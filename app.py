@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
+import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+import yaml
 
 from core.data import data_status, load_index, load_panel, load_tech, load_universe
 from core.engine import latest_signals, run_backtest
@@ -22,6 +27,43 @@ def load_data(version: str = ""):
 def data_version() -> str:
     from core.store import META_FILE
     return str(META_FILE.stat().st_mtime) if META_FILE.exists() else "legacy"
+
+
+# ---------------- 舆情情绪（sentiment-mvp 数据） ----------------
+SENT_ROOT = Path("/home/ubuntu/quant/sentiment-mvp")
+sys.path.insert(0, str(SENT_ROOT))
+
+from lib import store as sent_store  # noqa: E402
+
+SENT_DB = SENT_ROOT / "data/articles.db"
+SENT_STUDY_CSV = SENT_ROOT / "outputs/event_study_daily.csv"
+SENT_UNIVERSE_CSV = SENT_ROOT / "data/universe.csv"
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_news_stats():
+    return sent_store.stats(SENT_DB) if SENT_DB.exists() else {}
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_news_articles():
+    return sent_store.load_articles(SENT_DB) if SENT_DB.exists() else pd.DataFrame()
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_news_study():
+    if not SENT_STUDY_CSV.exists():
+        return pd.DataFrame()
+    return pd.read_csv(SENT_STUDY_CSV)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_news_universe():
+    if not SENT_UNIVERSE_CSV.exists():
+        return pd.DataFrame()
+    df = pd.read_csv(SENT_UNIVERSE_CSV, dtype={"code": str})
+    df["code"] = df["code"].astype(str).str.zfill(6)
+    return df
 
 
 def get_industry_map(tech) -> dict[str, str]:
@@ -117,8 +159,8 @@ def main():
         st.markdown("**Demo 说明**：回测使用本地 2020-2026 CSI800 面板数据，"
                     "资金曲线为策略模拟跟踪，真实账户记账将在下阶段加入。")
 
-    tab_dash, tab_bt, tab_sig, tab_data = st.tabs(
-        ["📊 资金看板", "🛠 回测工作台", "🎯 今日信号", "ℹ️ 数据状态"]
+    tab_dash, tab_bt, tab_sig, tab_news, tab_data = st.tabs(
+        ["📊 资金看板", "🛠 回测工作台", "🎯 今日信号", "📰 舆情情绪", "ℹ️ 数据状态"]
     )
 
     # ---------------- 资金看板 ----------------
@@ -290,6 +332,128 @@ def main():
         st.dataframe(sig2.rename(columns={"code": "代码", "score": "因子得分",
                                           "close": "收盘价", "turnover": "换手率"}),
                      use_container_width=True, hide_index=True)
+
+    # ---------------- 舆情情绪 ----------------
+    with tab_news:
+        st.subheader("📰 舆情情绪看板")
+        st.caption("数据：东方财富个股新闻 + 财联社电报 | 打分：中文金融词典 | "
+                   "研究：事件研究（沪深300超额）")
+        stats = load_news_stats()
+        if not stats or stats.get("total", 0) == 0:
+            st.warning("暂无舆情数据。先运行：cd ~/quant/sentiment-mvp && "
+                       "python run_pipeline.py daily")
+        else:
+            st.markdown("## 数据概览")
+            n1, n2, n3, n4 = st.columns(4)
+            n1.metric("新闻总数", f"{stats['total']:,}")
+            n2.metric("数据起始", (stats.get("min_time") or "-")[:10])
+            n3.metric("数据截止", (stats.get("max_time") or "-")[:10])
+            src = stats.get("by_source", {})
+            n4.metric("来源", f"EM {src.get('em', 0)} / CLS {src.get('cls', 0)}")
+
+            labels = stats.get("by_label", {})
+            l1, l2, l3 = st.columns(3)
+            l1.metric("正面", labels.get("positive", 0))
+            l2.metric("中性", labels.get("neutral", 0))
+            l3.metric("负面", labels.get("negative", 0))
+
+            arts = load_news_articles()
+            if len(arts):
+                arts = arts.copy()
+                arts["publish_time"] = arts["publish_time"].astype(str)
+
+                st.markdown("## 今日快照（财联社）")
+                today = pd.Timestamp.now().strftime("%Y-%m-%d")
+                today_df = arts[arts["publish_time"].str.startswith(today)].copy()
+                if len(today_df):
+                    uni_n = load_news_universe()
+                    nm = dict(zip(uni_n["code"], uni_n["name"])) if len(uni_n) else {}
+                    today_df["name"] = today_df["code"].map(nm)
+                    snap = (today_df.groupby(["code", "name"])
+                            .agg(n=("score", "size"), mean_score=("score", "mean"),
+                                 positive=("label", lambda s: int((s == "positive").sum())),
+                                 negative=("label", lambda s: int((s == "negative").sum())))
+                            .sort_values("mean_score", ascending=False).reset_index())
+                    st.dataframe(snap, use_container_width=True, hide_index=True)
+                else:
+                    st.info("今日暂无匹配标的的财联社电报")
+
+                st.markdown("## 情绪分布")
+                d1, d2 = st.columns(2)
+                with d1:
+                    fig = px.histogram(arts, x="score", nbins=40, title="情绪分直方图",
+                                       color_discrete_sequence=["#5470c6"])
+                    fig.update_layout(height=300, margin=dict(l=10, r=10, t=40, b=10))
+                    st.plotly_chart(fig, use_container_width=True)
+                with d2:
+                    lab = arts.groupby(["source", "label"]).size().reset_index(name="n")
+                    fig2 = px.bar(lab, x="label", y="n", color="source", barmode="group",
+                                  title="标签 × 来源",
+                                  color_discrete_sequence=["#5470c6", "#ee6666"])
+                    fig2.update_layout(height=300, margin=dict(l=10, r=10, t=40, b=10))
+                    st.plotly_chart(fig2, use_container_width=True)
+
+                st.markdown("## 事件研究（沪深300超额，次日开盘买入）")
+                study = load_news_study()
+                if len(study):
+                    col = [c for c in study.columns if c.startswith("excess_open_")]
+                    if col:
+                        rows = []
+                        for c in col:
+                            h = c.split("_")[-1]
+                            for lab in ("positive", "neutral", "negative"):
+                                sub = study[study["label"] == lab][c].dropna()
+                                if len(sub):
+                                    rows.append({"持有期": f"{h}日", "情绪桶": lab,
+                                                 "事件数": len(sub), "平均超额": sub.mean(),
+                                                 "胜率": (sub > 0).mean()})
+                        summ = pd.DataFrame(rows)
+                        t1, t2 = st.columns([1, 1.6])
+                        with t1:
+                            pivot = (summ.pivot(index="情绪桶", columns="持有期",
+                                                values="平均超额")
+                                     .reindex(["positive", "neutral", "negative"]))
+                            pivot.index = ["正面", "中性", "负面"]
+                            st.dataframe(pivot.map(lambda x: f"{x:.4f}"),
+                                         use_container_width=True)
+                        with t2:
+                            fig3 = px.bar(summ, x="持有期", y="平均超额", color="情绪桶",
+                                          barmode="group",
+                                          color_discrete_map={"positive": "#e8503a",
+                                                              "neutral": "#aaa",
+                                                              "negative": "#3b7dd8"})
+                            fig3.add_hline(y=0, line_color="#666", line_dash="dash")
+                            fig3.update_layout(height=320, margin=dict(l=10, r=10, t=20, b=10),
+                                               legend_title="情绪桶")
+                            st.plotly_chart(fig3, use_container_width=True)
+                else:
+                    st.info("暂无事件研究结果，运行 daily 后生成")
+
+                arts["date"] = pd.to_datetime(arts["publish_time"], errors="coerce").dt.date
+                trend = arts.dropna(subset=["date"]).groupby("date").size().reset_index(name="n")
+                if len(trend):
+                    fig4 = px.bar(trend, x="date", y="n", title="每日新闻条数",
+                                  color_discrete_sequence=["#91cc75"])
+                    fig4.update_layout(height=280, margin=dict(l=10, r=10, t=40, b=10))
+                    st.plotly_chart(fig4, use_container_width=True)
+
+                st.markdown("## 情绪最强 / 最弱新闻")
+                uni_n = load_news_universe()
+                nm = dict(zip(uni_n["code"], uni_n["name"])) if len(uni_n) else {}
+                arts["name"] = arts["code"].map(nm)
+                top = arts.nlargest(10, "score")[["date", "code", "name", "title",
+                                                  "label", "score", "source"]]
+                bot = arts.nsmallest(10, "score")[["date", "code", "name", "title",
+                                                   "label", "score", "source"]]
+                e1, e2 = st.columns(2)
+                with e1:
+                    st.markdown("**最正面**")
+                    st.dataframe(top, use_container_width=True, hide_index=True)
+                with e2:
+                    st.markdown("**最负面**")
+                    st.dataframe(bot, use_container_width=True, hide_index=True)
+            else:
+                st.info("暂无文章数据")
 
     # ---------------- 数据状态 ----------------
     with tab_data:
