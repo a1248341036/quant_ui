@@ -7,6 +7,7 @@ import streamlit as st
 
 from core.data import data_status, load_index, load_panel, load_tech, load_universe
 from core.engine import latest_signals, run_backtest
+from core.fetcher import update_data
 from strategies.registry import get_strategy, list_strategies
 
 
@@ -237,13 +238,46 @@ def main():
         st.subheader("数据状态")
         status = data_status()
         rows = []
-        for key, s in status.items():
-            rows.append({"数据": key, "存在": "✅" if s["exists"] else "❌",
-                         "大小MB": s["size_mb"]})
+        for key, src in status.items():
+            if key == "meta":
+                continue
+            for label, s in src.items():
+                rows.append({"数据": key, "位置": label,
+                             "存在": "✅" if s["exists"] else "❌",
+                             "大小MB": s["size_mb"]})
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-        st.markdown(f"- 面板行数：{len(panel):,}，个股数：{panel['code'].nunique()}")
-        st.markdown(f"- 日期范围：{first_date.date()} ~ {last_date.date()}")
-        st.caption("生产版将加入 AKShare 每日增量刷新与真实账户记账。")
+        meta = status.get("meta", {})
+        if meta:
+            st.markdown(f"- 上次更新：{meta.get('last_update', '-')} · "
+                        f"代码数 {meta.get('n_codes', '-')} · 行数 {meta.get('n_rows', '-'):,}")
+        st.markdown(f"- 当前加载：面板行数 {len(panel):,}，个股 {panel['code'].nunique()}，"
+                    f"日期 {first_date.date()} ~ {last_date.date()}")
+
+        st.markdown("---")
+        st.markdown("### 数据更新（腾讯行情 + 中证指数官网）")
+        u1, u2 = st.columns(2)
+        with u1:
+            mode = st.selectbox("更新模式", ["增量（推荐，只抓新增区间）", "全量重建"],
+                                key="data_mode")
+        with u2:
+            update_end = st.date_input("更新到", value=pd.Timestamp.today().date(),
+                                       key="data_end")
+        st.caption("首次全量约需几分钟；之后每天增量约 1-2 分钟。东方财富行业接口在部分"
+                   "服务器不可达，行业分类失败时自动沿用本地缓存。")
+        if st.button("🚀 开始更新", type="primary", key="data_update"):
+            bar = st.progress(0.0, text="准备中...")
+            try:
+                result = update_data(
+                    mode="incremental" if mode.startswith("增量") else "full",
+                    end=update_end.strftime("%Y-%m-%d"),
+                    progress=lambda p, t, label: bar.progress(min(float(p) / max(float(t), 1.0), 1.0),
+                                                              text=label),
+                )
+                bar.progress(1.0, text="完成")
+                load_data.clear()
+                st.success(f"更新完成：{result['n_codes']} 只，{result['n_rows']:,} 行。刷新页面生效。")
+            except Exception as exc:
+                st.error(f"更新失败：{exc}")
 
 
 if __name__ == "__main__":
