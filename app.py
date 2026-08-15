@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -12,6 +14,19 @@ from strategies.registry import get_strategy, list_strategies
 
 
 st.set_page_config(page_title="A股量化回测工作台", page_icon="📈", layout="wide")
+
+# 简单登录门：与后端共用同一密码（环境变量 QUANT_UI_PASSWORD）
+if not st.session_state.get("authed"):
+    st.title("🔐 量化回测工作台")
+    st.caption("仅限授权用户访问")
+    pw = st.text_input("密码", type="password")
+    if st.button("登录"):
+        if pw == os.environ.get("QUANT_UI_PASSWORD", "REDACTED_PASSWORD"):
+            st.session_state.authed = True
+            st.rerun()
+        else:
+            st.error("密码错误")
+    st.stop()
 
 
 @st.cache_data(show_spinner=False)
