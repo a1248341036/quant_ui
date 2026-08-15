@@ -65,7 +65,9 @@ cd /home/ubuntu/quant_ui
   --host 0.0.0.0 --port 8000
 ```
 
-手机浏览器打开 `http://<服务器IP>:8501`。
+手机浏览器打开：
+- 正式 Web 前端（Vue3 单页）：`http://<服务器IP>:8000`
+- Streamlit 旧 Demo：`http://<服务器IP>:8501`
 
 ## 目录
 
@@ -80,6 +82,7 @@ core/store.py           # 缓存存储
 strategies/registry.py  # 策略注册表（新策略在此添加）
 backend/                # FastAPI REST API
 scripts/refresh_data.py # 每日数据刷新脚本
+static/                 # Vue3 CDN 单页前端（index.html + 本地 vendor）
 ```
 
 ## 写自己的策略
