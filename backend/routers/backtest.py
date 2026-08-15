@@ -21,6 +21,8 @@ class BacktestRequest(BaseModel):
     end: str
     exclude_kechuang: bool = True
     affordable: bool = True
+    amount_q: float = 0.2   # am20 成交额分位过滤，旧脚本口径 0.2
+    warmup_days: int | None = 400  # 因子预热天数，短窗口动量因子需预热
 
 
 @router.get("/strategies")
@@ -45,6 +47,8 @@ def backtest(req: BacktestRequest):
         top_n=req.top_n,
         freq=req.freq,
         affordable=req.affordable,
+        amount_q=req.amount_q,
+        warmup_days=req.warmup_days,
     )
     return {
         "metrics": {k: services._to_float(v) for k, v in res["metrics"].items()},

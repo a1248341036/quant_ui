@@ -16,7 +16,8 @@ def compute_metrics(nav: pd.Series, periods_per_year: int = 244) -> dict:
     n = len(rets)
     ann = (1 + total) ** (periods_per_year / n) - 1 if total > -1 else -1.0
     vol = rets.std(ddof=1) * np.sqrt(periods_per_year)
-    sharpe = (ann - 0.0) / vol if vol and not np.isnan(vol) else np.nan
+    # 算术年化夏普（行业惯例，与旧 backtest_5w 口径一致）
+    sharpe = (rets.mean() * periods_per_year) / vol if vol and not np.isnan(vol) else np.nan
 
     running_max = nav.cummax()
     drawdown = nav / running_max - 1

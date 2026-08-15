@@ -37,20 +37,31 @@ def run_backtest(
     amount_q: float = 0.3,
     affordable: bool = True,
     lot_size: int = 100,
+    warmup_days: int | None = None,
 ) -> dict:
     """事件驱动回测：T+1、一手 100 股、费用、可承载性过滤。
 
     策略只需提供「每个信号日的因子得分」，引擎负责月度/周度调仓、
     停牌继承、买卖成本与净值计算。
+
+    warmup_days: 因子预热天数。短窗口回测时（如只看近半年），动量/波动类
+    因子在窗口起点没有足够历史，会用 start 前 warmup_days 个自然日的数据
+    计算因子，但净值仍从 start 开始输出。None 表示不预热（窗口即计算区间）。
     """
+    start_ts, end_ts = pd.Timestamp(start), pd.Timestamp(end)
+    calc_start = (start_ts - pd.Timedelta(days=warmup_days)
+                  if warmup_days and warmup_days > 0 else start_ts)
     sub = panel[panel["code"].isin(codes)].copy()
-    sub = sub[(sub["date"] >= pd.Timestamp(start)) & (sub["date"] <= pd.Timestamp(end))]
+    sub = sub[(sub["date"] >= calc_start) & (sub["date"] <= end_ts)]
     if sub.empty:
         raise ValueError("所选区间/股票池内没有数据")
 
+    cal = pd.DatetimeIndex(sorted(sub["date"].unique()))
+
     def pivot(col: str) -> pd.DataFrame:
+        # pivot_table 会丢弃全 NaN 行（如 am20 前 20 个交易日），需统一回交易日历
         return sub.pivot_table(index="date", columns="code", values=col,
-                               aggfunc="last").sort_index()
+                               aggfunc="last").reindex(cal).sort_index()
 
     close = pivot("close")
     open_ = pivot("open")
@@ -82,18 +93,28 @@ def run_backtest(
     else:
         signal_idx = [i for i, d in enumerate(dates) if d.weekday() == 4]
     exec_dates = [i + 1 for i in signal_idx if i + 1 < T]
-    exec_set = set(exec_dates)
+    start_idx = int(np.argmax(dates >= start_ts)) if (dates >= start_ts).any() else 0
+    # 预热模式：窗口起点不继承预热段持仓，也不在窗口起点当天调仓，
+    # 与"全量算因子、窗口起点从零开始"的旧脚本语义一致。
+    exec_set = ({i for i in exec_dates if i != start_idx}
+                if warmup_days else set(exec_dates))
 
     nav = np.ones(T)
     bench = np.ones(T)
     hold = np.zeros(K)
     holdings_history = []
     trades: list[dict] = []
-    last_signal_date = dates[exec_dates[-1] - 1] if exec_dates else None
     last_chosen = []
 
     for t in range(1, T):
         prev = t - 1
+        if t == start_idx and warmup_days:
+            # 窗口起点：持仓清零、净值归 1，只输出预热段之后的净值
+            hold = np.zeros(K)
+            nav[t] = 1.0
+            bench[t] = 1.0
+            holdings_history.append(hold.copy())
+            continue
         rr = o2o[t]
         if hold.sum() > 0:
             raw = float((rr * hold).sum() / hold.sum())
@@ -162,8 +183,20 @@ def run_backtest(
         bench[t] = bench[t - 1] * (1.0 + bench_ret)
         holdings_history.append(hold.copy())
 
-    nav_s = pd.Series(nav, index=dates, name="nav")
-    bench_s = pd.Series(bench, index=dates, name="bench")
+    exec_in_out = sorted(exec_set)
+    last_signal_date = dates[exec_in_out[-1] - 1] if exec_in_out else None
+    if start_idx > 0:
+        # 预热段只用于因子计算，净值/成交从 start 开始输出
+        nav = nav[start_idx:]
+        bench = bench[start_idx:]
+        dates_out = dates[start_idx:]
+        trades = [t for t in trades if t["date"] >= start_ts]
+        holdings_history = holdings_history[start_idx - 1:] if start_idx > 0 else holdings_history
+    else:
+        dates_out = dates
+
+    nav_s = pd.Series(nav, index=dates_out, name="nav")
+    bench_s = pd.Series(bench, index=dates_out, name="bench")
     trades_df = pd.DataFrame(trades)
 
     last_hold = pd.Series(hold, index=codes_used)
@@ -187,7 +220,7 @@ def run_backtest(
         "holdings": holdings_df,
         "last_signal_date": last_signal_date,
         "capital": capital,
-        "dates": dates,
+        "dates": dates_out,
         "last_chosen": last_chosen,
     }
 
@@ -196,9 +229,11 @@ def latest_signals(panel: pd.DataFrame, codes: list[str], factor: str,
                    ascending: bool, top_n: int = 10) -> pd.DataFrame:
     sub = panel[panel["code"].isin(codes)].copy()
 
+    cal = pd.DatetimeIndex(sorted(sub["date"].unique()))
+
     def pivot(col: str) -> pd.DataFrame:
         return sub.pivot_table(index="date", columns="code", values=col,
-                               aggfunc="last").sort_index()
+                               aggfunc="last").reindex(cal).sort_index()
 
     close = pivot("close")
     am20 = pivot("am20")

@@ -90,6 +90,8 @@
           <label>结束<input type="date" v-model="bt.end"></label>
           <label style="flex-direction:row;gap:6px;align-items:center"><input type="checkbox" v-model="bt.exclude"> 剔除科创/创业</label>
           <label style="flex-direction:row;gap:6px;align-items:center"><input type="checkbox" v-model="bt.affordable"> 一手过滤</label>
+          <label>成交额分位<input type="number" v-model.number="bt.amount_q" step="0.05" min="0" max="1" style="width:70px"></label>
+          <label>预热天数<select v-model.number="bt.warmup_days"><option :value="0">关闭</option><option :value="120">120 天</option><option :value="400">400 天</option><option :value="9999">全量</option></select></label>
           <button class="primary" @click="runBacktest">🚀 跑回测</button>
         </div>
       </div>
@@ -238,7 +240,7 @@ createApp({
       panelInfo: {},
       strategies: [],
       accSummary: null, accItems: [], accEmpty: true,
-      bt: { universe: '科技行业', strategy: '低换手冷门', top_n: 3, capital: 5000, freq: 'monthly', start: '2026-02-02', end: '2026-08-14', exclude: true, affordable: true },
+      bt: { universe: '科技行业', strategy: '低换手冷门', top_n: 3, capital: 5000, freq: 'monthly', start: '2026-02-02', end: '2026-08-14', exclude: true, affordable: true, amount_q: 0.2, warmup_days: 400 },
       btResult: null,
       sig: { universe: '科技行业', strategy: '低换手冷门', top_n: 10 },
       signals: [], sigDate: '', sigInfo: {},
@@ -302,7 +304,7 @@ createApp({
     },
     async runBacktest() {
       try {
-        const r = await api('/api/backtest', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(this.bt) });
+        const r = await api('/api/backtest', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...this.bt, exclude_kechuang: this.bt.exclude }) });
         if (r.error) { alert(r.error); return; }
         this.btResult = r;
         this.$nextTick(() => this.renderBacktest());

@@ -84,6 +84,45 @@ def main() -> int:
     except (ValueError, KeyError):
         check("空股票池抛错", True)
 
+    print("== 与旧 backtest_5w 结果一致性 ==")
+    legacy_panel = Path("/tmp/turn20_fast_panel_cs800_2020-01-01_2026-08-13.parquet")
+    legacy_tech = Path("/tmp/tech_universe_sw.csv")
+    old_csv = Path("/home/ubuntu/quant_3stocks/outputs/backtest_5w.csv")
+    if legacy_panel.exists() and legacy_tech.exists() and old_csv.exists():
+        old = pd.read_csv(old_csv)
+        old = old[old["top_n"] == 5].set_index(["window", "strategy"])
+        lp = pd.read_parquet(legacy_panel)
+        lp["code"] = lp["code"].astype(str).str.zfill(6)
+        lt = pd.read_csv(legacy_tech, dtype={"code": str})
+        lt["code"] = lt["code"].astype(str).str.zfill(6)
+        lcodes = sorted({c for c in set(lt["code"]) & set(lp["code"].unique())
+                         if not c.startswith(("300", "301", "688", "689"))})
+        old_map = {"低成交冷门": "cold", "高成交领涨": "leader", "动量 20 日": "mom20",
+                   "动量 60 日": "mom60", "反转 20 日": "rev20", "低波动": "lowvol",
+                   "复合因子": "composite"}
+        n_ok = 0
+        for wname, (ws, we) in {"长期(2020-2026)": ("2020-01-02", "2026-08-13"),
+                                "近半年": ("2026-02-02", "2026-08-13")}.items():
+            for strat_name, old_key in old_map.items():
+                st = STRATEGIES[strat_name]
+                res = run_backtest(lp, lcodes, st["factor"], st["ascending"],
+                                   ws, we, 50000, 5, "monthly", affordable=True,
+                                   amount_q=0.2, warmup_days=9999)
+                m = res["metrics"]
+                ref = old.loc[(wname, old_key)]
+                close_total = abs(m["总收益"] * 100 - ref["total"]) < 0.01
+                close_mdd = abs(m["最大回撤"] * 100 - ref["mdd"]) < 0.01
+                close_sharpe = abs(m["夏普"] - ref["sharpe"]) < 0.01
+                if close_total and close_mdd and close_sharpe:
+                    n_ok += 1
+                else:
+                    check(f"对照[{wname}/{old_key}]", False,
+                          f"total {m['总收益']*100:.2f} vs {ref['total']:.2f}, "
+                          f"sharpe {m['夏普']:.3f} vs {ref['sharpe']:.3f}")
+        check("旧结果对照 14 组全一致", n_ok == 14, f"ok={n_ok}/14")
+    else:
+        check("旧结果对照（旧数据缺失，跳过）", True)
+
     print("== 信号 ==")
     for strat_name, strat in STRATEGIES.items():
         sig, d = latest_signals(panel, codes, strat["factor"], strat["ascending"], top_n=10)
