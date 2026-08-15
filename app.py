@@ -39,6 +39,11 @@ def data_version() -> str:
     return str(META_FILE.stat().st_mtime) if META_FILE.exists() else "legacy"
 
 
+def get_industry_map(tech) -> dict[str, str]:
+    return {str(c).zfill(6): str(ind)
+            for c, ind in zip(tech["code"], tech["industry"])}
+
+
 def get_name_map(uni, tech) -> dict[str, str]:
     m = {}
     for df in (uni, tech):
@@ -65,6 +70,17 @@ def format_pct(x: float) -> str:
     if pd.isna(x):
         return "-"
     return f"{x * 100:.2f}%"
+
+
+def equity_compare_chart(navs: dict[str, pd.Series], capital: float) -> go.Figure:
+    fig = go.Figure()
+    for name, nav in navs.items():
+        fig.add_trace(go.Scatter(x=nav.index, y=nav.values * capital, name=name,
+                                 mode="lines", line=dict(width=2)))
+    fig.update_layout(height=400, margin=dict(l=10, r=10, t=30, b=10),
+                      title="策略资金对比", legend=dict(orientation="h", y=1.05),
+                      yaxis_title="资金")
+    return fig
 
 
 def equity_chart(nav: pd.Series, bench: pd.Series, capital: float) -> go.Figure:
@@ -123,48 +139,50 @@ def main():
             dash_capital = st.number_input("初始资金", value=5000.0, min_value=1000.0,
                                            step=1000.0, key="dash_capital")
         with col2:
-            dash_strategy = st.selectbox("策略", list_strategies(), index=0,
-                                         key="dash_strategy")
+            dash_strategies = st.multiselect("策略（可多选对比）", list_strategies(),
+                                             default=["低换手冷门", "反转 20 日",
+                                                      "低波动", "动量 20 日"],
+                                             key="dash_strategies")
         with col3:
             dash_topn = st.select_slider("持仓数 TopN", options=[1, 2, 3, 5, 8],
                                          value=3, key="dash_topn")
         with col4:
             dash_months = st.slider("回看月份", 1, 24, 6, key="dash_months")
 
-        dash_end = last_date
-        dash_start = last_date - pd.DateOffset(months=dash_months)
-        strat = get_strategy(dash_strategy)
-        codes = build_codes("科技行业", True, panel, uni, tech)
+        if dash_strategies:
+            dash_end = last_date
+            dash_start = last_date - pd.DateOffset(months=dash_months)
+            codes = build_codes("科技行业", True, panel, uni, tech)
+            navs: dict[str, pd.Series] = {}
+            rows = []
+            for sname in dash_strategies:
+                strat = get_strategy(sname)
+                with st.spinner(f"跑 {sname}..."):
+                    res = run_backtest(
+                        panel=panel, codes=codes, factor=strat["factor"],
+                        ascending=strat["ascending"],
+                        start=dash_start.strftime("%Y-%m-%d"), end=dash_end.strftime("%Y-%m-%d"),
+                        capital=float(dash_capital), top_n=int(dash_topn), freq="monthly",
+                        affordable=True,
+                        industry_map=get_industry_map(tech) if strat.get("industry_cap") else None,
+                        industry_cap=strat.get("industry_cap"),
+                    )
+                navs[sname] = res["nav"]
+                m = res["metrics"]
+                rows.append({
+                    "策略": sname, "总收益%": round(m["总收益"] * 100, 2),
+                    "年化%": round(m["年化收益"] * 100, 2),
+                    "夏普": round(m["夏普"], 3),
+                    "最大回撤%": round(m["最大回撤"] * 100, 2),
+                    "信号日": str(res["last_signal_date"].date()),
+                })
 
-        with st.spinner("跑回测中..."):
-            res = run_backtest(
-                panel=panel, codes=codes, factor=strat["factor"],
-                ascending=strat["ascending"],
-                start=dash_start.strftime("%Y-%m-%d"), end=dash_end.strftime("%Y-%m-%d"),
-                capital=float(dash_capital), top_n=int(dash_topn), freq="monthly",
-                affordable=True,
-            )
-
-        m = res["metrics"]
-        st.markdown(f"**{dash_strategy} · Top{int(dash_topn)} · 等权 · 月频调仓 · "
-                    f"信号日 {res['last_signal_date'].date()}**")
-        cols = st.columns(6)
-        render_metrics(cols, m)
-        st.plotly_chart(equity_chart(res["nav"], res["bench"], float(dash_capital)),
-                        use_container_width=True)
-        st.plotly_chart(drawdown_chart(res["drawdown"]), use_container_width=True)
-
-        st.markdown("#### 当前持仓（最近一次调仓）")
-        if res["holdings"].empty:
-            st.info("当前空仓")
+            st.plotly_chart(equity_compare_chart(navs, float(dash_capital)),
+                            use_container_width=True)
+            st.markdown("#### 策略指标对比")
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
         else:
-            nm = get_name_map(uni, tech)
-            h = res["holdings"].copy()
-            h["名称"] = [nm.get(str(c), "") for c in h["code"]]
-            st.dataframe(h[["code", "名称", "weight_pct", "price", "market_value"]]
-                         .rename(columns={"code": "代码", "weight_pct": "权重%",
-                                          "price": "价格", "market_value": "市值"}),
-                         use_container_width=True, hide_index=True)
+            st.info("请至少选择一个策略")
 
     # ---------------- 回测工作台 ----------------
     with tab_bt:
@@ -214,6 +232,8 @@ def main():
                         ascending=strat["ascending"], start=str(start), end=str(end),
                         capital=float(capital), top_n=int(top_n), freq=freq,
                         affordable=affordable,
+                        industry_map=get_industry_map(tech) if strat.get("industry_cap") else None,
+                        industry_cap=strat.get("industry_cap"),
                     )
                 st.session_state["bt_result"] = res
                 st.session_state["bt_desc"] = (
