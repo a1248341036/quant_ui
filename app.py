@@ -280,8 +280,13 @@ def main():
         st.caption(f"信号日：{sig_date.date()} · 因子：{strat['factor']} · "
                    f"排序：{'升序(买低)' if strat['ascending'] else '降序(买高)'}")
         nm = get_name_map(uni, tech)
-        sig2 = sig.copy()
-        sig2["名称"] = [nm.get(str(c), "") for c in sig2["code"]]
+        sig2 = pd.DataFrame({
+            "code": sig["code"],
+            "名称": [nm.get(str(c), "") for c in sig["code"]],
+            "score": sig["score"],
+            "close": sig["close"],
+            "turnover": sig["turnover"],
+        })
         st.dataframe(sig2.rename(columns={"code": "代码", "score": "因子得分",
                                           "close": "收盘价", "turnover": "换手率"}),
                      use_container_width=True, hide_index=True)
