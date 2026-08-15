@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>量化回测工作台</title>
+  <script src="/vendor/vue.global.prod.js"></script>
+  <script src="/vendor/echarts.min.js"></script>
+  <style>
+    :root {
+      --bg: #0f1420; --card: #1a2233; --line: #2a3550;
+      --text: #dbe4f5; --muted: #8b98b5; --red: #e8503a; --green: #22b07d;
+      --blue: #4d8dff;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--text); font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+    header { padding: 16px 20px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    header h1 { font-size: 18px; }
+    header .sub { color: var(--muted); font-size: 12px; }
+    nav { display: flex; gap: 4px; padding: 10px 20px; overflow-x: auto; border-bottom: 1px solid var(--line); }
+    nav button { background: none; border: none; color: var(--muted); padding: 8px 14px; border-radius: 8px; cursor: pointer; font-size: 14px; white-space: nowrap; }
+    nav button.active { background: var(--blue); color: #fff; }
+    main { padding: 16px 20px; max-width: 1200px; margin: 0 auto; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 14px; }
+    .card h3 { font-size: 15px; margin-bottom: 10px; }
+    .grid { display: grid; gap: 10px; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+    .metric { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+    .metric .label { color: var(--muted); font-size: 12px; }
+    .metric .value { font-size: 20px; font-weight: 600; margin-top: 4px; }
+    .pos { color: var(--red); } .neg { color: var(--green); }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+    label { font-size: 13px; color: var(--muted); display: flex; flex-direction: column; gap: 4px; }
+    input, select, button { background: #0f1729; color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 14px; }
+    button.primary { background: var(--blue); border: none; color: #fff; cursor: pointer; }
+    button.primary:hover { filter: brightness(1.1); }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { padding: 8px 10px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
+    th:first-child, td:first-child { text-align: left; }
+    .chart { width: 100%; height: 340px; }
+    .chart.small { height: 220px; }
+    .muted { color: var(--muted); font-size: 12px; }
+    .progress { background: #0f1729; border: 1px solid var(--line); border-radius: 8px; height: 18px; overflow: hidden; margin-top: 8px; }
+    .progress .bar { height: 100%; background: var(--blue); transition: width .3s; }
+    .warn { color: #e0b84d; font-size: 13px; }
+    .ok { color: var(--green); font-size: 13px; }
+    .err { color: var(--red); font-size: 13px; }
+    @media (max-width: 640px) { nav button { padding: 7px 10px; font-size: 13px; } main { padding: 10px; } }
+  </style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>📈 量化回测工作台</h1>
+    <span class="sub">数据至 {{panelInfo.last_date || '-'}} · 个股 {{panelInfo.n_codes || '-'}}</span>
+  </header>
+
+  <nav>
+    <button :class="{active: tab==='dashboard'}" @click="switchTab('dashboard')">📊 看板</button>
+    <button :class="{active: tab==='backtest'}" @click="switchTab('backtest')">🛠 回测</button>
+    <button :class="{active: tab==='signals'}" @click="switchTab('signals')">🎯 信号</button>
+    <button :class="{active: tab==='account'}" @click="switchTab('account')">📒 账户</button>
+    <button :class="{active: tab==='data'}" @click="switchTab('data')">ℹ️ 数据</button>
+  </nav>
+
+  <main>
+    <!-- 看板 -->
+    <section v-if="tab==='dashboard'">
+      <div class="cards">
+        <div class="metric"><div class="label">账户总资产</div><div class="value">{{fmt(accSummary?.latest_equity)}}</div></div>
+        <div class="metric"><div class="label">现金</div><div class="value">{{fmt(accSummary?.cash)}}</div></div>
+        <div class="metric"><div class="label">持仓市值</div><div class="value">{{fmt(accSummary?.market_value)}}</div></div>
+        <div class="metric"><div class="label">累计盈亏</div><div class="value" :class="sign(accSummary?.pnl)">{{fmt(accSummary?.pnl)}}</div></div>
+        <div class="metric"><div class="label">累计收益率</div><div class="value" :class="sign(accSummary?.pnl_pct)">{{pct(accSummary?.pnl_pct)}}</div></div>
+      </div>
+      <div class="card"><h3>资金曲线（真实账户）</h3><div id="dashEquity" class="chart"></div></div>
+      <div class="card" v-if="accEmpty"><p class="muted">还没有记账数据，去「账户」页录一笔入金和交易，这里就会显示真实资金曲线。下面先展示模拟策略曲线。</p><h3 style="margin-top:12px">模拟策略曲线（低换手冷门 Top3 · 5000）</h3><div id="dashSim" class="chart small"></div></div>
+    </section>
+
+    <!-- 回测 -->
+    <section v-if="tab==='backtest'">
+      <div class="card">
+        <div class="row">
+          <label>股票池<select v-model="bt.universe"><option>科技行业</option><option>沪深300+500</option></select></label>
+          <label>策略<select v-model="bt.strategy"><option v-for="s in strategies" :key="s.name">{{s.name}}</option></select></label>
+          <label>TopN<select v-model.number="bt.top_n"><option v-for="n in [1,2,3,5,8,10]" :value="n">{{n}}</option></select></label>
+          <label>资金<input type="number" v-model.number="bt.capital" step="1000"></label>
+          <label>频率<select v-model="bt.freq"><option value="monthly">月频</option><option value="weekly">周频</option></select></label>
+          <label>开始<input type="date" v-model="bt.start"></label>
+          <label>结束<input type="date" v-model="bt.end"></label>
+          <label style="flex-direction:row;gap:6px;align-items:center"><input type="checkbox" v-model="bt.exclude"> 剔除科创/创业</label>
+          <label style="flex-direction:row;gap:6px;align-items:center"><input type="checkbox" v-model="bt.affordable"> 一手过滤</label>
+          <button class="primary" @click="runBacktest">🚀 跑回测</button>
+        </div>
+      </div>
+      <div v-if="btResult">
+        <div class="cards">
+          <div class="metric" v-for="(v,k) in btResult.metrics" :key="k"><div class="label">{{k}}</div><div class="value" :class="sign(v)">{{metricText(k,v)}}</div></div>
+        </div>
+        <div class="card"><h3>资金曲线（策略 vs 基准）</h3><div id="btEquity" class="chart"></div></div>
+        <div class="card"><h3>回撤</h3><div id="btDraw" class="chart small"></div></div>
+        <div class="grid" style="grid-template-columns:1fr 1fr">
+          <div class="card"><h3>持仓明细</h3>
+            <div style="overflow-x:auto"><table><tr><th>代码</th><th>名称</th><th>权重%</th><th>价格</th><th>市值</th></tr>
+            <tr v-for="h in btResult.holdings" :key="h.code"><td>{{h.code}}</td><td>{{h.name||'-'}}</td><td>{{fmt(h.weight_pct)}}</td><td>{{fmt(h.price)}}</td><td>{{fmt(h.market_value)}}</td></tr></table></div>
+          </div>
+          <div class="card"><h3>调仓记录</h3>
+            <div style="overflow-x:auto"><table><tr><th>日期</th><th>信号日</th><th>持仓数</th><th>换手</th></tr>
+            <tr v-for="(t,i) in btResult.trades" :key="i"><td>{{t.date.slice(0,10)}}</td><td>{{t.signal_date.slice(0,10)}}</td><td>{{t.num_hold}}</td><td>{{fmt(t.turnover)}}</td></tr></table></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 信号 -->
+    <section v-if="tab==='signals'">
+      <div class="card">
+        <div class="row">
+          <label>股票池<select v-model="sig.universe"><option>科技行业</option><option>沪深300+500</option></select></label>
+          <label>策略<select v-model="sig.strategy"><option v-for="s in strategies" :key="s.name">{{s.name}}</option></select></label>
+          <label>条数<select v-model.number="sig.top_n"><option v-for="n in [5,10,15,20,30]" :value="n">{{n}}</option></select></label>
+          <button class="primary" @click="loadSignals">刷新</button>
+        </div>
+        <p class="muted" v-if="sigDate">信号日：{{sigDate}}</p>
+      </div>
+      <div class="card"><div id="sigChart" class="chart small"></div></div>
+      <div class="card">
+        <div style="overflow-x:auto"><table><tr><th>代码</th><th>因子得分</th><th>收盘价</th><th>换手率</th></tr>
+        <tr v-for="(s,i) in signals" :key="i"><td>{{s.code}}</td><td>{{fmt(s.score, 4)}}</td><td>{{fmt(s.close)}}</td><td>{{pct(s.turnover)}}</td></tr></table></div>
+      </div>
+    </section>
+
+    <!-- 账户 -->
+    <section v-if="tab==='account'">
+      <div class="grid" style="grid-template-columns:1fr 1fr">
+        <div class="card">
+          <h3>出入金</h3>
+          <div class="row">
+            <label>日期<input type="date" v-model="dep.date"></label>
+            <label>金额<input type="number" v-model.number="dep.amount"></label>
+            <button class="primary" @click="addDeposit">入金</button>
+          </div>
+          <div style="overflow-x:auto;margin-top:10px"><table><tr><th>日期</th><th>金额</th><th>备注</th></tr>
+          <tr v-for="(d,i) in deposits" :key="i"><td>{{d.date.slice(0,10)}}</td><td>{{fmt(d.amount)}}</td><td>{{d.note||'-'}}</td></tr></table></div>
+        </div>
+        <div class="card">
+          <h3>录入交易</h3>
+          <div class="row">
+            <label>日期<input type="date" v-model="tx.date"></label>
+            <label>代码<input v-model="tx.code" placeholder="601728"></label>
+            <label>名称<input v-model="tx.name"></label>
+            <label>方向<select v-model="tx.action"><option value="buy">买入</option><option value="sell">卖出</option></select></label>
+            <label>股数<input type="number" v-model.number="tx.shares"></label>
+            <label>价格<input type="number" v-model.number="tx.price"></label>
+            <button class="primary" @click="addTx">提交</button>
+          </div>
+          <div style="overflow-x:auto;margin-top:10px"><table><tr><th>日期</th><th>代码</th><th>名称</th><th>方向</th><th>股数</th><th>价格</th></tr>
+          <tr v-for="(t,i) in transactions" :key="i"><td>{{t.date.slice(0,10)}}</td><td>{{t.code}}</td><td>{{t.name}}</td><td>{{t.action}}</td><td>{{t.shares}}</td><td>{{fmt(t.price)}}</td></tr></table></div>
+        </div>
+      </div>
+      <div class="card"><h3>当前持仓</h3>
+        <div style="overflow-x:auto"><table><tr><th>代码</th><th>名称</th><th>股数</th><th>成本</th><th>现价</th><th>市值</th><th>盈亏</th><th>盈亏%</th></tr>
+        <tr v-for="p in positions" :key="p.code"><td>{{p.code}}</td><td>{{p.name||'-'}}</td><td>{{p.shares}}</td><td>{{fmt(p.avg_cost)}}</td><td>{{fmt(p.price)}}</td><td>{{fmt(p.market_value)}}</td><td :class="sign(p.pnl)">{{fmt(p.pnl)}}</td><td :class="sign(p.pnl_pct)">{{pct(p.pnl_pct)}}</td></tr></table></div>
+      </div>
+    </section>
+
+    <!-- 数据 -->
+    <section v-if="tab==='data'">
+      <div class="card">
+        <h3>缓存状态</h3>
+        <div style="overflow-x:auto"><table><tr><th>数据</th><th>位置</th><th>存在</th><th>大小MB</th></tr>
+        <tr v-for="(v,k) in statusRows" :key="k"><td>{{v.name}}</td><td>{{v.loc}}</td><td>{{v.exists?'✅':'❌'}}</td><td>{{v.size??'-'}}</td></tr></table></div>
+        <p class="muted" v-if="meta.last_update">上次更新：{{meta.last_update}} · 代码 {{meta.n_codes}} · 行数 {{meta.n_rows}}</p>
+      </div>
+      <div class="card">
+        <h3>更新数据</h3>
+        <div class="row">
+          <label>模式<select v-model="updateMode"><option value="incremental">增量（推荐）</option><option value="full">全量重建</option></select></label>
+          <button class="primary" @click="startUpdate">🚀 开始更新</button>
+        </div>
+        <div class="progress" v-if="updating"><div class="bar" :style="{width: (updateProgress*100)+'%'}"></div></div>
+        <p class="muted" v-if="updating">{{updateText}}</p>
+        <p class="ok" v-if="updateDone">更新完成：{{updateResult?.n_codes}} 只 · {{updateResult?.n_rows}} 行</p>
+        <p class="err" v-if="updateError">{{updateError}}</p>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script>
+const { createApp } = Vue;
+
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+const charts = {};
+function chart(id) {
+  const el = document.getElementById(id);
+  if (!el) return null;
+  if (charts[id] && !document.body.contains(el)) {
+    charts[id].dispose(); delete charts[id];
+  }
+  if (!charts[id]) charts[id] = echarts.init(el);
+  return charts[id];
+}
+function renderLine(id, series, height) {
+  const c = chart(id);
+  if (!c) return;
+  c.setOption({
+    tooltip: { trigger: 'axis' },
+    legend: { textStyle: { color: '#8b98b5' }, top: 0 },
+    grid: { left: 50, right: 16, top: 30, bottom: 30 },
+    xAxis: { type: 'category', data: series[0]?.dates || [], axisLabel: { color: '#8b98b5' } },
+    yAxis: { type: 'value', axisLabel: { color: '#8b98b5' } },
+    series: series.map(s => ({ name: s.name, type: 'line', data: s.values, showSymbol: false, smooth: true, lineStyle: { width: 2 } }))
+  }, true);
+}
+function renderBar(id, names, values) {
+  const c = chart(id);
+  if (!c) return;
+  c.setOption({
+    tooltip: {},
+    grid: { left: 50, right: 16, top: 20, bottom: 40 },
+    xAxis: { type: 'category', data: names, axisLabel: { color: '#8b98b5', rotate: 30 } },
+    yAxis: { type: 'value', axisLabel: { color: '#8b98b5' } },
+    series: [{ type: 'bar', data: values, itemStyle: { color: '#4d8dff' } }]
+  }, true);
+}
+window.addEventListener('resize', () => Object.values(charts).forEach(c => c.resize()));
+
+createApp({
+  data() {
+    return {
+      tab: 'dashboard',
+      panelInfo: {},
+      strategies: [],
+      accSummary: null, accItems: [], accEmpty: true,
+      bt: { universe: '科技行业', strategy: '低换手冷门', top_n: 3, capital: 5000, freq: 'monthly', start: '2026-02-02', end: '2026-08-14', exclude: true, affordable: true },
+      btResult: null,
+      sig: { universe: '科技行业', strategy: '低换手冷门', top_n: 10 },
+      signals: [], sigDate: '', sigInfo: {},
+      deposits: [], transactions: [], positions: [],
+      dep: { date: today(), amount: 5000 }, tx: { date: today(), code: '', name: '', action: 'buy', shares: 100, price: 0, fee: 0 },
+      statusRows: [], meta: {}, updateMode: 'incremental',
+      updating: false, updateProgress: 0, updateText: '', updateDone: false, updateResult: null, updateError: '',
+    };
+  },
+  mounted() { this.init(); },
+  methods: {
+    async init() {
+      try { this.panelInfo = await api('/api/data/panel-info'); } catch (e) {}
+      try { this.strategies = await api('/api/strategies'); } catch (e) {}
+      await this.loadAccount();
+      if (this.accEmpty) await this.loadSim();
+      await this.loadSignals();
+    },
+    switchTab(t) {
+      this.tab = t;
+      this.$nextTick(() => {
+        if (t === 'dashboard') { if (!this.accEmpty) renderLine('dashEquity', this.accountSeries()); else renderLine('dashSim', this.simSeries()); }
+        if (t === 'backtest' && this.btResult) this.renderBacktest();
+        if (t === 'signals') this.renderSignals();
+      });
+    },
+    async loadAccount() {
+      try {
+        const eq = await api('/api/ledger/equity');
+        this.accSummary = eq.summary; this.accItems = eq.items || []; this.accEmpty = eq.items.length === 0;
+        if (this.accEmpty) { this.accSummary = null; }
+        else { this.$nextTick(() => renderLine('dashEquity', this.accountSeries())); }
+      } catch (e) { this.accEmpty = true; }
+      try { this.deposits = await api('/api/ledger/deposits'); } catch (e) {}
+      try { this.transactions = await api('/api/ledger/transactions'); } catch (e) {}
+      try { this.positions = await api('/api/ledger/positions'); } catch (e) {}
+    },
+    accountSeries() {
+      const items = this.accItems;
+      return [
+        { name: '总资产', dates: items.map(x => x.date.slice(0, 10)), values: items.map(x => +x.equity.toFixed(2)) },
+        { name: '持仓市值', dates: items.map(x => x.date.slice(0, 10)), values: items.map(x => +x.market_value.toFixed(2)) }
+      ];
+    },
+    async loadSim() {
+      try {
+        const end = this.panelInfo.last_date || '2026-08-14';
+        const start = new Date(end); start.setMonth(start.getMonth() - 6);
+        const iso = d => d.toISOString().slice(0, 10);
+        const r = await api('/api/backtest', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ universe: '科技行业', strategy: '低换手冷门', top_n: 3, capital: 5000, freq: 'monthly', start: iso(start), end, exclude_kechuang: true, affordable: true }) });
+        this.simResult = r;
+        this.$nextTick(() => renderLine('dashSim', this.simSeries()));
+      } catch (e) {}
+    },
+    simSeries() {
+      const nav = this.simResult.nav, bench = this.simResult.bench;
+      return [
+        { name: '策略资金', dates: nav.map(x => x.date), values: nav.map(x => +(x.value * 5000).toFixed(2)) },
+        { name: '基准', dates: bench.map(x => x.date), values: bench.map(x => +(x.value * 5000).toFixed(2)) }
+      ];
+    },
+    async runBacktest() {
+      try {
+        const r = await api('/api/backtest', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(this.bt) });
+        if (r.error) { alert(r.error); return; }
+        this.btResult = r;
+        this.$nextTick(() => this.renderBacktest());
+      } catch (e) { alert('回测失败: ' + e.message); }
+    },
+    renderBacktest() {
+      const nav = this.btResult.nav, bench = this.btResult.bench;
+      renderLine('btEquity', [
+        { name: '策略资金', dates: nav.map(x => x.date), values: nav.map(x => +(x.value * this.bt.capital).toFixed(2)) },
+        { name: '基准', dates: bench.map(x => x.date), values: bench.map(x => +(x.value * this.bt.capital).toFixed(2)) }
+      ]);
+      const dd = this.btResult.drawdown;
+      renderLine('btDraw', [{ name: '回撤', dates: dd.map(x => x.date), values: dd.map(x => +(x.value * 100).toFixed(2)) }]);
+    },
+    async loadSignals() {
+      const q = new URLSearchParams({ universe: this.sig.universe, strategy: this.sig.strategy, top_n: this.sig.top_n });
+      try {
+        const r = await api('/api/signals?' + q.toString());
+        if (r.error) { alert(r.error); return; }
+        this.signals = r.items; this.sigDate = r.signal_date; this.sigInfo = r;
+        this.$nextTick(() => this.renderSignals());
+      } catch (e) { alert('信号获取失败: ' + e.message); }
+    },
+    renderSignals() {
+      renderBar('sigChart', this.signals.map(s => s.code), this.signals.map(s => +s.score.toFixed(4)));
+    },
+    async addDeposit() {
+      await api('/api/ledger/deposits', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(this.dep) });
+      await this.loadAccount(); this.switchTab('dashboard');
+    },
+    async addTx() {
+      if (!this.tx.code) { alert('请填代码'); return; }
+      await api('/api/ledger/transactions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(this.tx) });
+      await this.loadAccount(); this.switchTab('dashboard');
+    },
+    async startUpdate() {
+      this.updating = true; this.updateDone = false; this.updateError = '';
+      try {
+        await api('/api/data/update', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: this.updateMode }) });
+        const poll = setInterval(async () => {
+          const s = await api('/api/data/update/status');
+          this.updateProgress = s.progress; this.updateText = s.text;
+          if (!s.running) {
+            clearInterval(poll); this.updating = false;
+            if (s.error) this.updateError = s.error;
+            else { this.updateDone = true; this.updateResult = s.result; this.loadStatus(); this.loadDataInfo(); }
+          }
+        }, 2000);
+      } catch (e) { this.updating = false; this.updateError = e.message; }
+    },
+    async loadStatus() {
+      try {
+        const st = await api('/api/data/status');
+        this.meta = st.meta || {};
+        const rows = [];
+        for (const [name, src] of Object.entries(st)) {
+          if (name === 'meta') continue;
+          for (const [loc, s] of Object.entries(src)) rows.push({ name, loc, exists: s.exists, size: s.size_mb });
+        }
+        this.statusRows = rows;
+      } catch (e) {}
+    },
+    async loadDataInfo() { try { this.panelInfo = await api('/api/data/panel-info'); } catch (e) {} },
+    fmt(x, d) { return x == null ? '-' : Number(x).toLocaleString('zh-CN', { minimumFractionDigits: d ?? 2, maximumFractionDigits: d ?? 2 }); },
+    pct(x) { return x == null ? '-' : (x * 100).toFixed(2) + '%'; },
+    sign(x) { return x == null ? '' : (x > 0 ? 'pos' : (x < 0 ? 'neg' : '')); },
+    metricText(k, v) { return ['总收益', '年化收益', '年化波动', '最大回撤', '卡玛', '胜率'].includes(k) ? this.pct(v) : this.fmt(v); }
+  }
+}).mount('#app');
+
+function today() { return new Date().toISOString().slice(0, 10); }
+</script>
+</body>
+</html>
