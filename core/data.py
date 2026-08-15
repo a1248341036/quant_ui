@@ -23,6 +23,12 @@ def load_panel() -> pd.DataFrame:
         raise FileNotFoundError(f"面板数据不存在: {PANEL_PATH} 或 {PANEL_FILE}")
     panel["code"] = panel["code"].astype(str).str.zfill(6)
     panel["date"] = pd.to_datetime(panel["date"])
+    # 因子列/成交量降 float32（排序分位精度足够），价格与金额保持 float64；
+    # code 用 category 省约 60MB 常驻内存
+    for c in ("turn20", "am20", "volume"):
+        if c in panel.columns and panel[c].dtype == "float64":
+            panel[c] = panel[c].astype("float32")
+    panel["code"] = panel["code"].astype("category")
     return panel
 
 
