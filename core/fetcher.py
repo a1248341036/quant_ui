@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -79,18 +80,33 @@ def _fetch_kline(code: str, symbol: str, start: str, end: str, retries: int = 3)
 
 
 def fetch_universe() -> pd.DataFrame:
-    """沪深300 + 中证500 成分股（中证指数官网，约 30 秒）。"""
-    import akshare as ak
-
+    """沪深300 + 中证500 成分股（中证指数官网 OSS，带超时）。"""
     frames = []
     for idx in ("000300", "000905"):
-        df = ak.index_stock_cons_csindex(symbol=idx)
+        url = (f"https://oss-ch.csindex.com.cn/static/html/csindex/public/"
+               f"uploads/file/autofile/cons/{idx}cons.xls")
+        r = requests.get(url, timeout=20)
+        r.raise_for_status()
+        df = pd.read_excel(io.BytesIO(r.content))
         sub = df[["成分券代码", "成分券名称"]].copy()
         sub.columns = ["code", "name"]
         frames.append(sub)
     uni = pd.concat(frames, ignore_index=True).drop_duplicates("code")
     uni["code"] = uni["code"].astype(str).str.zfill(6)
     return uni
+
+
+def _load_cached_universe() -> pd.DataFrame | None:
+    if UNIVERSE_FILE.exists():
+        df = pd.read_csv(UNIVERSE_FILE, dtype={"code": str})
+        df["code"] = df["code"].astype(str).str.zfill(6)
+        return df
+    legacy = Path("/tmp/universe_cs800.csv")
+    if legacy.exists():
+        df = pd.read_csv(legacy, dtype={"code": str})
+        df["code"] = df["code"].astype(str).str.zfill(6)
+        return df
+    return None
 
 
 def fetch_index(start: str, end: str) -> pd.DataFrame:
@@ -233,8 +249,13 @@ def update_data(
     stage = {"text": "正在更新股票池..."}
     if progress:
         progress(0, 4, stage["text"])
-    universe = fetch_universe()
-    save_csv(universe, UNIVERSE_FILE)
+    try:
+        universe = fetch_universe()
+        save_csv(universe, UNIVERSE_FILE)
+    except Exception:
+        universe = _load_cached_universe()
+        if universe is None:
+            raise
     if progress:
         progress(1, 4, "股票池完成，更新指数...")
     index = fetch_index(start, end)

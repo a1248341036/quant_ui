@@ -57,6 +57,7 @@ def run_backtest(
     turnover = pivot("turnover")
     am20 = pivot("am20")
     turn20 = pivot("turn20")
+    codes_used = close.columns.tolist()
     factors = build_factor_frames(close, am20, turn20)
     fmat = factors[factor].values
 
@@ -145,8 +146,8 @@ def run_backtest(
             sell = float(np.maximum(hold - new_hold, 0).sum())
             turn = float(np.abs(new_hold - hold).sum() / 2.0)
             raw = raw - buy * buy_cost - sell * sell_cost
-            sold_codes = [codes[k] for k in np.where((hold > 0) & (new_hold <= hold))[0] if hold[k] > 0]
-            bought_codes = [codes[k] for k in np.where(new_hold > hold)[0]]
+            sold_codes = [codes_used[k] for k in np.where((hold > 0) & (new_hold <= hold))[0] if hold[k] > 0]
+            bought_codes = [codes_used[k] for k in np.where(new_hold > hold)[0]]
             trades.append({
                 "date": dates[t],
                 "signal_date": dates[sig],
@@ -165,7 +166,7 @@ def run_backtest(
     bench_s = pd.Series(bench, index=dates, name="bench")
     trades_df = pd.DataFrame(trades)
 
-    last_hold = pd.Series(hold, index=codes)
+    last_hold = pd.Series(hold, index=codes_used)
     last_holdings = last_hold[last_hold > 0].sort_values(ascending=False)
     last_price = close.iloc[-1]
     holdings_df = pd.DataFrame({
