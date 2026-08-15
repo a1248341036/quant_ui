@@ -30,7 +30,12 @@ class DepositRequest(BaseModel):
 
 @router.get("/transactions")
 def transactions():
-    return load_transactions().to_dict(orient="records")
+    nm = services.get_name_map()
+    rows = load_transactions().to_dict(orient="records")
+    for r in rows:
+        if not r.get("name"):
+            r["name"] = nm.get(str(r.get("code", "")), "")
+    return rows
 
 
 @router.post("/transactions")
@@ -74,4 +79,9 @@ def equity():
 def positions():
     panel = services.load_data()["panel"]
     pos = current_positions(panel)
-    return services.clean_records(pos.to_dict(orient="records"))
+    rows = services.clean_records(pos.to_dict(orient="records"))
+    nm = services.get_name_map()
+    for r in rows:
+        if not r.get("name"):
+            r["name"] = nm.get(str(r.get("code", "")), "")
+    return rows
