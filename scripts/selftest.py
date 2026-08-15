@@ -3,8 +3,11 @@
 """quant_ui 自测：引擎 + API + 记账 + 数据。"""
 from __future__ import annotations
 
+import http.cookiejar
 import json
+import os
 import sys
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -24,6 +27,19 @@ BASE = "http://127.0.0.1:8000"
 PASS = 0
 FAIL = 0
 
+# 带 cookie 的 opener：登录后 API 调用共享会话
+_cj = http.cookiejar.CookieJar()
+_opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(_cj))
+
+
+def raw_request(path, method="GET", body=None, use_cookie=True):
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(BASE + path, data=data, method=method,
+                                 headers={"Content-Type": "application/json"})
+    opener = _opener if use_cookie else urllib.request.build_opener()
+    with opener.open(req, timeout=60) as resp:
+        return resp.status, json.loads(resp.read().decode())
+
 
 def check(name, cond, detail=""):
     global PASS, FAIL
@@ -35,12 +51,9 @@ def check(name, cond, detail=""):
         print(f"  FAIL {name}  {detail}")
 
 
-def api(path, method="GET", body=None):
-    data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(BASE + path, data=data, method=method,
-                                 headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        return json.loads(resp.read().decode())
+def api(path, method="GET", body=None, use_cookie=True):
+    _, data = raw_request(path, method, body, use_cookie=use_cookie)
+    return data
 
 
 def main() -> int:
@@ -147,6 +160,22 @@ def main() -> int:
 
     print("== API ==")
     check("health", api("/api/health").get("status") == "ok")
+    # 登录鉴权
+    try:
+        api("/api/strategies", use_cookie=False)
+        check("未登录 API 返回 401", False)
+    except urllib.error.HTTPError as e:
+        check("未登录 API 返回 401", e.code == 401, str(e.code))
+    try:
+        api("/api/auth/login", "POST", {"username": "root", "password": "wrong"})
+        check("错误密码返回 401", False)
+    except urllib.error.HTTPError as e:
+        check("错误密码返回 401", e.code == 401, str(e.code))
+    pw = os.environ.get("QUANT_UI_PASSWORD", "ZBW207060")
+    me = api("/api/auth/login", "POST", {"username": "root", "password": pw})
+    check("登录成功", me.get("username") == "root", str(me))
+    me = api("/api/auth/me")
+    check("me 返回 root", me.get("username") == "root", str(me))
     info = api("/api/data/panel-info")
     check("panel-info", info["n_codes"] > 500 and bool(info["last_date"]))
     strats = api("/api/strategies")

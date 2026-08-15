@@ -8,6 +8,7 @@ A 股量化回测 Web 平台：Vue3 单页前端 + FastAPI 后端 + 事件驱动
 - 资金看板：策略资金曲线、回撤、指标卡片、当前持仓
 - 回测工作台：股票池/策略/TopN/资金/频率/区间/成交额分位/因子预热参数化回测
 - 今日信号：按因子打分看当前该买什么
+- 登录鉴权：HttpOnly Cookie 会话，除登录/健康检查外 API 全部需要登录
 - 账户记账：交易/出入金/每日估值/持仓盈亏
 - 数据状态：网上抓取（腾讯行情 + 中证指数官网）+ 本地增量缓存 + 一键更新
 - FastAPI 后端：回测/信号/记账/数据更新全部暴露为 REST API
@@ -32,6 +33,10 @@ A 股量化回测 Web 平台：Vue3 单页前端 + FastAPI 后端 + 事件驱动
 
 ```
 GET  /api/health
+POST /api/auth/login          登录 {username, password}，写 HttpOnly Cookie
+GET  /api/auth/me             当前登录用户
+POST /api/auth/logout         退出登录
+GET  /api/health
 GET  /api/data/status          数据缓存状态
 GET  /api/data/panel-info      面板概况
 POST /api/data/update          后台触发数据更新 {mode, end}
@@ -46,6 +51,14 @@ POST /api/ledger/deposits      录入出入金
 GET  /api/ledger/equity        每日资金曲线
 GET  /api/ledger/positions     当前持仓与盈亏
 ```
+
+## 登录
+
+默认账号 `root`，默认密码见启动环境变量 `QUANT_UI_PASSWORD`（未设置时为
+`ZBW207060`）。密码以 pbkdf2 哈希存于 `data/.auth.json`（已 gitignore，不提交），
+会话密钥存于 `data/.secret`。修改密码：删除 `data/.auth.json` 并重启服务，
+或在启动前设置 `QUANT_UI_PASSWORD` 后用 `python -c "import backend.auth; backend.auth.ensure_auth()"`
+重新生成。
 
 ## 每日自动更新
 
