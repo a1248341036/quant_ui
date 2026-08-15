@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -14,19 +12,6 @@ from strategies.registry import get_strategy, list_strategies
 
 
 st.set_page_config(page_title="A股量化回测工作台", page_icon="📈", layout="wide")
-
-# 简单登录门：与后端共用同一密码（环境变量 QUANT_UI_PASSWORD）
-if not st.session_state.get("authed"):
-    st.title("🔐 量化回测工作台")
-    st.caption("仅限授权用户访问")
-    pw = st.text_input("密码", type="password")
-    if st.button("登录"):
-        if pw == os.environ.get("QUANT_UI_PASSWORD", "REDACTED_PASSWORD"):
-            st.session_state.authed = True
-            st.rerun()
-        else:
-            st.error("密码错误")
-    st.stop()
 
 
 @st.cache_data(show_spinner=False)
@@ -72,8 +57,13 @@ def format_pct(x: float) -> str:
     return f"{x * 100:.2f}%"
 
 
-def equity_compare_chart(navs: dict[str, pd.Series], capital: float) -> go.Figure:
+def equity_compare_chart(navs: dict[str, pd.Series], capital: float,
+                         bench: pd.Series | None = None) -> go.Figure:
     fig = go.Figure()
+    if bench is not None:
+        fig.add_trace(go.Scatter(x=bench.index, y=bench.values * capital,
+                                 name="基准(等权)", mode="lines",
+                                 line=dict(width=1.5, dash="dash", color="#8b98b5")))
     for name, nav in navs.items():
         fig.add_trace(go.Scatter(x=nav.index, y=nav.values * capital, name=name,
                                  mode="lines", line=dict(width=2)))
@@ -155,6 +145,7 @@ def main():
             codes = build_codes("科技行业", True, panel, uni, tech)
             navs: dict[str, pd.Series] = {}
             rows = []
+            bench_line: pd.Series | None = None
             for sname in dash_strategies:
                 strat = get_strategy(sname)
                 with st.spinner(f"跑 {sname}..."):
@@ -168,6 +159,8 @@ def main():
                         industry_cap=strat.get("industry_cap"),
                     )
                 navs[sname] = res["nav"]
+                if bench_line is None:
+                    bench_line = res["bench"]
                 m = res["metrics"]
                 rows.append({
                     "策略": sname, "总收益%": round(m["总收益"] * 100, 2),
@@ -177,7 +170,7 @@ def main():
                     "信号日": str(res["last_signal_date"].date()),
                 })
 
-            st.plotly_chart(equity_compare_chart(navs, float(dash_capital)),
+            st.plotly_chart(equity_compare_chart(navs, float(dash_capital), bench=bench_line),
                             use_container_width=True)
             st.markdown("#### 策略指标对比")
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
