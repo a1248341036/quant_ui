@@ -1,0 +1,14 @@
+[Unit]
+Description=Quant UI Streamlit Dashboard
+After=network.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/quant_ui
+ExecStart=/home/ubuntu/stock-analyzer/local_venv/bin/python -m streamlit run /home/ubuntu/quant_ui/app.py --server.port=8501 --server.address=0.0.0.0 --server.headless=true
+Restart=always
+RestartSec=5
+Environment=STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+
+[Install]
+WantedBy=multi-user.target

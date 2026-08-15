@@ -1,0 +1,6 @@
+streamlit>=1.32
+pandas>=2.2
+numpy>=1.26
+plotly>=5.18
+pyarrow>=15
+akshare>=1.18
