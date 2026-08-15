@@ -15,8 +15,13 @@ st.set_page_config(page_title="A股量化回测工作台", page_icon="📈", lay
 
 
 @st.cache_data(show_spinner=False)
-def load_data():
+def load_data(version: str = ""):
     return load_panel(), load_universe(), load_tech(), load_index()
+
+
+def data_version() -> str:
+    from core.store import META_FILE
+    return str(META_FILE.stat().st_mtime) if META_FILE.exists() else "legacy"
 
 
 def build_codes(universe: str, exclude_kechuang: bool, panel, uni, tech) -> list[str]:
@@ -64,7 +69,7 @@ def render_metrics(cols, metrics: dict):
 
 def main():
     try:
-        panel, uni, tech, index = load_data()
+        panel, uni, tech, index = load_data(data_version())
     except FileNotFoundError as exc:
         st.error(str(exc))
         st.stop()

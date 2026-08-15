@@ -1,0 +1,9 @@
+[Unit]
+Description=Quant UI daily data refresh timer (17:35 Asia/Shanghai)
+
+[Timer]
+OnCalendar=*-*-* 17:35:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
