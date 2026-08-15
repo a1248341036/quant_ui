@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
@@ -16,19 +15,6 @@ sys.path.insert(0, str(SENT_ROOT))
 from lib import store as stk  # noqa: E402
 
 st.set_page_config(page_title="舆情情绪看板", page_icon="📰", layout="wide")
-
-# 与主应用一致的登录门
-if not st.session_state.get("authed"):
-    st.title("🔐 量化回测工作台")
-    st.caption("仅限授权用户访问")
-    pw = st.text_input("密码", type="password")
-    if st.button("登录"):
-        if pw == os.environ.get("QUANT_UI_PASSWORD", "ZBW207060"):
-            st.session_state.authed = True
-            st.rerun()
-        else:
-            st.error("密码错误")
-    st.stop()
 
 cfg = yaml.safe_load((SENT_ROOT / "config.yaml").read_text(encoding="utf-8"))
 DB = SENT_ROOT / cfg["paths"]["articles_db"]

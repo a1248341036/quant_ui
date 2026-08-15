@@ -33,10 +33,6 @@ A 股量化回测 Web 平台：Vue3 单页前端 + FastAPI 后端 + 事件驱动
 
 ```
 GET  /api/health
-POST /api/auth/login          登录 {username, password}，写 HttpOnly Cookie
-GET  /api/auth/me             当前登录用户
-POST /api/auth/logout         退出登录
-GET  /api/health
 GET  /api/data/status          数据缓存状态
 GET  /api/data/panel-info      面板概况
 POST /api/data/update          后台触发数据更新 {mode, end}
@@ -52,13 +48,10 @@ GET  /api/ledger/equity        每日资金曲线
 GET  /api/ledger/positions     当前持仓与盈亏
 ```
 
-## 登录
+## 登录（已临时关闭）
 
-默认账号 `root`，默认密码见启动环境变量 `QUANT_UI_PASSWORD`（未设置时为
-`ZBW207060`）。密码以 pbkdf2 哈希存于 `data/.auth.json`（已 gitignore，不提交），
-会话密钥存于 `data/.secret`。修改密码：删除 `data/.auth.json` 并重启服务，
-或在启动前设置 `QUANT_UI_PASSWORD` 后用 `python -c "import backend.auth; backend.auth.ensure_auth()"`
-重新生成。
+当前迭代已关闭登录鉴权，前后端均免登录访问。鉴权代码保留在
+`backend/auth.py`（pbkdf2 + HttpOnly Cookie），需要恢复时重新挂载中间件即可。
 
 ## 每日自动更新
 

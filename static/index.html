@@ -45,10 +45,6 @@
     .warn { color: #e0b84d; font-size: 13px; }
     .ok { color: var(--green); font-size: 13px; }
     .err { color: var(--red); font-size: 13px; }
-    .login-card { max-width: 340px; margin: 80px auto; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 26px; display: flex; flex-direction: column; gap: 12px; }
-    .login-card h2 { font-size: 20px; }
-    .login-card label { flex-direction: column; }
-    .login-card input { padding: 10px; }
     @media (max-width: 640px) { nav button { padding: 7px 10px; font-size: 13px; } main { padding: 10px; } }
   </style>
 </head>
@@ -57,11 +53,9 @@
   <header>
     <h1>📈 量化回测工作台</h1>
     <span class="sub">数据至 {{panelInfo.last_date || '-'}} · 个股 {{panelInfo.n_codes || '-'}}</span>
-    <span v-if="authed" class="muted" style="margin-left:auto">👤 {{username}}</span>
-    <button v-if="authed" @click="logout" style="margin-left:6px">退出</button>
   </header>
 
-  <nav v-if="authed">
+  <nav>
     <button :class="{active: tab==='dashboard'}" @click="switchTab('dashboard')">📊 看板</button>
     <button :class="{active: tab==='backtest'}" @click="switchTab('backtest')">🛠 回测</button>
     <button :class="{active: tab==='signals'}" @click="switchTab('signals')">🎯 信号</button>
@@ -69,16 +63,7 @@
     <button :class="{active: tab==='data'}" @click="switchTab('data')">ℹ️ 数据</button>
   </nav>
 
-  <div v-if="!authed" class="login-card">
-    <h2>🔐 登录</h2>
-    <p class="muted">量化回测工作台仅限授权用户访问</p>
-    <label>用户名<input v-model="loginUser" placeholder="root" autocomplete="username"></label>
-    <label>密码<input v-model="loginPass" type="password" placeholder="••••••••" autocomplete="current-password" @keyup.enter="login"></label>
-    <p v-if="loginErr" class="err">{{loginErr}}</p>
-    <button class="primary" style="width:100%;margin-top:6px" @click="login">登录</button>
-  </div>
-
-  <main v-if="authed">
+  <main>
     <!-- 看板 -->
     <section v-if="tab==='dashboard'">
       <div class="cards">
@@ -209,10 +194,6 @@ const { createApp } = Vue;
 
 async function api(path, opts) {
   const res = await fetch(path, { ...opts, credentials: 'include' });
-  if (res.status === 401) {
-    document.dispatchEvent(new CustomEvent('auth:expired'));
-    throw new Error('未登录');
-  }
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
@@ -256,7 +237,6 @@ createApp({
   data() {
     return {
       tab: 'dashboard',
-      authed: false, username: '', loginUser: 'root', loginPass: '', loginErr: '',
       panelInfo: {}, names: {},
       strategies: [],
       accSummary: null, accItems: [], accEmpty: true,
@@ -271,26 +251,9 @@ createApp({
     };
   },
   mounted() {
-    document.addEventListener('auth:expired', () => { this.authed = false; });
-    this.checkAuth().then(ok => { if (ok) this.init(); });
+    this.init();
   },
   methods: {
-    async checkAuth() {
-      try { const r = await api('/api/auth/me'); this.username = r.username; this.authed = true; return true; }
-      catch (e) { this.authed = false; return false; }
-    },
-    async login() {
-      this.loginErr = '';
-      try {
-        const r = await api('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: this.loginUser, password: this.loginPass }) });
-        this.username = r.username; this.authed = true; this.loginPass = '';
-        this.init();
-      } catch (e) { this.loginErr = '用户名或密码错误'; }
-    },
-    async logout() {
-      try { await api('/api/auth/logout', { method: 'POST' }); } catch (e) {}
-      this.authed = false; this.username = '';
-    },
     async init() {
       try { this.panelInfo = await api('/api/data/panel-info'); } catch (e) {}
       try { this.strategies = await api('/api/strategies'); } catch (e) {}

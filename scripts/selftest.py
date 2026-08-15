@@ -5,9 +5,7 @@ from __future__ import annotations
 
 import http.cookiejar
 import json
-import os
 import sys
-import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -27,7 +25,7 @@ BASE = "http://127.0.0.1:8000"
 PASS = 0
 FAIL = 0
 
-# 带 cookie 的 opener：登录后 API 调用共享会话
+# 带 cookie 的 opener（后续如需恢复鉴权直接复用）
 _cj = http.cookiejar.CookieJar()
 _opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(_cj))
 
@@ -160,22 +158,7 @@ def main() -> int:
 
     print("== API ==")
     check("health", api("/api/health").get("status") == "ok")
-    # 登录鉴权
-    try:
-        api("/api/strategies", use_cookie=False)
-        check("未登录 API 返回 401", False)
-    except urllib.error.HTTPError as e:
-        check("未登录 API 返回 401", e.code == 401, str(e.code))
-    try:
-        api("/api/auth/login", "POST", {"username": "root", "password": "wrong"})
-        check("错误密码返回 401", False)
-    except urllib.error.HTTPError as e:
-        check("错误密码返回 401", e.code == 401, str(e.code))
-    pw = os.environ.get("QUANT_UI_PASSWORD", "ZBW207060")
-    me = api("/api/auth/login", "POST", {"username": "root", "password": pw})
-    check("登录成功", me.get("username") == "root", str(me))
-    me = api("/api/auth/me")
-    check("me 返回 root", me.get("username") == "root", str(me))
+    check("API 免登录可访问", isinstance(api("/api/strategies", use_cookie=False), list))
     info = api("/api/data/panel-info")
     check("panel-info", info["n_codes"] > 500 and bool(info["last_date"]))
     strats = api("/api/strategies")
