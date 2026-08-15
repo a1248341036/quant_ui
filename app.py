@@ -39,6 +39,17 @@ def data_version() -> str:
     return str(META_FILE.stat().st_mtime) if META_FILE.exists() else "legacy"
 
 
+def get_name_map(uni, tech) -> dict[str, str]:
+    m = {}
+    for df in (uni, tech):
+        if "code" in df and "name" in df:
+            for code, name in zip(df["code"], df["name"]):
+                code = str(code).zfill(6)
+                if name and not pd.isna(name):
+                    m.setdefault(code, str(name))
+    return m
+
+
 def build_codes(universe: str, exclude_kechuang: bool, panel, uni, tech) -> list[str]:
     if universe == "科技行业":
         codes = set(tech["code"])
@@ -147,9 +158,12 @@ def main():
         if res["holdings"].empty:
             st.info("当前空仓")
         else:
-            st.dataframe(res["holdings"][["code", "weight_pct", "price", "market_value"]]
-                         .rename(columns={"weight_pct": "权重%", "price": "价格",
-                                          "market_value": "市值"}),
+            nm = get_name_map(uni, tech)
+            h = res["holdings"].copy()
+            h["名称"] = [nm.get(str(c), "") for c in h["code"]]
+            st.dataframe(h[["code", "名称", "weight_pct", "price", "market_value"]]
+                         .rename(columns={"code": "代码", "weight_pct": "权重%",
+                                          "price": "价格", "market_value": "市值"}),
                          use_container_width=True, hide_index=True)
 
     # ---------------- 回测工作台 ----------------
@@ -223,10 +237,13 @@ def main():
                 if res["holdings"].empty:
                     st.info("当前空仓")
                 else:
+                    nm = get_name_map(uni, tech)
+                    h = res["holdings"].copy()
+                    h["名称"] = [nm.get(str(c), "") for c in h["code"]]
                     st.dataframe(
-                        res["holdings"][["code", "weight_pct", "price", "market_value"]]
-                        .rename(columns={"weight_pct": "权重%", "price": "价格",
-                                         "market_value": "市值"}),
+                        h[["code", "名称", "weight_pct", "price", "market_value"]]
+                        .rename(columns={"code": "代码", "weight_pct": "权重%",
+                                         "price": "价格", "market_value": "市值"}),
                         use_container_width=True, hide_index=True)
             with tab_t:
                 if res["trades"].empty:
@@ -249,8 +266,11 @@ def main():
                                        strat["ascending"], top_n=int(sig_n))
         st.caption(f"信号日：{sig_date.date()} · 因子：{strat['factor']} · "
                    f"排序：{'升序(买低)' if strat['ascending'] else '降序(买高)'}")
-        st.dataframe(sig.rename(columns={"code": "代码", "score": "因子得分",
-                                         "close": "收盘价", "turnover": "换手率"}),
+        nm = get_name_map(uni, tech)
+        sig2 = sig.copy()
+        sig2["名称"] = [nm.get(str(c), "") for c in sig2["code"]]
+        st.dataframe(sig2.rename(columns={"code": "代码", "score": "因子得分",
+                                          "close": "收盘价", "turnover": "换手率"}),
                      use_container_width=True, hide_index=True)
 
     # ---------------- 数据状态 ----------------
