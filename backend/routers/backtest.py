@@ -23,6 +23,7 @@ class BacktestRequest(BaseModel):
     affordable: bool = True
     amount_q: float = 0.2   # am20 成交额分位过滤，旧脚本口径 0.2
     warmup_days: int | None = 400  # 因子预热天数，短窗口动量因子需预热
+    industry_cap: int | None = None  # 行业分散：每行业最多选 N 只
 
 
 @router.get("/strategies")
@@ -54,6 +55,8 @@ def backtest(req: BacktestRequest):
         affordable=req.affordable,
         amount_q=req.amount_q,
         warmup_days=req.warmup_days,
+        industry_map=services.get_industry_map() if req.industry_cap else None,
+        industry_cap=req.industry_cap,
     )
     nm = services.get_name_map()
     holdings = res["holdings"].copy()

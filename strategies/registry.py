@@ -7,6 +7,7 @@ STRATEGIES = {
     "低换手冷门": {"factor": "turn20", "ascending": True},
     "高成交领涨": {"factor": "am20", "ascending": False},
     "低成交冷门": {"factor": "am20", "ascending": True},
+    "冷门+行业分散": {"factor": "am20", "ascending": True, "industry_cap": 1},
     "动量 20 日": {"factor": "mom20", "ascending": False},
     "动量 60 日": {"factor": "mom60", "ascending": False},
     "反转 20 日": {"factor": "mom20", "ascending": True},

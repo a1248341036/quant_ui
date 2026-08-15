@@ -38,6 +38,8 @@ def run_backtest(
     affordable: bool = True,
     lot_size: int = 100,
     warmup_days: int | None = None,
+    industry_map: dict[str, str] | None = None,
+    industry_cap: int | None = None,
 ) -> dict:
     """事件驱动回测：T+1、一手 100 股、费用、可承载性过滤。
 
@@ -47,6 +49,9 @@ def run_backtest(
     warmup_days: 因子预热天数。短窗口回测时（如只看近半年），动量/波动类
     因子在窗口起点没有足够历史，会用 start 前 warmup_days 个自然日的数据
     计算因子，但净值仍从 start 开始输出。None 表示不预热（窗口即计算区间）。
+
+    industry_map/industry_cap: 行业分散约束。industry_map 为 {code: 行业}，
+    调仓时每个行业最多选 industry_cap 只，选不满 top_n 时按实际数量等权。
     """
     start_ts, end_ts = pd.Timestamp(start), pd.Timestamp(end)
     calc_start = (start_ts - pd.Timedelta(days=warmup_days)
@@ -153,11 +158,23 @@ def run_backtest(
                         scores = np.array([])
                 if len(cand) > 0:
                     order = np.argsort(scores, kind="mergesort")
-                    if ascending:
-                        chosen = order[:top_n]
+                    if not ascending:
+                        order = order[::-1]
+                    if industry_cap and industry_map:
+                        sel: list[int] = []
+                        cnt: dict[str, int] = {}
+                        for o in order:
+                            code = codes_used[cand[o]]
+                            ind = industry_map.get(str(code), "?")
+                            if cnt.get(ind, 0) >= industry_cap:
+                                continue
+                            cnt[ind] = cnt.get(ind, 0) + 1
+                            sel.append(int(cand[o]))
+                            if len(sel) >= top_n:
+                                break
+                        chosen = np.array(sel, dtype=int)
                     else:
-                        chosen = order[-top_n:][::-1]
-                    chosen = cand[chosen]
+                        chosen = cand[order[:top_n]]
                     remain = 1.0 - hold[cant_sell].sum() if len(cant_sell) else 1.0
                     new_hold[chosen] = remain / len(chosen) if len(chosen) else 0.0
                     last_chosen = [int(c) for c in chosen]

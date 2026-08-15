@@ -59,6 +59,14 @@ def get_name_map() -> dict[str, str]:
     return m
 
 
+def get_industry_map() -> dict[str, str]:
+    """股票代码 -> 申万行业（来自科技行业缓存表，科技池全覆盖）。"""
+    data = load_data()
+    tech = data["tech"]
+    return {str(c).zfill(6): str(ind)
+            for c, ind in zip(tech["code"], tech["industry"])}
+
+
 def build_codes(universe: str, exclude_kechuang: bool) -> list[str]:
     data = load_data()
     panel, uni, tech = data["panel"], data["universe"], data["tech"]
