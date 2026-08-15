@@ -46,6 +46,19 @@ def invalidate_data() -> None:
     DATA_CACHE.clear()
 
 
+def get_name_map() -> dict[str, str]:
+    """股票代码 -> 名称（universe + tech 合并，前 6 位代码去重）。"""
+    data = load_data()
+    m = {}
+    for df in (data["universe"], data["tech"]):
+        if "code" in df and "name" in df:
+            for code, name in zip(df["code"], df["name"]):
+                code = str(code).zfill(6)
+                if name and not pd.isna(name):
+                    m.setdefault(code, str(name))
+    return m
+
+
 def build_codes(universe: str, exclude_kechuang: bool) -> list[str]:
     data = load_data()
     panel, uni, tech = data["panel"], data["universe"], data["tech"]

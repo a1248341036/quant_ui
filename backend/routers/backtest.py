@@ -30,6 +30,11 @@ def strategies():
     return [{"name": k, **v} for k, v in STRATEGIES.items()]
 
 
+@router.get("/names")
+def names():
+    return services.get_name_map()
+
+
 @router.post("/backtest")
 def backtest(req: BacktestRequest):
     if req.strategy not in STRATEGIES:
@@ -50,13 +55,16 @@ def backtest(req: BacktestRequest):
         amount_q=req.amount_q,
         warmup_days=req.warmup_days,
     )
+    nm = services.get_name_map()
+    holdings = res["holdings"].copy()
+    holdings["name"] = [nm.get(str(c), "") for c in holdings["code"]]
     return {
         "metrics": {k: services._to_float(v) for k, v in res["metrics"].items()},
         "bench_metrics": {k: services._to_float(v) for k, v in res["bench_metrics"].items()},
         "nav": services.series_to_points(res["nav"]),
         "bench": services.series_to_points(res["bench"]),
         "drawdown": services.series_to_points(res["drawdown"]),
-        "holdings": res["holdings"].to_dict(orient="records"),
+        "holdings": holdings.to_dict(orient="records"),
         "trades": res["trades"].to_dict(orient="records"),
         "last_signal_date": str(res["last_signal_date"].date()) if res["last_signal_date"] else None,
     }
@@ -78,9 +86,13 @@ def signals(universe: str = "科技行业", strategy: str = "低换手冷门", t
         services.load_data()["panel"], codes, strat["factor"],
         strat["ascending"], top_n=top_n,
     )
+    nm = services.get_name_map()
+    items = sig.to_dict(orient="records")
+    for it in items:
+        it["name"] = nm.get(str(it["code"]), "")
     return {
         "signal_date": str(sig_date.date()),
         "factor": strat["factor"],
         "ascending": strat["ascending"],
-        "items": sig.to_dict(orient="records"),
+        "items": items,
     }

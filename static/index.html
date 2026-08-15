@@ -119,7 +119,7 @@
         <div class="grid" style="grid-template-columns:1fr 1fr">
           <div class="card"><h3>持仓明细</h3>
             <div style="overflow-x:auto"><table><tr><th>代码</th><th>名称</th><th>权重%</th><th>价格</th><th>市值</th></tr>
-            <tr v-for="h in btResult.holdings" :key="h.code"><td>{{h.code}}</td><td>{{h.name||'-'}}</td><td>{{fmt(h.weight_pct)}}</td><td>{{fmt(h.price)}}</td><td>{{fmt(h.market_value)}}</td></tr></table></div>
+            <tr v-for="h in btResult.holdings" :key="h.code"><td>{{stock(h.code, h.name)}}</td><td>{{h.name||'-'}}</td><td>{{fmt(h.weight_pct)}}</td><td>{{fmt(h.price)}}</td><td>{{fmt(h.market_value)}}</td></tr></table></div>
           </div>
           <div class="card"><h3>调仓记录</h3>
             <div style="overflow-x:auto"><table><tr><th>日期</th><th>信号日</th><th>持仓数</th><th>换手</th></tr>
@@ -143,7 +143,7 @@
       <div class="card"><div id="sigChart" class="chart small"></div></div>
       <div class="card">
         <div style="overflow-x:auto"><table><tr><th>代码</th><th>因子得分</th><th>收盘价</th><th>换手率</th></tr>
-        <tr v-for="(s,i) in signals" :key="i"><td>{{s.code}}</td><td>{{fmt(s.score, 4)}}</td><td>{{fmt(s.close)}}</td><td>{{pct(s.turnover)}}</td></tr></table></div>
+        <tr v-for="(s,i) in signals" :key="i"><td>{{stock(s.code, s.name)}}</td><td>{{fmt(s.score, 4)}}</td><td>{{fmt(s.close)}}</td><td>{{pct(s.turnover)}}</td></tr></table></div>
       </div>
     </section>
 
@@ -172,12 +172,12 @@
             <button class="primary" @click="addTx">提交</button>
           </div>
           <div style="overflow-x:auto;margin-top:10px"><table><tr><th>日期</th><th>代码</th><th>名称</th><th>方向</th><th>股数</th><th>价格</th></tr>
-          <tr v-for="(t,i) in transactions" :key="i"><td>{{t.date.slice(0,10)}}</td><td>{{t.code}}</td><td>{{t.name}}</td><td>{{t.action}}</td><td>{{t.shares}}</td><td>{{fmt(t.price)}}</td></tr></table></div>
+          <tr v-for="(t,i) in transactions" :key="i"><td>{{t.date.slice(0,10)}}</td><td>{{stock(t.code, t.name)}}</td><td>{{t.name}}</td><td>{{t.action}}</td><td>{{t.shares}}</td><td>{{fmt(t.price)}}</td></tr></table></div>
         </div>
       </div>
       <div class="card"><h3>当前持仓</h3>
         <div style="overflow-x:auto"><table><tr><th>代码</th><th>名称</th><th>股数</th><th>成本</th><th>现价</th><th>市值</th><th>盈亏</th><th>盈亏%</th></tr>
-        <tr v-for="p in positions" :key="p.code"><td>{{p.code}}</td><td>{{p.name||'-'}}</td><td>{{p.shares}}</td><td>{{fmt(p.avg_cost)}}</td><td>{{fmt(p.price)}}</td><td>{{fmt(p.market_value)}}</td><td :class="sign(p.pnl)">{{fmt(p.pnl)}}</td><td :class="sign(p.pnl_pct)">{{pct(p.pnl_pct)}}</td></tr></table></div>
+        <tr v-for="p in positions" :key="p.code"><td>{{stock(p.code, p.name)}}</td><td>{{p.name||'-'}}</td><td>{{p.shares}}</td><td>{{fmt(p.avg_cost)}}</td><td>{{fmt(p.price)}}</td><td>{{fmt(p.market_value)}}</td><td :class="sign(p.pnl)">{{fmt(p.pnl)}}</td><td :class="sign(p.pnl_pct)">{{pct(p.pnl_pct)}}</td></tr></table></div>
       </div>
     </section>
 
@@ -257,7 +257,7 @@ createApp({
     return {
       tab: 'dashboard',
       authed: false, username: '', loginUser: 'root', loginPass: '', loginErr: '',
-      panelInfo: {},
+      panelInfo: {}, names: {},
       strategies: [],
       accSummary: null, accItems: [], accEmpty: true,
       bt: { universe: '科技行业', strategy: '低换手冷门', top_n: 3, capital: 5000, freq: 'monthly', start: '2026-02-02', end: '2026-08-14', exclude: true, affordable: true, amount_q: 0.2, warmup_days: 400 },
@@ -294,6 +294,7 @@ createApp({
     async init() {
       try { this.panelInfo = await api('/api/data/panel-info'); } catch (e) {}
       try { this.strategies = await api('/api/strategies'); } catch (e) {}
+      try { this.names = await api('/api/names'); } catch (e) {}
       await this.loadAccount();
       if (this.accEmpty) await this.loadSim();
       await this.loadSignals();
@@ -368,7 +369,7 @@ createApp({
       } catch (e) { alert('信号获取失败: ' + e.message); }
     },
     renderSignals() {
-      renderBar('sigChart', this.signals.map(s => s.code), this.signals.map(s => +s.score.toFixed(4)));
+      renderBar('sigChart', this.signals.map(s => this.stock(s.code, s.name)), this.signals.map(s => +s.score.toFixed(4)));
     },
     async addDeposit() {
       await api('/api/ledger/deposits', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(this.dep) });
@@ -408,6 +409,7 @@ createApp({
     },
     async loadDataInfo() { try { this.panelInfo = await api('/api/data/panel-info'); } catch (e) {} },
     fmt(x, d) { return x == null ? '-' : Number(x).toLocaleString('zh-CN', { minimumFractionDigits: d ?? 2, maximumFractionDigits: d ?? 2 }); },
+    stock(code, name) { const nm = name || this.names[code] || ''; return nm ? `${code} ${nm}` : (code || '-'); },
     pct(x) { return x == null ? '-' : (x * 100).toFixed(2) + '%'; },
     sign(x) { return x == null ? '' : (x > 0 ? 'pos' : (x < 0 ? 'neg' : '')); },
     metricText(k, v) { return ['总收益', '年化收益', '年化波动', '最大回撤', '卡玛', '胜率'].includes(k) ? this.pct(v) : this.fmt(v); }
