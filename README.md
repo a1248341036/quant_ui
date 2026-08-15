@@ -86,7 +86,7 @@ journalctl -u quant-data-refresh.service -f
 ## 运行
 
 ```bash
-cd /home/ubuntu/quant_ui
+cd /home/ubuntu/quant/quant_ui
 /home/ubuntu/stock-analyzer/local_venv/bin/python -m streamlit run app.py \
   --server.port 8501 --server.address 0.0.0.0 --server.headless true
 /home/ubuntu/stock-analyzer/local_venv/bin/python -m uvicorn backend.main:app \

@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 import streamlit as st
 import yaml
 
-SENT_ROOT = Path("/home/ubuntu/sentiment-mvp")
+SENT_ROOT = Path("/home/ubuntu/quant/sentiment-mvp")
 sys.path.insert(0, str(SENT_ROOT))
 
 from lib import store as stk  # noqa: E402
@@ -67,7 +67,7 @@ st.caption("数据：东方财富个股新闻 + 财联社电报 | 打分：中�
 
 stats = load_stats()
 if not stats or stats["total"] == 0:
-    st.warning("暂无舆情数据。先运行：cd ~/sentiment-mvp && python run_pipeline.py daily")
+    st.warning("暂无舆情数据。先运行：cd ~/quant/sentiment-mvp && python run_pipeline.py daily")
     st.stop()
 
 # ---------- 概览 ----------
