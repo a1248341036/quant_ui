@@ -4,8 +4,9 @@ Description=Weekly Tencent stock panel fallback refresh (Sun 03:00)
 [Service]
 Type=oneshot
 User=ubuntu
-WorkingDirectory=/home/ubuntu/quant/quant_ui
-ExecStart=/home/ubuntu/stock-analyzer/local_venv/bin/python /home/ubuntu/quant/quant_ui/scripts/refresh_data.py --workers 3 --no-sync-pg
+WorkingDirectory=%h/quant/quant_ui
+Environment=QUANT_UI_DATA_DIR=%h/quant/quant_ui/data
+ExecStart=%h/stock-analyzer/local_venv/bin/python %h/quant/quant_ui/scripts/refresh_data.py --workers 3 --no-sync-pg
 Nice=10
 IOSchedulingClass=idle
 CPUQuota=80%

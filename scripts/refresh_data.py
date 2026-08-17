@@ -26,8 +26,9 @@ def main() -> int:
                         help="panel 刷新后不同步 PostgreSQL")
     parser.add_argument("--no-export-parquet", action="store_true",
                         help="PG 同步后不导出 Parquet（默认导出 stock_daily）")
-    parser.add_argument("--export-tables", default="stock_daily",
-                        help="要导出的表（逗号分隔，默认 stock_daily；all=全部白名单）")
+    parser.add_argument("--export-tables",
+                        default="stock_daily,stock_basic,fina_indicator,income",
+                        help="要导出的表（逗号分隔，默认行情/财务核心表；all=全部白名单）")
     parser.add_argument("--skip-stock-panel", action="store_true",
                         help="跳过腾讯股票日线刷新（股票行情由 Tushare PG 承担），"
                              "仅保留 ETF/基金/指数")

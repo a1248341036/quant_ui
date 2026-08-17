@@ -22,6 +22,7 @@ from core.composites import load_composites as api_load_composites  # noqa: E402
 from core.composites import save_composite as api_save_composite  # noqa: E402
 from core.engine import build_composite_factor, latest_signals, run_backtest  # noqa: E402
 from core.ledger import compute_equity, current_positions  # noqa: E402
+from core.store import LEGACY_DATA_DIR  # noqa: E402
 from strategies.registry import STRATEGIES  # noqa: E402
 
 
@@ -484,9 +485,9 @@ EVENT_STRATEGIES = {"QuickCross": QuickCross}
         check("空股票池抛错", True)
 
     print("== 与旧 backtest_5w 结果一致性 ==")
-    legacy_panel = Path("/home/ubuntu/quant_data/panel/turn20/turn20_fast_panel_cs800_2020-01-01_2026-08-13.parquet")
-    legacy_tech = Path("/home/ubuntu/quant_data/panel/tech_universe_sw.csv")
-    old_csv = Path("/home/ubuntu/quant_data/backtest/quant_3stocks/outputs/backtest_5w.csv")
+    legacy_panel = LEGACY_DATA_DIR / "panel/turn20/turn20_fast_panel_cs800_2020-01-01_2026-08-13.parquet"
+    legacy_tech = LEGACY_DATA_DIR / "panel/tech_universe_sw.csv"
+    old_csv = LEGACY_DATA_DIR / "backtest/quant_3stocks/outputs/backtest_5w.csv"
     if legacy_panel.exists() and legacy_tech.exists() and old_csv.exists():
         old = pd.read_csv(old_csv)
         old = old[old["top_n"] == 5].set_index(["window", "strategy"])

@@ -169,17 +169,19 @@ def build_codes(universe: str, exclude_kechuang: bool,
         codes = set(load_tech()["code"])
     elif universe == "ETF":
         etf = load_etf()
-        etf_panel = load_etf_panel()
-        if etf is None or len(etf) == 0 or etf_panel is None or len(etf_panel) == 0:
+        from core.data import load_etf_panel_codes
+        etf_panel_codes = load_etf_panel_codes()
+        if etf is None or len(etf) == 0 or not etf_panel_codes:
             return []
-        codes = set(etf["code"]) & set(etf_panel["code"].unique())
+        codes = set(etf["code"]) & etf_panel_codes
         return sorted(codes)  # ETF 无科创/主板之分，跳过剔除
     elif universe == "场外科技基金":
         fund = load_fund()
-        fund_nav = load_fund_nav()
-        if fund is None or len(fund) == 0 or fund_nav is None or len(fund_nav) == 0:
+        from core.data import load_fund_nav_codes
+        fund_nav_codes = load_fund_nav_codes()
+        if fund is None or len(fund) == 0 or not fund_nav_codes:
             return []
-        codes = set(fund["code"]) & set(fund_nav["code"].unique())
+        codes = set(fund["code"]) & fund_nav_codes
         return sorted(codes)
     else:
         codes = set(load_universe()["code"])

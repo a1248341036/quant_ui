@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -17,7 +16,7 @@ from core.composites import (FACTOR_OPTIONS, delete_composite, load_composites,
 from core.engine import latest_signals, run_backtest
 from core.updater import refresh_all
 from core.metrics import compute_metrics
-from core.store import normalize_universe
+from core.store import SENTIMENT_DIR, normalize_universe
 from core import strategy_pool as sp
 from strategies.registry import STRATEGIES, get_strategy, list_strategies
 from backend.routers import code as lab_api
@@ -469,7 +468,7 @@ def data_version() -> str:
 
 
 # ---------------- 舆情情绪（sentiment-mvp 数据） ----------------
-SENT_ROOT = Path("/home/ubuntu/quant/sentiment-mvp")
+SENT_ROOT = SENTIMENT_DIR
 sys.path.insert(0, str(SENT_ROOT))
 
 from lib import store as sent_store  # noqa: E402
@@ -536,17 +535,17 @@ def build_codes(universe: str, exclude_kechuang: bool, panel, uni, tech) -> list
     if normalize_universe(universe) == "科技TMT":
         codes = set(tech["code"])
     elif normalize_universe(universe) == "ETF":
-        from core.data import load_etf, load_etf_panel
-        etf_panel = load_etf_panel()
-        if len(etf_panel) == 0:
+        from core.data import load_etf, load_etf_panel_codes
+        etf_panel_codes = load_etf_panel_codes()
+        if not etf_panel_codes:
             return []
-        return sorted(set(load_etf()["code"]) & set(etf_panel["code"].unique()))
+        return sorted(set(load_etf()["code"]) & etf_panel_codes)
     elif normalize_universe(universe) == "场外科技基金":
-        from core.data import load_fund, load_fund_nav
-        fund_nav = load_fund_nav()
-        if len(fund_nav) == 0:
+        from core.data import load_fund, load_fund_nav_codes
+        fund_nav_codes = load_fund_nav_codes()
+        if not fund_nav_codes:
             return []
-        return sorted(set(load_fund()["code"]) & set(fund_nav["code"].unique()))
+        return sorted(set(load_fund()["code"]) & fund_nav_codes)
     else:
         codes = set(uni["code"])
     codes &= set(panel["code"].unique())

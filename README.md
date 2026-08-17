@@ -71,10 +71,10 @@
 
 ## 3. 快速开始
 
-依赖：Python 3.12，推荐 venv `/home/ubuntu/stock-analyzer/local_venv`。
+依赖：Python 3.12，推荐 venv `~/stock-analyzer/local_venv`。
 
 ```bash
-cd /home/ubuntu/quant/quant_ui
+cd ~/quant/quant_ui
 cp .env.example .env   # 按需填 TUSHARE_TOKEN / PG_DSN
 
 # 后端 API + Vue 前端（:8000）
@@ -94,6 +94,21 @@ python scripts/refresh_data.py
 python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
 python -m streamlit run app.py --server.port=8501
 ```
+
+### 数据目录与路径环境变量
+
+所有数据/目录路径均不再硬编码用户主目录，由以下环境变量驱动（`.env` 或
+systemd `Environment=` 均可配置）：
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `QUANT_UI_DATA_DIR` | `<项目>/data` | 主数据目录：panel/ETF/基金/duck.db/pg_parquet 等 |
+| `QUANT_UI_LEGACY_DATA_DIR` | `~/quant_data` | 旧独立数据目录（selftest/compare_old 对照用） |
+| `QUANT_UI_SENTIMENT_DIR` | `<项目父目录>/sentiment-mvp` | 舆情独立仓库 |
+| `QUANT_UI_QQBOT_DIR` | `~/qqbot` | QQ 机器人凭据/推送脚本目录 |
+
+迁移数据时只需把 `data/` 移动到目标位置并设置 `QUANT_UI_DATA_DIR`，
+代码不再依赖 `/home/ubuntu/...` 绝对路径。
 
 ## 4. 数据架构
 
@@ -234,6 +249,18 @@ GET  /api/sentiment/ic           舆情分桶回测 IC/分组
 | `scripts/sync_postgres.py` | 财务/公告宽表同步 PG | — |
 | `scripts/healthcheck.py` | 健康检查 | — |
 
+### 8.1 自动化测试（pytest）
+
+`core/engine.py`（因子轮动）与 `core/event_engine.py`（事件驱动）已带 pytest
+冒烟测试，使用合成小面板，不依赖真实行情/PostgreSQL：
+
+```bash
+python -m pytest tests -v
+```
+
+CI 配置见 `.github/workflows/ci.yml`，在 push/PR 时自动安装
+`requirements-dev.txt` 并执行上述冒烟测试。
+
 ## 9. 登录鉴权
 
 当前迭代已临时关闭，前后端免登录。鉴权代码保留在 `backend/auth.py`
@@ -287,6 +314,10 @@ GET  /api/sentiment/ic           舆情分桶回测 IC/分组
 
 - 未做多进程/后台任务，大批量参数扫描同步执行，event 模式约 1-2 分钟
 - 行业分类接口在部分服务器不可达时回退本地缓存，科技股票池为缓存快照
-- 腾讯前复权价随时间动态调整，跨天重抓同一天价格可能有微小差异
+- 行情以 PostgreSQL `stock_daily` 的**不复权原始价 + 每日复权因子**为准；
+  前复权锚点固定在导出快照的最新因子，同一历史日在不同查询区间价格一致。
+  前复权在出现新分红/送转时仍会整体重标定（这是前复权定义使然）；若要求历史价
+  绝对不随最新行情漂移，个股详情可选择「不复权」或「后复权」口径
+  （`/api/stock/{code}?adj=raw|hfq`）。
 - ST 涨跌停因缺标记暂按 10% 近似处理
 - 舆情数据依赖 `~/quant/sentiment-mvp` 独立流水线每日更新

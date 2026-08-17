@@ -626,7 +626,9 @@ def signals_post(req: SignalsRequest):
 def sweep(req: SweepRequest):
     """参数稳健性扫描（同步执行，event 模式可能耗时 1-2 分钟）。"""
     codes = services.build_codes("科技TMT", True)
-    data = services.load_data(codes=codes, need_heavy=False)
+    calc_start = _calc_start(req.start, req.warmup_days)
+    data = services.load_data(start=calc_start, end=req.end, codes=codes,
+                              need_heavy=False)
     panel = data["panel"]
     if req.mode == "event":
         from core.walkforward import golden_cross_sweep

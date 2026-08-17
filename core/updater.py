@@ -16,31 +16,27 @@ from .store import save_fund_panel
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SYNC_SCRIPT = PROJECT_ROOT / "scripts" / "sync_postgres.py"
 EXPORT_SCRIPT = PROJECT_ROOT / "scripts" / "export_pg_to_parquet.py"
-EXPORT_DEFAULT_TABLES = "stock_daily"
+# 运行时行情/财务来源：每日流式导出到 data/pg_parquet/，PG 不再承担运行读取
+EXPORT_DEFAULT_TABLES = "stock_daily,stock_basic,fina_indicator,income"
 
 
 def sync_postgres(end: str) -> None:
-    """把 panel 日线同步到 PostgreSQL/TimescaleDB；未配置或失败不影响主流程。"""
+    """用 Tushare 不复权日线增量同步 PostgreSQL/TimescaleDB；未配置或失败不影响主流程。"""
     try:
         if not pg.configured():
             print("PG_DSN 未配置，跳过 PostgreSQL 日线同步", flush=True)
             return
         since = (pd.Timestamp(end) - pd.Timedelta(days=10)).strftime("%Y%m%d")
-        r1 = subprocess.run(
-            [sys.executable, str(SYNC_SCRIPT), "--daily-from-panel"],
-            capture_output=True, text=True, timeout=1800,
-        )
-        print(r1.stdout.strip(), flush=True)
-        if r1.returncode != 0:
-            print(r1.stderr.strip(), file=sys.stderr, flush=True)
-            return
-        r2 = subprocess.run(
+        # 股票日线由 Tushare 不复权价负责（--daily-since），不把腾讯/面板的
+        # 前复权价写回 stock_daily：否则会覆盖 PG 里的不复权原始价，
+        # 导致“历史价随最新行情漂移”和复权因子二次调整。
+        r = subprocess.run(
             [sys.executable, str(SYNC_SCRIPT), "--daily-since", since],
             capture_output=True, text=True, timeout=3600,
         )
-        print(r2.stdout.strip(), flush=True)
-        if r2.returncode != 0:
-            print(r2.stderr.strip(), file=sys.stderr, flush=True)
+        print(r.stdout.strip(), flush=True)
+        if r.returncode != 0:
+            print(r.stderr.strip(), file=sys.stderr, flush=True)
     except Exception as exc:
         print(f"PostgreSQL 日线同步失败（不影响 panel 更新）: {exc}",
               file=sys.stderr, flush=True)
@@ -59,6 +55,12 @@ def export_parquet(tables: str | None = None, batch: int = 50000) -> None:
         print(r.stdout.strip(), flush=True)
         if r.returncode != 0:
             print(r.stderr.strip(), file=sys.stderr, flush=True)
+        else:
+            try:
+                from . import db
+                db.refresh_views()
+            except Exception as exc:
+                print(f"DuckDB 视图刷新失败: {exc}", file=sys.stderr, flush=True)
     except Exception as exc:
         print(f"PG->Parquet 导出失败（不影响主流程）: {exc}",
               file=sys.stderr, flush=True)

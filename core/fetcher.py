@@ -4,7 +4,6 @@ import io
 import json
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from pathlib import Path
 from typing import Callable
 
 import numpy as np
@@ -12,7 +11,7 @@ import pandas as pd
 import requests
 
 from .store import (ETF_FILE, ETF_PANEL_FILE, FUND_FILE, FUND_NAV_FILE,
-                    INDEX_FILE, TECH_FILE, UNIVERSE_FILE, save_csv,
+                    INDEX_FILE, LEGACY_DATA_DIR, TECH_FILE, UNIVERSE_FILE, save_csv,
                     save_meta, save_panel)
 from . import tushare_client
 
@@ -127,7 +126,7 @@ def _load_cached_universe() -> pd.DataFrame | None:
         df = pd.read_csv(UNIVERSE_FILE, dtype={"code": str})
         df["code"] = df["code"].astype(str).str.zfill(6)
         return df
-    legacy = Path("/home/ubuntu/quant_data/panel/universe_cs800.csv")
+    legacy = LEGACY_DATA_DIR / "panel/universe_cs800.csv"
     if legacy.exists():
         df = pd.read_csv(legacy, dtype={"code": str})
         df["code"] = df["code"].astype(str).str.zfill(6)
@@ -207,7 +206,7 @@ def _load_cached_tech() -> pd.DataFrame | None:
         df = pd.read_csv(TECH_FILE, dtype={"code": str})
         df["code"] = df["code"].astype(str).str.zfill(6)
         return df
-    legacy = Path("/home/ubuntu/quant_data/panel/tech_universe_sw.csv")
+    legacy = LEGACY_DATA_DIR / "panel/tech_universe_sw.csv"
     if legacy.exists():
         df = pd.read_csv(legacy, dtype={"code": str})
         df["code"] = df["code"].astype(str).str.zfill(6)
@@ -532,6 +531,9 @@ def update_data(
     from .store import PANEL_FILE, save_panel as _save_panel
 
     end = end or pd.Timestamp.today().strftime("%Y-%m-%d")
+    # include_stocks=False（股票由 Tushare PG 承担）时不会刷新股票面板，
+    # 初始化空表避免后续 save_meta 引用未定义变量。
+    panel = pd.DataFrame(columns=["date", "code"])
     stage = {"text": "正在更新股票池..."}
     if progress:
         progress(0, 6, stage["text"])
@@ -557,7 +559,7 @@ def update_data(
         existing = None
         if mode != "full":
             if not PANEL_FILE.exists():
-                legacy = Path("/home/ubuntu/quant_data/panel/turn20/turn20_fast_panel_cs800_2020-01-01_2026-08-13.parquet")
+                legacy = LEGACY_DATA_DIR / "panel/turn20/turn20_fast_panel_cs800_2020-01-01_2026-08-13.parquet"
                 if legacy.exists():
                     _save_panel(_add_rolling_factors(pd.read_parquet(legacy)))
             if PANEL_FILE.exists():
@@ -639,12 +641,14 @@ def update_data(
     if progress:
         progress(6, 6, "完成")
 
-    # meta 记录面板真实覆盖范围（实际最后交易日），而不是请求的日历日；
-    # 周末/节假日请求日（如 2026-08-16）不会产生行情，写请求日会误导展示。
-    save_meta({"mode": mode,
-               "start": str(panel["date"].min().date()),
-               "end": str(panel["date"].max().date()),
-               "n_codes": int(panel["code"].nunique()),
-               "n_rows": int(len(panel))})
-    return {"n_codes": int(panel["code"].nunique()), "n_rows": int(len(panel)),
+    if len(panel):
+        # meta 记录面板真实覆盖范围（实际最后交易日），而不是请求的日历日；
+        # 周末/节假日请求日（如 2026-08-16）不会产生行情，写请求日会误导展示。
+        save_meta({"mode": mode,
+                   "start": str(panel["date"].min().date()),
+                   "end": str(panel["date"].max().date()),
+                   "n_codes": int(panel["code"].nunique()),
+                   "n_rows": int(len(panel))})
+    return {"n_codes": int(panel["code"].nunique()) if len(panel) else 0,
+            "n_rows": int(len(panel)),
             "etf": etf_stats, "fund": fund_stats}

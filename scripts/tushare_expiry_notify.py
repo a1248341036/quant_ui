@@ -24,7 +24,10 @@ from dotenv import load_dotenv
 
 
 QUANT_ROOT = Path(__file__).resolve().parent.parent
-QQBOT_ROOT = Path("/home/ubuntu/qqbot")
+sys.path.insert(0, str(QUANT_ROOT))
+from core.store import QQBOT_DIR  # noqa: E402
+
+QQBOT_ROOT = QQBOT_DIR
 STATE_FILE = QUANT_ROOT / ".tushare_expiry_state.json"
 
 # 提醒节点：剩余天数阈值 -> 阶段 key（该阶段只提醒一次）

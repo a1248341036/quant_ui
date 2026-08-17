@@ -3,8 +3,11 @@
 # 由 systemd-run 以后台 unit 方式运行，断 SSH 不影响。
 set -u
 
-PY=/home/ubuntu/stock-analyzer/local_venv/bin/python
-cd /home/ubuntu/quant/quant_ui || exit 1
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+cd "$PROJECT_ROOT" || exit 1
+
+PY="${QUANT_UI_PYTHON:-$HOME/stock-analyzer/local_venv/bin/python}"
 
 echo "[$(date +%H:%M:%S)] 等待 backfill-adj 完成"
 while systemctl is-active --quiet backfill-adj; do

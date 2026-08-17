@@ -4,8 +4,9 @@ Description=Quant UI daily data refresh (oneshot)
 [Service]
 Type=oneshot
 User=ubuntu
-WorkingDirectory=/home/ubuntu/quant/quant_ui
-ExecStart=/home/ubuntu/stock-analyzer/local_venv/bin/python /home/ubuntu/quant/quant_ui/scripts/refresh_data.py --workers 1 --skip-stock-panel
+WorkingDirectory=%h/quant/quant_ui
+Environment=QUANT_UI_DATA_DIR=%h/quant/quant_ui/data
+ExecStart=%h/stock-analyzer/local_venv/bin/python %h/quant/quant_ui/scripts/refresh_data.py --workers 1 --skip-stock-panel
 Nice=10
 IOSchedulingClass=idle
 CPUQuota=80%

@@ -16,6 +16,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from .store import PG_PARQUET_DIR
+
 FINANCIAL_FACTORS = {
     "pb": "市净率(收盘/BPS，低估值)",
     "ep": "盈利收益率(EPS/收盘，高=便宜)",
@@ -27,9 +29,8 @@ FINANCIAL_FACTORS = {
 
 _lock = threading.Lock()
 _CACHE: dict = {}
-PG_PARQUET_DIR = Path(__file__).resolve().parent.parent / "data" / "pg_parquet"
-_pg_parquet = (__import__("os").getenv("QUANT_DATA_SOURCE", "pg").strip().lower()
-               == "pg_parquet")
+_pg_parquet = (__import__("os").getenv("QUANT_DATA_SOURCE", "pg_parquet")
+               .strip().lower() == "pg_parquet")
 
 
 def _map_code_to_ts() -> dict[str, str]:

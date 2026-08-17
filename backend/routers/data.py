@@ -26,10 +26,32 @@ def status():
 
 @router.get("/panel-info")
 def panel_info():
-    """面板统计走 PG 轻量聚合（不加载整张面板，避免触发 800MB 全量加载）。"""
+    """面板统计走 pg_parquet/DuckDB 轻量聚合，不加载整张面板。"""
     now = time.time()
     if now - _panel_info_cache["ts"] < 300 and _panel_info_cache["value"] is not None:
         return _panel_info_cache["value"]
+    try:
+        from core.data import PG_PARQUET_DIR
+        from core.db import query as duck_query
+        stock_path = PG_PARQUET_DIR / "stock_daily.parquet"
+        if stock_path.exists():
+            df = duck_query(
+                "SELECT (SELECT count(*) FROM stock_daily) AS n_rows, "
+                "(SELECT count(*) FROM stock_basic) AS n_codes, "
+                "(SELECT min(trade_date) FROM stock_daily) AS first_date, "
+                "(SELECT max(trade_date) FROM stock_daily) AS last_date ",
+                [],
+            ).iloc[0]
+            value = {
+                "n_rows": int(df["n_rows"]),
+                "n_codes": int(df["n_codes"]),
+                "first_date": str(df["first_date"]),
+                "last_date": str(df["last_date"]),
+            }
+            _panel_info_cache.update({"ts": now, "value": value})
+            return value
+    except Exception:
+        pass
     try:
         from core import pg
         if pg.configured():

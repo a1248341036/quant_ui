@@ -10,6 +10,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from backend import services
+from core.data import load_etf_panel
 from core import paper as paper_core
 from core.strategy_pool import resolve_strategy as resolve_pool_strategy
 
@@ -77,7 +78,9 @@ def _stock_panel(codes: list[str], end: str | None = None) -> pd.DataFrame:
 def _panel_for_account(account_id: int) -> pd.DataFrame:
     acc = paper_core.get_account(account_id)
     if acc and acc.get("universe") == "ETF":
-        return services.load_data(need_panel=False, need_heavy=True)["etf_panel"]
+        end_ts = pd.Timestamp.today()
+        start = (end_ts - pd.Timedelta(days=800)).date().isoformat()
+        return load_etf_panel(start=start, end=end_ts.date().isoformat())
     universe = (acc or {}).get("universe", "科技TMT")
     codes = services.build_codes(universe, True)
     return _stock_panel(codes)
@@ -248,10 +251,12 @@ def paper_run(req: RunRequest):
             run_date = res.get("run_date")
             out_accounts += res.get("accounts", [])
         if etf_ids:
-            data = services.load_data(need_panel=False, need_heavy=True)
+            end_ts = pd.Timestamp(req.exec_date) if req.exec_date else pd.Timestamp.today()
+            start = (end_ts - pd.Timedelta(days=800)).date().isoformat()
+            etf_panel = load_etf_panel(start=start, end=end_ts.date().isoformat())
             etf_codes = {"ETF": services.build_codes("ETF", False)}
             res = paper_core.run_paper_trade(
-                data["etf_panel"], etf_codes,
+                etf_panel, etf_codes,
                 account_ids=etf_ids, exec_date=req.exec_date,
                 dry_run=req.dry_run,
             )
