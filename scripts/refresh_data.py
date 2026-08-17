@@ -24,6 +24,10 @@ def main() -> int:
                         help="抓取日线并发线程数（内存紧张时调低，如 3-4）")
     parser.add_argument("--no-sync-pg", action="store_true",
                         help="panel 刷新后不同步 PostgreSQL")
+    parser.add_argument("--no-export-parquet", action="store_true",
+                        help="PG 同步后不导出 Parquet（默认导出 stock_daily）")
+    parser.add_argument("--export-tables", default="stock_daily",
+                        help="要导出的表（逗号分隔，默认 stock_daily；all=全部白名单）")
     parser.add_argument("--skip-stock-panel", action="store_true",
                         help="跳过腾讯股票日线刷新（股票行情由 Tushare PG 承担），"
                              "仅保留 ETF/基金/指数")
@@ -33,7 +37,10 @@ def main() -> int:
         end = pd.Timestamp.now().strftime("%Y-%m-%d")
         result = refresh_all(mode="incremental", end=end, max_workers=args.workers,
                              include_stocks=not args.skip_stock_panel,
-                             sync_pg=not args.no_sync_pg)
+                             sync_pg=not args.no_sync_pg,
+                             export_parquet_tables=None if args.no_export_parquet
+                             else ("all" if args.export_tables == "all"
+                                   else args.export_tables))
         print(f"ok: {result}", flush=True)
         return 0
     except Exception as exc:

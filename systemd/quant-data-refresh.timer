@@ -1,8 +1,8 @@
 [Unit]
-Description=Quant UI daily data refresh timer (17:35 Asia/Shanghai)
+Description=Quant UI daily data refresh timer (15:20 Asia/Shanghai, after A-share close)
 
 [Timer]
-OnCalendar=*-*-* 17:35:00
+OnCalendar=*-*-* 15:20:00
 Persistent=true
 
 [Install]

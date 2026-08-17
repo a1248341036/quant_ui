@@ -81,7 +81,7 @@ cp .env.example .env   # 按需填 TUSHARE_TOKEN / PG_DSN
 systemctl start quant-api
 # Streamlit（:8501）
 systemctl start quant-ui
-# 每日 17:35 自动增量更新行情（含 PG 日线同步与基金面板重建）
+# 每日 15:20 收盘后自动增量更新行情（含 PG 日线同步、stock_daily Parquet 导出与基金面板重建）
 systemctl start quant-data-refresh.timer
 
 # 手动跑一次数据更新
@@ -108,7 +108,9 @@ python -m streamlit run app.py --server.port=8501
 - 可选 PostgreSQL/TimescaleDB：`db/docker-compose.yml` + `db/schema.sql`
   - `stock_daily` 日线（hyper table）、`stock_minute` 分钟、财务/公告/舆情宽表
   - `backtest_runs` 回测归档、`ledger_transactions`/`ledger_deposits` 账本
-  - 回测数据源由 `QUANT_DATA_SOURCE` 控制：`pg` 优先读 PG，不足自动回退 parquet
+  - 回测数据源由 `QUANT_DATA_SOURCE` 控制：`pg` 优先读 PG（失败回退 parquet）；
+    `pg_parquet` 优先读 `data/pg_parquet/`（每日导出，失败回退 PG）；
+    `panel` 只用本地 parquet
 - 舆情：独立仓库 `~/quant/sentiment-mvp`，Streamlit 直接读取其 CSV/数据库
 
 ## 5. 回测引擎
@@ -145,7 +147,7 @@ python -m streamlit run app.py --server.port=8501
   从账户 `start_date` 起回放 `run_event_backtest`，逐笔成交落 `paper_trades`、
   逐日估值落 `paper_equity_snapshots`、最终持仓落 `paper_positions`；空头暂不支持
 - 幂等：同一 exec_date 重复执行自动跳过；订单表带唯一约束
-- 调度：`systemd/quant-paper.timer` 每天 17:55（数据刷新 17:35 之后）自动执行
+- 调度：`systemd/quant-paper.timer` 每天 15:40（数据刷新 15:20 之后）自动执行
 - 手动：`scripts/paper_trade.py --run [--account N] [--date YYYY-MM-DD] [--dry-run]`
 - 创建事件账户：`scripts/paper_trade.py --create --strategy-type event --module labs/xxx.py --event-strategy "双均线金叉事件" [--start-date YYYY-MM-DD]`
 

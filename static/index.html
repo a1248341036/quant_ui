@@ -2631,6 +2631,7 @@ const app = createApp({
       const n = Number(x);
       return Number.isFinite(n) ? n.toLocaleString('zh-CN', { minimumFractionDigits: d ?? 2, maximumFractionDigits: d ?? 2 }) : String(x);
     },
+    today() { return new Date().toISOString().slice(0, 10); },
     stock(code, name) { const nm = name || this.names[code] || ''; return nm ? `${code} ${nm}` : (code || '-'); },
     pct(x) { if (x == null || x === '') return '-'; const n = Number(x); return Number.isFinite(n) ? (n * 100).toFixed(2) + '%' : '-'; },
     sign(x) { return x == null ? '' : (x > 0 ? 'pos' : (x < 0 ? 'neg' : '')); },
