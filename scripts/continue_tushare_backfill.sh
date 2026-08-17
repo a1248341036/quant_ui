@@ -2,10 +2,12 @@
 # 续跑未完成的 Tushare 补拉：fina 缺失 -> surv 缺失 -> events 缺失 -> index_weight -> report_rc
 # 全部幂等：fina 走 upsert，surv/events 按股票 DELETE+INSERT。
 set -u
-cd /home/ubuntu/quant/quant_ui || exit 1
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+cd "$PROJECT_ROOT" || exit 1
 
 LOG=./data/backfill_continue.log
-PY=/home/ubuntu/stock-analyzer/local_venv/bin/python
+PY="${QUANT_UI_PYTHON:-$HOME/stock-analyzer/local_venv/bin/python}"
 
 log() { echo "[$(date '+%H:%M:%S')] $*" >> "$LOG"; }
 

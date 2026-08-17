@@ -3,10 +3,12 @@
 # 完成后排队 fina/surv/index_weight。全部 nice + ionice + 内存上限。
 # wait_unit 会检查退出码，失败自动重试（防代理 SSL 抖动）。
 set -u
-cd /home/ubuntu/quant/quant_ui || exit 1
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+cd "$PROJECT_ROOT" || exit 1
 
 LOG=./data/full_backfill.log
-PY=/home/ubuntu/stock-analyzer/local_venv/bin/python
+PY="${QUANT_UI_PYTHON:-$HOME/stock-analyzer/local_venv/bin/python}"
 MAX_RETRY=3
 
 log() { echo "[$(date '+%H:%M:%S')] $*" >> "$LOG"; }
@@ -15,7 +17,7 @@ run_unit() {
     local unit="$1"; shift
     sudo systemd-run --unit="$unit" \
         --working-directory=$(pwd) \
-        --property=User=ubuntu \
+        --property=User="$(id -un)" \
         --property=Nice=10 --property=IOSchedulingClass=idle \
         --property=MemoryHigh=900M --property=MemoryMax=1.2G \
         --property=StandardOutput=append:$(pwd)/data/${unit}.log \

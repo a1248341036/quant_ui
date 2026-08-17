@@ -133,6 +133,37 @@ def export_table(conn, table: str, out_path: Path, batch_size: int) -> tuple[int
     return rows, elapsed, size
 
 
+def export_last_adj(conn, out_path: Path) -> tuple[int, str]:
+    """导出每只股票最新复权因子快照（前复权锚点）。
+
+    只取最后一个交易日的 adj_factor（约 5000 行），内存占用极小。
+    core.data 读取时用它做 qfq 锚点，避免同一天在不同查询区间显示不同价格。
+    """
+    with conn.cursor() as cur:
+        cur.execute("SELECT max(trade_date) FROM stock_daily")
+        row = cur.fetchone()
+        max_date = row[0] if row else None
+        if max_date is None:
+            return 0, ""
+        cur.execute(
+            "SELECT ts_code, trade_date, adj_factor FROM stock_daily "
+            "WHERE trade_date = %s AND adj_factor IS NOT NULL",
+            (max_date,),
+        )
+        rows = cur.fetchall()
+    schema = pa.schema([
+        pa.field("ts_code", pa.string()),
+        pa.field("ref_date", pa.date32()),
+        pa.field("last_adj", pa.float64()),
+    ])
+    table = pa.Table.from_arrays(
+        [[r[0] for r in rows], [r[1] for r in rows], [r[2] for r in rows]],
+        schema=schema,
+    )
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(table, out_path, compression="zstd")
+    return len(rows), str(max_date)
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out-dir", default=str(ROOT / "data" / "pg_parquet"))
@@ -166,6 +197,13 @@ def main() -> None:
                 )
             except Exception as exc:
                 print(f"[FAIL] {table}: {exc}", flush=True)
+        # stock_daily 导出成功后补一份复权因子快照，供读取层做稳定 qfq 锚点
+        if "stock_daily" in tables:
+            try:
+                n, ref_date = export_last_adj(conn, out_dir / "stock_daily_last_adj.parquet")
+                print(f"[ok] stock_daily_last_adj: rows={n} ref_date={ref_date}", flush=True)
+            except Exception as exc:
+                print(f"[FAIL] stock_daily_last_adj: {exc}", flush=True)
     print(f"total: {time.time()-total_t0:.1f}s", flush=True)
 
 

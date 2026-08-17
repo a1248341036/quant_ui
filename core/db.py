@@ -23,6 +23,25 @@ _conn = None
 _lock = threading.Lock()
 _registered = False
 
+PG_PARQUET_DIR = DATA_DIR / "pg_parquet"
+PG_TABLE_NAMES = [
+    "stock_daily",
+    "stock_basic",
+    "share_float",
+    "fina_indicator",
+    "income",
+    "balancesheet",
+    "cashflow",
+    "dividend",
+    "stk_surv",
+    "forecast",
+    "express",
+    "namechange",
+    "trade_cal",
+    "report_rc",
+    "index_weight",
+]
+
 
 def _view_sql(name: str, file: Path, columns: dict[str, str] | None = None) -> str | None:
     if not file.exists():
@@ -37,6 +56,14 @@ def _view_sql(name: str, file: Path, columns: dict[str, str] | None = None) -> s
     )
 
 
+def _pg_parquet_view_sql(name: str) -> str | None:
+    path = PG_PARQUET_DIR / f"{name}.parquet"
+    if not path.exists():
+        return None
+    p = str(path).replace("'", "''")
+    return f"CREATE OR REPLACE VIEW {name} AS SELECT * FROM read_parquet('{p}')"
+
+
 def _register(conn) -> None:
     global _registered
     stmts = [
@@ -49,6 +76,7 @@ def _register(conn) -> None:
             {"date": "DATE", "code": "VARCHAR", "name": "VARCHAR", "open": "DOUBLE", "close": "DOUBLE"},
         ),
     ]
+    stmts.extend(_pg_parquet_view_sql(name) for name in PG_TABLE_NAMES)
     for stmt in stmts:
         if stmt:
             conn.execute(stmt)

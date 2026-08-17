@@ -595,6 +595,16 @@
           </div>
         </div>
 
+        <div class="card" style="display:flex;align-items:center;gap:12px;padding:10px 14px">
+          <span class="muted">复权口径</span>
+          <select class="input" :value="stockView.adj"
+                  @change="loadStockDetail(stockView.code, $event.target.value)">
+            <option value="qfq">前复权（默认）</option>
+            <option value="raw">不复权（真实成交价，历史稳定）</option>
+            <option value="hfq">后复权（历史价永不漂移）</option>
+          </select>
+        </div>
+
         <div class="card">
           <h3>价格与均线（近 {{stockView.detail.history.length}} 个交易日）</h3>
           <div id="stockChart" class="chart"></div>
@@ -1630,7 +1640,7 @@ const app = createApp({
       compResult: null,
       sig: { universe: '科技TMT', strategy: '低换手冷门', top_n: 10, long_short: false, short_n: 3 },
       signals: [], sigDate: '', sigInfo: {},
-      stockView: { q: '', code: '', name: '', detail: null, loading: false, error: '', open: false },
+      stockView: { q: '', code: '', name: '', detail: null, loading: false, error: '', open: false, adj: 'qfq' },
       deposits: [], transactions: [], positions: [],
       dep: { date: today(), amount: 5000 }, tx: { date: today(), code: '', name: '', action: 'buy', shares: 100, price: 0, fee: 0 },
       statusRows: [], meta: {}, updateMode: 'incremental',
@@ -2661,11 +2671,12 @@ const app = createApp({
       this.stockView.open = false;
       this.loadStockDetail(code);
     },
-    async loadStockDetail(code) {
+    async loadStockDetail(code, adj) {
+      if (adj) this.stockView.adj = adj;
       this.stockView.loading = true;
       this.stockView.error = '';
       try {
-        const r = await api('/api/stock/' + code + '?days=250');
+        const r = await api('/api/stock/' + code + '?days=250&adj=' + encodeURIComponent(this.stockView.adj));
         this.stockView.detail = r;
       } catch (e) {
         this.stockView.error = '加载失败: ' + e.message;

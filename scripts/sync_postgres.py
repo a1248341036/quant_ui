@@ -174,12 +174,50 @@ def _panel_to_daily(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def cmd_daily_from_panel() -> None:
+    """面板日线 -> stock_daily（只填空行，不覆盖已有原始价）。
+
+    panel 是前复权价，PG stock_daily 的 OHLCV 必须是 Tushare 不复权原始价
+    （与 adj_factor 配套）。这里仅用于 bootstrap：某日完全没有行情行时填上
+    占位数据，后续 --daily-since / 全量回填会用原始价覆盖。
+    """
     if not PANEL_FILE.exists():
         raise SystemExit(f"panel 不存在: {PANEL_FILE}")
     panel = pd.read_parquet(PANEL_FILE)
     daily = _panel_to_daily(panel)
-    n = upsert_df(daily, "stock_daily", ["ts_code", "trade_date"])
-    _log(f"panel -> stock_daily: {n} 行（按主键 upsert）")
+    if daily.empty:
+        _log("panel -> stock_daily: 空面板，跳过")
+        return
+    n = _upsert_daily_fill_missing(daily)
+    _log(f"panel -> stock_daily: {n} 行（仅填空行，不覆盖已有原始价）")
+
+
+def _upsert_daily_fill_missing(df: pd.DataFrame, table: str = "stock_daily") -> int:
+    """COPY + ON CONFLICT，只填充 open/close 为空的行情行，不覆盖既有 OHLCV。"""
+    cols = ["ts_code", "trade_date"] + DAILY_UPDATE_COLS
+    df = df[cols].copy()
+    cols_sql = ", ".join(f'"{c}"' for c in cols)
+    upd_sql = ", ".join(f"{c} = EXCLUDED.{c}" for c in DAILY_UPDATE_COLS)
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(f'CREATE TEMP TABLE _tmp_daily (LIKE "{table}" EXCLUDING CONSTRAINTS)')
+        cur.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = ANY (current_schemas(true)) AND table_name = %s AND is_nullable = 'NO'",
+            (f"_tmp_{table}",),
+        )
+        for (col,) in cur.fetchall():
+            cur.execute(f'ALTER TABLE _tmp_{table} ALTER COLUMN "{col}" DROP NOT NULL')
+        buf = io.StringIO()
+        df.to_csv(buf, index=False, header=False, na_rep="")
+        buf.seek(0)
+        with cur.copy(f"COPY _tmp_{table} ({cols_sql}) FROM STDIN WITH (FORMAT CSV, NULL '')") as copy:
+            copy.write(buf.getvalue())
+        cur.execute(
+            f'INSERT INTO "{table}" ({cols_sql}) SELECT {cols_sql} FROM _tmp_{table} '
+            f'ON CONFLICT (ts_code, trade_date) DO UPDATE SET {upd_sql} '
+            "WHERE stock_daily.open IS NULL OR stock_daily.close IS NULL"
+        )
+        n = cur.rowcount
+    return n
 
 
 def _fetch_one_trade_date(pro, d: str) -> tuple[str, int]:

@@ -4,8 +4,10 @@ After=network.target
 
 [Service]
 User=ubuntu
-WorkingDirectory=/home/ubuntu/quant/quant_ui
-ExecStart=/home/ubuntu/stock-analyzer/local_venv/bin/python -m streamlit run /home/ubuntu/quant/quant_ui/app.py --server.port=8501 --server.address=0.0.0.0 --server.headless=true
+WorkingDirectory=%h/quant/quant_ui
+Environment=QUANT_UI_DATA_DIR=%h/quant/quant_ui/data
+Environment=QUANT_UI_SENTIMENT_DIR=%h/quant/sentiment-mvp
+ExecStart=%h/stock-analyzer/local_venv/bin/python -m streamlit run %h/quant/quant_ui/app.py --server.port=8501 --server.address=0.0.0.0 --server.headless=true
 Restart=always
 RestartSec=5
 Environment=STREAMLIT_BROWSER_GATHER_USAGE_STATS=false

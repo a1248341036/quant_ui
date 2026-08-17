@@ -4,6 +4,7 @@ __pycache__/
 venv/
 .env
 data/
+*.zip
 results/
 labs/
 db/pgdata/

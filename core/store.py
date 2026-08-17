@@ -11,6 +11,20 @@ import pandas as pd
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = Path(os.getenv("QUANT_UI_DATA_DIR", str(PROJECT_ROOT / "data"))).expanduser()
+# 旧独立数据目录（历史迁移前位于 ~/quant_data；迁移后可直接指向 QUANT_UI_DATA_DIR）
+LEGACY_DATA_DIR = Path(
+    os.getenv("QUANT_UI_LEGACY_DATA_DIR", str(PROJECT_ROOT.parent.parent / "quant_data"))
+).expanduser()
+# 舆情独立仓库（sentiment-mvp）
+SENTIMENT_DIR = Path(
+    os.getenv("QUANT_UI_SENTIMENT_DIR", str(PROJECT_ROOT.parent / "sentiment-mvp"))
+).expanduser()
+# QQ 机器人凭据/推送脚本所在目录
+QQBOT_DIR = Path(
+    os.getenv("QUANT_UI_QQBOT_DIR", str(PROJECT_ROOT.parent.parent / "qqbot"))
+).expanduser()
+# 每日导出的 PG 快照（refresh_data.py --sync-pg 生成）
+PG_PARQUET_DIR = DATA_DIR / "pg_parquet"
 
 PANEL_FILE = DATA_DIR / "panel.parquet"
 UNIVERSE_FILE = DATA_DIR / "universe.csv"

@@ -6,10 +6,12 @@ from pathlib import Path
 import pandas as pd
 from fastapi import APIRouter
 
+from core.store import SENTIMENT_DIR
+
 
 router = APIRouter(prefix="/api/sentiment", tags=["sentiment"])
 
-SENT_ROOT = Path("/home/ubuntu/quant/sentiment-mvp")
+SENT_ROOT = SENTIMENT_DIR
 SENT_DB = SENT_ROOT / "data" / "articles.db"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 SENT_IC_CSV = PROJECT_ROOT / "results" / "sentiment_ic_group.csv"

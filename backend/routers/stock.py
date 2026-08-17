@@ -45,13 +45,18 @@ def search(q: str = Query(..., min_length=1, max_length=32), limit: int = Query(
 
 
 @router.get("/{code}")
-def detail(code: str, days: int = Query(250, ge=10, le=2000)):
-    """单只股票历史行情 + 最新报价。code 为 6 位代码。"""
+def detail(code: str, days: int = Query(250, ge=10, le=2000),
+           adj: str = Query("qfq", pattern="^(qfq|hfq|raw)$")):
+    """单只股票历史行情 + 最新报价。
+
+    adj: qfq=前复权（默认，锚定导出快照最新因子）；hfq=后复权（历史价永不漂移）；
+         raw=不复权原始价（真实成交价，除权日跳空）。
+    """
     code = str(code).zfill(6)
     name_map = services.get_name_map()
     industry_map = services.get_industry_map()
 
-    sub = load_stock_detail(code, days)
+    sub = load_stock_detail(code, days, adj=adj)
     if sub.empty:
         raise HTTPException(status_code=404, detail=f"股票 {code} 不在面板数据中")
 

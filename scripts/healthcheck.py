@@ -4,7 +4,7 @@
 
 失败时（可选）推送企业微信机器人 webhook。配在 .env：
   ALERT_WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx
-失败时也可推送 QQ（官方 QQ 机器人，凭据在 /home/ubuntu/qqbot/.env）：
+失败时也可推送 QQ（官方 QQ 机器人，凭据在 $QUANT_UI_QQBOT_DIR/.env，默认 ~/qqbot）：
   QQ_APP_ID / QQ_APP_SECRET / QQBOT_PUSH_OPENID
 由 systemd timer quant-healthcheck.timer 每 5 分钟执行一次。
 """
@@ -29,7 +29,10 @@ except ImportError:  # pragma: no cover
 
 
 ROOT = Path(__file__).resolve().parent.parent
-QQBOT_ROOT = Path("/home/ubuntu/qqbot")
+sys.path.insert(0, str(ROOT))
+from core.store import QQBOT_DIR  # noqa: E402
+
+QQBOT_ROOT = QQBOT_DIR
 STATE_FILE = ROOT / ".healthcheck_state.json"
 if load_dotenv is not None:
     load_dotenv(ROOT / ".env")

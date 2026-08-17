@@ -7,7 +7,9 @@ Wants=network-online.target
 Type=oneshot
 User=ubuntu
 Group=ubuntu
-WorkingDirectory=/home/ubuntu/quant/quant_ui
-Environment=HOME=/home/ubuntu
-EnvironmentFile=/home/ubuntu/qqbot/.env
-ExecStart=/home/ubuntu/qqbot/.venv/bin/python /home/ubuntu/quant/quant_ui/scripts/tushare_expiry_notify.py
+WorkingDirectory=%h/quant/quant_ui
+Environment=HOME=%h
+Environment=QUANT_UI_DATA_DIR=%h/quant/quant_ui/data
+Environment=QUANT_UI_QQBOT_DIR=%h/qqbot
+EnvironmentFile=%h/qqbot/.env
+ExecStart=%h/qqbot/.venv/bin/python %h/quant/quant_ui/scripts/tushare_expiry_notify.py

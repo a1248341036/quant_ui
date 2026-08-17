@@ -3,13 +3,16 @@
 # 再串行补拉 events（分红/解禁/改名）。surv/fina/index-weight 由编排负责。
 set -u
 
-PY=/home/ubuntu/stock-analyzer/local_venv/bin/python
-cd /home/ubuntu/quant/quant_ui || exit 1
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+cd "$PROJECT_ROOT" || exit 1
+
+PY="${QUANT_UI_PYTHON:-$HOME/stock-analyzer/local_venv/bin/python}"
 
 factor_done() {
-    "$PY" - <<'PYEOF' >/tmp/factor_cov.txt 2>/dev/null
+    "$PY" - <<PYEOF >/tmp/factor_cov.txt 2>/dev/null
 import sys
-sys.path.insert(0, "/home/ubuntu/quant/quant_ui")
+sys.path.insert(0, "$PROJECT_ROOT")
 from core.pg import get_conn
 with get_conn() as c, c.cursor() as cur:
     cur.execute(

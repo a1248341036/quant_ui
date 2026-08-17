@@ -4,7 +4,8 @@ Description=Quant UI daily paper trading (oneshot)
 [Service]
 Type=oneshot
 User=ubuntu
-WorkingDirectory=/home/ubuntu/quant/quant_ui
-ExecStart=/home/ubuntu/stock-analyzer/local_venv/bin/python /home/ubuntu/quant/quant_ui/scripts/paper_trade.py --run
+WorkingDirectory=%h/quant/quant_ui
+Environment=QUANT_UI_DATA_DIR=%h/quant/quant_ui/data
+ExecStart=%h/stock-analyzer/local_venv/bin/python %h/quant/quant_ui/scripts/paper_trade.py --run
 MemoryHigh=1G
 MemoryMax=1536M

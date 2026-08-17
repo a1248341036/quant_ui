@@ -26,6 +26,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from core.engine import run_backtest
+from core.store import LEGACY_DATA_DIR
 from strategies.registry import STRATEGIES
 
 CAPITAL = 50_000
@@ -53,7 +54,7 @@ OLD_REF = {}
 
 def load_old_ref() -> dict:
     ref = {}
-    path = Path("/home/ubuntu/quant_data/backtest/quant_3stocks/outputs/backtest_5w.csv")
+    path = LEGACY_DATA_DIR / "backtest/quant_3stocks/outputs/backtest_5w.csv"
     if not path.exists():
         return ref
     df = pd.read_csv(path)
@@ -103,7 +104,9 @@ def main() -> None:
     new_panel = pd.read_parquet(ROOT / "data/panel.parquet")
     new_panel["code"] = new_panel["code"].astype(str).str.zfill(6)
     new_panel["date"] = pd.to_datetime(new_panel["date"])
-    old_panel = pd.read_parquet("/home/ubuntu/quant_data/panel/turn20/turn20_fast_panel_cs800_2020-01-01_2026-08-13.parquet")
+    old_panel = pd.read_parquet(
+        LEGACY_DATA_DIR / "panel/turn20/turn20_fast_panel_cs800_2020-01-01_2026-08-13.parquet"
+    )
     old_panel["code"] = old_panel["code"].astype(str).str.zfill(6)
     old_panel["date"] = pd.to_datetime(old_panel["date"])
 
@@ -114,7 +117,7 @@ def main() -> None:
                        if not c.startswith(("300", "301", "688", "689"))})
 
     codes_new = codes_from(new_panel, ROOT / "data/tech.csv")
-    codes_old = codes_from(old_panel, "/home/ubuntu/quant_data/panel/tech_universe_sw.csv")
+    codes_old = codes_from(old_panel, LEGACY_DATA_DIR / "panel/tech_universe_sw.csv")
     print(f"codes: new={len(codes_new)} old={len(codes_old)}")
 
     rows = []
