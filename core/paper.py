@@ -280,6 +280,70 @@ def set_account_status(account_id: int, status: str) -> dict | None:
     return _acc_row(acc)
 
 
+def update_account_strategy(
+    account_id: int,
+    strategy_name: str | None = None,
+    factor: str | None = None,
+    ascending: bool | None = None,
+    universe: str | None = None,
+    top_n: int | None = None,
+    freq: str | None = None,
+    risk_config: dict | None = None,
+) -> dict | None:
+    """在线切换账户策略/参数（factor 账户）。事件账户不支持在线切换。
+
+    只更新调用方显式传入的字段；返回更新后的账户，账户不存在返回 None。
+    调用方负责在切换后 reset_account() 清空旧策略产生的历史。
+    """
+    if freq is not None and freq not in ("daily", "weekly", "monthly", "semiannual"):
+        raise ValueError("freq 仅支持 daily/weekly/monthly/semiannual")
+    if universe is not None:
+        universe = normalize_universe(universe)
+    acc = get_account(account_id)
+    if acc is None:
+        return None
+    if acc.get("strategy_type") == "event":
+        raise ValueError("事件策略账户不支持在线切换，请新建账户")
+    fields = (
+        ("strategy_name", strategy_name),
+        ("factor", factor),
+        ("ascending", ascending),
+        ("universe", universe),
+        ("top_n", top_n),
+        ("freq", freq),
+        ("risk_config", risk_config),
+    )
+    if pg.configured():
+        try:
+            sets = []
+            params = []
+            for col, val in fields:
+                if val is None:
+                    continue
+                sets.append(f"{col}=%s")
+                params.append(
+                    bool(val) if col == "ascending"
+                    else json.dumps(val, ensure_ascii=False)
+                    if col == "risk_config"
+                    else val)
+            if sets:
+                params.append(int(account_id))
+                _ex(f"UPDATE paper_accounts SET {', '.join(sets)} WHERE id=%s",
+                    tuple(params))
+            return get_account(account_id)
+        except Exception as exc:
+            print(f"[paper] PG 更新失败，回退 JSON: {exc}", flush=True)
+    state = _json_state()
+    a = state["accounts"].get(str(account_id))
+    if a is None:
+        return None
+    for col, val in fields:
+        if val is not None:
+            a[col] = val
+    _json_save(state)
+    return _acc_row(a)
+
+
 def delete_account(account_id: int) -> bool:
     if pg.configured():
         try:

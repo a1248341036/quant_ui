@@ -44,6 +44,14 @@ class StatusRequest(BaseModel):
     status: str = "active"
 
 
+class StrategySwitchRequest(BaseModel):
+    strategy_name: str
+    universe: str | None = None
+    top_n: int | None = None
+    freq: str | None = None
+    risk_config: dict | None = None
+
+
 class RunRequest(BaseModel):
     account_id: int | None = None
     exec_date: str | None = None
@@ -181,6 +189,28 @@ def account_create(req: AccountRequest):
 def account_status(account_id: int, req: StatusRequest):
     try:
         acc = paper_core.set_account_status(account_id, req.status)
+    except ValueError as exc:
+        return {"error": str(exc)}
+    return paper_core._jsonable(acc) or {"error": "账户不存在"}
+
+
+@router.patch("/paper/accounts/{account_id}/strategy")
+def account_switch_strategy(account_id: int, req: StrategySwitchRequest):
+    """在线切换 factor 账户策略；切换后前端应再调 reset 清空旧策略历史。"""
+    try:
+        s = resolve_pool_strategy(req.strategy_name)
+        if not s:
+            return {"error": f"未知策略: {req.strategy_name}"}
+        acc = paper_core.update_account_strategy(
+            account_id,
+            strategy_name=req.strategy_name,
+            factor=s.get("factor"),
+            ascending=s.get("ascending"),
+            universe=req.universe,
+            top_n=req.top_n,
+            freq=req.freq,
+            risk_config=req.risk_config,
+        )
     except ValueError as exc:
         return {"error": str(exc)}
     return paper_core._jsonable(acc) or {"error": "账户不存在"}

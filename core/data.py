@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from pathlib import Path
 
 import pandas as pd
 
-from .store import (ETF_FILE, ETF_PANEL_FILE, FUND_FILE, FUND_NAV_FILE, FUND_PANEL_FILE,
-                    INDEX_FILE, PANEL_FILE, TECH_FILE, UNIVERSE_FILE,
-                    load_meta)
+from .store import (DATA_DIR, ETF_FILE, ETF_PANEL_FILE, FUND_FILE, FUND_NAV_FILE,
+                    FUND_PANEL_FILE, INDEX_FILE, PANEL_FILE, TECH_FILE,
+                    UNIVERSE_FILE, load_meta)
 
 
 def duck_query(sql: str, params=None) -> pd.DataFrame:
@@ -22,6 +23,8 @@ UNIVERSE_PATH = Path("/home/ubuntu/quant_data/panel/universe_cs800.csv")
 TECH_PATH = Path("/home/ubuntu/quant_data/panel/tech_universe_sw.csv")
 INDEX_PATH = Path("/home/ubuntu/quant_data/panel/csi300_index.csv")
 
+SENT_ROOT = Path("/home/ubuntu/quant/sentiment-mvp")
+
 # PG 面板只拉该日期以来的行情，避免全表 1100 万行进入 pandas（与 parquet 面板口径一致）。
 PANEL_START = os.getenv("QUANT_PANEL_START", "2020-01-01").strip()
 # turn20/am20 滚动窗口在区间起点需要约 20 个交易日历史，查询起点统一前移自然日缓冲，
@@ -30,6 +33,9 @@ FACTOR_BUFFER_DAYS = 40
 
 # pg=优先 PostgreSQL stock_daily（未补全/失败时自动回退 parquet），panel=只用本地文件
 DATA_SOURCE = os.getenv("QUANT_DATA_SOURCE", "pg").strip().lower()
+# 与 backend/services 共用：空闲 TTL 后释放整份 PG 面板，
+# 避免全市场面板（几百 MB）在“什么都没跑”时仍被永久持有。
+PANEL_CACHE_TTL = float(os.getenv("QUANT_CACHE_TTL", "1800"))
 _pg_panel_cache: dict = {}
 _panel_codes_cache: set | None = None
 
@@ -83,8 +89,10 @@ def _load_panel_pg(start: str | None = None, end: str | None = None,
                       - pd.Timedelta(days=FACTOR_BUFFER_DAYS)).date().isoformat()
     codes_key = tuple(sorted(codes)) if codes else None
     key = (calc_start, end or str(meta_end), codes_key)
-    if _pg_panel_cache.get("key") == key:
-        return _pg_panel_cache["df"]
+    cached = _pg_panel_cache
+    if (cached.get("key") == key
+            and time.time() - cached.get("ts", 0) < PANEL_CACHE_TTL):
+        return cached["df"]
     where = ["adj_factor IS NOT NULL", "close IS NOT NULL"]
     params: list = []
     if calc_start:
@@ -110,7 +118,7 @@ def _load_panel_pg(start: str | None = None, end: str | None = None,
     # last_adj 直接取区间内各股票最新 adj_factor：回测终点通常是数据最新日，
     # 与全量口径一致；终点早于最新日时按区间内最新复权，避免全表 DISTINCT ON。
     out = _finalize_stock_df(df)
-    _pg_panel_cache = {"key": key, "df": out}
+    _pg_panel_cache = {"key": key, "df": out, "ts": time.time()}
     return out
 
 
@@ -318,26 +326,102 @@ def load_index() -> pd.DataFrame:
     return idx[cols].sort_values(["code", "date"]).reset_index(drop=True)
 
 
-def data_status() -> dict:
-    files = {
-        "panel": {"store": PANEL_FILE, "legacy": PANEL_PATH},
-        "universe": {"store": UNIVERSE_FILE, "legacy": UNIVERSE_PATH},
-        "tech": {"store": TECH_FILE, "legacy": TECH_PATH},
-        "index": {"store": INDEX_FILE, "legacy": INDEX_PATH},
-        "etf": {"store": ETF_FILE},
-        "etf_panel": {"store": ETF_PANEL_FILE},
-        "fund": {"store": FUND_FILE},
-        "fund_nav": {"store": FUND_NAV_FILE},
-        "fund_panel": {"store": FUND_PANEL_FILE},
+def _file_entry(name: str, path: Path, desc: str, source: str, update: str) -> dict:
+    return {
+        "name": name,
+        "path": str(path),
+        "desc": desc,
+        "source": source,
+        "update": update,
+        "exists": path.exists(),
+        "size_mb": round(path.stat().st_size / 1e6, 1) if path.exists() else None,
     }
-    out = {}
-    for key, paths in files.items():
-        entry = {}
-        for label, path in paths.items():
-            entry[label] = {
-                "exists": path.exists(),
-                "size_mb": round(path.stat().st_size / 1e6, 1) if path.exists() else None,
-            }
-        out[key] = entry
+
+
+def data_status() -> dict:
+    """返回所有数据源状态：本地行情文件 + 衍生缓存 + PostgreSQL + 舆情文件。"""
+    files = [
+        ("panel", _file_entry(
+            "股票日线+因子面板", PANEL_FILE,
+            "全股票池前复权日线，含 turn20/am20 滚动因子", "腾讯行情", "一键更新 / refresh_data.py")),
+        ("universe", _file_entry(
+            "股票池", UNIVERSE_FILE,
+            "沪深300 + 中证500 + 中证1000 成分股", "中证指数官网", "一键更新")),
+        ("tech", _file_entry(
+            "行业分类", TECH_FILE,
+            "科技TMT 行业归属", "东方财富 akshare", "一键更新")),
+        ("index", _file_entry(
+            "指数日线", INDEX_FILE,
+            "沪深300/中证500/中证1000/创业板指/科创50/上证指数",
+            "Tushare（腾讯回退）", "一键更新")),
+        ("etf", _file_entry(
+            "ETF 列表", ETF_FILE, "全市场 ETF 快照", "东方财富 akshare", "一键更新")),
+        ("etf_panel", _file_entry(
+            "ETF 日线面板", ETF_PANEL_FILE,
+            "ETF 日线，结构与股票面板一致", "腾讯行情", "一键更新")),
+        ("fund", _file_entry(
+            "场外基金池", FUND_FILE,
+            "科技相关场外基金（股票/混合/指数/QDII）", "天天基金（akshare）", "一键更新")),
+        ("fund_nav", _file_entry(
+            "场外基金净值", FUND_NAV_FILE,
+            "逐只基金单位净值历史", "天天基金（akshare）", "一键更新")),
+        ("fund_panel", _file_entry(
+            "基金衍生面板", FUND_PANEL_FILE,
+            "由基金净值派生，供统一回测引擎使用", "本地派生", "一键更新 / refresh_data.py")),
+        ("duck_cache", _file_entry(
+            "DuckDB 查询缓存", DATA_DIR / "duck.db",
+            "本地查询缓存/视图", "本地派生", "自动生成")),
+    ]
+    out = {key: {"store": entry} for key, entry in files}
+
+    sentiment_files = [
+        ("sentiment_articles", "舆情库", SENT_ROOT / "data" / "articles.db",
+         "去重后的舆情文章库"),
+        ("sentiment_news_raw", "东财个股新闻", SENT_ROOT / "data" / "news_raw.jsonl",
+         "东方财富个股新闻原始流"),
+        ("sentiment_news_cls", "财联社电报", SENT_ROOT / "data" / "news_cls.jsonl",
+         "财联社电报原始流"),
+        ("sentiment_news_extra", "扩展新闻源", SENT_ROOT / "data" / "news_extra.jsonl",
+         "其他来源新闻原始流"),
+        ("sentiment_news_sentiment", "词典打分", SENT_ROOT / "data" / "news_sentiment.csv",
+         "舆情词典/规则打分结果"),
+        ("sentiment_news_daily", "日度全量情绪", SENT_ROOT / "data" / "news_sentiment_daily.csv",
+         "按日聚合的情绪分"),
+        ("sentiment_event_study", "事件研究", SENT_ROOT / "outputs" / "event_study_daily.csv",
+         "事件驱动研究日度结果"),
+        ("sentiment_universe", "舆情股票池", SENT_ROOT / "data" / "universe.csv",
+         "舆情覆盖股票池"),
+    ]
+    for key, name, path, desc in sentiment_files:
+        out[key] = {"store": _file_entry(
+            name, path, desc, "sentiment-mvp", "独立流水线 run_pipeline.py daily")}
+
+    pg_entry = _file_entry(
+        "PG 日线表 stock_daily", Path("PostgreSQL: public.stock_daily"),
+        "TimescaleDB 日线同步表（Tushare/本地面板）", "Tushare / 本地面板",
+        "一键更新 / refresh_data.py")
+    pg_entry["info"] = {}
+    try:
+        from . import pg as pg_mod
+        if pg_mod.configured():
+            pg_entry["exists"] = True
+            try:
+                df = pg_mod.query_df("SELECT max(trade_date) AS last_date FROM stock_daily")
+                if len(df) and df.iloc[0]["last_date"] is not None:
+                    pg_entry["info"]["last_date"] = str(df.iloc[0]["last_date"])
+            except Exception:
+                pass
+            try:
+                df = pg_mod.query_df(
+                    "SELECT reltuples::bigint AS n_rows FROM pg_class "
+                    "WHERE relname = 'stock_daily'")
+                if len(df) and df.iloc[0]["n_rows"] is not None and int(df.iloc[0]["n_rows"]) > 0:
+                    pg_entry["info"]["n_rows"] = int(df.iloc[0]["n_rows"])
+            except Exception:
+                pass
+    except Exception:
+        pass
+    out["pg_stock_daily"] = {"store": pg_entry}
+
     out["meta"] = load_meta()
     return out

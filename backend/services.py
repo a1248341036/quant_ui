@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import threading
 import time
 from typing import Any
@@ -10,7 +11,7 @@ import pandas as pd
 from core.data import (data_status, load_etf, load_etf_panel, load_fund,
                        load_fund_nav, load_fund_panel, load_index, load_panel,
                        load_tech, load_universe)
-from core.fetcher import update_data
+from core.updater import refresh_all
 from core.store import (ETF_FILE, ETF_PANEL_FILE, FUND_FILE, FUND_NAV_FILE,
                         FUND_PANEL_FILE, INDEX_FILE, PANEL_FILE, TECH_FILE,
                         UNIVERSE_FILE, normalize_universe)
@@ -20,6 +21,45 @@ DATA_CACHE: dict[tuple, dict] = {}
 UPDATE_STATE: dict[str, Any] = {"running": False, "progress": 0.0,
                                 "text": "", "result": None, "error": None}
 _lock = threading.Lock()
+
+# 数据集缓存空闲 TTL：30 分钟没人访问就释放整份缓存，
+# 避免“什么都没跑”时仍常驻几百 MB ~ 1G 的全量行情数据。
+CACHE_TTL = float(os.getenv("QUANT_CACHE_TTL", "1800"))
+
+# Vue「开始更新」路径的内存保护阈值（单位 MB）。
+# 启动前要求有足够空闲内存；运行中每个进度回调都检查，低于下限立即中止。
+MIN_START_MEMORY_MB = 700
+MIN_RUN_MEMORY_MB = 500
+UPDATE_MAX_WORKERS = 3
+
+
+def _available_memory_mb() -> float:
+    """返回当前可用内存（MB），取系统可用与 cgroup 可用两者中的较小值。"""
+    sys_avail = None
+    try:
+        import psutil
+        sys_avail = float(psutil.virtual_memory().available) / 1024 / 1024
+    except Exception:
+        try:
+            with open("/proc/meminfo", encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("MemAvailable:"):
+                        sys_avail = float(line.split()[1]) / 1024
+                        break
+        except Exception:
+            pass
+    cg_avail = None
+    try:
+        with open("/sys/fs/cgroup/memory.max", encoding="utf-8") as f:
+            max_mem = f.read().strip()
+        if max_mem != "max":
+            with open("/sys/fs/cgroup/memory.current", encoding="utf-8") as f:
+                cur = float(f.read().strip())
+            cg_avail = (float(max_mem) - cur) / 1024 / 1024
+    except Exception:
+        pass
+    candidates = [x for x in (sys_avail, cg_avail) if x is not None]
+    return min(candidates) if candidates else float("inf")
 
 
 def _mtimes() -> tuple:
@@ -41,7 +81,9 @@ def load_data(force: bool = False, start: str | None = None,
     key = (start, end, need_panel, tuple(sorted(codes)) if codes else None, need_heavy)
     m = _mtimes()
     cached = DATA_CACHE.get(key)
-    if not force and cached is not None and cached.get("loaded") and cached.get("mtimes") == m:
+    if (not force and cached is not None and cached.get("loaded")
+            and cached.get("mtimes") == m
+            and time.time() - cached.get("ts", 0) < CACHE_TTL):
         return cached
     panel = load_panel(start=start, end=end, codes=codes) if need_panel else None
     uni = load_universe()
@@ -59,6 +101,7 @@ def load_data(force: bool = False, start: str | None = None,
                  "turn20", "am20", "volume"])
     out = {
         "loaded": True,
+        "ts": time.time(),
         "panel": panel,
         "universe": uni,
         "tech": tech,
@@ -70,6 +113,10 @@ def load_data(force: bool = False, start: str | None = None,
         "fund_panel": fund_panel,
         "mtimes": m,
     }
+    # 只保留最近一份数据集：不同回测区间/股票池会各自缓存一份全量数据，
+    # 无界缓存会在请求结束后仍占几份几百 MB 的内存（小内存机器直接卡死）。
+    if key not in DATA_CACHE:
+        DATA_CACHE.clear()
     DATA_CACHE[key] = out
     return out
 
@@ -181,13 +228,28 @@ def clean_records(records: list[dict]) -> list[dict]:
 
 def run_update_background(mode: str, end: str) -> None:
     def worker():
-        with _lock:
-            UPDATE_STATE.update({"running": True, "progress": 0.0, "text": "启动",
-                                 "result": None, "error": None})
         try:
-            result = update_data(
-                mode=mode, end=end,
-                progress=lambda p, t, label: _set_progress(p, t, label),
+            avail = _available_memory_mb()
+            if avail < MIN_START_MEMORY_MB:
+                with _lock:
+                    UPDATE_STATE.update({
+                        "running": False, "progress": 0.0, "text": "",
+                        "result": None,
+                        "error": f"可用内存不足（{avail:.0f}MB < {MIN_START_MEMORY_MB}MB），已拒绝启动更新",
+                    })
+                return
+            with _lock:
+                UPDATE_STATE.update({"running": True, "progress": 0.0, "text": "启动",
+                                     "result": None, "error": None})
+            def guarded_progress(p: float, t: float, label: str) -> None:
+                avail = _available_memory_mb()
+                if avail < MIN_RUN_MEMORY_MB:
+                    raise MemoryError(
+                        f"运行中可用内存不足（{avail:.0f}MB < {MIN_RUN_MEMORY_MB}MB），已中止更新")
+                _set_progress(p, t, label)
+            result = refresh_all(
+                mode=mode, end=end, max_workers=UPDATE_MAX_WORKERS,
+                progress=guarded_progress,
             )
             invalidate_data()
             UPDATE_STATE.update({"running": False, "progress": 1.0,

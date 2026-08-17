@@ -25,7 +25,7 @@
 | 今日信号 | ✅ | ✅ | 按因子打分输出当日候选 |
 | 日级模拟盘 | ✅ | ✅ | 因子/事件策略自动下单/成交/日结，systemd 盘后执行 |
 | 账户记账（出入金/交易/持仓/估值） | ✅ | ✅ | 手动录入，估值基于 panel 行情 |
-| 数据管理（状态/一键更新） | ✅ | ✅ | 腾讯行情 + Tushare 双源，增量刷新 |
+| 数据管理（状态/一键更新） | ✅ | ✅ | 腾讯行情 + Tushare 双源，增量刷新（含 PG 日线同步与基金面板重建） |
 | 舆情情绪看板 | ✅（简版） | ✅ | 读取 `~/quant/sentiment-mvp` 词典/LLM 打分 |
 | 因子质量分析（IC/分组/多空价差） | ✅ | — | 回测页勾选「因子质量分析」后展示 |
 | QuantStats 绩效报告 | ✅ | — | 回测结果页按钮，内嵌 HTML 报告 |
@@ -81,7 +81,7 @@ cp .env.example .env   # 按需填 TUSHARE_TOKEN / PG_DSN
 systemctl start quant-api
 # Streamlit（:8501）
 systemctl start quant-ui
-# 每日 17:35 自动增量更新行情
+# 每日 17:35 自动增量更新行情（含 PG 日线同步与基金面板重建）
 systemctl start quant-data-refresh.timer
 
 # 手动跑一次数据更新

@@ -167,6 +167,7 @@
     .chart { width: 100%; height: 340px; }
     .chart.small { height: 220px; }
     .muted { color: var(--muted); font-size: 12px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; word-break: break-all; }
     .empty {
       padding: 26px 16px; text-align: center; color: var(--faint);
       font-size: 13px; border: 1px dashed var(--line); border-radius: 12px;
@@ -484,7 +485,13 @@
             <label class="field"><span>TopN</span><select v-model.number="cmp.top_n"><option v-for="n in [3,5,8,10]" :value="n">{{n}}</option></select></label>
             <label class="field"><span>初始资金</span><input type="number" v-model.number="cmp.capital" step="1000"></label>
             <label class="field"><span>回看起点</span><input type="date" v-model="cmp.start_date" min="2020-01-01" :max="cmp.end_date || panelInfo.last_date || ''"></label>
-            <label class="field"><span>回看终点</span><input type="date" v-model="cmp.end_date" min="2020-01-01" :max="panelInfo.last_date || ''"></label>
+            <label class="field"><span>回看终点</span><input type="date" v-model="cmp.end_date" min="2020-01-01" :max="today() || ''"></label>
+            <label class="field"><span>基准</span>
+              <select v-model="cmp.bench">
+                <option>等权股票池</option>
+                <option v-for="i in indices" :value="i.name">{{i.name}}</option>
+              </select>
+            </label>
           </div>
         </div>
         <div class="form-actions">
@@ -494,8 +501,14 @@
       </div>
 
       <div v-if="cmpResult && cmpResult.items && cmpResult.items.length">
-        <div class="card"><h3>多策略资金曲线（vs 等权基准）</h3><div id="cmpChart" class="chart"></div></div>
+        <div class="card"><h3>多策略资金曲线（vs 基准）</h3><div id="cmpChart" class="chart"></div></div>
         <div class="card"><h3>多策略回撤（%）</h3><div id="cmpDraw" class="chart small"></div></div>
+        <div class="cards" v-if="benchInfo.metrics">
+          <div class="metric"><div class="label">基准 {{benchInfo.name}} 总收益</div><div class="value" :class="sign(benchInfo.metrics.total)">{{pct(benchInfo.metrics.total)}}</div></div>
+          <div class="metric"><div class="label">基准年化</div><div class="value" :class="sign(benchInfo.metrics.annual)">{{pct(benchInfo.metrics.annual)}}</div></div>
+          <div class="metric"><div class="label">基准夏普</div><div class="value">{{fmt(benchInfo.metrics.sharpe, 2)}}</div></div>
+          <div class="metric"><div class="label">基准最大回撤</div><div class="value" :class="sign(benchInfo.metrics.mdd)">{{pct(benchInfo.metrics.mdd)}}</div></div>
+        </div>
         <div class="card"><h3>策略指标对比</h3>
           <div style="overflow-x:auto"><table>
             <tr><th>策略</th><th>总收益</th><th>年化收益</th><th>年化波动</th><th>夏普</th><th>最大回撤</th><th>卡玛</th><th>胜率</th><th>信号日</th></tr>
@@ -620,6 +633,12 @@
             <label class="field wide"><span>策略</span><strategy-select v-model="bt.strategy" :strategies="strategies" placeholder="选择策略"></strategy-select></label>
             <label class="field"><span>TopN</span><select v-model.number="bt.top_n"><option v-for="n in [1,2,3,5,8,10]" :value="n">{{n}}</option></select></label>
             <label class="field"><span>初始资金</span><input type="number" v-model.number="bt.capital" step="1000"></label>
+            <label class="field"><span>基准</span>
+              <select v-model="bt.bench">
+                <option>等权股票池</option>
+                <option v-for="i in indices" :value="i.name">{{i.name}}</option>
+              </select>
+            </label>
           </div>
         </div>
         <div class="form-section">
@@ -655,7 +674,8 @@
           </div>
         </div>
         <div class="form-actions">
-          <button class="primary" @click="runBacktest">跑回测</button>
+          <p class="err left" v-if="btError">{{btError}}</p>
+          <button class="primary" @click="runBacktest" :disabled="btRunning"><span v-if="btRunning" class="spinner"></span>{{btRunning ? '回测中…' : '跑回测'}}</button>
         </div>
       </div>
       <div v-if="btResult">
@@ -664,6 +684,12 @@
         </div>
         <div class="cards">
           <div class="metric" v-for="(v,k) in btResult.metrics" :key="k"><div class="label">{{k}}</div><div class="value" :class="sign(v)">{{metricText(k,v)}}</div></div>
+        </div>
+        <div class="cards" v-if="benchInfo.metrics">
+          <div class="metric"><div class="label">基准 {{benchInfo.name}} 总收益</div><div class="value" :class="sign(benchInfo.metrics.total)">{{pct(benchInfo.metrics.total)}}</div></div>
+          <div class="metric"><div class="label">基准年化</div><div class="value" :class="sign(benchInfo.metrics.annual)">{{pct(benchInfo.metrics.annual)}}</div></div>
+          <div class="metric"><div class="label">基准夏普</div><div class="value">{{fmt(benchInfo.metrics.sharpe, 2)}}</div></div>
+          <div class="metric"><div class="label">基准最大回撤</div><div class="value" :class="sign(benchInfo.metrics.mdd)">{{pct(benchInfo.metrics.mdd)}}</div></div>
         </div>
         <div class="card"><h3>资金曲线（策略 vs 基准）</h3><div id="btEquity" class="chart"></div></div>
         <div class="card"><h3>回撤</h3><div id="btDraw" class="chart small"></div></div>
@@ -741,6 +767,12 @@
             <label class="field"><span>频率</span><select v-model="comp.freq"><option value="monthly">月频</option><option value="weekly">周频</option></select></label>
             <label class="field"><span>开始</span><input type="date" v-model="comp.start"></label>
             <label class="field"><span>结束</span><input type="date" v-model="comp.end"></label>
+            <label class="field"><span>基准</span>
+              <select v-model="comp.bench">
+                <option>等权股票池</option>
+                <option v-for="i in indices" :value="i.name">{{i.name}}</option>
+              </select>
+            </label>
           </div>
         </div>
         <div class="form-section">
@@ -782,6 +814,12 @@
       <div v-if="compResult">
         <div class="cards">
           <div class="metric" v-for="(v,k) in compResult.metrics" :key="k"><div class="label">{{k}}</div><div class="value" :class="sign(v)">{{metricText(k,v)}}</div></div>
+        </div>
+        <div class="cards" v-if="benchInfo.metrics">
+          <div class="metric"><div class="label">基准 {{benchInfo.name}} 总收益</div><div class="value" :class="sign(benchInfo.metrics.total)">{{pct(benchInfo.metrics.total)}}</div></div>
+          <div class="metric"><div class="label">基准年化</div><div class="value" :class="sign(benchInfo.metrics.annual)">{{pct(benchInfo.metrics.annual)}}</div></div>
+          <div class="metric"><div class="label">基准夏普</div><div class="value">{{fmt(benchInfo.metrics.sharpe, 2)}}</div></div>
+          <div class="metric"><div class="label">基准最大回撤</div><div class="value" :class="sign(benchInfo.metrics.mdd)">{{pct(benchInfo.metrics.mdd)}}</div></div>
         </div>
         <div class="card"><h3>资金曲线（策略 vs 基准）</h3><div id="compEquity" class="chart"></div></div>
         <div class="card"><h3>回撤</h3><div id="compDraw" class="chart small"></div></div>
@@ -873,6 +911,12 @@
             </label>
             <label class="field"><span>TopN</span><select v-model.number="code.top_n"><option v-for="n in [1,2,3,5,8,10]" :value="n">{{n}}</option></select></label>
             <label class="field"><span>初始资金</span><input type="number" v-model.number="code.capital" step="1000"></label>
+            <label class="field"><span>基准</span>
+              <select v-model="code.bench">
+                <option>等权股票池</option>
+                <option v-for="i in indices" :value="i.name">{{i.name}}</option>
+              </select>
+            </label>
           </div>
         </div>
         <div class="form-section">
@@ -914,6 +958,12 @@
         </div>
         <div class="cards">
           <div class="metric" v-for="(v,k) in codeResult.metrics" :key="k"><div class="label">{{k}}</div><div class="value" :class="sign(v)">{{metricText(k,v)}}</div></div>
+        </div>
+        <div class="cards" v-if="benchInfo.metrics">
+          <div class="metric"><div class="label">基准 {{benchInfo.name}} 总收益</div><div class="value" :class="sign(benchInfo.metrics.total)">{{pct(benchInfo.metrics.total)}}</div></div>
+          <div class="metric"><div class="label">基准年化</div><div class="value" :class="sign(benchInfo.metrics.annual)">{{pct(benchInfo.metrics.annual)}}</div></div>
+          <div class="metric"><div class="label">基准夏普</div><div class="value">{{fmt(benchInfo.metrics.sharpe, 2)}}</div></div>
+          <div class="metric"><div class="label">基准最大回撤</div><div class="value" :class="sign(benchInfo.metrics.mdd)">{{pct(benchInfo.metrics.mdd)}}</div></div>
         </div>
         <div class="card"><h3>资金曲线（当前代码 vs 基准）</h3><div id="codeEquity" class="chart"></div></div>
         <div class="card"><h3>回撤</h3><div id="codeDraw" class="chart small"></div></div>
@@ -1397,11 +1447,27 @@
     <!-- 数据 -->
     <section v-if="tab==='data'">
       <div class="card">
-        <h3>缓存状态</h3>
-        <div class="table-wrap"><table><tr><th>数据</th><th>位置</th><th>状态</th><th>大小MB</th></tr>
-        <tr v-for="(v,k) in statusRows" :key="k"><td>{{v.name}}</td><td>{{v.loc}}</td><td :class="v.exists?'ok':'err'">{{v.exists?'存在':'缺失'}}</td><td>{{v.size??'-'}}</td></tr></table></div>
+        <h3>数据源状态</h3>
+        <div class="table-wrap"><table><tr><th>数据</th><th>位置</th><th>状态</th><th>大小MB</th><th>说明</th></tr>
+        <tr v-for="(v,k) in statusRows" :key="k">
+          <td>{{v.name}}</td>
+          <td class="mono">{{v.loc}}</td>
+          <td :class="v.exists?'ok':'err'">{{v.exists?'存在':'缺失'}}</td>
+          <td>{{v.size??'-'}}</td>
+          <td>{{v.desc}}<span class="muted"><br>{{v.source}} · {{v.update}}</span></td>
+        </tr></table></div>
         <p class="muted" v-if="meta.last_update">上次刷新：{{meta.last_update}}</p>
         <p class="muted">数据截至：{{meta.end || panelInfo.last_date || '-'}} · 代码 {{meta.n_codes}} · 行数 {{meta.n_rows}}</p>
+      </div>
+      <div class="card">
+        <h3>数据更新说明</h3>
+        <ul class="muted">
+          <li>「开始更新」会刷新：股票池、指数、行业分类、股票日线、ETF、场外基金净值，并同步 PostgreSQL <code>stock_daily</code>、重建基金衍生面板。</li>
+          <li>「增量」只追加最新行情；「全量重建」重新抓取全部日线，耗时更长。</li>
+          <li>舆情数据不跟随一键更新，由 <code>~/quant/sentiment-mvp/run_pipeline.py daily</code> 独立更新。</li>
+          <li>状态只表示文件/表是否存在；数据新旧以「上次刷新 / 数据截至」为准。</li>
+          <li>更新带内存保护：启动前可用内存低于约 700MB 会拒绝启动；运行中低于约 500MB 会自动中止。</li>
+        </ul>
       </div>
       <div class="card">
         <h3>更新数据</h3>
@@ -1413,6 +1479,7 @@
         <p class="muted" v-if="updating">{{updateText}}</p>
         <p class="ok" v-if="updateDone">更新完成：{{updateResult?.n_codes}} 只 · {{updateResult?.n_rows}} 行</p>
         <p class="err" v-if="updateError">{{updateError}}</p>
+        <p class="muted">本次更新含：行情源 + PostgreSQL 日线同步 + 基金衍生面板重建</p>
       </div>
     </section>
 
@@ -1503,7 +1570,11 @@ function renderLine(id, series, height) {
     grid: { left: 50, right: 16, top: 30, bottom: 30 },
     xAxis: { type: 'category', data: series[0]?.dates || [], axisLabel: { color: '#8494b5' } },
     yAxis: { type: 'value', axisLabel: { color: '#8494b5' } },
-    series: series.map(s => ({ name: s.name, type: 'line', data: s.values, showSymbol: false, smooth: true, lineStyle: { width: 2, type: s.dash ? 'dashed' : 'solid' } }))
+    series: series.map(s => {
+      const item = { name: s.name, type: 'line', data: s.values, showSymbol: false, smooth: true, lineStyle: { width: 2, type: s.dash ? 'dashed' : 'solid' } };
+      if (s.fill) item.areaStyle = { color: 'rgba(255, 93, 77, 0.16)' };
+      return item;
+    })
   }, true);
 }
 function renderBar(id, names, values) {
@@ -1524,24 +1595,26 @@ const app = createApp({
     return {
       tab: 'dashboard',
       panelInfo: {}, names: {},
+      indices: [], idxCache: {},
       strategies: [],
       pool: {
         full: [], pooled: [], trash: [],
         q: '', grp: '全部', addSel: [], rmSel: [], delSel: [], purgeSel: [],
       },
       accSummary: null, accItems: [], accEmpty: true,
-      cmp: { universe: '科技TMT', strategies: ['低换手冷门', '反转 20 日', '低波动', '动量 20 日'], top_n: 3, capital: 5000, start_date: '', end_date: '' },
+      cmp: { universe: '科技TMT', strategies: ['低换手冷门', '反转 20 日', '低波动', '动量 20 日'], top_n: 3, capital: 5000, start_date: '', end_date: '', bench: '沪深300' },
       cmpResult: null, cmpRunning: false, cmpError: '', cmpHoldIdx: 0,
-      bt: { universe: '科技TMT', strategy: '低换手冷门', top_n: 3, capital: 5000, freq: 'monthly', start: '2026-02-02', end: '2026-08-14', exclude: true, affordable: true, amount_q: 0.2, warmup_days: 400, long_short: false, neutral: false, risk_neutral: false, use_financial: false, short_n: 3, short_rate: 8.6, industry_cap: 0, analyze: false },
+      bt: { universe: '科技TMT', strategy: '低换手冷门', top_n: 3, capital: 5000, freq: 'monthly', start: '2026-02-02', end: today(), exclude: true, affordable: true, amount_q: 0.2, warmup_days: 400, long_short: false, neutral: false, risk_neutral: false, use_financial: false, short_n: 3, short_rate: 8.6, industry_cap: 0, analyze: false, bench: '沪深300' },
       btSub: 'bt',
-      btResult: null, reportHtml: '', reportLoading: false,
+      btResult: null, btRunning: false, btError: '', reportHtml: '', reportLoading: false,
+      benchInfo: { name: '', metrics: null },
       factorOptions: [],
       composites: [],
       compName: '', compPick: '', compError: '', compRunning: false,
       compSignals: [], compSigDate: '', compSignalsLoading: false,
       comp: {
         universe: '科技TMT', top_n: 5, capital: 5000, freq: 'monthly',
-        start: '2026-02-02', end: '2026-08-14',
+        start: '2026-02-02', end: today(), bench: '沪深300',
         factors: {
           turn20: { enabled: true, dir: '买低', weight: 1 },
           am20: { enabled: true, dir: '买高', weight: 1 },
@@ -1568,7 +1641,7 @@ const app = createApp({
         tplInfo: null,
         strategy: '', strategies: [],
         universe: '科技TMT', top_n: 3, capital: 5000, freq: 'monthly',
-        start: '2026-02-02', end: '2026-08-14',
+        start: '2026-02-02', end: today(), bench: '沪深300',
         exclude: true, affordable: true, amount_q: 0.2, warmup_days: 400,
         slippage_bps: 0, max_participation: 0, buy_cost_pct: 0.08, sell_cost_pct: 0.13,
         savedName: '', savedList: [],
@@ -1605,6 +1678,14 @@ const app = createApp({
     'bt.strategy'(name) {
       this.applyBtStrategyDefaults();
     },
+    'bt.bench'() { if (this.btResult) this.renderBacktest(); },
+    'cmp.bench'() {
+      if (this.cmpResult && this.cmpResult.items && this.cmpResult.items.length) {
+        this.renderCompare(this.cmp.start_date || this.cmp.end_date, this.cmp.end_date || this.panelInfo.last_date);
+      }
+    },
+    'comp.bench'() { if (this.compResult) this.renderCompositeBacktest(); },
+    'code.bench'() { if (this.codeResult) this.renderCode(); },
     'btSub'(v) {
       this.$nextTick(() => {
         if (v === 'bt' && this.btResult) this.renderBacktest();
@@ -1803,10 +1884,11 @@ const app = createApp({
       return html;
     },
     async init() {
+      this.loadIndices();
       try { this.panelInfo = await api('/api/data/panel-info'); } catch (e) {}
       if (this.panelInfo.last_date) {
-        if (!this.cmp.end_date) this.cmp.end_date = this.panelInfo.last_date;
-        if (!this.sweep.end) this.sweep.end = this.panelInfo.last_date;
+        if (!this.cmp.end_date) this.cmp.end_date = today();
+        if (!this.sweep.end) this.sweep.end = today();
         if (!this.cmp.start_date) {
           const d = new Date(this.cmp.end_date + 'T00:00:00Z');
           d.setUTCMonth(d.getUTCMonth() - 6);
@@ -1826,6 +1908,12 @@ const app = createApp({
       this.loadStatus();
       this.loadSentiment();
       this.runCompare(true);
+    },
+    async loadIndices() {
+      try {
+        const r = await api('/api/data/indices');
+        this.indices = r.items || [];
+      } catch (e) {}
     },
     applyBtStrategyDefaults() {
       const s = this.strategies.find(x => x.name === this.bt.strategy) || {};
@@ -1912,23 +2000,62 @@ const app = createApp({
         })});
         if (r.error) { this.cmpError = r.error; return; }
         this.cmpResult = r; this.cmpHoldIdx = 0;
-        this.$nextTick(() => this.renderCompare());
+        this.$nextTick(async () => this.renderCompare(start, end));
       } catch (e) { if (!silent) this.cmpError = '对比失败: ' + e.message; }
       finally { this.cmpRunning = false; }
     },
-    renderCompare() {
+    async benchSeries(result, scope, start, end) {
+      if (scope.bench === '等权股票池') {
+        const b = result.bench;
+        return { name: '等权基准', points: b || [] };
+      }
+      if (!(this.indices || []).length) await this.loadIndices();
+      const idx = (this.indices || []).find(i => i.name === scope.bench);
+      if (!idx) return { name: scope.bench, points: [] };
+      const key = idx.code + '|' + start + '|' + end;
+      if (!this.idxCache[key]) {
+        try {
+          const r = await api('/api/data/indices/series?code=' + encodeURIComponent(idx.code) + '&start=' + encodeURIComponent(start) + '&end=' + encodeURIComponent(end));
+          if (r.ok && r.items) this.idxCache[key] = r.items;
+        } catch (e) {}
+      }
+      const pts = this.idxCache[key];
+      return { name: idx.name, points: pts || [] };
+    },
+    calcSeriesMetrics(points) {
+      if (!points || points.length < 2) return null;
+      const v = points.map(p => +p.value);
+      const n = v.length;
+      const total = v[n - 1] / v[0] - 1;
+      const years = (n - 1) / 252;
+      const annual = years > 0 ? Math.pow(1 + total, 1 / years) - 1 : 0;
+      const rets = [];
+      for (let i = 1; i < n; i++) rets.push(v[i] / v[i - 1] - 1);
+      const mean = rets.reduce((a, b) => a + b, 0) / rets.length;
+      const sd = Math.sqrt(rets.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / (rets.length - 1 || 1));
+      const sharpe = sd > 0 ? mean / sd * Math.sqrt(252) : 0;
+      let peak = v[0], mdd = 0;
+      for (const x of v) { if (x > peak) peak = x; const dd = x / peak - 1; if (dd < mdd) mdd = dd; }
+      return { total, annual, sharpe, mdd };
+    },
+    async renderCompare(start, end) {
       const series = this.cmpResult.items.map(it => ({
         name: it.name,
         dates: it.nav.map(x => x.date),
         values: it.nav.map(x => +(x.value * this.cmp.capital).toFixed(2))
       }));
-      const bench = this.cmpResult.bench;
-      if (bench && bench.length) series.push({ name: '等权基准', dates: bench.map(x => x.date), values: bench.map(x => +(x.value * this.cmp.capital).toFixed(2)), dash: true });
+      const bs = await this.benchSeries(this.cmpResult, this.cmp, start, end);
+      if (bs.points.length) {
+        series.push({ name: bs.name, dates: bs.points.map(x => x.date), values: bs.points.map(x => +(x.value * this.cmp.capital).toFixed(2)), dash: true });
+        this.benchInfo = { name: bs.name, metrics: this.calcSeriesMetrics(bs.points) };
+      } else {
+        this.benchInfo = { name: '', metrics: null };
+      }
       renderLine('cmpChart', series);
       const ddSeries = this.cmpResult.items
         .filter(it => it.drawdown && it.drawdown.length)
         .map(it => ({ name: it.name, dates: it.drawdown.map(x => x.date), values: it.drawdown.map(x => +(x.value * 100).toFixed(2)) }));
-      if (ddSeries.length) renderLine('cmpDraw', ddSeries, 220);
+      if (ddSeries.length) renderLine('cmpDraw', ddSeries.map(x => ({ ...x, fill: true })), 220);
     },
     cmpRows() {
       const order = ['总收益', '年化收益', '年化波动', '夏普', '最大回撤', '卡玛', '胜率'];
@@ -1940,6 +2067,7 @@ const app = createApp({
       });
     },
     async runBacktest() {
+      this.btRunning = true; this.btError = '';
       try {
         const payload = {
           ...this.bt,
@@ -1949,20 +2077,36 @@ const app = createApp({
           industry_cap: this.bt.industry_cap > 0 ? this.bt.industry_cap : null,
           analyze: !!this.bt.analyze,
         };
-        const r = await api('/api/backtest', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-        if (r.error) { alert(r.error); return; }
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 120000);
+        let r;
+        try {
+          r = await api('/api/backtest', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), signal: ctrl.signal });
+        } finally { clearTimeout(timer); }
+        if (r.error) { this.btError = r.error; return; }
         this.btResult = r;
-        this.$nextTick(() => this.renderBacktest());
-      } catch (e) { alert('回测失败: ' + e.message); }
+        this.$nextTick(async () => this.renderBacktest());
+      } catch (e) {
+        this.btError = (e && e.name === 'AbortError')
+          ? '回测超时（120 秒）。后台补数或内存不足时可能变慢，稍后重试。'
+          : '回测失败: ' + (e && e.message ? e.message : e);
+      } finally { this.btRunning = false; }
     },
-    renderBacktest() {
-      const nav = this.btResult.nav, bench = this.btResult.bench || [];
-      renderLine('btEquity', [
+    async renderBacktest() {
+      const nav = this.btResult.nav;
+      const series = [
         { name: '策略资金', dates: nav.map(x => x.date), values: nav.map(x => +(x.value * this.bt.capital).toFixed(2)) },
-        { name: '基准', dates: bench.map(x => x.date), values: bench.map(x => +(x.value * this.bt.capital).toFixed(2)) }
-      ]);
+      ];
+      const bs = await this.benchSeries(this.btResult, this.bt, this.bt.start, this.bt.end);
+      if (bs.points.length) {
+        series.push({ name: bs.name, dates: bs.points.map(x => x.date), values: bs.points.map(x => +(x.value * this.bt.capital).toFixed(2)), dash: true });
+        this.benchInfo = { name: bs.name, metrics: this.calcSeriesMetrics(bs.points) };
+      } else {
+        this.benchInfo = { name: '', metrics: null };
+      }
+      renderLine('btEquity', series);
       const dd = this.btResult.drawdown;
-      renderLine('btDraw', [{ name: '回撤', dates: dd.map(x => x.date), values: dd.map(x => +(x.value * 100).toFixed(2)) }]);
+      renderLine('btDraw', [{ name: '回撤', dates: dd.map(x => x.date), values: dd.map(x => +(x.value * 100).toFixed(2)), fill: true }]);
       const ic = this.btResult.factor_quality;
       if (ic && ic.ic_series) {
         renderLine('btIc', [{ name: 'IC', dates: ic.ic_series.map(x => x.date), values: ic.ic_series.map(x => +(x.ic || 0).toFixed(4)) }]);
@@ -2066,18 +2210,25 @@ const app = createApp({
         })});
         if (r.error) { this.compError = r.error; return; }
         this.compResult = r;
-        this.$nextTick(() => this.renderCompositeBacktest());
+        this.$nextTick(async () => this.renderCompositeBacktest());
       } catch (e) { this.compError = '回测失败: ' + e.message; }
       finally { this.compRunning = false; }
     },
-    renderCompositeBacktest() {
-      const nav = this.compResult.nav, bench = this.compResult.bench;
-      renderLine('compEquity', [
+    async renderCompositeBacktest() {
+      const nav = this.compResult.nav;
+      const series = [
         { name: '组合资金', dates: nav.map(x => x.date), values: nav.map(x => +(x.value * this.comp.capital).toFixed(2)) },
-        { name: '基准', dates: bench.map(x => x.date), values: bench.map(x => +(x.value * this.comp.capital).toFixed(2)) }
-      ]);
+      ];
+      const bs = await this.benchSeries(this.compResult, this.comp, this.comp.start, this.comp.end);
+      if (bs.points.length) {
+        series.push({ name: bs.name, dates: bs.points.map(x => x.date), values: bs.points.map(x => +(x.value * this.comp.capital).toFixed(2)), dash: true });
+        this.benchInfo = { name: bs.name, metrics: this.calcSeriesMetrics(bs.points) };
+      } else {
+        this.benchInfo = { name: '', metrics: null };
+      }
+      renderLine('compEquity', series);
       const dd = this.compResult.drawdown;
-      renderLine('compDraw', [{ name: '回撤', dates: dd.map(x => x.date), values: dd.map(x => +(x.value * 100).toFixed(2)) }]);
+      renderLine('compDraw', [{ name: '回撤', dates: dd.map(x => x.date), values: dd.map(x => +(x.value * 100).toFixed(2)), fill: true }]);
     },
     async loadCompositeSignals() {
       this.compError = '';
@@ -2099,7 +2250,7 @@ const app = createApp({
         const d = await api('/api/code/default');
         this.code.code = d.code || '';
         this.code.tplInfo = { name: '事件驱动模板', group: '事件驱动', desc: '每个交易日 on_bar(ctx, bar) 被调用，自由下单（示例：双均线金叉）', factor: 'event', ascending: false };
-        if (this.panelInfo.last_date) this.code.end = this.panelInfo.last_date;
+        this.code.end = today();
         this.codeError = ''; this.codeSaveMsg = '';
         await this.refreshSaved();
         if (!this.code.tplOptions.length) this.buildTplOptions();
@@ -2175,18 +2326,25 @@ const app = createApp({
         if (r.error || r.ok === false) { this.codeError = r.error || '运行失败'; return; }
         if (r.strategies && r.strategies.length) this.code.strategies = r.strategies;
         this.codeResult = r;
-        this.$nextTick(() => this.renderCode());
+        this.$nextTick(async () => this.renderCode());
       } catch (e) { this.codeError = '运行失败: ' + e.message; }
       finally { this.codeRunning = false; }
     },
-    renderCode() {
-      const nav = this.codeResult.nav, bench = this.codeResult.bench;
-      renderLine('codeEquity', [
+    async renderCode() {
+      const nav = this.codeResult.nav;
+      const series = [
         { name: '策略资金', dates: nav.map(x => x.date), values: nav.map(x => +(x.value * this.code.capital).toFixed(2)) },
-        { name: '基准', dates: bench.map(x => x.date), values: bench.map(x => +(x.value * this.code.capital).toFixed(2)) }
-      ]);
+      ];
+      const bs = await this.benchSeries(this.codeResult, this.code, this.code.start, this.code.end);
+      if (bs.points.length) {
+        series.push({ name: bs.name, dates: bs.points.map(x => x.date), values: bs.points.map(x => +(x.value * this.code.capital).toFixed(2)), dash: true });
+        this.benchInfo = { name: bs.name, metrics: this.calcSeriesMetrics(bs.points) };
+      } else {
+        this.benchInfo = { name: '', metrics: null };
+      }
+      renderLine('codeEquity', series);
       const dd = this.codeResult.drawdown;
-      renderLine('codeDraw', [{ name: '回撤', dates: dd.map(x => x.date), values: dd.map(x => +(x.value * 100).toFixed(2)) }]);
+      renderLine('codeDraw', [{ name: '回撤', dates: dd.map(x => x.date), values: dd.map(x => +(x.value * 100).toFixed(2)), fill: true }]);
     },
     async saveCode() {
       if (!this.code.savedName.trim()) { this.codeError = '请填保存名称'; return; }
@@ -2257,7 +2415,17 @@ const app = createApp({
         const rows = [];
         for (const [name, src] of Object.entries(st)) {
           if (name === 'meta') continue;
-          for (const [loc, s] of Object.entries(src)) rows.push({ name, loc, exists: s.exists, size: s.size_mb });
+          for (const [loc, s] of Object.entries(src)) {
+            let desc = s.desc || '';
+            if (s.info) {
+              if (s.info.last_date) desc += ' · 截至 ' + s.info.last_date;
+              if (s.info.n_rows != null) desc += ' · 约 ' + Number(s.info.n_rows).toLocaleString() + ' 行';
+            }
+            rows.push({
+              name: s.name || name, loc: s.path || loc, exists: s.exists,
+              size: s.size_mb, desc, source: s.source || '', update: s.update || ''
+            });
+          }
         }
         this.statusRows = rows;
       } catch (e) {}
