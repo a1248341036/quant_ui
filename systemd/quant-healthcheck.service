@@ -1,0 +1,8 @@
+[Unit]
+Description=Quant UI health check (API + PG + disk)
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/quant/quant_ui
+ExecStart=/home/ubuntu/stock-analyzer/local_venv/bin/python /home/ubuntu/quant/quant_ui/scripts/healthcheck.py

@@ -1,0 +1,13 @@
+[Unit]
+Description=Tushare token expiry QQ reminder (oneshot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/quant/quant_ui
+Environment=HOME=/home/ubuntu
+EnvironmentFile=/home/ubuntu/qqbot/.env
+ExecStart=/home/ubuntu/qqbot/.venv/bin/python /home/ubuntu/quant/quant_ui/scripts/tushare_expiry_notify.py

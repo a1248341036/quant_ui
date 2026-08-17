@@ -5,7 +5,11 @@ venv/
 .env
 data/
 results/
+labs/
+db/pgdata/
 *.log
+*.bak_*
+.healthcheck_state.json
 .DS_Store
 .idea/
 .vscode/

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pandas as pd
+
 from fastapi import APIRouter
 from pydantic import BaseModel
 
@@ -9,6 +11,28 @@ from core.ledger import (add_deposit, add_transaction, compute_equity,
 
 
 router = APIRouter()
+
+_EMPTY_PANEL_COLS = ["date", "open", "high", "low", "close", "turnover",
+                     "amount", "code", "turn20", "am20", "volume"]
+
+
+def _ledger_panel() -> pd.DataFrame:
+    """账本估值只涉及持仓股票代码，按交易起始日前移 60 天拉取，避免全量面板。"""
+    tx = load_transactions()
+    dep = load_deposits()
+    codes: set[str] = set()
+    first = None
+    if tx is not None and len(tx):
+        codes |= {str(c).zfill(6) for c in tx["code"].astype(str)}
+        first = pd.Timestamp(tx["date"].min())
+    if dep is not None and len(dep):
+        d = pd.Timestamp(dep["date"].min())
+        first = d if first is None else min(first, d)
+    if not codes:
+        return pd.DataFrame(columns=_EMPTY_PANEL_COLS)
+    start = (first - pd.Timedelta(days=60)).date().isoformat()
+    return services.load_data(start=start, end=None, codes=sorted(codes),
+                              need_panel=True, need_heavy=False)["panel"]
 
 
 class TransactionRequest(BaseModel):
@@ -58,7 +82,7 @@ def add_dep(req: DepositRequest):
 
 @router.get("/equity")
 def equity():
-    panel = services.load_data()["panel"]
+    panel = _ledger_panel()
     eq = compute_equity(panel)
     if eq.empty:
         return {"items": [], "summary": None}
@@ -77,7 +101,7 @@ def equity():
 
 @router.get("/positions")
 def positions():
-    panel = services.load_data()["panel"]
+    panel = _ledger_panel()
     pos = current_positions(panel)
     rows = services.clean_records(pos.to_dict(orient="records"))
     nm = services.get_name_map()
