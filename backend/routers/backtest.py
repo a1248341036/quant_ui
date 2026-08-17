@@ -567,7 +567,7 @@ def _compute_signals(universe, strategy, top_n, composite_weights=None,
         short_n = strat.get("short_n")
     codes = services.build_codes(universe, True)
     sig, sig_date = latest_signals(
-        _load_panel_for(universe), codes,
+        _load_panel_for(universe, codes=codes), codes,
         "composite" if is_composite else strat["factor"],
         False if is_composite else strat["ascending"],
         top_n=top_n,
@@ -616,8 +616,8 @@ def signals_post(req: SignalsRequest):
 @router.post("/sweep")
 def sweep(req: SweepRequest):
     """参数稳健性扫描（同步执行，event 模式可能耗时 1-2 分钟）。"""
-    data = services.load_data()
     codes = services.build_codes("科技TMT", True)
+    data = services.load_data(codes=codes, need_heavy=False)
     panel = data["panel"]
     if req.mode == "event":
         from core.walkforward import golden_cross_sweep

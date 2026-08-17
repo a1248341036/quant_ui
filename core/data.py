@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -38,6 +39,7 @@ DATA_SOURCE = os.getenv("QUANT_DATA_SOURCE", "pg").strip().lower()
 PANEL_CACHE_TTL = float(os.getenv("QUANT_CACHE_TTL", "1800"))
 _pg_panel_cache: dict = {}
 _panel_codes_cache: set | None = None
+_pg_panel_lock = threading.Lock()
 
 
 def _finalize_stock_df(df: pd.DataFrame, last_adj: pd.DataFrame | None = None) -> pd.DataFrame:
@@ -93,33 +95,40 @@ def _load_panel_pg(start: str | None = None, end: str | None = None,
     if (cached.get("key") == key
             and time.time() - cached.get("ts", 0) < PANEL_CACHE_TTL):
         return cached["df"]
-    where = ["adj_factor IS NOT NULL", "close IS NOT NULL"]
-    params: list = []
-    if calc_start:
-        where.append("trade_date >= %s")
-        params.append(calc_start)
-    if end:
-        where.append("trade_date <= %s")
-        params.append(end)
-    if codes:
-        like_conds = " OR ".join(["ts_code LIKE %s"] * len(codes))
-        where.append(f"({like_conds})")
-        params.extend(f"{c}%" for c in codes)
-    df = query_df(
-        "SELECT ts_code, trade_date AS date, open, high, low, close, vol AS volume, amount, "
-        "turnover_rate AS turnover, adj_factor FROM stock_daily "
-        "WHERE " + " AND ".join(where) + " ORDER BY ts_code, trade_date",
-        tuple(params),
-    )
-    if len(df) == 0:
-        raise RuntimeError("所选区间/股票池在 stock_daily 中没有数据")
-    if df["adj_factor"].isna().mean() > 0.05:
-        raise RuntimeError("stock_daily 复权因子覆盖不足，历史补全后自动切换")
-    # last_adj 直接取区间内各股票最新 adj_factor：回测终点通常是数据最新日，
-    # 与全量口径一致；终点早于最新日时按区间内最新复权，避免全表 DISTINCT ON。
-    out = _finalize_stock_df(df)
-    _pg_panel_cache = {"key": key, "df": out, "ts": time.time()}
-    return out
+    with _pg_panel_lock:
+        # 双检锁：并发请求同时 miss 时只允许一个构建，
+        # 避免 N 份全量面板同时进内存（3.6G 机器直接卡死）。
+        cached = _pg_panel_cache
+        if (cached.get("key") == key
+                and time.time() - cached.get("ts", 0) < PANEL_CACHE_TTL):
+            return cached["df"]
+        where = ["adj_factor IS NOT NULL", "close IS NOT NULL"]
+        params: list = []
+        if calc_start:
+            where.append("trade_date >= %s")
+            params.append(calc_start)
+        if end:
+            where.append("trade_date <= %s")
+            params.append(end)
+        if codes:
+            like_conds = " OR ".join(["ts_code LIKE %s"] * len(codes))
+            where.append(f"({like_conds})")
+            params.extend(f"{c}%" for c in codes)
+        df = query_df(
+            "SELECT ts_code, trade_date AS date, open, high, low, close, vol AS volume, amount, "
+            "turnover_rate AS turnover, adj_factor FROM stock_daily "
+            "WHERE " + " AND ".join(where) + " ORDER BY ts_code, trade_date",
+            tuple(params),
+        )
+        if len(df) == 0:
+            raise RuntimeError("所选区间/股票池在 stock_daily 中没有数据")
+        if df["adj_factor"].isna().mean() > 0.05:
+            raise RuntimeError("stock_daily 复权因子覆盖不足，历史补全后自动切换")
+        # last_adj 直接取区间内各股票最新 adj_factor：回测终点通常是数据最新日，
+        # 与全量口径一致；终点早于最新日时按区间内最新复权，避免全表 DISTINCT ON。
+        out = _finalize_stock_df(df)
+        _pg_panel_cache = {"key": key, "df": out, "ts": time.time()}
+        return out
 
 
 def load_panel(start: str | None = None, end: str | None = None,
