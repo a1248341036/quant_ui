@@ -13,6 +13,7 @@ from core import backtest_archive
 from core.attribution import brinson_attribution
 from core.composites import (FACTOR_OPTIONS, delete_composite,
                              load_composites, save_composite)
+from core.data import load_signal_panel
 from core.engine import latest_signals, run_backtest
 from core.event_engine import run_event_backtest
 from core.fund_engine import run_fund_backtest
@@ -566,8 +567,16 @@ def _compute_signals(universe, strategy, top_n, composite_weights=None,
     if short_n is None:
         short_n = strat.get("short_n")
     codes = services.build_codes(universe, True)
+    if _is_fund(universe) or _is_etf(universe):
+        panel = _load_panel_for(universe)
+    else:
+        try:
+            panel = load_signal_panel(codes)
+        except Exception as exc:
+            print(f"[signals] 流式面板加载失败，回退普通加载: {exc}", file=sys.stderr)
+            panel = _load_panel_for(universe, codes=codes)
     sig, sig_date = latest_signals(
-        _load_panel_for(universe, codes=codes), codes,
+        panel, codes,
         "composite" if is_composite else strat["factor"],
         False if is_composite else strat["ascending"],
         top_n=top_n,

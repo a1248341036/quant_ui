@@ -15,6 +15,8 @@ from .store import save_fund_panel
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SYNC_SCRIPT = PROJECT_ROOT / "scripts" / "sync_postgres.py"
+EXPORT_SCRIPT = PROJECT_ROOT / "scripts" / "export_pg_to_parquet.py"
+EXPORT_DEFAULT_TABLES = "stock_daily"
 
 
 def sync_postgres(end: str) -> None:
@@ -44,6 +46,24 @@ def sync_postgres(end: str) -> None:
               file=sys.stderr, flush=True)
 
 
+def export_parquet(tables: str | None = None, batch: int = 50000) -> None:
+    """PG 主要表流式导出到 Parquet；失败不影响主流程。"""
+    if not pg.configured():
+        print("PG_DSN 未配置，跳过 PG->Parquet 导出", flush=True)
+        return
+    tables = tables or EXPORT_DEFAULT_TABLES
+    cmd = [sys.executable, str(EXPORT_SCRIPT), "--tables", tables,
+           "--batch", str(batch)]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+        print(r.stdout.strip(), flush=True)
+        if r.returncode != 0:
+            print(r.stderr.strip(), file=sys.stderr, flush=True)
+    except Exception as exc:
+        print(f"PG->Parquet 导出失败（不影响主流程）: {exc}",
+              file=sys.stderr, flush=True)
+
+
 def rebuild_fund_panel() -> None:
     """从最新 fund_nav.parquet 重建基金衍生面板 fund_panel.parquet。"""
     try:
@@ -60,8 +80,9 @@ def rebuild_fund_panel() -> None:
 
 def refresh_all(mode: str = "incremental", end: str | None = None,
                 max_workers: int = 6, include_stocks: bool = True,
-                sync_pg: bool = True, progress=None) -> dict:
-    """一键全量刷新：行情源数据 + PostgreSQL 同步 + 基金衍生面板。"""
+                sync_pg: bool = True, export_parquet_tables: str | None = "stock_daily",
+                progress=None) -> dict:
+    """一键全量刷新：行情源数据 + PostgreSQL 同步 + PG->Parquet + 基金衍生面板。"""
     end = end or pd.Timestamp.today().strftime("%Y-%m-%d")
     result = update_data(mode=mode, end=end, max_workers=max_workers,
                          progress=progress, include_stocks=include_stocks)
@@ -69,6 +90,10 @@ def refresh_all(mode: str = "incremental", end: str | None = None,
         if progress:
             progress(6, 6, "同步 PostgreSQL 日线...")
         sync_postgres(end)
+    if export_parquet_tables:
+        if progress:
+            progress(6, 6, "导出 PG 数据到 Parquet...")
+        export_parquet(export_parquet_tables)
     if progress:
         progress(6, 6, "重建基金衍生面板...")
     rebuild_fund_panel()

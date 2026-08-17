@@ -11,6 +11,7 @@ ann_date <= 当日的最近一期财报。
 
 
 import threading
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -26,12 +27,27 @@ FINANCIAL_FACTORS = {
 
 _lock = threading.Lock()
 _CACHE: dict = {}
+PG_PARQUET_DIR = Path(__file__).resolve().parent.parent / "data" / "pg_parquet"
+_pg_parquet = (__import__("os").getenv("QUANT_DATA_SOURCE", "pg").strip().lower()
+               == "pg_parquet")
 
 
 def _map_code_to_ts() -> dict[str, str]:
     with _lock:
         if "code_map" in _CACHE:
             return _CACHE["code_map"]
+        if _pg_parquet:
+            try:
+                path = PG_PARQUET_DIR / "stock_basic.parquet"
+                if path.exists():
+                    df = pd.read_parquet(path, columns=["ts_code", "symbol"])
+                    _CACHE["code_map"] = {
+                        str(r["symbol"]).zfill(6): str(r["ts_code"])
+                        for _, r in df.iterrows()
+                    }
+                    return _CACHE["code_map"]
+            except Exception:
+                pass
         from .pg import query_df
         try:
             df = query_df("SELECT ts_code, symbol FROM stock_basic")
@@ -47,6 +63,28 @@ def _load_raw() -> dict[str, pd.DataFrame]:
     with _lock:
         if "raw" in _CACHE:
             return _CACHE["raw"]
+        if _pg_parquet:
+            out: dict[str, pd.DataFrame] = {}
+            try:
+                fina_path = PG_PARQUET_DIR / "fina_indicator.parquet"
+                inc_path = PG_PARQUET_DIR / "income.parquet"
+                if fina_path.exists() and inc_path.exists():
+                    fina = pd.read_parquet(fina_path, columns=[
+                        "ts_code", "ann_date", "end_date", "bps", "eps",
+                        "roe_waa", "grossprofit_margin"])
+                    inc = pd.read_parquet(inc_path, columns=[
+                        "ts_code", "ann_date", "end_date", "revenue",
+                        "n_income_attr_p"])
+                    fina["ann_date"] = pd.to_datetime(fina["ann_date"])
+                    fina["end_date"] = pd.to_datetime(fina["end_date"])
+                    inc["ann_date"] = pd.to_datetime(inc["ann_date"])
+                    inc["end_date"] = pd.to_datetime(inc["end_date"])
+                    out["fina"] = fina
+                    out["inc"] = inc
+                    _CACHE["raw"] = out
+                    return out
+            except Exception:
+                out = {}
         from .pg import query_df
         out: dict[str, pd.DataFrame] = {}
         try:

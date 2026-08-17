@@ -23,6 +23,8 @@ PANEL_PATH = Path("/home/ubuntu/quant_data/panel/turn20/turn20_fast_panel_cs800_
 UNIVERSE_PATH = Path("/home/ubuntu/quant_data/panel/universe_cs800.csv")
 TECH_PATH = Path("/home/ubuntu/quant_data/panel/tech_universe_sw.csv")
 INDEX_PATH = Path("/home/ubuntu/quant_data/panel/csi300_index.csv")
+# 每日由 scripts/export_pg_to_parquet.py 生成的 PG 快照（列与 PG 表一致）
+PG_PARQUET_DIR = Path(__file__).resolve().parent.parent / "data" / "pg_parquet"
 
 SENT_ROOT = Path("/home/ubuntu/quant/sentiment-mvp")
 
@@ -32,7 +34,8 @@ PANEL_START = os.getenv("QUANT_PANEL_START", "2020-01-01").strip()
 # 保证区间化加载与全量加载的因子口径一致。
 FACTOR_BUFFER_DAYS = 40
 
-# pg=优先 PostgreSQL stock_daily（未补全/失败时自动回退 parquet），panel=只用本地文件
+# pg=优先 PostgreSQL（失败回退本地 parquet）；pg_parquet=优先本地 PG 导出 parquet
+# （失败回退 PostgreSQL）；panel=只用本地文件
 DATA_SOURCE = os.getenv("QUANT_DATA_SOURCE", "pg").strip().lower()
 # 与 backend/services 共用：空闲 TTL 后释放整份 PG 面板，
 # 避免全市场面板（几百 MB）在“什么都没跑”时仍被永久持有。
@@ -40,6 +43,10 @@ PANEL_CACHE_TTL = float(os.getenv("QUANT_CACHE_TTL", "1800"))
 _pg_panel_cache: dict = {}
 _panel_codes_cache: set | None = None
 _pg_panel_lock = threading.Lock()
+
+# 信号因子最长只看 60 个交易日（ma_cross20_60），
+# 保留 800 个自然日（约 550 个交易日）足够覆盖全部滚动窗口。
+SIGNAL_LOOKBACK_DAYS = int(os.getenv("QUANT_SIGNAL_LOOKBACK_DAYS", "800"))
 
 
 def _finalize_stock_df(df: pd.DataFrame, last_adj: pd.DataFrame | None = None) -> pd.DataFrame:
@@ -66,6 +73,54 @@ def _finalize_stock_df(df: pd.DataFrame, last_adj: pd.DataFrame | None = None) -
     df["code"] = df["code"].astype("category")
     return df[["date", "open", "high", "low", "close", "turnover", "amount", "code",
                "turn20", "am20", "volume"]]
+
+
+def _code_to_ts_map() -> dict[str, str]:
+    """6 位代码 -> 完整 ts_code（优先 pg_parquet/stock_basic，缺失回退 PG）。"""
+    try:
+        path = PG_PARQUET_DIR / "stock_basic.parquet"
+        if path.exists():
+            df = pd.read_parquet(path, columns=["ts_code", "symbol"])
+            return {str(r["symbol"]).zfill(6): str(r["ts_code"]) for _, r in df.iterrows()}
+    except Exception:
+        pass
+    try:
+        from .pg import query_df
+        df = query_df("SELECT ts_code, symbol FROM stock_basic")
+        return {str(r["symbol"]).zfill(6): str(r["ts_code"]) for _, r in df.iterrows()}
+    except Exception:
+        return {}
+
+
+def _load_panel_pg_parquet(start: str | None = None, end: str | None = None,
+                           codes: list[str] | None = None) -> pd.DataFrame:
+    """从每日导出的 pg_parquet/stock_daily.parquet 构建回测面板（与 PG 同口径）。"""
+    path = PG_PARQUET_DIR / "stock_daily.parquet"
+    if not path.exists():
+        raise FileNotFoundError(f"PG parquet 不存在: {path}")
+    if end is None:
+        end = str(pd.Timestamp(
+            pd.read_parquet(path, columns=["trade_date"])["trade_date"].max()).date())
+    calc_start = start or PANEL_START
+    if start:
+        calc_start = (pd.Timestamp(start)
+                      - pd.Timedelta(days=FACTOR_BUFFER_DAYS)).date().isoformat()
+    filters: list = []
+    if codes:
+        code_map = _code_to_ts_map()
+        ts_codes = [code_map.get(str(c).zfill(6), f"{str(c).zfill(6)}.SZ")
+                    for c in codes]
+        filters.append(("ts_code", "in", ts_codes))
+    filters.append(("trade_date", ">=", pd.Timestamp(calc_start).date()))
+    filters.append(("trade_date", "<=", pd.Timestamp(end).date()))
+    cols = ["ts_code", "trade_date", "open", "high", "low", "close",
+            "vol", "amount", "turnover_rate", "adj_factor"]
+    df = pd.read_parquet(path, columns=cols, filters=filters)
+    if len(df) == 0:
+        raise RuntimeError("PG parquet 面板为空")
+    df = df.rename(columns={"trade_date": "date", "vol": "volume",
+                            "turnover_rate": "turnover"})
+    return _finalize_stock_df(df)
 
 
 def _load_panel_pg(start: str | None = None, end: str | None = None,
@@ -138,6 +193,15 @@ def load_panel(start: str | None = None, end: str | None = None,
             return _load_panel_pg(start=start, end=end, codes=codes)
         except Exception as exc:
             print(f"PG 面板加载失败，回退 parquet: {exc}", file=sys.stderr)
+    if DATA_SOURCE == "pg_parquet":
+        try:
+            return _load_panel_pg_parquet(start=start, end=end, codes=codes)
+        except Exception as exc:
+            print(f"PG parquet 面板加载失败，回退 PG: {exc}", file=sys.stderr)
+            try:
+                return _load_panel_pg(start=start, end=end, codes=codes)
+            except Exception as exc2:
+                print(f"PG 面板加载失败: {exc2}", file=sys.stderr)
     if PANEL_FILE.exists():
         path = PANEL_FILE
     elif PANEL_PATH.exists():
@@ -174,13 +238,81 @@ def load_panel(start: str | None = None, end: str | None = None,
     return panel
 
 
+def load_signal_panel(codes: list[str], end: str | None = None) -> pd.DataFrame:
+    """信号面板轻量加载：只拉最近 ~2 年行情，不加载 2020 年至今全量。
+
+    信号因子最长只看 60 个交易日，2 年窗口（约 550 个交易日）足够覆盖。
+    科技TMT（约 90 只）只需 5~6 万行，内存有界，响应也快。
+    """
+    if not codes:
+        raise RuntimeError("信号股票池为空")
+    if DATA_SOURCE == "pg_parquet":
+        path = PG_PARQUET_DIR / "stock_daily.parquet"
+        if not path.exists():
+            raise FileNotFoundError(f"PG parquet 不存在: {path}")
+        if end is None:
+            end = str(pd.Timestamp(
+                pd.read_parquet(path, columns=["trade_date"])["trade_date"].max()).date())
+        calc_start = (pd.Timestamp(end)
+                      - pd.Timedelta(days=SIGNAL_LOOKBACK_DAYS + FACTOR_BUFFER_DAYS * 2)
+                      ).date().isoformat()
+        code_map = _code_to_ts_map()
+        ts_codes = [code_map.get(str(c).zfill(6), f"{str(c).zfill(6)}.SZ")
+                    for c in codes]
+        cols = ["ts_code", "trade_date", "open", "high", "low", "close",
+                "vol", "amount", "turnover_rate", "adj_factor"]
+        df = pd.read_parquet(path, columns=cols, filters=[
+            ("ts_code", "in", ts_codes),
+            ("trade_date", ">=", pd.Timestamp(calc_start).date()),
+            ("trade_date", "<=", pd.Timestamp(end).date()),
+        ])
+        df = df.rename(columns={"trade_date": "date", "vol": "volume",
+                                "turnover_rate": "turnover"})
+        if len(df) == 0:
+            raise RuntimeError("信号面板为空")
+        return _finalize_stock_df(df)
+    from .pg import configured as pg_configured, query_df
+    if not pg_configured():
+        raise RuntimeError("PG_DSN 未配置")
+    if end is None:
+        end = str(query_df(
+            "SELECT max(trade_date) AS end FROM stock_daily"
+        ).iloc[0]["end"])
+    calc_start = (pd.Timestamp(end)
+                  - pd.Timedelta(days=SIGNAL_LOOKBACK_DAYS + FACTOR_BUFFER_DAYS * 2)
+                  ).date().isoformat()
+    like_conds = " OR ".join(["ts_code LIKE %s"] * len(codes))
+    sql = (
+        "SELECT ts_code, trade_date AS date, open, high, low, close, "
+        "vol AS volume, amount, turnover_rate AS turnover, adj_factor "
+        "FROM stock_daily "
+        "WHERE adj_factor IS NOT NULL AND close IS NOT NULL "
+        "AND trade_date >= %s AND trade_date <= %s AND (" + like_conds + ") "
+        "ORDER BY ts_code, trade_date"
+    )
+    params: list = [calc_start, end] + [f"{c}%" for c in codes]
+    df = query_df(sql, tuple(params))
+    if len(df) == 0:
+        raise RuntimeError("信号面板为空")
+    return _finalize_stock_df(df)
+
+
 def load_panel_codes() -> set[str]:
     """轻量返回股票面板全部代码（不加载整张面板），用于构建股票池。"""
     global _panel_codes_cache
     if _panel_codes_cache is not None:
         return _panel_codes_cache
     codes: set[str] = set()
-    if DATA_SOURCE == "pg":
+    if DATA_SOURCE in ("pg", "pg_parquet"):
+        if DATA_SOURCE == "pg_parquet":
+            try:
+                path = PG_PARQUET_DIR / "stock_basic.parquet"
+                if path.exists():
+                    df = pd.read_parquet(path, columns=["ts_code"])
+                    codes = {str(c)[:6].zfill(6) for c in df["ts_code"]}
+            except Exception:
+                codes = set()
+    if DATA_SOURCE == "pg" and not codes:
         try:
             from .pg import configured as pg_configured, query_df
             if pg_configured():
@@ -201,7 +333,22 @@ def load_panel_codes() -> set[str]:
 def load_stock_detail(code: str, days: int = 250) -> pd.DataFrame:
     """单只股票前复权行情 + turn20/am20，只查 PG 单股，避免加载整张面板。"""
     code = str(code).zfill(6)
-    if DATA_SOURCE == "pg":
+    if DATA_SOURCE in ("pg", "pg_parquet"):
+        if DATA_SOURCE == "pg_parquet":
+            try:
+                path = PG_PARQUET_DIR / "stock_daily.parquet"
+                code_map = _code_to_ts_map()
+                ts_codes = [code_map.get(code, f"{code}.SZ"), f"{code}.SH", f"{code}.BJ"]
+                cols = ["ts_code", "trade_date", "open", "high", "low", "close",
+                        "vol", "amount", "turnover_rate", "adj_factor"]
+                df = pd.read_parquet(path, columns=cols,
+                                     filters=[("ts_code", "in", ts_codes)])
+                if not df.empty:
+                    df = df.rename(columns={"trade_date": "date", "vol": "volume",
+                                            "turnover_rate": "turnover"})
+                    return _finalize_stock_df(df).tail(days).reset_index(drop=True)
+            except Exception:
+                pass
         try:
             from .pg import configured as pg_configured, query_df
             if pg_configured():
