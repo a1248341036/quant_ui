@@ -325,6 +325,9 @@ def run_backtest(
         fmat = raw_fmat
 
     close_mat = close.values
+    # 停牌日 close 为 NaN，持仓按最后一笔有效收盘价（每股 ffill）继续估值，
+    # 避免停牌期间市值被当成 0、复牌日净值跳变。
+    close_fill_mat = close.ffill().values
     open_mat = open_.values
     turn_mat = turnover.values
     am20_mat = am20.values
@@ -355,11 +358,12 @@ def run_backtest(
     exec_dates = [i + 1 for i in signal_idx if i + 1 < T]
     # 模拟盘不支持空头；空头回测继续走权重模型
     use_cash = bool(cash_mode) and not long_short
+    if freq == "daily":
+        # 每日收盘信号 -> 次日开盘成交，现金/权重模式统一每日调仓
+        exec_dates = list(range(max(1, start_idx), T))
     if use_cash:
         # 与模拟盘一致：窗口起点即首次调仓日（立即建仓）
         exec_dates = sorted(set(exec_dates) | {start_idx})
-        if freq == "daily":
-            exec_dates = list(range(max(1, start_idx), T))
     limit_up = limit_down = None
     if use_cash and limit_flags:
         limit_up, limit_down, _, _ = build_limit_flags(close, open_)
@@ -382,11 +386,11 @@ def run_backtest(
     def _record_holdings(day: int, cash_: float, pos: dict[int, float]) -> float:
         eq = float(cash_)
         for k, sh in pos.items():
-            if valid_close[day, k]:
-                eq += sh * float(close_mat[day, k])
+            if np.isfinite(close_fill_mat[day, k]):
+                eq += sh * float(close_fill_mat[day, k])
         w = np.zeros(K)
         for k, sh in pos.items():
-            px = float(close_mat[day, k]) if valid_close[day, k] else 0.0
+            px = float(close_fill_mat[day, k]) if np.isfinite(close_fill_mat[day, k]) else 0.0
             w[k] = sh * px / eq if eq > 0 else 0.0
         holdings_history.append(w)
         cash_history.append(float(cash_))
@@ -401,8 +405,8 @@ def run_backtest(
         def _portfolio_value(day: int) -> float:
             v = cash
             for k, sh in positions.items():
-                if valid_close[day, k]:
-                    v += sh * float(close_mat[day, k])
+                if np.isfinite(close_fill_mat[day, k]):
+                    v += sh * float(close_fill_mat[day, k])
             return v
 
         for t in range(1, T):
@@ -434,6 +438,7 @@ def run_backtest(
                 # 窗口起点：清空预热段持仓，与模拟盘/旧口径一致从零开始
                 positions.clear()
                 cash = float(capital)
+                bench[t] = 1.0
             elig = valid_close[prev] & valid_open[prev] & valid_open[t]
             bench_ret = float(np.nanmean(np.where(elig, o2o[t], np.nan))) if elig.any() else 0.0
 
@@ -589,15 +594,16 @@ def run_backtest(
 
             eq = _record_holdings(t, cash, positions)
             nav[t] = eq / capital
-            bench[t] = bench[t - 1] * (1.0 + bench_ret)
+            if t != start_idx:
+                bench[t] = bench[t - 1] * (1.0 + bench_ret)
 
         hold = np.zeros(K)
         final_eq = float(cash)
         for k, sh in positions.items():
-            px = float(close_mat[-1, k]) if valid_close[-1, k] else 0.0
+            px = float(close_fill_mat[-1, k]) if np.isfinite(close_fill_mat[-1, k]) else 0.0
             final_eq += sh * px
         for k, sh in positions.items():
-            px = float(close_mat[-1, k]) if valid_close[-1, k] else 0.0
+            px = float(close_fill_mat[-1, k]) if np.isfinite(close_fill_mat[-1, k]) else 0.0
             hold[k] = sh * px / final_eq if final_eq > 0 else 0.0
     else:
         for t in range(1, T):
@@ -612,17 +618,38 @@ def run_backtest(
                 positions_history.append({})
                 continue
             rr = o2o[t]
-            gross = float(np.abs(hold).sum())
-            if gross > 0:
-                raw = float((rr * hold).sum())
-                if not long_short:
-                    raw = raw / hold.sum()
-                hold = hold * (1.0 + rr) / (1.0 + raw)
-            else:
-                raw = 0.0
             if long_short:
-                short_notional = float(-hold[hold < 0].sum())
+                # 多空：long/short 两腿按各自的加权收益分别再平衡，
+                # 保持多头名义=1、空头名义=1、净敞口=0，避免共用分母导致敞口漂移。
+                long_mask = hold > 0
+                short_mask = hold < 0
+                long_gross = float(hold[long_mask].sum()) if long_mask.any() else 0.0
+                short_notional = float(-hold[short_mask].sum()) if short_mask.any() else 0.0
+                long_ret = (float((rr[long_mask] * hold[long_mask]).sum()) / long_gross
+                            if long_gross > 0 else 0.0)
+                # 空头腿：标的加权收益 u_short，空头腿 P&L = -u_short。
+                # 再平衡时多头按 (1+long_ret) 缩放，空头按 (1+u_short) 缩放，
+                # 保持两腿名义各 1、净敞口为 0。
+                short_base = -hold[short_mask] if short_mask.any() else np.zeros(0)
+                u_short = (float((rr[short_mask] * short_base).sum()) / short_notional
+                           if short_notional > 0 else 0.0)
+                raw = long_gross * long_ret - short_notional * u_short
+                new_hold = np.zeros(K)
+                if long_gross > 0 and (1.0 + long_ret) > 0:
+                    new_hold[long_mask] = (hold[long_mask] * (1.0 + rr[long_mask])
+                                           / (1.0 + long_ret))
+                if short_notional > 0 and (1.0 + u_short) > 0:
+                    new_hold[short_mask] = (hold[short_mask] * (1.0 + rr[short_mask])
+                                            / (1.0 + u_short))
+                hold = new_hold
                 raw -= short_notional * short_cost_rate / 252.0
+            else:
+                gross = float(np.abs(hold).sum())
+                if gross > 0:
+                    raw = float((rr * hold).sum()) / hold.sum()
+                    hold = hold * (1.0 + rr) / (1.0 + raw)
+                else:
+                    raw = 0.0
 
             elig = valid_close[prev] & valid_open[prev] & valid_open[t]
             bench_ret = float(np.nanmean(np.where(elig, rr, np.nan))) if elig.any() else 0.0
@@ -722,6 +749,9 @@ def run_backtest(
         # 预热段只用于因子计算，净值/成交从 start 开始输出
         nav = nav[start_idx:]
         bench = bench[start_idx:]
+        # 兜底：基准必须从窗口起点归 1，避免前端 capital*bench 起点偏差
+        if len(bench) and not np.isclose(bench[0], 1.0):
+            bench = bench / bench[0]
         dates_out = dates[start_idx:]
         trades = [t for t in trades if t["date"] >= start_ts]
         holdings_history = holdings_history[start_idx - 1:] if start_idx > 0 else holdings_history

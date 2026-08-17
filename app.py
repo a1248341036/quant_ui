@@ -15,7 +15,7 @@ from core.data import (data_status, load_etf, load_fund, load_index,  # noqa: E4
 from core.composites import (FACTOR_OPTIONS, delete_composite, load_composites,
                              save_composite)
 from core.engine import latest_signals, run_backtest
-from core.fetcher import update_data
+from core.updater import refresh_all
 from core.metrics import compute_metrics
 from core.store import normalize_universe
 from core import strategy_pool as sp
@@ -1644,7 +1644,8 @@ def main():
         from core.paper import (account_equity, account_events, account_orders,
                                 account_summary, account_trades, create_account,
                                 delete_account, list_accounts, reset_account,
-                                run_paper_trade, set_account_status)
+                                run_paper_trade, set_account_status,
+                                update_account_strategy)
         st.markdown("### 日级模拟盘")
         st.caption("信号日（T-1）收盘生成目标持仓 → T 日开盘成交 → 收盘估值。"
                    "因子账户由同一回测引擎（cash_mode=True）重放，执行口径一致："
@@ -1655,6 +1656,7 @@ def main():
         acc_by_id = {a["id"]: a for a in accounts}
 
         with st.container(border=True):
+            st.caption("以下参数仅用于创建新账户；已存在账户的策略切换请在下方「选择账户」后进行。")
             c1, c2, c3, c4 = st.columns(4)
             with c1:
                 pa_name = st.text_input("账户名称", value="模拟盘", key="pa_name")
@@ -1748,6 +1750,64 @@ def main():
                 delete_account(sel_id)
                 st.success("已删除")
                 st.rerun()
+
+        with st.container(border=True):
+            st.markdown("##### 模拟盘策略（切换即自动更新）")
+            if sel.get("strategy_type") == "event":
+                st.info("事件策略账户不支持在线切换，请新建账户。")
+            else:
+                sw_scope = strategy_scope_ui("pa_sw_scope")
+                sw_opts = strategy_options(sw_scope)
+                sw_cur = sel.get("strategy_name")
+                if sw_cur not in sw_opts:
+                    # 当前策略不在选项里时前置插入，避免 selectbox 自动跳到 index=0 误触发
+                    sw_opts = [sw_cur] + sw_opts
+                sw_strategy = st.selectbox(
+                    "策略", sw_opts, index=sw_opts.index(sw_cur),
+                    format_func=strategy_display, key=f"pa_sw_{sel_id}",
+                    help="切换后自动重置该账户并按新策略重新回放")
+                freq_opts = ["daily", "weekly", "monthly", "semiannual"]
+                sw_freq = st.selectbox("调仓频率", freq_opts,
+                                       index=freq_opts.index(sel.get("freq", "monthly")),
+                                       key=f"pa_sw_freq_{sel_id}")
+                sw_topn = st.select_slider("TopN", options=[1, 2, 3, 5, 8, 10],
+                                           value=int(sel.get("top_n", 3)),
+                                           key=f"pa_sw_topn_{sel_id}")
+                st.caption("切换会自动清空历史并按新策略重新回放模拟盘。")
+                applied_key = f"pa_sw_applied_{sel_id}"
+                cur_combo = (sw_strategy, sw_freq, int(sw_topn))
+                if applied_key not in st.session_state:
+                    st.session_state[applied_key] = (
+                        sw_cur, sel.get("freq", "monthly"),
+                        int(sel.get("top_n", 3)))
+                if cur_combo != st.session_state[applied_key]:
+                    st.session_state[applied_key] = cur_combo
+                    try:
+                        s = resolve_strategy(sw_strategy)
+                        risk_cfg = {**sel.get("risk_config", {})}
+                        for k in ("adx_filter", "chandelier_mult", "chandelier_period",
+                                  "regime_adx", "regime_scale"):
+                            if s.get(k) not in (None, ""):
+                                risk_cfg[k] = (int(s[k]) if k == "chandelier_period"
+                                               else float(s[k]))
+                        update_account_strategy(
+                            sel_id, strategy_name=sw_strategy,
+                            factor=s["factor"], ascending=s["ascending"],
+                            freq=sw_freq, top_n=int(sw_topn),
+                            risk_config=risk_cfg)
+                        reset_account(sel_id)
+                        codes_map = {
+                            "科技TMT": build_codes("科技TMT", True, panel, uni, tech),
+                            "沪深300+中证500+中证1000":
+                                build_codes("沪深300+中证500+中证1000", True, panel, uni, tech),
+                        }
+                        if sel.get("universe") in codes_map:
+                            with st.spinner("正在按新策略重放模拟盘..."):
+                                run_paper_trade(panel, codes_map, account_id=sel_id)
+                        st.success(f"已自动切换到「{sw_strategy}」并按新策略重放")
+                        st.rerun()
+                    except (KeyError, ValueError) as exc:
+                        st.error(str(exc))
 
         summary = account_summary(sel_id, panel)
         if summary is None:
@@ -2083,9 +2143,20 @@ def main():
             if key == "meta":
                 continue
             for label, s in src.items():
-                rows.append({"数据": key, "位置": label,
-                             "状态": "存在" if s["exists"] else "缺失",
-                             "大小MB": s["size_mb"]})
+                desc = s.get("desc", "")
+                info = s.get("info") or {}
+                if info.get("last_date"):
+                    desc += f" · 截至 {info['last_date']}"
+                if info.get("n_rows") is not None:
+                    desc += f" · 约 {info['n_rows']:,} 行"
+                rows.append({
+                    "数据": s.get("name", key),
+                    "位置": s.get("path", label),
+                    "状态": "存在" if s.get("exists") else "缺失",
+                    "大小MB": s.get("size_mb"),
+                    "来源/更新": f"{s.get('source','')} · {s.get('update','')}",
+                    "说明": desc,
+                })
         show_table(pd.DataFrame(rows))
         meta = status.get("meta", {})
         if meta:
@@ -2094,6 +2165,13 @@ def main():
                         f"代码数 {meta.get('n_codes', '-')} · 行数 {meta.get('n_rows', '-'):,}")
         st.markdown(f"- 当前加载：面板行数 {len(panel):,}，个股 {panel['code'].nunique()}，"
                     f"日期 {first_date.date()} ~ {last_date.date()}")
+
+        st.markdown("#### 更新说明")
+        st.markdown("""
+- **开始更新 / `refresh_data.py`**：刷新股票池、指数、行业分类、股票日线、ETF、场外基金净值，并同步 PostgreSQL `stock_daily`、重建基金衍生面板。
+- **舆情数据**由 `~/quant/sentiment-mvp/run_pipeline.py daily` 独立更新，不跟随一键更新。
+- 状态只表示文件/表是否存在；数据新旧以「上次刷新 / 数据截至」为准。
+""")
 
         st.markdown("#### 舆情数据状态")
         st.caption("舆情由 `~/quant/sentiment-mvp/run_pipeline.py daily` 更新，"
@@ -2111,23 +2189,6 @@ def main():
             lbl = sent_stats.get("by_label", {})
             if lbl:
                 st.markdown("标签：" + " · ".join(f"{k}={v:,}" for k, v in sorted(lbl.items())))
-        sent_files = [
-            ("舆情库 articles.db", SENT_DB),
-            ("东财个股新闻 news_raw", SENT_ROOT / "data/news_raw.jsonl"),
-            ("财联社电报 news_cls", SENT_ROOT / "data/news_cls.jsonl"),
-            ("扩展源 news_extra", SENT_ROOT / "data/news_extra.jsonl"),
-            ("词典打分 news_sentiment", SENT_ROOT / "data/news_sentiment.csv"),
-            ("日度全量 news_sentiment_daily", SENT_ROOT / "data/news_sentiment_daily.csv"),
-            ("事件研究 event_study_daily", SENT_STUDY_CSV),
-            ("舆情股票池 universe", SENT_UNIVERSE_CSV),
-        ]
-        srows = []
-        for label, path in sent_files:
-            p = Path(path)
-            srows.append({"数据": label,
-                          "状态": "存在" if p.exists() else "缺失",
-                          "大小MB": round(p.stat().st_size / 1e6, 1) if p.exists() else None})
-        show_table(pd.DataFrame(srows))
 
         st.markdown("---")
         st.markdown("### 数据更新（腾讯行情 + 中证指数官网）")
@@ -2150,7 +2211,7 @@ def main():
             if st.button("开始更新", type="primary", key="data_update"):
                 bar = st.progress(0.0, text="准备中...")
                 try:
-                    result = update_data(
+                    result = refresh_all(
                         mode="incremental" if mode.startswith("增量") else "full",
                         end=update_end.strftime("%Y-%m-%d"),
                         progress=lambda p, t, label: bar.progress(min(float(p) / max(float(t), 1.0), 1.0),

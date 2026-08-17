@@ -6,7 +6,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from backend import services
-from core.data import data_status
+from core.data import data_status, load_index
 
 
 router = APIRouter()
@@ -28,16 +28,18 @@ def status():
 def panel_info():
     """面板统计走 PG 轻量聚合（不加载整张面板，避免触发 800MB 全量加载）。"""
     now = time.time()
-    if now - _panel_info_cache["ts"] < 60 and _panel_info_cache["value"] is not None:
+    if now - _panel_info_cache["ts"] < 300 and _panel_info_cache["value"] is not None:
         return _panel_info_cache["value"]
     try:
         from core import pg
         if pg.configured():
             df = pg.query_df(
-                "SELECT count(*) AS n_rows, "
-                "count(DISTINCT substr(ts_code, 1, 6)) AS n_codes, "
-                "min(trade_date) AS first_date, max(trade_date) AS last_date "
-                "FROM stock_daily WHERE close IS NOT NULL"
+                # n_codes 走 stock_basic，避免对 1160 万行 stock_daily
+                # 做 count(DISTINCT ...)（实测约 27s，前端直接超时）
+                "SELECT (SELECT count(*) FROM stock_daily) AS n_rows, "
+                "(SELECT count(*) FROM stock_basic) AS n_codes, "
+                "(SELECT min(trade_date) FROM stock_daily) AS first_date, "
+                "(SELECT max(trade_date) FROM stock_daily) AS last_date "
             ).iloc[0]
             value = {
                 "n_rows": int(df["n_rows"]),
@@ -77,3 +79,43 @@ def update(req: UpdateRequest):
 @router.get("/update/status")
 def update_status():
     return services.UPDATE_STATE
+
+
+@router.get("/indices")
+def indices():
+    """大盘指数基准列表（data/index.csv：上证/沪深300/科创50/中证500/中证1000/创业板指）。"""
+    try:
+        idx = load_index()
+    except Exception:
+        return {"items": []}
+    seen: dict[str, str] = {}
+    for _, row in idx.iterrows():
+        seen.setdefault(str(row["code"]), str(row["name"]))
+    return {"items": [{"code": c, "name": n} for c, n in sorted(seen.items(), key=lambda kv: kv[1])]}
+
+
+@router.get("/indices/series")
+def index_series(code: str, start: str, end: str):
+    """单个大盘指数归一化收盘序列（窗口起点=1），用于叠加资金曲线基准。"""
+    try:
+        idx = load_index()
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    sub = idx[idx["code"].astype(str) == str(code)]
+    if sub.empty:
+        return {"ok": False, "error": f"指数 {code} 无数据"}
+    sub = sub.sort_values("date")
+    sub = sub[(sub["date"] >= start) & (sub["date"] <= end)]
+    if sub.empty:
+        return {"ok": False, "error": f"指数 {code} 区间内无数据"}
+    s = sub.set_index("date")["close"].astype(float)
+    if s.iloc[0] == 0 or len(s) < 2:
+        return {"ok": False, "error": f"指数 {code} 序列无效"}
+    s = s / s.iloc[0]
+    return {
+        "ok": True,
+        "code": str(code),
+        "name": str(sub.iloc[0]["name"]),
+        "items": [{"date": d.strftime("%Y-%m-%d"), "value": round(float(v), 6)}
+                  for d, v in s.items()],
+    }
