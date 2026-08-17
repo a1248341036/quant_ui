@@ -9,6 +9,8 @@ ExecStart=/home/ubuntu/stock-analyzer/local_venv/bin/python -m streamlit run /ho
 Restart=always
 RestartSec=5
 Environment=STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+MemoryHigh=768M
+MemoryMax=1024M
 
 [Install]
 WantedBy=multi-user.target

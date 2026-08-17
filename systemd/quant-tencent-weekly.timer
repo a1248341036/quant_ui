@@ -1,0 +1,9 @@
+[Unit]
+Description=Weekly Tencent stock panel fallback refresh (Sun 03:00 Asia/Shanghai)
+
+[Timer]
+OnCalendar=Sun *-*-* 03:00:00 Asia/Shanghai
+Persistent=true
+
+[Install]
+WantedBy=timers.target

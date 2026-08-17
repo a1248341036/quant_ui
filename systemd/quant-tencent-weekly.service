@@ -1,0 +1,15 @@
+[Unit]
+Description=Weekly Tencent stock panel fallback refresh (Sun 03:00)
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/quant/quant_ui
+ExecStart=/home/ubuntu/stock-analyzer/local_venv/bin/python /home/ubuntu/quant/quant_ui/scripts/refresh_data.py --workers 3 --no-sync-pg
+Nice=10
+IOSchedulingClass=idle
+CPUQuota=80%
+MemoryHigh=1G
+MemoryMax=1536M
+ExecStartPost=-/usr/bin/sudo -n /bin/systemctl --no-block try-restart quant-api.service
+ExecStartPost=-/usr/bin/sudo -n /bin/systemctl --no-block try-restart quant-ui.service

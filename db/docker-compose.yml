@@ -1,0 +1,17 @@
+services:
+  db:
+    image: timescale/timescaledb:latest-pg16
+    container_name: quant-pg
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: quant
+      POSTGRES_PASSWORD: quant123
+      POSTGRES_DB: quant_db
+      TZ: Asia/Shanghai
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
+      - ./schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+    mem_limit: 512m
+    shm_size: 256m

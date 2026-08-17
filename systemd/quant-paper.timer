@@ -1,0 +1,9 @@
+[Unit]
+Description=Quant UI daily paper trading timer (17:55 Asia/Shanghai, after data refresh)
+
+[Timer]
+OnCalendar=*-*-* 17:55:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

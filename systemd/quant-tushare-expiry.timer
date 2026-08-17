@@ -1,0 +1,10 @@
+[Unit]
+Description=Tushare token expiry check (09:05 Asia/Shanghai daily)
+
+[Timer]
+OnCalendar=*-*-* 09:05:00 Asia/Shanghai
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target
