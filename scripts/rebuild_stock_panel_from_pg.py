@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
@@ -74,7 +75,7 @@ def load_ts_code_map() -> dict[str, str]:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="从 PG 原始价+复权因子重建股票 panel.parquet")
-    ap.add_argument("--start", default="2020-01-01", help="面板起始日期（默认 2020-01-01）")
+    ap.add_argument("--start", default="2015-01-01", help="面板起始日期（默认 2015-01-01，覆盖旧 panel 全部区间）")
     ap.add_argument("--batch", type=int, default=200, help="每批股票数（内存安全）")
     args = ap.parse_args()
 
@@ -100,6 +101,8 @@ def main() -> None:
     t0 = time.time()
     rows_total = 0
     writer = None
+    out_path = PANEL_FILE
+    tmp_path = PANEL_FILE.with_name(f".{PANEL_FILE.name}.rebuild.tmp")
     batches = [ts_codes[i:i + args.batch] for i in range(0, len(ts_codes), args.batch)]
     for bi, batch in enumerate(batches, 1):
         marks = ", ".join(["?"] * len(batch))
@@ -115,6 +118,8 @@ def main() -> None:
             print(f"  batch {bi}/{len(batches)}: 空", flush=True)
             continue
         out = _finalize_stock_df(df, adj="qfq")
+        # 停牌/缺行情日只有 adj_factor 没有价格，与 PG 路径 close IS NOT NULL 口径一致
+        out = out.dropna(subset=["open", "close"])
         out = out[out["date"] >= start]
         if out.empty:
             print(f"  batch {bi}/{len(batches)}: 空（过滤后）", flush=True)
@@ -123,8 +128,8 @@ def main() -> None:
         out["code"] = out["code"].astype(str)
         table = pa.Table.from_pandas(out, schema=PANEL_SCHEMA, preserve_index=False)
         if writer is None:
-            PANEL_FILE.parent.mkdir(parents=True, exist_ok=True)
-            writer = pq.ParquetWriter(str(PANEL_FILE), PANEL_SCHEMA, compression="zstd")
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            writer = pq.ParquetWriter(str(tmp_path), PANEL_SCHEMA, compression="zstd")
         writer.write_table(table)
         rows_total += len(out)
         print(f"  batch {bi}/{len(batches)}: +{len(out)} 行（累计 {rows_total}）", flush=True)
@@ -132,7 +137,8 @@ def main() -> None:
     if writer is None:
         raise SystemExit("无数据写入，panel 未重建")
     writer.close()
-    print(f"完成: rows={rows_total} codes={len(codes)} time={time.time()-t0:.0f}s -> {PANEL_FILE}", flush=True)
+    os.replace(tmp_path, out_path)  # 原子替换，避免写入中断损坏正在使用的面板
+    print(f"完成: rows={rows_total} codes={len(codes)} time={time.time()-t0:.0f}s -> {out_path}", flush=True)
 
 
 if __name__ == "__main__":
