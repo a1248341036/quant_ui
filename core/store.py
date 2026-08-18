@@ -19,9 +19,9 @@ LEGACY_DATA_DIR = Path(
 SENTIMENT_DIR = Path(
     os.getenv("QUANT_UI_SENTIMENT_DIR", str(PROJECT_ROOT.parent / "sentiment-mvp"))
 ).expanduser()
-# QQ 机器人凭据/推送脚本所在目录
+# QQ 机器人凭据/推送脚本所在目录（默认 ~/qqbot，与 .env.example 文档一致）
 QQBOT_DIR = Path(
-    os.getenv("QUANT_UI_QQBOT_DIR", str(PROJECT_ROOT.parent.parent / "qqbot"))
+    os.getenv("QUANT_UI_QQBOT_DIR", str(Path.home() / "qqbot"))
 ).expanduser()
 # 每日导出的 PG 快照（refresh_data.py --sync-pg 生成）
 PG_PARQUET_DIR = DATA_DIR / "pg_parquet"

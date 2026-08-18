@@ -1,8 +1,8 @@
 [Unit]
-Description=Quant UI daily paper trading timer (15:40 Asia/Shanghai, after data refresh)
+Description=Quant UI daily paper trading timer (20:00 Asia/Shanghai, after evening data catch-up)
 
 [Timer]
-OnCalendar=*-*-* 15:40:00
+OnCalendar=*-*-* 20:00:00
 Persistent=true
 
 [Install]

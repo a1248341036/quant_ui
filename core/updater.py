@@ -16,6 +16,7 @@ from .store import save_fund_panel
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SYNC_SCRIPT = PROJECT_ROOT / "scripts" / "sync_postgres.py"
 EXPORT_SCRIPT = PROJECT_ROOT / "scripts" / "export_pg_to_parquet.py"
+REBUILD_SCRIPT = PROJECT_ROOT / "scripts" / "rebuild_stock_panel_from_pg.py"
 # 运行时行情/财务来源：每日流式导出到 data/pg_parquet/，PG 不再承担运行读取
 EXPORT_DEFAULT_TABLES = "stock_daily,stock_basic,fina_indicator,income"
 
@@ -66,6 +67,24 @@ def export_parquet(tables: str | None = None, batch: int = 50000) -> None:
               file=sys.stderr, flush=True)
 
 
+def rebuild_stock_panel() -> None:
+    """从 PG stock_daily 重建股票 panel.parquet（稳定前复权、原子替换）。"""
+    if not pg.configured():
+        print("PG_DSN 未配置，跳过股票 panel 重建", flush=True)
+        return
+    try:
+        r = subprocess.run(
+            [sys.executable, str(REBUILD_SCRIPT)],
+            capture_output=True, text=True, timeout=3600,
+        )
+        print(r.stdout.strip(), flush=True)
+        if r.returncode != 0:
+            print(r.stderr.strip(), file=sys.stderr, flush=True)
+    except Exception as exc:
+        print(f"股票 panel 重建失败（不影响主流程）: {exc}",
+              file=sys.stderr, flush=True)
+
+
 def rebuild_fund_panel() -> None:
     """从最新 fund_nav.parquet 重建基金衍生面板 fund_panel.parquet。"""
     try:
@@ -83,22 +102,27 @@ def rebuild_fund_panel() -> None:
 def refresh_all(mode: str = "incremental", end: str | None = None,
                 max_workers: int = 6, include_stocks: bool = True,
                 sync_pg: bool = True, export_parquet_tables: str | None = "stock_daily",
-                progress=None) -> dict:
-    """一键全量刷新：行情源数据 + PostgreSQL 同步 + PG->Parquet + 基金衍生面板。"""
+                rebuild_panel: bool = True, progress=None) -> dict:
+    """一键全量刷新：行情源数据 + PostgreSQL 同步 + 股票 panel 重建 +
+    PG->Parquet + 基金衍生面板。"""
     end = end or pd.Timestamp.today().strftime("%Y-%m-%d")
     result = update_data(mode=mode, end=end, max_workers=max_workers,
                          progress=progress, include_stocks=include_stocks)
     if sync_pg:
         if progress:
-            progress(6, 6, "同步 PostgreSQL 日线...")
+            progress(7, 7, "同步 PostgreSQL 日线...")
         sync_postgres(end)
     if export_parquet_tables:
         if progress:
-            progress(6, 6, "导出 PG 数据到 Parquet...")
+            progress(7, 7, "导出 PG 数据到 Parquet...")
         export_parquet(export_parquet_tables)
+    if rebuild_panel:
+        if progress:
+            progress(7, 7, "从 PG 重建股票 panel...")
+        rebuild_stock_panel()
     if progress:
-        progress(6, 6, "重建基金衍生面板...")
+        progress(7, 7, "重建基金衍生面板...")
     rebuild_fund_panel()
     if progress:
-        progress(6, 6, "完成")
+        progress(7, 7, "完成")
     return result

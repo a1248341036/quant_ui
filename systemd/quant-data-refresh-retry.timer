@@ -1,0 +1,10 @@
+[Unit]
+Description=Quant UI daily data refresh retry timer (16:30 Asia/Shanghai, catch Tushare late daily data)
+
+[Timer]
+OnCalendar=*-*-* 16:30:00
+Unit=quant-data-refresh.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target
