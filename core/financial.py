@@ -49,7 +49,7 @@ def _map_code_to_ts() -> dict[str, str]:
                     return _CACHE["code_map"]
             except Exception:
                 pass
-        from .pg import query_df
+        from .duckdb import query_df
         try:
             df = query_df("SELECT ts_code, symbol FROM stock_basic")
             code_map = {str(r["symbol"]).zfill(6): str(r["ts_code"])
@@ -86,7 +86,7 @@ def _load_raw() -> dict[str, pd.DataFrame]:
                     return out
             except Exception:
                 out = {}
-        from .pg import query_df
+        from .duckdb import query_df
         out: dict[str, pd.DataFrame] = {}
         try:
             fina = query_df(

@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from . import pg
+from . import sqldb as pg
 from .store import DATA_DIR
 
 

@@ -47,10 +47,12 @@ PANEL_SCHEMA = pa.schema([
     pa.field("turn20", pa.float32()),
     pa.field("am20", pa.float32()),
     pa.field("volume", pa.float32()),
+    pa.field("high", pa.float64()),
+    pa.field("low", pa.float64()),
 ])
 
 KEEP_COLS = ["date", "open", "close", "turnover", "amount", "code",
-             "turn20", "am20", "volume"]
+             "turn20", "am20", "volume", "high", "low"]
 BUFFER_DAYS = 40
 
 

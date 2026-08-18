@@ -332,16 +332,17 @@ def run_backtest(
     turn_mat = turnover.values
     am20_mat = am20.values
     valid_close = ~np.isnan(close_mat)
-    valid_open = ~np.isnan(open_mat)
+    valid_open = ~np.isnan(open_mat) & (open_mat > 0)
 
     dates = close.index
     T, K = close.shape
     if T < 5:
         raise ValueError("数据区间太短")
 
-    open_ff = open_.ffill()
+    open_ff = open_.where(open_ > 0).ffill()
     o2o = open_ff.pct_change().values  # t>=1
-    o2o = np.nan_to_num(o2o, nan=0.0)
+    # 停牌/缺失日 open 为 0 时 pct_change 会产生 inf，与 NaN 一起归零，避免污染等权基准
+    o2o = np.nan_to_num(o2o, nan=0.0, posinf=0.0, neginf=0.0)
 
     start_idx = int(np.argmax(dates >= start_ts)) if (dates >= start_ts).any() else 0
     if freq == "daily":

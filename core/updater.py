@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from . import pg
+from . import sqldb as pg
 from .data import load_fund_nav
 from .fetcher import update_data
 from .fund_engine import build_fund_panel
@@ -22,7 +22,9 @@ EXPORT_DEFAULT_TABLES = "stock_daily,stock_basic,fina_indicator,income"
 
 
 def sync_postgres(end: str) -> None:
-    """用 Tushare 不复权日线增量同步 PostgreSQL/TimescaleDB；未配置或失败不影响主流程。"""
+    """已切换 DuckDB：不再同步 PostgreSQL，保留签名兼容。"""
+    print("已切换 DuckDB，跳过 PostgreSQL 日线同步", flush=True)
+    return
     try:
         if not pg.configured():
             print("PG_DSN 未配置，跳过 PostgreSQL 日线同步", flush=True)
@@ -70,7 +72,9 @@ def _pg_max_trade_date() -> str:
 
 
 def export_parquet(tables: str | None = None, batch: int = 50000) -> None:
-    """PG 主要表流式导出到 Parquet；失败不影响主流程。"""
+    """已切换 DuckDB：行情直接读本地 parquet，不再从 PG 导出。"""
+    print("已切换 DuckDB，跳过 PG->Parquet 导出", flush=True)
+    return
     if not pg.configured():
         print("PG_DSN 未配置，跳过 PG->Parquet 导出", flush=True)
         return
@@ -94,7 +98,9 @@ def export_parquet(tables: str | None = None, batch: int = 50000) -> None:
 
 
 def rebuild_stock_panel() -> None:
-    """从 PG stock_daily 重建股票 panel.parquet（稳定前复权、原子替换）。"""
+    """已切换 DuckDB：本地 panel 由增量拉取维护，不再从 PG 重建。"""
+    print("已切换 DuckDB，跳过股票 panel 重建", flush=True)
+    return
     if not pg.configured():
         print("PG_DSN 未配置，跳过股票 panel 重建", flush=True)
         return

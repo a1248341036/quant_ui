@@ -20,7 +20,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from . import pg
+from . import sqldb as pg
 from .limit import build_limit_flags
 from .store import DATA_DIR, normalize_universe
 
