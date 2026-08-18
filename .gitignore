@@ -11,6 +11,9 @@ db/pgdata/
 *.log
 *.bak_*
 .healthcheck_state.json
+data_status/state.json
+data_status/tasks.json
+data_status/logs/
 .DS_Store
 .idea/
 .vscode/
