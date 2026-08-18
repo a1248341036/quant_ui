@@ -2,10 +2,15 @@
 
 不复制数据、不依赖外部服务；迁移 = 整个项目目录拷走。
 视图基于文件路径，每次查询读取文件最新内容。
+
+并发说明（3.6G 小机）：读进程每次打开只读连接、用完即关；写进程
+（每日刷新/本地导入）把新视图写进临时 duck.db 后原子替换正式文件，
+避免读进程常驻连接把 duck.db 锁死导致“DuckDB 视图刷新失败”。
 """
 from __future__ import annotations
 
-import threading
+import os
+import time
 from pathlib import Path
 from typing import Sequence
 
@@ -19,11 +24,9 @@ except ImportError:  # pragma: no cover
 from .store import DATA_DIR, INDEX_FILE, PANEL_FILE, TECH_FILE, UNIVERSE_FILE
 
 
-_conn = None
-_lock = threading.Lock()
-_registered = False
-
 PG_PARQUET_DIR = DATA_DIR / "pg_parquet"
+DUCKDB_FILE = DATA_DIR / "duck.db"
+DUCKDB_WAL = DATA_DIR / "duck.db.wal"
 PG_TABLE_NAMES = [
     "stock_daily",
     "stock_basic",
@@ -65,7 +68,6 @@ def _pg_parquet_view_sql(name: str) -> str | None:
 
 
 def _register(conn) -> None:
-    global _registered
     stmts = [
         _view_sql("panel", PANEL_FILE),
         _view_sql("universe", UNIVERSE_FILE, {"code": "VARCHAR", "name": "VARCHAR"}),
@@ -80,45 +82,81 @@ def _register(conn) -> None:
     for stmt in stmts:
         if stmt:
             conn.execute(stmt)
-    _registered = True
 
 
-def _ensure_conn_unlocked():
-    """假设调用方已持有 _lock。"""
-    global _conn
+def _build_db_file() -> None:
+    """把当前 parquet/csv 视图写入临时 duck.db，再原子替换正式文件。"""
     if duckdb is None:
         raise RuntimeError("duckdb 未安装，请先 pip install duckdb")
-    if _conn is None:
-        _conn = duckdb.connect(str(DATA_DIR / "duck.db"))
-        _register(_conn)
-    return _conn
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = DUCKDB_FILE.with_name(f".{DUCKDB_FILE.name}.{os.getpid()}.tmp")
+    try:
+        if tmp.exists():
+            tmp.unlink()
+        conn = duckdb.connect(str(tmp))
+        try:
+            _register(conn)
+        finally:
+            conn.close()
+        os.replace(tmp, DUCKDB_FILE)
+        # 旧文件残留的 WAL 不属于新文件；读进程只读打开不会写盘
+        if DUCKDB_WAL.exists():
+            try:
+                DUCKDB_WAL.unlink()
+            except OSError:
+                pass
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
+def _open(read_only: bool = True):
+    if duckdb is None:
+        raise RuntimeError("duckdb 未安装，请先 pip install duckdb")
+    return duckdb.connect(str(DUCKDB_FILE), read_only=read_only)
 
 
 def get_conn():
-    """进程内 DuckDB 单例（文件视图模式，线程安全由全局锁保证）。"""
-    with _lock:
-        return _ensure_conn_unlocked()
+    """兼容接口：返回一个只读连接，调用方负责 close。"""
+    if not DUCKDB_FILE.exists():
+        _build_db_file()
+    return _open(read_only=True)
 
 
 def refresh_views() -> None:
-    """文件被刷新后重新注册视图（例如每日增量更新后）。"""
-    global _registered
-    with _lock:
-        _registered = False
-        _register(_ensure_conn_unlocked())
+    """文件被刷新后重建视图文件（原子替换 duck.db，不依赖已有连接）。"""
+    _build_db_file()
 
 
 def query(sql: str, params: Sequence | None = None) -> pd.DataFrame:
-    """执行 SQL，返回 pandas DataFrame。"""
-    conn = get_conn()
-    with _lock:
-        return conn.execute(sql, params or []).df()
+    """执行 SQL，返回 pandas DataFrame（每次新建只读连接，用完即关）。"""
+    if not DUCKDB_FILE.exists():
+        _build_db_file()
+    last_exc = None
+    for attempt in range(3):
+        try:
+            conn = _open(read_only=True)
+            try:
+                return conn.execute(sql, params or []).df()
+            finally:
+                conn.close()
+        except Exception as exc:  # noqa: BLE001 - 文件可能正被原子替换
+            last_exc = exc
+            time.sleep(0.1 * (attempt + 1))
+    raise last_exc
 
 
 def tables() -> list[str]:
-    conn = get_conn()
-    with _lock:
+    if not DUCKDB_FILE.exists():
+        _build_db_file()
+    conn = _open(read_only=True)
+    try:
         rows = conn.execute(
             "SELECT table_name FROM information_schema.tables WHERE table_schema='main' ORDER BY 1"
         ).fetchall()
-    return [r[0] for r in rows]
+        return [r[0] for r in rows]
+    finally:
+        conn.close()
