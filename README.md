@@ -4,14 +4,14 @@
 本地增量行情缓存（Parquet/DuckDB/PostgreSQL），内置因子轮动与事件驱动两套
 回测引擎，支持账户记账、今日信号、参数稳健性、历史归档与舆情情绪分析。
 
-- 地址：Vue 工作台 `http://<host>:8000`，Streamlit 看板 `http://<host>:8501`
+- 地址：Vue 工作台 `http://<host>:8080`（Streamlit 看板已废弃，不再启动）
 - 默认免登录（鉴权代码保留，可恢复，见「登录鉴权」）
 
 ---
 
 ## 1. 功能总览
 
-| 模块 | Vue :8000 | Streamlit :8501 | 说明 |
+| 模块 | Vue :8080 | Streamlit :8501 | 说明 |
 | --- | :---: | :---: | --- |
 | 看板（账户 KPI + 资金曲线 + 策略对比） | ✅ | ✅ | 真实账户为空时显示「未开户」引导 |
 | 单策略回测（因子轮动） | ✅ | ✅ | 股票池/策略/TopN/资金/频率/区间/过滤/预热 |
@@ -37,13 +37,13 @@
 
 ```
 ┌─────────────────────────────┬─────────────────────────────┐
-│  Vue3 SPA  :8000            │  Streamlit  :8501           │
+│  Vue3 SPA  :8080            │  Streamlit  :8501           │
 │  static/index.html          │  app.py（单页多 tab）        │
 │  （FastAPI StaticFiles 托管）│                              │
 └─────────────┬───────────────┴──────────────┬──────────────┘
               │ REST (/api/...)              │ 直接调用 core/
 ┌─────────────▼──────────────────────────────▼──────────────┐
-│  FastAPI  backend/main.py :8000                            │
+│  FastAPI  backend/main.py :8080                            │
 │  routers: backtest / code / ledger / data                  │
 │  services: 数据加载、名称/行业映射、系列序列化               │
 ├────────────────────────────────────────────────────────────┤
@@ -77,7 +77,7 @@
 cd ~/quant/quant_ui
 cp .env.example .env   # 按需填 TUSHARE_TOKEN / PG_DSN
 
-# 后端 API + Vue 前端（:8000）
+# 后端 API + Vue 前端（:8080）
 systemctl start quant-api
 # Streamlit（:8501）
 systemctl start quant-ui
@@ -91,8 +91,8 @@ python scripts/refresh_data.py
 `systemd` 单元见 `systemd/`。开发调试：
 
 ```bash
-python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
-python -m streamlit run app.py --server.port=8501
+python -m uvicorn backend.main:app --host 0.0.0.0 --port 8080 --reload
+# Streamlit 已废弃（原 8501）
 ```
 
 ### 数据目录与路径环境变量
@@ -190,7 +190,7 @@ systemd `Environment=` 均可配置）：
 | 复合/综合 | 复合因子 |
 | 多空/对冲 | 多空动量 20 日、多空低换手 |
 
-## 7. 后端 API（FastAPI :8000，文档 `/docs`）
+## 7. 后端 API（FastAPI :8080，文档 `/docs`）
 
 ```
 GET  /api/health

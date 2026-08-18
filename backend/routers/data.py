@@ -53,7 +53,7 @@ def panel_info():
     except Exception:
         pass
     try:
-        from core import pg
+        from core import sqldb as pg
         if pg.configured():
             df = pg.query_df(
                 # n_codes 走 stock_basic，避免对 1160 万行 stock_daily

@@ -26,7 +26,7 @@ from core.store import LEGACY_DATA_DIR  # noqa: E402
 from strategies.registry import STRATEGIES  # noqa: E402
 
 
-BASE = "http://127.0.0.1:8000"
+BASE = "http://127.0.0.1:8080"
 PASS = 0
 FAIL = 0
 

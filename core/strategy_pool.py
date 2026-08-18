@@ -10,7 +10,7 @@ import json
 
 import pandas as pd
 
-from . import pg
+from . import duckdb as pg
 from strategies.registry import STRATEGIES, list_strategies
 
 

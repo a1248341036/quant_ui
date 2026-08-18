@@ -45,17 +45,20 @@ def _max_date_parquet(path: Path) -> str:
 
 
 def _pg_max_trade_date() -> str:
-    """查询 PostgreSQL stock_daily 最新交易日（轻量单行查询）。"""
+    """查询 pg_parquet/stock_daily.parquet 最新交易日（轻量单行查询）。"""
     try:
-        from core import pg
-        if not pg.configured():
-            return ""
-        with pg.get_conn() as conn, conn.cursor() as cur:
-            cur.execute("SELECT max(trade_date)::text FROM stock_daily")
-            row = cur.fetchone()
+        import duckdb
+        con = duckdb.connect()
+        try:
+            row = con.execute(
+                "SELECT strftime(max(trade_date), '%Y-%m-%d') FROM "
+                "read_parquet('data/pg_parquet/stock_daily.parquet')"
+            ).fetchone()
             return row[0] if row and row[0] else ""
+        finally:
+            con.close()
     except Exception as exc:
-        print(f"[refresh] 查询 PG stock_daily 最新日期失败: {exc}",
+        print(f"[refresh] 查询 stock_daily 最新日期失败: {exc}",
               file=sys.stderr, flush=True)
         return ""
 

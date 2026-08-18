@@ -222,7 +222,7 @@ def _code_to_ts_map() -> dict[str, str]:
     except Exception:
         pass
     try:
-        from .pg import query_df
+        from .duckdb import query_df
         df = query_df("SELECT ts_code, symbol FROM stock_basic")
         return {str(r["symbol"]).zfill(6): str(r["ts_code"]) for _, r in df.iterrows()}
     except Exception:
@@ -303,7 +303,7 @@ def _load_panel_pg(start: str | None = None, end: str | None = None,
     避免 5600 只全市场行情进入 pandas。
     """
     global _pg_panel_cache
-    from .pg import configured as pg_configured, query_df
+    from .duckdb import configured as pg_configured, query_df
     if not pg_configured():
         raise RuntimeError("PG_DSN 未配置")
     meta_end = query_df(
@@ -362,10 +362,10 @@ def load_panel(start: str | None = None, end: str | None = None,
     unbounded = start is None and end is None and codes is None
     if DATA_SOURCE == "pg":
         try:
-            return _load_panel_pg(start=start, end=end, codes=codes)
+            return _load_panel_pg_parquet(start=start, end=end, codes=codes)
         except Exception as exc:
             print(f"PG 面板加载失败，回退 parquet: {exc}", file=sys.stderr)
-    if DATA_SOURCE == "pg_parquet":
+    if DATA_SOURCE in ("pg", "pg_parquet"):
         if unbounded:
             # 全量面板直接用预计算文件（已有 turn20/am20），避免把
             # 1170 万行 stock_daily 重新构造成 pandas（3.6G 机器会 OOM）。
@@ -378,7 +378,7 @@ def load_panel(start: str | None = None, end: str | None = None,
         except Exception as exc:
             print(f"PG parquet 面板加载失败，回退 PG: {exc}", file=sys.stderr)
             try:
-                return _load_panel_pg(start=start, end=end, codes=codes)
+                return _load_panel_pg_parquet(start=start, end=end, codes=codes)
             except Exception as exc2:
                 print(f"PG 面板加载失败: {exc2}", file=sys.stderr)
     return _load_panel_precomputed(start=start, end=end, codes=codes)
@@ -392,7 +392,7 @@ def load_signal_panel(codes: list[str], end: str | None = None) -> pd.DataFrame:
     """
     if not codes:
         raise RuntimeError("信号股票池为空")
-    if DATA_SOURCE == "pg_parquet":
+    if DATA_SOURCE in ("pg", "pg_parquet"):
         calc_start = (pd.Timestamp(end or pd.Timestamp.today())
                       - pd.Timedelta(days=SIGNAL_LOOKBACK_DAYS + FACTOR_BUFFER_DAYS * 2)
                       ).date().isoformat()
@@ -402,7 +402,7 @@ def load_signal_panel(codes: list[str], end: str | None = None) -> pd.DataFrame:
             print(f"[duck] 信号面板加载失败，回退预计算面板: {exc}",
                   file=sys.stderr)
         return _load_panel_precomputed(start=calc_start, end=end, codes=codes)
-    from .pg import configured as pg_configured, query_df
+    from .duckdb import configured as pg_configured, query_df
     if not pg_configured():
         raise RuntimeError("PG_DSN 未配置")
     if end is None:
@@ -435,7 +435,7 @@ def load_panel_codes() -> set[str]:
         return _panel_codes_cache
     codes: set[str] = set()
     if DATA_SOURCE in ("pg", "pg_parquet"):
-        if DATA_SOURCE == "pg_parquet":
+        if DATA_SOURCE in ("pg", "pg_parquet"):
             try:
                 path = PG_PARQUET_DIR / "stock_basic.parquet"
                 if path.exists():
@@ -445,7 +445,7 @@ def load_panel_codes() -> set[str]:
                 codes = set()
     if DATA_SOURCE == "pg" and not codes:
         try:
-            from .pg import configured as pg_configured, query_df
+            from .duckdb import configured as pg_configured, query_df
             if pg_configured():
                 # stock_basic 是静态股票注册表（5000+ 行），避免对 1174 万行日线做 DISTINCT
                 df = query_df("SELECT ts_code FROM stock_basic WHERE ts_code IS NOT NULL")
@@ -472,7 +472,7 @@ def load_stock_detail(code: str, days: int = 250, adj: str = "qfq") -> pd.DataFr
     if adj not in ("qfq", "hfq", "raw"):
         adj = "qfq"
     if DATA_SOURCE in ("pg", "pg_parquet"):
-        if DATA_SOURCE == "pg_parquet":
+        if DATA_SOURCE in ("pg", "pg_parquet"):
             try:
                 path = PG_PARQUET_DIR / "stock_daily.parquet"
                 code_map = _code_to_ts_map()
@@ -488,7 +488,7 @@ def load_stock_detail(code: str, days: int = 250, adj: str = "qfq") -> pd.DataFr
             except Exception:
                 pass
         try:
-            from .pg import configured as pg_configured, query_df
+            from .duckdb import configured as pg_configured, query_df
             if pg_configured():
                 df = query_df(
                     "SELECT ts_code, trade_date AS date, open, high, low, close, "
@@ -754,7 +754,7 @@ def data_status() -> dict:
         "一键更新 / refresh_data.py")
     pg_entry["info"] = {}
     try:
-        from . import pg as pg_mod
+        from . import sqldb as pg_mod
         if pg_mod.configured():
             pg_entry["exists"] = True
             try:

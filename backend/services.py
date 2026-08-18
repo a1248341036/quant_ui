@@ -197,10 +197,13 @@ def build_codes(universe: str, exclude_kechuang: bool,
 
 
 def _to_float(x) -> float | None:
-    if x is None or (isinstance(x, float) and np.isnan(x)):
+    if x is None:
         return None
     try:
-        return float(x)
+        f = float(x)
+        if np.isnan(f) or np.isinf(f):
+            return None
+        return f
     except (TypeError, ValueError):
         return None
 

@@ -7,7 +7,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from core import strategy_pool as sp
-from core.pg import configured
+from core.duckdb import configured
 
 
 router = APIRouter(prefix="/api/strategy-pool", tags=["strategy-pool"])

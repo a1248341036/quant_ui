@@ -11,7 +11,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from . import pg
+from . import sqldb as pg
 
 
 def _clean(obj: Any) -> Any:
@@ -101,7 +101,7 @@ def list_runs(kind: str | None = None, limit: int = 50) -> pd.DataFrame:
         df = pg.query_df(sql, (int(limit),))
     if df.empty:
         return df
-    df["created_at"] = pd.to_datetime(df["created_at"])
+    df["created_at"] = pd.to_datetime(df["created_at"], format="mixed", errors="coerce")
     for col in ("params", "summary"):
         df[col] = df[col].apply(lambda x: json.loads(x) if isinstance(x, str) else x)
     return df
@@ -142,4 +142,5 @@ def delete_run(run_id: int) -> bool:
         return False
     with pg.get_conn() as conn, conn.cursor() as cur:
         cur.execute("DELETE FROM backtest_runs WHERE run_id = %s", (int(run_id),))
-        return cur.rowcount > 0
+        # DuckDB 不报告 rowcount（返回 -1），执行成功即视为删除完成
+        return True

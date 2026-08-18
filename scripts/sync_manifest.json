@@ -1,0 +1,237 @@
+{
+    "server":  "tencent-ubuntu",
+    "remote_base":  "/home/ubuntu/quant/quant_ui/data",
+    "remote_backup":  "/home/ubuntu/quant_sync_backup",
+    "remote_python":  "/home/ubuntu/stock-analyzer/local_venv/bin/python",
+    "items":  [
+                  {
+                      "path":  "panel.parquet",
+                      "key_cols":  [
+                                       "code",
+                                       "date"
+                                   ],
+                      "smart":  true,
+                      "incremental":  true,
+                      "date_col":  "date",
+                      "direction":  "server_to_local"
+                  },
+                  {
+                      "path":  "pg_parquet/stock_basic.parquet",
+                      "direction":  "server_to_local",
+                      "smart":  true
+                  },
+                  {
+                      "path":  "pg_parquet/stock_daily.parquet",
+                      "key_cols":  [
+                                       "ts_code",
+                                       "trade_date"
+                                   ],
+                      "smart":  true,
+                      "incremental":  true,
+                      "date_col":  "trade_date",
+                      "direction":  "server_to_local"
+                  },
+                  {
+                      "path":  "pg_parquet/stock_daily_last_adj.parquet",
+                      "direction":  "server_to_local",
+                      "smart":  true
+                  },
+                  {
+                      "path":  "pg_parquet/share_float.parquet",
+                      "direction":  "server_to_local",
+                      "smart":  true
+                  },
+                  {
+                      "path":  "pg_parquet/fina_indicator.parquet",
+                      "direction":  "server_to_local",
+                      "smart":  true
+                  },
+                  {
+                      "path":  "pg_parquet/income.parquet",
+                      "direction":  "server_to_local",
+                      "smart":  true
+                  },
+                  {
+                      "path":  "pg_parquet/balancesheet.parquet",
+                      "direction":  "server_to_local",
+                      "smart":  true
+                  },
+                  {
+                      "path":  "pg_parquet/cashflow.parquet",
+                      "direction":  "server_to_local",
+                      "smart":  true
+                  },
+                  {
+                      "path":  "pg_parquet/dividend.parquet",
+                      "direction":  "server_to_local",
+                      "smart":  true
+                  },
+                  {
+                      "path":  "pg_parquet/stk_surv.parquet",
+                      "direction":  "server_to_local",
+                      "smart":  true
+                  },
+                  {
+                      "path":  "pg_parquet/forecast.parquet",
+                      "direction":  "server_to_local",
+                      "smart":  true
+                  },
+                  {
+                      "path":  "pg_parquet/express.parquet",
+                      "direction":  "server_to_local",
+                      "smart":  true
+                  },
+                  {
+                      "path":  "pg_parquet/namechange.parquet",
+                      "direction":  "server_to_local",
+                      "smart":  true
+                  },
+                  {
+                      "path":  "pg_parquet/trade_cal.parquet",
+                      "direction":  "server_to_local",
+                      "smart":  true
+                  },
+                  {
+                      "path":  "fund.csv",
+                      "direction":  "server_to_local",
+                      "smart":  true
+                  },
+                  {
+                      "path":  "fund_nav.parquet",
+                      "key_cols":  [
+                                       "code",
+                                       "date"
+                                   ],
+                      "smart":  true,
+                      "incremental":  true,
+                      "date_col":  "date",
+                      "direction":  "server_to_local"
+                  },
+                  {
+                      "path":  "fund_panel.parquet",
+                      "key_cols":  [
+                                       "code",
+                                       "date"
+                                   ],
+                      "smart":  true,
+                      "incremental":  true,
+                      "date_col":  "date",
+                      "direction":  "server_to_local"
+                  },
+                  {
+                      "path":  "etf.csv",
+                      "direction":  "server_to_local",
+                      "smart":  true
+                  },
+                  {
+                      "path":  "etf_panel.parquet",
+                      "key_cols":  [
+                                       "code",
+                                       "date"
+                                   ],
+                      "smart":  true,
+                      "incremental":  true,
+                      "date_col":  "date",
+                      "direction":  "server_to_local"
+                  },
+                  {
+                      "path":  "tech.csv",
+                      "direction":  "server_to_local",
+                      "smart":  true
+                  },
+                  {
+                      "path":  "universe.csv",
+                      "direction":  "server_to_local",
+                      "smart":  true
+                  },
+                  {
+                      "path":  "index.csv",
+                      "direction":  "server_to_local",
+                      "smart":  true
+                  },
+                  {
+                      "path":  "account/deposits.csv",
+                      "direction":  "server_to_local"
+                  },
+                  {
+                      "path":  "paper/paper_store.json",
+                      "direction":  "server_to_local"
+                  },
+                  {
+                      "path":  "composites.json",
+                      "direction":  "local_to_server"
+                  },
+                  {
+                      "path":  "meta.json",
+                      "direction":  "local_to_server"
+                  },
+                  {
+                      "path":  "results/**",
+                      "direction":  "local_to_server"
+                  },
+                  {
+                      "path":  "etf_adx20.csv",
+                      "direction":  "local_to_server"
+                  },
+                  {
+                      "path":  "etf_adx25.csv",
+                      "direction":  "local_to_server"
+                  },
+                  {
+                      "path":  "etf_combo_a.csv",
+                      "direction":  "local_to_server"
+                  },
+                  {
+                      "path":  "etf_combo_b.csv",
+                      "direction":  "local_to_server"
+                  },
+                  {
+                      "path":  "etf_combo_c1.csv",
+                      "direction":  "local_to_server"
+                  },
+                  {
+                      "path":  "etf_combo_c2.csv",
+                      "direction":  "local_to_server"
+                  },
+                  {
+                      "path":  "etf_combo_w1.csv",
+                      "direction":  "local_to_server"
+                  },
+                  {
+                      "path":  "etf_combo_w2.csv",
+                      "direction":  "local_to_server"
+                  },
+                  {
+                      "path":  "etf_s5k.csv",
+                      "direction":  "local_to_server"
+                  },
+                  {
+                      "path":  "etf_survey.csv",
+                      "direction":  "local_to_server"
+                  },
+                  {
+                      "path":  "etf_survey_60d.csv",
+                      "direction":  "local_to_server"
+                  },
+                  {
+                      "path":  "etf_w3.csv",
+                      "direction":  "local_to_server"
+                  },
+                  {
+                      "path":  "etf_w4.csv",
+                      "direction":  "local_to_server"
+                  },
+                  {
+                      "path":  "ma_sweep.csv",
+                      "direction":  "local_to_server"
+                  },
+                  {
+                      "merge_keys":  [
+                                         "ts_code",
+                                         "report_date"
+                                     ],
+                      "path":  "pg_parquet/report_rc.parquet",
+                      "direction":  "merge"
+                  }
+              ]
+}
