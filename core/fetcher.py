@@ -531,7 +531,7 @@ def update_data(
     from .store import PANEL_FILE, save_panel as _save_panel
 
     end = end or pd.Timestamp.today().strftime("%Y-%m-%d")
-    # include_stocks=False（股票由 Tushare PG 承担）时不会刷新股票面板，
+    # include_stocks=False（股票由 Tushare parquet 承担）时不会刷新股票面板，
     # 初始化空表避免后续 save_meta 引用未定义变量。
     panel = pd.DataFrame(columns=["date", "code"])
     stage = {"text": "正在更新股票池..."}
@@ -578,7 +578,7 @@ def update_data(
         )
         save_panel(panel)
     else:
-        print("跳过腾讯股票日线（股票行情由 Tushare PG 承担）", flush=True)
+        print("跳过腾讯股票日线（股票行情由 Tushare parquet 承担）", flush=True)
 
     # ---- ETF：池子 + 日线 ----
     if progress:

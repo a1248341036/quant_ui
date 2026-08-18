@@ -7,7 +7,7 @@ from __future__ import annotations
   执行口径与回测完全一致（现金/整手/费用/涨跌停/停牌/流动性拒单）
 - 事件账户重放 core.event_engine.run_event_backtest 的结果
 - 幂等：同一 exec_date 重复执行不会重复成交；已处理日期直接跳过
-- 持久化：PG 优先，未配置 PG_DSN 时回退 JSON 文件
+- 持久化：SQLite 持久化（JSON 回退）
 """
 
 import json
@@ -37,7 +37,7 @@ DEFAULT_RISK = {
 }
 
 
-# ---------- 底层读写（PG 优先 / JSON 回退） ----------
+# ---------- 底层读写（SQLite 优先 / JSON 回退） ----------
 
 def _q(sql: str, params: tuple | None = None) -> pd.DataFrame:
     return pg.query_df(sql, params)
@@ -146,7 +146,7 @@ _cols_checked = False
 
 
 def _ensure_columns() -> None:
-    """PG 迁移：老表补策略/订单字段列。"""
+    """SQLite 迁移：老表补策略/订单字段列。"""
     global _cols_checked
     if _cols_checked or not pg.configured():
         return
@@ -211,7 +211,7 @@ def create_account(
         except Exception as exc:
             if "duplicate" in str(exc).lower() or "unique" in str(exc).lower():
                 raise ValueError(f"账户名称已存在: {name}") from exc
-            print(f"[paper] PG 写入失败，回退 JSON: {exc}", flush=True)
+            print(f"[paper] SQLite 写入失败，回退 JSON: {exc}", flush=True)
     state = _json_state()
     if any(str(a.get("name")) == name.strip()
            for a in state["accounts"].values()):
@@ -243,7 +243,7 @@ def list_accounts() -> list[dict]:
             df = _q("SELECT * FROM paper_accounts ORDER BY id")
             return [_acc_row(r) for r in df.to_dict(orient="records")]
         except Exception as exc:
-            print(f"[paper] PG 读取失败，回退 JSON: {exc}", flush=True)
+            print(f"[paper] SQLite 读取失败，回退 JSON: {exc}", flush=True)
     state = _json_state()
     return [_acc_row(a) for a in state["accounts"].values()]
 
@@ -256,7 +256,7 @@ def get_account(account_id: int) -> dict | None:
                 return None
             return _acc_row(df.iloc[0])
         except Exception as exc:
-            print(f"[paper] PG 读取失败，回退 JSON: {exc}", flush=True)
+            print(f"[paper] SQLite 读取失败，回退 JSON: {exc}", flush=True)
     state = _json_state()
     return _acc_row(state["accounts"].get(str(account_id)))
 
@@ -270,7 +270,7 @@ def set_account_status(account_id: int, status: str) -> dict | None:
                 (status, int(account_id)))
             return get_account(account_id)
         except Exception as exc:
-            print(f"[paper] PG 写入失败，回退 JSON: {exc}", flush=True)
+            print(f"[paper] SQLite 写入失败，回退 JSON: {exc}", flush=True)
     state = _json_state()
     acc = state["accounts"].get(str(account_id))
     if acc is None:
@@ -332,7 +332,7 @@ def update_account_strategy(
                     tuple(params))
             return get_account(account_id)
         except Exception as exc:
-            print(f"[paper] PG 更新失败，回退 JSON: {exc}", flush=True)
+            print(f"[paper] SQLite 更新失败，回退 JSON: {exc}", flush=True)
     state = _json_state()
     a = state["accounts"].get(str(account_id))
     if a is None:
@@ -356,7 +356,7 @@ def delete_account(account_id: int) -> bool:
                 cur.execute("DELETE FROM paper_accounts WHERE id=%s", (int(account_id),))
                 return cur.rowcount > 0
         except Exception as exc:
-            print(f"[paper] PG 删除失败，回退 JSON: {exc}", flush=True)
+            print(f"[paper] SQLite 删除失败，回退 JSON: {exc}", flush=True)
     state = _json_state()
     key = str(account_id)
     if key not in state["accounts"]:
@@ -385,7 +385,7 @@ def reset_account(account_id: int) -> bool:
                 " last_rebalance_date=NULL WHERE id=%s", (int(account_id),))
             return True
         except Exception as exc:
-            print(f"[paper] PG 重置失败，回退 JSON: {exc}", flush=True)
+            print(f"[paper] SQLite 重置失败，回退 JSON: {exc}", flush=True)
     state = _json_state()
     key = str(account_id)
     if key not in state["accounts"]:
@@ -412,7 +412,7 @@ def _clear_account_state(account_id: int) -> None:
             _ex("DELETE FROM paper_orders WHERE account_id=%s", (int(account_id),))
             return
         except Exception as exc:
-            print(f"[paper] PG 清空失败，回退 JSON: {exc}", flush=True)
+            print(f"[paper] SQLite 清空失败，回退 JSON: {exc}", flush=True)
     state = _json_state()
     state["orders"] = [o for o in state.get("orders", [])
                        if o.get("account_id") != account_id]
@@ -430,7 +430,7 @@ def _update_account_start(account_id: int, start_date: str) -> None:
                 (start_date, int(account_id)))
             return
         except Exception as exc:
-            print(f"[paper] PG 账户起始日更新失败: {exc}", flush=True)
+            print(f"[paper] SQLite 账户起始日更新失败: {exc}", flush=True)
     state = _json_state()
     acc = state["accounts"].get(str(account_id))
     if acc is not None:
@@ -447,7 +447,7 @@ def account_orders(account_id: int) -> list[dict]:
                     " ORDER BY exec_date DESC, id", (int(account_id),))
             return df.to_dict(orient="records")
         except Exception as exc:
-            print(f"[paper] PG 读取失败，回退 JSON: {exc}", flush=True)
+            print(f"[paper] SQLite 读取失败，回退 JSON: {exc}", flush=True)
     state = _json_state()
     return [o for o in state.get("orders", []) if o.get("account_id") == account_id]
 
@@ -459,7 +459,7 @@ def account_trades(account_id: int) -> list[dict]:
                     " ORDER BY exec_date DESC, id", (int(account_id),))
             return df.to_dict(orient="records")
         except Exception as exc:
-            print(f"[paper] PG 读取失败，回退 JSON: {exc}", flush=True)
+            print(f"[paper] SQLite 读取失败，回退 JSON: {exc}", flush=True)
     state = _json_state()
     return [t for t in state.get("trades", []) if t.get("account_id") == account_id]
 
@@ -471,7 +471,7 @@ def account_positions(account_id: int) -> list[dict]:
                     " ORDER BY shares DESC", (int(account_id),))
             return df.to_dict(orient="records")
         except Exception as exc:
-            print(f"[paper] PG 读取失败，回退 JSON: {exc}", flush=True)
+            print(f"[paper] SQLite 读取失败，回退 JSON: {exc}", flush=True)
     state = _json_state()
     return sorted(
         [p for p in state.get("positions", {}).get(str(account_id), {}).values()
@@ -485,7 +485,7 @@ def account_equity(account_id: int) -> list[dict]:
                     " ORDER BY date", (int(account_id),))
             return df.to_dict(orient="records")
         except Exception as exc:
-            print(f"[paper] PG 读取失败，回退 JSON: {exc}", flush=True)
+            print(f"[paper] SQLite 读取失败，回退 JSON: {exc}", flush=True)
     state = _json_state()
     snaps = state.get("snapshots", {}).get(str(account_id), {})
     return [snaps[k] for k in sorted(snaps)]
@@ -498,7 +498,7 @@ def account_events(account_id: int) -> list[dict]:
                     " ORDER BY date DESC, id DESC", (int(account_id),))
             return df.to_dict(orient="records")
         except Exception as exc:
-            print(f"[paper] PG 读取失败，回退 JSON: {exc}", flush=True)
+            print(f"[paper] SQLite 读取失败，回退 JSON: {exc}", flush=True)
     state = _json_state()
     return [e for e in state.get("events", []) if e.get("account_id") == account_id]
 
@@ -588,7 +588,7 @@ def _add_order(account_id: int, order: dict) -> int:
         except Exception as exc:
             if "unique" in str(exc).lower() or "duplicate" in str(exc).lower():
                 return 0  # 幂等：重复订单直接忽略
-            print(f"[paper] PG 订单写入失败: {exc}", flush=True)
+            print(f"[paper] SQLite 订单写入失败: {exc}", flush=True)
     state = _json_state()
     oid = _json_next_id(state, "orders")
     order = dict(order)
@@ -612,7 +612,7 @@ def _add_trade(account_id: int, trade: dict) -> None:
                  trade.get("note")))
             return
         except Exception as exc:
-            print(f"[paper] PG 成交写入失败: {exc}", flush=True)
+            print(f"[paper] SQLite 成交写入失败: {exc}", flush=True)
     state = _json_state()
     trade = dict(trade)
     trade["id"] = _json_next_id(state, "trades")
@@ -638,7 +638,7 @@ def _set_position(account_id: int, code: str, shares: float,
                     (account_id, code, float(shares), float(avg_cost), date))
             return
         except Exception as exc:
-            print(f"[paper] PG 持仓写入失败: {exc}", flush=True)
+            print(f"[paper] SQLite 持仓写入失败: {exc}", flush=True)
     state = _json_state()
     pos = state.setdefault("positions", {}).setdefault(str(account_id), {})
     if shares <= 1e-6:
@@ -668,7 +668,7 @@ def _add_snapshot(account_id: int, snap: dict) -> None:
                  float(snap["pnl"]), float(snap["pnl_pct"])))
             return
         except Exception as exc:
-            print(f"[paper] PG 估值写入失败: {exc}", flush=True)
+            print(f"[paper] SQLite 估值写入失败: {exc}", flush=True)
     state = _json_state()
     snaps = state.setdefault("snapshots", {}).setdefault(str(account_id), {})
     snaps[str(snap["date"])] = dict(snap)
@@ -683,7 +683,7 @@ def _add_event(account_id: int, date: str, level: str, msg: str) -> None:
                 (account_id, date, level, msg[:2000]))
             return
         except Exception as exc:
-            print(f"[paper] PG 事件写入失败: {exc}", flush=True)
+            print(f"[paper] SQLite 事件写入失败: {exc}", flush=True)
     state = _json_state()
     ev = {"id": _json_next_id(state, "events"), "account_id": account_id,
           "date": date, "level": level, "msg": msg[:2000],
@@ -701,7 +701,7 @@ def _update_account_dates(account_id: int, processed: str | None,
                 (processed, rebalance, account_id))
             return
         except Exception as exc:
-            print(f"[paper] PG 账户日期更新失败: {exc}", flush=True)
+            print(f"[paper] SQLite 账户日期更新失败: {exc}", flush=True)
     state = _json_state()
     acc = state["accounts"].get(str(account_id))
     if acc is not None:

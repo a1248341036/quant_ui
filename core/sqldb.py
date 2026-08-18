@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""SQLite 本地存储层（替代 PostgreSQL / DuckDB 持久写库）。
+"""SQLite 本地存储层（业务数据统一落 data/quant.db，替代 PostgreSQL）。
 
 - 单文件数据库：data/quant.db（可用 QUANT_SQLITE_PATH 覆盖）
 - API 与旧 core/duckdb.py 对齐：configured/get_conn/exec_sql/create_schema/df_to_pg/query_df

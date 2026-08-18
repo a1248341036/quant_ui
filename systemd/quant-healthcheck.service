@@ -1,5 +1,5 @@
 [Unit]
-Description=Quant UI health check (API + PG + disk)
+Description=Quant UI health check (API + parquet + disk)
 
 [Service]
 Type=oneshot

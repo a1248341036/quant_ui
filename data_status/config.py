@@ -25,7 +25,7 @@ PYTHON = os.getenv(
     str(Path.home() / "stock-analyzer" / "local_venv" / "bin" / "python"),
 )
 
-# Date column used to judge freshness per PG table (mirrors export script).
+# Date column used to judge freshness per parquet file.
 TABLE_DATE_COLUMN = {
     "stock_daily": "trade_date",
     "share_float": "ann_date",
@@ -40,10 +40,9 @@ TABLE_DATE_COLUMN = {
     "namechange": "ann_date",
     "trade_cal": "cal_date",
     "report_rc": "report_date",
-    "index_weight": "trade_date",
 }
 
-PG_TABLES = list(TABLE_DATE_COLUMN) + ["stock_basic"]
+PARQUET_TABLES = list(TABLE_DATE_COLUMN) + ["stock_basic"]
 
 
 def load_env() -> None:
