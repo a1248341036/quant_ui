@@ -27,7 +27,18 @@ def sync_postgres(end: str) -> None:
         if not pg.configured():
             print("PG_DSN 未配置，跳过 PostgreSQL 日线同步", flush=True)
             return
-        since = (pd.Timestamp(end) - pd.Timedelta(days=10)).strftime("%Y%m%d")
+        end_ts = pd.Timestamp(end)
+        max_date = _pg_max_trade_date()
+        if max_date:
+            latest = pd.Timestamp(max_date)
+            if latest >= end_ts:
+                print(f"PG stock_daily 最新 {max_date}，已是最新，跳过 Tushare 日线拉取",
+                      flush=True)
+                return
+            # 只拉最新已入库交易日之后的新交易日，不重复拉最近 10 天已入库数据
+            since = (latest + pd.Timedelta(days=1)).strftime("%Y%m%d")
+        else:
+            since = (end_ts - pd.Timedelta(days=10)).strftime("%Y%m%d")
         # 股票日线由 Tushare 不复权价负责（--daily-since），不把腾讯/面板的
         # 前复权价写回 stock_daily：否则会覆盖 PG 里的不复权原始价，
         # 导致“历史价随最新行情漂移”和复权因子二次调整。
@@ -41,6 +52,21 @@ def sync_postgres(end: str) -> None:
     except Exception as exc:
         print(f"PostgreSQL 日线同步失败（不影响 panel 更新）: {exc}",
               file=sys.stderr, flush=True)
+
+
+def _pg_max_trade_date() -> str:
+    """查询 PostgreSQL stock_daily 最新交易日（轻量单行查询）。"""
+    try:
+        if not pg.configured():
+            return ""
+        with pg.get_conn() as conn, conn.cursor() as cur:
+            cur.execute("SELECT max(trade_date)::text FROM stock_daily")
+            row = cur.fetchone()
+            return row[0] if row and row[0] else ""
+    except Exception as exc:
+        print(f"查询 PG stock_daily 最新日期失败: {exc}",
+              file=sys.stderr, flush=True)
+        return ""
 
 
 def export_parquet(tables: str | None = None, batch: int = 50000) -> None:
@@ -106,6 +132,13 @@ def refresh_all(mode: str = "incremental", end: str | None = None,
     """一键全量刷新：行情源数据 + PostgreSQL 同步 + 股票 panel 重建 +
     PG->Parquet + 基金衍生面板。"""
     end = end or pd.Timestamp.today().strftime("%Y-%m-%d")
+    # 股票 panel 最终会从 PG 重建时，update_data 里再抓一遍股票日线属于冗余：
+    # 同一份 Tushare 数据会先被 sync_postgres 拉入 PG，随后 rebuild_stock_panel
+    # 又会从 PG 重建并覆盖刚抓出来的 panel。这种场景直接把股票抓取交给 PG 路径。
+    if include_stocks and sync_pg and rebuild_panel and pg.configured() and _pg_max_trade_date():
+        print("股票 panel 将从 PG 重建，跳过 update_data 中的股票日线抓取（避免重复拉取）",
+              flush=True)
+        include_stocks = False
     result = update_data(mode=mode, end=end, max_workers=max_workers,
                          progress=progress, include_stocks=include_stocks)
     if sync_pg:
