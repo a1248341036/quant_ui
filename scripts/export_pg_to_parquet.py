@@ -9,6 +9,8 @@
     - 3.6G 内存小机器：server-side cursor + 分批 fetch，绝不整表载入。
     - 显式 pyarrow schema（从 information_schema 推断），避免全 NULL 列导致的 schema 漂移。
     - zstd 压缩；每张表一个文件，流式写入。
+    - 导出前先对比 PG 与 parquet 的最新日期/行数，已是最新则跳过，
+      避免每天 15:10/16:30 两次刷新重复导出 1170 万行。
 """
 
 from __future__ import annotations
@@ -49,6 +51,25 @@ DEFAULT_TABLES = [
     "report_rc",
     "index_weight",
 ]
+
+# 每张表用于判断“是否已是最新”的日期列；stock_basic 没有可用的更新日期，
+# 只比行数。
+TABLE_DATE_COLUMN = {
+    "stock_daily": "trade_date",
+    "share_float": "ann_date",
+    "fina_indicator": "ann_date",
+    "income": "ann_date",
+    "balancesheet": "ann_date",
+    "cashflow": "ann_date",
+    "dividend": "ann_date",
+    "stk_surv": "surv_date",
+    "forecast": "ann_date",
+    "express": "ann_date",
+    "namechange": "ann_date",
+    "trade_cal": "cal_date",
+    "report_rc": "report_date",
+    "index_weight": "trade_date",
+}
 
 PG_TO_ARROW = {
     "smallint": pa.int64(),
@@ -164,6 +185,74 @@ def export_last_adj(conn, out_path: Path) -> tuple[int, str]:
     pq.write_table(table, out_path, compression="zstd")
     return len(rows), str(max_date)
 
+
+def pg_date_count(conn, table: str, date_col: str | None) -> tuple[str | None, int | None]:
+    """PG 侧最新日期与行数（date_col 为 None 时只取行数）。"""
+    with conn.cursor() as cur:
+        if date_col:
+            cur.execute(
+                f'SELECT max("{date_col}")::text, count(*) FROM "public"."{table}"'
+            )
+            row = cur.fetchone()
+            return (str(row[0]) if row[0] is not None else None), row[1]
+        cur.execute(f'SELECT count(*) FROM "public"."{table}"')
+        return None, cur.fetchone()[0]
+
+
+def parquet_date_count(path: Path, date_col: str | None) -> tuple[str | None, int | None]:
+    """parquet 侧最新日期与行数（DuckDB 流式读取，不整列进 pandas）。"""
+    if not path.exists():
+        return None, None
+    try:
+        import duckdb
+    except ImportError:
+        return None, None
+    con = duckdb.connect()
+    try:
+        if date_col:
+            row = con.execute(
+                f"SELECT max(CAST({date_col} AS VARCHAR)), count(*) "
+                "FROM read_parquet(?)",
+                [str(path)],
+            ).fetchone()
+            return (str(row[0]) if row[0] is not None else None), row[1]
+        row = con.execute("SELECT count(*) FROM read_parquet(?)", [str(path)]).fetchone()
+        return None, row[0]
+    finally:
+        con.close()
+
+
+def parquet_last_adj_ref(path: Path) -> str | None:
+    """stock_daily_last_adj.parquet 的 ref_date（轻量 DuckDB 读取）。"""
+    if not path.exists():
+        return None
+    try:
+        import duckdb
+    except ImportError:
+        return None
+    con = duckdb.connect()
+    try:
+        row = con.execute(
+            "SELECT max(CAST(ref_date AS VARCHAR)) FROM read_parquet(?)",
+            [str(path)],
+        ).fetchone()
+        return str(row[0]) if row and row[0] is not None else None
+    finally:
+        con.close()
+
+
+def _skip_if_current(conn, table: str, out_path: Path) -> bool:
+    """PG 与 parquet 的最新日期和行数一致时跳过导出。"""
+    date_col = TABLE_DATE_COLUMN.get(table)
+    pg_date, pg_count = pg_date_count(conn, table, date_col)
+    pq_date, pq_count = parquet_date_count(out_path, date_col)
+    if pq_date == pg_date and pq_count == pg_count:
+        suffix = f"max={pg_date} " if pg_date else ""
+        print(f"[skip] {table}: 已是最新（{suffix}rows={pg_count or 0:,}）", flush=True)
+        return True
+    return False
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out-dir", default=str(ROOT / "data" / "pg_parquet"))
@@ -189,6 +278,8 @@ def main() -> None:
         for table in tables:
             out_path = out_dir / f"{table}.parquet"
             try:
+                if _skip_if_current(conn, table, out_path):
+                    continue
                 rows, elapsed, size = export_table(conn, table, out_path, args.batch)
                 print(
                     f"[ok] {table}: rows={rows:,} time={elapsed:.1f}s "
@@ -200,8 +291,15 @@ def main() -> None:
         # stock_daily 导出成功后补一份复权因子快照，供读取层做稳定 qfq 锚点
         if "stock_daily" in tables:
             try:
-                n, ref_date = export_last_adj(conn, out_dir / "stock_daily_last_adj.parquet")
-                print(f"[ok] stock_daily_last_adj: rows={n} ref_date={ref_date}", flush=True)
+                last_adj_path = out_dir / "stock_daily_last_adj.parquet"
+                pg_max, _ = pg_date_count(conn, "stock_daily", "trade_date")
+                if pg_max and parquet_last_adj_ref(last_adj_path) == pg_max:
+                    print(f"[skip] stock_daily_last_adj: 已是最新（ref_date={pg_max}）",
+                          flush=True)
+                else:
+                    n, ref_date = export_last_adj(conn, last_adj_path)
+                    print(f"[ok] stock_daily_last_adj: rows={n} ref_date={ref_date}",
+                          flush=True)
             except Exception as exc:
                 print(f"[FAIL] stock_daily_last_adj: {exc}", flush=True)
     print(f"total: {time.time()-total_t0:.1f}s", flush=True)
