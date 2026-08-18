@@ -1,7 +1,7 @@
 # quant_ui — A 股个人量化研究平台
 
 一个自托管的 A 股量化研究/回测 Web 平台：Vue3 单页应用 + FastAPI 后端 +
-本地增量行情缓存（Parquet/DuckDB/PostgreSQL），内置因子轮动与事件驱动两套
+本地增量行情缓存（Parquet + SQLite），内置因子轮动与事件驱动两套
 回测引擎，支持账户记账、今日信号、参数稳健性、历史归档与舆情情绪分析。
 
 - 地址：Vue 工作台 `http://<host>:8080`（Streamlit 看板已废弃，不再启动）
@@ -59,12 +59,12 @@
 │  ledger.py        账户账本                                  │
 │  backtest_archive.py 回测结果归档                           │
 │  fetcher.py / tushare_client.py  行情抓取（腾讯/Tushare）    │
-│  data.py / store.py / db.py / pg.py  数据访问层             │
+│  data.py / store.py / db.py / sqldb.py  数据访问层          │
 ├────────────────────────────────────────────────────────────┤
 │  数据                                                       │
 │  data/panel.parquet       日线+因子面板（1800 只）           │
 │  data/duck.db             DuckDB 查询缓存/视图              │
-│  PostgreSQL/TimescaleDB   stock_daily / backtest_runs / ledger│
+│  data/quant.db            SQLite 业务库（回测/账本/模拟盘）  │
 │  strategies/registry.py   策略注册表                        │
 └────────────────────────────────────────────────────────────┘
 ```
@@ -75,13 +75,13 @@
 
 ```bash
 cd ~/quant/quant_ui
-cp .env.example .env   # 按需填 TUSHARE_TOKEN / PG_DSN
+cp .env.example .env   # 按需填 TUSHARE_TOKEN
 
 # 后端 API + Vue 前端（:8080）
 systemctl start quant-api
 # Streamlit（:8501）
 systemctl start quant-ui
-# 每日 15:20 收盘后自动增量更新行情（含 PG 日线同步、stock_daily Parquet 导出与基金面板重建）
+# 每日 15:10/16:30 收盘后自动增量更新行情（Tushare 日线直写 Parquet + panel 重建）
 systemctl start quant-data-refresh.timer
 
 # 手动跑一次数据更新
@@ -120,12 +120,13 @@ systemd `Environment=` 均可配置）：
 - 行情源：股票优先 Tushare（`.env` 配 token，请求限速），失败自动回退腾讯行情接口；
   ETF 走腾讯行情、场外基金走天天基金净值
 - 本地缓存：`data/universe.csv`、`data/tech.csv`、`data/index.csv`、`data/meta.json`
-- 可选 PostgreSQL/TimescaleDB：`db/docker-compose.yml` + `db/schema.sql`
-  - `stock_daily` 日线（hyper table）、`stock_minute` 分钟、财务/公告/舆情宽表
-  - `backtest_runs` 回测归档、`ledger_transactions`/`ledger_deposits` 账本
-  - 回测数据源由 `QUANT_DATA_SOURCE` 控制：`pg` 优先读 PG（失败回退 parquet）；
-    `pg_parquet` 优先读 `data/pg_parquet/`（每日导出，失败回退 PG）；
-    `panel` 只用本地 parquet
+- Tushare 直写 parquet：`scripts/sync_tushare_to_parquet.py` 按交易日增量写
+  `data/pg_parquet/stock_daily.parquet`（不复权原始价 + 每日复权因子），
+  财务/公告/调研宽表按股票逐只同步到 `data/pg_parquet/`
+- 业务数据统一 SQLite：`data/quant.db`（回测归档、账本、模拟盘等），
+  不再依赖 PostgreSQL/TimescaleDB
+- 回测数据源由 `QUANT_DATA_SOURCE` 控制：`pg_parquet` 优先读 `data/pg_parquet/`；
+  `panel` 只用本地预计算面板
 - 舆情：独立仓库 `~/quant/sentiment-mvp`，Streamlit 直接读取其 CSV/数据库
 
 ## 5. 回测引擎
@@ -135,7 +136,8 @@ systemd `Environment=` 均可配置）：
 - 过滤：剔除科创/创业、一手 100 股、成交额分位（`amount_q`）、因子预热（`warmup_days`）
 - 组合构建：行业分散（`industry_cap`）、多空对冲（`long_short`/`short_n`/`short_cost_rate`）、行业中性化（`industry_neutral`）
 - 财务因子（`use_financial`）：PB/EP/ROE/毛利率/营收同比/净利同比，按公告日 point-in-time
-  对齐避免未来函数；数据来自 PG 财务宽表（`scripts/sync_postgres.py --fina` 全市场补全）
+  对齐避免未来函数；数据来自 Tushare parquet 财务宽表
+  （`scripts/sync_tushare_to_parquet.py --fina` 全市场补全）
 - 风险中性化（`risk_neutral`）：选股前把因子得分对风格/行业暴露回归取残差，
   并输出期末持仓的**风险归因**（liquidity/momentum/volatility/turnover/value/quality/growth + 行业 + specific）
 - 基准：股票池等权；支持沪深300/中证500 等指数线（Streamlit 可选）
@@ -239,20 +241,20 @@ GET  /api/sentiment/ic           舆情分桶回测 IC/分组
 
 | 脚本 | 作用 | 输出 |
 | --- | --- | --- |
-| `scripts/refresh_data.py` | 行情增量更新 + 可选同步 PG | `data/panel.parquet` |
+| `scripts/refresh_data.py` | 行情增量更新 + Tushare 直写 parquet | `data/panel.parquet` |
 | `scripts/selftest.py` | 新旧引擎一致性对照 | 控制台报告 |
 | `scripts/performance_report.py` | QuantStats 报告 + IC/分组分析 | `results/performance/` |
 | `scripts/parameter_sweep.py` | 参数网格 / walk-forward | `results/parameter_sweep/` |
-| `scripts/paper_trade.py` | 日级模拟盘（创建/执行/查询） | PG `paper_*` 表 |
+| `scripts/paper_trade.py` | 日级模拟盘（创建/执行/查询） | SQLite `paper_*` 表 |
 | `scripts/attribution.py` | Brinson 归因 | `results/attribution/` |
 | `scripts/sentiment_backtest.py` | 舆情分桶回测 + IC/分组 | `results/sentiment_backtest.csv`、`results/sentiment_ic_group.csv` |
-| `scripts/sync_postgres.py` | 财务/公告宽表同步 PG | — |
+| `scripts/sync_tushare_to_parquet.py` | Tushare 日线/财务/公告直写 parquet | `data/pg_parquet/` |
 | `scripts/healthcheck.py` | 健康检查 | — |
 
 ### 8.1 自动化测试（pytest）
 
 `core/engine.py`（因子轮动）与 `core/event_engine.py`（事件驱动）已带 pytest
-冒烟测试，使用合成小面板，不依赖真实行情/PostgreSQL：
+冒烟测试，使用合成小面板，不依赖真实行情：
 
 ```bash
 python -m pytest tests -v
@@ -293,7 +295,7 @@ CI 配置见 `.github/workflows/ci.yml`，在 push/PR 时自动安装
 
 | 能力域 | 本平台 | 聚宽/米筐/掘金 | Qlib/backtrader | 差距与方向 |
 | --- | --- | --- | --- | --- |
-| 数据 | 腾讯+Tushare 增量缓存，日线+滚动因子 | 商业全量数据（分钟/财务/事件） | 自备数据 | 缺分钟线、财务/公告宽表仅 PG 预留 |
+| 数据 | 腾讯+Tushare 增量缓存，日线+滚动因子 | 商业全量数据（分钟/财务/事件） | 自备数据 | 缺分钟线、财务/公告宽表仅 Tushare parquet 预留 |
 | 研究环境 | 网页代码实验室 + Streamlit | Notebook + 因子库 | Notebook/脚本 | 缺 Notebook、因子表达式库 |
 | 回测 | 因子轮动 + 事件驱动，T+1/涨跌停/费用/滑点/多空 + 财务因子 | 成熟撮合 + 多周期 | 成熟 | 撮合近似（ST 涨跌幅未区分、无分钟级撮合） |
 | 组合构建 | 等权/风险平价/均值方差/最大分散化 + Barra 风格风险模型 | 优化器 + 风险模型 | 部分 | 风格因子为轻量代理定义，缺完整 Barra 行业/风格库 |
@@ -314,8 +316,8 @@ CI 配置见 `.github/workflows/ci.yml`，在 push/PR 时自动安装
 
 - 未做多进程/后台任务，大批量参数扫描同步执行，event 模式约 1-2 分钟
 - 行业分类接口在部分服务器不可达时回退本地缓存，科技股票池为缓存快照
-- 行情以 PostgreSQL `stock_daily` 的**不复权原始价 + 每日复权因子**为准；
-  前复权锚点固定在导出快照的最新因子，同一历史日在不同查询区间价格一致。
+- 行情以 Tushare 直写 parquet `stock_daily` 的**不复权原始价 + 每日复权因子**为准；
+  前复权锚点固定在同步快照的最新因子，同一历史日在不同查询区间价格一致。
   前复权在出现新分红/送转时仍会整体重标定（这是前复权定义使然）；若要求历史价
   绝对不随最新行情漂移，个股详情可选择「不复权」或「后复权」口径
   （`/api/stock/{code}?adj=raw|hfq`）。

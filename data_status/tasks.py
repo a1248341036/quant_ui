@@ -30,41 +30,24 @@ TASK_DEFS = {
         "script": "healthcheck.py",
         "params": {},
     },
-    "export-parquet": {
-        "script": "export_pg_to_parquet.py",
-        "params": {
-            "tables": str,
-            "batch": int,
-            "full": bool,
-        },
-    },
     "sync-basic": {
-        "script": "sync_postgres.py",
+        "script": "sync_tushare_to_parquet.py",
         "base": ["--basic"],
         "params": {"sleep": float},
     },
     "sync-daily": {
-        "script": "sync_postgres.py",
-        "required": ["date"],
+        "script": "sync_tushare_to_parquet.py",
+        "required": ["daily_since"],
         "params": {
-            "date": str,
-            "workers": int,
+            "daily_since": str,
+            "daily_workers": int,
             "force": bool,
             "sleep": float,
-        },
-    },
-    "sync-daily-tencent": {
-        "script": "sync_postgres.py",
-        "base": ["--daily-tencent"],
-        "params": {
-            "workers": int,
-            "max_codes": int,
-            "batch": int,
-            "sleep": float,
+            "last_adj": bool,
         },
     },
     "sync-events": {
-        "script": "sync_postgres.py",
+        "script": "sync_tushare_to_parquet.py",
         "base": ["--events"],
         "params": {
             "limit": int,
@@ -74,7 +57,7 @@ TASK_DEFS = {
         },
     },
     "sync-fina": {
-        "script": "sync_postgres.py",
+        "script": "sync_tushare_to_parquet.py",
         "base": ["--fina"],
         "params": {
             "limit": int,
@@ -84,7 +67,7 @@ TASK_DEFS = {
         },
     },
     "sync-surv": {
-        "script": "sync_postgres.py",
+        "script": "sync_tushare_to_parquet.py",
         "base": ["--surv"],
         "params": {
             "limit": int,
@@ -94,13 +77,8 @@ TASK_DEFS = {
         },
     },
     "sync-report-rc": {
-        "script": "sync_postgres.py",
+        "script": "sync_tushare_to_parquet.py",
         "base": ["--report-rc"],
-        "params": {"sleep": float},
-    },
-    "sync-index-weight": {
-        "script": "sync_postgres.py",
-        "base": ["--index-weight"],
         "params": {"sleep": float},
     },
     "refresh-data": {
@@ -109,9 +87,7 @@ TASK_DEFS = {
             "workers": int,
             "skip_stock_panel": bool,
             "no_sync_pg": bool,
-            "no_export_parquet": bool,
             "no_rebuild_panel": bool,
-            "export_tables": str,
         },
     },
     "rebuild-panel": {

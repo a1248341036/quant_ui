@@ -7,7 +7,7 @@ Provides:
   POST /api/tasks             submit a script task
   GET  /api/tasks/{id}        task detail + log
   POST /api/tasks/{id}/cancel cancel queued/running task
-  GET  /api/query?sql=...     read-only SQL on PostgreSQL
+  GET  /api/query?sql=...     read-only SQL on local parquet (DuckDB views)
   GET  /                      minimal HTML dashboard
 """
 from __future__ import annotations
@@ -22,7 +22,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
 from .collector import collect_all, ensure_logs_dir
-from .config import TABLE_DATE_COLUMN, PG_TABLES
+from .config import PARQUET_TABLES, TABLE_DATE_COLUMN
 from .state import load_state
 from .tasks import TASK_DEFS, get_runner
 
@@ -115,15 +115,10 @@ def query(sql: str):
     if " LIMIT " not in up:
         sql += " LIMIT 1000"
     try:
-        import psycopg
-        dsn = os.getenv("PG_DSN", "").strip()
-        if not dsn:
-            raise RuntimeError("PG_DSN not configured")
-        with psycopg.connect(dsn, connect_timeout=5, autocommit=True) as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql)
-                cols = [d.name for d in cur.description] if cur.description else []
-                rows = cur.fetchall()
+        from core.db import query as duck_query
+        df = duck_query(sql)
+        cols = list(df.columns)
+        rows = df.head(1000).astype(str).values.tolist()
         return {"columns": cols, "rows": rows}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -131,7 +126,7 @@ def query(sql: str):
 
 @app.get("/api/defs")
 def defs() -> dict:
-    return {"task_types": sorted(TASK_DEFS), "tables": PG_TABLES,
+    return {"task_types": sorted(TASK_DEFS), "tables": PARQUET_TABLES,
             "date_columns": TABLE_DATE_COLUMN}
 
 
@@ -207,19 +202,6 @@ function render(s){
   const res=g.resources||{};
   if(res.memory){html+='<div class="card"><b>内存</b> 已用 '+esc(res.memory.used_pct)+'% · 可用 '+esc(Math.round(res.memory.available_bytes/1024/1024/1024*100)/100)+'GB</div>';}
   if(res.disk){html+='<div class="card"><b>磁盘</b> 可用 '+esc(res.disk.free_pct)+'% · '+esc(Math.round(res.disk.free_bytes/1024/1024/1024*100)/100)+'GB</div>';}
-  if(res.pg_container){html+='<div class="card"><b>quant-pg</b> '+esc(res.pg_container)+'</div>';}
-  // pg tables
-  const pg=g.pg||{};
-  html+='<h2>PostgreSQL ('+badge(pg.status)+')</h2><table><tr><th>表</th><th>行数</th><th>最早</th><th>最新</th><th>大小</th></tr>';
-  for(const [name,t] of Object.entries(pg.tables||{})){
-    html+=`<tr><td>${esc(name)}</td><td>${esc(t.rows)}</td><td>${esc(t.min_date)}</td><td>${esc(t.max_date)}</td><td>${t.size_bytes?esc(Math.round(t.size_bytes/1048576))+'MB':'—'}</td></tr>`;
-  }
-  html+='</table>';
-  if(pg.daily_coverage&&pg.daily_coverage.length){
-    html+='<h2>最近8个交易日覆盖</h2><table><tr><th>日期</th><th>股票数</th></tr>';
-    for(const d of pg.daily_coverage)html+=`<tr><td>${esc(d.date)}</td><td>${esc(d.stocks)}</td></tr>`;
-    html+='</table>';
-  }
   // parquet
   const pq=g.parquet||{};
   html+='<h2>Parquet ('+badge(pq.status)+')</h2><table><tr><th>表</th><th>行数</th><th>最新</th><th>大小</th><th>mtime</th></tr>';
@@ -229,7 +211,7 @@ function render(s){
   html+='</table>';
   // sources
   const src=g.sources||{};
-  html+='<h2>数据源同步 ('+badge(src.status)+')</h2><div class="card">日历最新 '+esc(src.calendar_max)+' · stock_daily 最新 '+esc(src.stock_daily_max)+' · 滞后 '+esc(src.lag_days)+' 天</div>';
+  html+='<h2>数据源同步 ('+badge(src.status)+')</h2><div class="card">交易日历最新 '+esc(src.calendar_max)+' · Tushare stock_daily 最新 '+esc(src.stock_daily_max)+' · 滞后 '+esc(src.lag_days)+' 天</div>';
   // services
   const svc=g.services||{};
   html+='<h2>服务/定时器 ('+badge(svc.status)+')</h2><table><tr><th>项目</th><th>状态</th><th>详情</th></tr>';
@@ -251,7 +233,7 @@ async function showTask(id){
 async function submitTask(){
   const type=document.getElementById('task-type').value;
   const params={};
-  if(type==='sync-daily'){const d=prompt('起始日期 YYYYMMDD');if(!d)return;params.date=d;}
+  if(type==='sync-daily'){const d=prompt('起始日期 YYYYMMDD');if(!d)return;params.daily_since=d;}
   const r=await j(API+'/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type,params})});
   const pre=document.getElementById('task-result');pre.style.display='block';
   pre.textContent='已提交 '+r.id+' / '+r.type+' -> '+r.argv.join(' ');

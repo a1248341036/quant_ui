@@ -1,11 +1,10 @@
-"""Collector: aggregates data status from PG, parquet, services and resources.
+"""Collector: aggregates data status from parquet, services and resources.
 
-All checks are aggregation-only (count/max from PG, parquet footer metadata)
+All checks are aggregation-only (parquet footer metadata / DuckDB max date)
 so a full run stays light on the 3.6G machine.
 """
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 import sys
@@ -14,20 +13,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 try:
-    import psycopg
-except ImportError:  # pragma: no cover
-    psycopg = None
-
-try:
     import pyarrow.parquet as pq
 except ImportError:  # pragma: no cover
     pq = None
 
 from .config import (
     LOGS_DIR,
+    PARQUET_TABLES,
     PG_PARQUET_DIR,
-    PG_TABLES,
-    QUANT_UI_DATA_DIR,
     QUANT_UI_ROOT,
     SCRIPTS_DIR,
     TABLE_DATE_COLUMN,
@@ -37,76 +30,6 @@ from .state import load_state, save_state
 
 def _utcnow() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _pg_conn():
-    dsn = os.getenv("PG_DSN", "").strip()
-    if not dsn:
-        raise RuntimeError("PG_DSN not configured")
-    return psycopg.connect(dsn, connect_timeout=5, autocommit=True)
-
-
-def collect_pg() -> dict:
-    """Per-table row count / min-max date / size / recent coverage."""
-    out = {"status": "ok", "tables": {}, "errors": []}
-    try:
-        conn = _pg_conn()
-    except Exception as exc:
-        out["status"] = "error"
-        out["errors"].append(f"connect: {exc}")
-        return out
-    try:
-        with conn.cursor() as cur:
-            for table in PG_TABLES:
-                date_col = TABLE_DATE_COLUMN.get(table)
-                try:
-                    if date_col:
-                        cur.execute(
-                            f"SELECT count(*), min({date_col}), max({date_col}), "
-                            f"pg_total_relation_size('public.{table}') FROM {table}"
-                        )
-                        n, dmin, dmax, size = cur.fetchone()
-                    else:
-                        cur.execute(
-                            f"SELECT count(*), NULL, NULL, "
-                            f"pg_total_relation_size('public.{table}') FROM {table}"
-                        )
-                        n, dmin, dmax, size = cur.fetchone()
-                    out["tables"][table] = {
-                        "rows": n,
-                        "min_date": str(dmin) if dmin else None,
-                        "max_date": str(dmax) if dmax else None,
-                        "size_bytes": size or 0,
-                    }
-                except Exception as exc:
-                    out["tables"][table] = {"rows": None, "error": str(exc)}
-                    out["errors"].append(f"{table}: {exc}")
-            # Per-day coverage of stock_daily for the last 8 days.
-            try:
-                cur.execute(
-                    "SELECT trade_date, count(*) FROM stock_daily "
-                    "WHERE trade_date >= current_date - interval '8 days' "
-                    "GROUP BY trade_date ORDER BY trade_date"
-                )
-                out["daily_coverage"] = [
-                    {"date": str(d), "stocks": n} for d, n in cur.fetchall()
-                ]
-            except Exception as exc:
-                out["errors"].append(f"daily_coverage: {exc}")
-            # Calendar freshness: latest trading day up to today (trade_cal
-            # contains future dates for the whole year).
-            try:
-                cur.execute(
-                    "SELECT max(cal_date) FROM trade_cal "
-                    "WHERE cal_date <= current_date"
-                )
-                row = cur.fetchone()
-                out["calendar_max"] = str(row[0]) if row and row[0] else None
-            except Exception as exc:
-                out["errors"].append(f"calendar: {exc}")
-    finally:
-        conn.close()
-    return out
 
 
 def _parquet_stats(name: str) -> dict | None:
@@ -143,23 +66,47 @@ def _parquet_stats(name: str) -> dict | None:
 
 def collect_parquet() -> dict:
     out = {"status": "ok", "files": {}}
-    missing = [t for t in PG_TABLES if not (PG_PARQUET_DIR / f"{t}.parquet").exists()]
+    missing = [t for t in PARQUET_TABLES
+               if not (PG_PARQUET_DIR / f"{t}.parquet").exists()]
     if missing:
         out["status"] = "warn"
         out["missing"] = missing
-    for name in PG_TABLES:
+    for name in PARQUET_TABLES:
         stats = _parquet_stats(name)
         if stats is not None:
             out["files"][name] = stats
     return out
 
 
-def collect_sources(pg: dict) -> dict:
+def _parquet_max_date(path: Path, date_col: str, where: str = "") -> str | None:
+    """用 DuckDB 读 parquet 最新日期（轻量，不整表进 pandas）。"""
+    if not path.exists():
+        return None
+    try:
+        import duckdb
+        con = duckdb.connect()
+        try:
+            where_sql = f" WHERE {where}" if where else ""
+            row = con.execute(
+                f"SELECT max(CAST({date_col} AS VARCHAR)) FROM read_parquet(?){where_sql}",
+                [str(path)],
+            ).fetchone()
+            return str(row[0]) if row and row[0] is not None else None
+        finally:
+            con.close()
+    except Exception:
+        return None
+
+
+def collect_sources(pq_data: dict) -> dict:
     """Compare calendar max vs stock_daily max to estimate Tushare lag."""
     out = {"status": "ok", "lag_days": None}
     try:
-        cal = pg.get("calendar_max")
-        daily = pg.get("tables", {}).get("stock_daily", {}).get("max_date")
+        cal = _parquet_max_date(
+            PG_PARQUET_DIR / "trade_cal.parquet", "cal_date",
+            where=f"{'cal_date'} <= CURRENT_DATE",
+        )
+        daily = pq_data.get("files", {}).get("stock_daily", {}).get("max_date")
         if cal and daily:
             d0 = datetime.strptime(cal, "%Y-%m-%d").date()
             d1 = datetime.strptime(daily, "%Y-%m-%d").date()
@@ -263,16 +210,6 @@ def collect_resources() -> dict:
             out["status"] = "critical"
     except Exception as exc:
         out.setdefault("errors", []).append(f"disk: {exc}")
-    # docker quant-pg container memory.
-    try:
-        p = subprocess.run(
-            ["docker", "stats", "--no-stream", "--format", "{{.Name}} {{.MemUsage}} {{.MemPerc}}", "quant-pg"],
-            capture_output=True, text=True, timeout=10,
-        )
-        if p.returncode == 0 and p.stdout.strip():
-            out["pg_container"] = p.stdout.strip()
-    except Exception as exc:
-        out.setdefault("errors", []).append(f"docker: {exc}")
     return out
 
 
@@ -311,10 +248,9 @@ def _alert(state: dict, groups: dict[str, dict]) -> None:
 def collect_all(alert: bool = True) -> dict:
     started = time.time()
     groups = {
-        "pg": collect_pg(),
         "parquet": collect_parquet(),
     }
-    groups["sources"] = collect_sources(groups["pg"])
+    groups["sources"] = collect_sources(groups["parquet"])
     groups["services"] = collect_services()
     groups["resources"] = collect_resources()
     state = {

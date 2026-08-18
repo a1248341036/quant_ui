@@ -27,29 +27,23 @@ INDEX_PATH = LEGACY_DATA_DIR / "panel/csi300_index.csv"
 
 SENT_ROOT = SENTIMENT_DIR
 
-# PG 面板只拉该日期以来的行情，避免全表 1100 万行进入 pandas（与 parquet 面板口径一致）。
+# 面板只拉该日期以来的行情，避免全表 1200 万行进入 pandas。
 PANEL_START = os.getenv("QUANT_PANEL_START", "2020-01-01").strip()
 # turn20/am20 滚动窗口在区间起点需要约 20 个交易日历史，查询起点统一前移自然日缓冲，
 # 保证区间化加载与全量加载的因子口径一致。
 FACTOR_BUFFER_DAYS = 40
 
-# pg=优先 PostgreSQL（失败回退本地 parquet）；pg_parquet=优先本地 PG 导出 parquet
-# （失败回退 PostgreSQL）；panel=只用本地文件。小内存机器默认走 pg_parquet，
-# 运行时不再整表读 PG 行情。
+# pg_parquet=优先读 Tushare 直写 parquet；panel=只用本地预计算文件。
+# 小内存机器默认走 pg_parquet，运行时不再整表读全市场行情。
 DATA_SOURCE = os.getenv("QUANT_DATA_SOURCE", "pg_parquet").strip().lower()
-# 与 backend/services 共用：空闲 TTL 后释放整份 PG 面板，
-# 避免全市场面板（几百 MB）在“什么都没跑”时仍被永久持有。
-PANEL_CACHE_TTL = float(os.getenv("QUANT_CACHE_TTL", "1800"))
-_pg_panel_cache: dict = {}
 _panel_codes_cache: set | None = None
-_pg_panel_lock = threading.Lock()
 
 # 信号因子最长只看 60 个交易日（ma_cross20_60），
 # 保留 800 个自然日（约 550 个交易日）足够覆盖全部滚动窗口。
 SIGNAL_LOOKBACK_DAYS = int(os.getenv("QUANT_SIGNAL_LOOKBACK_DAYS", "800"))
 
 
-# 导出 PG 时同时写一份「每只股票最新复权因子」小文件，作为前复权锚点：
+# 同步 Tushare 时同时写一份「每只股票最新复权因子」小文件，作为前复权锚点：
 # qfq 价 = 不复权价 * adj_factor / last_adj。锚点取自导出快照而不是查询区间，
 # 避免同一历史日在不同查询区间/不同刷新时间下显示不同的价格。
 LAST_ADJ_FILE = PG_PARQUET_DIR / "stock_daily_last_adj.parquet"
@@ -213,28 +207,23 @@ def _pg_parquet_end() -> str:
     return str(pd.Timestamp(dates["trade_date"].max()).date())
 
 def _code_to_ts_map() -> dict[str, str]:
-    """6 位代码 -> 完整 ts_code（优先 pg_parquet/stock_basic，缺失回退 PG）。"""
+    """6 位代码 -> 完整 ts_code（读 pg_parquet/stock_basic.parquet）。"""
     try:
         path = PG_PARQUET_DIR / "stock_basic.parquet"
         if path.exists():
             df = pd.read_parquet(path, columns=["ts_code", "symbol"])
             return {str(r["symbol"]).zfill(6): str(r["ts_code"]) for _, r in df.iterrows()}
     except Exception:
-        pass
-    try:
-        from .duckdb import query_df
-        df = query_df("SELECT ts_code, symbol FROM stock_basic")
-        return {str(r["symbol"]).zfill(6): str(r["ts_code"]) for _, r in df.iterrows()}
-    except Exception:
         return {}
+    return {}
 
 
 def _load_panel_pg_parquet(start: str | None = None, end: str | None = None,
                            codes: list[str] | None = None) -> pd.DataFrame:
-    """从每日导出的 pg_parquet/stock_daily.parquet 构建回测面板（与 PG 同口径）。"""
+    """从 Tushare 直写 pg_parquet/stock_daily.parquet 构建回测面板。"""
     path = PG_PARQUET_DIR / "stock_daily.parquet"
     if not path.exists():
-        raise FileNotFoundError(f"PG parquet 不存在: {path}")
+        raise FileNotFoundError(f"Tushare parquet 不存在: {path}")
     if end is None:
         end = _pg_parquet_end()
     calc_start = start or PANEL_START
@@ -294,77 +283,9 @@ def _load_panel_precomputed(start: str | None = None, end: str | None = None,
     return panel
 
 
-def _load_panel_pg(start: str | None = None, end: str | None = None,
-                   codes: list[str] | None = None) -> pd.DataFrame:
-    """从 PostgreSQL stock_daily 构建回测面板（前复权 + turn20/am20 因子）。
-
-    start/end 可选，只拉回测所需区间；实际查询起点前移 FACTOR_BUFFER_DAYS，
-    保证因子滚动窗口与全量加载口径一致。codes 限定股票池（如科技TMT 90 只），
-    避免 5600 只全市场行情进入 pandas。
-    """
-    global _pg_panel_cache
-    from .duckdb import configured as pg_configured, query_df
-    if not pg_configured():
-        raise RuntimeError("PG_DSN 未配置")
-    meta_end = query_df(
-        "SELECT max(trade_date) AS end FROM stock_daily"
-    ).iloc[0]["end"]
-    if meta_end is None:
-        raise RuntimeError("stock_daily 为空")
-    calc_start = start or PANEL_START
-    if start:
-        calc_start = (pd.Timestamp(start)
-                      - pd.Timedelta(days=FACTOR_BUFFER_DAYS)).date().isoformat()
-    codes_key = tuple(sorted(codes)) if codes else None
-    key = (calc_start, end or str(meta_end), codes_key)
-    cached = _pg_panel_cache
-    if (cached.get("key") == key
-            and time.time() - cached.get("ts", 0) < PANEL_CACHE_TTL):
-        return cached["df"]
-    with _pg_panel_lock:
-        # 双检锁：并发请求同时 miss 时只允许一个构建，
-        # 避免 N 份全量面板同时进内存（3.6G 机器直接卡死）。
-        cached = _pg_panel_cache
-        if (cached.get("key") == key
-                and time.time() - cached.get("ts", 0) < PANEL_CACHE_TTL):
-            return cached["df"]
-        where = ["adj_factor IS NOT NULL", "close IS NOT NULL"]
-        params: list = []
-        if calc_start:
-            where.append("trade_date >= %s")
-            params.append(calc_start)
-        if end:
-            where.append("trade_date <= %s")
-            params.append(end)
-        if codes:
-            like_conds = " OR ".join(["ts_code LIKE %s"] * len(codes))
-            where.append(f"({like_conds})")
-            params.extend(f"{c}%" for c in codes)
-        df = query_df(
-            "SELECT ts_code, trade_date AS date, open, high, low, close, vol AS volume, amount, "
-            "turnover_rate AS turnover, adj_factor FROM stock_daily "
-            "WHERE " + " AND ".join(where) + " ORDER BY ts_code, trade_date",
-            tuple(params),
-        )
-        if len(df) == 0:
-            raise RuntimeError("所选区间/股票池在 stock_daily 中没有数据")
-        if df["adj_factor"].isna().mean() > 0.05:
-            raise RuntimeError("stock_daily 复权因子覆盖不足，历史补全后自动切换")
-        # last_adj 直接取区间内各股票最新 adj_factor：回测终点通常是数据最新日，
-        # 与全量口径一致；终点早于最新日时按区间内最新复权，避免全表 DISTINCT ON。
-        out = _finalize_stock_df(df)
-        _pg_panel_cache = {"key": key, "df": out, "ts": time.time()}
-        return out
-
-
 def load_panel(start: str | None = None, end: str | None = None,
                codes: list[str] | None = None) -> pd.DataFrame:
     unbounded = start is None and end is None and codes is None
-    if DATA_SOURCE == "pg":
-        try:
-            return _load_panel_pg_parquet(start=start, end=end, codes=codes)
-        except Exception as exc:
-            print(f"PG 面板加载失败，回退 parquet: {exc}", file=sys.stderr)
     if DATA_SOURCE in ("pg", "pg_parquet"):
         if unbounded:
             # 全量面板直接用预计算文件（已有 turn20/am20），避免把
@@ -376,11 +297,7 @@ def load_panel(start: str | None = None, end: str | None = None,
         try:
             return _load_panel_pg_parquet(start=start, end=end, codes=codes)
         except Exception as exc:
-            print(f"PG parquet 面板加载失败，回退 PG: {exc}", file=sys.stderr)
-            try:
-                return _load_panel_pg_parquet(start=start, end=end, codes=codes)
-            except Exception as exc2:
-                print(f"PG 面板加载失败: {exc2}", file=sys.stderr)
+            print(f"Tushare parquet 面板加载失败: {exc}", file=sys.stderr)
     return _load_panel_precomputed(start=start, end=end, codes=codes)
 
 
@@ -402,30 +319,7 @@ def load_signal_panel(codes: list[str], end: str | None = None) -> pd.DataFrame:
             print(f"[duck] 信号面板加载失败，回退预计算面板: {exc}",
                   file=sys.stderr)
         return _load_panel_precomputed(start=calc_start, end=end, codes=codes)
-    from .duckdb import configured as pg_configured, query_df
-    if not pg_configured():
-        raise RuntimeError("PG_DSN 未配置")
-    if end is None:
-        end = str(query_df(
-            "SELECT max(trade_date) AS end FROM stock_daily"
-        ).iloc[0]["end"])
-    calc_start = (pd.Timestamp(end)
-                  - pd.Timedelta(days=SIGNAL_LOOKBACK_DAYS + FACTOR_BUFFER_DAYS * 2)
-                  ).date().isoformat()
-    like_conds = " OR ".join(["ts_code LIKE %s"] * len(codes))
-    sql = (
-        "SELECT ts_code, trade_date AS date, open, high, low, close, "
-        "vol AS volume, amount, turnover_rate AS turnover, adj_factor "
-        "FROM stock_daily "
-        "WHERE adj_factor IS NOT NULL AND close IS NOT NULL "
-        "AND trade_date >= %s AND trade_date <= %s AND (" + like_conds + ") "
-        "ORDER BY ts_code, trade_date"
-    )
-    params: list = [calc_start, end] + [f"{c}%" for c in codes]
-    df = query_df(sql, tuple(params))
-    if len(df) == 0:
-        raise RuntimeError("信号面板为空")
-    return _finalize_stock_df(df)
+    return _load_panel_precomputed(start=calc_start, end=end, codes=codes)
 
 
 def load_panel_codes() -> set[str]:
@@ -435,20 +329,10 @@ def load_panel_codes() -> set[str]:
         return _panel_codes_cache
     codes: set[str] = set()
     if DATA_SOURCE in ("pg", "pg_parquet"):
-        if DATA_SOURCE in ("pg", "pg_parquet"):
-            try:
-                path = PG_PARQUET_DIR / "stock_basic.parquet"
-                if path.exists():
-                    df = pd.read_parquet(path, columns=["ts_code"])
-                    codes = {str(c)[:6].zfill(6) for c in df["ts_code"]}
-            except Exception:
-                codes = set()
-    if DATA_SOURCE == "pg" and not codes:
         try:
-            from .duckdb import configured as pg_configured, query_df
-            if pg_configured():
-                # stock_basic 是静态股票注册表（5000+ 行），避免对 1174 万行日线做 DISTINCT
-                df = query_df("SELECT ts_code FROM stock_basic WHERE ts_code IS NOT NULL")
+            path = PG_PARQUET_DIR / "stock_basic.parquet"
+            if path.exists():
+                df = pd.read_parquet(path, columns=["ts_code"])
                 codes = {str(c)[:6].zfill(6) for c in df["ts_code"]}
         except Exception:
             codes = set()
@@ -462,7 +346,7 @@ def load_panel_codes() -> set[str]:
 
 
 def load_stock_detail(code: str, days: int = 250, adj: str = "qfq") -> pd.DataFrame:
-    """单只股票复权行情 + turn20/am20，只查 PG 单股，避免加载整张面板。
+    """单只股票复权行情 + turn20/am20，只查 Tushare parquet 单股，避免加载整张面板。
 
     adj: qfq/hfq/raw，见 _finalize_stock_df。raw/hfq 的历史价不随最新分红漂移，
     适合需要稳定历史图的展示场景；回测/信号仍使用 qfq（默认）。
@@ -472,34 +356,18 @@ def load_stock_detail(code: str, days: int = 250, adj: str = "qfq") -> pd.DataFr
     if adj not in ("qfq", "hfq", "raw"):
         adj = "qfq"
     if DATA_SOURCE in ("pg", "pg_parquet"):
-        if DATA_SOURCE in ("pg", "pg_parquet"):
-            try:
-                path = PG_PARQUET_DIR / "stock_daily.parquet"
-                code_map = _code_to_ts_map()
-                ts_codes = [code_map.get(code, f"{code}.SZ"), f"{code}.SH", f"{code}.BJ"]
-                cols = ["ts_code", "trade_date", "open", "high", "low", "close",
-                        "vol", "amount", "turnover_rate", "adj_factor"]
-                df = pd.read_parquet(path, columns=cols,
-                                     filters=[("ts_code", "in", ts_codes)])
-                if not df.empty:
-                    df = df.rename(columns={"trade_date": "date", "vol": "volume",
-                                            "turnover_rate": "turnover"})
-                    return _finalize_stock_df(df, adj=adj).tail(days).reset_index(drop=True)
-            except Exception:
-                pass
         try:
-            from .duckdb import configured as pg_configured, query_df
-            if pg_configured():
-                df = query_df(
-                    "SELECT ts_code, trade_date AS date, open, high, low, close, "
-                    "vol AS volume, amount, turnover_rate AS turnover, adj_factor "
-                    "FROM stock_daily "
-                    "WHERE ts_code LIKE %s AND adj_factor IS NOT NULL AND close IS NOT NULL "
-                    "ORDER BY ts_code, trade_date",
-                    (f"{code}%",),
-                )
-                if not df.empty:
-                    return _finalize_stock_df(df, adj=adj).tail(days).reset_index(drop=True)
+            path = PG_PARQUET_DIR / "stock_daily.parquet"
+            code_map = _code_to_ts_map()
+            ts_codes = [code_map.get(code, f"{code}.SZ"), f"{code}.SH", f"{code}.BJ"]
+            cols = ["ts_code", "trade_date", "open", "high", "low", "close",
+                    "vol", "amount", "turnover_rate", "adj_factor"]
+            df = pd.read_parquet(path, columns=cols,
+                                 filters=[("ts_code", "in", ts_codes)])
+            if not df.empty:
+                df = df.rename(columns={"trade_date": "date", "vol": "volume",
+                                        "turnover_rate": "turnover"})
+                return _finalize_stock_df(df, adj=adj).tail(days).reset_index(drop=True)
         except Exception:
             pass
     panel = load_panel()
@@ -509,8 +377,7 @@ def load_stock_detail(code: str, days: int = 250, adj: str = "qfq") -> pd.DataFr
 
 def reset_caches() -> None:
     """数据更新后清空面板/代码缓存，避免 stale。"""
-    global _pg_panel_cache, _panel_codes_cache
-    _pg_panel_cache = {}
+    global _panel_codes_cache
     _panel_codes_cache = None
     reset_last_adj_cache()
 
@@ -691,7 +558,7 @@ def _file_entry(name: str, path: Path, desc: str, source: str, update: str) -> d
 
 
 def data_status() -> dict:
-    """返回所有数据源状态：本地行情文件 + 衍生缓存 + PostgreSQL + 舆情文件。"""
+    """返回所有数据源状态：本地行情文件 + 衍生缓存 + Tushare parquet + 舆情文件。"""
     files = [
         ("panel", _file_entry(
             "股票日线+因子面板", PANEL_FILE,
@@ -747,33 +614,6 @@ def data_status() -> dict:
     for key, name, path, desc in sentiment_files:
         out[key] = {"store": _file_entry(
             name, path, desc, "sentiment-mvp", "独立流水线 run_pipeline.py daily")}
-
-    pg_entry = _file_entry(
-        "PG 日线表 stock_daily", Path("PostgreSQL: public.stock_daily"),
-        "TimescaleDB 日线同步表（Tushare/本地面板）", "Tushare / 本地面板",
-        "一键更新 / refresh_data.py")
-    pg_entry["info"] = {}
-    try:
-        from . import sqldb as pg_mod
-        if pg_mod.configured():
-            pg_entry["exists"] = True
-            try:
-                df = pg_mod.query_df("SELECT max(trade_date) AS last_date FROM stock_daily")
-                if len(df) and df.iloc[0]["last_date"] is not None:
-                    pg_entry["info"]["last_date"] = str(df.iloc[0]["last_date"])
-            except Exception:
-                pass
-            try:
-                df = pg_mod.query_df(
-                    "SELECT reltuples::bigint AS n_rows FROM pg_class "
-                    "WHERE relname = 'stock_daily'")
-                if len(df) and df.iloc[0]["n_rows"] is not None and int(df.iloc[0]["n_rows"]) > 0:
-                    pg_entry["info"]["n_rows"] = int(df.iloc[0]["n_rows"])
-            except Exception:
-                pass
-    except Exception:
-        pass
-    out["pg_stock_daily"] = {"store": pg_entry}
 
     out["meta"] = load_meta()
     return out

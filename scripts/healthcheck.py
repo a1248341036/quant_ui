@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""quant_ui 健康检查：API + PostgreSQL + 数据新鲜度 + 磁盘。
+"""quant_ui 健康检查：API + Tushare parquet 新鲜度 + 磁盘。
 
 失败时（可选）推送企业微信机器人 webhook。配在 .env：
   ALERT_WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx
@@ -16,11 +16,6 @@ import sys
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-
-try:
-    import psycopg
-except ImportError:  # pragma: no cover
-    psycopg = None
 
 try:
     from dotenv import load_dotenv
@@ -62,25 +57,26 @@ def check_api() -> tuple[bool, str]:
         return False, f"API 不可达: {exc}"
 
 
-def check_pg() -> tuple[bool, str]:
-    dsn = os.getenv("PG_DSN", "").strip()
-    if not dsn:
-        return False, "PG_DSN 未配置"
-    if psycopg is None:
-        return False, "psycopg 未安装"
+def check_data() -> tuple[bool, str]:
+    """检查 Tushare 直写 parquet 的 stock_daily 最新交易日。"""
     try:
-        with psycopg.connect(dsn, connect_timeout=5) as conn, conn.cursor() as cur:
-            cur.execute("SELECT 1")
-            cur.fetchone()
-            cur.execute("SELECT max(trade_date) FROM stock_daily")
-            latest = cur.fetchone()[0]
+        import duckdb
+        con = duckdb.connect()
+        try:
+            row = con.execute(
+                "SELECT max(trade_date) FROM read_parquet(?)",
+                [str(ROOT / "data" / "pg_parquet" / "stock_daily.parquet")],
+            ).fetchone()
+            latest = row[0] if row and row[0] is not None else None
+        finally:
+            con.close()
         if latest is not None:
             age = (datetime.now(timezone.utc).date() - latest).days
             if age > 5:
-                return False, f"stock_daily 最新 {latest}，距今 {age} 天"
-        return True, f"PG OK，最新数据 {latest}"
+                return False, f"stock_daily.parquet 最新 {latest}，距今 {age} 天"
+        return True, f"Tushare parquet OK，最新数据 {latest}"
     except Exception as exc:
-        return False, f"PG: {exc}"
+        return False, f"数据检查: {exc}"
 
 
 def check_disk() -> tuple[bool, str]:
@@ -156,7 +152,7 @@ def send_qq_alert(text: str) -> None:
 def main() -> int:
     checks = [
         ("quant-api", *check_api()),
-        ("postgres", *check_pg()),
+        ("data-parquet", *check_data()),
         ("disk", *check_disk()),
     ]
     failed = [f"{name}: {msg}" for name, ok, msg in checks if not ok]

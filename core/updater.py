@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pandas as pd
 
-from . import sqldb as pg
 from .data import load_fund_nav
 from .fetcher import update_data
 from .fund_engine import build_fund_panel
@@ -14,96 +13,53 @@ from .store import save_fund_panel
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-SYNC_SCRIPT = PROJECT_ROOT / "scripts" / "sync_postgres.py"
-EXPORT_SCRIPT = PROJECT_ROOT / "scripts" / "export_pg_to_parquet.py"
+SYNC_SCRIPT = PROJECT_ROOT / "scripts" / "sync_tushare_to_parquet.py"
 REBUILD_SCRIPT = PROJECT_ROOT / "scripts" / "rebuild_stock_panel_from_pg.py"
-# 运行时行情/财务来源：每日流式导出到 data/pg_parquet/，PG 不再承担运行读取
-EXPORT_DEFAULT_TABLES = "stock_daily,stock_basic,fina_indicator,income"
+STOCK_DAILY_PARQUET = PROJECT_ROOT / "data" / "pg_parquet" / "stock_daily.parquet"
 
 
-def sync_postgres(end: str) -> None:
-    """已切换 DuckDB：不再同步 PostgreSQL，保留签名兼容。"""
-    print("已切换 DuckDB，跳过 PostgreSQL 日线同步", flush=True)
-    return
+def _parquet_max_trade_date() -> str:
+    """查询 pg_parquet/stock_daily.parquet 最新交易日（轻量单行查询）。"""
     try:
-        if not pg.configured():
-            print("PG_DSN 未配置，跳过 PostgreSQL 日线同步", flush=True)
-            return
-        end_ts = pd.Timestamp(end)
-        max_date = _pg_max_trade_date()
-        if max_date:
-            latest = pd.Timestamp(max_date)
-            if latest >= end_ts:
-                print(f"PG stock_daily 最新 {max_date}，已是最新，跳过 Tushare 日线拉取",
-                      flush=True)
-                return
-            # 只拉最新已入库交易日之后的新交易日，不重复拉最近 10 天已入库数据
-            since = (latest + pd.Timedelta(days=1)).strftime("%Y%m%d")
+        import duckdb
+        con = duckdb.connect()
+        try:
+            row = con.execute(
+                "SELECT strftime(max(trade_date), '%Y-%m-%d') FROM "
+                "read_parquet(?)",
+                [str(STOCK_DAILY_PARQUET)],
+            ).fetchone()
+            return row[0] if row and row[0] else ""
+        finally:
+            con.close()
+    except Exception as exc:
+        print(f"查询 stock_daily.parquet 最新日期失败: {exc}",
+              file=sys.stderr, flush=True)
+        return ""
+
+
+def sync_market_data(end: str) -> None:
+    """Tushare 直写 parquet：按交易日增量拉日线并重建复权因子锚点。"""
+    try:
+        latest = _parquet_max_trade_date()
+        if latest:
+            since = (pd.Timestamp(latest) + pd.Timedelta(days=1)).strftime("%Y%m%d")
         else:
-            since = (end_ts - pd.Timedelta(days=10)).strftime("%Y%m%d")
-        # 股票日线由 Tushare 不复权价负责（--daily-since），不把腾讯/面板的
-        # 前复权价写回 stock_daily：否则会覆盖 PG 里的不复权原始价，
-        # 导致“历史价随最新行情漂移”和复权因子二次调整。
+            since = (pd.Timestamp(end) - pd.Timedelta(days=10)).strftime("%Y%m%d")
         r = subprocess.run(
-            [sys.executable, str(SYNC_SCRIPT), "--daily-since", since],
+            [sys.executable, str(SYNC_SCRIPT), "--daily-since", since, "--last-adj"],
             capture_output=True, text=True, timeout=3600,
         )
         print(r.stdout.strip(), flush=True)
         if r.returncode != 0:
             print(r.stderr.strip(), file=sys.stderr, flush=True)
     except Exception as exc:
-        print(f"PostgreSQL 日线同步失败（不影响 panel 更新）: {exc}",
-              file=sys.stderr, flush=True)
-
-
-def _pg_max_trade_date() -> str:
-    """查询 PostgreSQL stock_daily 最新交易日（轻量单行查询）。"""
-    try:
-        if not pg.configured():
-            return ""
-        with pg.get_conn() as conn, conn.cursor() as cur:
-            cur.execute("SELECT max(trade_date)::text FROM stock_daily")
-            row = cur.fetchone()
-            return row[0] if row and row[0] else ""
-    except Exception as exc:
-        print(f"查询 PG stock_daily 最新日期失败: {exc}",
-              file=sys.stderr, flush=True)
-        return ""
-
-
-def export_parquet(tables: str | None = None, batch: int = 50000) -> None:
-    """已切换 DuckDB：行情直接读本地 parquet，不再从 PG 导出。"""
-    print("已切换 DuckDB，跳过 PG->Parquet 导出", flush=True)
-    return
-    if not pg.configured():
-        print("PG_DSN 未配置，跳过 PG->Parquet 导出", flush=True)
-        return
-    tables = tables or EXPORT_DEFAULT_TABLES
-    cmd = [sys.executable, str(EXPORT_SCRIPT), "--tables", tables,
-           "--batch", str(batch)]
-    try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
-        print(r.stdout.strip(), flush=True)
-        if r.returncode != 0:
-            print(r.stderr.strip(), file=sys.stderr, flush=True)
-        else:
-            try:
-                from . import db
-                db.refresh_views()
-            except Exception as exc:
-                print(f"DuckDB 视图刷新失败: {exc}", file=sys.stderr, flush=True)
-    except Exception as exc:
-        print(f"PG->Parquet 导出失败（不影响主流程）: {exc}",
+        print(f"Tushare 日线同步失败（不影响 panel 更新）: {exc}",
               file=sys.stderr, flush=True)
 
 
 def rebuild_stock_panel() -> None:
-    """已切换 DuckDB：本地 panel 由增量拉取维护，不再从 PG 重建。"""
-    print("已切换 DuckDB，跳过股票 panel 重建", flush=True)
-    return
-    if not pg.configured():
-        print("PG_DSN 未配置，跳过股票 panel 重建", flush=True)
-        return
+    """从 pg_parquet/stock_daily.parquet 重建/增量更新股票 panel.parquet。"""
     try:
         r = subprocess.run(
             [sys.executable, str(REBUILD_SCRIPT)],
@@ -133,31 +89,25 @@ def rebuild_fund_panel() -> None:
 
 def refresh_all(mode: str = "incremental", end: str | None = None,
                 max_workers: int = 6, include_stocks: bool = True,
-                sync_pg: bool = True, export_parquet_tables: str | None = "stock_daily",
-                rebuild_panel: bool = True, progress=None) -> dict:
-    """一键全量刷新：行情源数据 + PostgreSQL 同步 + 股票 panel 重建 +
-    PG->Parquet + 基金衍生面板。"""
+                sync_tushare: bool = True, rebuild_panel: bool = True,
+                progress=None) -> dict:
+    """一键刷新：ETF/基金/指数源数据 + Tushare 直写 parquet + 股票/基金 panel。"""
     end = end or pd.Timestamp.today().strftime("%Y-%m-%d")
-    # 股票 panel 最终会从 PG 重建时，update_data 里再抓一遍股票日线属于冗余：
-    # 同一份 Tushare 数据会先被 sync_postgres 拉入 PG，随后 rebuild_stock_panel
-    # 又会从 PG 重建并覆盖刚抓出来的 panel。这种场景直接把股票抓取交给 PG 路径。
-    if include_stocks and sync_pg and rebuild_panel and pg.configured() and _pg_max_trade_date():
-        print("股票 panel 将从 PG 重建，跳过 update_data 中的股票日线抓取（避免重复拉取）",
+    # 股票 panel 最终会从 Tushare parquet 重建，update_data 里再抓一遍腾讯股票
+    # 日线属于冗余，直接跳过，避免重复拉取和面板被腾讯 qfq 价覆盖。
+    if include_stocks and rebuild_panel:
+        print("股票 panel 将从 Tushare parquet 重建，跳过 update_data 中的腾讯股票日线抓取",
               flush=True)
         include_stocks = False
     result = update_data(mode=mode, end=end, max_workers=max_workers,
                          progress=progress, include_stocks=include_stocks)
-    if sync_pg:
+    if sync_tushare:
         if progress:
-            progress(7, 7, "同步 PostgreSQL 日线...")
-        sync_postgres(end)
-    if export_parquet_tables:
-        if progress:
-            progress(7, 7, "导出 PG 数据到 Parquet...")
-        export_parquet(export_parquet_tables)
+            progress(7, 7, "同步 Tushare 日线到 Parquet...")
+        sync_market_data(end)
     if rebuild_panel:
         if progress:
-            progress(7, 7, "从 PG 重建股票 panel...")
+            progress(7, 7, "从 Tushare parquet 重建股票 panel...")
         rebuild_stock_panel()
     if progress:
         progress(7, 7, "重建基金衍生面板...")

@@ -950,8 +950,8 @@ def main():
             with c12:
                 bt_financial = st.checkbox(
                     "使用财务因子(ROE/PB/EP等)", value=False, key="bt_financial",
-                    help="从 PG 财务宽表读取基本面因子（当前为样例数据，全市场需"
-                         "先运行 scripts/sync_postgres.py --fina）")
+                    help="从 Tushare parquet 财务宽表读取基本面因子（当前为样例数据，"
+                         "全市场需先运行 scripts/sync_tushare_to_parquet.py --fina）")
             with c13:
                 bt_risk_neutral = st.checkbox(
                     "风险中性化(风格+行业)", value=False, key="bt_risk_neutral",
@@ -1891,9 +1891,9 @@ def main():
             else:
                 st.info("暂无事件")
 
-    # ---------------- 历史回测（PG 归档） ----------------
+    # ---------------- 历史回测（本地归档） ----------------
     elif page == "history":
-        st.markdown("### 历史回测（PG 归档）")
+        st.markdown("### 历史回测（本地归档）")
         st.caption("每次回测/对比/扫描自动落库，参数、指标、净值、交易可追溯。")
         from core import backtest_archive
         kind_map = {"": "全部", "backtest": "单策略回测", "compare": "多策略对比",
@@ -2167,7 +2167,7 @@ def main():
 
         st.markdown("#### 更新说明")
         st.markdown("""
-- **开始更新 / `refresh_data.py`**：刷新股票池、指数、行业分类、股票日线、ETF、场外基金净值，并同步 PostgreSQL `stock_daily`、重建基金衍生面板。
+- **开始更新 / `refresh_data.py`**：刷新股票池、指数、行业分类、股票日线、ETF、场外基金净值，并同步 Tushare 日线到 parquet、重建基金衍生面板。
 - **舆情数据**由 `~/quant/sentiment-mvp/run_pipeline.py daily` 独立更新，不跟随一键更新。
 - 状态只表示文件/表是否存在；数据新旧以「上次刷新 / 数据截至」为准。
 """)
