@@ -38,9 +38,9 @@ async def no_cache_html(request: Request, call_next):
 
 
 @app.on_event("startup")
-def _ensure_duckdb_schema() -> None:
+def _ensure_db_schema() -> None:
     """确保本地 DuckDB 归档表（backtest_runs/ledger/paper_*）存在，幂等。"""
-    from core import duckdb as duck_store
+    from core import sqldb as duck_store
     duck_store.create_schema()
 
 
