@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
 from fastapi import APIRouter
 from pydantic import BaseModel
 
@@ -21,26 +22,32 @@ class ReorderReq(BaseModel):
     names: list[str]
 
 
+def _clean_value(v):
+    if v is None:
+        return None
+    if isinstance(v, dict):
+        return {k: _clean_value(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_clean_value(x) for x in v]
+    if hasattr(v, "isoformat"):
+        return v.isoformat()
+    try:
+        f = float(v)
+        if np.isnan(f) or np.isinf(f):
+            return None
+    except (TypeError, ValueError):
+        pass
+    return v
+
+
 def _clean_df(df) -> list[dict]:
-    out = []
     if df is None or df.empty:
-        return out
-    for _, r in df.iterrows():
-        item = {}
-        for k, v in r.items():
-            if isinstance(v, float) and math.isnan(v):
-                item[k] = None
-            elif hasattr(v, "isoformat"):
-                item[k] = v.isoformat()
-            else:
-                item[k] = v
-        out.append(item)
-    return out
+        return []
+    return [{k: _clean_value(v) for k, v in r.items()} for _, r in df.iterrows()]
 
 
 def _clean_pool_row(r: dict) -> dict:
-    return {k: (None if isinstance(v, float) and math.isnan(v) else v)
-            for k, v in r.items()}
+    return {k: _clean_value(v) for k, v in r.items()}
 
 
 @router.get("/full")
