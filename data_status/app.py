@@ -22,7 +22,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
 from .collector import collect_all, ensure_logs_dir
-from .config import PARQUET_TABLES, TABLE_DATE_COLUMN
+from .config import DATASETS, PARQUET_TABLES, TABLE_DATE_COLUMN, TASK_CATALOG
 from .state import load_state
 from .tasks import TASK_DEFS, get_runner
 
@@ -126,7 +126,8 @@ def query(sql: str):
 
 @app.get("/api/defs")
 def defs() -> dict:
-    return {"task_types": sorted(TASK_DEFS), "tables": PARQUET_TABLES,
+    return {"task_types": sorted(TASK_DEFS), "task_defs": TASK_CATALOG,
+            "datasets": DATASETS, "tables": PARQUET_TABLES,
             "date_columns": TABLE_DATE_COLUMN}
 
 
@@ -186,6 +187,7 @@ input,select{padding:6px 8px;background:#0a0c10;border:1px solid #2a2f3a;color:#
 
 <script>
 const API='/api';
+let TASK_META={};
 async function j(url, opts){const r=await fetch(url,opts);if(!r.ok)throw new Error((await r.text()).slice(0,300));return r.json();}
 function esc(s){const d=document.createElement('div');d.textContent=s==null?'':String(s);return d.innerHTML;}
 function badge(s){const c=['ok','warn','critical','error','unknown'].includes(s)?s:'unknown';return `<span class="badge ${c}">${esc(s||'unknown')}</span>`;}
@@ -202,13 +204,15 @@ function render(s){
   const res=g.resources||{};
   if(res.memory){html+='<div class="card"><b>内存</b> 已用 '+esc(res.memory.used_pct)+'% · 可用 '+esc(Math.round(res.memory.available_bytes/1024/1024/1024*100)/100)+'GB</div>';}
   if(res.disk){html+='<div class="card"><b>磁盘</b> 可用 '+esc(res.disk.free_pct)+'% · '+esc(Math.round(res.disk.free_bytes/1024/1024/1024*100)/100)+'GB</div>';}
-  // parquet
-  const pq=g.parquet||{};
-  html+='<h2>Parquet ('+badge(pq.status)+')</h2><table><tr><th>表</th><th>行数</th><th>最新</th><th>大小</th><th>mtime</th></tr>';
-  for(const [name,f] of Object.entries(pq.files||{})){
-    html+=`<tr><td>${esc(name)}</td><td>${esc(f.rows)}</td><td>${esc(f.max_date)}</td><td>${f.size_bytes?esc(Math.round(f.size_bytes/1048576))+'MB':'—'}</td><td>${esc(f.mtime)}</td></tr>`;
+  // configured datasets
+  const ds=g.datasets||{};
+  for(const [group,items] of Object.entries(ds.groups||{})){
+    html+='<h2>'+esc(group)+' ('+badge(ds.status)+')</h2><table><tr><th>数据</th><th>状态</th><th>行数</th><th>最新</th><th>覆盖率</th><th>mtime</th></tr>';
+    for(const [id,f] of Object.entries(items||{})){
+      html+=`<tr><td>${esc(f.name||id)}</td><td>${badge(f.status)}</td><td>${esc(f.rows)}</td><td>${esc(f.max_date)}</td><td>${f.coverage_pct==null?'—':esc(f.coverage_pct)+'%'}</td><td>${esc(f.mtime||f.error)}</td></tr>`;
+    }
+    html+='</table>';
   }
-  html+='</table>';
   // sources
   const src=g.sources||{};
   html+='<h2>数据源同步 ('+badge(src.status)+')</h2><div class="card">交易日历最新 '+esc(src.calendar_max)+' · Tushare stock_daily 最新 '+esc(src.stock_daily_max)+' · 滞后 '+esc(src.lag_days)+' 天</div>';
@@ -224,7 +228,7 @@ function render(s){
 async function loadTasks(){
   const r=await j(API+'/tasks');
   document.getElementById('tasks').innerHTML='<table><tr><th>id</th><th>类型</th><th>状态</th><th>开始</th><th>结束</th><th>退出码</th><th></th></tr>'+
-    r.tasks.map(t=>`<tr><td>${esc(t.id)}</td><td>${esc(t.type)}</td><td>${badge(t.status)}</td><td>${esc(t.started_at||'')}</td><td>${esc(t.finished_at||'')}</td><td>${esc(t.exit_code==null?'':t.exit_code)}</td><td><a href="#" onclick="showTask('${esc(t.id)}')">日志</a></td></tr>`).join('')+'</table>';
+    r.tasks.map(t=>`<tr><td>${esc(t.id)}</td><td>${esc(TASK_META[t.type]||t.type)}</td><td>${badge(t.status)}</td><td>${esc(t.started_at||'')}</td><td>${esc(t.finished_at||'')}</td><td>${esc(t.exit_code==null?'':t.exit_code)}</td><td><a href="#" onclick="showTask('${esc(t.id)}')">日志</a></td></tr>`).join('')+'</table>';
 }
 async function showTask(id){
   const t=await j(API+'/tasks/'+id);
@@ -242,7 +246,11 @@ async function submitTask(){
 async function init(){
   document.getElementById('interval').textContent='300';
   const d=await j(API+'/defs');
-  document.getElementById('task-type').innerHTML=d.task_types.map(t=>`<option value="${t}">${t}</option>`).join('');
+  const byId=Object.fromEntries((d.task_defs||[]).map(x=>[x.id,x]));
+  TASK_META=Object.fromEntries((d.task_defs||[]).map(x=>[x.id,x.name||x.id]));
+  const groups={};
+  for(const id of d.task_types){const item=byId[id]||{id,name:id,group:'其他'};(groups[item.group]??=[]).push(item);}
+  document.getElementById('task-type').innerHTML=Object.entries(groups).map(([group,items])=>`<optgroup label="${esc(group)}">${items.map(t=>`<option value="${t.id}">${esc(t.name||t.id)}</option>`).join('')}</optgroup>`).join('');
   const s=await j(API+'/status');
   render(s);
   loadTasks();

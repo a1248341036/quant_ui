@@ -15,7 +15,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .config import LOGS_DIR, PYTHON, QUANT_UI_ROOT, SCRIPTS_DIR
+from .config import LOGS_DIR, PYTHON, QUANT_UI_ROOT, SCRIPTS_DIR, TASK_CATALOG
 from .state import load_tasks, save_tasks
 
 
@@ -23,82 +23,26 @@ def _utcnow() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-# Each task type maps to a script plus a whitelist of optional params.
-# Param value must be str/int/float/bool; bools become flags when True.
-TASK_DEFS = {
-    "healthcheck": {
-        "script": "healthcheck.py",
-        "params": {},
-    },
-    "sync-basic": {
-        "script": "sync_tushare_to_parquet.py",
-        "base": ["--basic"],
-        "params": {"sleep": float},
-    },
-    "sync-daily": {
-        "script": "sync_tushare_to_parquet.py",
-        "required": ["daily_since"],
-        "params": {
-            "daily_since": str,
-            "daily_workers": int,
-            "force": bool,
-            "sleep": float,
-            "last_adj": bool,
-        },
-    },
-    "sync-events": {
-        "script": "sync_tushare_to_parquet.py",
-        "base": ["--events"],
-        "params": {
-            "limit": int,
-            "workers": int,
-            "codes_file": str,
-            "sleep": float,
-        },
-    },
-    "sync-fina": {
-        "script": "sync_tushare_to_parquet.py",
-        "base": ["--fina"],
-        "params": {
-            "limit": int,
-            "workers": int,
-            "codes_file": str,
-            "sleep": float,
-        },
-    },
-    "sync-surv": {
-        "script": "sync_tushare_to_parquet.py",
-        "base": ["--surv"],
-        "params": {
-            "limit": int,
-            "workers": int,
-            "codes_file": str,
-            "sleep": float,
-        },
-    },
-    "sync-report-rc": {
-        "script": "sync_tushare_to_parquet.py",
-        "base": ["--report-rc"],
-        "params": {"sleep": float},
-    },
-    "refresh-data": {
-        "script": "refresh_data.py",
-        "params": {
-            "workers": int,
-            "skip_stock_panel": bool,
-            "no_sync_pg": bool,
-            "no_rebuild_panel": bool,
-        },
-    },
-    "rebuild-panel": {
-        "script": "rebuild_stock_panel_from_pg.py",
-        "params": {
-            "start": str,
-            "batch": int,
-            "force_full": bool,
-        },
-    },
-}
+_PARAM_TYPES = {"str": str, "int": int, "float": float, "bool": bool}
+
+
+def _task_defs() -> dict:
+    """Convert the JSON task catalog to the runner's validated command specs."""
+    defs = {}
+    for item in TASK_CATALOG:
+        spec = dict(item)
+        params = {}
+        for name, type_name in spec.get("params", {}).items():
+            try:
+                params[name] = _PARAM_TYPES[type_name]
+            except KeyError as exc:
+                raise ValueError(f"unknown task parameter type: {type_name}") from exc
+        spec["params"] = params
+        defs[spec["id"]] = spec
+    return defs
+
+
+TASK_DEFS = _task_defs()
 
 
 def _flag(name: str) -> str:

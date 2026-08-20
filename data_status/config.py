@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
 
 try:
@@ -20,29 +21,30 @@ PG_PARQUET_DIR = QUANT_UI_DATA_DIR / "pg_parquet"
 STATE_FILE = BASE_DIR / "state.json"
 TASKS_FILE = BASE_DIR / "tasks.json"
 LOGS_DIR = BASE_DIR / "logs"
+CATALOG_FILE = BASE_DIR / "catalog.json"
 PYTHON = os.getenv(
     "QUANT_UI_PYTHON",
     str(Path.home() / "stock-analyzer" / "local_venv" / "bin" / "python"),
 )
 
-# Date column used to judge freshness per parquet file.
-TABLE_DATE_COLUMN = {
-    "stock_daily": "trade_date",
-    "share_float": "ann_date",
-    "fina_indicator": "ann_date",
-    "income": "ann_date",
-    "balancesheet": "ann_date",
-    "cashflow": "ann_date",
-    "dividend": "ann_date",
-    "stk_surv": "surv_date",
-    "forecast": "ann_date",
-    "express": "ann_date",
-    "namechange": "ann_date",
-    "trade_cal": "cal_date",
-    "report_rc": "report_date",
-}
+def load_catalog() -> dict:
+    """Load the declarative dataset/task catalog used by status and task UI."""
+    with CATALOG_FILE.open(encoding="utf-8") as f:
+        catalog = json.load(f)
+    if not isinstance(catalog, dict):
+        raise ValueError("data_status/catalog.json must contain an object")
+    return catalog
 
-PARQUET_TABLES = list(TABLE_DATE_COLUMN) + ["stock_basic"]
+
+CATALOG = load_catalog()
+DATASETS = CATALOG.get("datasets", [])
+TASK_CATALOG = CATALOG.get("tasks", [])
+TABLE_DATE_COLUMN = {
+    item["id"]: item["date_column"]
+    for item in DATASETS
+    if item.get("kind") == "parquet" and item.get("date_column")
+}
+PARQUET_TABLES = [item["id"] for item in DATASETS if item.get("kind") == "parquet"]
 
 
 def load_env() -> None:
