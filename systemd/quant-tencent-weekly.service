@@ -13,4 +13,3 @@ CPUQuota=80%
 MemoryHigh=1G
 MemoryMax=1536M
 ExecStartPost=-/usr/bin/sudo -n /bin/systemctl --no-block try-restart quant-api.service
-ExecStartPost=-/usr/bin/sudo -n /bin/systemctl --no-block try-restart quant-ui.service

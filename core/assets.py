@@ -25,6 +25,8 @@ class AssetExecutionProfile:
     limit_flags: bool
     uses_intraday_execution: bool
     notes: str = ""
+    spread_bps: float = 0.0
+    min_commission: float = 0.0
 
 
 STOCK_PROFILE = AssetExecutionProfile(
@@ -33,7 +35,8 @@ STOCK_PROFILE = AssetExecutionProfile(
 )
 ETF_PROFILE = AssetExecutionProfile(
     "etf", "场内ETF", 100, 0.0003, 0.0003, False, True,
-    "先按场内ETF日线回测；申赎、IOPV、折溢价作为后续扩展。",
+    "日线使用前复权OHLCV；分红已反映在前复权价格，暂不重复现金分红。",
+    spread_bps=2.0, min_commission=5.0,
 )
 FUND_NAV_PROFILE = AssetExecutionProfile(
     "fund_nav", "场外基金", 1, 0.0015, 0.0050, False, False,

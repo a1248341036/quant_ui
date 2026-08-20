@@ -287,6 +287,8 @@ def run_backtest(
     max_positions: int | None = None,
     execution_profile: AssetExecutionProfile | None = None,
     share_classes: dict[str, str] | None = None,
+    spread_bps: float | None = None,
+    min_commission: float | None = None,
 ) -> dict:
     """事件驱动回测：T+1、一手 100 股、费用、可承载性过滤。
 
@@ -330,6 +332,8 @@ def run_backtest(
     max_weight: 单票权重上限（占组合市值比例），None 表示不限制。
     """
     profile = execution_profile or STOCK_PROFILE
+    spread_bps = profile.spread_bps if spread_bps is None else spread_bps
+    min_commission = profile.min_commission if min_commission is None else min_commission
     if profile.asset_type in ("etf", "fund_nav"):
         # ETF/基金入口使用各自默认费率；显式传入非股票默认费率时保留调用方配置。
         if buy_cost == STOCK_PROFILE.buy_cost:
@@ -555,6 +559,8 @@ def run_backtest(
             buy_cost=buy_cost, sell_cost=sell_cost, lot_size=lot_size,
             slippage_bps=slippage_bps,
             max_participation=max_participation,
+            spread_bps=spread_bps,
+            min_commission=min_commission,
         )
         if adapter_cls is FundNavExecutionAdapter:
             # 传入 A/C 类信息，供申购费率判断

@@ -294,6 +294,7 @@ def fetch_etf_daily_bars(
     else:
         panel = new
     panel = panel[(panel["open"] > 0) & (panel["close"] > 0)]
+    panel["price_basis"] = "qfq"
     panel = panel.sort_values(["code", "date"]).reset_index(drop=True)
     panel = _add_rolling_factors(panel)
     return _compact_panel(panel)

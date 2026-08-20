@@ -37,6 +37,8 @@ class AccountRequest(BaseModel):
     warmup_days: int | None = 400
     buy_cost: float = 0.0008
     sell_cost: float = 0.0013
+    spread_bps: float = 0.0
+    min_commission: float = 0.0
     lot_size: int = 100
     limit_flags: bool = True
 
@@ -133,12 +135,24 @@ def account_create(req: AccountRequest):
         if req.universe == "场外基金":
             return {"error": "场外基金模拟盘尚未接入，请先使用 ETF/股票池或回测验证基金策略"}
         risk = dict(req.risk_config or {})
+        if req.universe == "ETF":
+            from core.assets import ETF_PROFILE
+            if "buy_cost" not in risk and req.buy_cost == 0.0008:
+                risk["buy_cost"] = ETF_PROFILE.buy_cost
+            if "sell_cost" not in risk and req.sell_cost == 0.0013:
+                risk["sell_cost"] = ETF_PROFILE.sell_cost
+            if "spread_bps" not in risk and req.spread_bps == 0.0:
+                risk["spread_bps"] = ETF_PROFILE.spread_bps
+            if "min_commission" not in risk and req.min_commission == 0.0:
+                risk["min_commission"] = ETF_PROFILE.min_commission
         for key, val in (
             ("slippage_bps", req.slippage_bps),
             ("max_participation", req.max_participation),
             ("warmup_days", req.warmup_days),
             ("buy_cost", req.buy_cost),
             ("sell_cost", req.sell_cost),
+            ("spread_bps", req.spread_bps),
+            ("min_commission", req.min_commission),
             ("lot_size", req.lot_size),
             ("limit_flags", req.limit_flags),
         ):

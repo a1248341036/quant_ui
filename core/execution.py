@@ -46,6 +46,8 @@ class _CashExecutionAdapter:
         lot_size: int,
         slippage_bps: float,
         max_participation: float,
+        spread_bps: float = 0.0,
+        min_commission: float = 0.0,
     ) -> None:
         self.codes = codes
         self.open_mat = open_mat
@@ -60,6 +62,11 @@ class _CashExecutionAdapter:
         self.lot_size = int(lot_size)
         self.slippage = float(slippage_bps) / 1e4
         self.max_participation = float(max_participation)
+        self.spread = float(spread_bps) / 1e4
+        self.min_commission = max(float(min_commission), 0.0)
+
+    def _fee(self, amount: float, rate: float) -> float:
+        return max(amount * rate, self.min_commission) if amount > 0 else 0.0
 
     def execute_stop_losses(
         self,
@@ -85,9 +92,9 @@ class _CashExecutionAdapter:
                 continue
             if self.limit_down is not None and self.limit_down[exec_idx, k]:
                 continue
-            px = float(self.open_mat[exec_idx, k]) * (1.0 - self.slippage)
+            px = float(self.open_mat[exec_idx, k]) * (1.0 - self.slippage - self.spread)
             amount = shares * px
-            fee = amount * self.sell_cost
+            fee = self._fee(amount, self.sell_cost)
             result.cash += amount - fee
             result.positions.pop(k)
             result.sell_amount += amount
@@ -143,9 +150,9 @@ class StockExecutionAdapter(_CashExecutionAdapter):
                     "status": "rejected", "reason": "跌停卖不出",
                 })
                 continue
-            px = float(self.open_mat[exec_idx, k]) * (1.0 - self.slippage)
+            px = float(self.open_mat[exec_idx, k]) * (1.0 - self.slippage - self.spread)
             amount = shares * px
-            fee = amount * self.sell_cost
+            fee = self._fee(amount, self.sell_cost)
             result.cash += amount - fee
             result.sell_amount += amount
             result.positions.pop(k)
@@ -189,7 +196,7 @@ class StockExecutionAdapter(_CashExecutionAdapter):
                     "status": "rejected", "reason": "无成交量",
                 })
                 continue
-            px = float(self.open_mat[exec_idx, k]) * (1.0 + self.slippage)
+            px = float(self.open_mat[exec_idx, k]) * (1.0 + self.slippage + self.spread)
             pct = targets[k]
             if max_weight:
                 pct = min(pct, float(max_weight))
@@ -209,7 +216,7 @@ class StockExecutionAdapter(_CashExecutionAdapter):
                 })
                 continue
             shares = lots * self.lot_size
-            fee = shares * px * self.buy_cost
+            fee = self._fee(shares * px, self.buy_cost)
             amount = shares * px
             result.cash -= amount + fee
             result.buy_amount += amount

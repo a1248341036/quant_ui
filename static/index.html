@@ -165,6 +165,7 @@
     tbody tr:hover { background: rgb(255 255 255 / .025); }
     tbody tr:last-child td { border-bottom: none; }
     .chart { width: 100%; height: 340px; }
+    .chart.heatmap { height: 360px; }
     .chart.small { height: 220px; }
     .muted { color: var(--muted); font-size: 12px; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; word-break: break-all; }
@@ -702,6 +703,7 @@
           <div class="metric"><div class="label">基准最大回撤</div><div class="value" :class="sign(benchInfo.metrics.mdd)">{{pct(benchInfo.metrics.mdd)}}</div></div>
         </div>
         <div class="card"><h3>资金曲线（策略 vs 基准）</h3><div id="btEquity" class="chart"></div></div>
+        <div class="card"><h3>月度收益热力图</h3><div id="btMonthly" class="chart heatmap"></div><p class="muted">按回测净值计算；首月和末月按实际区间统计，年度列为月度收益复合值。</p></div>
         <div class="card"><h3>回撤</h3><div id="btDraw" class="chart small"></div></div>
         <div class="card" v-if="btResult.factor_quality">
           <h3>因子质量分析（未来 20 日收益 · Spearman IC / 5 分组）</h3>
@@ -832,6 +834,7 @@
           <div class="metric"><div class="label">基准最大回撤</div><div class="value" :class="sign(benchInfo.metrics.mdd)">{{pct(benchInfo.metrics.mdd)}}</div></div>
         </div>
         <div class="card"><h3>资金曲线（策略 vs 基准）</h3><div id="compEquity" class="chart"></div></div>
+        <div class="card"><h3>月度收益热力图</h3><div id="compMonthly" class="chart heatmap"></div><p class="muted">按组合净值计算；首月和末月按实际区间统计，年度列为月度收益复合值。</p></div>
         <div class="card"><h3>回撤</h3><div id="compDraw" class="chart small"></div></div>
         <div class="grid" style="grid-template-columns:1fr 1fr">
           <div class="card"><h3>持仓明细</h3>
@@ -1550,6 +1553,50 @@ function renderLine(id, series, height) {
     })
   }, true);
 }
+function monthlyReturnCells(points) {
+  if (!Array.isArray(points) || points.length < 2) return null;
+  const months = {};
+  for (const p of points) {
+    const date = String(p.date || '').slice(0, 10);
+    const value = Number(p.value);
+    if (!date || !Number.isFinite(value) || value <= 0) continue;
+    const key = date.slice(0, 7);
+    if (!months[key]) months[key] = { first: value, last: value };
+    else months[key].last = value;
+  }
+  const keys = Object.keys(months).sort();
+  const years = [...new Set(keys.map(k => k.slice(0, 4)))].sort();
+  if (!keys.length || !years.length) return null;
+  const yearIndex = Object.fromEntries(years.map((y, i) => [y, i]));
+  const annual = Object.fromEntries(years.map(y => [y, 1]));
+  const data = [];
+  for (const key of keys) {
+    const ret = months[key].last / months[key].first - 1;
+    const year = key.slice(0, 4);
+    const month = Number(key.slice(5, 7)) - 1;
+    annual[year] *= 1 + ret;
+    data.push({ value: [month, yearIndex[year], ret * 100] });
+  }
+  for (const year of years) {
+    data.push({ value: [12, yearIndex[year], (annual[year] - 1) * 100] });
+  }
+  return { years, data };
+}
+function renderMonthlyHeatmap(id, points) {
+  const c = chart(id);
+  if (!c) return;
+  const result = monthlyReturnCells(points);
+  if (!result) { c.clear(); return; }
+  const maxAbs = Math.max(1, ...result.data.map(x => Math.abs(x.value[2])));
+  c.setOption({
+    tooltip: { formatter: p => `${result.years[p.value[1]]} · ${p.value[0] === 12 ? '年度' : `${p.value[0] + 1}月`}: <b>${Number(p.value[2]).toFixed(2)}%</b>` },
+    grid: { left: 54, right: 82, top: 24, bottom: 48 },
+    xAxis: { type: 'category', position: 'top', data: ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月','年度'], axisLabel: { color: '#8494b5' } },
+    yAxis: { type: 'category', data: result.years, inverse: true, axisLabel: { color: '#8494b5' } },
+    visualMap: { min: -maxAbs, max: maxAbs, calculable: false, orient: 'vertical', right: 0, top: 'middle', text: ['正','负'], textStyle: { color: '#8494b5' }, inRange: { color: ['#c94b55', '#27344d', '#35b779'] } },
+    series: [{ type: 'heatmap', data: result.data, label: { show: true, color: '#e6ecf7', formatter: p => `${Number(p.value[2]).toFixed(2)}%` }, emphasis: { itemStyle: { shadowBlur: 8, shadowColor: 'rgba(255,255,255,0.35)' } } }]
+  }, true);
+}
 function renderBar(id, names, values) {
   const c = chart(id);
   if (!c) return;
@@ -2090,6 +2137,7 @@ const app = createApp({
         this.benchInfo = { name: '', metrics: null };
       }
       renderLine('btEquity', series);
+      renderMonthlyHeatmap('btMonthly', nav);
       const dd = this.btResult.drawdown;
       renderLine('btDraw', [{ name: '回撤', dates: dd.map(x => x.date), values: dd.map(x => +(x.value * 100).toFixed(2)), fill: true }]);
       const ic = this.btResult.factor_quality;
@@ -2212,6 +2260,7 @@ const app = createApp({
         this.benchInfo = { name: '', metrics: null };
       }
       renderLine('compEquity', series);
+      renderMonthlyHeatmap('compMonthly', nav);
       const dd = this.compResult.drawdown;
       renderLine('compDraw', [{ name: '回撤', dates: dd.map(x => x.date), values: dd.map(x => +(x.value * 100).toFixed(2)), fill: true }]);
     },

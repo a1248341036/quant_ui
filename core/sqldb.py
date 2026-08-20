@@ -158,6 +158,10 @@ def create_schema() -> None:
                 con.execute(stmt)
             except Exception as exc:  # noqa: BLE001
                 print(f"[sqldb] 建表语句失败（忽略）: {stmt[:60]} ... {exc}", flush=True)
+        try:
+            con.execute("ALTER TABLE backtest_runs ADD COLUMN data_snapshot_hash TEXT")
+        except Exception:
+            pass
     finally:
         con.close()
 

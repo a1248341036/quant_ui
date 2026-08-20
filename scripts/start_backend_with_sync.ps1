@@ -9,4 +9,4 @@ $env:PYTHONIOENCODING = "utf-8"
 & $python (Join-Path $PSScriptRoot "startup_remote_sync.py")
 
 # Preserve the existing local backend startup command.
-& $python -m uvicorn backend.main:app --host 0.0.0.0 --port 17891
+& $python -m uvicorn backend.main:app --host 127.0.0.1 --port 17891
