@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import time
+import csv
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -24,6 +25,7 @@ from .config import (
     QUANT_UI_ROOT,
     SCRIPTS_DIR,
     TABLE_DATE_COLUMN,
+    DATASETS,
 )
 from .state import load_state, save_state
 
@@ -32,8 +34,14 @@ def _utcnow() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _parquet_stats(name: str) -> dict | None:
-    path = PG_PARQUET_DIR / f"{name}.parquet"
+def _dataset_path(item: dict) -> Path:
+    path = Path(item["path"])
+    return path if path.is_absolute() else QUANT_UI_ROOT / path
+
+
+def _parquet_stats(item: dict) -> dict | None:
+    name = item["id"]
+    path = _dataset_path(item)
     if not path.exists():
         return None
     stat = path.stat()
@@ -47,7 +55,7 @@ def _parquet_stats(name: str) -> dict | None:
     try:
         md = pq.ParquetFile(path).metadata
         base["rows"] = md.num_rows
-        date_col = TABLE_DATE_COLUMN.get(name)
+        date_col = item.get("date_column") or TABLE_DATE_COLUMN.get(name)
         if date_col:
             col_idx = {md.schema.column(i).name: i for i in range(md.num_columns)}
             if date_col in col_idx:
@@ -66,15 +74,87 @@ def _parquet_stats(name: str) -> dict | None:
 
 def collect_parquet() -> dict:
     out = {"status": "ok", "files": {}}
-    missing = [t for t in PARQUET_TABLES
-               if not (PG_PARQUET_DIR / f"{t}.parquet").exists()]
+    items = [item for item in DATASETS if item.get("kind") == "parquet"]
+    missing = [item["id"] for item in items
+               if item.get("required", True) and not _dataset_path(item).exists()]
     if missing:
         out["status"] = "warn"
         out["missing"] = missing
-    for name in PARQUET_TABLES:
-        stats = _parquet_stats(name)
+    for item in items:
+        stats = _parquet_stats(item)
         if stats is not None:
-            out["files"][name] = stats
+            stats["name"] = item.get("name", item["id"])
+            out["files"][item["id"]] = stats
+    return out
+
+
+def collect_csv_dataset(item: dict) -> dict:
+    """Collect lightweight row/coverage stats for a configured CSV dataset."""
+    path = _dataset_path(item)
+    out = {"status": "warn", "path": str(path), "name": item.get("name", item["id"])}
+    if not path.exists():
+        out["error"] = f"{path.name} not found"
+        return out
+    try:
+        stat = path.stat()
+        out.update({
+            "size_bytes": stat.st_size,
+            "mtime": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+        })
+        key_column = item.get("key_column", "code")
+        status_column = item.get("status_column")
+        success_value = str(item.get("success_value", "ok")).lower()
+        fields = item.get("fields", [])
+        counts = {"rows": 0, "ok_rows": 0, "error_rows": 0}
+        counts.update({f"{field}_rows": 0 for field in fields})
+        with path.open(newline="", encoding="utf-8-sig") as f:
+            for row in csv.DictReader(f):
+                if not str(row.get(key_column, "")).strip():
+                    continue
+                counts["rows"] += 1
+                if status_column and str(row.get(status_column, "")).strip().lower() == success_value:
+                    counts["ok_rows"] += 1
+                elif status_column:
+                    counts["error_rows"] += 1
+                for field in fields:
+                    if str(row.get(field, "")).strip():
+                        counts[f"{field}_rows"] += 1
+        out.update(counts)
+        rows = counts["rows"]
+        out["coverage_pct"] = round(counts["ok_rows"] / rows * 100, 1) if rows else 0.0
+        out["status"] = "critical" if rows == 0 else "ok" if not status_column or counts["ok_rows"] / rows >= 0.8 else "warn"
+        if rows == 0:
+            out["error"] = f"{path.name} has no rows"
+    except Exception as exc:
+        out["status"] = "error"
+        out["error"] = str(exc)
+    return out
+
+
+def collect_configured_datasets() -> dict:
+    out = {"status": "ok", "groups": {}, "files": {}}
+    for item in DATASETS:
+        if item.get("kind") == "parquet":
+            stats = _parquet_stats(item)
+            if stats is None:
+                stats = {
+                    "status": "warn",
+                    "name": item.get("name", item["id"]),
+                    "path": str(_dataset_path(item)),
+                    "error": "file not found",
+                }
+        elif item.get("kind") == "csv":
+            stats = collect_csv_dataset(item)
+        else:
+            continue
+        group = item.get("group", "其他")
+        out["groups"].setdefault(group, {})[item["id"]] = stats
+        if item.get("kind") == "parquet":
+            out["files"][item["id"]] = stats
+        if stats.get("status") in ("critical", "error"):
+            out["status"] = "critical"
+        elif stats.get("status") == "warn" and out["status"] == "ok":
+            out["status"] = "warn"
     return out
 
 
@@ -142,7 +222,7 @@ def collect_services() -> dict:
     # quant-api health endpoint.
     import urllib.request
     try:
-            with urllib.request.urlopen("http://127.0.0.1:17891/api/health", timeout=5) as r:
+        with urllib.request.urlopen("http://127.0.0.1:8080/api/health", timeout=5) as r:
             out["checks"]["quant-api"] = {"ok": r.status == 200, "detail": f"HTTP {r.status}"}
     except Exception as exc:
         out["checks"]["quant-api"] = {"ok": False, "detail": str(exc)}
@@ -247,10 +327,11 @@ def _alert(state: dict, groups: dict[str, dict]) -> None:
 
 def collect_all(alert: bool = True) -> dict:
     started = time.time()
+    dataset_data = collect_configured_datasets()
     groups = {
-        "parquet": collect_parquet(),
+        "datasets": dataset_data,
     }
-    groups["sources"] = collect_sources(groups["parquet"])
+    groups["sources"] = collect_sources(dataset_data)
     groups["services"] = collect_services()
     groups["resources"] = collect_resources()
     state = {

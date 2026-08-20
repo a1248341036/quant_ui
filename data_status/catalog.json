@@ -1,0 +1,31 @@
+{
+  "datasets": [
+    {"id": "stock_daily", "name": "股票日线", "group": "股票与Tushare", "kind": "parquet", "path": "data/pg_parquet/stock_daily.parquet", "date_column": "trade_date", "required": true},
+    {"id": "stock_basic", "name": "股票基础资料", "group": "股票与Tushare", "kind": "parquet", "path": "data/pg_parquet/stock_basic.parquet", "required": true},
+    {"id": "share_float", "name": "股本数据", "group": "股票与Tushare", "kind": "parquet", "path": "data/pg_parquet/share_float.parquet", "date_column": "ann_date", "required": true},
+    {"id": "fina_indicator", "name": "财务指标", "group": "股票与Tushare", "kind": "parquet", "path": "data/pg_parquet/fina_indicator.parquet", "date_column": "ann_date", "required": true},
+    {"id": "income", "name": "利润表", "group": "股票与Tushare", "kind": "parquet", "path": "data/pg_parquet/income.parquet", "date_column": "ann_date", "required": true},
+    {"id": "balancesheet", "name": "资产负债表", "group": "股票与Tushare", "kind": "parquet", "path": "data/pg_parquet/balancesheet.parquet", "date_column": "ann_date", "required": true},
+    {"id": "cashflow", "name": "现金流量表", "group": "股票与Tushare", "kind": "parquet", "path": "data/pg_parquet/cashflow.parquet", "date_column": "ann_date", "required": true},
+    {"id": "dividend", "name": "分红数据", "group": "股票与Tushare", "kind": "parquet", "path": "data/pg_parquet/dividend.parquet", "date_column": "ann_date", "required": true},
+    {"id": "stk_surv", "name": "股票调研", "group": "股票与Tushare", "kind": "parquet", "path": "data/pg_parquet/stk_surv.parquet", "date_column": "surv_date", "required": true},
+    {"id": "forecast", "name": "业绩预告", "group": "股票与Tushare", "kind": "parquet", "path": "data/pg_parquet/forecast.parquet", "date_column": "ann_date", "required": true},
+    {"id": "express", "name": "业绩快报", "group": "股票与Tushare", "kind": "parquet", "path": "data/pg_parquet/express.parquet", "date_column": "ann_date", "required": true},
+    {"id": "namechange", "name": "股票名称变更", "group": "股票与Tushare", "kind": "parquet", "path": "data/pg_parquet/namechange.parquet", "date_column": "ann_date", "required": true},
+    {"id": "trade_cal", "name": "交易日历", "group": "股票与Tushare", "kind": "parquet", "path": "data/pg_parquet/trade_cal.parquet", "date_column": "cal_date", "required": true},
+    {"id": "report_rc", "name": "研报评级", "group": "股票与Tushare", "kind": "parquet", "path": "data/pg_parquet/report_rc.parquet", "date_column": "report_date", "required": true},
+    {"id": "fund_fee", "name": "基金费率", "group": "基金与ETF", "kind": "csv", "path": "data/fund_fee.csv", "key_column": "code", "status_column": "fee_status", "success_value": "ok", "fields": ["purchase_fee_rate", "management_fee_rate", "custodian_fee_rate", "sales_service_fee_rate", "redemption_fee_rule"], "required": false}
+  ],
+  "tasks": [
+    {"id": "refresh-data", "name": "日常增量刷新", "group": "日常刷新", "script": "refresh_data.py", "params": {"workers": "int", "skip_stock_panel": "bool", "no_sync_pg": "bool", "no_rebuild_panel": "bool", "no_fund_fees": "bool"}},
+    {"id": "refresh-fund-fees", "name": "刷新基金费率", "group": "日常刷新", "script": "refresh_fund_fees.py", "params": {"workers": "int", "limit": "int", "refresh_existing": "bool"}},
+    {"id": "healthcheck", "name": "运行健康检查", "group": "运维检查", "script": "healthcheck.py", "params": {}},
+    {"id": "rebuild-panel", "name": "重建股票面板", "group": "修复与重建", "script": "rebuild_stock_panel_from_pg.py", "params": {"start": "str", "batch": "int", "force_full": "bool"}},
+    {"id": "sync-basic", "name": "补股票基础资料", "group": "专项补数", "script": "sync_tushare_to_parquet.py", "base": ["--basic"], "params": {"sleep": "float"}},
+    {"id": "sync-daily", "name": "补股票日线", "group": "专项补数", "script": "sync_tushare_to_parquet.py", "required": ["daily_since"], "params": {"daily_since": "str", "daily_workers": "int", "force": "bool", "sleep": "float", "last_adj": "bool"}},
+    {"id": "sync-events", "name": "补股票事件", "group": "专项补数", "script": "sync_tushare_to_parquet.py", "base": ["--events"], "params": {"limit": "int", "workers": "int", "codes_file": "str", "sleep": "float"}},
+    {"id": "sync-fina", "name": "补财务数据", "group": "专项补数", "script": "sync_tushare_to_parquet.py", "base": ["--fina"], "params": {"limit": "int", "workers": "int", "codes_file": "str", "sleep": "float"}},
+    {"id": "sync-surv", "name": "补股票调研", "group": "专项补数", "script": "sync_tushare_to_parquet.py", "base": ["--surv"], "params": {"limit": "int", "workers": "int", "codes_file": "str", "sleep": "float"}},
+    {"id": "sync-report-rc", "name": "补研报评级", "group": "专项补数", "script": "sync_tushare_to_parquet.py", "base": ["--report-rc"], "params": {"sleep": "float"}}
+  ]
+}
