@@ -130,7 +130,7 @@ def accounts():
 @router.post("/paper/accounts")
 def account_create(req: AccountRequest):
     try:
-        if req.universe == "场外科技基金":
+        if req.universe == "场外基金":
             return {"error": "场外基金模拟盘尚未接入，请先使用 ETF/股票池或回测验证基金策略"}
         risk = dict(req.risk_config or {})
         for key, val in (

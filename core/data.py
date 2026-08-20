@@ -8,9 +8,9 @@ from pathlib import Path
 
 import pandas as pd
 
-from .store import (DATA_DIR, ETF_FILE, ETF_PANEL_FILE, FUND_FILE, FUND_NAV_FILE,
-                    FUND_PANEL_FILE, INDEX_FILE, LEGACY_DATA_DIR, PANEL_FILE,
-                    PG_PARQUET_DIR, SENTIMENT_DIR, TECH_FILE, UNIVERSE_FILE,
+from .store import (DATA_DIR, ETF_FILE, ETF_PANEL_FILE, FUND_FILE, FUND_FEE_FILE,
+                    FUND_NAV_FILE, FUND_PANEL_FILE, INDEX_FILE, LEGACY_DATA_DIR, PANEL_FILE,
+                    PG_PARQUET_DIR, PRED_FILE, SENTIMENT_DIR, TECH_FILE, UNIVERSE_FILE,
                     load_meta)
 
 
@@ -375,6 +375,29 @@ def load_stock_detail(code: str, days: int = 250, adj: str = "qfq") -> pd.DataFr
     return sub.tail(days).reset_index(drop=True)
 
 
+def load_pred_scores(codes: list[str] | None = None,
+                     cal: pd.DatetimeIndex | None = None) -> pd.DataFrame | None:
+    """读 qweave 研究层输出的 ML 预测分数（data/pred_demo.parquet）。
+
+    返回 date x code 的 score 矩阵，对齐到 cal 交易日历；文件不存在返回 None。
+    """
+    if not PRED_FILE.exists():
+        return None
+    df = pd.read_parquet(PRED_FILE)
+    if df.empty or "score" not in df.columns:
+        return None
+    df = df.copy()
+    df["date"] = pd.to_datetime(df["date"])
+    df["code"] = df["code"].astype(str).str.zfill(6)
+    mat = df.pivot_table(index="date", columns="code", values="score",
+                         aggfunc="last").sort_index()
+    if cal is not None:
+        mat = mat.reindex(cal)
+    if codes is not None:
+        mat = mat.reindex(columns=[str(c).zfill(6) for c in codes])
+    return mat
+
+
 def reset_caches() -> None:
     """数据更新后清空面板/代码缓存，避免 stale。"""
     global _panel_codes_cache
@@ -438,6 +461,8 @@ def load_etf_panel(start: str | None = None,
         if c in panel.columns and panel[c].dtype == "float64":
             panel[c] = panel[c].astype("float32")
     panel["code"] = panel["code"].astype("category")
+    from .assets import ETF_PROFILE, validate_ohlcv_panel
+    validate_ohlcv_panel(panel, ETF_PROFILE)
     return panel
 
 
@@ -580,7 +605,10 @@ def data_status() -> dict:
             "ETF 日线，结构与股票面板一致", "腾讯行情", "一键更新")),
         ("fund", _file_entry(
             "场外基金池", FUND_FILE,
-            "科技相关场外基金（股票/混合/指数/QDII）", "天天基金（akshare）", "一键更新")),
+            "全市场权益类场外基金（股票/混合/指数/QDII）", "天天基金（akshare）", "一键更新")),
+        ("fund_fee", _file_entry(
+            "基金费率", FUND_FEE_FILE,
+            "申购、管理、托管、销售服务及赎回费率", "天天基金（akshare）", "一键更新 / refresh_fund_fees.py")),
         ("fund_nav", _file_entry(
             "场外基金净值", FUND_NAV_FILE,
             "逐只基金单位净值历史", "天天基金（akshare）", "一键更新")),
@@ -617,3 +645,4 @@ def data_status() -> dict:
 
     out["meta"] = load_meta()
     return out
+

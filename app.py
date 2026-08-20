@@ -540,7 +540,7 @@ def build_codes(universe: str, exclude_kechuang: bool, panel, uni, tech) -> list
         if not etf_panel_codes:
             return []
         return sorted(set(load_etf()["code"]) & etf_panel_codes)
-    elif normalize_universe(universe) == "场外科技基金":
+    elif normalize_universe(universe) == "场外基金":
         from core.data import load_fund, load_fund_nav_codes
         fund_nav_codes = load_fund_nav_codes()
         if not fund_nav_codes:
@@ -901,7 +901,7 @@ def main():
         with st.container(border=True):
             c1, c2, c3, c4 = st.columns(4)
             with c1:
-                universe = st.selectbox("股票池", ["科技TMT", "沪深300+中证500+中证1000", "ETF", "场外科技基金"], key="bt_universe")
+                universe = st.selectbox("股票池", ["科技TMT", "沪深300+中证500+中证1000", "ETF", "场外基金"], key="bt_universe")
             with c2:
                 bt_scope = strategy_scope_ui("bt_scope")
                 strategy = st.selectbox("策略", strategy_options(bt_scope), key="bt_strategy",
@@ -1006,10 +1006,13 @@ def main():
                     st.session_state["bt_result"] = res
                     try:
                         from core.attribution import brinson_attribution
-                        b_detail, b_summary = brinson_attribution(
-                            panel, codes, res["weight_history"],
-                            res["dates"], ind_map or get_industry_map(tech))
-                        st.session_state["bt_brinson"] = (b_detail, b_summary)
+                        if universe == "ETF":
+                            st.session_state["bt_brinson"] = None
+                        else:
+                            b_detail, b_summary = brinson_attribution(
+                                panel, codes, res["weight_history"],
+                                res["dates"], ind_map or get_industry_map(tech))
+                            st.session_state["bt_brinson"] = (b_detail, b_summary)
                     except Exception:
                         st.session_state["bt_brinson"] = None
                     st.session_state["bt_desc"] = (
@@ -1115,7 +1118,7 @@ def main():
         with st.container(border=True):
             c1, c2, c3, c4 = st.columns(4)
             with c1:
-                comp_universe = st.selectbox("股票池", ["科技TMT", "沪深300+中证500+中证1000", "ETF", "场外科技基金"],
+                comp_universe = st.selectbox("股票池", ["科技TMT", "沪深300+中证500+中证1000", "ETF", "场外基金"],
                                              key="comp_universe")
             with c2:
                 comp_top_n = st.select_slider("TopN", options=[1, 2, 3, 5, 8, 10],
@@ -1331,7 +1334,7 @@ def main():
             st.markdown("**运行参数**")
             rc1, rc2, rc3, rc4 = st.columns(4)
             with rc1:
-                lab_universe = st.selectbox("股票池", ["科技TMT", "沪深300+中证500+中证1000", "ETF", "场外科技基金"],
+                lab_universe = st.selectbox("股票池", ["科技TMT", "沪深300+中证500+中证1000", "ETF", "场外基金"],
                                             key="lab_universe")
             with rc2:
                 _lab_strats = st.session_state["lab_strategies"] or ["低换手冷门"]
@@ -1664,7 +1667,7 @@ def main():
                 pa_strategy = st.selectbox("策略", strategy_options(pa_scope), key="pa_strategy",
                                            format_func=strategy_display)
             with c3:
-                pa_universe = st.selectbox("股票池", ["科技TMT", "沪深300+中证500+中证1000", "ETF", "场外科技基金"],
+                pa_universe = st.selectbox("股票池", ["科技TMT", "沪深300+中证500+中证1000", "ETF", "场外基金"],
                                            key="pa_universe")
             with c4:
                 pa_freq = st.selectbox("调仓频率", ["daily", "weekly", "monthly", "semiannual"],
@@ -1941,7 +1944,7 @@ def main():
         with st.container(border=True):
             s1, s2 = st.columns(2)
             with s1:
-                sig_universe = st.selectbox("股票池", ["科技TMT", "沪深300+中证500+中证1000", "ETF", "场外科技基金"], key="sig_universe")
+                sig_universe = st.selectbox("股票池", ["科技TMT", "沪深300+中证500+中证1000", "ETF", "场外基金"], key="sig_universe")
             with s2:
                 sig_scope = strategy_scope_ui("sig_scope")
                 sig_strategy = st.selectbox("策略", strategy_options(sig_scope), index=0,

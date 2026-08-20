@@ -97,6 +97,11 @@
                       "smart":  true
                   },
                   {
+                      "path":  "fund_fee.csv",
+                      "direction":  "server_to_local",
+                      "smart":  true
+                  },
+                  {
                       "path":  "fund_nav.parquet",
                       "key_cols":  [
                                        "code",

@@ -71,7 +71,7 @@ def main() -> int:
             from backend.routers.backtest import _calc_start
 
             calc_start = _calc_start(cfg["start"], cfg.get("warmup_days"))
-            is_fund = cfg["universe"] == "场外科技基金"
+            is_fund = cfg["universe"] == "场外基金"
             codes = services.build_codes(cfg["universe"], cfg["exclude_kechuang"])
             data = services.load_data(start=calc_start, end=cfg["end"], codes=codes,
                                       need_panel=not is_fund,

@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from backend import services
 from core import backtest_archive
 from core.attribution import brinson_attribution
+from core.assets import ETF_PROFILE, STOCK_PROFILE
 from core.composites import (FACTOR_OPTIONS, delete_composite,
                              load_composites, save_composite)
 from core.data import load_signal_panel
@@ -20,7 +21,7 @@ from core.fund_engine import run_fund_backtest
 from core.performance import quantstats_html
 from core.store import normalize_universe
 from core.strategy_pool import resolve_strategy as resolve_pool_strategy
-from strategies.registry import STRATEGIES
+from strategies.registry import STRATEGIES, list_strategies_by_type
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -42,7 +43,48 @@ def _is_etf(universe: str) -> bool:
 
 
 def _is_fund(universe: str) -> bool:
-    return normalize_universe(universe) == "场外科技基金"
+    return normalize_universe(universe) == "场外基金"
+
+
+def _universe_to_asset_type(universe: str) -> str:
+    """universe 名称 → 资产类型标识。"""
+    n = normalize_universe(universe)
+    if n == "ETF":
+        return "etf"
+    if n == "场外基金":
+        return "fund"
+    return "stock"
+
+
+def _validate_strategy_for_universe(name: str, universe: str) -> str | None:
+    """返回策略不适用时的错误信息；适用或未知配置时返回 None。"""
+    strat = _resolve_strategy(name)
+    if strat is None:
+        return f"未知策略: {name}"
+    asset_type = _universe_to_asset_type(universe)
+    allowed = strat.get("types", ["stock", "etf", "fund"])
+    if asset_type not in allowed:
+        return f"策略「{name}」不适用于「{universe}」（仅 {allowed}）"
+    return None
+
+
+def _validate_composite_for_universe(
+    weights: dict[str, float] | None, universe: str,
+) -> str | None:
+    """校验自定义组合中每个因子是否适用于所选资产类型。"""
+    if not weights:
+        return None
+    asset_type = _universe_to_asset_type(universe)
+    options = {item["name"]: item for item in FACTOR_OPTIONS}
+    for name in weights:
+        if name == "pred" and asset_type != "stock":
+            return f"因子「pred」不适用于「{universe}」"
+        item = options.get(name)
+        if item is None:
+            continue  # 引擎负责兼容动态因子/外部 pred 因子
+        if asset_type not in item.get("types", ["stock", "etf", "fund"]):
+            return f"因子「{name}」不适用于「{universe}」"
+    return None
 
 
 def _calc_start(start: str, warmup_days: int | None) -> str:
@@ -132,20 +174,32 @@ class CompareRequest(BaseModel):
 
 
 @router.get("/strategies")
-def strategies():
-    """统一策略源：配置池优先，空配置池回退注册表全量。"""
+def strategies(universe: str | None = None):
+    """统一策略源：配置池优先，空配置池回退注册表全量。
+
+    universe: 传入时按资产类型过滤，只返回该类型可用的策略。
+    """
     from core.strategy_pool import pool_names, resolve_strategy
+    asset_type = _universe_to_asset_type(universe) if universe else None
     names = pool_names()
     if not names:
-        return [{"name": k, **v} for k, v in STRATEGIES.items()]
-    items = []
-    for n in names:
-        try:
-            d = resolve_strategy(n)
-        except KeyError:
-            continue
-        items.append({"name": n, **d})
-    return items or [{"name": k, **v} for k, v in STRATEGIES.items()]
+        items = [{"name": k, **v} for k, v in STRATEGIES.items()]
+    else:
+        items = []
+        for n in names:
+            try:
+                d = resolve_strategy(n)
+            except KeyError:
+                continue
+            items.append({"name": n, **d})
+        if not items:
+            items = [{"name": k, **v} for k, v in STRATEGIES.items()]
+    if asset_type:
+        items = [
+            it for it in items
+            if asset_type in it.get("types", ["stock", "etf", "fund"])
+        ]
+    return items
 
 
 @router.get("/factors")
@@ -187,8 +241,14 @@ def names():
 def backtest(req: BacktestRequest):
     is_composite = bool(req.composite_weights)
     strat = None if is_composite else _resolve_strategy(req.strategy)
-    if not is_composite and strat is None:
-        return {"error": f"未知策略: {req.strategy}"}
+    if not is_composite:
+        strategy_error = _validate_strategy_for_universe(req.strategy, req.universe)
+        if strategy_error:
+            return {"error": strategy_error}
+    composite_error = _validate_composite_for_universe(
+        req.composite_weights, req.universe)
+    if composite_error:
+        return {"error": composite_error}
     long_short = (req.long_short if req.long_short is not None
                   else (strat or {}).get("long_short", False))
     short_n = (req.short_n if req.short_n is not None
@@ -205,6 +265,10 @@ def backtest(req: BacktestRequest):
         except (TypeError, ValueError):
             pass
     is_fund = _is_fund(req.universe)
+    if _is_etf(req.universe) and (
+        req.industry_cap or req.industry_neutral or req.risk_neutral
+    ):
+        return {"error": "ETF 当前没有可靠的成分行业映射，暂不支持行业上限/行业中性/风险中性"}
     need_heavy = _is_etf(req.universe) or is_fund
     calc_start = _calc_start(req.start, req.warmup_days)
     codes = services.build_codes(req.universe, req.exclude_kechuang)
@@ -217,6 +281,7 @@ def backtest(req: BacktestRequest):
                     if is_fund and len(data["fund_nav"])
                     else str(panel["date"].max().date()))
     fund_cost = is_fund and req.buy_cost == 0.0008 and req.sell_cost == 0.0013
+    etf_cost = _is_etf(req.universe) and req.buy_cost == 0.0008 and req.sell_cost == 0.0013
     if is_fund:
         res = run_fund_backtest(
             nav=data["fund_nav"],
@@ -242,6 +307,7 @@ def backtest(req: BacktestRequest):
             analyze=req.analyze,
             factor_weights=req.composite_weights,
             factor_directions=req.composite_directions,
+            fund_names=services.get_fund_name_map(),
         )
     else:
         res = run_backtest(
@@ -263,8 +329,8 @@ def backtest(req: BacktestRequest):
             max_participation=req.max_participation,
             max_weight=req.max_weight,
             lot_size=req.lot_size,
-            buy_cost=req.buy_cost,
-            sell_cost=req.sell_cost,
+            buy_cost=0.0003 if etf_cost else req.buy_cost,
+            sell_cost=0.0003 if etf_cost else req.sell_cost,
             industry_map=services.get_industry_map()
             if (req.industry_cap or industry_neutral or req.risk_neutral) else None,
             industry_cap=req.industry_cap,
@@ -282,9 +348,11 @@ def backtest(req: BacktestRequest):
         chandelier_period=req.chandelier_period,
         regime_adx=req.regime_adx,
         regime_scale=req.regime_scale,
+        execution_profile=ETF_PROFILE if _is_etf(req.universe) else STOCK_PROFILE,
 )
     brinson = None
-    if (not is_fund and res.get("weight_history")
+    if (not is_fund and not _is_etf(req.universe)
+            and res.get("weight_history")
             and len(res["dates"]) == len(res["weight_history"])):
         try:
             b_detail, b_summary = brinson_attribution(
@@ -399,6 +467,11 @@ def backtest_compare(req: CompareRequest):
     unknown = [s for s in req.strategies if _resolve_strategy(s) is None]
     if unknown:
         return {"error": f"未知策略: {unknown}"}
+    for strategy_name in req.strategies:
+        strategy_error = _validate_strategy_for_universe(
+            strategy_name, req.universe)
+        if strategy_error:
+            return {"error": strategy_error}
     is_fund = _is_fund(req.universe)
     need_heavy = _is_etf(req.universe) or is_fund
     calc_start = _calc_start(req.start, req.warmup_days)
@@ -411,6 +484,7 @@ def backtest_compare(req: CompareRequest):
     data_version = (str(data["fund_nav"]["date"].max().date())
                     if is_fund and len(data["fund_nav"])
                     else str(panel["date"].max().date()))
+    etf_cost = _is_etf(req.universe) and req.buy_cost == 0.0008 and req.sell_cost == 0.0013
     nm = services.get_name_map()
     if is_fund:
         nm = {**nm, **services.get_fund_name_map()}
@@ -431,6 +505,7 @@ def backtest_compare(req: CompareRequest):
                 max_participation=req.max_participation,
                 max_weight=req.max_weight, lot_size=1,
                 buy_cost=0.0015, sell_cost=0.0050,
+                fund_names=services.get_fund_name_map(),
             )
         else:
             res = run_backtest(
@@ -445,8 +520,8 @@ def backtest_compare(req: CompareRequest):
                 max_participation=req.max_participation,
                 max_weight=req.max_weight,
                 lot_size=req.lot_size,
-                buy_cost=req.buy_cost,
-                sell_cost=req.sell_cost,
+                buy_cost=0.0003 if etf_cost else req.buy_cost,
+                sell_cost=0.0003 if etf_cost else req.sell_cost,
                 industry_map=ind_map if strat.get("industry_cap") else None,
                 industry_cap=strat.get("industry_cap"),
                 long_short=strat.get("long_short", False),
@@ -458,6 +533,7 @@ def backtest_compare(req: CompareRequest):
         chandelier_period=req.chandelier_period,
         regime_adx=req.regime_adx,
         regime_scale=req.regime_scale,
+        execution_profile=ETF_PROFILE if _is_etf(req.universe) else STOCK_PROFILE,
     )
         holdings = res["holdings"].copy()
         holdings["name"] = [nm.get(str(c), "") for c in holdings["code"]]
@@ -560,8 +636,14 @@ def _compute_signals(universe, strategy, top_n, composite_weights=None,
                      use_financial=False):
     is_composite = bool(composite_weights)
     strat = None if is_composite else _resolve_strategy(strategy)
-    if not is_composite and strat is None:
-        return None, {"error": f"未知策略: {strategy}"}
+    if not is_composite:
+        strategy_error = _validate_strategy_for_universe(strategy, universe)
+        if strategy_error:
+            return None, {"error": strategy_error}
+    composite_error = _validate_composite_for_universe(
+        composite_weights, universe)
+    if composite_error:
+        return None, {"error": composite_error}
     if long_short is None:
         long_short = strat.get("long_short", False)
     if short_n is None:
@@ -575,6 +657,7 @@ def _compute_signals(universe, strategy, top_n, composite_weights=None,
         except Exception as exc:
             print(f"[signals] 流式面板加载失败，回退普通加载: {exc}", file=sys.stderr)
             panel = _load_panel_for(universe, codes=codes)
+    _asset_type = "fund_nav" if _is_fund(universe) else ("etf" if _is_etf(universe) else "stock")
     sig, sig_date = latest_signals(
         panel, codes,
         "composite" if is_composite else strat["factor"],
@@ -585,6 +668,7 @@ def _compute_signals(universe, strategy, top_n, composite_weights=None,
         long_short=long_short,
         short_n=short_n,
         use_financial=use_financial,
+        asset_type=_asset_type,
     )
     nm = services.get_name_map()
     if _is_fund(universe):
@@ -628,8 +712,9 @@ def sweep(req: SweepRequest):
     codes = services.build_codes("科技TMT", True)
     calc_start = _calc_start(req.start, req.warmup_days)
     data = services.load_data(start=calc_start, end=req.end, codes=codes,
-                              need_heavy=False)
-    panel = data["panel"]
+                              need_panel=not _is_etf(req.universe),
+                              need_heavy=_is_etf(req.universe))
+    panel = data["etf_panel"] if _is_etf(req.universe) else data["panel"]
     if req.mode == "event":
         from core.walkforward import golden_cross_sweep
         summary, heatmap, windows = golden_cross_sweep(
@@ -783,10 +868,22 @@ def backtest_run_delete(run_id: int):
 @router.post("/backtest/quantstats")
 def backtest_quantstats(req: BacktestRequest):
     """跑一次回测并生成 QuantStats HTML 报告，返回 HTML 文本。"""
+    if not req.composite_weights:
+        strategy_error = _validate_strategy_for_universe(req.strategy, req.universe)
+        if strategy_error:
+            return {"error": strategy_error}
+    composite_error = _validate_composite_for_universe(
+        req.composite_weights, req.universe)
+    if composite_error:
+        return {"error": composite_error}
     strat = _resolve_strategy(req.strategy)
     if strat is None:
         return {"error": f"未知策略: {req.strategy}"}
     is_fund = _is_fund(req.universe)
+    if _is_etf(req.universe) and (
+        req.industry_cap or req.industry_neutral or req.risk_neutral
+    ):
+        return {"error": "ETF 当前没有可靠的成分行业映射，暂不支持行业上限/行业中性/风险中性"}
     need_heavy = _is_etf(req.universe) or is_fund
     calc_start = _calc_start(req.start, req.warmup_days)
     codes = services.build_codes(req.universe, req.exclude_kechuang)
@@ -809,8 +906,10 @@ def backtest_quantstats(req: BacktestRequest):
             analyze=req.analyze,
             factor_weights=req.composite_weights,
             factor_directions=req.composite_directions,
+            fund_names=services.get_fund_name_map(),
         )
     else:
+        etf_cost = _is_etf(req.universe) and req.buy_cost == 0.0008 and req.sell_cost == 0.0013
         res = run_backtest(
             panel=panel, codes=codes, factor=strat["factor"],
             ascending=strat["ascending"], start=req.start, end=req.end,
@@ -823,8 +922,8 @@ def backtest_quantstats(req: BacktestRequest):
             max_participation=req.max_participation,
             max_weight=req.max_weight,
             lot_size=req.lot_size,
-            buy_cost=req.buy_cost,
-            sell_cost=req.sell_cost,
+            buy_cost=0.0003 if etf_cost else req.buy_cost,
+            sell_cost=0.0003 if etf_cost else req.sell_cost,
             industry_map=services.get_industry_map()
             if (strat.get("industry_cap") or req.industry_neutral or req.risk_neutral)
             else None,
@@ -842,6 +941,7 @@ def backtest_quantstats(req: BacktestRequest):
         chandelier_period=req.chandelier_period,
         regime_adx=req.regime_adx,
         regime_scale=req.regime_scale,
+        execution_profile=ETF_PROFILE if _is_etf(req.universe) else STOCK_PROFILE,
 )
     out_dir = PROJECT_ROOT / "results" / "performance"
     safe = req.strategy.replace("/", "_").replace(" ", "")
@@ -857,6 +957,8 @@ def backtest_quantstats(req: BacktestRequest):
 @router.post("/backtest/attribution")
 def backtest_attribution(req: AttributionRequest):
     """事件策略回测 + Brinson 归因（行业配置/个股选择/交互）。"""
+    if _is_etf(req.universe) or _is_fund(req.universe):
+        return {"error": "事件归因当前仅支持股票；ETF 尚未接入成分行业映射，场外基金也不使用 OHLCV 事件引擎"}
     from backend.lab_runner import load_module
     fd, tmp = tempfile.mkstemp(suffix=".py", prefix="attribution_")
     with open(fd, "w", encoding="utf-8") as f:
@@ -878,16 +980,18 @@ def backtest_attribution(req: AttributionRequest):
                               need_heavy=False)
     panel = data["panel"]
     try:
+        from core.assets import ETF_PROFILE, STOCK_PROFILE
         res = run_event_backtest(
             panel=panel, codes=codes,
             strategy_class=EVENT_STRATEGIES[req.strategy],
             start=req.start, end=req.end, capital=req.capital,
             warmup_days=req.warmup_days, amount_q=req.amount_q,
-            limit_flags=req.limit_flags,
+            limit_flags=req.limit_flags and not _is_etf(req.universe),
             lot_size=req.lot_size,
             slippage_bps=req.slippage_bps,
             max_participation=req.max_participation,
             buy_cost=req.buy_cost, sell_cost=req.sell_cost,
+            execution_profile=ETF_PROFILE if _is_etf(req.universe) else STOCK_PROFILE,
         )
     except Exception as exc:
         return {"error": f"回测失败: {type(exc).__name__}: {exc}"}
@@ -901,7 +1005,7 @@ def backtest_attribution(req: AttributionRequest):
         return {"error": f"归因数据长度不一致: weight={len(wh)} dates={len(dates)}"}
     industry_map = services.get_industry_map()
     detail, summary = brinson_attribution(
-        panel=data["panel"], codes=codes,
+        panel=panel, codes=codes,
         weight_history=wh, dates=dates, industry_map=industry_map,
     )
     return {

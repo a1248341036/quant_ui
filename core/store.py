@@ -34,19 +34,25 @@ META_FILE = DATA_DIR / "meta.json"
 ETF_FILE = DATA_DIR / "etf.csv"
 ETF_PANEL_FILE = DATA_DIR / "etf_panel.parquet"
 FUND_FILE = DATA_DIR / "fund.csv"
+FUND_FEE_FILE = DATA_DIR / "fund_fee.csv"
 FUND_NAV_FILE = DATA_DIR / "fund_nav.parquet"
 FUND_PANEL_FILE = DATA_DIR / "fund_panel.parquet"
+PRED_FILE = DATA_DIR / "pred_demo.parquet"  # qweave 研究层输出的 ML 预测分数（date/code/score）
 
 
 TECH_UNIVERSE = "科技TMT"
 TECH_UNIVERSE_LEGACY = "科技行业"
 WIDE_UNIVERSE = "沪深300+中证500+中证1000"
+FUND_UNIVERSE = "场外基金"
+FUND_UNIVERSE_LEGACY = "场外科技基金"
 
 
 def normalize_universe(name: str) -> str:
-    """把旧名「科技行业」归一化为「科技TMT」，兼容存量账户/回测参数。"""
+    """归一化旧名，兼容存量账户/回测参数。"""
     if name == TECH_UNIVERSE_LEGACY:
         return TECH_UNIVERSE
+    if name == FUND_UNIVERSE_LEGACY:
+        return FUND_UNIVERSE
     return name
 
 
@@ -117,3 +123,4 @@ def load_meta() -> dict:
         return json.loads(META_FILE.read_text(encoding="utf-8"))
     except Exception:
         return {}
+

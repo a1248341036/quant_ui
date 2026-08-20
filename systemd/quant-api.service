@@ -6,7 +6,7 @@ After=network.target quant-data-refresh.service
 User=ubuntu
 WorkingDirectory=%h/quant/quant_ui
 Environment=QUANT_UI_DATA_DIR=%h/quant/quant_ui/data
-ExecStart=%h/stock-analyzer/local_venv/bin/python -m uvicorn backend.main:app --host 0.0.0.0 --port 8080
+ExecStart=%h/stock-analyzer/local_venv/bin/python -m uvicorn backend.main:app --host 0.0.0.0 --port 17891
 Restart=always
 RestartSec=5
 MemoryHigh=1024M

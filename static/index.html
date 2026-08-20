@@ -480,7 +480,7 @@
         <div class="form-section">
           <div class="form-section-title">参数</div>
           <div class="form-grid">
-            <label class="field"><span>股票池</span><select v-model="cmp.universe"><option>科技TMT</option><option>沪深300+中证500+中证1000</option><option>ETF</option><option>场外科技基金</option></select></label>
+            <label class="field"><span>股票池</span><select v-model="cmp.universe"><option>科技TMT</option><option>沪深300+中证500+中证1000</option><option>ETF</option><option>场外基金</option></select></label>
             <label class="field wide"><span>策略（可多选）</span><strategy-select v-model="cmp.strategies" :strategies="strategies" multiple :max="6" placeholder="点选策略"></strategy-select></label>
             <label class="field"><span>TopN</span><select v-model.number="cmp.top_n"><option v-for="n in [3,5,8,10]" :value="n">{{n}}</option></select></label>
             <label class="field"><span>初始资金</span><input type="number" v-model.number="cmp.capital" step="1000"></label>
@@ -639,7 +639,7 @@
         <div class="form-section">
           <div class="form-section-title">标的与策略</div>
           <div class="form-grid">
-            <label class="field"><span>股票池</span><select v-model="bt.universe"><option>科技TMT</option><option>沪深300+中证500+中证1000</option><option>ETF</option><option>场外科技基金</option></select></label>
+            <label class="field"><span>股票池</span><select v-model="bt.universe"><option>科技TMT</option><option>沪深300+中证500+中证1000</option><option>ETF</option><option>场外基金</option></select></label>
             <label class="field wide"><span>策略</span><strategy-select v-model="bt.strategy" :strategies="strategies" placeholder="选择策略"></strategy-select></label>
             <label class="field"><span>TopN</span><select v-model.number="bt.top_n"><option v-for="n in [1,2,3,5,8,10]" :value="n">{{n}}</option></select></label>
             <label class="field"><span>初始资金</span><input type="number" v-model.number="bt.capital" step="1000"></label>
@@ -771,7 +771,7 @@
         <div class="form-section">
           <div class="form-section-title">参数</div>
           <div class="form-grid">
-            <label class="field"><span>股票池</span><select v-model="comp.universe"><option>科技TMT</option><option>沪深300+中证500+中证1000</option><option>ETF</option><option>场外科技基金</option></select></label>
+            <label class="field"><span>股票池</span><select v-model="comp.universe"><option>科技TMT</option><option>沪深300+中证500+中证1000</option><option>ETF</option><option>场外基金</option></select></label>
             <label class="field"><span>TopN</span><select v-model.number="comp.top_n"><option v-for="n in [1,2,3,5,8,10]" :value="n">{{n}}</option></select></label>
             <label class="field"><span>初始资金</span><input type="number" v-model.number="comp.capital" step="1000"></label>
             <label class="field"><span>频率</span><select v-model="comp.freq"><option value="monthly">月频</option><option value="weekly">周频</option></select></label>
@@ -864,12 +864,12 @@
     <!-- 代码 -->
     <section v-if="tab==='code'">
       <div class="card">
-        <h3>策略代码（Python）</h3>
-        <p class="muted">从「已有策略」选一个加载代码模板，直接改下面的 Python 代码，然后点「跑代码」回测。保存只写入服务器 labs/ 目录，不会覆盖系统策略文件。</p>
+        <h3>研究代码（qweave / Python）</h3>
+        <p class="muted">这里运行 qweave 因子研究：代码只需要返回 qweave 表达式列表，不再绑定旧的 STRATEGIES / EVENT_STRATEGIES 交易引擎。</p>
         <div class="form-grid" style="margin-top:12px">
-          <label class="field wide"><span>已有策略</span>
+          <label class="field wide"><span>研究代码模板</span>
             <select v-model="code.tplName" @change="loadTemplate">
-              <option value="" disabled>选择策略…</option>
+              <option value="" disabled>选择预制研究代码…</option>
               <option v-for="s in code.tplOptions" :key="s.value" :value="s.value">{{s.label}}</option>
             </select>
           </label>
@@ -893,14 +893,14 @@
             <span class="muted">改文件头「参数」区即可，不用动函数体</span>
           </div>
         </div>
-        <div class="tpl-note">数据语义：close/am20/turn20 行=交易日(升序)、列=股票代码；引擎已处理预热、T+1、涨跌停/停牌过滤；只允许用当前及之前的数据，禁止 <code>pct_change(-n)</code>/<code>shift(-n)</code> 等未来函数。</div>
+        <div class="tpl-note">qweave 输入为长表行情（date/code/open/high/low/close/volume/amount/turnover/vwap），自动生成未来收益标签并计算 IC、分组收益、换手和覆盖率。研究代码只允许使用当前及之前的数据，避免未来函数。</div>
         <details class="helpers">
           <summary>📖 常用函数说明（点开查看）</summary>
           <div class="helpers-body" v-html="helpersHtml"></div>
         </details>
         <div class="form-actions" style="margin-top:6px">
           <span class="ok left" v-if="codeSaveMsg">{{codeSaveMsg}}</span>
-          <button class="ghost" @click="parseCode(false)" :disabled="codeRunning">解析策略</button>
+          <button class="ghost" @click="parseCode(false)" :disabled="codeRunning">解析因子</button>
           <button class="ghost" @click="saveCode" :disabled="codeRunning">保存</button>
           <button class="ghost" @click="loadCodeDefault">恢复默认</button>
         </div>
@@ -912,94 +912,57 @@
       <div class="card">
         <h3>运行参数</h3>
         <div class="form-section">
-          <div class="form-section-title">标的与策略</div>
+          <div class="form-section-title">研究标的</div>
           <div class="form-grid">
-            <label class="field"><span>股票池</span><select v-model="code.universe"><option>科技TMT</option><option>沪深300+中证500+中证1000</option><option>ETF</option><option>场外科技基金</option></select></label>
-            <label class="field wide"><span>策略名</span>
-              <input list="code-strats" v-model="code.strategy" placeholder="策略注册表里的名称">
-              <datalist id="code-strats"><option v-for="s in code.strategies" :value="s">{{s}}</option></datalist>
-            </label>
-            <label class="field"><span>TopN</span><select v-model.number="code.top_n"><option v-for="n in [1,2,3,5,8,10]" :value="n">{{n}}</option></select></label>
-            <label class="field"><span>初始资金</span><input type="number" v-model.number="code.capital" step="1000"></label>
-            <label class="field"><span>基准</span>
-              <select v-model="code.bench">
-                <option>等权股票池</option>
-                <option v-for="i in indices" :value="i.name">{{i.name}}</option>
-              </select>
-            </label>
-          </div>
-        </div>
-        <div class="form-section">
-          <div class="form-section-title">时间与频率</div>
-          <div class="form-grid">
-            <label class="field"><span>频率</span><select v-model="code.freq"><option value="monthly">月频</option><option value="weekly">周频</option></select></label>
-            <label class="field"><span>开始</span><input type="date" v-model="code.start"></label>
-            <label class="field"><span>结束</span><input type="date" v-model="code.end"></label>
-            <label class="field"><span>预热天数</span><select v-model.number="code.warmup_days"><option :value="0">关闭</option><option :value="120">120 天</option><option :value="400">400 天</option><option :value="9999">全量</option></select></label>
-          </div>
-        </div>
-        <div class="form-section">
-          <div class="form-section-title">过滤条件</div>
-          <div class="form-grid">
-            <label class="field-check"><input type="checkbox" v-model="code.exclude"> 剔除科创/创业</label>
-            <label class="field-check"><input type="checkbox" v-model="code.affordable"> 一手过滤</label>
-            <label class="field"><span>成交额分位</span><input type="number" v-model.number="code.amount_q" step="0.05" min="0" max="1"></label>
-          </div>
-        </div>
-        <div class="form-section">
-          <div class="form-section-title">执行成本（事件驱动策略）</div>
-          <div class="form-grid">
-            <label class="field"><span>滑点 bps</span><input type="number" v-model.number="code.slippage_bps" step="1" min="0" placeholder="0"></label>
-            <label class="field"><span>流动性参与率</span><input type="number" v-model.number="code.max_participation" step="0.01" min="0" max="1" placeholder="0=不限"></label>
+            <label class="field"><span>股票池</span><select v-model="code.universe"><option>科技TMT</option><option>沪深300+中证500+中证1000</option><option>ETF</option><option>场外基金</option></select></label>
+            <label class="field"><span>Alpha 集</span><select v-model="code.alpha_set"><option value="alpha158">Alpha158</option><option value="alpha101">Alpha101</option><option value="alpha191">Alpha191</option><option value="custom">自定义代码</option></select></label>
+            <label class="field"><span>因子数量上限</span><input type="number" v-model.number="code.alpha_limit" min="1" placeholder="自定义代码忽略"></label>
+            <label class="field wide"><span>回测信号因子</span><select v-model="code.score_factor"><option value="">自动使用评估排名第一的因子</option><option v-for="f in code.strategies" :key="f" :value="f">{{f}}</option></select></label>
+            <label class="field"><span>回测 TopN</span><input type="number" v-model.number="code.top_n" min="1"></label>
+            <label class="field"><span>选股数量模式</span><select v-model="code.selection_mode"><option value="top_n">固定 TopN</option><option value="top_pct">按有效股票比例</option></select></label>
+            <label class="field" v-if="code.selection_mode === 'top_pct'"><span>动态比例</span><input type="number" v-model.number="code.selection_pct" min="0.01" max="1" step="0.01"><small class="muted">例如 0.10 = 每次选有效股票的前 10%</small></label>
+            <label class="field"><span>最少持仓数</span><input type="number" v-model.number="code.min_positions" min="1"></label>
+            <label class="field"><span>最多持仓数（可选）</span><input type="number" v-model.number="code.max_positions" min="1" placeholder="不限制"></label>
             <label class="field"><span>买入费率%</span><input type="number" v-model.number="code.buy_cost_pct" step="0.01" min="0"></label>
             <label class="field"><span>卖出费率%</span><input type="number" v-model.number="code.sell_cost_pct" step="0.01" min="0"></label>
+            <label class="field"><span>滑点 bps</span><input type="number" v-model.number="code.slippage_bps" step="1" min="0"></label>
+            <label class="field"><span>单笔成交参与率</span><input type="number" v-model.number="code.max_participation" step="0.01" min="0" max="1" placeholder="0=不限"></label>
+            <label class="field"><span>成交额过滤分位</span><input type="number" v-model.number="code.amount_q" step="0.05" min="0" max="1"></label>
+            <label class="field"><span>回测频率</span><select v-model="code.freq"><option value="daily">每日</option><option value="weekly">每周</option><option value="monthly">每月</option></select></label>
+            <label class="field"><span>回测资金</span><input type="number" v-model.number="code.capital" step="10000"></label>
+          </div>
+        </div>
+        <div class="form-section">
+          <div class="form-section-title">时间与标签</div>
+          <div class="form-grid">
+            <label class="field"><span>开始</span><input type="date" v-model="code.start"></label>
+            <label class="field"><span>结束</span><input type="date" v-model="code.end"></label>
+            <label class="field wide"><span>标签 horizon（交易日，逗号分隔）</span><input v-model="code.horizonsText" placeholder="1,5,10,20"></label>
+          </div>
+        </div>
+        <div class="form-section">
+          <div class="form-section-title">评估参数</div>
+          <div class="form-grid">
+            <label class="field-check"><input type="checkbox" v-model="code.exclude"> 剔除科创/创业</label>
+            <label class="field"><span>分位数</span><input type="number" v-model.number="code.quantiles" min="2" max="20"></label>
+            <label class="field"><span>最小截面数</span><input type="number" v-model.number="code.min_cs_count" min="1"></label>
+            <label class="field"><span>成本 bps</span><input type="number" v-model.number="code.cost_bps" step="1" min="0"></label>
           </div>
         </div>
         <div class="form-actions">
-          <p class="muted left">当前代码中的策略：<span v-if="code.strategies.length">{{code.strategies.join('、')}}</span><span v-else>（未解析，点「解析策略」）</span></p>
+          <p class="muted left">当前因子：<span v-if="code.strategies.length">{{code.strategies.join('、')}}</span><span v-else>（未解析，点「解析因子」）</span></p>
           <p class="err left" v-if="codeError">{{codeError}}</p>
-          <button class="primary" @click="runCode" :disabled="codeRunning"><span v-if="codeRunning" class="spinner"></span>{{codeRunning ? '运行中…' : '跑代码'}}</button>
+          <button class="primary" @click="runCode" :disabled="codeRunning"><span v-if="codeRunning" class="spinner"></span>{{codeRunning ? '研究中…' : '运行 qweave'}}</button>
+          <button class="primary" @click="runQweaveBacktest" :disabled="codeRunning"><span v-if="codeRunning" class="spinner"></span>{{codeRunning ? '回测中…' : '研究并回测 TopN'}}</button>
         </div>
       </div>
 
       <div v-if="codeResult">
-        <div class="row" style="justify-content:flex-end; gap:8px">
-          <button class="ghost" @click="runAttribution" :disabled="attributionRunning"><span v-if="attributionRunning" class="spinner"></span>{{attributionRunning ? '归因中…' : 'Brinson 归因'}}</button>
-        </div>
-        <div class="cards">
-          <div class="metric" v-for="(v,k) in codeResult.metrics" :key="k"><div class="label">{{k}}</div><div class="value" :class="sign(v)">{{metricText(k,v)}}</div></div>
-        </div>
-        <div class="cards" v-if="benchInfo.metrics">
-          <div class="metric"><div class="label">基准 {{benchInfo.name}} 总收益</div><div class="value" :class="sign(benchInfo.metrics.total)">{{pct(benchInfo.metrics.total)}}</div></div>
-          <div class="metric"><div class="label">基准年化</div><div class="value" :class="sign(benchInfo.metrics.annual)">{{pct(benchInfo.metrics.annual)}}</div></div>
-          <div class="metric"><div class="label">基准夏普</div><div class="value">{{fmt(benchInfo.metrics.sharpe, 2)}}</div></div>
-          <div class="metric"><div class="label">基准最大回撤</div><div class="value" :class="sign(benchInfo.metrics.mdd)">{{pct(benchInfo.metrics.mdd)}}</div></div>
-        </div>
-        <div class="card"><h3>资金曲线（当前代码 vs 基准）</h3><div id="codeEquity" class="chart"></div></div>
-        <div class="card"><h3>回撤</h3><div id="codeDraw" class="chart small"></div></div>
-        <div class="card" v-if="attribution">
-          <h3>Brinson 归因（月度 · 相对股票池等权基准）</h3>
-          <p class="muted">行业配置 / 个股选择 / 交互效应。只对事件驱动策略有效。</p>
-          <div class="table-wrap" v-if="attribution.summary && attribution.summary.length"><table>
-            <tr><th>行业</th><th>配置效应</th><th>选择效应</th><th>交互效应</th><th>合计</th><th>组合权重</th><th>基准权重</th></tr>
-            <tr v-for="(s,i) in attribution.summary" :key="i">
-              <td>{{s.industry}}</td><td :class="sign(s.allocation)">{{pct(s.allocation)}}</td>
-              <td :class="sign(s.selection)">{{pct(s.selection)}}</td><td :class="sign(s.interaction)">{{pct(s.interaction)}}</td>
-              <td :class="sign(s.total)">{{pct(s.total)}}</td><td>{{fmt(s.avg_combo_weight, 4)}}</td><td>{{fmt(s.avg_bench_weight, 4)}}</td>
-            </tr>
-          </table></div>
-          <div v-else class="empty">暂无归因结果（事件策略需要先在代码里运行）</div>
-        </div>
-        <div class="grid" style="grid-template-columns:1fr 1fr">
-          <div class="card"><h3>持仓明细</h3>
-            <div style="overflow-x:auto"><table><tr><th>代码</th><th>名称</th><th>权重%</th><th>价格</th><th>市值</th></tr>
-            <tr v-for="h in codeResult.holdings" :key="h.code"><td>{{stock(h.code, h.name)}}</td><td>{{h.name||'-'}}</td><td>{{fmt(h.weight_pct)}}</td><td>{{fmt(h.price)}}</td><td>{{fmt(h.market_value)}}</td></tr></table></div>
-          </div>
-          <div class="card"><h3>调仓记录</h3>
-            <div style="overflow-x:auto"><table><tr><th>日期</th><th>信号日</th><th>持仓数</th><th>换手</th></tr>
-            <tr v-for="(t,i) in codeResult.trades" :key="i"><td>{{t.date.slice(0,10)}}</td><td>{{t.signal_date.slice(0,10)}}</td><td>{{t.num_hold}}</td><td>{{fmt(t.turnover)}}</td></tr></table></div>
-          </div>
-        </div>
+        <div class="cards"><div class="metric"><div class="label">因子数</div><div class="value">{{codeResult.factor_count}}</div></div><div class="metric"><div class="label">样本行数</div><div class="value">{{codeResult.rows}}</div></div><div class="metric"><div class="label">研究区间</div><div class="value">{{code.start}} ~ {{code.end}}</div></div><div class="metric"><div class="label">输出目录</div><div class="value" style="font-size:12px">{{codeResult.run_dir}}</div></div></div>
+        <div class="card"><h3>Top 因子评估</h3><div class="table-wrap"><table><tr><th>因子</th><th>H</th><th>IC 均值</th><th>Rank IC</th><th>ICIR</th><th>多空年化</th><th>多空 IR</th><th>换手</th></tr><tr v-for="(s,i) in codeResult.summary" :key="i"><td>{{s.factor}}</td><td>{{s.horizon}}</td><td :class="sign(s.ic_mean)">{{fmt(s.ic_mean,4)}}</td><td>{{fmt(s.rank_ic_mean,4)}}</td><td>{{fmt(s.ic_ir,3)}}</td><td>{{pct(s.ls_net_ann)}}</td><td>{{fmt(s.ls_ir,3)}}</td><td>{{fmt(s.ls_turnover,3)}}</td></tr></table></div></div>
+        <div class="card"><h3>最新交易日股票因子排名</h3><p class="muted">上面的 Top 因子是“因子级”统计，不会对应单个股票。这里展示 Top 因子在最新交易日的具体股票代码、因子值和截面排名。</p><div class="table-wrap"><table><tr><th>日期</th><th>方向</th><th>排名</th><th>代码</th><th>因子</th><th>因子值</th><th>截面分位</th></tr><tr v-for="(r,i) in topFactorRows()" :key="i"><td>{{r.date}}</td><td>{{r.side === 'top' ? '高值' : '低值'}}</td><td>{{r.rank}}</td><td>{{stock(r.code)}}</td><td>{{r.factor}}</td><td>{{fmt(r.value,6)}}</td><td>{{pct(r.percentile)}}</td></tr></table></div><div v-if="!topFactorRows().length" class="empty">暂无股票级因子明细</div></div>
+        <div class="card" v-if="codeResult.backtest"><h3>qweave 信号 → 日线交易回测</h3><p class="muted">因子：{{codeResult.backtest.factor}} · 选股：{{code.selection_mode === 'top_pct' ? '有效股票前 ' + (code.selection_pct * 100).toFixed(1) + '%' : '固定 TopN=' + code.top_n}} · {{code.freq}} · qweave 输出的股票级分数已交给交易执行层，模拟 T+1、整手、费用和交易限制。</p><div class="cards"><div class="metric" v-for="(v,k) in codeResult.backtest.metrics" :key="k"><div class="label">{{k}}</div><div class="value" :class="sign(v)">{{metricText(k,v)}}</div></div></div><div id="qweaveBacktestEquity" class="chart"></div></div>
+        <div class="grid" style="grid-template-columns:1fr 1fr"><div class="card"><h3>Rank IC（Top 因子）</h3><div id="codeIc" class="chart"></div></div><div class="card"><h3>分组收益（Top 因子）</h3><div id="codeQuantile" class="chart"></div></div></div>
       </div>
       <div v-else class="card"><div class="empty">编辑代码后点击「跑代码」查看回测结果</div></div>
     </section>
@@ -1142,7 +1105,7 @@
                 <option v-for="s in paperEventStrategies()" :value="s">{{s}}</option>
               </select></label>
             </template>
-            <label class="field"><span>股票池</span><select v-model="paper.form.universe"><option>科技TMT</option><option>沪深300+中证500+中证1000</option><option>ETF</option><option>场外科技基金</option></select></label>
+            <label class="field"><span>股票池</span><select v-model="paper.form.universe"><option>科技TMT</option><option>沪深300+中证500+中证1000</option><option>ETF</option><option>场外基金</option></select></label>
             <label class="field"><span>频率</span><select v-model="paper.form.freq"><option value="daily">每日</option><option value="weekly">每周</option><option value="monthly">每月</option></select></label>
             <label class="field"><span>资金</span><input type="number" v-model.number="paper.form.capital" step="10000"></label>
             <label class="field"><span>TopN</span><select v-model.number="paper.form.top_n"><option v-for="n in [1,2,3,5,8,10]" :value="n">{{n}}</option></select></label>
@@ -1399,7 +1362,7 @@
     <section v-if="tab==='signals'">
       <div class="card">
         <div class="form-grid">
-          <label class="field"><span>股票池</span><select v-model="sig.universe"><option>科技TMT</option><option>沪深300+中证500+中证1000</option><option>ETF</option><option>场外科技基金</option></select></label>
+          <label class="field"><span>股票池</span><select v-model="sig.universe"><option>科技TMT</option><option>沪深300+中证500+中证1000</option><option>ETF</option><option>场外基金</option></select></label>
           <label class="field wide"><span>策略</span><strategy-select v-model="sig.strategy" :strategies="strategies" placeholder="选择策略"></strategy-select></label>
           <label class="field"><span>条数</span><select v-model.number="sig.top_n"><option v-for="n in [5,10,15,20,30]" :value="n">{{n}}</option></select></label>
           <label class="field-check"><input type="checkbox" v-model="sig.long_short"> 多空对冲</label>
@@ -1647,13 +1610,12 @@ const app = createApp({
       updating: false, updateProgress: 0, updateText: '', updateDone: false, updateResult: null, updateError: '',
       sentStats: { ok: false }, sentError: '', sentIc: [], sentNewsHigh: [], sentNewsLow: [],
       code: {
-        code: '', tplName: '', tplOptions: [],
+        code: '', tplName: '', tplOptions: [], presetList: [],
         tplInfo: null,
         strategy: '', strategies: [],
-        universe: '科技TMT', top_n: 3, capital: 5000, freq: 'monthly',
-        start: '2026-02-02', end: today(), bench: '沪深300',
-        exclude: true, affordable: true, amount_q: 0.2, warmup_days: 400,
-        slippage_bps: 0, max_participation: 0, buy_cost_pct: 0.08, sell_cost_pct: 0.13,
+        universe: '沪深300+中证500+中证1000', alpha_set: 'alpha158', alpha_limit: 30,
+        horizonsText: '1,5,10,20', quantiles: 10, min_cs_count: 30, cost_bps: 8,
+        start: '2022-01-01', end: today(), exclude: true, score_factor: '', top_n: 10, selection_mode: 'top_n', selection_pct: 0.10, min_positions: 1, max_positions: null, capital: 100000, freq: 'weekly', amount_q: 0.2, buy_cost_pct: 0.08, sell_cost_pct: 0.13, slippage_bps: 0, max_participation: 0,
         savedName: '', savedList: [],
       },
       codeResult: null, codeRunning: false, codeError: '', codeSaveMsg: '',
@@ -1685,6 +1647,15 @@ const app = createApp({
     this.loadHelpers();
   },
   watch: {
+    'bt.universe'(universe) {
+      this.reloadStrategiesForUniverse(universe);
+    },
+    'cmp.universe'(universe) {
+      this.reloadStrategiesForUniverse(universe);
+    },
+    'sig.universe'(universe) {
+      this.reloadStrategiesForUniverse(universe);
+    },
     'bt.strategy'(name) {
       this.applyBtStrategyDefaults();
     },
@@ -1695,7 +1666,6 @@ const app = createApp({
       }
     },
     'comp.bench'() { if (this.compResult) this.renderCompositeBacktest(); },
-    'code.bench'() { if (this.codeResult) this.renderCode(); },
     'btSub'(v) {
       this.$nextTick(() => {
         if (v === 'bt' && this.btResult) this.renderBacktest();
@@ -1767,6 +1737,11 @@ const app = createApp({
     },
     async reloadStrategies() {
       try { this.strategies = await api('/api/strategies'); } catch (e) {}
+      this.ensureSelectedInPool();
+      this.applyBtStrategyDefaults();
+    },
+    async reloadStrategiesForUniverse(universe) {
+      try { this.strategies = await api('/api/strategies?universe=' + encodeURIComponent(universe)); } catch (e) {}
       this.ensureSelectedInPool();
       this.applyBtStrategyDefaults();
     },
@@ -1905,7 +1880,7 @@ const app = createApp({
           this.cmp.start_date = d.toISOString().slice(0, 10);
         }
       }
-      try { this.strategies = await api('/api/strategies'); } catch (e) {}
+      try { this.strategies = await api('/api/strategies?universe=' + encodeURIComponent(this.bt.universe)); } catch (e) {}
       this.applyBtStrategyDefaults();
       this.ensureSelectedInPool();
       this.loadPoolData();
@@ -2257,21 +2232,28 @@ const app = createApp({
     },
     async loadCodeDefault() {
       try {
-        const d = await api('/api/code/default');
+        const d = await api('/api/code/qweave/default');
         this.code.code = d.code || '';
-        this.code.tplInfo = { name: '事件驱动模板', group: '事件驱动', desc: '每个交易日 on_bar(ctx, bar) 被调用，自由下单（示例：双均线金叉）', factor: 'event', ascending: false };
+        this.code.tplInfo = { name: 'qweave Alpha 研究模板', group: 'qweave', desc: '因子表达式 → 未来收益标签 → IC / 分组 / 换手评估', factor: 'alpha', ascending: false };
         this.code.end = today();
         this.codeError = ''; this.codeSaveMsg = '';
         await this.refreshSaved();
-        if (!this.code.tplOptions.length) this.buildTplOptions();
+        await this.refreshQweaveTemplates();
         if (!this.code.tplName && this.code.tplOptions.length) this.code.tplName = this.code.tplOptions[0].value;
-        if (!this.code.strategies.length) await this.parseCode(true);
+        await this.parseCode(true);
       } catch (e) { this.codeError = '加载默认代码失败: ' + e.message; }
     },
     buildTplOptions() {
-      const sys = (this.strategies || []).map(s => ({ value: 'sys:' + s.name, label: '系统 · ' + s.name }));
-      const labs = (this.code.savedList || []).map(s => ({ value: 'lab:' + s.name, label: '已保存 · ' + s.name }));
-      this.code.tplOptions = [...sys, ...labs];
+      const presets = (this.code.presetList || []).map(s => ({ value: 'preset:' + s.name, label: '预制 · ' + s.label }));
+      const labs = (this.code.savedList || []).filter(s => s.engine === 'qweave').map(s => ({ value: 'lab:' + s.name, label: '已保存 · ' + s.name }));
+      this.code.tplOptions = [...presets, ...labs];
+    },
+    async refreshQweaveTemplates() {
+      try {
+        const r = await api('/api/code/qweave/templates');
+        this.code.presetList = r.items || [];
+        this.buildTplOptions();
+      } catch (e) { this.codeError = '加载预制代码失败: ' + e.message; }
     },
     async refreshSaved() {
       try { const r = await api('/api/code/saved'); this.code.savedList = r.items || []; this.buildTplOptions(); } catch (e) {}
@@ -2282,13 +2264,14 @@ const app = createApp({
       this.codeError = '';
       try {
         const isLab = v.startsWith('lab:');
-        const name = v.slice(4);
+        const isPreset = v.startsWith('preset:');
+        const name = isPreset ? v.slice(7) : v.slice(4);
         const r = isLab ? await api('/api/code/saved/' + encodeURIComponent(name))
-                        : await api('/api/code/template?strategy=' + encodeURIComponent(name));
+                        : isPreset ? await api('/api/code/qweave/template?name=' + encodeURIComponent(name))
+                                   : await api('/api/code/qweave/default');
         if (r.error) { this.codeError = r.error; return; }
         this.code.code = r.code || '';
-        const meta = this.strategies.find(s => s.name === name);
-        this.code.tplInfo = meta || { name, group: '已保存', desc: '自定义策略代码', factor: 'score', ascending: false };
+        this.code.tplInfo = { name: r.label || r.name || name, group: isPreset ? '预制 qweave' : 'qweave', desc: isPreset ? '可直接运行，也可以继续修改代码' : '已保存的 qweave 研究代码', factor: 'alpha', ascending: false };
         await this.parseCode(true);
         this.codeSaveMsg = '已加载：' + r.name;
         setTimeout(() => { if (this.codeSaveMsg) this.codeSaveMsg = ''; }, 3000);
@@ -2298,69 +2281,70 @@ const app = createApp({
       if (!this.code.code) { if (!silent) alert('代码为空'); return; }
       this.codeRunning = true; this.codeError = '';
       try {
-        const r = await api('/api/code/parse', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: this.code.code }) });
+        const r = await api('/api/code/qweave/parse', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: this.code.code }) });
         if (r.error || r.ok === false) { this.codeError = r.error || '解析失败'; return; }
-        this.code.strategies = r.strategies || [];
-        if (!this.code.strategy || !this.code.strategies.includes(this.code.strategy)) this.code.strategy = this.code.strategies[0] || '';
+        this.code.strategies = r.factors || [];
       } catch (e) { this.codeError = '解析失败: ' + e.message; }
       finally { this.codeRunning = false; }
     },
     codeParams() {
+      const horizons = (this.code.horizonsText || '').split(',').map(x => Number(x.trim())).filter(x => Number.isFinite(x) && x > 0);
       return {
-        code: this.code.code,
-        universe: this.code.universe, top_n: this.code.top_n, capital: this.code.capital,
-        freq: this.code.freq, start: this.code.start, end: this.code.end,
-        exclude_kechuang: this.code.exclude, affordable: this.code.affordable,
-        amount_q: this.code.amount_q, warmup_days: this.code.warmup_days,
-        slippage_bps: this.code.slippage_bps || 0,
-        max_participation: this.code.max_participation || 0,
+        code: this.code.code, universe: this.code.universe, alpha_set: this.code.alpha_set,
+        alpha_limit: this.code.alpha_limit, horizons, start: this.code.start, end: this.code.end,
+        exclude_kechuang: this.code.exclude, quantiles: this.code.quantiles,
+        min_cs_count: this.code.min_cs_count, cost_bps: this.code.cost_bps,
+        score_factor: this.code.score_factor, top_n: this.code.top_n,
+        selection_mode: this.code.selection_mode, selection_pct: this.code.selection_pct,
+        min_positions: this.code.min_positions, max_positions: this.code.max_positions,
+        amount_q: this.code.amount_q,
+        capital: this.code.capital, freq: this.code.freq,
         buy_cost: (this.code.buy_cost_pct || 0) / 100,
         sell_cost: (this.code.sell_cost_pct || 0) / 100,
+        slippage_bps: this.code.slippage_bps || 0,
+        max_participation: this.code.max_participation || 0,
       };
     },
-    async runAttribution() {
-      if (!this.code.strategy) { alert('请先解析策略'); return; }
-      this.attributionRunning = true; this.attributionError = '';
-      try {
-        const r = await api('/api/backtest/attribution', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...this.codeParams(), strategy: this.code.strategy }) });
-        if (r.error) { this.attributionError = r.error; alert(r.error); return; }
-        this.attribution = r;
-      } catch (e) { this.attributionError = '归因失败: ' + e.message; alert(this.attributionError); }
-      finally { this.attributionRunning = false; }
-    },
     async runCode() {
-      if (!this.code.strategy) { this.codeError = '请填写策略名，或先点「解析策略」'; return; }
+      if (!this.code.strategies.length) { this.codeError = '请先点「解析因子」'; return; }
+      await this.executeQweave(false);
+    },
+    async runQweaveBacktest() {
+      if (!this.code.strategies.length) { this.codeError = '请先点「解析因子」'; return; }
+      await this.executeQweave(true);
+    },
+    async executeQweave(withBacktest) {
       this.codeRunning = true; this.codeError = ''; this.codeSaveMsg = '';
       try {
-        const r = await api('/api/code/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...this.codeParams(), strategy: this.code.strategy }) });
+        const r = await api('/api/code/qweave/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...this.codeParams(), run_backtest: withBacktest }) });
         if (r.error || r.ok === false) { this.codeError = r.error || '运行失败'; return; }
         if (r.strategies && r.strategies.length) this.code.strategies = r.strategies;
         this.codeResult = r;
-        this.$nextTick(async () => this.renderCode());
+        this.$nextTick(() => this.renderCode());
       } catch (e) { this.codeError = '运行失败: ' + e.message; }
       finally { this.codeRunning = false; }
     },
     async renderCode() {
-      const nav = this.codeResult.nav;
-      const series = [
-        { name: '策略资金', dates: nav.map(x => x.date), values: nav.map(x => +(x.value * this.code.capital).toFixed(2)) },
-      ];
-      const bs = await this.benchSeries(this.codeResult, this.code, this.code.start, this.code.end);
-      if (bs.points.length) {
-        series.push({ name: bs.name, dates: bs.points.map(x => x.date), values: bs.points.map(x => +(x.value * this.code.capital).toFixed(2)), dash: true });
-        this.benchInfo = { name: bs.name, metrics: this.calcSeriesMetrics(bs.points) };
-      } else {
-        this.benchInfo = { name: '', metrics: null };
+      const rows = this.codeResult.summary || [];
+      const factor = rows[0] && rows[0].factor;
+      const ic = (this.codeResult.ic || []).filter(x => x.factor === factor).slice(-500);
+      renderLine('codeIc', [{ name: 'Rank IC', dates: ic.map(x => x.date), values: ic.map(x => x.rank_ic) }]);
+      const qr = (this.codeResult.quantile_returns || []).filter(x => x.factor === factor).slice(-this.code.quantiles * 2);
+      renderBar('codeQuantile', qr.map(x => 'Q' + x.bin), qr.map(x => x.mean_ret_5));
+      if (this.codeResult.backtest) {
+        const bt = this.codeResult.backtest;
+        renderLine('qweaveBacktestEquity', [{ name: 'qweave score 回测', dates: bt.nav.map(x => x.date), values: bt.nav.map(x => x.value) }]);
       }
-      renderLine('codeEquity', series);
-      const dd = this.codeResult.drawdown;
-      renderLine('codeDraw', [{ name: '回撤', dates: dd.map(x => x.date), values: dd.map(x => +(x.value * 100).toFixed(2)), fill: true }]);
+    },
+    topFactorRows() {
+      const factor = this.codeResult && this.codeResult.summary && this.codeResult.summary[0] && this.codeResult.summary[0].factor;
+      return (this.codeResult && this.codeResult.latest_factor_rows || []).filter(x => x.factor === factor);
     },
     async saveCode() {
       if (!this.code.savedName.trim()) { this.codeError = '请填保存名称'; return; }
       this.codeError = '';
       try {
-        const r = await api('/api/code/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: this.code.savedName, code: this.code.code }) });
+        const r = await api('/api/code/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: this.code.savedName, code: this.code.code, engine: 'qweave' }) });
         if (r.error) { this.codeError = r.error; return; }
         this.codeSaveMsg = '已保存：' + r.name;
         await this.refreshSaved();

@@ -15,6 +15,7 @@ from .store import save_fund_panel
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SYNC_SCRIPT = PROJECT_ROOT / "scripts" / "sync_tushare_to_parquet.py"
 REBUILD_SCRIPT = PROJECT_ROOT / "scripts" / "rebuild_stock_panel_from_pg.py"
+FUND_FEES_SCRIPT = PROJECT_ROOT / "scripts" / "refresh_fund_fees.py"
 STOCK_DAILY_PARQUET = PROJECT_ROOT / "data" / "pg_parquet" / "stock_daily.parquet"
 
 
@@ -87,10 +88,25 @@ def rebuild_fund_panel() -> None:
         print(f"fund_panel 生成失败: {exc}", file=sys.stderr, flush=True)
 
 
+def refresh_fund_fees(max_workers: int = 4) -> None:
+    """补齐缺失的基金费率；已有成功记录不会重复抓取。"""
+    try:
+        r = subprocess.run(
+            [sys.executable, str(FUND_FEES_SCRIPT), "--workers", str(max(1, min(max_workers, 8)))],
+            capture_output=True, text=True, timeout=3600,
+        )
+        if r.stdout.strip():
+            print(r.stdout.strip(), flush=True)
+        if r.returncode != 0 and r.stderr.strip():
+            print(r.stderr.strip(), file=sys.stderr, flush=True)
+    except Exception as exc:
+        print(f"基金费率同步失败（不影响主流程）: {exc}", file=sys.stderr, flush=True)
+
+
 def refresh_all(mode: str = "incremental", end: str | None = None,
                 max_workers: int = 6, include_stocks: bool = True,
                 sync_tushare: bool = True, rebuild_panel: bool = True,
-                progress=None) -> dict:
+                sync_fund_fees: bool = True, progress=None) -> dict:
     """一键刷新：ETF/基金/指数源数据 + Tushare 直写 parquet + 股票/基金 panel。"""
     end = end or pd.Timestamp.today().strftime("%Y-%m-%d")
     # 股票 panel 最终会从 Tushare parquet 重建，update_data 里再抓一遍腾讯股票
@@ -112,6 +128,10 @@ def refresh_all(mode: str = "incremental", end: str | None = None,
     if progress:
         progress(7, 7, "重建基金衍生面板...")
     rebuild_fund_panel()
+    if sync_fund_fees:
+        if progress:
+            progress(7, 7, "补齐基金费率...")
+        refresh_fund_fees(max_workers=max_workers)
     if progress:
         progress(7, 7, "完成")
     return result

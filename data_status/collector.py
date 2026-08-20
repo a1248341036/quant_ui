@@ -142,7 +142,7 @@ def collect_services() -> dict:
     # quant-api health endpoint.
     import urllib.request
     try:
-        with urllib.request.urlopen("http://127.0.0.1:8080/api/health", timeout=5) as r:
+            with urllib.request.urlopen("http://127.0.0.1:17891/api/health", timeout=5) as r:
             out["checks"]["quant-api"] = {"ok": r.status == 200, "detail": f"HTTP {r.status}"}
     except Exception as exc:
         out["checks"]["quant-api"] = {"ok": False, "detail": str(exc)}

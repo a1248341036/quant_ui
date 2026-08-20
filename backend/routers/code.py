@@ -50,6 +50,39 @@ class SaveRequest(BaseModel):
     code: str = ""
     registry: str = ""
     factors: str = ""
+    engine: str = "legacy"
+
+
+class QweaveRunRequest(BaseModel):
+    code: str = ""
+    universe: str = "沪深300+中证500+中证1000"
+    start: str = "2022-01-01"
+    end: str = ""
+    alpha_set: str = "alpha158"
+    alpha_limit: int | None = 30
+    horizons: list[int] = [1, 5, 10, 20]
+    quantiles: int = 10
+    min_cs_count: int = 30
+    cost_bps: float = 8.0
+    exclude_kechuang: bool = True
+    run_backtest: bool = False
+    score_factor: str = ""
+    top_n: int = 10
+    selection_mode: str = "top_n"
+    selection_pct: float = 0.10
+    min_positions: int = 1
+    max_positions: int | None = None
+    capital: float = 100000.0
+    freq: str = "weekly"
+    affordable: bool = True
+    amount_q: float = 0.2
+    warmup_days: int | None = 400
+    slippage_bps: float = 0.0
+    max_participation: float = 0.0
+    max_weight: float | None = None
+    buy_cost: float = 0.0008
+    sell_cost: float = 0.0013
+    industry_cap: int | None = None
 
 
 def _default_registry() -> str:
@@ -348,6 +381,44 @@ def get_default():
     }
 
 
+@router.get("/qweave/default")
+def get_qweave_default():
+    from backend.qweave_runner import _default_code
+    return {"engine": "qweave", "code": _default_code()}
+
+
+@router.get("/qweave/templates")
+def list_qweave_templates():
+    from backend.qweave_runner import QWEAVE_TEMPLATES
+    return {"items": [{"name": name, **item} for name, item in QWEAVE_TEMPLATES.items()]}
+
+
+@router.get("/qweave/template")
+def get_qweave_template(name: str):
+    try:
+        from backend.qweave_runner import QWEAVE_TEMPLATES, template_code
+        item = QWEAVE_TEMPLATES[name]
+        return {"ok": True, "engine": "qweave", "name": name,
+                "label": item["label"], "code": template_code(name)}
+    except (KeyError, ValueError) as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@router.post("/qweave/parse")
+def parse_qweave(req: QweaveRunRequest):
+    try:
+        from backend.qweave_runner import parse_code as parse_qweave_code
+        return parse_qweave_code(req.code)
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
+@router.post("/qweave/run")
+def run_qweave(req: QweaveRunRequest):
+    from backend.qweave_runner import execute
+    return execute(req.model_dump())
+
+
 @router.get("/template")
 def get_template(strategy: str):
     try:
@@ -366,6 +437,7 @@ def list_saved():
             meta = json.loads(p.read_text(encoding="utf-8"))
             items.append({
                 "name": meta.get("name", p.stem),
+                "engine": meta.get("engine", "legacy"),
                 "saved_at": meta.get("saved_at", ""),
             })
         except (json.JSONDecodeError, OSError):
@@ -385,6 +457,7 @@ def get_saved(name: str):
             "name": safe,
             "code": meta["code"],
             "saved_at": meta.get("saved_at", ""),
+            "engine": meta.get("engine", "legacy"),
         }
     return {
         "name": safe,
@@ -405,6 +478,7 @@ def save_code(req: SaveRequest):
         "registry": req.registry,
         "factors": req.factors,
         "saved_at": datetime.now().isoformat(timespec="seconds"),
+        "engine": req.engine,
     }
     (LABS_DIR / f"{safe}.json").write_text(
         json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")

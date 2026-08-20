@@ -305,8 +305,11 @@ FUND_TECH_KEYWORDS = (
 )
 
 
-def fetch_fund_universe(keywords: tuple[str, ...] = FUND_TECH_KEYWORDS) -> pd.DataFrame:
-    """科技相关场外基金池：天天基金全量列表按简称/类型过滤。"""
+def fetch_fund_universe(keywords: tuple[str, ...] | None = None) -> pd.DataFrame:
+    """全市场场外基金池：天天基金全量列表，保留权益类，剔除债券/货币/理财/ETF。
+
+    keywords 为 None 时拉全量权益类基金；传入关键词时按简称过滤（向后兼容）。
+    """
     try:
         import akshare as ak
         df = ak.fund_name_em()
@@ -318,14 +321,19 @@ def fetch_fund_universe(keywords: tuple[str, ...] = FUND_TECH_KEYWORDS) -> pd.Da
         out["code"] = out["code"].astype(str).str.zfill(6)
         out["name"] = out["name"].astype(str)
         out["type"] = out["type"].astype(str)
-        # 只保留权益类（股票/混合/指数/QDII），剔除债券/货币/理财
+        # 剔除非权益类：债券/货币/理财/FOF/固收/商品/债
+        drop_type = out["type"].str.contains(
+            "债券|货币|理财|FOF|固收|商品|债", regex=True, na=False)
+        # 只保留权益类（股票型/混合偏股/混合灵活/混合平衡/指数型/QDII 股票）
         keep_type = out["type"].str.contains(
             "股票|混合|指数|QDII", regex=True, na=False)
-        keep_name = out["name"].str.contains(
-            "|".join(keywords), regex=True, na=False)
         # 剔除场内 ETF（东财基金列表会混入 ETF，代码与场外重复/净值口径不同）
         keep_otc = ~out["name"].str.contains("ETF", na=False)
-        out = out[keep_type & keep_name & keep_otc].drop_duplicates("code")
+        mask = keep_type & ~drop_type & keep_otc
+        if keywords:
+            mask = mask & out["name"].str.contains(
+                "|".join(keywords), regex=True, na=False)
+        out = out[mask].drop_duplicates("code")
         return out.reset_index(drop=True)
     except Exception:
         if FUND_FILE.exists():
