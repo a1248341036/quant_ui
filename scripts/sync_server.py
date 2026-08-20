@@ -396,8 +396,12 @@ def plan_item(server: str, base: str, item: dict) -> dict:
             action["action"] = "download"
             action["detail"] = "本机缺失，拉服务器"
         elif rs is None:
-            action["action"] = "upload"
-            action["detail"] = "服务器缺失，推本机"
+            if direction == "server_to_local":
+                action["action"] = "skip"
+                action["detail"] = "服务器缺失，按服务器权威规则跳过"
+            else:
+                action["action"] = "upload"
+                action["detail"] = "服务器缺失，推本机"
         else:
             lf = freshness_local(lp)
             rf = freshness_remote(server, rp)

@@ -8,6 +8,9 @@ import pandas as pd
 
 from .limit import build_limit_flags
 from .metrics import compute_metrics, drawdown_series
+from .assets import AssetExecutionProfile, STOCK_PROFILE
+from .execution import ETFExecutionAdapter, FundNavExecutionAdapter, StockExecutionAdapter
+from .selection import PortfolioBuilder
 
 
 def _compute_atr(high: pd.DataFrame, low: pd.DataFrame, close: pd.DataFrame,
@@ -40,37 +43,132 @@ def _compute_adx(high: pd.DataFrame, low: pd.DataFrame, close: pd.DataFrame,
 def build_factor_frames(close: pd.DataFrame, am20: pd.DataFrame,
                         turn20: pd.DataFrame,
                         financial: dict[str, pd.DataFrame] | None = None,
+                        asset_type: str = "stock",
                         ) -> dict[str, pd.DataFrame]:
+    """构建因子矩阵。
+
+    asset_type 控制因子集：
+    - stock/etf：全量因子（量价 + 财务）
+    - fund_nav：跳过 turn20/am20（恒 1.0 无区分度），新增净值专属因子
+    """
     mom20 = close.pct_change(20, fill_method=None)
     mom60 = close.pct_change(60, fill_method=None)
     vol20 = close.pct_change(fill_method=None).rolling(20).std().reindex_like(am20)
-    composite = am20.rank(axis=1) + vol20.rank(axis=1)
     # 双均线交叉：短期均线相对长期均线的乖离率。
-    # 正值=多头排列/金叉上方（选最大做趋势），负值=空头排列/死叉下方（选最小博反转）。
     ma_cross5_10 = (close.rolling(5).mean() / close.rolling(10).mean() - 1.0)
     ma_cross5_20 = (close.rolling(5).mean() / close.rolling(20).mean() - 1.0)
     ma_cross10_30 = (close.rolling(10).mean() / close.rolling(30).mean() - 1.0)
     ma_cross20_30 = (close.rolling(20).mean() / close.rolling(30).mean() - 1.0)
     ma_cross20_60 = (close.rolling(20).mean() / close.rolling(60).mean() - 1.0)
-    frames = {
-        "mom20": mom20,
-        "mom60": mom60,
-        "vol20": vol20,
-        "am20": am20,
-        "turn20": turn20,
-        "composite": composite,
-        "ma_cross5_10": ma_cross5_10,
-        "ma_cross5_20": ma_cross5_20,
-        "ma_cross10_30": ma_cross10_30,
-        "ma_cross20_60": ma_cross20_60,
-        "ma_cross20_30": ma_cross20_30,
-    }
-    if financial:
-        for name, mat in financial.items():
-            if name not in frames:
-                frames[name] = mat.reindex(index=close.index,
-                                           columns=close.columns)
+
+    if asset_type == "fund_nav":
+        # 基金净值专属因子（纯净值计算，无需额外数据源）
+        # 滚动最大回撤：返回负回撤，越接近 0 越稳健，因此选更大值。
+        def _rolling_mdd(s: pd.Series, w: int) -> pd.Series:
+            roll_max = s.rolling(w, min_periods=1).max()
+            return (s / roll_max - 1.0)
+        mdd20 = close.apply(lambda c: _rolling_mdd(c, 20)).reindex_like(am20)
+        mdd60 = close.apply(lambda c: _rolling_mdd(c, 60)).reindex_like(am20)
+
+        # 滚动夏普：收益/波动，选最大
+        rets = close.pct_change(fill_method=None)
+        sharpe20 = (rets.rolling(20).mean() / rets.rolling(20).std()
+                    ).reindex_like(am20)
+        sharpe60 = (rets.rolling(60).mean() / rets.rolling(60).std()
+                    ).reindex_like(am20)
+
+        # 滚动 Sortino：只用下行波动
+        downside = rets.clip(upper=0.0)
+        sortino20 = (rets.rolling(20).mean()
+                     / downside.rolling(20).std()
+                     ).reindex_like(am20)
+
+        # 动量加速度：短期动量 - 长期动量
+        mom_accel = mom20 - mom60
+
+        # 净值稳定性：滚动线性拟合 R²
+        def _rolling_r2(s: pd.Series, w: int) -> pd.Series:
+            x = np.arange(w)
+            x_mean = x.mean()
+            x_var = ((x - x_mean) ** 2).sum()
+            def _r2(window: pd.Series) -> float:
+                if len(window) < w or window.isna().any():
+                    return np.nan
+                y = window.values
+                y_mean = y.mean()
+                ss_xy = ((x - x_mean) * (y - y_mean)).sum()
+                ss_yy = ((y - y_mean) ** 2).sum()
+                if ss_yy < 1e-12:
+                    return np.nan
+                return float((ss_xy ** 2) / (x_var * ss_yy))
+            return s.rolling(w, min_periods=w).apply(_r2, raw=False)
+        nav_stability = close.apply(lambda c: _rolling_r2(c, 60)).reindex_like(am20)
+
+        # composite 用低波动 + 低回撤。mdd20 为负数，排名后取反，
+        # 使回撤越小（越接近 0）得分越低。
+        composite = vol20.rank(axis=1) - mdd20.rank(axis=1)
+
+        frames = {
+            "mom20": mom20,
+            "mom60": mom60,
+            "vol20": vol20,
+            "composite": composite,
+            "ma_cross5_10": ma_cross5_10,
+            "ma_cross5_20": ma_cross5_20,
+            "ma_cross10_30": ma_cross10_30,
+            "ma_cross20_60": ma_cross20_60,
+            "ma_cross20_30": ma_cross20_30,
+            "mdd20": mdd20,
+            "mdd60": mdd60,
+            "sharpe20": sharpe20,
+            "sharpe60": sharpe60,
+            "sortino20": sortino20,
+            "mom_accel": mom_accel,
+            "nav_stability": nav_stability,
+        }
+    else:
+        # 股票/ETF：全量因子
+        composite = am20.rank(axis=1) + vol20.rank(axis=1)
+        frames = {
+            "mom20": mom20,
+            "mom60": mom60,
+            "vol20": vol20,
+            "am20": am20,
+            "turn20": turn20,
+            "composite": composite,
+            "ma_cross5_10": ma_cross5_10,
+            "ma_cross5_20": ma_cross5_20,
+            "ma_cross10_30": ma_cross10_30,
+            "ma_cross20_60": ma_cross20_60,
+            "ma_cross20_30": ma_cross20_30,
+        }
+        if financial:
+            for name, mat in financial.items():
+                if name not in frames:
+                    frames[name] = mat.reindex(index=close.index,
+                                               columns=close.columns)
     return frames
+
+
+def _inject_pred_factor(factors: dict, close: pd.DataFrame,
+                        factor: str, factor_weights: dict | None,
+                        external_scores: pd.DataFrame | None = None) -> dict:
+    """外部 ML 预测分数因子：读 data/pred_demo.parquet 注入 factors['pred']。"""
+    needs_pred = factor == "pred" or (factor_weights and "pred" in factor_weights)
+    if not needs_pred:
+        return factors
+    if external_scores is not None:
+        pred = external_scores.reindex(index=close.index,
+                                       columns=close.columns)
+    else:
+        from .data import load_pred_scores
+        pred = load_pred_scores(close.columns.tolist(), close.index)
+    if pred is None:
+        raise ValueError(
+            "缺少外部预测分数 data/pred_demo.parquet，请先运行 "
+            "scripts/qweave_research.py --train-model")
+    factors["pred"] = pred.reindex(index=close.index, columns=close.columns)
+    return factors
 
 
 def build_composite_factor(
@@ -80,6 +178,7 @@ def build_composite_factor(
     weights: dict[str, float],
     directions: dict[str, bool] | None = None,
     factor_builder: Callable | None = None,
+    extra_factors: dict | None = None,
 ) -> pd.DataFrame:
     """多因子加权合成：每个因子先做横截面百分位排名（0~1），
     按方向翻转后乘以权重求和，得到组合得分矩阵。
@@ -92,6 +191,8 @@ def build_composite_factor(
         raise ValueError("组合至少需要一个因子")
     builder = factor_builder or build_factor_frames
     factors = builder(close, am20, turn20)
+    if extra_factors:
+        factors.update(extra_factors)
     directions = directions or {}
     total: pd.DataFrame | None = None
     for name, w in weights.items():
@@ -122,6 +223,25 @@ def _ensure_ma_cross_factor(factors: dict, close: pd.DataFrame,
     return factors
 
 
+def _selection_count(candidate_count: int, top_n: int,
+                     selection_mode: str = "top_n",
+                     selection_pct: float = 0.10,
+                     min_positions: int = 1,
+                     max_positions: int | None = None) -> int:
+    """Resolve a fixed or dynamic number of holdings from today's eligible set."""
+    if candidate_count <= 0:
+        return 0
+    if selection_mode == "top_pct":
+        pct = min(max(float(selection_pct), 0.001), 1.0)
+        count = int(np.ceil(candidate_count * pct))
+    else:
+        count = int(top_n)
+    count = max(int(min_positions), count)
+    if max_positions is not None and int(max_positions) > 0:
+        count = min(count, int(max_positions))
+    return min(candidate_count, count)
+
+
 def run_backtest(
     panel: pd.DataFrame,
     codes: list[str],
@@ -146,6 +266,7 @@ def run_backtest(
     industry_map: dict[str, str] | None = None,
     industry_cap: int | None = None,
     factor_builder: Callable | None = None,
+    external_scores: pd.DataFrame | None = None,
     factor_weights: dict[str, float] | None = None,
     factor_directions: dict[str, bool] | None = None,
     analyze: bool = False,
@@ -160,6 +281,12 @@ def run_backtest(
     chandelier_period: int = 22,
     regime_adx: float | None = None,
     regime_scale: float = 0.5,
+    selection_mode: str = "top_n",
+    selection_pct: float = 0.10,
+    min_positions: int = 1,
+    max_positions: int | None = None,
+    execution_profile: AssetExecutionProfile | None = None,
+    share_classes: dict[str, str] | None = None,
 ) -> dict:
     """事件驱动回测：T+1、一手 100 股、费用、可承载性过滤。
 
@@ -202,6 +329,13 @@ def run_backtest(
     max_participation: 流动性约束，单笔买入金额 <= 20日均成交额 × 该比例。
     max_weight: 单票权重上限（占组合市值比例），None 表示不限制。
     """
+    profile = execution_profile or STOCK_PROFILE
+    if profile.asset_type in ("etf", "fund_nav"):
+        # ETF/基金入口使用各自默认费率；显式传入非股票默认费率时保留调用方配置。
+        if buy_cost == STOCK_PROFILE.buy_cost:
+            buy_cost = profile.buy_cost
+        if sell_cost == STOCK_PROFILE.sell_cost:
+            sell_cost = profile.sell_cost
     start_ts, end_ts = pd.Timestamp(start), pd.Timestamp(end)
     calc_start = (start_ts - pd.Timedelta(days=warmup_days)
                   if warmup_days and warmup_days > 0 else start_ts)
@@ -263,17 +397,22 @@ def run_backtest(
         except Exception:
             financial_frames = None
 
+    _asset_type = profile.asset_type
+
     def _default_builder(c: pd.DataFrame, a: pd.DataFrame, t: pd.DataFrame):
-        return build_factor_frames(c, a, t, financial=financial_frames)
+        return build_factor_frames(c, a, t, financial=financial_frames,
+                                   asset_type=_asset_type)
 
     builder = factor_builder or _default_builder
     factors = builder(close, am20, turn20)
+    _inject_pred_factor(factors, close, factor, factor_weights, external_scores)
     _ensure_ma_cross_factor(factors, close, factor)
     if factor_weights:
         # 多因子自由组合：权重合成后的得分矩阵
         combo = build_composite_factor(
             close, am20, turn20, factor_weights, factor_directions,
             factor_builder=builder,
+            extra_factors={"pred": factors["pred"]} if "pred" in factors else None,
         )
         fmat = combo.values
         quality = None
@@ -375,6 +514,7 @@ def run_backtest(
 
     nav = np.ones(T)
     bench = np.ones(T)
+    portfolio_builder = PortfolioBuilder(codes_used, industry_map, industry_cap)
     hold = np.zeros(K)
     holdings_history = []
     trades: list[dict] = []
@@ -402,6 +542,25 @@ def run_backtest(
     if use_cash:
         cash = float(capital)
         positions: dict[int, float] = {}
+        if profile.asset_type == "etf":
+            adapter_cls = ETFExecutionAdapter
+        elif profile.asset_type == "fund_nav":
+            adapter_cls = FundNavExecutionAdapter
+        else:
+            adapter_cls = StockExecutionAdapter
+        adapter_kwargs = dict(
+            codes=codes_used, open_mat=open_mat, valid_open=valid_open,
+            am20_mat=am20_mat, turnover_mat=turn_mat,
+            limit_up=limit_up, limit_down=limit_down, dates=dates,
+            buy_cost=buy_cost, sell_cost=sell_cost, lot_size=lot_size,
+            slippage_bps=slippage_bps,
+            max_participation=max_participation,
+        )
+        if adapter_cls is FundNavExecutionAdapter:
+            # 传入 A/C 类信息，供申购费率判断
+            if share_classes:
+                adapter_kwargs["share_classes"] = share_classes
+        execution_adapter = adapter_cls(**adapter_kwargs)
 
         def _portfolio_value(day: int) -> float:
             v = cash
@@ -414,27 +573,11 @@ def run_backtest(
             prev = t - 1
             if use_cash and stop_mat is not None:
                 # Chandelier/ATR 追踪止损：收盘跌破止损线，次日开盘卖出
-                for k in list(positions.keys()):
-                    sh = positions[k]
-                    if sh <= 0:
-                        continue
-                    if not (valid_close[prev, k] and np.isfinite(stop_mat[prev, k])
-                            and close_mat[prev, k] < stop_mat[prev, k]):
-                        continue
-                    if not valid_open[t, k]:
-                        continue
-                    if limit_down is not None and limit_down[t, k]:
-                        continue
-                    px = float(open_mat[t, k]) * (1.0 - slippage_bps / 1e4)
-                    amt = sh * px
-                    fee = amt * sell_cost
-                    cash += amt - fee
-                    positions.pop(k)
-                    trades_detail.append({"date": dates[t], "signal_date": dates[prev],
-                                          "code": codes_used[k], "side": "sell",
-                                          "shares": float(sh), "price": px, "fee": fee,
-                                          "amount": amt, "status": "filled",
-                                          "reason": "chandelier"})
+                stopped = execution_adapter.execute_stop_losses(
+                    cash, positions, close_mat, valid_close, stop_mat, prev, t,
+                )
+                cash, positions = stopped.cash, stopped.positions
+                trades_detail.extend(stopped.trades_detail)
             if t == start_idx:
                 # 窗口起点：清空预热段持仓，与模拟盘/旧口径一致从零开始
                 positions.clear()
@@ -464,28 +607,12 @@ def run_backtest(
                 chosen_list: list[int] = []
                 if len(cand) > 0:
                     scores = fmat[sig, cand]
-                    order = np.argsort(scores, kind="mergesort")
-                    if not ascending:
-                        order = order[::-1]
-                    if industry_cap and industry_map:
-                        sel: list[int] = []
-                        cnt: dict[str, int] = {}
-                        for o in order:
-                            code = codes_used[cand[o]]
-                            ind = industry_map.get(str(code), "?")
-                            if cnt.get(ind, 0) >= industry_cap:
-                                continue
-                            cnt[ind] = cnt.get(ind, 0) + 1
-                            sel.append(int(cand[o]))
-                            if len(sel) >= top_n:
-                                break
-                        ordered_sel = np.array(sel, dtype=int)
-                    else:
-                        ordered_sel = cand[order]
-                    if len(ordered_sel) >= top_n:
-                        chosen_list = [int(k) for k in ordered_sel[:top_n]]
-                        for k in chosen_list:
-                            targets[k] = 1.0 / len(chosen_list)
+                    chosen_list = portfolio_builder.rank_select(
+                        cand, scores, ascending, top_n, selection_mode,
+                        selection_pct, min_positions, max_positions,
+                    )
+                    if chosen_list:
+                        targets.update(portfolio_builder.equal_weights(chosen_list))
                         last_chosen = [codes_used[k] for k in chosen_list]
                     if regime_adx is not None and adx_mat is not None:
                         ma = float(np.nanmedian(adx_mat[sig]))
@@ -500,88 +627,16 @@ def run_backtest(
                 buy_amt = 0.0
                 sell_amt = 0.0
 
-                # 第一步：卖出（先），跌停/停牌保留持仓
-                for k in list(positions.keys()):
-                    if targets.get(k, 0.0) > 0:
-                        continue
-                    sh = positions[k]
-                    if sh <= 0:
-                        continue
-                    if not valid_open[t, k]:
-                        rejections.append({"date": exec_d, "signal_date": signal_d,
-                                           "code": codes_used[k], "side": "sell",
-                                           "status": "rejected", "reason": "停牌/无开盘价"})
-                        continue
-                    if limit_down is not None and limit_down[t, k]:
-                        rejections.append({"date": exec_d, "signal_date": signal_d,
-                                           "code": codes_used[k], "side": "sell",
-                                           "status": "rejected", "reason": "跌停卖不出"})
-                        continue
-                    px = float(open_mat[t, k]) * (1.0 - slippage_bps / 1e4)
-                    amt = sh * px
-                    fee = amt * sell_cost
-                    cash += amt - fee
-                    sell_amt += amt
-                    positions.pop(k)
-                    sold_codes.append(codes_used[k])
-                    trades_detail.append({"date": dates[t], "signal_date": dates[sig],
-                                          "code": codes_used[k], "side": "sell",
-                                          "shares": float(sh), "price": px, "fee": fee,
-                                          "amount": amt, "status": "filled"})
-
-                # 第二步：买入（后），现金/整手/流动性约束
-                for k in chosen_list:
-                    if not valid_open[t, k]:
-                        rejections.append({"date": exec_d, "signal_date": signal_d,
-                                           "code": codes_used[k], "side": "buy",
-                                           "status": "rejected", "reason": "停牌/无开盘价"})
-                        continue
-                    if limit_up is not None and limit_up[t, k]:
-                        rejections.append({"date": exec_d, "signal_date": signal_d,
-                                           "code": codes_used[k], "side": "buy",
-                                           "status": "rejected", "reason": "涨停买不进"})
-                        continue
-                    am20v = am20_mat[sig, k]
-                    if not np.isfinite(am20v) or (np.isfinite(am_thr) and am20v < am_thr):
-                        rejections.append({"date": exec_d, "signal_date": signal_d,
-                                           "code": codes_used[k], "side": "buy",
-                                           "status": "rejected", "reason": "流动性不足(am20分位)"})
-                        continue
-                    tv = turn_mat[sig, k]
-                    if not np.isfinite(tv) or tv <= 0:
-                        rejections.append({"date": exec_d, "signal_date": signal_d,
-                                           "code": codes_used[k], "side": "buy",
-                                           "status": "rejected", "reason": "无成交量"})
-                        continue
-                    px = float(open_mat[t, k]) * (1.0 + slippage_bps / 1e4)
-                    pct = targets[k]
-                    if max_weight:
-                        pct = min(pct, float(max_weight))
-                    budget = pv * pct
-                    gross = px * (1.0 + buy_cost)
-                    want_lots = int(budget // gross // lot_size)
-                    cash_lots = int(cash // gross // lot_size)
-                    lots = min(want_lots, cash_lots)
-                    if max_participation > 0:
-                        liq = am20v
-                        liq_lots = int((liq * max_participation) / gross) // lot_size
-                        lots = min(lots, liq_lots)
-                    if lots <= 0:
-                        rejections.append({"date": exec_d, "signal_date": signal_d,
-                                           "code": codes_used[k], "side": "buy",
-                                           "status": "rejected", "reason": "现金不足/预算过小"})
-                        continue
-                    shares = lots * lot_size
-                    fee = shares * px * buy_cost
-                    cost = shares * px + fee
-                    cash -= cost
-                    buy_amt += shares * px
-                    positions[k] = positions.get(k, 0.0) + shares
-                    bought_codes.append(codes_used[k])
-                    trades_detail.append({"date": dates[t], "signal_date": dates[sig],
-                                          "code": codes_used[k], "side": "buy",
-                                          "shares": float(shares), "price": px, "fee": fee,
-                                          "amount": shares * px, "status": "filled"})
+                executed = execution_adapter.execute_targets(
+                    cash, positions, targets, chosen_list, pv, am_thr, sig, t,
+                    max_weight=max_weight,
+                )
+                cash, positions = executed.cash, executed.positions
+                buy_amt, sell_amt = executed.buy_amount, executed.sell_amount
+                bought_codes = executed.bought_codes
+                sold_codes = executed.sold_codes
+                trades_detail.extend(executed.trades_detail)
+                rejections.extend(executed.rejections)
 
                 turn = (buy_amt + sell_amt) / 2.0 / pv if pv else 0.0
                 trades.append({
@@ -685,27 +740,16 @@ def run_backtest(
                             cand = np.array([], dtype=int)
                             scores = np.array([])
                     if len(cand) > 0:
-                        order = np.argsort(scores, kind="mergesort")
-                        if not ascending:
-                            order = order[::-1]
-                        long_n = top_n
-                        short_count = short_n or top_n
+                        long_n = PortfolioBuilder.selection_count(
+                            len(cand), top_n, selection_mode, selection_pct,
+                            min_positions, max_positions)
+                        short_count = short_n or long_n
                         min_cand = long_n + short_count if long_short else long_n
-                        if industry_cap and industry_map:
-                            sel: list[int] = []
-                            cnt: dict[str, int] = {}
-                            for o in order:
-                                code = codes_used[cand[o]]
-                                ind = industry_map.get(str(code), "?")
-                                if cnt.get(ind, 0) >= industry_cap:
-                                    continue
-                                cnt[ind] = cnt.get(ind, 0) + 1
-                                sel.append(int(cand[o]))
-                                if len(sel) >= min_cand:
-                                    break
-                            ordered_sel = np.array(sel, dtype=int)
-                        else:
-                            ordered_sel = cand[order]
+                        ordered = portfolio_builder.rank_select(
+                            cand, scores, ascending, min_cand, "top_n", 0.10,
+                            1, None, limit_count=min_cand,
+                        )
+                        ordered_sel = np.asarray(ordered, dtype=int)
                         if len(ordered_sel) >= min_cand:
                             chosen = ordered_sel[:long_n]
                             long_stuck = float(np.maximum(hold[cant_sell], 0).sum()) if len(cant_sell) else 0.0
@@ -818,6 +862,8 @@ def run_backtest(
         "positions_history": positions_history,
         "rejections": rejections,
         "risk_attribution": risk_attribution,
+        "asset_type": profile.asset_type,
+        "execution_profile": profile,
     }
 
 
@@ -828,7 +874,8 @@ def latest_signals(panel: pd.DataFrame, codes: list[str], factor: str,
                    long_short: bool = False,
                    short_n: int | None = None,
                    use_financial: bool = False,
-                   adx_filter: float | None = None) -> pd.DataFrame:
+                   adx_filter: float | None = None,
+                   asset_type: str = "stock") -> pd.DataFrame:
     sub = panel[panel["code"].isin(codes)].copy()
 
     cal = pd.DatetimeIndex(sorted(sub["date"].unique()))
@@ -861,14 +908,18 @@ def latest_signals(panel: pd.DataFrame, codes: list[str], factor: str,
         except Exception:
             financial_frames = None
     factors = build_factor_frames(close, am20, turn20,
-                                  financial=financial_frames)
+                                  financial=financial_frames,
+                                  asset_type=asset_type)
+    _inject_pred_factor(factors, close, factor, factor_weights)
     _ensure_ma_cross_factor(factors, close, factor)
     last_date = close.index[-1]
     if factor_weights:
         combo = build_composite_factor(
             close, am20, turn20, factor_weights, factor_directions,
             factor_builder=(lambda c, a, t: build_factor_frames(
-                c, a, t, financial=financial_frames)))
+                c, a, t, financial=financial_frames,
+                asset_type=asset_type)),
+            extra_factors={"pred": factors["pred"]} if "pred" in factors else None)
         row = combo.iloc[-1]
         factor = "composite"
     else:
@@ -910,3 +961,5 @@ def latest_signals(panel: pd.DataFrame, codes: list[str], factor: str,
         "turnover": [turn_row.get(c, np.nan) for c in top.index],
     }).reset_index(drop=True)
     return out, last_date
+
+

@@ -87,6 +87,8 @@ def main() -> int:
     parser.add_argument("--skip-stock-panel", action="store_true",
                         help="跳过腾讯股票日线刷新（股票行情由 Tushare parquet 承担），"
                              "仅保留 ETF/基金/指数")
+    parser.add_argument("--no-fund-fees", action="store_true",
+                        help="不补齐基金费率数据")
     args = parser.parse_args()
     started = datetime.now()
     send_qq_text(
@@ -101,6 +103,7 @@ def main() -> int:
                              include_stocks=not args.skip_stock_panel,
                              sync_tushare=not args.no_sync_pg,
                              rebuild_panel=not args.no_rebuild_panel,
+                             sync_fund_fees=not args.no_fund_fees,
                              )
         print(f"ok: {result}", flush=True)
         send_qq_text(_refresh_summary(started))

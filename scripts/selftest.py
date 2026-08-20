@@ -21,12 +21,13 @@ from core.composites import delete_composite as api_delete_composite  # noqa: E4
 from core.composites import load_composites as api_load_composites  # noqa: E402
 from core.composites import save_composite as api_save_composite  # noqa: E402
 from core.engine import build_composite_factor, latest_signals, run_backtest  # noqa: E402
+from core.assets import ETF_PROFILE  # noqa: E402
 from core.ledger import compute_equity, current_positions  # noqa: E402
 from core.store import LEGACY_DATA_DIR  # noqa: E402
 from strategies.registry import STRATEGIES  # noqa: E402
 
 
-BASE = "http://127.0.0.1:8080"
+BASE = "http://127.0.0.1:17891"
 PASS = 0
 FAIL = 0
 
@@ -92,7 +93,8 @@ def main() -> int:
     etf_codes = sorted(set(etf["code"]) & set(etf_panel["code"].unique()))
     etf_res = run_backtest(etf_panel, etf_codes, "mom20", False,
                            "2025-01-02", "2026-08-14", 5000, 3, "monthly",
-                           affordable=True, limit_flags=False)
+                           affordable=True, limit_flags=False,
+                           execution_profile=ETF_PROFILE)
     check("ETF 回测 NAV 终点有限", np.isfinite(etf_res["nav"].iloc[-1]))
     check("ETF 回测 指标无 NaN",
           all(np.isfinite(v) for v in etf_res["metrics"].values()))

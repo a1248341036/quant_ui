@@ -1089,6 +1089,8 @@ def _run_one_event(
 
     try:
         from .event_engine import run_event_backtest
+        from .assets import ETF_PROFILE, STOCK_PROFILE
+        is_etf = acc.get("universe") == "ETF"
         res = run_event_backtest(
             panel=panel,
             codes=codes,
@@ -1101,10 +1103,11 @@ def _run_one_event(
             lot_size=int(risk.get("lot_size", 100)),
             warmup_days=warmup_days,
             amount_q=float(risk.get("amount_q", 0.2)),
-            limit_flags=True,
+            limit_flags=not is_etf,
             slippage_bps=float(risk.get("slippage_bps", 0.0) or 0.0),
             max_participation=float(risk.get("max_participation", 0.0) or 0.0),
             short_rate=0.0,
+            execution_profile=ETF_PROFILE if is_etf else STOCK_PROFILE,
         )
     except Exception as exc:
         return {**base, "processed": "error",
@@ -1225,6 +1228,8 @@ def _run_one_factor(
 
     try:
         from .engine import run_backtest
+        from .assets import ETF_PROFILE, STOCK_PROFILE
+        is_etf = acc.get("universe") == "ETF"
         res = run_backtest(
             panel=panel,
             codes=codes,
@@ -1241,7 +1246,7 @@ def _run_one_factor(
             amount_q=float(risk.get("amount_q", 0.2)),
             warmup_days=warmup_days,
             cash_mode=True,
-            limit_flags=bool(risk.get("limit_flags", True)),
+            limit_flags=bool(risk.get("limit_flags", True)) and not is_etf,
             slippage_bps=float(risk.get("slippage_bps", 0.0) or 0.0),
             max_participation=float(risk.get("max_participation", 0.0) or 0.0),
             max_weight=(float(risk["max_weight"])
@@ -1253,6 +1258,7 @@ def _run_one_factor(
             regime_adx=(float(risk["regime_adx"])
                         if risk.get("regime_adx") is not None else None),
             regime_scale=float(risk.get("regime_scale", 0.5) or 0.5),
+            execution_profile=ETF_PROFILE if is_etf else STOCK_PROFILE,
         )
     except Exception as exc:
         return {**base, "processed": "error",

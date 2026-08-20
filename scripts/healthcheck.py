@@ -50,7 +50,7 @@ def save_state(state: dict) -> None:
 
 def check_api() -> tuple[bool, str]:
     try:
-        with urllib.request.urlopen("http://127.0.0.1:8080/api/health",
+        with urllib.request.urlopen("http://127.0.0.1:17891/api/health",
                                     timeout=10) as r:
             return r.status == 200, f"API HTTP {r.status}"
     except Exception as exc:

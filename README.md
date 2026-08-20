@@ -4,19 +4,19 @@
 本地增量行情缓存（Parquet + SQLite），内置因子轮动与事件驱动两套
 回测引擎，支持账户记账、今日信号、参数稳健性、历史归档与舆情情绪分析。
 
-- 地址：Vue 工作台 `http://<host>:8080`（Streamlit 看板已废弃，不再启动）
+- 地址：Vue 工作台 `http://<host>:17891`（Streamlit 看板已废弃，不再启动）
 - 默认免登录（鉴权代码保留，可恢复，见「登录鉴权」）
 
 ---
 
 ## 1. 功能总览
 
-| 模块 | Vue :8080 | Streamlit :8501 | 说明 |
+| 模块 | Vue :17891 | Streamlit :8501 | 说明 |
 | --- | :---: | :---: | --- |
 | 看板（账户 KPI + 资金曲线 + 策略对比） | ✅ | ✅ | 真实账户为空时显示「未开户」引导 |
 | 单策略回测（因子轮动） | ✅ | ✅ | 股票池/策略/TopN/资金/频率/区间/过滤/预热 |
 | ETF 池回测 | ✅ | ✅ | 全市场 ETF 池（腾讯日线），涨跌停/停牌过滤自动关闭 |
-| 场外科技基金回测 | ✅ | ✅ | 科技相关场外基金池（天天基金净值），T+1 净值执行 + 申赎费 |
+| 场外基金回测 | ✅ | ✅ | 科技相关场外基金池（天天基金净值），T+1 净值执行 + 申赎费 |
 | 多空对冲 + 行业中性化 | ✅ | ✅ | 多头 TopN + 空头最弱 N 只，模拟融券费率 |
 | 多因子组合（权重/方向/保存/回测/信号） | ✅ | — | 因子自由组合打分 |
 | 事件驱动策略实验室 | ✅ | ✅ | 按策略类型生成差异化模板 + FactorKit 数据/日期封装 |
@@ -37,13 +37,13 @@
 
 ```
 ┌─────────────────────────────┬─────────────────────────────┐
-│  Vue3 SPA  :8080            │  Streamlit  :8501           │
+│  Vue3 SPA  :17891           │  Streamlit  :8501           │
 │  static/index.html          │  app.py（单页多 tab）        │
 │  （FastAPI StaticFiles 托管）│                              │
 └─────────────┬───────────────┴──────────────┬──────────────┘
               │ REST (/api/...)              │ 直接调用 core/
 ┌─────────────▼──────────────────────────────▼──────────────┐
-│  FastAPI  backend/main.py :8080                            │
+│  FastAPI  backend/main.py :17891                           │
 │  routers: backtest / code / ledger / data                  │
 │  services: 数据加载、名称/行业映射、系列序列化               │
 ├────────────────────────────────────────────────────────────┤
@@ -77,7 +77,7 @@
 cd ~/quant/quant_ui
 cp .env.example .env   # 按需填 TUSHARE_TOKEN
 
-# 后端 API + Vue 前端（:8080）
+# 后端 API + Vue 前端（:17891）
 systemctl start quant-api
 # Streamlit（:8501）
 systemctl start quant-ui
@@ -88,10 +88,30 @@ systemctl start quant-data-refresh.timer
 python scripts/refresh_data.py
 ```
 
+### 本地启动前检查服务器数据
+
+本地 Windows 环境可用 `scripts/start_backend_with_sync.ps1` 启动 API。脚本会先通过 SSH
+访问服务器 `data_status` 服务的 `GET /api/status`，确认服务器数据状态正常后，执行本地
+的只拉取同步（仅 `server_to_local`），服务器不可达或状态异常时不会阻塞本地 API 启动。
+
+```powershell
+.\scripts\start_backend_with_sync.ps1
+```
+
+只检查、不写入本地数据：
+
+```powershell
+.venv\Scripts\python.exe scripts\startup_remote_sync.py --dry-run
+```
+
+脚本默认使用 `scripts/sync_manifest.json` 中的 SSH 别名和服务器地址；可通过
+`QUANT_REMOTE_HOST`、`QUANT_REMOTE_STATUS_URL` 覆盖。同步过程仍由现有
+`scripts/sync_server.py` 负责，覆盖前会备份到 `data/sync_backup/` 并做 SHA256 校验。
+
 `systemd` 单元见 `systemd/`。开发调试：
 
 ```bash
-python -m uvicorn backend.main:app --host 0.0.0.0 --port 8080 --reload
+python -m uvicorn backend.main:app --host 0.0.0.0 --port 17891 --reload
 # Streamlit 已废弃（原 8501）
 ```
 
@@ -115,8 +135,9 @@ systemd `Environment=` 均可配置）：
 - 主面板：`data/panel.parquet`（267 万行，1800 只，2015-09 ~ 2026-08，日线 + 滚动因子）
 - ETF：`data/etf.csv`（1576 只全市场 ETF）+ `data/etf_panel.parquet`（123 万行日线，
   腾讯行情增量拉取，字段与股票面板一致）
-- 场外科技基金：`data/fund.csv`（1350 只科技相关权益基金，关键词过滤 + 剔除场内 ETF）
+- 场外基金：`data/fund.csv`（1350 只科技相关权益基金，关键词过滤 + 剔除场内 ETF）
   + `data/fund_nav.parquet`（105 万行单位净值，天天基金逐只抓取）
+  + `data/fund_fee.csv`（申购、管理、托管、销售服务及赎回费率，AkShare/Eastmoney）
 - 行情源：股票优先 Tushare（`.env` 配 token，请求限速），失败自动回退腾讯行情接口；
   ETF 走腾讯行情、场外基金走天天基金净值
 - 本地缓存：`data/universe.csv`、`data/tech.csv`、`data/index.csv`、`data/meta.json`
@@ -192,7 +213,7 @@ systemd `Environment=` 均可配置）：
 | 复合/综合 | 复合因子 |
 | 多空/对冲 | 多空动量 20 日、多空低换手 |
 
-## 7. 后端 API（FastAPI :8080，文档 `/docs`）
+## 7. 后端 API（FastAPI :17891，文档 `/docs`）
 
 ```
 GET  /api/health
@@ -243,15 +264,40 @@ GET  /api/sentiment/ic           舆情分桶回测 IC/分组
 | --- | --- | --- |
 | `scripts/refresh_data.py` | 行情增量更新 + Tushare 直写 parquet | `data/panel.parquet` |
 | `scripts/selftest.py` | 新旧引擎一致性对照 | 控制台报告 |
+| `scripts/qweave_research.py` | **研究层（qweave 替代 Qlib）**：Alpha158/101/191 因子计算 + IC/分组/换手评估 + LightGBM 预测分数 | `data/qweave/`、`data/pred_demo.parquet` |
 | `scripts/performance_report.py` | QuantStats 报告 + IC/分组分析 | `results/performance/` |
 | `scripts/parameter_sweep.py` | 参数网格 / walk-forward | `results/parameter_sweep/` |
 | `scripts/paper_trade.py` | 日级模拟盘（创建/执行/查询） | SQLite `paper_*` 表 |
 | `scripts/attribution.py` | Brinson 归因 | `results/attribution/` |
 | `scripts/sentiment_backtest.py` | 舆情分桶回测 + IC/分组 | `results/sentiment_backtest.csv`、`results/sentiment_ic_group.csv` |
 | `scripts/sync_tushare_to_parquet.py` | Tushare 日线/财务/公告直写 parquet | `data/pg_parquet/` |
+| `scripts/refresh_fund_fees.py` | AkShare 基金费率补齐（已成功记录跳过） | `data/fund_fee.csv` |
 | `scripts/healthcheck.py` | 健康检查 | — |
 
-### 8.1 自动化测试（pytest）
+### 8.1 qweave 研究层（替代 Qlib）
+
+研究层使用 [qweave](https://github.com/qweave/qweave)（Polars/Rust 原生），
+直接读 `data/pg_parquet/stock_daily.parquet`（与回测面板同口径），
+不再需要 pyqlib / qlib_data 二进制。内置 Qlib Alpha158、WorldQuant Alpha101、
+GTJA Alpha191 三套因子表达式，并支持 IC/分组/换手评估与 LightGBM 预测。
+
+```bash
+# 全市场 Alpha158 评估（universe.csv 股票池，2020 至今）
+python scripts/qweave_research.py
+
+# 训练 LightGBM 并导出预测分数 -> data/pred_demo.parquet
+python scripts/qweave_research.py --start 2022-01-01 --train-model
+
+# 预测分数回灌现有回测引擎：策略「ML 预测 Top / ML 预测 Bottom」，
+# 或组合因子中使用 pred（如 {"pred": 0.6, "mom20": 0.4}）
+```
+
+输出在 `data/qweave/<alpha-set>_<start>_<end>/`（summary/ic/分组收益/换手等），
+`data/pred_demo.parquet` 为 date/code/score 长表。旧 Qlib 工具链
+（`scripts/export_qlib.py`、`scripts/dump_bin.py`、`scripts/qlib_alpha158_demo.py`）
+已删除，不再需要 pyqlib/qlib_data。
+
+### 8.2 自动化测试（pytest）
 
 `core/engine.py`（因子轮动）与 `core/event_engine.py`（事件驱动）已带 pytest
 冒烟测试，使用合成小面板，不依赖真实行情：
@@ -296,7 +342,7 @@ CI 配置见 `.github/workflows/ci.yml`，在 push/PR 时自动安装
 | 能力域 | 本平台 | 聚宽/米筐/掘金 | Qlib/backtrader | 差距与方向 |
 | --- | --- | --- | --- | --- |
 | 数据 | 腾讯+Tushare 增量缓存，日线+滚动因子 | 商业全量数据（分钟/财务/事件） | 自备数据 | 缺分钟线、财务/公告宽表仅 Tushare parquet 预留 |
-| 研究环境 | 网页代码实验室 + Streamlit | Notebook + 因子库 | Notebook/脚本 | 缺 Notebook、因子表达式库 |
+| 研究环境 | 网页代码实验室 + qweave 因子研究脚本 | Notebook + 因子库 | Notebook/脚本 | 缺 Notebook，qweave 已内置 Alpha158/101/191 |
 | 回测 | 因子轮动 + 事件驱动，T+1/涨跌停/费用/滑点/多空 + 财务因子 | 成熟撮合 + 多周期 | 成熟 | 撮合近似（ST 涨跌幅未区分、无分钟级撮合） |
 | 组合构建 | 等权/风险平价/均值方差/最大分散化 + Barra 风格风险模型 | 优化器 + 风险模型 | 部分 | 风格因子为轻量代理定义，缺完整 Barra 行业/风格库 |
 | 稳健性 | walk-forward + 参数网格 + 滚动训练-测试 | 参数优化/样本外验证 | 部分 | 训练期无特征工程/MI 选参，仅简单网格 |
@@ -323,3 +369,5 @@ CI 配置见 `.github/workflows/ci.yml`，在 push/PR 时自动安装
   （`/api/stock/{code}?adj=raw|hfq`）。
 - ST 涨跌停因缺标记暂按 10% 近似处理
 - 舆情数据依赖 `~/quant/sentiment-mvp` 独立流水线每日更新
+
+

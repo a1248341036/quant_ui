@@ -91,12 +91,12 @@ def load_data(force: bool = False, start: str | None = None,
     index = load_index()
     etf = load_etf()
     fund = load_fund()
-    etf_panel = load_etf_panel() if need_heavy else pd.DataFrame(
+    etf_panel = load_etf_panel(start=start, end=end) if need_heavy else pd.DataFrame(
         columns=["date", "open", "close", "turnover", "amount", "code",
                  "turn20", "am20", "volume"])
-    fund_nav = load_fund_nav() if need_heavy else pd.DataFrame(
+    fund_nav = load_fund_nav(start=start, end=end) if need_heavy else pd.DataFrame(
         columns=["date", "code", "nav"])
-    fund_panel = load_fund_panel() if need_heavy else pd.DataFrame(
+    fund_panel = load_fund_panel(start=start, end=end) if need_heavy else pd.DataFrame(
         columns=["date", "open", "close", "turnover", "amount", "code",
                  "turn20", "am20", "volume"])
     out = {
@@ -175,7 +175,7 @@ def build_codes(universe: str, exclude_kechuang: bool,
             return []
         codes = set(etf["code"]) & etf_panel_codes
         return sorted(codes)  # ETF 无科创/主板之分，跳过剔除
-    elif universe == "场外科技基金":
+    elif universe == "场外基金":
         fund = load_fund()
         from core.data import load_fund_nav_codes
         fund_nav_codes = load_fund_nav_codes()

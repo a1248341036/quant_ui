@@ -7,6 +7,7 @@ import pandas as pd
 
 from .limit import build_limit_flags
 from .metrics import compute_metrics, drawdown_series
+from .assets import AssetExecutionProfile, STOCK_PROFILE
 
 
 # ============================================================
@@ -390,6 +391,7 @@ def run_event_backtest(
     slippage_bps: float = 0.0,
     max_participation: float = 0.0,
     short_rate: float = 0.0,
+    execution_profile: AssetExecutionProfile | None = None,
 ) -> dict:
     """事件驱动回测。
 
@@ -398,6 +400,12 @@ def run_event_backtest(
         0 表示不限。
     short_rate: 空头年化融券费率（占空头市值比例/年），每日按 short_rate/252 扣。
     """
+    profile = execution_profile or STOCK_PROFILE
+    if profile.asset_type == "etf":
+        if buy_cost == STOCK_PROFILE.buy_cost:
+            buy_cost = profile.buy_cost
+        if sell_cost == STOCK_PROFILE.sell_cost:
+            sell_cost = profile.sell_cost
     start_ts, end_ts = pd.Timestamp(start), pd.Timestamp(end)
     calc_start = (start_ts - pd.Timedelta(days=warmup_days)
                   if warmup_days and warmup_days > 0 else start_ts)
