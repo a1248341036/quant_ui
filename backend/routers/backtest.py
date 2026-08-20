@@ -128,6 +128,8 @@ class BacktestRequest(BaseModel):
     lot_size: int = 100
     buy_cost: float = 0.0008
     sell_cost: float = 0.0013
+    spread_bps: float | None = None
+    min_commission: float | None = None
     industry_cap: int | None = None  # 行业分散：每行业最多选 N 只
     analyze: bool = False   # 额外输出 IC/分组因子质量分析
     composite_weights: dict[str, float] | None = None  # 多因子自由组合权重
@@ -166,6 +168,8 @@ class CompareRequest(BaseModel):
     lot_size: int = 100
     buy_cost: float = 0.0008
     sell_cost: float = 0.0013
+    spread_bps: float | None = None
+    min_commission: float | None = None
     adx_filter: float | None = None
     chandelier_mult: float = 0.0
     chandelier_period: int = 22
@@ -328,6 +332,8 @@ def backtest(req: BacktestRequest):
             slippage_bps=req.slippage_bps,
             max_participation=req.max_participation,
             max_weight=req.max_weight,
+            spread_bps=req.spread_bps,
+            min_commission=req.min_commission,
             lot_size=req.lot_size,
             buy_cost=0.0003 if etf_cost else req.buy_cost,
             sell_cost=0.0003 if etf_cost else req.sell_cost,
@@ -519,6 +525,8 @@ def backtest_compare(req: CompareRequest):
                 slippage_bps=req.slippage_bps,
                 max_participation=req.max_participation,
                 max_weight=req.max_weight,
+                spread_bps=req.spread_bps,
+                min_commission=req.min_commission,
                 lot_size=req.lot_size,
                 buy_cost=0.0003 if etf_cost else req.buy_cost,
                 sell_cost=0.0003 if etf_cost else req.sell_cost,

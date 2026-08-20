@@ -457,6 +457,11 @@ def load_etf_panel(start: str | None = None,
             panel = panel[panel["date"] <= pd.Timestamp(end)]
     panel["code"] = panel["code"].astype(str).str.zfill(6)
     panel["date"] = pd.to_datetime(panel["date"])
+    # ETF 日线固定为腾讯 qfq 前复权口径；不允许把 raw/hfq 数据静默混入回测。
+    if "price_basis" not in panel.columns:
+        panel["price_basis"] = "qfq"
+    if not panel["price_basis"].fillna("qfq").eq("qfq").all():
+        raise ValueError("ETF 面板必须使用 qfq 前复权口径")
     for c in ("turn20", "am20", "volume"):
         if c in panel.columns and panel[c].dtype == "float64":
             panel[c] = panel[c].astype("float32")

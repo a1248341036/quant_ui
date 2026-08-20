@@ -48,6 +48,7 @@ def main() -> int:
     )
 
     if len(etf_panel):
+        etf_panel["price_basis"] = "qfq"
         ETF_PANEL_FILE.parent.mkdir(parents=True, exist_ok=True)
         etf_panel.to_parquet(ETF_PANEL_FILE, index=False)
 

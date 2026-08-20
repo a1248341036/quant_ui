@@ -4,6 +4,7 @@ PG 不可用时静默跳过归档，不影响回测主流程。
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import date, datetime
 from typing import Any
@@ -12,6 +13,20 @@ import numpy as np
 import pandas as pd
 
 from . import sqldb as pg
+
+
+def _data_snapshot_hash(params: dict | None) -> str | None:
+    from .store import ETF_PANEL_FILE, FUND_NAV_FILE, PANEL_FILE
+    universe = str((params or {}).get("universe", ""))
+    path = ETF_PANEL_FILE if universe.upper() == "ETF" else (
+        FUND_NAV_FILE if "基金" in universe else PANEL_FILE)
+    if not path.exists():
+        return None
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def _clean(obj: Any) -> Any:
@@ -50,6 +65,7 @@ def save_run(kind: str = "backtest",
              trades: list | None = None,
              summary: dict | None = None,
              data_version: str | None = None,
+             data_snapshot_hash: str | None = None,
              error: str | None = None) -> int | None:
     """写入一次回测运行记录，返回 run_id；PG 不可用时返回 None。"""
     if not pg.configured():
@@ -57,8 +73,8 @@ def save_run(kind: str = "backtest",
     sql = """
         INSERT INTO backtest_runs
             (kind, params, metrics, bench_metrics, nav, bench, drawdown,
-             holdings, trades, summary, data_version, error)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            holdings, trades, summary, data_version, data_snapshot_hash, error)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING run_id
     """
     try:
@@ -75,6 +91,7 @@ def save_run(kind: str = "backtest",
                 _dumps(trades),
                 _dumps(summary),
                 data_version,
+                data_snapshot_hash or _data_snapshot_hash(params),
                 error,
             ))
             run_id = int(cur.fetchone()[0])
@@ -90,7 +107,8 @@ def list_runs(kind: str | None = None, limit: int = 50) -> pd.DataFrame:
         return pd.DataFrame(columns=["run_id", "kind", "created_at", "params",
                                      "summary", "data_version", "error"])
     sql = """
-        SELECT run_id, kind, created_at, params, summary, data_version, error
+        SELECT run_id, kind, created_at, params, summary, data_version,
+               data_snapshot_hash, error
         FROM backtest_runs
     """
     if kind:

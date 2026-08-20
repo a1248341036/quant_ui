@@ -53,24 +53,33 @@ ALPHA_SETS = {
 }
 
 
-def load_codes(codes_arg: str | None, max_codes: int | None) -> list[str] | None:
+def load_codes(codes_arg: str | None, max_codes: int | None,
+               asset_type: str = "stock") -> list[str] | None:
     """--codes 逗号列表；缺省用 universe.csv；文件也没有就 None（全市场）。"""
     if codes_arg:
         return [str(c).strip().zfill(6) for c in codes_arg.split(",") if c.strip()]
-    uni = PROJECT_ROOT / "data" / "universe.csv"
+    uni = (PROJECT_ROOT / "data" / "etf.csv" if asset_type == "etf"
+           else PROJECT_ROOT / "data" / "universe.csv")
     if uni.exists():
         import pandas as pd
         codes = pd.read_csv(uni, dtype={"code": str})["code"].astype(str).str.zfill(6).tolist()
         codes = sorted(codes)
         if max_codes:
             codes = codes[:max_codes]
-        print(f"[qweave] 股票池: universe.csv {len(codes)} 只")
+        print(f"[qweave] {'ETF' if asset_type == 'etf' else '股票'}池: {uni.name} {len(codes)} 只")
         return codes
     return None
 
 
-def load_panel(start: str, end: str, codes: list[str] | None):
-    """读 pg_parquet/stock_daily.parquet，构建与回测面板同口径的前复权面板。"""
+def load_panel(start: str, end: str, codes: list[str] | None,
+               asset_type: str = "stock"):
+    """读取与回测面板同口径的股票/ETF前复权日线。"""
+    if asset_type == "etf":
+        from core.data import load_etf_panel
+        panel = load_etf_panel(start=start, end=end)
+        if codes:
+            panel = panel[panel["code"].astype(str).isin(codes)].copy()
+        return panel
     from core.data import _load_panel_pg_parquet
     t0 = time.time()
     panel = _load_panel_pg_parquet(start=start, end=end, codes=codes)
@@ -213,6 +222,7 @@ def main() -> int:
     parser.add_argument("--start", default="2020-01-01", help="研究起始日")
     parser.add_argument("--end", default=None, help="研究截止日（默认数据最新日）")
     parser.add_argument("--codes", default=None, help="逗号分隔 6 位代码")
+    parser.add_argument("--asset-type", default="stock", choices=["stock", "etf"])
     parser.add_argument("--max-codes", type=int, default=None, help="股票池只取前 N 只（冒烟）")
     parser.add_argument("--alpha-set", default="alpha158",
                         choices=sorted(ALPHA_SETS), help="因子集")
@@ -241,8 +251,8 @@ def main() -> int:
         raise SystemExit("[qweave] 无法确定数据最新日，请用 --end 指定")
     print(f"[qweave] 研究区间: {args.start} ~ {end}")
 
-    codes = load_codes(args.codes, args.max_codes)
-    panel = load_panel(args.start, end, codes)
+    codes = load_codes(args.codes, args.max_codes, args.asset_type)
+    panel = load_panel(args.start, end, codes, args.asset_type)
     df = to_qweave_df(panel)
 
     alphas, names = build_alphas(args.alpha_set, args.alpha_limit)

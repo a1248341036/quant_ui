@@ -31,6 +31,8 @@ PAPER_FILE = PAPER_DIR / "paper_store.json"
 DEFAULT_RISK = {
     "buy_cost": 0.0008,
     "sell_cost": 0.0013,
+    "spread_bps": 0.0,
+    "min_commission": 0.0,
     "lot_size": 100,
     "amount_q": 0.2,
     "max_weight": 0.5,
@@ -194,6 +196,13 @@ def create_account(
         pd.Timestamp(start_date)  # 校验格式
     _ensure_columns()
     risk = {**DEFAULT_RISK, **(risk_config or {})}
+    if universe == "ETF":
+        from .assets import ETF_PROFILE
+        supplied = risk_config or {}
+        if "spread_bps" not in supplied:
+            risk["spread_bps"] = ETF_PROFILE.spread_bps
+        if "min_commission" not in supplied:
+            risk["min_commission"] = ETF_PROFILE.min_commission
     if pg.configured():
         try:
             aid = _ex_id(
@@ -1249,6 +1258,10 @@ def _run_one_factor(
             limit_flags=bool(risk.get("limit_flags", True)) and not is_etf,
             slippage_bps=float(risk.get("slippage_bps", 0.0) or 0.0),
             max_participation=float(risk.get("max_participation", 0.0) or 0.0),
+            spread_bps=(float(risk["spread_bps"]) if risk.get("spread_bps") is not None
+                        else None),
+            min_commission=(float(risk["min_commission"]) if risk.get("min_commission") is not None
+                            else None),
             max_weight=(float(risk["max_weight"])
                         if risk.get("max_weight") is not None else None),
             adx_filter=(float(risk["adx_filter"])

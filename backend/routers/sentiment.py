@@ -56,7 +56,7 @@ def sentiment_ic():
 
 @router.get("/stats")
 def sentiment_stats():
-    """舆情统计，与 Streamlit 同源：全量 articles.db（词典打分全量入库）。"""
+    """舆情统计，读取全量 articles.db（词典打分全量入库）。"""
     if not SENT_DB.exists():
         return {"ok": False, "error": "暂无舆情数据，先运行 sentiment-mvp 流水线"}
     total = _query("SELECT COUNT(*) AS n FROM articles").iloc[0]["n"]

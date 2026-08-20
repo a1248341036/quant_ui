@@ -210,8 +210,10 @@ def run(req: dict) -> dict:
     if not horizons or any(x <= 0 for x in horizons):
         raise ValueError("horizons 必须是正整数列表")
     universe = req.get("universe") or "沪深300+中证500+中证1000"
+    is_etf = str(universe).strip().upper() == "ETF"
     codes = services.build_codes(universe, bool(req.get("exclude_kechuang", True)))
-    panel = load_panel(start, end, codes or None)
+    panel = load_panel(start, end, codes or None,
+                       asset_type="etf" if is_etf else "stock")
     if panel.empty:
         raise ValueError("研究区间内没有可用行情数据")
     df = to_qweave_df(panel)
@@ -228,7 +230,8 @@ def run(req: dict) -> dict:
     run_dir.mkdir(parents=True, exist_ok=True)
     result.save(str(run_dir))
     (run_dir / "meta.json").write_text(json.dumps({
-        "engine": "qweave", "universe": universe, "start": start, "end": end,
+        "engine": "qweave", "universe": universe,
+        "asset_type": "etf" if is_etf else "stock", "start": start, "end": end,
         "factors": names, "horizons": horizons, "rows": df.height,
     }, ensure_ascii=False, indent=2), encoding="utf-8")
     summary = result.summary.sort("ic_mean", descending=True)
@@ -255,7 +258,7 @@ def run(req: dict) -> dict:
         score_matrix = score_df.pivot_table(index="date", columns="code", values=score_factor,
                                              aggfunc="last", observed=True)
         from core.engine import run_backtest
-        from core.assets import STOCK_PROFILE
+        from core.assets import ETF_PROFILE, STOCK_PROFILE
         bt_res = run_backtest(
             panel=panel, codes=codes or sorted(panel["code"].astype(str).unique()),
             factor="pred", ascending=False, start=start, end=end,
@@ -268,12 +271,14 @@ def run(req: dict) -> dict:
             amount_q=float(req.get("amount_q", 0.2)), warmup_days=0,
             slippage_bps=float(req.get("slippage_bps", 0.0)),
             max_participation=float(req.get("max_participation", 0.0)),
+            spread_bps=req.get("spread_bps"),
+            min_commission=req.get("min_commission"),
             max_weight=req.get("max_weight"),
             buy_cost=float(req.get("buy_cost", 0.0008)),
             sell_cost=float(req.get("sell_cost", 0.0013)),
             industry_map=services.get_industry_map() if req.get("industry_cap") else None,
             industry_cap=req.get("industry_cap"), external_scores=score_matrix,
-            execution_profile=STOCK_PROFILE,
+            execution_profile=ETF_PROFILE if str(req.get("universe")) == "ETF" else STOCK_PROFILE,
         )
         payload["backtest"] = {"factor": score_factor, **_backtest_payload(bt_res)}
     return payload

@@ -4,47 +4,45 @@
 本地增量行情缓存（Parquet + SQLite），内置因子轮动与事件驱动两套
 回测引擎，支持账户记账、今日信号、参数稳健性、历史归档与舆情情绪分析。
 
-- 地址：Vue 工作台 `http://<host>:17891`（Streamlit 看板已废弃，不再启动）
+- 地址：Vue 工作台 `http://<host>:17891`
 - 默认免登录（鉴权代码保留，可恢复，见「登录鉴权」）
 
 ---
 
 ## 1. 功能总览
 
-| 模块 | Vue :17891 | Streamlit :8501 | 说明 |
-| --- | :---: | :---: | --- |
-| 看板（账户 KPI + 资金曲线 + 策略对比） | ✅ | ✅ | 真实账户为空时显示「未开户」引导 |
-| 单策略回测（因子轮动） | ✅ | ✅ | 股票池/策略/TopN/资金/频率/区间/过滤/预热 |
-| ETF 池回测 | ✅ | ✅ | 全市场 ETF 池（腾讯日线），涨跌停/停牌过滤自动关闭 |
-| 场外基金回测 | ✅ | ✅ | 科技相关场外基金池（天天基金净值），T+1 净值执行 + 申赎费 |
-| 多空对冲 + 行业中性化 | ✅ | ✅ | 多头 TopN + 空头最弱 N 只，模拟融券费率 |
-| 多因子组合（权重/方向/保存/回测/信号） | ✅ | — | 因子自由组合打分 |
-| 事件驱动策略实验室 | ✅ | ✅ | 按策略类型生成差异化模板 + FactorKit 数据/日期封装 |
-| 参数稳健性 / Walk-forward | ✅ | ✅ | 双均线参数网格 + 分窗口回测 + 滚动训练-测试 |
-| 历史回测归档 | ✅ | ✅ | PG `backtest_runs` 记录参数/指标/净值/交易 |
-| 今日信号 | ✅ | ✅ | 按因子打分输出当日候选 |
-| 日级模拟盘 | ✅ | ✅ | 因子/事件策略自动下单/成交/日结，systemd 盘后执行 |
-| 账户记账（出入金/交易/持仓/估值） | ✅ | ✅ | 手动录入，估值基于 panel 行情 |
-| 数据管理（状态/一键更新） | ✅ | ✅ | 腾讯行情 + Tushare 双源，增量刷新（含 PG 日线同步与基金面板重建） |
-| 舆情情绪看板 | ✅（简版） | ✅ | 读取 `~/quant/sentiment-mvp` 词典/LLM 打分 |
-| 因子质量分析（IC/分组/多空价差） | ✅ | — | 回测页勾选「因子质量分析」后展示 |
-| QuantStats 绩效报告 | ✅ | — | 回测结果页按钮，内嵌 HTML 报告 |
-| Brinson 归因 | ✅ | ✅ | 回测结果内置行业归因 + 代码实验室一键归因 |
-| 事件引擎费用/滑点/流动性参数 | ✅ | 部分（滑点） | 代码页运行参数可配 |
-| 舆情 IC/分组结果 | ✅ | — | 舆情 tab 展示 scripts/sentiment_backtest.py 输出 |
+| 模块 | Vue :17891 | 说明 |
+| --- | :---: | --- |
+| 看板（账户 KPI + 资金曲线 + 策略对比） | ✅ | 真实账户为空时显示「未开户」引导 |
+| 单策略回测（因子轮动） | ✅ | 股票池/策略/TopN/资金/频率/区间/过滤/预热 |
+| ETF 池回测 | ✅ | 全市场 ETF 池（腾讯日线），涨跌停/停牌过滤自动关闭 |
+| 场外基金回测 | ✅ | 科技相关场外基金池（天天基金净值），T+1 净值执行 + 申赎费 |
+| 多空对冲 + 行业中性化 | ✅ | 多头 TopN + 空头最弱 N 只，模拟融券费率 |
+| 多因子组合（权重/方向/保存/回测/信号） | ✅ | 因子自由组合打分 |
+| 事件驱动策略实验室 | ✅ | 按策略类型生成差异化模板 + FactorKit 数据/日期封装 |
+| 参数稳健性 / Walk-forward | ✅ | 双均线参数网格 + 分窗口回测 + 滚动训练-测试 |
+| 历史回测归档 | ✅ | SQLite `backtest_runs` 记录参数/指标/净值/交易 |
+| 今日信号 | ✅ | 按因子打分输出当日候选 |
+| 日级模拟盘 | ✅ | 因子/事件策略自动下单/成交/日结，systemd 盘后执行 |
+| 账户记账（出入金/交易/持仓/估值） | ✅ | 手动录入，估值基于 panel 行情 |
+| 数据管理（状态/一键更新） | ✅ | 腾讯行情 + Tushare 双源，增量刷新（含日线同步与基金面板重建） |
+| 舆情情绪看板 | ✅（简版） | 读取 `~/quant/sentiment-mvp` 词典/LLM 打分 |
+| 因子质量分析（IC/分组/多空价差） | ✅ | 回测页勾选「因子质量分析」后展示 |
+| QuantStats 绩效报告 | ✅ | 回测结果页按钮，内嵌 HTML 报告 |
+| Brinson 归因 | ✅ | 回测结果内置行业归因 + 代码实验室一键归因 |
+| 事件引擎费用/滑点/流动性参数 | ✅ | 代码页运行参数可配 |
+| 舆情 IC/分组结果 | ✅ | 舆情 tab 展示 scripts/sentiment_backtest.py 输出 |
 
 ## 2. 架构
 
 ```
-┌─────────────────────────────┬─────────────────────────────┐
-│  Vue3 SPA  :17891           │  Streamlit  :8501           │
-│  static/index.html          │  app.py（单页多 tab）        │
-│  （FastAPI StaticFiles 托管）│                              │
-└─────────────┬───────────────┴──────────────┬──────────────┘
-              │ REST (/api/...)              │ 直接调用 core/
-┌─────────────▼──────────────────────────────▼──────────────┐
-│  FastAPI  backend/main.py :17891                           │
-│  routers: backtest / code / ledger / data                  │
+┌────────────────────────────────────────────────────────────┐
+│  Vue3 SPA + FastAPI backend/main.py :17891                  │
+│  static/index.html（FastAPI StaticFiles 托管）              │
+└───────────────────────┬────────────────────────────────────┘
+                        │ REST (/api/...)
+┌───────────────────────▼────────────────────────────────────┐
+│  FastAPI routers: backtest / code / ledger / data           │
 │  services: 数据加载、名称/行业映射、系列序列化               │
 ├────────────────────────────────────────────────────────────┤
 │  core/                                                      │
@@ -79,8 +77,6 @@ cp .env.example .env   # 按需填 TUSHARE_TOKEN
 
 # 后端 API + Vue 前端（:17891）
 systemctl start quant-api
-# Streamlit（:8501）
-systemctl start quant-ui
 # 每日 15:10/16:30 收盘后自动增量更新行情（Tushare 日线直写 Parquet + panel 重建）
 systemctl start quant-data-refresh.timer
 
@@ -111,8 +107,7 @@ python scripts/refresh_data.py
 `systemd` 单元见 `systemd/`。开发调试：
 
 ```bash
-python -m uvicorn backend.main:app --host 0.0.0.0 --port 17891 --reload
-# Streamlit 已废弃（原 8501）
+python -m uvicorn backend.main:app --host 127.0.0.1 --port 17891 --reload
 ```
 
 ### 数据目录与路径环境变量
@@ -148,7 +143,7 @@ systemd `Environment=` 均可配置）：
   不再依赖 PostgreSQL/TimescaleDB
 - 回测数据源由 `QUANT_DATA_SOURCE` 控制：`pg_parquet` 优先读 `data/pg_parquet/`；
   `panel` 只用本地预计算面板
-- 舆情：独立仓库 `~/quant/sentiment-mvp`，Streamlit 直接读取其 CSV/数据库
+- 舆情：独立仓库 `~/quant/sentiment-mvp`，FastAPI 后端读取其 CSV/数据库
 
 ## 5. 回测引擎
 
@@ -161,7 +156,7 @@ systemd `Environment=` 均可配置）：
   （`scripts/sync_tushare_to_parquet.py --fina` 全市场补全）
 - 风险中性化（`risk_neutral`）：选股前把因子得分对风格/行业暴露回归取残差，
   并输出期末持仓的**风险归因**（liquidity/momentum/volatility/turnover/value/quality/growth + 行业 + specific）
-- 基准：股票池等权；支持沪深300/中证500 等指数线（Streamlit 可选）
+- 基准：股票池等权；支持沪深300/中证500 等指数线
 - 输出：净值/基准/回撤/指标/持仓/调仓记录/最近信号日 + **Brinson 行业归因**（自动），
   `analyze=true` 时附带因子质量（IC/分组）
 

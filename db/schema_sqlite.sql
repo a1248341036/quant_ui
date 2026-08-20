@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS backtest_runs (
     trades        TEXT,
     summary       TEXT,
     data_version  TEXT,
+    data_snapshot_hash TEXT,
     error         TEXT
 );
 
