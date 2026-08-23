@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import pandas as pd
 from pathlib import Path
 import tempfile
@@ -22,6 +23,8 @@ from core.performance import quantstats_html
 from core.store import normalize_universe
 from core.strategy_pool import resolve_strategy as resolve_pool_strategy
 from strategies.registry import STRATEGIES, list_strategies_by_type
+
+logger = logging.getLogger(__name__)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -108,6 +111,57 @@ def _load_panel_for(universe: str, start: str | None = None,
     return data["panel"]
 
 
+def _eval_alpha_factor(factor_id: str, library: str,
+                       bt_panel: pd.DataFrame,
+                       start: str, end: str) -> pd.DataFrame:
+    """从 AlphaAgent 因子库读取 DSL 表达式，在 CNE 面板上求值，
+    返回 date×code 的因子得分矩阵（与 bt_panel 对齐）。
+
+    bt_panel: 回测引擎使用的扁平面板（有 date/code 列）。
+    返回的 DataFrame 索引为 date，列为 code，值同 _inject_pred_factor 期望。
+    """
+    from backend.alphaagent_service import get_factor_detail
+    from alphaagent.data.adapters.cnequity import load_panel_from_cne
+    from alphaagent.dsl import eval_factor
+    from alphaagent.factor.align import align_series_to_panel
+
+    # 1. 获取 DSL 表达式
+    detail = get_factor_detail(factor_id, library=library)
+    if "error" in detail:
+        raise ValueError(detail["error"])
+    expr = detail.get("expr", "")
+    if not expr:
+        raise ValueError(f"因子 {factor_id} 无 DSL 表达式")
+
+    # 2. 从 CNE 数据湖加载 AlphaAgent 格式面板
+    cne_panel = load_panel_from_cne(start=start, end=end, universe_mask=False)
+    cne_panel = cne_panel.sort_index()
+
+    # 3. DSL 求值
+    raw = eval_factor(expr, cne_panel)
+    if not isinstance(raw, pd.Series):
+        raise TypeError(f"DSL 求值结果类型异常: {type(raw)!r}")
+    values = align_series_to_panel(raw, cne_panel)
+    factor_series = pd.Series(values, index=cne_panel.index, name="alpha_factor",
+                              dtype="float32")
+
+    # 4. 转为 date×code 矩阵
+    # cne_panel index = MultiIndex(datetime, instrument)
+    factor_df = factor_series.unstack(level="instrument")
+    factor_df.index.name = "date"
+    factor_df.columns.name = "code"
+
+    # 5. 代码格式转换：CNE 用 000001.SZ 格式，回测面板用 000001 格式
+    # 去掉后缀 .SZ / .SH / .BJ 即可
+    factor_df.columns = [str(c).split(".")[0] for c in factor_df.columns]
+
+    # 6. 对齐到回测面板的交易日历和股票代码
+    bt_dates = pd.DatetimeIndex(sorted(bt_panel["date"].unique()))
+    bt_codes = [str(c) for c in bt_panel["code"].unique()]
+    factor_df = factor_df.reindex(index=bt_dates, columns=bt_codes)
+    return factor_df
+
+
 class BacktestRequest(BaseModel):
     universe: str = "科技TMT"
     strategy: str = "低换手冷门"
@@ -146,6 +200,9 @@ class BacktestRequest(BaseModel):
     chandelier_period: int = 22
     regime_adx: float | None = None  # 市场 ADX 低于该阈值时降仓
     regime_scale: float = 0.5
+    alpha_factor_id: str | None = None  # AlphaAgent 因子库 ID，选中后用 DSL 因子回测
+    alpha_library: str = "production"  # 因子库: production / candidate
+    alpha_ascending: bool = False  # AlphaAgent 因子方向：False=买高，True=买低
 
 
 class CompareRequest(BaseModel):
@@ -211,6 +268,30 @@ def factors():
     return FACTOR_OPTIONS
 
 
+@router.get("/alpha-factors")
+def alpha_factors(library: str = "production"):
+    """列出 AlphaAgent 因子库中的因子，供回测页面选择。"""
+    try:
+        from backend.alphaagent_service import list_factors
+        data = list_factors(library=library)
+        # 精简返回：只取回测选择所需的字段
+        items = []
+        for f in data.get("factors", []):
+            items.append({
+                "factor_id": f["factor_id"],
+                "name": f["name"],
+                "expr": f["expr"],
+                "library": library,
+                "metrics": f.get("metrics", {}),
+            })
+        return {"library": library, "factors": items,
+                "n_factors": len(items)}
+    except Exception as exc:
+        logger.warning("列出 AlphaAgent 因子失败: %s", exc)
+        return {"library": library, "factors": [], "n_factors": 0,
+                "error": str(exc)}
+
+
 @router.get("/composites")
 def composites():
     return list(load_composites().values())
@@ -244,11 +325,16 @@ def names():
 @router.post("/backtest")
 def backtest(req: BacktestRequest):
     is_composite = bool(req.composite_weights)
-    strat = None if is_composite else _resolve_strategy(req.strategy)
-    if not is_composite:
-        strategy_error = _validate_strategy_for_universe(req.strategy, req.universe)
-        if strategy_error:
-            return {"error": strategy_error}
+    is_alpha = bool(req.alpha_factor_id)
+    if is_alpha:
+        # AlphaAgent 因子模式：不走策略/组合验证，用 DSL 因子注入回测
+        strat = None
+    else:
+        strat = None if is_composite else _resolve_strategy(req.strategy)
+        if not is_composite:
+            strategy_error = _validate_strategy_for_universe(req.strategy, req.universe)
+            if strategy_error:
+                return {"error": strategy_error}
     composite_error = _validate_composite_for_universe(
         req.composite_weights, req.universe)
     if composite_error:
@@ -314,11 +400,20 @@ def backtest(req: BacktestRequest):
             fund_names=services.get_fund_name_map(),
         )
     else:
+        # AlphaAgent 因子模式：从 DSL 求值注入 external_scores
+        external_scores = None
+        if is_alpha:
+            try:
+                external_scores = _eval_alpha_factor(
+                    req.alpha_factor_id, req.alpha_library,
+                    panel, calc_start, req.end)
+            except Exception as exc:
+                return {"error": f"AlphaAgent 因子求值失败: {exc}"}
         res = run_backtest(
             panel=panel,
             codes=codes,
-            factor="composite" if is_composite else strat["factor"],
-            ascending=False if is_composite else strat["ascending"],
+            factor="pred" if is_alpha else ("composite" if is_composite else strat["factor"]),
+            ascending=req.alpha_ascending if is_alpha else (False if is_composite else strat["ascending"]),
             start=req.start,
             end=req.end,
             capital=req.capital,
@@ -355,6 +450,7 @@ def backtest(req: BacktestRequest):
         regime_adx=req.regime_adx,
         regime_scale=req.regime_scale,
         execution_profile=ETF_PROFILE if _is_etf(req.universe) else STOCK_PROFILE,
+        external_scores=external_scores,
 )
     brinson = None
     if (not is_fund and not _is_etf(req.universe)
@@ -378,7 +474,7 @@ def backtest(req: BacktestRequest):
     quality = None
     if res.get("factor_quality") is not None:
         q = res["factor_quality"]
-        sign = -1.0 if (not is_composite and strat.get("ascending")) else 1.0
+        sign = -1.0 if (not is_composite and not is_alpha and strat and strat.get("ascending")) else 1.0
         quality = {
             "horizon": q["horizon"],
             "ic": {k: services._to_float(v) for k, v in q["ic"].items()},
@@ -415,6 +511,8 @@ def backtest(req: BacktestRequest):
             "composite": is_composite,
             "composite_name": req.composite_name,
             "composite_weights": req.composite_weights,
+            "alpha_factor_id": req.alpha_factor_id,
+            "alpha_library": req.alpha_library if req.alpha_factor_id else None,
             "long_short": long_short,
             "short_n": short_n,
             "short_cost_rate": short_cost_rate,
@@ -434,6 +532,7 @@ def backtest(req: BacktestRequest):
             "start": req.start, "end": req.end, "freq": req.freq,
             "composite": is_composite,
             "composite_name": req.composite_name,
+            "alpha_factor_id": req.alpha_factor_id,
             "total_return": metrics.get("总收益"),
             "annual": metrics.get("年化收益"),
             "sharpe": metrics.get("夏普"),
@@ -446,6 +545,7 @@ def backtest(req: BacktestRequest):
         "run_id": run_id,
         "composite": is_composite,
         "composite_name": req.composite_name,
+        "alpha_factor_id": req.alpha_factor_id,
         "long_short": long_short,
         "short_n": short_n,
         "short_cost_rate": short_cost_rate,

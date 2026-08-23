@@ -12,7 +12,15 @@
         <div class="form-section-title">标的与策略</div>
         <div class="form-grid">
           <label class="field"><span>股票池</span><select v-model="bt.universe"><option>科技TMT</option><option>沪深300+中证500+中证1000</option><option>ETF</option><option>场外基金</option></select></label>
-          <label class="field wide"><span>策略</span><strategy-select v-model="bt.strategy" :strategies="store.strategies" placeholder="选择策略"></strategy-select></label>
+          <label class="field wide" v-if="!bt.useAlphaFactor"><span>策略</span><strategy-select v-model="bt.strategy" :strategies="store.strategies" placeholder="选择策略"></strategy-select></label>
+          <label class="field wide" v-if="bt.useAlphaFactor"><span>AlphaAgent 因子</span>
+            <select v-model="bt.alphaFactorId" @change="onAlphaFactorChange">
+              <option value="">— 选择因子 —</option>
+              <option v-for="f in alphaFactors" :key="f.factor_id" :value="f.factor_id">{{f.name}} (IC={{fmt(f.metrics?.ic, 3)}}, ICIR={{fmt(f.metrics?.icir, 3)}})</option>
+            </select>
+          </label>
+          <label class="field" v-if="bt.useAlphaFactor"><span>因子库</span><select v-model="bt.alphaLibrary" @change="loadAlphaFactors"><option value="production">正式库</option><option value="candidate">候选库</option></select></label>
+          <label class="field-check" v-if="bt.useAlphaFactor" style="grid-column:auto"><input type="checkbox" v-model="bt.alphaAscending"> 因子取低值（ascending）</label>
           <label class="field"><span>TopN</span><select v-model.number="bt.top_n"><option v-for="n in [1,2,3,5,8,10]" :value="n">{{n}}</option></select></label>
           <label class="field"><span>初始资金</span><input type="number" v-model.number="bt.capital" step="1000"></label>
           <label class="field"><span>基准</span>
@@ -21,6 +29,10 @@
               <option v-for="i in store.indices" :value="i.name">{{i.name}}</option>
             </select>
           </label>
+        </div>
+        <div class="form-check-row" style="margin-top:8px">
+          <label class="field-check"><input type="checkbox" v-model="bt.useAlphaFactor" @change="onAlphaToggle"> 使用 AlphaAgent 因子（DSL 因子库）</label>
+          <span class="muted" v-if="bt.useAlphaFactor && alphaFactorExpr">表达式: {{alphaFactorExpr}}</span>
         </div>
       </div>
       <div class="form-section">
@@ -261,13 +273,15 @@ export default {
   data() {
     return {
       store,
-      bt: { universe: '科技TMT', strategy: '低换手冷门', top_n: 3, capital: 5000, freq: 'monthly', start: '2026-02-02', end: today(), exclude: true, affordable: true, amount_q: 0.2, warmup_days: 400, long_short: false, neutral: false, risk_neutral: false, use_financial: false, short_n: 3, short_rate: 8.6, industry_cap: 0, analyze: false, bench: '沪深300' },
+      bt: { universe: '科技TMT', strategy: '低换手冷门', top_n: 3, capital: 5000, freq: 'monthly', start: '2026-02-02', end: today(), exclude: true, affordable: true, amount_q: 0.2, warmup_days: 400, long_short: false, neutral: false, risk_neutral: false, use_financial: false, short_n: 3, short_rate: 8.6, industry_cap: 0, analyze: false, bench: '沪深300', useAlphaFactor: false, alphaFactorId: '', alphaLibrary: 'production', alphaAscending: false },
       btSub: 'bt',
       btResult: null,
       btRunning: false,
       btError: '',
       reportHtml: '',
       reportLoading: false,
+      alphaFactors: [],
+      alphaFactorExpr: '',
       sweep: { mode: 'event', start: '2023-01-03', end: '', folds: 4,
                shortList: '3,5,8,10,13', longList: '10,20,30,60', top_n: 3,
                strategy: '双均线多头 5/20' },
@@ -315,8 +329,19 @@ export default {
           industry_cap: this.bt.industry_cap > 0 ? this.bt.industry_cap : null,
           analyze: !!this.bt.analyze,
         };
+        // AlphaAgent 因子模式：传 alpha_factor_id，策略字段留空
+        if (this.bt.useAlphaFactor && this.bt.alphaFactorId) {
+          payload.alpha_factor_id = this.bt.alphaFactorId;
+          payload.alpha_library = this.bt.alphaLibrary || 'production';
+          payload.alpha_ascending = this.bt.alphaAscending;
+          payload.strategy = '';
+        } else {
+          delete payload.alpha_factor_id;
+          delete payload.alpha_library;
+          delete payload.alpha_ascending;
+        }
         const ctrl = new AbortController();
-        const timer = setTimeout(() => ctrl.abort(), 120000);
+        const timer = setTimeout(() => ctrl.abort(), 300000);
         let r;
         try {
           r = await api('/api/backtest', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), signal: ctrl.signal });
@@ -326,9 +351,29 @@ export default {
         this.$nextTick(async () => this.renderBacktest());
       } catch (e) {
         this.btError = (e && e.name === 'AbortError')
-          ? '回测超时（120 秒）。后台补数或内存不足时可能变慢，稍后重试。'
+          ? '回测超时（300 秒）。AlphaAgent 因子需从 CNE 数据湖加载面板，首次可能较慢。'
           : '回测失败: ' + (e && e.message ? e.message : e);
       } finally { this.btRunning = false; }
+    },
+    async loadAlphaFactors() {
+      try {
+        const r = await api(`/api/backtest/alpha-factors?library=${this.bt.alphaLibrary || 'production'}`);
+        this.alphaFactors = r.factors || [];
+      } catch (e) {
+        this.alphaFactors = [];
+      }
+    },
+    onAlphaToggle() {
+      if (this.bt.useAlphaFactor && !this.alphaFactors.length) {
+        this.loadAlphaFactors();
+      }
+      if (!this.bt.useAlphaFactor) {
+        this.alphaFactorExpr = '';
+      }
+    },
+    onAlphaFactorChange() {
+      const f = this.alphaFactors.find(x => x.factor_id === this.bt.alphaFactorId);
+      this.alphaFactorExpr = f ? f.expr : '';
     },
     async renderBacktest() {
       const nav = this.btResult.nav;
