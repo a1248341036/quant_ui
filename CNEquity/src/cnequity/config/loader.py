@@ -185,6 +185,23 @@ def _expand(path_str: str, data_root: Path) -> Path:
     return Path(path_str.replace("{data.root}", str(data_root))).expanduser().resolve()
 
 
+def _resolve_path(path_str: str, config_dir: Path, data_root: Path | None = None) -> Path:
+    """Resolve a path relative to the config file directory (not CWD).
+
+    Absolute paths are kept as-is; ``{data.root}`` placeholders are expanded
+    with the already-resolved ``data_root`` so external roots can reference
+    the lake root.
+    """
+    if data_root is not None:
+        expanded = path_str.replace("{data.root}", str(data_root))
+    else:
+        expanded = path_str
+    p = Path(expanded).expanduser()
+    if not p.is_absolute():
+        p = config_dir / p
+    return p.resolve()
+
+
 def _parse_tdx_host_pool(hosts_raw: object) -> list[str]:
     """Parse ``[tdx_protocol.hosts]``: a flat list, or {standard, extended}.
 
@@ -210,7 +227,12 @@ def load_config(path: str | Path) -> Config:
     with open(config_path, "rb") as f:
         raw = tomllib.load(f)
 
-    data_root = Path(raw.get("data", {}).get("root", "./data/cnequity")).expanduser().resolve()
+    # Resolve data.root relative to the config file directory (not CWD),
+    # so the CLI works correctly regardless of where it's invoked from.
+    _root_raw = Path(raw.get("data", {}).get("root", "./data/cnequity")).expanduser()
+    if not _root_raw.is_absolute():
+        _root_raw = config_path.parent / _root_raw
+    data_root = _root_raw.resolve()
     orch = raw.get("orchestrator", {})
     tdx = raw.get("tdx_protocol", {})
     external_tushare_wide = raw.get("external_tushare_wide", {})
@@ -310,7 +332,7 @@ def load_config(path: str | Path) -> Config:
         tdx_allow_mock=bool(tdx.get("allow_mock", False)),
         external_tushare_wide_enabled=bool(external_tushare_wide.get("enabled", False)),
         external_tushare_wide_root=(
-            Path(str(external_tushare_wide["root"])).expanduser().resolve()
+            _resolve_path(str(external_tushare_wide["root"]), config_path.parent, data_root)
             if external_tushare_wide.get("root")
             else None
         ),
@@ -321,13 +343,13 @@ def load_config(path: str | Path) -> Config:
         ),
         external_pg_parquet_enabled=bool(external_pg_parquet.get("enabled", False)),
         external_pg_parquet_root=(
-            Path(str(external_pg_parquet["root"])).expanduser().resolve()
+            _resolve_path(str(external_pg_parquet["root"]), config_path.parent, data_root)
             if external_pg_parquet.get("root")
             else None
         ),
         external_local_assets_enabled=bool(external_local_assets.get("enabled", False)),
-    external_local_assets_root=(
-            Path(str(external_local_assets["root"])).expanduser().resolve()
+        external_local_assets_root=(
+            _resolve_path(str(external_local_assets["root"]), config_path.parent, data_root)
             if external_local_assets.get("root")
             else None
         ),
@@ -338,7 +360,7 @@ def load_config(path: str | Path) -> Config:
         ),
         external_alphaagent_enabled=bool(external_alphaagent.get("enabled", False)),
         external_alphaagent_root=(
-            Path(str(external_alphaagent["root"])).expanduser().resolve()
+            _resolve_path(str(external_alphaagent["root"]), config_path.parent, data_root)
             if external_alphaagent.get("root")
             else None
         ),
@@ -346,7 +368,7 @@ def load_config(path: str | Path) -> Config:
             external_minute_bars_local.get("enabled", False)
         ),
         external_minute_bars_local_root=(
-            Path(str(external_minute_bars_local["root"])).expanduser().resolve()
+            _resolve_path(str(external_minute_bars_local["root"]), config_path.parent, data_root)
             if external_minute_bars_local.get("root")
             else None
         ),
