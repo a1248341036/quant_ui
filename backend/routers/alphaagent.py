@@ -169,3 +169,88 @@ async def events(run_id: str):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  单因子评估 API
+# ══════════════════════════════════════════════════════════════════════
+
+class EvalFactorRequest(BaseModel):
+    multi_line_expr: str = Field(min_length=1, max_length=10000)
+    factor_name: str = "expr"
+    profile_id: str = "train_screen"
+    train_start: str = "2018-01-01"
+    train_end: str = "2022-12-31"
+    val_start: str = "2023-01-01"
+    val_end: str = "2025-12-31"
+    label_col: str = "label_1d_open_to_open"
+    include_fundamentals: bool = False
+    all_profiles: bool = True
+
+
+@router.post("/eval-factor")
+def eval_factor(req: EvalFactorRequest) -> dict[str, Any]:
+    """独立评估一个因子表达式（不依赖挖掘流程）。"""
+    try:
+        if req.all_profiles:
+            result = service.evaluate_multi_profile(
+                multi_line_expr=req.multi_line_expr,
+                factor_name=req.factor_name,
+                train_start=req.train_start,
+                train_end=req.train_end,
+                val_start=req.val_start,
+                val_end=req.val_end,
+                label_col=req.label_col,
+                include_fundamentals=req.include_fundamentals,
+            )
+        else:
+            result = {
+                req.profile_id: service.evaluate_single_factor(
+                    multi_line_expr=req.multi_line_expr,
+                    factor_name=req.factor_name,
+                    profile_id=req.profile_id,
+                    train_start=req.train_start,
+                    train_end=req.train_end,
+                    val_start=req.val_start,
+                    val_end=req.val_end,
+                    label_col=req.label_col,
+                    include_fundamentals=req.include_fundamentals,
+                )
+            }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {"results": result}
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  因子库管理 API
+# ══════════════════════════════════════════════════════════════════════
+
+@router.get("/factors")
+def list_factors(library: str = "production") -> dict[str, Any]:
+    """列出因子库中的所有因子。"""
+    return service.list_factors(library=library)
+
+
+@router.get("/factors/{factor_id}")
+def factor_detail(factor_id: str, library: str = "production") -> dict[str, Any]:
+    """获取单个因子详情。"""
+    result = service.get_factor_detail(factor_id, library=library)
+    if "error" in result:
+        raise HTTPException(status_code=404, detail=result["error"])
+    return result
+
+
+class DeleteFactorRequest(BaseModel):
+    library: str = "production"
+
+
+@router.delete("/factors/{factor_id}")
+def delete_factor(factor_id: str, library: str = "production") -> dict[str, Any]:
+    """删除一个因子。"""
+    result = service.delete_factor(factor_id, library=library)
+    if "error" in result:
+        if result["error"] == "library_not_initialized":
+            raise HTTPException(status_code=404, detail=result["error"])
+        raise HTTPException(status_code=404, detail=result["error"])
+    return result

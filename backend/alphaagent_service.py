@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
+import pandas as pd
+
 from alphaagent.factor.mining.research_spec import default_research_spec, normalize_research_spec
 
 from alphaagent.factor.mining.research_memory import ResearchMemoryStore
@@ -26,6 +28,11 @@ DEFAULT_PANEL = "cne://"  # 从 CNE 数据湖实时构建 panel，不再依赖�
 DEFAULT_FACTORLIB = ROOT / "artifacts" / "alphaagent" / "factorzoo" / "stock_1d"
 RESEARCH_MEMORY_FILE = ROOT / "artifacts" / "alphaagent" / "research_memory.json"
 LOG_ROOT = ROOT / "logs" / "factor_mining" / "ui"
+
+# ── 单因子评估服务（懒初始化） ──────────────────────────────────────
+_eval_service: Any = None
+_eval_service_lock = threading.Lock()
+_eval_service_params: dict[str, Any] | None = None
 
 
 def _now() -> str:
@@ -465,3 +472,275 @@ async def event_stream(run_id: str):
         if not emitted:
             yield {"event": "heartbeat", "status": run.status}
         await asyncio.sleep(0.5)
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  单因子评估（独立于挖掘流程）
+# ══════════════════════════════════════════════════════════════════════
+
+def _get_eval_service(
+    train_start: str = "2018-01-01",
+    train_end: str = "2022-12-31",
+    val_start: str = "2023-01-01",
+    val_end: str = "2025-12-31",
+    label_col: str = "label_1d_open_to_open",
+    include_fundamentals: bool = False,
+) -> Any:
+    """懒初始化 StockEvalService 并复用 session。
+
+    panel 加载很重（~11M 行），首次调用时创建 session 后复用。
+    如果参数变更则重建 session。
+    """
+    global _eval_service, _eval_service_params
+
+    params_key = {
+        "train_start": train_start,
+        "train_end": train_end,
+        "val_start": val_start,
+        "val_end": val_end,
+        "label_col": label_col,
+        "include_fundamentals": include_fundamentals,
+    }
+
+    with _eval_service_lock:
+        if _eval_service is not None and _eval_service_params == params_key:
+            # 参数一致，复用
+            return _eval_service
+
+        from alphaagent.factor.mining.service import StockEvalService
+        from alphaagent.factor.mining.schemas import SessionCreateRequest
+
+        svc = StockEvalService()
+        req = SessionCreateRequest(
+            panel_path=DEFAULT_PANEL,
+            train_start=train_start,
+            train_end=train_end,
+            val_start=val_start,
+            val_end=val_end,
+            label_col=label_col,
+            include_fundamentals=include_fundamentals,
+        )
+        resp = svc.create_session(req)
+        _eval_service = svc
+        _eval_service_params = params_key
+        return svc
+
+
+def evaluate_single_factor(
+    *,
+    multi_line_expr: str,
+    factor_name: str = "expr",
+    profile_id: str = "train_screen",
+    train_start: str = "2018-01-01",
+    train_end: str = "2022-12-31",
+    val_start: str = "2023-01-01",
+    val_end: str = "2025-12-31",
+    label_col: str = "label_1d_open_to_open",
+    include_fundamentals: bool = False,
+) -> dict[str, Any]:
+    """独立评估一个因子表达式。"""
+    from alphaagent.factor.mining.schemas import EvalProfileRequest
+
+    svc = _get_eval_service(
+        train_start=train_start,
+        train_end=train_end,
+        val_start=val_start,
+        val_end=val_end,
+        label_col=label_col,
+        include_fundamentals=include_fundamentals,
+    )
+
+    # 使用已有的 session（第一个）
+    session_ids = list(svc.sessions._sessions.keys())
+    if not session_ids:
+        raise RuntimeError("eval_service_session_empty")
+    session_id = session_ids[-1]
+
+    # 如果 profile_id 包含 "train" 或 "val" 分别走不同 split
+    req = EvalProfileRequest(
+        session_id=session_id,
+        profile_id=profile_id,
+        multi_line_expr=multi_line_expr,
+        factor_name=factor_name,
+    )
+    return svc.eval_profile(req)
+
+
+def evaluate_multi_profile(
+    *,
+    multi_line_expr: str,
+    factor_name: str = "expr",
+    train_start: str = "2018-01-01",
+    train_end: str = "2022-12-31",
+    val_start: str = "2023-01-01",
+    val_end: str = "2025-12-31",
+    label_col: str = "label_1d_open_to_open",
+    include_fundamentals: bool = False,
+) -> dict[str, Any]:
+    """一次评估多个 profile（train_screen + validation + size_neutral_validation）。"""
+    from alphaagent.factor.mining.schemas import EvalProfileRequest
+
+    svc = _get_eval_service(
+        train_start=train_start,
+        train_end=train_end,
+        val_start=val_start,
+        val_end=val_end,
+        label_col=label_col,
+        include_fundamentals=include_fundamentals,
+    )
+
+    session_ids = list(svc.sessions._sessions.keys())
+    if not session_ids:
+        raise RuntimeError("eval_service_session_empty")
+    session_id = session_ids[-1]
+
+    results: dict[str, Any] = {}
+    for profile_id in ("train_screen", "validation", "size_neutral_validation"):
+        req = EvalProfileRequest(
+            session_id=session_id,
+            profile_id=profile_id,
+            multi_line_expr=multi_line_expr,
+            factor_name=factor_name,
+        )
+        results[profile_id] = svc.eval_profile(req)
+
+    return results
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  因子库管理
+# ══════════════════════════════════════════════════════════════════════
+
+def list_factors(*, library: str = "production") -> dict[str, Any]:
+    """列出因子库中的所有因子。
+
+    library:
+      - "production": 正式因子库 (stock_1d)
+      - "candidate": 候选因子库 (candidate_1d)
+    """
+    from alphaagent.factor.zoo import FactorZoo, DEFAULT_FACTORLIB_ROOT
+
+    root = DEFAULT_FACTORLIB_ROOT if library == "production" else DEFAULT_FACTORLIB_ROOT.parent / "candidate_1d"
+
+    try:
+        zoo = FactorZoo.open(root)
+    except FileNotFoundError:
+        return {"library": library, "root": str(root), "factors": [], "n_factors": 0, "error": "library_not_initialized"}
+
+    df = zoo.catalog.to_dataframe()
+    factors: list[dict[str, Any]] = []
+    for _, row in df.iterrows():
+        extra = row.get("extra")
+        if isinstance(extra, str) and extra:
+            try:
+                import json as _json
+                extra = _json.loads(extra)
+            except (ValueError, TypeError):
+                extra = {}
+        elif extra is None or (isinstance(extra, float) and pd.isna(extra)):
+            extra = {}
+
+        metrics = (extra or {}).get("metrics", {})
+        factors.append({
+            "factor_id": str(row["factor_id"]),
+            "name": str(row["name"]),
+            "expr": str(row["expr"]),
+            "col_idx": int(row["col_idx"]),
+            "status": str(row.get("status", "")),
+            "finite_count": int(row.get("finite_count", 0)),
+            "created_at": str(row.get("created_at", "")),
+            "metrics": {
+                "ic": _safe_float(metrics.get("ic")),
+                "icir": _safe_float(metrics.get("icir")),
+                "rank_ic": _safe_float(metrics.get("rank_ic")),
+                "factor_coverage": _safe_float(metrics.get("factor_coverage")),
+            } if metrics else {},
+            "extra": extra,
+        })
+
+    # 读取 registry（如有）
+    registry_path = root / "mining_delivered_registry.json"
+    registry: dict[str, Any] = {}
+    if registry_path.is_file():
+        registry = json.loads(registry_path.read_text(encoding="utf-8"))
+
+    return {
+        "library": library,
+        "root": str(root),
+        "n_factors": len(factors),
+        "factors": factors,
+        "registry": registry,
+    }
+
+
+def get_factor_detail(factor_id: str, *, library: str = "production") -> dict[str, Any]:
+    """获取单个因子详情。"""
+    from alphaagent.factor.zoo import FactorZoo, DEFAULT_FACTORLIB_ROOT
+
+    root = DEFAULT_FACTORLIB_ROOT if library == "production" else DEFAULT_FACTORLIB_ROOT.parent / "candidate_1d"
+
+    try:
+        zoo = FactorZoo.open(root)
+    except FileNotFoundError:
+        return {"error": "library_not_initialized"}
+
+    meta = zoo.catalog.get(factor_id)
+    if meta is None:
+        return {"error": "factor_not_found"}
+
+    # 读取 registry 获取完整评估信息
+    registry_path = root / "mining_delivered_registry.json"
+    reg_entry: dict[str, Any] = {}
+    if registry_path.is_file():
+        registry = json.loads(registry_path.read_text(encoding="utf-8"))
+        reg_entry = registry.get(factor_id, {})
+
+    return {
+        "factor_id": meta.factor_id,
+        "name": meta.name,
+        "expr": meta.expr,
+        "col_idx": meta.col_idx,
+        "status": meta.status.value,
+        "finite_count": meta.finite_count,
+        "created_at": meta.created_at,
+        "extra": meta.extra,
+        "registry_entry": reg_entry,
+    }
+
+
+def delete_factor(factor_id: str, *, library: str = "production") -> dict[str, Any]:
+    """删除一个因子。"""
+    from alphaagent.factor.zoo import FactorZoo, DEFAULT_FACTORLIB_ROOT
+
+    root = DEFAULT_FACTORLIB_ROOT if library == "production" else DEFAULT_FACTORLIB_ROOT.parent / "candidate_1d"
+
+    try:
+        zoo = FactorZoo.open(root)
+    except FileNotFoundError:
+        return {"error": "library_not_initialized"}
+
+    try:
+        zoo.delete_factor(factor_id)
+    except KeyError:
+        return {"error": "factor_not_found"}
+
+    # 从 registry 中删除
+    registry_path = root / "mining_delivered_registry.json"
+    if registry_path.is_file():
+        registry = json.loads(registry_path.read_text(encoding="utf-8"))
+        registry.pop(factor_id, None)
+        registry_path.write_text(json.dumps(registry, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    return {"ok": True, "factor_id": factor_id, "deleted": True}
+
+
+def _safe_float(v: Any) -> float | None:
+    """安全转 float，None/NaN → None。"""
+    if v is None:
+        return None
+    try:
+        f = float(v)
+        import math
+        return f if math.isfinite(f) else None
+    except (TypeError, ValueError):
+        return None

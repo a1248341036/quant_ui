@@ -1,6 +1,106 @@
 <template>
   <section class="agent-page">
-    <div class="agent-shell">
+    <div class="agent-subtabs">
+      <button :class="{active: subtab==='research'}" @click="subtab='research'">研究</button>
+      <button :class="{active: subtab==='lab'}" @click="subtab='lab'">因子实验室</button>
+      <button :class="{active: subtab==='library'}" @click="subtab='library'; loadFactors()">因子库</button>
+    </div>
+
+    <!-- ═══ 因子实验室 ═══ -->
+    <div v-if="subtab==='lab'" class="lab-panel">
+      <div class="lab-left">
+        <h3>因子表达式</h3>
+        <textarea v-model="lab.expr" class="lab-editor" rows="14" spellcheck="false" placeholder="输入 DSL 因子表达式…"></textarea>
+        <div class="lab-options">
+          <label>因子名称 <input v-model="lab.factorName" type="text" placeholder="expr"></label>
+          <div class="lab-date-row">
+            <label>训练 <input v-model="lab.trainStart" type="date"> → <input v-model="lab.trainEnd" type="date"></label>
+            <label>验证 <input v-model="lab.valStart" type="date"> → <input v-model="lab.valEnd" type="date"></label>
+          </div>
+          <label class="lab-funda">
+            <input type="checkbox" v-model="lab.includeFundamentals"> 包含基本面列
+          </label>
+        </div>
+        <button class="lab-run-btn" :disabled="lab.busy || !lab.expr.trim()" @click="runEval">
+          {{ lab.busy ? '评估中…' : '评估因子' }}
+        </button>
+        <p v-if="lab.error" class="lab-error">{{ lab.error }}</p>
+      </div>
+      <div class="lab-right">
+        <div v-if="!lab.results && !lab.busy" class="lab-empty">
+          输入 DSL 表达式后点击评估，将同时在 train_screen / validation / size_neutral_validation 三个 profile 上评估。
+        </div>
+        <div v-if="lab.busy" class="lab-loading">正在加载 panel 并评估（首次约 30-60 秒）…</div>
+        <div v-if="lab.results" class="lab-results">
+          <div v-for="(result, profileId) in lab.results" :key="profileId" class="lab-result-card" :class="{ok: result.ok, bad: !result.ok}">
+            <div class="lab-result-head">
+              <strong>{{ profileId }}</strong>
+              <span v-if="result.ok" class="lab-pass" :class="{pass: result.passed, fail: !result.passed}">
+                {{ result.passed ? '通过' : '未通过' }}
+              </span>
+              <span v-if="result.date_range" class="lab-daterange">{{ result.date_range.start }} → {{ result.date_range.end }}</span>
+            </div>
+            <div v-if="!result.ok" class="lab-result-error">{{ result.error }}</div>
+            <div v-if="result.ok && result.metrics" class="lab-metrics">
+              <template v-for="(m, mid) in result.metrics" :key="mid">
+                <div v-if="typeof m === 'number' || m == null" class="lab-metric">
+                  <span class="lab-metric-label">{{ metricLabel(mid) }}</span>
+                  <span class="lab-metric-value">{{ formatMetricValue(m) }}</span>
+                </div>
+              </template>
+            </div>
+            <details v-if="result.ok && result.rule_results?.length" class="lab-rules">
+              <summary>规则详情 ({{ result.rule_results.filter(r => r.passed).length }}/{{ result.rule_results.length }})</summary>
+              <div v-for="(rule, i) in result.rule_results" :key="i" class="lab-rule" :class="{pass: rule.passed, fail: !rule.passed}">
+                <span>{{ rule.metric }} {{ rule.op }} {{ rule.expected }}</span>
+                <span>{{ rule.actual != null ? formatMetricValue(rule.actual) : '—' }}</span>
+                <span>{{ rule.passed ? '✓' : '✗' }}</span>
+              </div>
+            </details>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ 因子库管理 ═══ -->
+    <div v-if="subtab==='library'" class="lib-panel">
+      <div class="lib-head">
+        <div class="lib-tabs">
+          <button :class="{active: lib.library==='production'}" @click="switchLibrary('production')">正式因子库</button>
+          <button :class="{active: lib.library==='candidate'}" @click="switchLibrary('candidate')">候选因子库</button>
+        </div>
+        <span class="lib-count" v-if="lib.data">{{ lib.data.n_factors || 0 }} 个因子</span>
+        <button class="lib-refresh" @click="loadFactors">刷新</button>
+      </div>
+      <div v-if="lib.error" class="lib-error">{{ lib.error }}</div>
+      <div v-if="lib.loading" class="lib-loading">加载中…</div>
+      <div v-if="lib.data && !lib.data.factors?.length && !lib.loading" class="lib-empty">
+        {{ lib.data.error === 'library_not_initialized' ? '因子库尚未初始化，请在挖掘流程中启用因子提交。' : '暂无因子。' }}
+      </div>
+      <table v-if="lib.data?.factors?.length" class="lib-table">
+        <thead>
+          <tr>
+            <th>ID</th><th>名称</th><th>IC</th><th>ICIR</th><th>RankIC</th><th>覆盖率</th><th>状态</th><th>创建时间</th><th></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="f in lib.data.factors" :key="f.factor_id">
+            <td class="lib-fid" @click="showFactorDetail(f)">{{ f.factor_id }}</td>
+            <td @click="showFactorDetail(f)">{{ f.name }}</td>
+            <td :class="icClass(f.metrics?.ic)">{{ formatMetricValue(f.metrics?.ic) }}</td>
+            <td :class="icClass(f.metrics?.icir)">{{ formatMetricValue(f.metrics?.icir) }}</td>
+            <td>{{ formatMetricValue(f.metrics?.rank_ic) }}</td>
+            <td>{{ formatMetricValue(f.metrics?.factor_coverage) }}</td>
+            <td><span class="lib-status" :class="'status-' + f.status">{{ f.status }}</span></td>
+            <td class="lib-time">{{ formatTime(f.created_at) }}</td>
+            <td><button class="lib-del" @click="confirmDelete(f)">删除</button></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- ═══ 研究面板（原有） ═══ -->
+    <div v-show="subtab==='research'" class="agent-shell">
       <aside class="agent-sidebar">
         <div class="sidebar-head">
           <div>
@@ -280,10 +380,38 @@
             </div>
             <textarea v-model="agent.researchSpecText" :disabled="agentBusy" spellcheck="false" aria-label="ResearchSpec JSON"></textarea>
           </div>
-          <p class="composer-hint">AgentScope 实时事件 · 训练集评估 · 验证集检验 · FactorZoo 提交</p>
+        <p class="composer-hint">AgentScope 实时事件 · 训练集评估 · 验证集检验 · FactorZoo 提交</p>
         </div>
       </main>
     </div>
+
+    <!-- 因子详情弹窗 -->
+    <Teleport to="body">
+      <div v-if="factorDetail" class="factor-modal-overlay" @click="factorDetail = null">
+        <div class="factor-modal" @click.stop>
+          <div class="factor-modal-head">
+            <strong>{{ factorDetail.name }}</strong>
+            <code>{{ factorDetail.factor_id }}</code>
+            <button class="factor-modal-close" @click="factorDetail = null">×</button>
+          </div>
+          <div class="factor-modal-body">
+            <div class="factor-modal-section">
+              <label>表达式</label>
+              <pre class="factor-modal-expr">{{ factorDetail.expr }}</pre>
+            </div>
+            <div class="factor-modal-section" v-if="factorDetail.registry_entry">
+              <label>Registry 记录</label>
+              <pre class="factor-modal-registry">{{ JSON.stringify(factorDetail.registry_entry, null, 2) }}</pre>
+            </div>
+            <div class="factor-modal-meta">
+              <span>状态: {{ factorDetail.status }}</span>
+              <span>有限值: {{ factorDetail.finite_count }}</span>
+              <span>创建: {{ formatTime(factorDetail.created_at) }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </section>
 </template>
 
@@ -328,6 +456,26 @@ export default {
           allow_submit: false,
         },
       },
+      subtab: 'research',
+      lab: {
+        expr: '',
+        factorName: 'expr',
+        trainStart: '2018-01-01',
+        trainEnd: '2022-12-31',
+        valStart: '2023-01-01',
+        valEnd: '2025-12-31',
+        includeFundamentals: false,
+        busy: false,
+        error: '',
+        results: null,
+      },
+      lib: {
+        library: 'production',
+        data: null,
+        loading: false,
+        error: '',
+      },
+      factorDetail: null,
     }
   },
   computed: {
@@ -915,6 +1063,68 @@ export default {
     statusLabel(status) {
       return ({ starting: '准备中', running: '运行中', stopping: '停止中', completed: '已完成', failed: '失败', interrupted: '已中断' }[status] || status || '未开始')
     },
+    async runEval() {
+      if (!this.lab.expr.trim() || this.lab.busy) return
+      this.lab.busy = true
+      this.lab.error = ''
+      this.lab.results = null
+      try {
+        const data = await api('/api/alphaagent/eval-factor', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            multi_line_expr: this.lab.expr,
+            factor_name: this.lab.factorName || 'expr',
+            train_start: this.lab.trainStart,
+            train_end: this.lab.trainEnd,
+            val_start: this.lab.valStart,
+            val_end: this.lab.valEnd,
+            include_fundamentals: this.lab.includeFundamentals,
+            all_profiles: true,
+          }),
+        })
+        this.lab.results = data.results
+      } catch (e) {
+        this.lab.error = e.message
+      } finally {
+        this.lab.busy = false
+      }
+    },
+    async loadFactors() {
+      this.lib.loading = true
+      this.lib.error = ''
+      try {
+        this.lib.data = await api('/api/alphaagent/factors?library=' + this.lib.library + '&t=' + Date.now())
+      } catch (e) {
+        this.lib.error = e.message
+      } finally {
+        this.lib.loading = false
+      }
+    },
+    switchLibrary(lib) {
+      this.lib.library = lib
+      this.loadFactors()
+    },
+    async showFactorDetail(f) {
+      try {
+        this.factorDetail = await api('/api/alphaagent/factors/' + encodeURIComponent(f.factor_id) + '?library=' + this.lib.library + '&t=' + Date.now())
+      } catch (e) {
+        this.lib.error = e.message
+      }
+    },
+    async confirmDelete(f) {
+      if (!confirm('确认删除因子 ' + f.name + ' (' + String(f.factor_id).slice(0, 8) + ')？')) return
+      try {
+        await api('/api/alphaagent/factors/' + encodeURIComponent(f.factor_id) + '?library=' + this.lib.library, { method: 'DELETE' })
+        this.loadFactors()
+      } catch (e) {
+        this.lib.error = e.message
+      }
+    },
+    icClass(v) {
+      if (v == null) return ''
+      return v >= 0 ? 'ic-pos' : 'ic-neg'
+    },
   },
   mounted() {
     this._closeSessionMenu = () => {
@@ -1096,6 +1306,96 @@ export default {
 .memory-modal-obs-verdict { padding:1px 6px; border-radius:4px; font-size:10px; }
 .memory-modal-obs-time { margin-left:auto; color:var(--muted); font:10px var(--font-mono); }
 .memory-modal-meta { display:flex; flex-wrap:wrap; gap:8px 14px; padding-top:10px; border-top:1px solid var(--line); color:var(--muted); font:10px var(--font-mono); }
+
+/* ═══ 子 Tab ═══ */
+.agent-subtabs { display:flex; gap:4px; margin-bottom:14px; }
+.agent-subtabs button { padding:7px 14px; border:1px solid var(--line); border-radius:8px; background:transparent; color:var(--muted); font-size:12px; cursor:pointer; transition:all .12s; }
+.agent-subtabs button:hover { color:var(--text); border-color:var(--line-strong); }
+.agent-subtabs button.active { color:var(--text); border-color:var(--accent); background:rgb(79 140 255 / .14); }
+
+/* ═══ 因子实验室 ═══ */
+.lab-panel { display:grid; grid-template-columns:360px minmax(0,1fr); gap:16px; height:calc(100% - 40px); }
+.lab-left { display:flex; flex-direction:column; padding:16px; border:1px solid var(--line); border-radius:12px; background:var(--card); }
+.lab-left h3 { margin:0 0 10px; font-size:13px; color:var(--text); }
+.lab-editor { width:100%; resize:vertical; border:1px solid var(--line-strong); border-radius:8px; background:var(--bg-soft); color:#c7d8ee; padding:10px; font:12px/1.55 var(--font-mono); outline:none; }
+.lab-editor:focus { border-color:var(--accent); }
+.lab-options { display:flex; flex-direction:column; gap:8px; margin-top:10px; }
+.lab-options label { display:flex; align-items:center; gap:6px; color:var(--muted); font-size:11px; }
+.lab-options input[type="text"] { flex:1; padding:4px 7px; border:1px solid var(--line); border-radius:5px; background:var(--bg-soft); color:var(--text); font-size:11px; }
+.lab-options input[type="date"] { padding:3px 6px; border:1px solid var(--line); border-radius:5px; background:var(--bg-soft); color:var(--text); font-size:11px; }
+.lab-date-row { display:flex; gap:8px; }
+.lab-date-row label { flex:1; }
+.lab-funda { cursor:pointer; }
+.lab-run-btn { margin-top:10px; padding:9px; border:0; border-radius:8px; background:var(--accent); color:#fff; font-size:13px; cursor:pointer; transition:opacity .12s; }
+.lab-run-btn:disabled { opacity:.5; cursor:not-allowed; }
+.lab-error { margin-top:8px; color:#f58b93; font-size:11px; }
+.lab-right { overflow:auto; padding:16px; border:1px solid var(--line); border-radius:12px; background:var(--card); }
+.lab-empty { display:grid; place-items:center; height:100%; color:var(--muted); font-size:12px; text-align:center; line-height:1.7; }
+.lab-loading { display:grid; place-items:center; height:100%; color:#b9a3e8; font-size:12px; }
+.lab-results { display:flex; flex-direction:column; gap:12px; }
+.lab-result-card { padding:12px 14px; border:1px solid var(--line); border-radius:10px; background:rgb(255 255 255 / .018); }
+.lab-result-card.ok { border-color:rgb(67 209 122 / .22); }
+.lab-result-card.bad { border-color:rgb(239 107 115 / .22); }
+.lab-result-head { display:flex; align-items:center; gap:8px; margin-bottom:8px; font-size:12px; }
+.lab-result-head strong { color:var(--text); font-size:13px; }
+.lab-pass { padding:2px 8px; border-radius:5px; font-size:10px; font-weight:600; }
+.lab-pass.pass { color:#72d69a; background:rgb(67 209 122 / .12); }
+.lab-pass.fail { color:#ef8b92; background:rgb(239 107 115 / .12); }
+.lab-daterange { margin-left:auto; color:var(--muted); font:10px var(--font-mono); }
+.lab-result-error { color:#e89a9f; font-size:11px; }
+.lab-metrics { display:grid; grid-template-columns:repeat(auto-fill,minmax(120px,1fr)); gap:6px; }
+.lab-metric { display:flex; align-items:center; justify-content:space-between; padding:5px 8px; border-radius:6px; background:rgb(255 255 255 / .035); }
+.lab-metric-label { color:var(--muted); font-size:10px; }
+.lab-metric-value { color:#a9e9bd; font:11px var(--font-mono); }
+.lab-rules { margin-top:8px; }
+.lab-rules summary { cursor:pointer; color:var(--muted); font-size:11px; }
+.lab-rule { display:flex; align-items:center; gap:8px; padding:4px 0; font:11px var(--font-mono); color:var(--muted); }
+.lab-rule.pass span:first-child { color:#a9e9bd; }
+.lab-rule.fail span:first-child { color:#e89a9f; }
+
+/* ═══ 因子库管理 ═══ */
+.lib-panel { height:calc(100% - 40px); overflow:auto; padding:16px; border:1px solid var(--line); border-radius:12px; background:var(--card); }
+.lib-head { display:flex; align-items:center; gap:10px; margin-bottom:14px; }
+.lib-tabs { display:flex; gap:4px; }
+.lib-tabs button { padding:5px 12px; border:1px solid var(--line); border-radius:7px; background:transparent; color:var(--muted); font-size:11px; cursor:pointer; }
+.lib-tabs button:hover { color:var(--text); }
+.lib-tabs button.active { color:var(--text); border-color:var(--accent); background:rgb(79 140 255 / .14); }
+.lib-count { color:var(--muted); font-size:11px; }
+.lib-refresh { margin-left:auto; padding:4px 10px; border:1px solid var(--line); border-radius:6px; background:transparent; color:var(--muted); font-size:11px; cursor:pointer; }
+.lib-refresh:hover { color:var(--text); border-color:var(--line-strong); }
+.lib-error { color:#f58b93; font-size:12px; }
+.lib-loading { color:var(--muted); font-size:12px; padding:20px 0; text-align:center; }
+.lib-empty { color:var(--muted); font-size:12px; padding:20px 0; text-align:center; }
+.lib-table { width:100%; border-collapse:collapse; }
+.lib-table th { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); color:var(--muted); font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:.05em; }
+.lib-table td { padding:8px 10px; border-bottom:1px solid var(--line); font-size:12px; }
+.lib-table tr:hover td { background:rgb(79 140 255 / .06); }
+.lib-fid { color:var(--accent); font:11px var(--font-mono); cursor:pointer; }
+.lib-table td:nth-child(2) { cursor:pointer; }
+.lib-time { color:var(--muted); font:10px var(--font-mono); }
+.lib-del { padding:3px 8px; border:1px solid rgb(239 107 115 / .3); border-radius:5px; background:transparent; color:#ef8b92; font-size:10px; cursor:pointer; }
+.lib-del:hover { background:rgb(239 107 115 / .1); }
+.lib-status { padding:2px 7px; border-radius:4px; font-size:10px; }
+.status-active { color:#72d69a; background:rgb(67 209 122 / .12); }
+.status-archived { color:var(--muted); background:rgb(255 255 255 / .05); }
+.ic-pos { color:#72d69a; }
+.ic-neg { color:#ef8b92; }
+
+/* ═══ 因子详情弹窗 ═══ */
+.factor-modal-overlay { position:fixed; inset:0; z-index:10001; display:grid; place-items:center; background:rgb(0 0 0 / .55); backdrop-filter:blur(2px); }
+.factor-modal { width:min(600px, 92vw); max-height:80vh; overflow:auto; border:1px solid var(--line-strong); border-radius:12px; background:var(--bg-soft); box-shadow:0 20px 60px rgb(0 0 0 / .4); }
+.factor-modal-head { display:flex; align-items:center; gap:10px; padding:14px 16px; border-bottom:1px solid var(--line); }
+.factor-modal-head strong { flex:1; min-width:0; color:var(--text); font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.factor-modal-head code { color:var(--muted); font:11px var(--font-mono); }
+.factor-modal-close { flex:none; width:24px; height:24px; padding:0; border:0; border-radius:5px; background:transparent; color:var(--muted); font-size:18px; line-height:20px; cursor:pointer; }
+.factor-modal-close:hover { background:rgb(255 255 255 / .09); color:var(--text); }
+.factor-modal-body { padding:14px 16px; }
+.factor-modal-section { margin-bottom:14px; }
+.factor-modal-section:last-child { margin-bottom:0; }
+.factor-modal-section label { display:block; margin-bottom:5px; color:var(--muted); font-size:10px; letter-spacing:.05em; text-transform:uppercase; }
+.factor-modal-expr { margin:0; padding:10px; border:1px solid var(--line); border-radius:7px; background:rgb(255 255 255 / .025); color:#c7d8ee; white-space:pre-wrap; overflow-wrap:break-word; word-break:break-all; font:12px/1.5 var(--font-mono); }
+.factor-modal-registry { margin:0; padding:10px; border:1px solid var(--line); border-radius:7px; background:rgb(255 255 255 / .025); color:#aebbd2; white-space:pre-wrap; overflow-wrap:break-word; font:11px/1.5 var(--font-mono); max-height:300px; overflow:auto; }
+.factor-modal-meta { display:flex; flex-wrap:wrap; gap:8px 14px; padding-top:10px; border-top:1px solid var(--line); color:var(--muted); font:10px var(--font-mono); }
 
 @media (max-width: 820px) {
   .agent-page { height:auto; min-height:calc(100vh - 110px); }
