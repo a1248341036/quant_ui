@@ -12,25 +12,49 @@ from typing import Any
 
 
 _TOKEN_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9_]{2,}")
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]{2,}")
 _STOPWORDS = {"add", "subtract", "multiply", "divide", "ts", "cs", "mean", "std", "rank", "expr", "factor"}
 
+_jieba_cut = None
+try:  # 可选依赖：装 jieba 时用标准中文分词，否则回退 bigram
+    import jieba  # type: ignore
+    _jieba_cut = jieba.lcut_for_search
+except Exception:  # pragma: no cover - 环境无 jieba 时走 bigram
+    pass
 
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
+def _cjk_tokens(text: str) -> set[str]:
+    """抽取中文字段为可检索 token。
 
-def _safe_float(value: Any) -> float | None:
-    try:
-        out = float(value)
-    except (TypeError, ValueError):
-        return None
-    return out if math.isfinite(out) else None
+    优先使用 jieba（安装后生效），否则按连续中文串生成 bigram。
+    """
+    if not text:
+        return set()
+    if _jieba_cut is not None:
+        words = {w.strip().lower() for w in _jieba_cut(text) if len(w.strip()) >= 2 and _CJK_RE.fullmatch(w.strip())}
+        if words:
+            return words
+    out: set[str] = set()
+    for seq in _CJK_RE.findall(text):
+        if len(seq) == 2:
+            out.add(seq)
+            continue
+        out.update(seq[i:i + 2] for i in range(len(seq) - 1))
+    return out
 
 
 def _tokens(*values: Any) -> list[str]:
+    """从英文表达式/字段与中文结论中抽取去重 token，供 BM25 检索。"""
     found: set[str] = set()
     for value in values:
-        found.update(token.lower() for token in _TOKEN_RE.findall(str(value or "")))
+        text = str(value or "")
+        for token in _TOKEN_RE.findall(text):
+            token = token.lower()
+            found.add(token)
+            # 下划线连接的复合词拆开（momentum_reversal -> momentum + reversal），
+            # 否则查询侧 "momentum reversal"（空格分词）与条目侧对不上
+            found.update(part for part in token.split("_") if len(part) >= 2)
+        found.update(_cjk_tokens(text))
     return sorted(found - _STOPWORDS)
 
 
@@ -106,7 +130,7 @@ class ResearchMemoryStore:
             "id": signature,
             "factor_name": factor_name,
             "expression": expression,
-            "tokens": _tokens(factor_name, expression),
+            "tokens": _tokens(factor_name, expression, conclusion),
             "verdict": verdict,
             "conclusion": conclusion,
             "stage": result.get("split") or name.removeprefix("eval_on_").removesuffix("_set"),
