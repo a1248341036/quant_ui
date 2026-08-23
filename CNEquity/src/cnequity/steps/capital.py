@@ -19,9 +19,11 @@ from cnequity.adapters.eastmoney.capital import (
     fetch_northbound_holdings,
 )
 from cnequity.config import Config
+from cnequity.domain.datasets import should_fetch
 from cnequity.orchestrator.registry import register_step
 from cnequity.steps.common import BACKFILL_START, incremental_trade_dates, list_trading_dates
 from cnequity.steps.http_common import run_incremental_fetched, write_fetched
+from cnequity.storage.state import StateStore
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +145,14 @@ def step_northbound_flows(config: Config, trade_date: date, run_id: str, context
     """
     if not config.sources.get("eastmoney", True):
         raise RuntimeError("northbound_flows: eastmoney source disabled in config")
+
+    # Cadence check: source retired (cadence="skip") — skip the fetch entirely.
+    state = StateStore(config.meta_root)
+    wm = state.get_date("northbound_flows")
+    if not should_fetch("northbound_flows", wm, trade_date):
+        logger.info("northbound_flows: cadence skip (source retired)")
+        state.set_date("northbound_flows", trade_date)
+        return {"rows_read": 0, "rows_written": 0, "status": "success"}
 
     if getattr(config, "_backfill", False):
         start = getattr(config, "_backfill_start", None) or NORTHBOUND_HISTORY_START

@@ -22,6 +22,13 @@ FetchSemantics = Literal["by_date", "snapshot"]
 HistoryMode = Literal["by_date", "snapshot_with_backfill", "snapshot_only"]
 Layer = Literal["curated", "derived", "external"]
 
+# Publication cadence — controls how often ``cne run daily`` actually fetches
+# a dataset.  ``daily`` fetches every trading session; ``monthly`` and
+# ``quarterly`` skip the fetch (but still advance the watermark) when the
+# watermark is in the same period as ``trade_date``; ``skip`` never fetches
+# (source retired or middleware limitation, historical data in curated).
+Cadence = Literal["daily", "monthly", "quarterly", "skip"]
+
 # Research-use classification, orthogonal to ``Layer`` (which is a storage
 # location). L0 is the reference spine everything joins on and L8 the risk
 # overlay; the ordering is roughly "how far from the price series".
@@ -161,6 +168,10 @@ class DatasetSpec:
     # sources with a slower cadence (margin T+1, quarterly northbound holdings)
     # so their inherent lag is not mistaken for a stuck pipeline.
     max_staleness_days: int = 1
+    # Publication cadence — see ``Cadence``.  Controls whether ``cne run daily``
+    # fetches this dataset on every run or skips it until the next cadence
+    # period boundary.  Step functions call ``should_fetch()`` to check.
+    cadence: Cadence = "daily"
     required: bool = True
     history_horizon_days: int | None = None
     history_floor_date: date | None = None
@@ -455,6 +466,7 @@ _SPECS = [
         partition_col="report_period",
         partition_granularity="quarter",
         watermark=False,
+        cadence="quarterly",
         description="财报预约披露时间表",
     ),
     # L3 fundamentals
@@ -466,6 +478,7 @@ _SPECS = [
         partition_granularity="quarter",
         watermark=False,
         pit=True,
+        cadence="quarterly",
         description="财报长表（三大表科目）",
     ),
     # Shareholder structure — the dimensions the long-format statement table
@@ -488,6 +501,7 @@ _SPECS = [
         history_floor_date=date(1990, 1, 1),
         watermark=False,
         pit=True,
+        cadence="quarterly",
         description="股本结构变动",
     ),
     DatasetSpec(
@@ -501,6 +515,7 @@ _SPECS = [
         history_floor_date=date(1992, 1, 1),
         watermark=False,
         pit=True,
+        cadence="quarterly",
         description="股东户数",
     ),
     DatasetSpec(
@@ -520,6 +535,7 @@ _SPECS = [
         history_floor_date=date(2003, 1, 1),
         watermark=False,
         pit=True,
+        cadence="quarterly",
         description="十大流通股东",
     ),
     DatasetSpec(
@@ -582,6 +598,7 @@ _SPECS = [
         # are dropped rather than zero-filled. The lake holds everything that
         # exists, so this is not staleness and no backfill can change it.
         source_retired_date=date(2024, 8, 16),
+        cadence="skip",
         description="北向资金每日净流入（已停产）",
     ),
     DatasetSpec(
@@ -607,6 +624,7 @@ _SPECS = [
         partition_col="report_period",
         partition_granularity="quarter",
         watermark=False,
+        cadence="quarterly",
         description="机构持股汇总",
     ),
     # L5 structure
@@ -628,6 +646,7 @@ _SPECS = [
         # CNI adjustment history reconstructs 399001/399006 from ~2021-12;
         # CSI indices still accumulate via daily EM snapshots only.
         backfill_source="cni",
+        cadence="monthly",
         description="指数成分股快照",
     ),
     DatasetSpec(
@@ -638,6 +657,7 @@ _SPECS = [
         fetch_semantics="snapshot",
         # Shenwan StockClassifyUse intervals → monthly as_of from 2020.
         backfill_source="sw",
+        cadence="monthly",
         description="申万行业分类",
     ),
     # L6 macro
@@ -746,6 +766,7 @@ _SPECS = [
         # must not advance a freshness watermark beyond the run day.
         watermark=False,
         required=False,
+        cadence="skip",
         description="经济日历（端点已下线）",
     ),
     # L8 risk
@@ -965,6 +986,7 @@ _SPECS = [
         partition_granularity="year",
         watermark=False,
         pit=True,
+        cadence="quarterly",
         description="资产负债表",
     ),
     DatasetSpec(
@@ -976,6 +998,7 @@ _SPECS = [
         partition_granularity="year",
         watermark=False,
         pit=True,
+        cadence="quarterly",
         description="利润表",
     ),
     DatasetSpec(
@@ -987,6 +1010,7 @@ _SPECS = [
         partition_granularity="year",
         watermark=False,
         pit=True,
+        cadence="quarterly",
         description="现金流量表",
     ),
     DatasetSpec(
@@ -998,6 +1022,7 @@ _SPECS = [
         partition_granularity="year",
         watermark=False,
         pit=True,
+        cadence="quarterly",
         description="财务指标",
     ),
     DatasetSpec(
@@ -1008,6 +1033,7 @@ _SPECS = [
         partition_col="ann_date",
         partition_granularity="year",
         watermark=False,
+        cadence="skip",
         description="业绩预告",
     ),
     DatasetSpec(
@@ -1018,6 +1044,7 @@ _SPECS = [
         partition_col="end_date",
         partition_granularity="year",
         watermark=False,
+        cadence="skip",
         description="业绩快报",
     ),
     DatasetSpec(
@@ -1028,6 +1055,7 @@ _SPECS = [
         partition_col="report_date",
         partition_granularity="year",
         watermark=False,
+        cadence="quarterly",
         description="业绩报告口径",
     ),
     # L7 sentiment (Tushare curated — fetched by steps/tushare_wide.py)
@@ -1166,6 +1194,44 @@ def is_stale(dataset: str, mark, anchor) -> bool:
             return False
     tolerance = spec.max_staleness_days if spec else 1
     return (anchor - mark).days > tolerance
+
+
+def should_fetch(dataset: str, watermark: date | None, trade_date: date) -> bool:
+    """Whether *dataset* should be fetched on this daily run.
+
+    Returns True when a fetch is needed, False when the cadence says skip.
+    When skipping, the step should still advance the watermark so the engine
+    records the run.
+
+    Rules:
+    - ``daily``: always fetch (every trading session).
+    - ``monthly``: fetch only when the watermark is in a different year-month
+      than ``trade_date`` (i.e. trade_date crossed into a new month).
+    - ``quarterly``: fetch only when the watermark is in a different year-quarter
+      than ``trade_date``.
+    - ``skip``: never fetch — source is retired or middleware limitation;
+      historical data is in the curated layer.
+    """
+    spec = DATASETS.get(dataset)
+    if spec is None:
+        return True
+    cadence = spec.cadence
+    if cadence == "daily":
+        return True
+    if cadence == "skip":
+        return False
+    if cadence == "monthly":
+        if watermark is None:
+            return True
+        return (watermark.year, watermark.month) != (trade_date.year, trade_date.month)
+    if cadence == "quarterly":
+        if watermark is None:
+            return True
+        return (watermark.year, (watermark.month - 1) // 3) != (
+            trade_date.year,
+            (trade_date.month - 1) // 3,
+        )
+    return True
 
 
 def is_dataset_enabled(dataset: str, config) -> bool:

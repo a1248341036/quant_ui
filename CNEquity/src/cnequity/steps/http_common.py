@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from datetime import date
 
 import polars as pl
 
 from cnequity.config import Config
+from cnequity.domain.datasets import should_fetch
 from cnequity.domain.schemas import data_version_for, with_provenance
 from cnequity.steps.common import fetch_incremental_daily, write_simple
+from cnequity.storage.state import StateStore
+
+logger = logging.getLogger(__name__)
 
 
 def write_fetched(
@@ -37,6 +42,21 @@ def run_incremental_fetched(
     universe: set[str] | None = None,
     date_col: str | None = None,
 ) -> dict:
+    # Cadence check: skip fetch when the dataset's publication period has not
+    # changed since the watermark.  Still advance the watermark so the engine
+    # records the run as successful.
+    state = StateStore(config.meta_root)
+    watermark = state.get_date(dataset)
+    if not should_fetch(dataset, watermark, trade_date):
+        logger.info(
+            "%s: cadence skip (watermark %s in same period as trade_date %s)",
+            dataset,
+            watermark.isoformat() if watermark else "None",
+            trade_date.isoformat(),
+        )
+        state.set_date(dataset, trade_date)
+        return {"rows_read": 0, "rows_written": 0, "status": "success"}
+
     df, findings = fetch_incremental_daily(
         config,
         dataset,

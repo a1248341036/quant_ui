@@ -8,9 +8,11 @@ from datetime import date
 from cnequity.adapters.eastmoney.economic_calendar import fetch_economic_calendar
 from cnequity.adapters.eastmoney.news_wire import fetch_flash_news_wire
 from cnequity.config import Config
+from cnequity.domain.datasets import should_fetch
 from cnequity.orchestrator.registry import register_step
 from cnequity.steps.common import SnapshotBackfillError
 from cnequity.steps.http_common import empty_ok, run_incremental_fetched, write_fetched
+from cnequity.storage.state import StateStore
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +43,16 @@ def step_flash_news_wire(config: Config, trade_date: date, run_id: str, context:
 def step_economic_calendar(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
     if not config.sources.get("eastmoney", True):
         raise RuntimeError("economic_calendar: eastmoney source disabled in config")
+
+    # Cadence check: endpoint is retired (cadence="skip"), so skip the fetch
+    # entirely and advance the watermark.
+    state = StateStore(config.meta_root)
+    wm = state.get_date("economic_calendar")
+    if not should_fetch("economic_calendar", wm, trade_date):
+        logger.info("economic_calendar: cadence skip (endpoint retired)")
+        state.set_date("economic_calendar", trade_date)
+        return {"rows_read": 0, "rows_written": 0, "status": "success"}
+
     # This is a rolling live window, not historical by-date data. It cannot
     # be routed through the daily helper because its event_date intentionally
     # contains future dates; reject backfill explicitly before fetching.

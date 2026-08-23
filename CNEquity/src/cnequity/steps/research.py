@@ -14,10 +14,12 @@ from cnequity.adapters.eastmoney.consensus import fetch_analyst_consensus
 from cnequity.adapters.eastmoney.institutional import fetch_institutional_holdings
 from cnequity.config import Config
 from cnequity.derive.sentiment_scores import compute_sentiment_scores
+from cnequity.domain.datasets import should_fetch
 from cnequity.domain.symbols import format_symbol, infer_exchange_from_code
 from cnequity.orchestrator.registry import register_step
 from cnequity.steps.common import load_symbols
 from cnequity.steps.http_common import empty_ok, run_incremental_fetched, write_fetched
+from cnequity.storage.state import StateStore
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +79,16 @@ def step_institutional_holdings(
 ) -> dict:
     if not config.sources.get("eastmoney", True):
         raise RuntimeError("institutional_holdings: eastmoney source disabled in config")
+
+    # Cadence check: quarterly dataset — skip when watermark is in the same
+    # quarter as trade_date.
+    state = StateStore(config.meta_root)
+    wm = state.get_date("institutional_holdings")
+    if not should_fetch("institutional_holdings", wm, trade_date):
+        logger.info("institutional_holdings: cadence skip (same quarter)")
+        state.set_date("institutional_holdings", trade_date)
+        return {"rows_read": 0, "rows_written": 0, "status": "success"}
+
     # Quarterly by REPORT_DATE: daily refreshes the latest quarter, backfill
     # walks all quarters from 2016.
     backfill = getattr(config, "_backfill", False)
