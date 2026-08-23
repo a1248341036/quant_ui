@@ -15,6 +15,25 @@ _TOKEN_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9_]{2,}")
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]{2,}")
 _STOPWORDS = {"add", "subtract", "multiply", "divide", "ts", "cs", "mean", "std", "rank", "expr", "factor"}
 
+# 肯定（正向证据）verdict：已有明确有效性证据，应鼓励模型在其相似邻域继续探索
+_POSITIVE_VERDICTS = {"production_approved", "validated", "candidate_approved", "promising"}
+# 否定 verdict：已证明无效的路径，不应机械重复
+_NEGATIVE_VERDICTS = {"rejected", "revise_required", "weak"}
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _safe_float(value: Any) -> float | None:
+    try:
+        v = float(value)
+        if v != v:  # NaN
+            return None
+        return v
+    except (TypeError, ValueError):
+        return None
+
 _jieba_cut = None
 try:  # 可选依赖：装 jieba 时用标准中文分词，否则回退 bigram
     import jieba  # type: ignore
@@ -215,6 +234,10 @@ class ResearchMemoryStore:
             return "promising", "训练阶段指标有潜力，优先进行训练外验证或独立性改造。"
         return "weak", "当前指标不足；除非改变变量、经济机制或处理方式，否则不要机械重试。"
 
+    # Verdict 分类
+    _POSITIVE_VERDICTS = frozenset({"production_approved", "validated", "candidate_approved", "promising"})
+    _NEGATIVE_VERDICTS = frozenset({"rejected", "revise_required", "weak"})
+
     def context_for(
         self,
         research_goal: str,
@@ -227,45 +250,127 @@ class ResearchMemoryStore:
         """Build a compact, retrieval-based research memory context block.
 
         Retrieval uses a local BM25 scoring over each entry's token set (zero
-        API cost), replacing the prior naive lexical overlap count. Each hit is
-        emitted in a compact form; when ``include_expression`` is False the full
-        DSL expression is omitted to save prompt tokens.
+        API cost).  Entries are split into **positive** (validated, promising…)
+        and **negative** (rejected, weak…) pools, scored independently, then
+        merged with a guaranteed minimum quota for positive entries — so that
+        known-good factor families always surface even when negatives vastly
+        outnumber them (which is the common case after many dead-end attempts).
+        Output is split into two sections — positive then negative — to make
+        the contrast immediately legible to the LLM.
         """
         entries = self._load()
         if not include_rejected:
-            entries = [entry for entry in entries if entry.get("verdict") not in {"rejected", "revise_required"}]
+            entries = [entry for entry in entries if entry.get("verdict") not in self._NEGATIVE_VERDICTS]
         if not entries:
             return ""
         query_tokens = set(_tokens(research_goal))
-        priority = {"production_approved": 5, "validated": 4, "candidate_approved": 3, "rejected": 3, "revise_required": 3, "promising": 2, "weak": 1}
+
+        verdict_rank = {
+            "production_approved": 5, "validated": 4, "candidate_approved": 3,
+            "promising": 2, "revise_required": 1, "rejected": 1, "weak": 0,
+        }
 
         bm25 = self._bm25_scores(entries, query_tokens)
 
-        def score(entry: dict[str, Any], bm: float) -> tuple[float, int, int, str]:
+        def _key(entry: dict[str, Any], bm: float) -> tuple[float, int, int, str]:
             observations = entry.get("observations", [])
-            observation_count = observations if isinstance(observations, int) else len(observations)
-            return (bm, priority.get(str(entry.get("verdict")), 0), observation_count, str(entry.get("updated_at", "")))
+            n = observations if isinstance(observations, int) else len(observations)
+            return (bm, verdict_rank.get(str(entry.get("verdict")), 0), n, str(entry.get("updated_at", "")))
 
-        selected = sorted(zip(entries, bm25), key=lambda pair: score(pair[0], pair[1]), reverse=True)[:limit]
+        # Split into positive / negative pools and score independently so
+        # that a large negative pool can't crowd out all positives.
+        positive_pool = [(e, b) for e, b in zip(entries, bm25) if e.get("verdict") in self._POSITIVE_VERDICTS]
+        negative_pool = [(e, b) for e, b in zip(entries, bm25) if e.get("verdict") in self._NEGATIVE_VERDICTS]
+
+        positive_pool.sort(key=lambda pair: _key(pair[0], pair[1]), reverse=True)
+        negative_pool.sort(key=lambda pair: _key(pair[0], pair[1]), reverse=True)
+
+        # Guarantee at least 40% of slots go to positive entries (when available),
+        # but don't waste slots on irrelevant positives with zero BM25 overlap.
+        positive_quota = max(1, int(limit * 0.4)) if positive_pool else 0
+        # Only include positive entries with non-zero BM25 relevance, or fall
+        # back to top verdict-only entries if none overlap (still useful as
+        # "here's what worked before" even if off-topic).
+        positive_relevant = [(e, b) for e, b in positive_pool if b > 0]
+        if not positive_relevant and positive_pool:
+            positive_relevant = positive_pool[:positive_quota]
+        positive_selected = positive_relevant[:positive_quota]
+        n_pos = len(positive_selected)
+        n_neg = limit - n_pos
+        negative_selected = negative_pool[:n_neg]
+        # If we didn't fill all positive slots (fewer available), give
+        # remaining slots to negatives.
+        if n_pos < positive_quota:
+            negative_selected = negative_pool[:limit - n_pos]
+
+        positive = positive_selected
+        negative = negative_selected
 
         lines = [
             "# 长期研究记忆（来自真实评估与提交结果）",
-            "以下结论必须作为实验先验：已否定路径不可机械重复；已验证路径应做正交扩展，并仍须重新评估。",
+            "以下结论必须作为实验先验。",
         ]
-        if prefer_orthogonal:
-            lines.append("对已验证或已入库机制，优先引入不同原始字段、不同算子族或不同经济假设的正交扩展。")
-        for entry, bm in selected:
-            m = entry.get("metrics", {})
-            metric_text = " ".join(
-                f"{key}={value:.4g}" for key, value in m.items() if isinstance(value, (int, float))
-            )
-            expr = entry.get("expression")
-            expr_tail = f"；表达式：{expr}" if (include_expression and expr) else ""
+
+        # ── 肯定段 ──
+        if positive:
+            lines.append("")
+            lines.append("## 已验证 / 有潜力的因子（优先在其邻近空间继续挖掘相似机制）")
             lines.append(
-                f"- [{entry.get('verdict')}] {entry.get('factor_name')}: {entry.get('conclusion')} "
-                f"指标({metric_text or '无'}){expr_tail}"
+                "这些因子在训练集或验证集上表现可用。**鼓励**基于它们的经济逻辑，"
+                "通过更换窗口、算子族或原始字段，在相似但不重复的方向上继续探索。"
             )
+            if prefer_orthogonal:
+                lines.append("扩展时优先引入正交变量，避免仅改窗口长度的同质微调。")
+            for entry, _ in positive:
+                lines.append(self._format_entry(entry, include_expression))
+
+        # ── 否定段 ──
+        if negative:
+            lines.append("")
+            lines.append("## 已否定 / 不足的因子（避免机械重复同一死路）")
+            lines.append(
+                "以下路径已被评估否定。除非改变了核心变量、经济机制或处理方式，"
+                "否则不要重复尝试相同结构。"
+            )
+            for entry, _ in negative:
+                lines.append(self._format_entry(entry, include_expression))
+
         return "\n".join(lines)
+
+    @staticmethod
+    def _format_entry(entry: dict[str, Any], include_expression: bool) -> str:
+        m = entry.get("metrics", {})
+        metric_text = " ".join(
+            f"{key}={value:.4g}" for key, value in m.items() if isinstance(value, (int, float))
+        )
+        expr = entry.get("expression")
+        expr_tail = f"；表达式：{expr}" if (include_expression and expr) else ""
+        return (
+            f"- [{entry.get('verdict')}] {entry.get('factor_name')}: {entry.get('conclusion')} "
+            f"指标({metric_text or '无'}){expr_tail}"
+        )
+
+    @staticmethod
+    def _entry_token_set(entry: dict[str, Any]) -> set[str]:
+        """Return the token set for an entry, re-splitting compound tokens on
+        the fly so that legacy entries written before underscore-splitting was
+        added still match sub-word queries (e.g. ``reversal_5`` → ``reversal``).
+        """
+        stored = set(entry.get("tokens", []))
+        if not stored:
+            # Fallback: re-tokenise from factor_name + expression + conclusion
+            stored = set(_tokens(
+                entry.get("factor_name", ""),
+                entry.get("expression", ""),
+                entry.get("conclusion", ""),
+            ))
+        # Ensure underscore-split sub-words are present
+        extra: set[str] = set()
+        for token in stored:
+            parts = token.split("_")
+            if len(parts) > 1:
+                extra.update(p for p in parts if len(p) >= 2)
+        return stored | extra
 
     @staticmethod
     def _bm25_scores(entries: list[dict[str, Any]], query_tokens: set[str]) -> list[float]:
@@ -277,7 +382,7 @@ class ResearchMemoryStore:
         """
         if not query_tokens:
             return [0.0] * len(entries)
-        docs = [set(entry.get("tokens", [])) for entry in entries]
+        docs = [ResearchMemoryStore._entry_token_set(entry) for entry in entries]
         n = len(docs)
         if n == 0:
             return []
