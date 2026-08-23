@@ -48,6 +48,7 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
         "retrieve_limit": 12,
         "include_rejected_paths": True,
         "prefer_orthogonal_to_approved": True,
+        "include_expression": False,
     },
     "delivery_policy": {
         "allow_submit": False,
@@ -146,6 +147,7 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
     memory["retrieve_limit"] = int(_bounded_number(memory.get("retrieve_limit"), "memory_policy.retrieve_limit", 0, 100))
     memory["include_rejected_paths"] = _require_bool(memory.get("include_rejected_paths"), "memory_policy.include_rejected_paths")
     memory["prefer_orthogonal_to_approved"] = _require_bool(memory.get("prefer_orthogonal_to_approved"), "memory_policy.prefer_orthogonal_to_approved")
+    memory["include_expression"] = _require_bool(memory.get("include_expression"), "memory_policy.include_expression")
 
     delivery = _require_dict(spec.get("delivery_policy"), "delivery_policy")
     delivery["allow_submit"] = _require_bool(delivery.get("allow_submit"), "delivery_policy.allow_submit")

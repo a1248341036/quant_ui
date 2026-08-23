@@ -173,6 +173,7 @@ def main() -> int:
             limit=research_spec["memory_policy"]["retrieve_limit"],
             include_rejected=research_spec["memory_policy"]["include_rejected_paths"],
             prefer_orthogonal=research_spec["memory_policy"]["prefer_orthogonal_to_approved"],
+            include_expression=research_spec["memory_policy"].get("include_expression", False),
         )
         if memory_context:
             user_message = f"{memory_context}\n\n# 当前研究任务\n{user_message}"

@@ -198,7 +198,15 @@ class ResearchMemoryStore:
         limit: int = 12,
         include_rejected: bool = True,
         prefer_orthogonal: bool = True,
+        include_expression: bool = True,
     ) -> str:
+        """Build a compact, retrieval-based research memory context block.
+
+        Retrieval uses a local BM25 scoring over each entry's token set (zero
+        API cost), replacing the prior naive lexical overlap count. Each hit is
+        emitted in a compact form; when ``include_expression`` is False the full
+        DSL expression is omitted to save prompt tokens.
+        """
         entries = self._load()
         if not include_rejected:
             entries = [entry for entry in entries if entry.get("verdict") not in {"rejected", "revise_required"}]
@@ -207,29 +215,67 @@ class ResearchMemoryStore:
         query_tokens = set(_tokens(research_goal))
         priority = {"production_approved": 5, "validated": 4, "candidate_approved": 3, "rejected": 3, "revise_required": 3, "promising": 2, "weak": 1}
 
-        def score(entry: dict[str, Any]) -> tuple[int, int, str]:
-            overlap = len(query_tokens & set(entry.get("tokens", [])))
+        bm25 = self._bm25_scores(entries, query_tokens)
+
+        def score(entry: dict[str, Any], bm: float) -> tuple[float, int, int, str]:
             observations = entry.get("observations", [])
             observation_count = observations if isinstance(observations, int) else len(observations)
-            return (overlap * 10 + priority.get(str(entry.get("verdict")), 0), observation_count, str(entry.get("updated_at", "")))
+            return (bm, priority.get(str(entry.get("verdict")), 0), observation_count, str(entry.get("updated_at", "")))
 
-        selected = sorted(entries, key=score, reverse=True)[:limit]
+        selected = sorted(zip(entries, bm25), key=lambda pair: score(pair[0], pair[1]), reverse=True)[:limit]
+
         lines = [
             "# 长期研究记忆（来自真实评估与提交结果）",
             "以下结论必须作为实验先验：已否定路径不可机械重复；已验证路径应做正交扩展，并仍须重新评估。",
         ]
         if prefer_orthogonal:
             lines.append("对已验证或已入库机制，优先引入不同原始字段、不同算子族或不同经济假设的正交扩展。")
-        for entry in selected:
+        for entry, bm in selected:
             m = entry.get("metrics", {})
             metric_text = " ".join(
                 f"{key}={value:.4g}" for key, value in m.items() if isinstance(value, (int, float))
             )
+            expr = entry.get("expression")
+            expr_tail = f"；表达式：{expr}" if (include_expression and expr) else ""
             lines.append(
                 f"- [{entry.get('verdict')}] {entry.get('factor_name')}: {entry.get('conclusion')} "
-                f"指标({metric_text or '无'})；表达式：{entry.get('expression')}"
+                f"指标({metric_text or '无'}){expr_tail}"
             )
         return "\n".join(lines)
+
+    @staticmethod
+    def _bm25_scores(entries: list[dict[str, Any]], query_tokens: set[str]) -> list[float]:
+        """BM25 IDF/term-frequency scoring over entry token sets.
+
+        k1=1.5, b=0.75. tf is 1 for present tokens (we store deduplicated token
+        sets). Without query overlap a small negative floor avoids zero scores
+        dominating ordering; priority still acts as the tie-breaker.
+        """
+        if not query_tokens:
+            return [0.0] * len(entries)
+        docs = [set(entry.get("tokens", [])) for entry in entries]
+        n = len(docs)
+        if n == 0:
+            return []
+        from collections import Counter
+        df = Counter()
+        for doc in docs:
+            df.update(doc)
+        avgdl = sum(len(doc) for doc in docs) / n
+        k1, b = 1.5, 0.75
+        out = []
+        for doc in docs:
+            dl = len(doc)
+            score = 0.0
+            for q in query_tokens:
+                if q not in doc:
+                    continue
+                idf = math.log(1 + (n - df[q] + 0.5) / (df[q] + 0.5))
+                tf = 1.0
+                norm = k1 * (1 - b + b * dl / avgdl) if avgdl else 1.0
+                score += idf * (tf * (k1 + 1)) / (tf + norm)
+            out.append(score if score > 0 else -1.0)
+        return out
 
     def recent(self, *, limit: int = 50) -> list[dict[str, Any]]:
         return sorted(self._load(), key=lambda item: str(item.get("updated_at", "")), reverse=True)[:limit]
