@@ -85,7 +85,8 @@ function Write-Log([string]$Msg) {
     $ts = Get-Date -Format "HH:mm:ss"
     $line = "[$ts] $Msg"
     Write-Host $line
-    $line | Out-File -FilePath $LogFile -Append -Encoding UTF8
+    # 用 .NET File.AppendAllText 原子写入，避免 Out-File -Append 文件锁竞争
+    [System.IO.File]::AppendAllText($LogFile, "$line`n", [System.Text.Encoding]::UTF8)
 }
 
 function Invoke-Cne([string[]]$CmdArgs) {
@@ -97,32 +98,39 @@ function Invoke-Cne([string[]]$CmdArgs) {
 }
 
 function Invoke-CneWithLog([string[]]$CmdArgs) {
-    # 前台实时输出 + tee 到日志
+    # 前台实时输出 + 写日志
     if ($Quiet -and ($CmdArgs -contains "run" -and $CmdArgs -contains "daily")) {
         $CmdArgs = @($CmdArgs) + "--quiet"
     }
     $fullArgs = @($CmdArgs) + "--config", $Config
 
-    # 前台输出同时写日志：用 Tee 流
-    $pipeLine = & $Cne @fullArgs 2>&1 |
-        ForEach-Object {
-            $line = $_.ToString()
-            Write-Host $line
-            $line | Out-File -FilePath $LogFile -Append -Encoding UTF8
-        }
+    $lines = [System.Collections.Generic.List[string]]::new()
+    & $Cne @fullArgs 2>&1 | ForEach-Object {
+        $line = $_.ToString()
+        Write-Host $line
+        $lines.Add($line)
+    }
+    if ($lines.Count -gt 0) {
+        $text = ($lines -join "`n") + "`n"
+        [System.IO.File]::AppendAllText($LogFile, $text, [System.Text.Encoding]::UTF8)
+    }
     return $LASTEXITCODE
 }
 
 function Invoke-PyWithLog([string[]]$CmdArgs, [string]$JobName) {
-    # 前台输出 + tee 到日志
+    # 前台输出 + 写日志（统一收集后写入，避免文件锁竞争）
     Write-Log "$JobName start"
     $fullArgs = @($CmdArgs)
-    & $Py @fullArgs 2>&1 |
-        ForEach-Object {
-            $line = $_.ToString()
-            Write-Host $line
-            $line | Out-File -FilePath $LogFile -Append -Encoding UTF8
-        }
+    $lines = [System.Collections.Generic.List[string]]::new()
+    & $Py @fullArgs 2>&1 | ForEach-Object {
+        $line = $_.ToString()
+        Write-Host $line
+        $lines.Add($line)
+    }
+    if ($lines.Count -gt 0) {
+        $text = ($lines -join "`n") + "`n"
+        [System.IO.File]::AppendAllText($LogFile, $text, [System.Text.Encoding]::UTF8)
+    }
     $exitCode = $LASTEXITCODE
     if ($exitCode -eq 0) {
         Write-Log "$JobName OK"
