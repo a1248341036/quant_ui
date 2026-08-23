@@ -602,7 +602,7 @@ export default {
     },
     async loadResearchMemory() {
       try {
-        const payload = await api('/api/alphaagent/research-memory?limit=30&t=' + Date.now())
+        const payload = await api('/api/alphaagent/research-memory?limit=50&t=' + Date.now())
         this.agent.memory = payload.entries || []
       } catch (e) {
         this.agent.error = '读取长期研究记忆失败: ' + e.message

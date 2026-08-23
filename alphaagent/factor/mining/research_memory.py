@@ -21,6 +21,15 @@ _POSITIVE_VERDICTS = {"production_approved", "validated", "candidate_approved", 
 _NEGATIVE_VERDICTS = {"rejected", "revise_required", "weak"}
 
 
+def _neg_str(s: Any) -> str:
+    """Return a string that sorts *before* all normal strings, so that when
+    used as a secondary sort key in ascending order the *most recent*
+    (lexicographically largest) timestamp comes first."""
+    # Invert by prefixing with a high char — simple but effective for
+    # ISO-8601 timestamps which are all ASCII.
+    return "\uffff" + str(s)
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -406,8 +415,29 @@ class ResearchMemoryStore:
             out.append(score if score > 0 else -1.0)
         return out
 
+    # Verdict display order — positive first, then negative.
+    _VERDICT_ORDER = {
+        "production_approved": 0,
+        "validated": 1,
+        "candidate_approved": 2,
+        "promising": 3,
+        "revise_required": 4,
+        "rejected": 5,
+        "weak": 6,
+    }
+
     def recent(self, *, limit: int = 50) -> list[dict[str, Any]]:
-        return sorted(self._load(), key=lambda item: str(item.get("updated_at", "")), reverse=True)[:limit]
+        """Return entries sorted by verdict priority (positive first) then
+        recency, so the frontend always shows validated/promising factors
+        even when recent runs produced mostly rejections.
+        """
+        entries = self._load()
+        # Two-pass sort: first by updated_at descending, then stable sort by
+        # verdict priority ascending — Python's sort is stable, so entries
+        # with the same verdict rank keep their recency order.
+        entries.sort(key=lambda e: str(e.get("updated_at", "")), reverse=True)
+        entries.sort(key=lambda e: self._VERDICT_ORDER.get(str(e.get("verdict")), 99))
+        return entries[:limit]
 
     def statistics(self) -> dict[str, Any]:
         entries = self._load()
