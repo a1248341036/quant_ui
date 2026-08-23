@@ -88,20 +88,20 @@ function Write-Log([string]$Msg) {
     $line | Out-File -FilePath $LogFile -Append -Encoding UTF8
 }
 
-function Invoke-Cne([string[]]$Args) {
-    if ($Quiet -and ($Args -contains "run" -and $Args -contains "daily")) {
-        $Args = @($Args) + "--quiet"
+function Invoke-Cne([string[]]$CmdArgs) {
+    if ($Quiet -and ($CmdArgs -contains "run" -and $CmdArgs -contains "daily")) {
+        $CmdArgs = @($CmdArgs) + "--quiet"
     }
-    & $Cne @Args --config $Config
+    & $Cne @CmdArgs --config $Config
     return $LASTEXITCODE
 }
 
-function Invoke-CneWithLog([string[]]$Args) {
+function Invoke-CneWithLog([string[]]$CmdArgs) {
     # 前台实时输出 + tee 到日志
-    if ($Quiet -and ($Args -contains "run" -and $Args -contains "daily")) {
-        $Args = @($Args) + "--quiet"
+    if ($Quiet -and ($CmdArgs -contains "run" -and $CmdArgs -contains "daily")) {
+        $CmdArgs = @($CmdArgs) + "--quiet"
     }
-    $fullArgs = @($Args) + "--config", $Config
+    $fullArgs = @($CmdArgs) + "--config", $Config
 
     # 前台输出同时写日志：用 Tee 流
     $pipeLine = & $Cne @fullArgs 2>&1 |
@@ -113,10 +113,10 @@ function Invoke-CneWithLog([string[]]$Args) {
     return $LASTEXITCODE
 }
 
-function Invoke-PyWithLog([string[]]$Args, [string]$JobName) {
+function Invoke-PyWithLog([string[]]$CmdArgs, [string]$JobName) {
     # 前台输出 + tee 到日志
     Write-Log "$JobName start"
-    $fullArgs = @($Args)
+    $fullArgs = @($CmdArgs)
     & $Py @fullArgs 2>&1 |
         ForEach-Object {
             $line = $_.ToString()
@@ -138,8 +138,8 @@ function Invoke-EtfFund {
     # --no-sync-pg:              不同步 Tushare 日线到 pg_parquet（避免与 CNE daily 重复）
     # --no-rebuild-panel:        不重建股票 panel.parquet（股票 panel 由 CNE daily_bars 提供）
     # 这样 refresh_data 只负责 ETF/基金/指数，股票相关完全交给 CNE 流水线。
-    $args = @($RefreshData, "--skip-stock-panel", "--no-sync-pg", "--no-rebuild-panel")
-    return Invoke-PyWithLog $args "quant_ui:refresh_data"
+    $cmdArgs = @($RefreshData, "--skip-stock-panel", "--no-sync-pg", "--no-rebuild-panel")
+    return Invoke-PyWithLog $cmdArgs "quant_ui:refresh_data"
 }
 
 function Backup-Meta {
