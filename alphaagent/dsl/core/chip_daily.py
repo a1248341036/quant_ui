@@ -331,7 +331,7 @@ def _chip_metric_from_q(
     return np.nan
 
 
-@njit(cache=False)
+@njit(cache=True)
 def roll_chip_metric_daily_numba(
     close: np.ndarray,
     volume: np.ndarray,
@@ -476,7 +476,7 @@ def _chip_hist_dip(q: np.ndarray, nbins: int) -> float:
     return max_dev
 
 
-@njit(cache=False)
+@njit(cache=True)
 def roll_chip_peak_sharpness_daily_numba(
     close: np.ndarray,
     volume: np.ndarray,
@@ -530,7 +530,7 @@ def roll_chip_peak_sharpness_daily_numba(
     return out
 
 
-@njit(cache=False)
+@njit(cache=True)
 def roll_chip_bimodal_daily_numba(
     close: np.ndarray,
     volume: np.ndarray,
@@ -603,7 +603,7 @@ def roll_chip_bimodal_daily_numba(
     return out
 
 
-@njit(cache=False)
+@njit(cache=True)
 def roll_chip_wass_dist_daily_numba(
     close: np.ndarray,
     volume: np.ndarray,

@@ -2,6 +2,9 @@
 agentscope>=2.0.0
 openai>=1.0
 
+# JIT compilation for chip-distribution operators (250x+ speedup).
+numba>=0.60
+
 # CJK tokenization for research-memory BM25 retrieval.
 # research_memory.py falls back to built-in bigram segmentation when jieba is absent.
 jieba>=0.42.1
