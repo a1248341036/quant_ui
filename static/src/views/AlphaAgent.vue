@@ -43,7 +43,7 @@
         <section class="memory-panel" aria-label="长期研究记忆">
           <div class="memory-head"><span>长期研究记忆</span><b>{{ agent.memory.length }}</b></div>
           <div v-if="agent.memory.length" class="memory-items">
-            <div v-for="entry in agent.memory.slice(0, 3)" :key="entry.id" class="memory-item" :class="'memory-' + entry.verdict">
+            <div v-for="entry in agent.memory" :key="entry.id" class="memory-item" :class="'memory-' + entry.verdict" role="button" tabindex="0" @click="showMemoryDetail(entry)" @keydown.enter.prevent="showMemoryDetail(entry)">
               <strong>{{ memoryVerdictLabel(entry.verdict) }} · {{ entry.factor_name }}</strong>
               <small>{{ entry.conclusion }}</small>
             </div>
@@ -87,6 +87,55 @@
           >
           <button type="submit" title="保存会话名称" aria-label="保存会话名称">✓</button>
         </form>
+      </Teleport>
+
+      <Teleport to="body">
+        <div v-if="agent.memoryDetail" class="memory-modal-overlay" @click="agent.memoryDetail = null">
+          <div class="memory-modal" @click.stop>
+            <div class="memory-modal-head">
+              <strong>{{ agent.memoryDetail.factor_name }}</strong>
+              <span class="memory-modal-verdict" :class="'memory-' + agent.memoryDetail.verdict">{{ memoryVerdictLabel(agent.memoryDetail.verdict) }}</span>
+              <button class="memory-modal-close" @click="agent.memoryDetail = null">×</button>
+            </div>
+            <div class="memory-modal-body">
+              <div class="memory-modal-section">
+                <label>因子表达式</label>
+                <pre class="memory-modal-expr">{{ agent.memoryDetail.expression }}</pre>
+              </div>
+              <div class="memory-modal-section" v-if="agent.memoryDetail.conclusion">
+                <label>结论</label>
+                <p class="memory-modal-text">{{ agent.memoryDetail.conclusion }}</p>
+              </div>
+              <div class="memory-modal-section" v-if="agent.memoryDetail.metrics && Object.keys(agent.memoryDetail.metrics).length">
+                <label>评估指标</label>
+                <div class="memory-modal-metrics">
+                  <span v-for="(value, key) in agent.memoryDetail.metrics" :key="key">{{ metricLabel(key) }}: {{ formatMetricValue(value) }}</span>
+                </div>
+              </div>
+              <div class="memory-modal-section" v-if="agent.memoryDetail.error">
+                <label>错误/跳过原因</label>
+                <pre class="memory-modal-error">{{ agent.memoryDetail.error }}</pre>
+              </div>
+              <div class="memory-modal-section" v-if="agent.memoryDetail.observations && agent.memoryDetail.observations.length">
+                <label>评估历史 ({{ agent.memoryDetail.attempts || agent.memoryDetail.observations.length }} 次)</label>
+                <div class="memory-modal-observations">
+                  <div v-for="(obs, i) in agent.memoryDetail.observations" :key="i" class="memory-modal-observation">
+                    <span>{{ obs.stage || '-' }}</span>
+                    <span class="memory-modal-obs-verdict" :class="'memory-' + obs.verdict">{{ memoryVerdictLabel(obs.verdict) }}</span>
+                    <span class="memory-modal-obs-time">{{ formatTime(obs.at) }}</span>
+                  </div>
+                </div>
+              </div>
+              <div class="memory-modal-meta">
+                <span v-if="agent.memoryDetail.created_at">创建: {{ formatTime(agent.memoryDetail.created_at) }}</span>
+                <span v-if="agent.memoryDetail.updated_at">更新: {{ formatTime(agent.memoryDetail.updated_at) }}</span>
+                <span v-if="agent.memoryDetail.profile_id">Profile: {{ agent.memoryDetail.profile_id }}</span>
+                <span v-if="agent.memoryDetail.candidate_id">候选ID: {{ agent.memoryDetail.candidate_id }}</span>
+                <span v-if="agent.memoryDetail.failure_code">失败码: {{ agent.memoryDetail.failure_code }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
       </Teleport>
 
       <main class="agent-main">
@@ -262,6 +311,7 @@ export default {
         renameTitle: '',
         renamePosition: { top: 0, left: 0 },
         showArchived: false,
+        memoryDetail: null,
         showResearchSpec: false,
         researchSpecText: '',
         defaultResearchSpecText: '',
@@ -811,8 +861,27 @@ export default {
         validated: '验证有效',
         promising: '训练有潜力',
         rejected: '明确否定',
+        revise_required: '需修订',
         weak: '证据不足',
       }[verdict] || '待评估')
+    },
+    showMemoryDetail(entry) {
+      this.agent.memoryDetail = entry
+    },
+    metricLabel(key) {
+      return ({
+        ic: 'IC',
+        icir: 'ICIR',
+        rank_ic: 'RankIC',
+        factor_coverage: '覆盖率',
+        coverage: '覆盖率',
+        long_group_annual_excess_return: '多头年化超额',
+        winsorized_abs_ic_decay: '截尾IC衰减',
+      }[key] || key)
+    },
+    formatMetricValue(value) {
+      const n = Number(value)
+      return isNaN(n) ? String(value) : Math.abs(n) < 1 ? n.toFixed(4) : n.toFixed(2)
     },
     addUsage(total, event) {
       return {
@@ -908,14 +977,16 @@ export default {
 .memory-panel { margin:10px 12px 0; padding:9px; border-top:1px solid var(--line); color:var(--muted); font-size:10px; }
 .memory-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:7px; color:var(--text); font-size:11px; }
 .memory-head b { color:var(--accent); font:10px var(--font-mono); }
-.memory-items { display:grid; gap:6px; }
-.memory-item { padding-left:7px; border-left:2px solid var(--muted); }
+.memory-items { display:grid; gap:6px; max-height:220px; overflow-y:auto; }
+.memory-item { padding:5px 6px 5px 7px; border-left:2px solid var(--muted); border-radius:0 4px 4px 0; cursor:pointer; transition:background .12s; }
+.memory-item:hover, .memory-item:focus-visible { background:rgb(255 255 255 / .05); outline:none; }
 .memory-item strong, .memory-item small { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .memory-item strong { color:var(--text); font-size:10px; font-weight:550; }
 .memory-item small { margin-top:2px; font-size:9px; }
 .memory-production_approved, .memory-validated { border-color:#43d17a; }
 .memory-candidate_approved, .memory-promising { border-color:#f5bd4f; }
 .memory-rejected, .memory-weak { border-color:#ef6b73; }
+.memory-revise_required { border-color:#f5bd4f; }
 .sidebar-footer { margin-top:auto; display:flex; align-items:center; gap:8px; padding:14px 16px; border-top:1px solid var(--line); color:var(--muted); font-size:11px; }
 .agent-main { display:flex; flex-direction:column; min-width:0; min-height:0; }
 .agent-header { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:16px 24px; border-bottom:1px solid var(--line); }
@@ -948,15 +1019,15 @@ export default {
 .agent-avatar { color:#d7c7ff; background:linear-gradient(145deg,#7b61ff,#3e83ff); }
 .message-body { min-width:0; flex:1; }
 .message-author { color:var(--accent-strong); font-size:11px; font-weight:650; margin:4px 0 5px; }
-.message-text { white-space:pre-wrap; color:var(--text); font-size:13px; line-height:1.7; }
+.message-text { white-space:pre-wrap; color:var(--text); font-size:13px; line-height:1.7; overflow-wrap:break-word; }
 .thinking-card, .tool-card, .result-card { margin-left:37px; border:1px solid var(--line); border-radius:10px; background:rgb(255 255 255 / .018); }
 .thinking-card summary, .tool-card summary { cursor:pointer; padding:9px 11px; color:#b9a3e8; font-size:12px; list-style:none; }
 .thinking-card summary::-webkit-details-marker, .tool-card summary::-webkit-details-marker { display:none; }
 .thinking-icon { color:#c792ea; }
 .tool-icon { color:#7dd3fc; margin-right:5px; }
 .tool-state { float:right; color:var(--muted); font-size:10px; }
-.tool-expression, .result-expression { margin:0 11px 8px; padding:7px 8px; border-left:2px solid rgb(125 211 252 / .65); border-radius:3px; color:#c7d8ee; background:rgb(125 211 252 / .055); white-space:pre-wrap; word-break:break-word; font:11px/1.5 var(--font-mono); }
-.thinking-card pre, .tool-card pre { margin:0; padding:0 11px 11px; color:#aebbd2; white-space:pre-wrap; word-break:break-word; font:12px/1.55 var(--font-mono); }
+.tool-expression, .result-expression { margin:0 11px 8px; padding:7px 8px; border-left:2px solid rgb(125 211 252 / .65); border-radius:3px; color:#c7d8ee; background:rgb(125 211 252 / .055); white-space:pre-wrap; overflow-wrap:break-word; word-break:break-all; font:11px/1.5 var(--font-mono); }
+.thinking-card pre, .tool-card pre { margin:0; padding:0 11px 11px; color:#aebbd2; white-space:pre-wrap; overflow-wrap:break-word; word-break:break-all; font:12px/1.55 var(--font-mono); }
 .result-card { padding:10px 12px; border-color:rgb(67 209 122 / .2); }
 .result-head { display:flex; align-items:center; gap:7px; font-size:12px; }
 .result-icon { color:#43d17a; font-weight:700; }
@@ -965,8 +1036,8 @@ export default {
 .result-factor { color:#d7e3ff; font:11px var(--font-mono); }
 .result-expression { border-left-color:rgb(67 209 122 / .7); background:rgb(67 209 122 / .055); }
 .result-metrics { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
-.result-metrics span { padding:3px 6px; border-radius:5px; color:#a9e9bd; background:rgb(67 209 122 / .1); font:11px var(--font-mono); }
-.result-note { margin-top:7px; color:#e89a9f; font-size:11px; }
+.result-metrics span { padding:3px 6px; border-radius:5px; color:#a9e9bd; background:rgb(67 209 122 / .1); font:11px var(--font-mono); overflow-wrap:break-word; word-break:break-all; }
+.result-note { margin-top:7px; color:#e89a9f; font-size:11px; overflow-wrap:break-word; word-break:break-all; }
 .review-card { margin-left:37px; padding:11px 12px; border:1px solid var(--line); border-radius:8px; background:rgb(255 255 255 / .018); font-size:12px; }
 .review-head { display:flex; align-items:center; gap:8px; }
 .review-head strong { color:#d7c7ff; }.review-head span { font-weight:650; }.review-head em { margin-left:auto; color:var(--muted); font:10px var(--font-mono); }
@@ -1003,6 +1074,29 @@ export default {
 .composer-hint { margin-top:7px; color:var(--muted); text-align:center; font-size:10px; }
 .composer-error { margin-bottom:6px; color:#f58b93; font-size:11px; }
 .activity-bar { display:flex; align-items:center; gap:7px; margin:0 0 7px 3px; color:#b9a3e8; font-size:11px; }
+.memory-modal-overlay { position:fixed; inset:0; z-index:10001; display:grid; place-items:center; background:rgb(0 0 0 / .55); backdrop-filter:blur(2px); }
+.memory-modal { width:min(560px, 92vw); max-height:80vh; overflow:auto; border:1px solid var(--line-strong); border-radius:12px; background:var(--bg-soft); box-shadow:0 20px 60px rgb(0 0 0 / .4); }
+.memory-modal-head { display:flex; align-items:center; gap:10px; padding:14px 16px; border-bottom:1px solid var(--line); }
+.memory-modal-head strong { flex:1; min-width:0; color:var(--text); font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.memory-modal-verdict { flex:none; padding:2px 8px; border-radius:5px; color:var(--text); font-size:10px; white-space:nowrap; }
+.memory-modal-close { flex:none; width:24px; height:24px; padding:0; border:0; border-radius:5px; background:transparent; color:var(--muted); font-size:18px; line-height:20px; }
+.memory-modal-close:hover { background:rgb(255 255 255 / .09); color:var(--text); }
+.memory-modal-body { padding:14px 16px; }
+.memory-modal-section { margin-bottom:14px; }
+.memory-modal-section:last-child { margin-bottom:0; }
+.memory-modal-section label { display:block; margin-bottom:5px; color:var(--muted); font-size:10px; letter-spacing:.05em; text-transform:uppercase; }
+.memory-modal-expr { margin:0; padding:10px; border:1px solid var(--line); border-radius:7px; background:rgb(255 255 255 / .025); color:#c7d8ee; white-space:pre-wrap; overflow-wrap:break-word; word-break:break-all; font:12px/1.5 var(--font-mono); }
+.memory-modal-text { margin:0; color:var(--text); font-size:12px; line-height:1.6; overflow-wrap:break-word; }
+.memory-modal-metrics { display:flex; flex-wrap:wrap; gap:6px; }
+.memory-modal-metrics span { padding:4px 8px; border-radius:5px; color:#a9e9bd; background:rgb(67 209 122 / .1); font:11px var(--font-mono); }
+.memory-modal-error { margin:0; padding:10px; border:1px solid rgb(239 107 115 / .25); border-radius:7px; background:rgb(239 107 115 / .06); color:#e89a9f; white-space:pre-wrap; overflow-wrap:break-word; font:11px/1.5 var(--font-mono); }
+.memory-modal-observations { display:flex; flex-direction:column; gap:5px; }
+.memory-modal-observation { display:flex; align-items:center; gap:8px; padding:5px 8px; border:1px solid var(--line); border-radius:6px; font-size:11px; }
+.memory-modal-observation span:first-child { color:var(--text); font-weight:550; }
+.memory-modal-obs-verdict { padding:1px 6px; border-radius:4px; font-size:10px; }
+.memory-modal-obs-time { margin-left:auto; color:var(--muted); font:10px var(--font-mono); }
+.memory-modal-meta { display:flex; flex-wrap:wrap; gap:8px 14px; padding-top:10px; border-top:1px solid var(--line); color:var(--muted); font:10px var(--font-mono); }
+
 @media (max-width: 820px) {
   .agent-page { height:auto; min-height:calc(100vh - 110px); }
   .agent-shell { grid-template-columns:1fr; min-height:calc(100vh - 130px); }
