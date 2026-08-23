@@ -2,6 +2,6 @@
 agentscope>=2.0.0
 openai>=1.0
 
-# Optional: better CJK tokenization for research-memory BM25 retrieval.
+# CJK tokenization for research-memory BM25 retrieval.
 # research_memory.py falls back to built-in bigram segmentation when jieba is absent.
-# jieba>=0.42.1
+jieba>=0.42.1
