@@ -10,7 +10,8 @@ import pandas as pd
 
 from .store import (DATA_DIR, ETF_FILE, ETF_PANEL_FILE, FUND_FILE, FUND_FEE_FILE,
                     FUND_NAV_FILE, FUND_PANEL_FILE, INDEX_FILE, LEGACY_DATA_DIR, PANEL_FILE,
-                    PG_PARQUET_DIR, PRED_FILE, SENTIMENT_DIR, TECH_FILE, UNIVERSE_FILE,
+                    PG_PARQUET_DIR, PRED_FILE, QUANT_DATASET_DIR, SENTIMENT_DIR, TECH_FILE,
+                    UNIVERSE_FILE,
                     load_meta)
 
 
@@ -33,9 +34,12 @@ PANEL_START = os.getenv("QUANT_PANEL_START", "2020-01-01").strip()
 # 保证区间化加载与全量加载的因子口径一致。
 FACTOR_BUFFER_DAYS = 40
 
-# pg_parquet=优先读 Tushare 直写 parquet；panel=只用本地预计算文件。
-# 小内存机器默认走 pg_parquet，运行时不再整表读全市场行情。
-DATA_SOURCE = os.getenv("QUANT_DATA_SOURCE", "pg_parquet").strip().lower()
+# cne=读 CNEquity 管理的 quant_dataset 年度日频文件；panel=只用本地预计算文件。
+# pg/pg_parquet 作为兼容别名保留，实际日线也读 CNE 年度档案。
+DATA_SOURCE = os.getenv("QUANT_DATA_SOURCE", "cne").strip().lower()
+# 全面迁移 CNE 数据源：QUANT_USE_CNE=1 时，日线读取优先走 CNE reader，
+# 失败自动回退旧路径（panel.parquet / 年度 parquet），不影响可用性。
+_USE_CNE = os.getenv("QUANT_USE_CNE", "").strip().lower() in ("1", "true", "yes", "on")
 _panel_codes_cache: set | None = None
 
 # 信号因子最长只看 60 个交易日（ma_cross20_60），
@@ -43,32 +47,63 @@ _panel_codes_cache: set | None = None
 SIGNAL_LOOKBACK_DAYS = int(os.getenv("QUANT_SIGNAL_LOOKBACK_DAYS", "800"))
 
 
-# 同步 Tushare 时同时写一份「每只股票最新复权因子」小文件，作为前复权锚点：
-# qfq 价 = 不复权价 * adj_factor / last_adj。锚点取自导出快照而不是查询区间，
-# 避免同一历史日在不同查询区间/不同刷新时间下显示不同的价格。
-LAST_ADJ_FILE = PG_PARQUET_DIR / "stock_daily_last_adj.parquet"
+# CNEquity quant_dataset 日频按年存放：data/quant_dataset/YYYY/YYYY/day/stock_daily.parquet
+_CNE_DAILY_GLOB = str(QUANT_DATASET_DIR / "*" / "*" / "day" / "stock_daily.parquet")
+
+
+def _cne_daily_years() -> list[int]:
+    """返回 quant_dataset 下已有日频数据的年份列表（升序）。"""
+    if not QUANT_DATASET_DIR.is_dir():
+        return []
+    years = []
+    for d in QUANT_DATASET_DIR.iterdir():
+        f = d / d.name / "day" / "stock_daily.parquet"
+        if d.is_dir() and d.name.isdigit() and f.is_file():
+            years.append(int(d.name))
+    years.sort()
+    return years
+
+
+def _cne_latest_year_file() -> Path | None:
+    """最新年度的 stock_daily.parquet 路径。"""
+    years = _cne_daily_years()
+    if not years:
+        return None
+    y = years[-1]
+    return QUANT_DATASET_DIR / str(y) / str(y) / "day" / "stock_daily.parquet"
+
+
 _last_adj_cache: dict | None = None
 _last_adj_lock = threading.Lock()
 
 
 def _load_last_adj() -> pd.DataFrame | None:
-    """读导出快照的最新复权因子（ts_code, last_adj），进程内缓存。"""
+    """从 cnequant_dataset 最新年度文件计算各股最新复权因子（进程内缓存）。
+
+    qfq 价 = 不复权价 * adj_factor / last_adj。锚点取自最新年度数据，
+    避免同一历史日在不同查询区间/不同刷新时间下显示不同的价格。
+    """
     global _last_adj_cache
     if _last_adj_cache is not None:
         return _last_adj_cache
-    if not LAST_ADJ_FILE.exists():
+    latest = _cne_latest_year_file()
+    if latest is None:
         return None
     with _last_adj_lock:
         if _last_adj_cache is not None:
             return _last_adj_cache
         try:
-            _last_adj_cache = pd.read_parquet(LAST_ADJ_FILE)
-            if "last_adj" not in _last_adj_cache.columns:
-                _last_adj_cache = _last_adj_cache.rename(
-                    columns={"adj_factor": "last_adj"})
+            df = pd.read_parquet(latest, columns=["ts_code", "trade_date", "adj_factor"])
+            _last_adj_cache = (
+                df.sort_values(["ts_code", "trade_date"])
+                .groupby("ts_code", observed=True)["adj_factor"]
+                .last()
+                .reset_index()
+                .rename(columns={"adj_factor": "last_adj"})
+            )
             return _last_adj_cache
         except Exception as exc:
-            print(f"加载复权因子快照失败: {exc}", file=sys.stderr)
+            print(f"从 cne 数据计算复权因子锚点失败: {exc}", file=sys.stderr)
             return None
 
 
@@ -195,24 +230,22 @@ def _duck_panel_slice(start: str | None = None, end: str | None = None,
 
 
 def _pg_parquet_end() -> str:
-    """pg_parquet/stock_daily.parquet 最新交易日（优先 DuckDB，回退列投影）。"""
-    try:
-        df = _duck_query("SELECT max(trade_date) AS end FROM stock_daily", [])
-        if df is not None and len(df) and df.iloc[0]["end"] is not None:
-            return str(pd.Timestamp(df.iloc[0]["end"]).date())
-    except Exception:
-        pass
-    path = PG_PARQUET_DIR / "stock_daily.parquet"
-    dates = pd.read_parquet(path, columns=["trade_date"])
+    """quant_dataset 最新年度 stock_daily 的最新交易日。"""
+    latest = _cne_latest_year_file()
+    if latest is None:
+        return ""
+    dates = pd.read_parquet(latest, columns=["trade_date"])
     return str(pd.Timestamp(dates["trade_date"].max()).date())
 
 def _code_to_ts_map() -> dict[str, str]:
-    """6 位代码 -> 完整 ts_code（读 pg_parquet/stock_basic.parquet）。"""
+    """6 位代码 -> 完整 ts_code（从 cne 最新年度日线 ts_code 去重推导）。"""
+    latest = _cne_latest_year_file()
+    if latest is None:
+        return {}
     try:
-        path = PG_PARQUET_DIR / "stock_basic.parquet"
-        if path.exists():
-            df = pd.read_parquet(path, columns=["ts_code", "symbol"])
-            return {str(r["symbol"]).zfill(6): str(r["ts_code"]) for _, r in df.iterrows()}
+        df = pd.read_parquet(latest, columns=["ts_code"])
+        codes = sorted(df["ts_code"].astype(str).unique())
+        return {str(c)[:6].zfill(6): c for c in codes}
     except Exception:
         return {}
     return {}
@@ -220,10 +253,13 @@ def _code_to_ts_map() -> dict[str, str]:
 
 def _load_panel_pg_parquet(start: str | None = None, end: str | None = None,
                            codes: list[str] | None = None) -> pd.DataFrame:
-    """从 Tushare 直写 pg_parquet/stock_daily.parquet 构建回测面板。"""
-    path = PG_PARQUET_DIR / "stock_daily.parquet"
-    if not path.exists():
-        raise FileNotFoundError(f"Tushare parquet 不存在: {path}")
+    """从 CNEquant_dataset 年度 stock_daily 合并构建回测面板。
+
+    使用 DuckDB glob 多文件读取 + 谓词下推，避免把全部年度数据载入内存。
+    """
+    years = _cne_daily_years()
+    if not years:
+        raise FileNotFoundError(f"quant_dataset 下无日频数据: {_CNE_DAILY_GLOB}")
     if end is None:
         end = _pg_parquet_end()
     calc_start = start or PANEL_START
@@ -240,9 +276,38 @@ def _load_panel_pg_parquet(start: str | None = None, end: str | None = None,
     filters.append(("trade_date", "<=", pd.Timestamp(end).date()))
     cols = ["ts_code", "trade_date", "open", "high", "low", "close",
             "vol", "amount", "turnover_rate", "adj_factor"]
-    df = pd.read_parquet(path, columns=cols, filters=filters)
+
+    # 只读覆盖查询区间的年度文件，减少 IO
+    y0 = max(int(str(calc_start)[:4]), years[0])
+    y1 = min(int(str(end)[:4]), years[-1])
+    selected_years = [y for y in years if y0 <= y <= y1]
+    if not selected_years:
+        raise RuntimeError("cne quant_dataset 无覆盖该日期范围的日频文件")
+    files = [str(QUANT_DATASET_DIR / str(y) / str(y) / "day" / "stock_daily.parquet")
+             for y in selected_years]
+    col_list = ", ".join(cols)
+    ts_filter = ""
+    params: list = []
+    if codes:
+        code_map = _code_to_ts_map()
+        ts_codes = [code_map.get(str(c).zfill(6), f"{str(c).zfill(6)}.SZ")
+                    for c in codes]
+        marks = ", ".join(["?"] * len(ts_codes))
+        ts_filter = f" AND ts_code IN ({marks})"
+        params = ts_codes
+    file_list = ", ".join(f"'{f}'" for f in files)
+    sql = (
+        f"SELECT {col_list} FROM read_parquet([{file_list}]) "
+        f"WHERE trade_date >= ? AND trade_date <= ?{ts_filter}"
+    )
+    import duckdb
+    con = duckdb.connect()
+    try:
+        df = con.execute(sql, [calc_start, end] + params).df()
+    finally:
+        con.close()
     if len(df) == 0:
-        raise RuntimeError("PG parquet 面板为空")
+        raise RuntimeError("cne 面板为空")
     df = df.rename(columns={"trade_date": "date", "vol": "volume",
                             "turnover_rate": "turnover"})
     return _finalize_stock_df(df)
@@ -286,7 +351,15 @@ def _load_panel_precomputed(start: str | None = None, end: str | None = None,
 def load_panel(start: str | None = None, end: str | None = None,
                codes: list[str] | None = None) -> pd.DataFrame:
     unbounded = start is None and end is None and codes is None
-    if DATA_SOURCE in ("pg", "pg_parquet"):
+    # CNE 优先：QUANT_USE_CNE=1 时先走 CNE reader（读同一份文件，口径已验证一致），
+    # 失败回退旧路径。全量（无任何过滤）仍用预计算 panel 避免整表构造。
+    if _USE_CNE and not unbounded:
+        try:
+            from .cne_reader import load_stock_daily
+            return load_stock_daily(codes=codes, start=start, end=end)
+        except Exception as exc:
+            print(f"[cne] CNE 面板加载失败，回退旧路径: {exc}", file=sys.stderr)
+    if DATA_SOURCE in ("cne", "pg", "pg_parquet"):
         if unbounded:
             # 全量面板直接用预计算文件（已有 turn20/am20），避免把
             # 1170 万行 stock_daily 重新构造成 pandas（3.6G 机器会 OOM）。
@@ -309,7 +382,7 @@ def load_signal_panel(codes: list[str], end: str | None = None) -> pd.DataFrame:
     """
     if not codes:
         raise RuntimeError("信号股票池为空")
-    if DATA_SOURCE in ("pg", "pg_parquet"):
+    if DATA_SOURCE in ("cne", "pg", "pg_parquet"):
         calc_start = (pd.Timestamp(end or pd.Timestamp.today())
                       - pd.Timedelta(days=SIGNAL_LOOKBACK_DAYS + FACTOR_BUFFER_DAYS * 2)
                       ).date().isoformat()
@@ -328,11 +401,11 @@ def load_panel_codes() -> set[str]:
     if _panel_codes_cache is not None:
         return _panel_codes_cache
     codes: set[str] = set()
-    if DATA_SOURCE in ("pg", "pg_parquet"):
+    if DATA_SOURCE in ("cne", "pg", "pg_parquet"):
         try:
-            path = PG_PARQUET_DIR / "stock_basic.parquet"
-            if path.exists():
-                df = pd.read_parquet(path, columns=["ts_code"])
+            latest = _cne_latest_year_file()
+            if latest is not None:
+                df = pd.read_parquet(latest, columns=["ts_code"])
                 codes = {str(c)[:6].zfill(6) for c in df["ts_code"]}
         except Exception:
             codes = set()
@@ -355,15 +428,36 @@ def load_stock_detail(code: str, days: int = 250, adj: str = "qfq") -> pd.DataFr
     adj = (adj or "qfq").strip().lower()
     if adj not in ("qfq", "hfq", "raw"):
         adj = "qfq"
-    if DATA_SOURCE in ("pg", "pg_parquet"):
+    if _USE_CNE:
         try:
-            path = PG_PARQUET_DIR / "stock_daily.parquet"
+            from .cne_reader import load_stock_daily_single
+            return load_stock_daily_single(code, days=days, adjust=adj)
+        except Exception as exc:
+            print(f"[cne] CNE 单股读取失败，回退旧路径: {exc}", file=sys.stderr)
+    if DATA_SOURCE in ("cne", "pg", "pg_parquet"):
+        try:
             code_map = _code_to_ts_map()
             ts_codes = [code_map.get(code, f"{code}.SZ"), f"{code}.SH", f"{code}.BJ"]
             cols = ["ts_code", "trade_date", "open", "high", "low", "close",
                     "vol", "amount", "turnover_rate", "adj_factor"]
-            df = pd.read_parquet(path, columns=cols,
-                                 filters=[("ts_code", "in", ts_codes)])
+            years = _cne_daily_years()
+            if not years:
+                raise FileNotFoundError("quant_dataset 下无日频数据")
+            file_list = ", ".join(
+                f"'{QUANT_DATASET_DIR / str(y) / str(y) / 'day' / 'stock_daily.parquet'}'"
+                for y in years)
+            col_list = ", ".join(cols)
+            marks = ", ".join(["?"] * len(ts_codes))
+            import duckdb
+            con = duckdb.connect()
+            try:
+                df = con.execute(
+                    f"SELECT {col_list} FROM read_parquet([{file_list}]) "
+                    f"WHERE ts_code IN ({marks})",
+                    ts_codes,
+                ).df()
+            finally:
+                con.close()
             if not df.empty:
                 df = df.rename(columns={"trade_date": "date", "vol": "volume",
                                         "turnover_rate": "turnover"})
@@ -554,6 +648,12 @@ def load_fund_panel(start: str | None = None,
 
 
 def load_index() -> pd.DataFrame:
+    if _USE_CNE:
+        try:
+            from .cne_reader import load_index as _cne_load_index
+            return _cne_load_index()
+        except Exception as exc:
+            print(f"[cne] CNE 指数加载失败，回退 CSV: {exc}", file=sys.stderr)
     if INDEX_FILE.exists():
         idx = pd.read_csv(INDEX_FILE)
     elif INDEX_PATH.exists():
@@ -621,27 +721,39 @@ def data_status() -> dict:
             "基金衍生面板", FUND_PANEL_FILE,
             "由基金净值派生，供统一回测引擎使用", "本地派生", "一键更新 / refresh_data.py")),
         ("duck_cache", _file_entry(
-            "DuckDB 查询缓存", DATA_DIR / "duck.db",
+            "DuckDB 查询缓存", DATA_DIR / "db" / "duck.db",
             "本地查询缓存/视图", "本地派生", "自动生成")),
     ]
     out = {key: {"store": entry} for key, entry in files}
+    try:
+        from .cne_reader import source_status
+        out["cne_daily_source"] = {"store": {
+            "name": "CNE 原生日线来源",
+            "path": source_status().get("path"),
+            "desc": "Tushare 主源，AkShare 兜底；失败时保留 CNE 原有 fallback",
+            "source": "CNE daily_bars",
+            "update": "run_cne_daily.ps1",
+            **source_status(),
+        }}
+    except Exception as exc:  # noqa: BLE001
+        out["cne_daily_source"] = {"store": {"status": "unknown", "error": str(exc)}}
 
     sentiment_files = [
-        ("sentiment_articles", "舆情库", SENT_ROOT / "data" / "articles.db",
+        ("sentiment_articles", "舆情库", SENT_ROOT / "articles.db",
          "去重后的舆情文章库"),
-        ("sentiment_news_raw", "东财个股新闻", SENT_ROOT / "data" / "news_raw.jsonl",
+        ("sentiment_news_raw", "东财个股新闻", SENT_ROOT / "news_raw.jsonl",
          "东方财富个股新闻原始流"),
-        ("sentiment_news_cls", "财联社电报", SENT_ROOT / "data" / "news_cls.jsonl",
+        ("sentiment_news_cls", "财联社电报", SENT_ROOT / "news_cls.jsonl",
          "财联社电报原始流"),
-        ("sentiment_news_extra", "扩展新闻源", SENT_ROOT / "data" / "news_extra.jsonl",
+        ("sentiment_news_extra", "扩展新闻源", SENT_ROOT / "news_extra.jsonl",
          "其他来源新闻原始流"),
-        ("sentiment_news_sentiment", "词典打分", SENT_ROOT / "data" / "news_sentiment.csv",
+        ("sentiment_news_sentiment", "词典打分", SENT_ROOT / "news_sentiment.csv",
          "舆情词典/规则打分结果"),
-        ("sentiment_news_daily", "日度全量情绪", SENT_ROOT / "data" / "news_sentiment_daily.csv",
+        ("sentiment_news_daily", "日度全量情绪", SENT_ROOT / "news_sentiment_daily.csv",
          "按日聚合的情绪分"),
         ("sentiment_event_study", "事件研究", SENT_ROOT / "outputs" / "event_study_daily.csv",
          "事件驱动研究日度结果"),
-        ("sentiment_universe", "舆情股票池", SENT_ROOT / "data" / "universe.csv",
+        ("sentiment_universe", "舆情股票池", SENT_ROOT / "universe.csv",
          "舆情覆盖股票池"),
     ]
     for key, name, path, desc in sentiment_files:

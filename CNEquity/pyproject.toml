@@ -1,0 +1,179 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cnequity"
+version = "0.7.2"
+description = "Open, self-hosted financial data infrastructure for China markets, starting with A-shares"
+# Short PyPI page (absolute links only). GitHub keeps README.md / README.en.md.
+readme = "README.pypi.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE*", "NOTICE"]
+authors = [{ name = "CNEquity Contributors" }]
+keywords = [
+  "a-share",
+  "china-stocks",
+  "china-equity",
+  "data-lake",
+  "mcp",
+  "ai-agent",
+  "duckdb",
+  "polars",
+  "parquet",
+  "quantitative-finance",
+  "market-data",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Financial and Insurance Industry",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Office/Business :: Financial :: Investment",
+]
+# One install, no extras: `pip install cnequity` brings every runtime source
+# the daily pipeline and the backfill paths need. Splitting these out again would
+# bring back the failure mode that motivated folding them in — a source enabled
+# in config with no package behind it, degrading silently on a scheduled run.
+dependencies = [
+  "click>=8.1",
+  "duckdb>=1.0",
+  # The 0.25 floor existed only so mootdx (httpx>=0.25,<0.26) could co-resolve.
+  # mootdx is gone — the TDX client is vendored — so nothing caps httpx now and
+  # the floor just marks the oldest release with the Client() options we use.
+  "httpx>=0.25",
+  # Chrome TLS impersonation for push2his (plain httpx often gets Empty reply overseas).
+  "curl_cffi>=0.7",
+  "polars>=1.0",
+  "pyarrow>=15.0",
+  "tushare>=1.4.29",
+  "akshare>=1.18",
+  # Baostock: valuation / ST / delisted-bar history for `cne init` and backfills.
+  "baostock>=0.8",
+  # SnowNLP: on-demand stock_news sentiment ([sentiment] use_snownlp).
+  "snownlp>=0.12",
+  # Shenwan / CNI publish constituent history as XLS and XLSX only; polars cannot
+  # read either, so pandas is here as a parser, not as a dataframe layer.
+  "pandas>=2.0",
+  "openpyxl>=3.0",
+  "xlrd>=2.0",
+  # stdlib tomllib is 3.11+; config loader falls back to tomli on 3.10.
+  "tomli>=2; python_version < '3.11'",
+  # `cne serve` — the read-only lake dashboard. FastAPI earns its ~8 packages on
+  # the response models and the OpenAPI page they generate: /api/docs is the
+  # API reference, so it cannot drift from the handlers, and the same models are
+  # what keep the CLI's JSON and the dashboard's JSON one contract instead of
+  # two. Starlette alone would route just as well and document nothing.
+  "fastapi>=0.110",
+  "uvicorn>=0.27",
+  # sentiment-mvp ML pipeline: research.py imports sentiment-mvp's ml_sentiment,
+  # which uses scikit-learn for TF-IDF + LogisticRegression and joblib for model
+  # persistence. Only loaded when the research wave runs the sentiment pipeline.
+  "scikit-learn>=1.4",
+  "joblib>=1.3",
+]
+
+# No [project.optional-dependencies]. Everything is a hard dependency.
+# `pip install "cnequity[tdx]"` from an older doc still installs correctly —
+# pip prints "does not provide the extra 'tdx'" and carries on, uv is silent —
+# so declaring empty extras would only advertise things that no longer exist.
+
+# Contributor tooling lives in a PEP 735 dependency group, not an extra: it is
+# never part of what a user installs. `pip install --group dev` (pip >= 25.1) or
+# `uv sync`.
+[dependency-groups]
+dev = [
+  "pytest>=8.0",
+  "pytest-cov>=5.0",
+  "pytest-timeout>=2.3",
+  # Pinned to a minor line: CI runs `ruff format --check`, and the formatter's
+  # line-wrapping changes between minors, so an unpinned `ruff>=0.4` turns any
+  # upstream release into a red build on code nobody touched.
+  "ruff>=0.15,<0.16",
+]
+
+[project.urls]
+Homepage = "https://github.com/rootSunc/cnequity"
+Documentation = "https://rootsunc.github.io/cnequity/"
+Source = "https://github.com/rootSunc/cnequity"
+Changelog = "https://github.com/rootSunc/cnequity/blob/main/CHANGELOG.md"
+Citation = "https://github.com/rootSunc/cnequity/blob/main/CITATION.cff"
+Issues = "https://github.com/rootSunc/cnequity/issues"
+
+[project.scripts]
+cne = "cnequity.cli.main:cli"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+cnequity = [
+    "py.typed",
+    "adapters/calendar/seeds/*.csv",
+    "adapters/ths/seeds/*.json",
+    # Public DigiCert intermediate that swsresearch.com fails to send. Without
+    # it in the wheel every Shenwan fetch fails TLS verification on a fresh
+    # install — see adapters/sw/industry_history.py.
+    "adapters/sw/*.pem",
+    "config/templates/*.toml",
+    # The dashboard page. Self-contained on purpose (no CDN, no build step): a
+    # lake often runs on an offline box or behind a proxy that would turn an
+    # external asset into a page that does not load.
+    "serve/static/*.html",
+    "serve/static/*.js",
+    "serve/static/*.css",
+    # MIT requires the notice to travel with every copy of the vendored code.
+    "adapters/tdx_protocol/_wire/LICENSE.tdxpy",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+# Vendored upstream code (tdxpy, MIT). Kept byte-close to its source so it can be
+# re-synced or diffed against upstream; reformatting it to our rules would only
+# make that harder, and the style is not ours to own.
+extend-exclude = ["src/cnequity/adapters/tdx_protocol/_wire"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "W"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Scripts insert repo src onto sys.path before importing the package.
+"scripts/*.py" = ["E402"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["cnequity"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Network probes (EastMoney schema contracts, etc.) run only with `-m network`.
+addopts = "-ra -m 'not network'"
+# Fail loud on a hung test instead of blocking the whole suite and leaving an
+# orphaned process behind. The full suite runs in ~10s; 120s is generous slack.
+# `thread` method dumps a traceback pinpointing where the hang occurred.
+timeout = 120
+timeout_method = "thread"
+markers = [
+  "integration: end-to-end tests that exercise the full pipeline (may be slower)",
+  "network: tests that require outbound network access",
+]
+
+[tool.coverage.run]
+source = ["cnequity"]
+branch = true
+# Vendored upstream (tdxpy, MIT). Same boundary as ruff extend-exclude: we own
+# the facade around it, not every struct.unpack line inside.
+omit = ["*/adapters/tdx_protocol/_wire/*", "*/adapters/tdx_protocol/_wire/**"]
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true

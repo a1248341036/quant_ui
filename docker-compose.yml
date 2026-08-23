@@ -1,0 +1,73 @@
+# ─────────────────────────────────────────────
+# docker-compose.yml — quant_ui 单容器全栈
+# 一个容器跑 4 组进程:
+#   API :17891 + Vue 前端（backend.main 托管 dist）
+#   数据状态看板 :8001 (data_status)
+#   CNEquity 数据湖看板 :8787 (cne serve)
+#   supercronic 定时任务（数据刷新/模拟盘/健康检查）
+# ─────────────────────────────────────────────
+
+services:
+  quant_ui:
+    build: .
+    image: quant_ui:latest
+    container_name: quant_ui
+    restart: unless-stopped
+
+    ports:
+      - "17891:17891"   # FastAPI 主服务 + Vue 前端
+      - "8001:8001"     # 数据状态看板
+      - "8787:8787"     # CNEquity 数据湖看板
+
+    env_file:
+      - .env
+
+    environment:
+      - TZ=Asia/Shanghai
+      - PYTHONPATH=/app
+      - QUANT_UI_DATA_DIR=/app/data
+      - QUANT_UI_PYTHON=/usr/local/bin/python
+      # data_status 状态（state.json/tasks.json/logs）持久化到数据 volume
+      - QUANT_DATA_STATUS_DIR=/app/data/data_status
+      - QUANT_DATA_SOURCE=pg_parquet
+      - QUANT_DUCKDB_PATH=/app/data/quant.duckdb
+      - QUANT_USE_CNE=1
+      # CNE 看板访问令牌（非回环地址必须带 token；0.0.0.0 即视为暴露）
+      - CNE_TOKEN=${CNE_TOKEN:-quant-dev-token}
+
+    volumes:
+      # 数据持久化（parquet / sqlite / duckdb / CNE 数据湖）
+      # 同一 volume 同时挂 /app/data 与 /app/CNEquity/data：
+      #   /app/data/quant_dataset   ==  /app/CNEquity/data/quant_dataset
+      # CNE 的 data.root 与 quant_ui 的 QUANT_UI_DATA_DIR 指向同一棵数据树，
+      # 迁移时只需搬这一个 volume。
+      # 注意：/app/CNEquity/data 的父目录 /app/CNEquity 已由下方只读 bind
+      # 挂载（含 configs/），此挂载点不可被同一父级 RO 挂载遮蔽。
+      - quant_data:/app/data
+      - quant_data:/app/CNEquity/data
+      # 用户保存的策略代码
+      - quant_labs:/app/labs
+      # 回测结果输出
+      - quant_results:/app/results
+      # alphaagent 因子挖掘产物（factorzoo / research_memory / logs）
+      - quant_artifacts:/app/artifacts
+      - quant_artifacts:/app/logs
+      # CNE 数据湖配置目录（只读源码，含 configs/ 与入口脚本）
+      - ./CNEquity:/app/CNEquity:ro
+
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+volumes:
+  quant_data:
+  quant_labs:
+  quant_results:
+  quant_artifacts:

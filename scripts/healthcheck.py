@@ -17,6 +17,8 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pandas as pd
+
 try:
     from dotenv import load_dotenv
 except ImportError:  # pragma: no cover
@@ -58,23 +60,28 @@ def check_api() -> tuple[bool, str]:
 
 
 def check_data() -> tuple[bool, str]:
-    """检查 Tushare 直写 parquet 的 stock_daily 最新交易日。"""
+    """检查 CNE 年度日线档案最新交易日。"""
     try:
         import duckdb
+        from core.store import QUANT_DATASET_DIR
+
+        files = [str(p) for p in QUANT_DATASET_DIR.glob("*/**/day/stock_daily.parquet")]
+        if not files:
+            return False, f"CNE 日线档案不存在: {QUANT_DATASET_DIR}"
         con = duckdb.connect()
         try:
             row = con.execute(
-                "SELECT max(trade_date) FROM read_parquet(?)",
-                [str(ROOT / "data" / "pg_parquet" / "stock_daily.parquet")],
+                "SELECT max(trade_date) FROM read_parquet(?)", [files]
             ).fetchone()
             latest = row[0] if row and row[0] is not None else None
         finally:
             con.close()
         if latest is not None:
-            age = (datetime.now(timezone.utc).date() - latest).days
+            latest_date = pd.Timestamp(latest).date()
+            age = (datetime.now(timezone.utc).date() - latest_date).days
             if age > 5:
-                return False, f"stock_daily.parquet 最新 {latest}，距今 {age} 天"
-        return True, f"Tushare parquet OK，最新数据 {latest}"
+                return False, f"CNE stock_daily 最新 {latest_date}，距今 {age} 天"
+        return True, f"CNE 日线档案 OK，最新数据 {latest}"
     except Exception as exc:
         return False, f"数据检查: {exc}"
 

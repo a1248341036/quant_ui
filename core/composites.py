@@ -10,10 +10,10 @@ import json
 import os
 import tempfile
 
-from .store import DATA_DIR
+from .store import DATA_DIR, STOCK_DIR
 
 
-COMPOSITES_FILE = DATA_DIR / "composites.json"
+COMPOSITES_FILE = STOCK_DIR / "composites.json"
 
 
 FACTOR_OPTIONS = [

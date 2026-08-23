@@ -1,11 +1,12 @@
 {
+    "_deprecated": "2026-08-22 已废弃，日更已切换至 CNE 数据湖流水线 (run_cne_daily.ps1)",
     "server":  "tencent-ubuntu",
     "remote_base":  "/home/ubuntu/quant/quant_ui/data",
     "remote_backup":  "/home/ubuntu/quant_sync_backup",
     "remote_python":  "/home/ubuntu/stock-analyzer/local_venv/bin/python",
     "items":  [
                   {
-                      "path":  "panel.parquet",
+                      "path":  "stock/panel.parquet",
                       "key_cols":  [
                                        "code",
                                        "date"
@@ -92,17 +93,17 @@
                       "smart":  true
                   },
                   {
-                      "path":  "fund.csv",
+                      "path":  "fund/fund.csv",
                       "direction":  "server_to_local",
                       "smart":  true
                   },
                   {
-                      "path":  "fund_fee.csv",
+                      "path":  "fund/fund_fee.csv",
                       "direction":  "server_to_local",
                       "smart":  true
                   },
                   {
-                      "path":  "fund_nav.parquet",
+                      "path":  "fund/fund_nav.parquet",
                       "key_cols":  [
                                        "code",
                                        "date"
@@ -113,7 +114,7 @@
                       "direction":  "server_to_local"
                   },
                   {
-                      "path":  "fund_panel.parquet",
+                      "path":  "fund/fund_panel.parquet",
                       "key_cols":  [
                                        "code",
                                        "date"
@@ -124,12 +125,12 @@
                       "direction":  "server_to_local"
                   },
                   {
-                      "path":  "etf.csv",
+                      "path":  "etf/etf.csv",
                       "direction":  "server_to_local",
                       "smart":  true
                   },
                   {
-                      "path":  "etf_panel.parquet",
+                      "path":  "etf/etf_panel.parquet",
                       "key_cols":  [
                                        "code",
                                        "date"
@@ -140,17 +141,17 @@
                       "direction":  "server_to_local"
                   },
                   {
-                      "path":  "tech.csv",
+                      "path":  "stock/tech.csv",
                       "direction":  "server_to_local",
                       "smart":  true
                   },
                   {
-                      "path":  "universe.csv",
+                      "path":  "stock/universe.csv",
                       "direction":  "server_to_local",
                       "smart":  true
                   },
                   {
-                      "path":  "index.csv",
+                      "path":  "stock/index.csv",
                       "direction":  "server_to_local",
                       "smart":  true
                   },
@@ -163,11 +164,11 @@
                       "direction":  "server_to_local"
                   },
                   {
-                      "path":  "composites.json",
+                      "path":  "stock/composites.json",
                       "direction":  "local_to_server"
                   },
                   {
-                      "path":  "meta.json",
+                      "path":  "stock/meta.json",
                       "direction":  "local_to_server"
                   },
                   {
@@ -175,59 +176,59 @@
                       "direction":  "local_to_server"
                   },
                   {
-                      "path":  "etf_adx20.csv",
+                      "path":  "etf/etf_adx20.csv",
                       "direction":  "local_to_server"
                   },
                   {
-                      "path":  "etf_adx25.csv",
+                      "path":  "etf/etf_adx25.csv",
                       "direction":  "local_to_server"
                   },
                   {
-                      "path":  "etf_combo_a.csv",
+                      "path":  "etf/etf_combo_a.csv",
                       "direction":  "local_to_server"
                   },
                   {
-                      "path":  "etf_combo_b.csv",
+                      "path":  "etf/etf_combo_b.csv",
                       "direction":  "local_to_server"
                   },
                   {
-                      "path":  "etf_combo_c1.csv",
+                      "path":  "etf/etf_combo_c1.csv",
                       "direction":  "local_to_server"
                   },
                   {
-                      "path":  "etf_combo_c2.csv",
+                      "path":  "etf/etf_combo_c2.csv",
                       "direction":  "local_to_server"
                   },
                   {
-                      "path":  "etf_combo_w1.csv",
+                      "path":  "etf/etf_combo_w1.csv",
                       "direction":  "local_to_server"
                   },
                   {
-                      "path":  "etf_combo_w2.csv",
+                      "path":  "etf/etf_combo_w2.csv",
                       "direction":  "local_to_server"
                   },
                   {
-                      "path":  "etf_s5k.csv",
+                      "path":  "etf/etf_s5k.csv",
                       "direction":  "local_to_server"
                   },
                   {
-                      "path":  "etf_survey.csv",
+                      "path":  "etf/etf_survey.csv",
                       "direction":  "local_to_server"
                   },
                   {
-                      "path":  "etf_survey_60d.csv",
+                      "path":  "etf/etf_survey_60d.csv",
                       "direction":  "local_to_server"
                   },
                   {
-                      "path":  "etf_w3.csv",
+                      "path":  "etf/etf_w3.csv",
                       "direction":  "local_to_server"
                   },
                   {
-                      "path":  "etf_w4.csv",
+                      "path":  "etf/etf_w4.csv",
                       "direction":  "local_to_server"
                   },
                   {
-                      "path":  "ma_sweep.csv",
+                      "path":  "stock/ma_sweep.csv",
                       "direction":  "local_to_server"
                   },
                   {

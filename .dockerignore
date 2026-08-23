@@ -1,0 +1,82 @@
+# ─────────────────────────────────────────────
+# .dockerignore — quant_ui 构建上下文瘦身
+# 目标：只把「源码 + 依赖清单 + 前端构建产物」送进构建上下文，
+#       数据/运行时产物/虚拟环境/敏感配置一律排除。
+# ─────────────────────────────────────────────
+
+# 敏感配置（绝不进镜像；运行时经 env_file 注入）
+.env
+.env.*
+!.env.example
+
+# Python
+**/__pycache__/
+*.py[cod]
+**/.venv/
+**/venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Git
+.git
+.github/
+CNEquity/.git/
+CNEquity/.github/
+
+# 数据与运行时产物（全部 volume 化，不进镜像）
+data/
+CNEquity/data/
+results/
+labs/
+logs/
+artifacts/
+db/pgdata/
+CNEquity/frontend/
+static/node_modules/
+
+# 前端源码（镜像只带 dist/ 构建产物）
+static/src/
+static/public/
+static/vendor/
+static/index_legacy.html
+static/package.json
+static/package-lock.json
+static/vite.config.js
+static/strategy_helpers.md
+
+# CNEquity 非运行必需目录（包已由 pip 安装，源码只需 configs/static）
+CNEquity/tests/
+CNEquity/docs/
+CNEquity/scripts/
+CNEquity/uv.lock
+CNEquity/codecov.yml
+CNEquity/mkdocs.yml
+CNEquity/.pytest_cache/
+CNEquity/.ruff_cache/
+CNEquity/.temp/
+CNEquity/CHANGELOG.md
+CNEquity/CITATION.cff
+CNEquity/CONTRIBUTING.md
+CNEquity/SECURITY.md
+CNEquity/ROADMAP.md
+CNEquity/codecov.yml
+
+# 本地开发/CI 目录
+.codefree/
+.remote_status_work/
+.streamlit/
+.temp/
+_tmp_check.py
+systemd/
+docs/
+*.zip
+*.log
+*.tmp
+*.bak_*
+
+# Docker 自身
+Dockerfile
+docker-compose.yml
+docker-compose.override.yml
+.dockerignore

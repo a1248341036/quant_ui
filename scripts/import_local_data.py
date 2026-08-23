@@ -27,14 +27,14 @@ from core.store import DATA_DIR  # noqa: E402
 
 # Files owned by the local machine (relative to data dir).
 LOCAL_FILES = [
-    "etf.csv",
-    "etf_panel.parquet",
-    "fund.csv",
-    "fund_nav.parquet",
-    "fund_panel.parquet",
-    "tech.csv",
-    "index.csv",
-    "universe.csv",
+    "etf/etf.csv",
+    "etf/etf_panel.parquet",
+    "fund/fund.csv",
+    "fund/fund_nav.parquet",
+    "fund/fund_panel.parquet",
+    "stock/tech.csv",
+    "stock/index.csv",
+    "stock/universe.csv",
     "pg_parquet/report_rc.parquet",
 ]
 

@@ -21,12 +21,13 @@ try:
 except ImportError:  # pragma: no cover
     duckdb = None
 
-from .store import DATA_DIR, INDEX_FILE, PANEL_FILE, TECH_FILE, UNIVERSE_FILE
+from .store import (DATA_DIR, DB_DIR, INDEX_FILE, PANEL_FILE, QUANT_DATASET_DIR,
+                    TECH_FILE, UNIVERSE_FILE)
 
 
 PG_PARQUET_DIR = DATA_DIR / "pg_parquet"
-DUCKDB_FILE = DATA_DIR / "duck.db"
-DUCKDB_WAL = DATA_DIR / "duck.db.wal"
+DUCKDB_FILE = DB_DIR / "duck.db"
+DUCKDB_WAL = DB_DIR / "duck.db.wal"
 PG_TABLE_NAMES = [
     "stock_daily",
     "stock_basic",
@@ -60,6 +61,11 @@ def _view_sql(name: str, file: Path, columns: dict[str, str] | None = None) -> s
 
 
 def _pg_parquet_view_sql(name: str) -> str | None:
+    if name == "stock_daily":
+        # CNEquant_dataset 日频按年分目录，用 DuckDB glob 多文件视图
+        glob = str(QUANT_DATASET_DIR / "*" / "*" / "day" / "stock_daily.parquet")
+        return (f"CREATE OR REPLACE VIEW {name} AS "
+                f"SELECT * FROM read_parquet('{glob}')")
     path = PG_PARQUET_DIR / f"{name}.parquet"
     if not path.exists():
         return None

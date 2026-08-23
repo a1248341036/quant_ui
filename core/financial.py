@@ -29,8 +29,9 @@ FINANCIAL_FACTORS = {
 
 _lock = threading.Lock()
 _CACHE: dict = {}
-_pg_parquet = (__import__("os").getenv("QUANT_DATA_SOURCE", "pg_parquet")
-               .strip().lower() == "pg_parquet")
+_pg_parquet = __import__("os").getenv("QUANT_DATA_SOURCE", "cne").strip().lower() in (
+    "cne", "pg", "pg_parquet"
+)
 
 
 def _map_code_to_ts() -> dict[str, str]:

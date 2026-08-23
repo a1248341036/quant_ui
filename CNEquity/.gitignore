@@ -1,0 +1,53 @@
+# Byte-compiled / build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+site/
+
+# Test / lint caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage.json
+coverage.xml
+htmlcov/
+
+# Virtual environments
+.venv/
+.venv-*/
+venv/
+env/
+
+# Secrets & local config
+.env
+configs/*.local.toml
+configs/cnequity.toml
+configs/cnequity.demo.toml
+configs/cnequity.quant_dataset.toml
+
+# Agent temp files
+.temp/
+
+# Data lake artifacts (never commit generated data)
+data/
+*.duckdb
+*.duckdb.wal
+
+# Runtime logs (prefer {data.root}/logs/; never commit either)
+logs/
+
+# Local AI / editor tooling
+.claude/
+.cursor/
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Frontend build inputs (the built bundle IS committed — see frontend/README.md)
+frontend/node_modules/

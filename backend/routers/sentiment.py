@@ -12,7 +12,7 @@ from core.store import SENTIMENT_DIR
 router = APIRouter(prefix="/api/sentiment", tags=["sentiment"])
 
 SENT_ROOT = SENTIMENT_DIR
-SENT_DB = SENT_ROOT / "data" / "articles.db"
+SENT_DB = SENT_ROOT / "articles.db"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 SENT_IC_CSV = PROJECT_ROOT / "results" / "sentiment_ic_group.csv"
 
@@ -37,7 +37,7 @@ def _query(sql: str, params: tuple = ()) -> pd.DataFrame:
 @router.get("/status")
 def sentiment_status():
     return {
-        "data_dir": str(SENT_ROOT / "data"),
+        "data_dir": str(SENT_ROOT),
         "has_news": SENT_DB.exists(),
         "has_ic": SENT_IC_CSV.exists(),
         "has_articles_db": SENT_DB.exists(),

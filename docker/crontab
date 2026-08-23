@@ -1,0 +1,25 @@
+# ─────────────────────────────────────────────
+# supercronic crontab — 容器内定时任务
+# 时区: Asia/Shanghai (由 Dockerfile TZ 环境变量控制)
+# supercronic 格式与标准 cron 完全兼容，支持秒级日志输出
+# ─────────────────────────────────────────────
+
+# ── 每日数据刷新（收盘后尽早拉取，对应 quant-data-refresh.timer 15:10）
+10 15 * * 1-5 cd /app && python scripts/refresh_data.py --workers 1 --skip-stock-panel >> /var/log/supervisor/cron-data-refresh.log 2>&1
+
+# ── 每日数据刷新重试（补抓 Tushare 迟到数据，对应 quant-data-refresh-retry.timer 16:30）
+30 16 * * 1-5 cd /app && python scripts/refresh_data.py --workers 1 --skip-stock-panel >> /var/log/supervisor/cron-data-refresh-retry.log 2>&1
+
+# ── 日级模拟盘交易（对应 quant-paper.timer 20:00）
+0 20 * * 1-5 cd /app && python scripts/paper_trade.py --run >> /var/log/supervisor/cron-paper.log 2>&1
+
+# ── 健康检查（对应 quant-healthcheck.timer 每5分钟）
+*/5 * * * * cd /app && python scripts/healthcheck.py >> /var/log/supervisor/cron-healthcheck.log 2>&1
+
+# ── 周度腾讯面板兜底刷新（对应 quant-tencent-weekly.timer 周日 03:00）
+0 3 * * 0 cd /app && python scripts/refresh_data.py --workers 3 --no-sync-pg >> /var/log/supervisor/cron-tencent-weekly.log 2>&1
+
+# ── Tushare token 到期 QQ 提醒（对应 quant-tushare-expiry.timer 09:05）
+# 注意: 此任务依赖 QQ bot 环境（QUANT_UI_QQBOT_DIR + ~/qqbot/.env）
+# 如容器内无 QQ bot 环境，此任务会失败但不影响其他服务
+5 9 * * * cd /app && python scripts/tushare_expiry_notify.py >> /var/log/supervisor/cron-tushare-expiry.log 2>&1

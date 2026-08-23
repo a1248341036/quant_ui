@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""从 Tushare parquet 原始价 + 复权因子重建/增量更新股票 panel.parquet（稳定前复权）。
+"""从 CNEquity 年度日线档案重建/增量更新股票 panel.parquet（稳定前复权）。
 
 用法:
     python scripts/rebuild_stock_panel_from_pg.py [--start 2020-01-01] [--batch 200]
     python scripts/rebuild_stock_panel_from_pg.py --force-full   # 强制全量重建
 
 数据来源:
-    - 行情: data/pg_parquet/stock_daily.parquet（sync_tushare_to_parquet.py 直写）
-    - 前复权锚点: data/pg_parquet/stock_daily_last_adj.parquet（同步时生成）
+    - 行情: data/quant_dataset/YYYY/YYYY/day/stock_daily.parquet
+    - 复权锚点: 从年度档案按股票计算
     - 股票池: data/universe.csv（沪深300+中证500+中证1000）
 
 口径:
@@ -41,7 +41,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from core.data import _finalize_stock_df  # noqa: E402
-from core.store import PANEL_FILE, UNIVERSE_FILE  # noqa: E402
+from core.store import PANEL_FILE, QUANT_DATASET_DIR, UNIVERSE_FILE  # noqa: E402
 
 PANEL_SCHEMA = pa.schema([
     pa.field("date", pa.timestamp("ns")),
@@ -61,7 +61,7 @@ KEEP_COLS = ["date", "open", "close", "turnover", "amount", "code",
              "turn20", "am20", "volume", "high", "low"]
 BUFFER_DAYS = 40
 ANCHOR_FILE = ROOT / "data" / "panel_anchor.parquet"
-LAST_ADJ_FILE = ROOT / "data" / "pg_parquet" / "stock_daily_last_adj.parquet"
+STOCK_GLOB = str(QUANT_DATASET_DIR / "*" / "*" / "day" / "stock_daily.parquet")
 
 
 def load_universe_codes() -> list[str]:
@@ -84,13 +84,15 @@ def load_ts_code_map() -> dict[str, str]:
 
 
 def load_last_adj_snapshot() -> pd.DataFrame | None:
-    """读取当前复权因子快照（ts_code, last_adj, ref_date）。"""
-    if not LAST_ADJ_FILE.exists():
+    """从 CNE 年度档案计算当前复权因子锚点。"""
+    if not list(QUANT_DATASET_DIR.glob("*/**/day/stock_daily.parquet")):
         return None
-    df = pd.read_parquet(LAST_ADJ_FILE)
-    if "last_adj" not in df.columns:
-        df = df.rename(columns={"adj_factor": "last_adj"})
-    return df[["ts_code", "last_adj", "ref_date"]]
+    rows = duckdb.query(
+        "SELECT ts_code, max(trade_date) AS ref_date, arg_max(adj_factor, trade_date) AS last_adj "
+        "FROM read_parquet(?) GROUP BY ts_code",
+        [STOCK_GLOB],
+    ).fetchdf()
+    return rows[["ts_code", "last_adj", "ref_date"]]
 
 
 def write_panel_parquet(df: pd.DataFrame, path: Path) -> None:
@@ -304,20 +306,19 @@ def main() -> None:
     ts_codes = sorted(t for t in ts_by_code.values() if t)
     if not ts_codes:
         raise SystemExit("股票池无可匹配 ts_code，中止")
-    stock_path = ROOT / "data" / "pg_parquet" / "stock_daily.parquet"
-    if not stock_path.exists():
-        raise SystemExit(f"行情快照不存在: {stock_path}（先跑 sync_tushare_to_parquet.py --daily-since）")
+    stock_path = STOCK_GLOB
+    if not list(QUANT_DATASET_DIR.glob("*/**/day/stock_daily.parquet")):
+        raise SystemExit(f"CNE 行情档案不存在: {QUANT_DATASET_DIR}")
 
     con = duckdb.connect()
     stock_max = con.execute(
-        "SELECT max(trade_date) FROM read_parquet(?)", [str(stock_path)]
+        "SELECT max(trade_date) FROM read_parquet(?)", [stock_path]
     ).fetchone()[0]
     print(f"股票池 {len(codes)} 只（可匹配 {len(ts_codes)} 只），行情 {start.date()} ~ {stock_max}（起点前移 {BUFFER_DAYS} 天做滚动因子）", flush=True)
 
     last_adj = load_last_adj_snapshot()
-    if last_adj is None:
-        raise SystemExit(
-            f"复权因子快照不存在: {LAST_ADJ_FILE}（先跑 sync_tushare_to_parquet.py --last-adj）")
+    if last_adj is None or last_adj.empty:
+        raise SystemExit(f"CNE 复权因子不存在: {QUANT_DATASET_DIR}")
 
     # panel 已是最新则跳过
     panel_max = None

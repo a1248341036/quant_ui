@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import os
+import json
+import subprocess
+import sys
 import threading
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -11,6 +16,7 @@ import pandas as pd
 from core.data import (data_status, load_etf, load_etf_panel, load_fund,
                        load_fund_nav, load_fund_panel, load_index, load_panel,
                        load_tech, load_universe)
+from core.run_log import finish_run, start_run
 from core.updater import refresh_all
 from core.store import (ETF_FILE, ETF_PANEL_FILE, FUND_FILE, FUND_NAV_FILE,
                         FUND_PANEL_FILE, INDEX_FILE, PANEL_FILE, TECH_FILE,
@@ -20,7 +26,13 @@ from core.store import (ETF_FILE, ETF_PANEL_FILE, FUND_FILE, FUND_NAV_FILE,
 DATA_CACHE: dict[tuple, dict] = {}
 UPDATE_STATE: dict[str, Any] = {"running": False, "progress": 0.0,
                                 "text": "", "result": None, "error": None}
+CONFIG_UPDATE_STATES: dict[str, dict[str, Any]] = {}
 _lock = threading.Lock()
+_config_update_lock = threading.Lock()
+ROOT = Path(__file__).resolve().parents[1]
+DATA_TASK_CATALOG = ROOT / "data_status" / "catalog.json"
+DATA_UPDATE_LOG_DIR = ROOT / "logs" / "data_updates"
+_PARAM_TYPES: dict[str, type] = {"str": str, "int": int, "float": float, "bool": bool}
 
 # 数据集缓存空闲 TTL：30 分钟没人访问就释放整份缓存，
 # 避免“什么都没跑”时仍常驻几百 MB ~ 1G 的全量行情数据。
@@ -232,6 +244,8 @@ def clean_records(records: list[dict]) -> list[dict]:
 
 
 def run_update_background(mode: str, end: str) -> None:
+    run_id = start_run("quant_ui:update", metadata={"mode": mode, "end": end})
+
     def worker():
         try:
             avail = _available_memory_mb()
@@ -242,6 +256,8 @@ def run_update_background(mode: str, end: str) -> None:
                         "result": None,
                         "error": f"可用内存不足（{avail:.0f}MB < {MIN_START_MEMORY_MB}MB），已拒绝启动更新",
                     })
+                finish_run(run_id, status="failed",
+                           error_message=f"insufficient memory: {avail:.0f}MB")
                 return
             with _lock:
                 UPDATE_STATE.update({"running": True, "progress": 0.0, "text": "启动",
@@ -259,8 +275,11 @@ def run_update_background(mode: str, end: str) -> None:
             invalidate_data()
             UPDATE_STATE.update({"running": False, "progress": 1.0,
                                  "result": result, "error": None})
+            finish_run(run_id, status="success",
+                       rows_written=result.get("rows_written", 0) if isinstance(result, dict) else 0)
         except Exception as exc:
             UPDATE_STATE.update({"running": False, "error": str(exc)})
+            finish_run(run_id, status="failed", error_message=str(exc))
 
     threading.Thread(target=worker, daemon=True).start()
 
@@ -270,3 +289,109 @@ def _set_progress(p: float, t: float, label: str) -> None:
         "progress": round(float(p) / max(float(t), 1.0), 4),
         "text": label,
     })
+
+
+def configured_update_tasks() -> list[dict[str, Any]]:
+    """Read the declarative data-update catalog shared with data_status."""
+    data = json.loads(DATA_TASK_CATALOG.read_text(encoding="utf-8"))
+    tasks = data.get("tasks", [])
+    if not isinstance(tasks, list):
+        raise ValueError("data task catalog is invalid")
+    out: list[dict[str, Any]] = []
+    for raw in tasks:
+        if not isinstance(raw, dict) or not all(key in raw for key in ("id", "name", "script")):
+            continue
+        item = {
+            "id": str(raw["id"]),
+            "name": str(raw["name"]),
+            "group": str(raw.get("group", "其他")),
+            "script": str(raw["script"]),
+            "base": list(raw.get("base", [])),
+            "required": list(raw.get("required", [])),
+            "params": dict(raw.get("params", {})),
+        }
+        item["state"] = dict(CONFIG_UPDATE_STATES.get(item["id"], {}))
+        out.append(item)
+    return out
+
+
+def _configured_task_command(task_id: str, supplied: dict[str, Any]) -> list[str]:
+    task = next((item for item in configured_update_tasks() if item["id"] == task_id), None)
+    if task is None:
+        raise ValueError(f"unknown update task: {task_id}")
+    script = ROOT / "scripts" / task["script"]
+    if not script.is_file():
+        raise ValueError(f"configured script does not exist: {task['script']}")
+    argv = [sys.executable, str(script), *task["base"]]
+    for name in task["required"]:
+        if supplied.get(name) in (None, ""):
+            raise ValueError(f"missing required parameter: {name}")
+    for name, type_name in task["params"].items():
+        if name not in supplied or supplied[name] in (None, "", False):
+            continue
+        expected = _PARAM_TYPES.get(str(type_name))
+        if expected is None:
+            raise ValueError(f"unsupported parameter type: {type_name}")
+        value = supplied[name]
+        if expected is bool:
+            if value is True:
+                argv.append("--" + name.replace("_", "-"))
+            continue
+        if expected is int:
+            value = int(value)
+        elif expected is float:
+            value = float(value)
+        elif not isinstance(value, str):
+            raise ValueError(f"parameter {name} must be a string")
+        argv.extend(["--" + name.replace("_", "-"), str(value)])
+    return argv
+
+
+def run_configured_update_background(task_id: str, supplied: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Run one catalog task at a time and retain state for the Vue data page."""
+    supplied = supplied or {}
+    command = _configured_task_command(task_id, supplied)
+    with _config_update_lock:
+        if any(state.get("running") for state in CONFIG_UPDATE_STATES.values()):
+            raise RuntimeError("another configured data update is already running")
+        state = {
+            "running": True,
+            "status": "running",
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "finished_at": None,
+            "error": None,
+            "log": None,
+            "command": command,
+        }
+        CONFIG_UPDATE_STATES[task_id] = state
+
+    run_id = start_run(f"quant_ui:{task_id}", metadata={"task_id": task_id, "supplied": supplied})
+
+    def worker() -> None:
+        DATA_UPDATE_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        log_path = DATA_UPDATE_LOG_DIR / f"{task_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+        try:
+            with log_path.open("w", encoding="utf-8") as log:
+                log.write("$ " + subprocess.list2cmdline(command) + "\n\n")
+                log.flush()
+                completed = subprocess.run(
+                    command, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, check=False,
+                )
+            if completed.returncode != 0:
+                raise RuntimeError(f"exit code {completed.returncode}")
+            invalidate_data()
+            result = {"status": "success", "error": None}
+            finish_run(run_id, status="success")
+        except Exception as exc:  # noqa: BLE001
+            result = {"status": "failed", "error": str(exc)}
+            finish_run(run_id, status="failed", error_message=str(exc))
+        with _config_update_lock:
+            CONFIG_UPDATE_STATES[task_id].update({
+                "running": False,
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+                "log": str(log_path),
+                **result,
+            })
+
+    threading.Thread(target=worker, daemon=True, name=f"data-update-{task_id}").start()
+    return dict(state)

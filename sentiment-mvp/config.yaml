@@ -1,0 +1,79 @@
+# 舆情情绪 MVP 配置
+# 数据目录已统一至 quant_ui/data/sentiment-mvp
+universe:
+  top_n: 1800
+  panel: /home/ubuntu/quant/quant_ui/data/panel.parquet
+  universe_csv: /home/ubuntu/quant/quant_ui/data/universe.csv
+  tech_csv: /home/ubuntu/quant/quant_ui/data/tech.csv
+  output: D:/Quant/quant_ui/data/sentiment-mvp/universe.csv
+
+news:
+  max_pages: 20          # 全量/补历史最多翻页数（接口上限约100页/股）
+  daily_max_pages: 5     # 每日增量翻页数，保持轻量
+  workers: 12            # EM 抓取并发线程数
+  request_delay: 0.05
+  timeout: 15
+
+cls:
+  max_pages: 10          # 财联社电报最多翻页数，每页50条（仅当日窗口）
+  archive_dir: D:/Quant/quant_ui/data/sentiment-mvp/cls  # 每日快照归档目录
+
+sources:
+  em_global:             # 东财全球资讯 7x24（需匹配标的）
+    enabled: true
+    max_items: 100
+  jin10:                 # 金十快讯（需匹配标的）
+    enabled: true
+    max_items: 100
+  guba:                  # 东财股吧热帖（直接按标的抓取）
+    enabled: true
+    posts_per_stock: 3
+    workers: 8
+  cninfo:                # 巨潮公告（直接按标的抓取，较慢，默认关）
+    enabled: false
+    announcements_per_stock: 10
+  irm:                   # 互动易问答（直接按标的抓取，较慢，默认关）
+    enabled: false
+    page_size: 10
+  hot:                   # 同花顺热榜 + 东财人气榜
+    enabled: true
+    top: 30
+
+sentiment:
+  method: lexicon        # lexicon | llm | ml
+  pos_threshold: 0.15
+  llm:
+    base_url: http://127.0.0.1:3000/v1
+    model: deepseek-v4-flash
+    concurrency: 8
+    timeout: 60
+
+event_study:
+  horizons: [1, 2, 3, 5]
+  baseline_lead_days: 10
+  source_weights:          # 来源权重：财联社电报时效性/可信度更高
+    em: 1.0
+    cls: 1.2
+  decay_half_life_hours: 8.0   # 新闻时效半衰期：距事件日 15:00 越久权重越低
+  volume_filter:
+    enabled: true
+    window: 20             # 事件日成交量 vs 过去 N 日中位数
+    min_vol_ratio: 1.0     # 低于该倍数的事件剔除
+  industry_breakdown: true # 事件研究按行业拆分
+  autocorr:
+    enabled: true          # 重叠事件窗口用 Newey-West 修正 t 值
+
+paths:
+  news_raw: D:/Quant/quant_ui/data/sentiment-mvp/news_raw.jsonl
+  news_cls: D:/Quant/quant_ui/data/sentiment-mvp/news_cls.jsonl
+  news_extra: D:/Quant/quant_ui/data/sentiment-mvp/news_extra.jsonl
+  news_sentiment: D:/Quant/quant_ui/data/sentiment-mvp/news_sentiment.csv
+  news_sentiment_llm: D:/Quant/quant_ui/data/sentiment-mvp/news_sentiment_llm.csv
+  news_sentiment_daily: D:/Quant/quant_ui/data/sentiment-mvp/news_sentiment_daily.csv
+  articles_db: D:/Quant/quant_ui/data/sentiment-mvp/articles.db
+  prices_dir: D:/Quant/quant_ui/data/sentiment-mvp/prices
+  index_file: D:/Quant/quant_ui/data/sentiment-mvp/csi300.csv
+  study_csv: outputs/event_study.csv
+  report: outputs/event_study_report.md
+  audit_report: outputs/llm_lexicon_audit.md
+  snapshot: outputs/sentiment_snapshot.md

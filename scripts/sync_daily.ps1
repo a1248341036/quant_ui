@@ -1,4 +1,8 @@
-﻿$ErrorActionPreference = "Stop"
+﻿# [DEPRECATED 2026-08-22] 此脚本已废弃。日更已切换至 CNE 数据湖流水线。
+# 新脚本：scripts/run_cne_daily.ps1（计划任务 QuantUIDataSync 已指向新脚本）
+# 此文件保留仅作参考，不再被任何计划任务或自动化流程调用。
+# ---------------------------------------------------------------------------
+$ErrorActionPreference = "Stop"
 $root = "D:\Quant\quant_ui"
 $log = Join-Path $root "data\sync_run.log"
 $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"

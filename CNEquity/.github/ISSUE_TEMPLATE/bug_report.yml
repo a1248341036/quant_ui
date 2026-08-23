@@ -1,0 +1,37 @@
+name: Bug 报告
+description: 报告数据错误、崩溃或 CLI/API 异常
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。**安全问题**请走
+        [SECURITY.md](https://github.com/rootSunc/cnequity/security/advisories/new)，
+        不要开公开 issue。
+  - type: textarea
+    id: what
+    attributes:
+      label: 发生了什么？
+      description: 期望行为 vs 实际行为。
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤
+      description: 尽量精简的命令/配置（打码本机路径与代理）。
+      placeholder: |
+        cne run daily --group reference --config configs/cnequity.toml
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: 版本 / commit
+      placeholder: "0.3.0 或 git SHA"
+  - type: textarea
+    id: env
+    attributes:
+      label: 环境
+      placeholder: "Python 3.12, macOS / Linux / Windows"

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import time
+from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from backend import services
@@ -14,9 +15,32 @@ router = APIRouter()
 _panel_info_cache: dict = {"ts": 0.0, "value": None}
 
 
+def _with_alphaagent_panel_info(value: dict[str, Any]) -> dict[str, Any]:
+    """Add the separate AlphaAgent panel date without loading its 1B parquet file."""
+    try:
+        import duckdb
+        from pathlib import Path
+
+        path = Path(__file__).resolve().parents[2] / "data" / "alphaagent" / "panel_1d.parquet"
+        if path.exists():
+            con = duckdb.connect()
+            try:
+                row = con.execute("SELECT max(datetime) FROM read_parquet(?)", [str(path)]).fetchone()
+            finally:
+                con.close()
+            value["alphaagent_last_date"] = str(row[0].date()) if row and row[0] else None
+    except Exception:
+        value["alphaagent_last_date"] = None
+    return value
+
+
 class UpdateRequest(BaseModel):
     mode: str = "incremental"
     end: str | None = None
+
+
+class ConfiguredUpdateRequest(BaseModel):
+    params: dict[str, Any] = {}
 
 
 @router.get("/status")
@@ -26,18 +50,17 @@ def status():
 
 @router.get("/panel-info")
 def panel_info():
-    """面板统计走 pg_parquet/DuckDB 轻量聚合，不加载整张面板。"""
+    """面板统计走 CNE 年度日线/DuckDB 轻量聚合，不加载整张面板。"""
     now = time.time()
     if now - _panel_info_cache["ts"] < 300 and _panel_info_cache["value"] is not None:
         return _panel_info_cache["value"]
     try:
-        from core.data import PG_PARQUET_DIR
+        from core.data import _cne_daily_years
         from core.db import query as duck_query
-        stock_path = PG_PARQUET_DIR / "stock_daily.parquet"
-        if stock_path.exists():
+        if _cne_daily_years():
             df = duck_query(
                 "SELECT (SELECT count(*) FROM stock_daily) AS n_rows, "
-                "(SELECT count(*) FROM stock_basic) AS n_codes, "
+                "(SELECT count(DISTINCT ts_code) FROM stock_daily) AS n_codes, "
                 "(SELECT min(trade_date) FROM stock_daily) AS first_date, "
                 "(SELECT max(trade_date) FROM stock_daily) AS last_date ",
                 [],
@@ -48,6 +71,7 @@ def panel_info():
                 "first_date": str(df["first_date"]),
                 "last_date": str(df["last_date"]),
             }
+            value = _with_alphaagent_panel_info(value)
             _panel_info_cache.update({"ts": now, "value": value})
             return value
     except Exception:
@@ -69,6 +93,7 @@ def panel_info():
                 "first_date": str(df["first_date"]),
                 "last_date": str(df["last_date"]),
             }
+            value = _with_alphaagent_panel_info(value)
             _panel_info_cache.update({"ts": now, "value": value})
             return value
     except Exception:
@@ -85,9 +110,10 @@ def panel_info():
             "first_date": str(cols["date"].min().date()),
             "last_date": str(cols["date"].max().date()),
         }
+        value = _with_alphaagent_panel_info(value)
         _panel_info_cache.update({"ts": now, "value": value})
         return value
-    return {"n_rows": 0, "n_codes": 0, "first_date": None, "last_date": None}
+    return _with_alphaagent_panel_info({"n_rows": 0, "n_codes": 0, "first_date": None, "last_date": None})
 
 
 @router.post("/update")
@@ -101,6 +127,19 @@ def update(req: UpdateRequest):
 @router.get("/update/status")
 def update_status():
     return services.UPDATE_STATE
+
+
+@router.get("/update-configs")
+def update_configs() -> dict[str, Any]:
+    return {"items": services.configured_update_tasks()}
+
+
+@router.post("/update-configs/{task_id}")
+def run_update_config(task_id: str, req: ConfiguredUpdateRequest) -> dict[str, Any]:
+    try:
+        return services.run_configured_update_background(task_id, req.params)
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/indices")

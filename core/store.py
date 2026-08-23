@@ -15,9 +15,9 @@ DATA_DIR = Path(os.getenv("QUANT_UI_DATA_DIR", str(PROJECT_ROOT / "data"))).expa
 LEGACY_DATA_DIR = Path(
     os.getenv("QUANT_UI_LEGACY_DATA_DIR", str(PROJECT_ROOT.parent.parent / "quant_data"))
 ).expanduser()
-# 舆情独立仓库（sentiment-mvp）
+# 舆情数据目录（sentiment-mvp/data 统一放置在 quant_ui/data 下）
 SENTIMENT_DIR = Path(
-    os.getenv("QUANT_UI_SENTIMENT_DIR", str(PROJECT_ROOT.parent / "sentiment-mvp"))
+    os.getenv("QUANT_UI_SENTIMENT_DIR", str(DATA_DIR / "sentiment-mvp"))
 ).expanduser()
 # QQ 机器人凭据/推送脚本所在目录（默认 ~/qqbot，与 .env.example 文档一致）
 QQBOT_DIR = Path(
@@ -25,19 +25,27 @@ QQBOT_DIR = Path(
 ).expanduser()
 # 每日导出的 PG 快照（refresh_data.py --sync-pg 生成）
 PG_PARQUET_DIR = DATA_DIR / "pg_parquet"
+# CNEquity 管理的原始数据（日频按年分目录）
+QUANT_DATASET_DIR = DATA_DIR / "quant_dataset"
 
-PANEL_FILE = DATA_DIR / "panel.parquet"
-UNIVERSE_FILE = DATA_DIR / "universe.csv"
-TECH_FILE = DATA_DIR / "tech.csv"
-INDEX_FILE = DATA_DIR / "index.csv"
-META_FILE = DATA_DIR / "meta.json"
-ETF_FILE = DATA_DIR / "etf.csv"
-ETF_PANEL_FILE = DATA_DIR / "etf_panel.parquet"
-FUND_FILE = DATA_DIR / "fund.csv"
-FUND_FEE_FILE = DATA_DIR / "fund_fee.csv"
-FUND_NAV_FILE = DATA_DIR / "fund_nav.parquet"
-FUND_PANEL_FILE = DATA_DIR / "fund_panel.parquet"
-PRED_FILE = DATA_DIR / "pred_demo.parquet"  # qweave 研究层输出的 ML 预测分数（date/code/score）
+# ── 子目录划分（stock/etf/fund/db/logs）
+STOCK_DIR = DATA_DIR / "stock"
+ETF_DIR = DATA_DIR / "etf"
+FUND_DIR = DATA_DIR / "fund"
+DB_DIR = DATA_DIR / "db"
+
+PANEL_FILE = STOCK_DIR / "panel.parquet"
+UNIVERSE_FILE = STOCK_DIR / "universe.csv"
+TECH_FILE = STOCK_DIR / "tech.csv"
+INDEX_FILE = STOCK_DIR / "index.csv"
+META_FILE = STOCK_DIR / "meta.json"
+ETF_FILE = ETF_DIR / "etf.csv"
+ETF_PANEL_FILE = ETF_DIR / "etf_panel.parquet"
+FUND_FILE = FUND_DIR / "fund.csv"
+FUND_FEE_FILE = FUND_DIR / "fund_fee.csv"
+FUND_NAV_FILE = FUND_DIR / "fund_nav.parquet"
+FUND_PANEL_FILE = FUND_DIR / "fund_panel.parquet"
+PRED_FILE = STOCK_DIR / "pred_demo.parquet"  # qweave 研究层输出的 ML 预测分数（date/code/score）
 
 
 TECH_UNIVERSE = "科技TMT"
@@ -58,6 +66,10 @@ def normalize_universe(name: str) -> str:
 
 def ensure_dir() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+    STOCK_DIR.mkdir(parents=True, exist_ok=True)
+    ETF_DIR.mkdir(parents=True, exist_ok=True)
+    FUND_DIR.mkdir(parents=True, exist_ok=True)
+    DB_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _atomic_write_text(target: Path, text: str) -> None:

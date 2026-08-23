@@ -1,0 +1,9 @@
+# C++ extension build artifacts
+*.so
+*.pyd
+build/
+dist/
+*.egg-info/
+MANIFEST
+__pycache__/
+*.py[cod]

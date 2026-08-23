@@ -1,0 +1,3160 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="本地量化回测工作台：策略对比、因子回测、信号查看、账户记账">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%234f8cff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 17l5-6 4 4 7-9'/%3E%3Cpath d='M14 6h6v6'/%3E%3C/svg%3E">
+  <title>量化回测工作台</title>
+  <script src="/vendor/vue.global.prod.js"></script>
+  <script src="/vendor/echarts.min.js"></script>
+  <style>
+    :root {
+      --bg: #0a0f1c;
+      --bg-soft: #0d1424;
+      --card: #111a2e;
+      --card-2: #16233d;
+      --line: #1f2c45;
+      --line-strong: #2b3d61;
+      --text: #e6ecf7;
+      --muted: #8494b5;
+      --faint: #5d6c8c;
+      --accent: #4f8cff;
+      --accent-strong: #6aa5ff;
+      --red: #ff5d4d;
+      --green: #2bb98a;
+      --warn: #e6b450;
+      --radius: 14px;
+      --shadow: 0 1px 0 rgb(255 255 255 / .03) inset, 0 14px 36px rgb(2 6 14 / .45);
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Courier New", monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html { color-scheme: dark; }
+    body {
+      background:
+        radial-gradient(1100px 480px at 88% -8%, rgb(79 140 255 / .09), transparent 60%),
+        radial-gradient(900px 420px at -8% 0%, rgb(43 185 138 / .05), transparent 55%),
+        var(--bg);
+      color: var(--text);
+      font-family: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      font-size: 14px;
+      line-height: 1.55;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+    }
+    ::selection { background: rgb(79 140 255 / .3); }
+    .topbar {
+      position: sticky; top: 0; z-index: 50;
+      background: rgb(10 15 28 / .86);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      border-bottom: 1px solid var(--line);
+    }
+    header { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 12px 20px 8px; }
+    .brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+    .brand-mark {
+      display: grid; place-items: center;
+      width: 30px; height: 30px; flex: none;
+      border-radius: 9px;
+      background: linear-gradient(145deg, rgb(79 140 255 / .28), rgb(79 140 255 / .06));
+      border: 1px solid rgb(79 140 255 / .35);
+      color: var(--accent-strong);
+      box-shadow: 0 6px 18px rgb(79 140 255 / .18);
+    }
+    .brand-mark svg { width: 17px; height: 17px; }
+    header h1 { font-size: 16px; font-weight: 700; letter-spacing: .01em; white-space: nowrap; }
+    header .sub { color: var(--muted); font-size: 12px; }
+    .header-right { margin-left: auto; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .status-chip {
+      display: inline-flex; align-items: center; gap: 7px;
+      font-size: 12px; color: var(--muted);
+      background: var(--card); border: 1px solid var(--line);
+      border-radius: 999px; padding: 5px 12px;
+      font-variant-numeric: tabular-nums;
+    }
+    .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 3px rgb(43 185 138 / .18); }
+    nav {
+      display: flex; gap: 2px; padding: 6px 20px 10px;
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+    nav::-webkit-scrollbar { display: none; }
+    nav button {
+      display: inline-flex; align-items: center; gap: 7px;
+      background: none; border: none; color: var(--muted);
+      padding: 8px 14px; border-radius: 9px; cursor: pointer;
+      font-size: 13.5px; font-weight: 500; white-space: nowrap;
+      transition: color .15s, background-color .15s;
+    }
+    nav button:hover { color: var(--text); background: rgb(255 255 255 / .04); }
+    nav button.active {
+      color: #fff;
+      background: linear-gradient(145deg, rgb(79 140 255 / .32), rgb(79 140 255 / .14));
+      box-shadow: 0 0 0 1px rgb(79 140 255 / .28) inset;
+    }
+    nav button .nav-icon { width: 15px; height: 15px; flex: none; opacity: .85; }
+    main { padding: 18px 20px 48px; max-width: 1400px; margin: 0 auto; }
+    .card {
+      background: linear-gradient(180deg, rgb(255 255 255 / .018), transparent 90px), var(--card);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 16px 18px;
+      margin-bottom: 14px;
+      box-shadow: var(--shadow);
+    }
+    .card h3 { font-size: 14px; font-weight: 600; letter-spacing: .005em; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+    .card h3::before { content: ""; width: 3px; height: 14px; border-radius: 2px; background: linear-gradient(180deg, var(--accent), transparent); }
+    .grid { display: grid; gap: 14px; }
+    .grid .card { margin-bottom: 0; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+    .metric {
+      background: linear-gradient(180deg, rgb(255 255 255 / .02), transparent), var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px; padding: 13px 14px;
+      position: relative; overflow: hidden;
+    }
+    .metric::after { content: ""; position: absolute; inset: 0 0 auto; height: 1px; background: linear-gradient(90deg, transparent, rgb(255 255 255 / .08), transparent); }
+    .metric .label { color: var(--muted); font-size: 12px; }
+    .metric .value { font-size: 21px; font-weight: 650; margin-top: 5px; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+    .metric .value.muted { color: var(--muted); font-size: 16px; font-weight: 600; }
+    .pos { color: var(--red); } .neg { color: var(--green); }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+    label { font-size: 13px; color: var(--muted); display: flex; flex-direction: column; gap: 4px; }
+    input, select, textarea, button { font-family: inherit; }
+    input, select, button {
+      background: var(--bg-soft);
+      color: var(--text);
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      padding: 8px 10px;
+      font-size: 14px;
+      transition: border-color .15s, box-shadow .15s, background-color .15s;
+    }
+    input:focus, select:focus, button:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgb(79 140 255 / .18); }
+    input[type="checkbox"], input[type="radio"] { width: 15px; height: 15px; accent-color: var(--accent); padding: 0; }
+    button { cursor: pointer; }
+    button:hover:not(:disabled) { border-color: var(--line-strong); }
+    button:disabled { opacity: .55; cursor: not-allowed; }
+    button.primary, .btn-primary {
+      background: linear-gradient(145deg, var(--accent), #3b6fe0);
+      border: none; color: #fff; font-weight: 600;
+      box-shadow: 0 6px 18px rgb(79 140 255 / .28);
+      display: inline-flex; align-items: center; gap: 7px; justify-content: center;
+      min-height: 38px; padding: 8px 16px;
+    }
+    button.primary:hover:not(:disabled), .btn-primary:hover:not(:disabled) { filter: brightness(1.08); box-shadow: 0 8px 24px rgb(79 140 255 / .38); }
+    button.primary:active, .btn-primary:active { transform: translateY(1px); }
+    button.ghost, .btn-ghost { background: transparent; color: var(--muted); }
+    button.ghost:hover:not(:disabled), .btn-ghost:hover:not(:disabled) { color: var(--text); background: rgb(255 255 255 / .04); border-color: var(--line-strong); }
+    .spinner {
+      display: inline-block; width: 13px; height: 13px; flex: none;
+      border: 2px solid rgb(255 255 255 / .35); border-top-color: #fff;
+      border-radius: 50%; animation: spin .8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+    th, td { padding: 9px 10px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
+    th { color: var(--muted); font-weight: 550; font-size: 12px; letter-spacing: .02em; }
+    th:first-child, td:first-child { text-align: left; }
+    th.sortable { cursor: pointer; user-select: none; transition: color .15s; }
+    th.sortable:hover { color: var(--accent-strong); }
+    th.sortable .sort-arrow { margin-left: 4px; color: var(--accent); font-weight: 700; }
+    tr.clickable-row { cursor: pointer; }
+    tr.clickable-row:hover { background: rgb(79 140 255 / .06); }
+    tbody tr:hover { background: rgb(255 255 255 / .025); }
+    tbody tr:last-child td { border-bottom: none; }
+    .chart { width: 100%; height: 340px; }
+    .chart.heatmap { height: 360px; }
+    .chart.small { height: 220px; }
+    .muted { color: var(--muted); font-size: 12px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; word-break: break-all; }
+    .empty {
+      padding: 26px 16px; text-align: center; color: var(--faint);
+      font-size: 13px; border: 1px dashed var(--line); border-radius: 12px;
+      background: rgb(255 255 255 / .012);
+    }
+    .modal { position: fixed; inset: 0; z-index: 200; background: rgb(0 0 0 / .6); display: flex; align-items: center; justify-content: center; padding: 24px; }
+    .modal-box { width: min(1200px, 96vw); max-height: 92vh; background: var(--bg); border: 1px solid var(--line-strong); border-radius: 14px; padding: 14px; box-shadow: 0 20px 60px rgb(0 0 0 / .5); display: flex; flex-direction: column; gap: 10px; }
+    .row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .news-list { display: flex; flex-direction: column; gap: 8px; max-height: 460px; overflow-y: auto; }
+    .news-item { display: block; padding: 9px 11px; border: 1px solid var(--line); border-radius: 10px; background: rgb(255 255 255 / .015); text-decoration: none; }
+    .news-item:hover { border-color: var(--line-strong); background: rgb(255 255 255 / .04); }
+    .news-title { color: var(--text); font-size: 13px; line-height: 1.45; }
+    .news-meta { color: var(--muted); font-size: 11px; margin-top: 3px; }
+    .chip { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+    .chip-long { color: var(--red); background: rgb(255 80 80 / .12); }
+    .chip-short { color: var(--green); background: rgb(0 200 130 / .12); }
+    .tpl-info { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: rgb(255 255 255 / .02); }
+    .tpl-info-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13px; }
+    .tpl-note { margin-top: 10px; padding: 8px 12px; font-size: 12px; line-height: 1.6; color: var(--muted); border: 1px dashed var(--line); border-left: 3px solid var(--accent); border-radius: 8px; background: rgb(79 140 255 / .05); }
+    .tpl-note code { color: var(--text); background: var(--bg-soft); padding: 1px 5px; border-radius: 4px; font-size: 11px; }
+    .helpers { margin-top: 12px; border: 1px solid var(--line); border-radius: 10px; background: rgb(255 255 255 / .015); }
+    .helpers summary { cursor: pointer; padding: 10px 12px; font-size: 13px; color: var(--text); user-select: none; list-style: none; }
+    .helpers summary::before { content: "▸"; margin-right: 8px; color: var(--accent); transition: transform .15s; }
+    .helpers[open] summary::before { transform: rotate(90deg); }
+    .helpers-body { padding: 4px 14px 14px; font-size: 13px; line-height: 1.7; color: var(--text); border-top: 1px dashed var(--line); }
+    .helpers-body h1 { font-size: 16px; margin: 14px 0 8px; color: #fff; }
+    .helpers-body h2 { font-size: 14px; margin: 14px 0 6px; color: var(--accent-strong); }
+    .helpers-body h3 { font-size: 13px; margin: 12px 0 5px; color: var(--text); }
+    .helpers-body p, .helpers-body li { color: var(--text); }
+    .helpers-body ul { padding-left: 18px; margin: 6px 0; }
+    .helpers-body code { background: var(--bg-soft); color: var(--text); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+    .helpers-body pre { background: var(--bg-soft); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; overflow-x: auto; margin: 8px 0; }
+    .helpers-body pre code { background: none; padding: 0; font-size: 12px; }
+    .helpers-body table { font-size: 12px; }
+    .helpers-body table th, .helpers-body table td { white-space: normal; padding: 7px 9px; }
+    .progress { background: var(--bg-soft); border: 1px solid var(--line); border-radius: 999px; height: 8px; overflow: hidden; margin-top: 10px; }
+    .progress .bar { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-strong)); border-radius: inherit; transition: width .3s; }
+    .warn { color: var(--warn); font-size: 13px; }
+    .ok { color: var(--green); font-size: 13px; }
+    .err { color: var(--red); font-size: 13px; }
+    .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px 14px; align-items: end; }
+    .form-grid .wide { grid-column: span 2; }
+    .form-section { margin-bottom: 14px; }
+    .form-section-title {
+      display: flex; align-items: center; gap: 8px;
+      font-size: 12px; font-weight: 600; color: var(--muted);
+      letter-spacing: .04em; margin-bottom: 10px;
+    }
+    .form-section-title::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+    .field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+    .field > span, .field-label { font-size: 12px; color: var(--muted); }
+    .field-check {
+      display: inline-flex; flex-direction: row; align-items: center; gap: 7px;
+      font-size: 13px; color: var(--text); min-height: 38px; padding-top: 18px; white-space: nowrap;
+    }
+    .form-check-row { display: flex; flex-wrap: wrap; gap: 4px 22px; align-items: center; }
+    .form-check-row .field-check { margin: 0; }
+    .form-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+    .form-actions .left { margin-right: auto; }
+    .picker { position: relative; display: inline-block; width: 100%; min-width: 0; max-width: 100%; }
+    .picker-trigger {
+      background: var(--bg-soft); color: var(--text); border: 1px solid var(--line);
+      border-radius: 9px; padding: 8px 10px; font-size: 14px;
+      display: flex; align-items: center; gap: 8px; cursor: pointer; justify-content: space-between;
+      min-height: 38px; transition: border-color .15s, box-shadow .15s;
+    }
+    .picker-trigger:hover { border-color: var(--line-strong); }
+    .picker-trigger:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px rgb(79 140 255 / .18); }
+    .picker-summary { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .picker-selected-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+    .mini-chip {
+      background: rgb(79 140 255 / .16); border: 1px solid rgb(79 140 255 / .28);
+      border-radius: 6px; padding: 1px 6px; font-size: 12px; color: var(--accent-strong); cursor: pointer;
+    }
+    .mini-chip:hover { background: rgb(79 140 255 / .26); }
+    .picker-arrow { color: var(--muted); }
+    .picker-dropdown {
+      position: absolute; top: calc(100% + 6px); left: 0; z-index: 60;
+      width: min(440px, calc(100vw - 40px));
+      background: var(--card-2); border: 1px solid var(--line-strong); border-radius: 12px;
+      box-shadow: 0 18px 48px rgb(2 6 14 / .6); padding: 8px;
+    }
+    .picker-search { width: 100%; margin-bottom: 8px; }
+    .picker-actions { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+    .picker-action { font-size: 12px; padding: 4px 8px; background: var(--bg-soft); color: var(--muted); border: 1px solid var(--line); border-radius: 6px; cursor: pointer; }
+    .picker-action:hover { color: var(--text); border-color: var(--line-strong); }
+    .picker-count { color: var(--muted); font-size: 12px; margin-left: auto; }
+    .picker-over { padding: 0 4px 8px; }
+    .picker-list { max-height: 300px; overflow-y: auto; }
+    .picker-group { font-size: 11px; color: var(--faint); padding: 6px 4px 2px; }
+    .picker-group-row { display: flex; align-items: center; justify-content: space-between; padding: 6px 4px 2px; }
+    .picker-group-toggle { font-size: 11px; padding: 2px 6px; background: var(--bg-soft); color: var(--muted); border: 1px solid var(--line); border-radius: 6px; cursor: pointer; }
+    .picker-group-toggle:hover { color: var(--text); }
+    .picker-item { display: flex; align-items: center; gap: 8px; padding: 7px 6px; border-radius: 8px; cursor: pointer; font-size: 13px; }
+    .picker-item:hover { background: rgb(255 255 255 / .04); }
+    .picker-item.selected { color: #fff; background: rgb(79 140 255 / .16); box-shadow: 0 0 0 1px rgb(79 140 255 / .25) inset; }
+    .picker-check { color: var(--accent); width: 14px; }
+    .picker-name { font-weight: 600; white-space: nowrap; }
+    .picker-desc { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .picker-empty { color: var(--muted); font-size: 13px; padding: 10px; text-align: center; }
+    .hold-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+    .hold-tabs button { font-size: 12px; padding: 6px 10px; background: var(--bg-soft); color: var(--muted); border: 1px solid var(--line); border-radius: 8px; cursor: pointer; }
+    .hold-tabs button.active { background: rgb(79 140 255 / .16); color: #fff; border-color: rgb(79 140 255 / .4); }
+    .editor {
+      display: flex; border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
+      background: #0a101f;
+      font-family: var(--font-mono); font-size: 13px; line-height: 1.6;
+    }
+    .editor:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px rgb(79 140 255 / .12); }
+    .editor .gutter {
+      flex: none; width: 46px; padding: 10px 8px 10px 12px; text-align: right;
+      color: #44547a; background: #0d1526; border-right: 1px solid var(--line);
+      user-select: none; overflow: hidden; white-space: pre;
+    }
+    .editor textarea {
+      flex: 1; background: transparent; color: #cfe0f5; border: none; outline: none;
+      resize: vertical; padding: 10px 12px; min-height: 340px;
+      font: inherit; tab-size: 4; white-space: pre; overflow: auto;
+    }
+    .code-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .skip-link { position: absolute; left: -9999px; top: 8px; z-index: 100; background: var(--card-2); color: var(--text); padding: 8px 14px; border-radius: 8px; }
+    .skip-link:focus { left: 8px; }
+    .stock-search { position: relative; max-width: 560px; }
+    .stock-search .field { margin: 0; }
+    .stock-drop {
+      position: absolute; top: calc(100% + 6px); left: 0; right: 0; z-index: 120;
+      background: var(--card-2); border: 1px solid var(--line-strong); border-radius: 12px;
+      box-shadow: 0 18px 48px rgb(2 6 14 / .6); padding: 6px; max-height: 320px; overflow-y: auto;
+    }
+    .stock-drop-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 10px; border-radius: 8px; cursor: pointer; font-size: 13px;
+    }
+    .stock-drop-item:hover { background: rgb(255 255 255 / .04); }
+    .stock-drop-item .code { font-family: var(--font-mono); color: var(--accent); font-weight: 600; }
+    .stock-drop-item .name { font-weight: 600; }
+    .stock-drop-item .ind { margin-left: auto; color: var(--muted); font-size: 12px; }
+    .stock-empty { color: var(--muted); font-size: 13px; padding: 10px; text-align: center; }
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #22304c; border-radius: 999px; border: 2px solid var(--bg); }
+    ::-webkit-scrollbar-thumb:hover { background: #2e4062; }
+    @media (max-width: 900px) {
+      header { padding: 10px 14px 6px; }
+      nav { padding: 4px 10px 8px; }
+      nav button { padding: 7px 10px; font-size: 13px; }
+      main { padding: 12px 10px 40px; }
+      .form-grid { grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
+      .form-grid .wide { grid-column: span 1; }
+      .grid { grid-template-columns: 1fr !important; }
+      .header-right { margin-left: 0; width: 100%; }
+    }
+  </style>
+</head>
+<body>
+<div id="app">
+  <a class="skip-link" href="#main">跳到主内容</a>
+  <div class="topbar">
+    <header>
+      <div class="brand">
+        <span class="brand-mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l5-6 4 4 7-9"/><path d="M14 6h6v6"/></svg></span>
+        <h1>量化回测工作台</h1>
+      </div>
+      <div class="header-right">
+        <span class="status-chip"><span class="status-dot"></span>数据至 {{panelInfo.last_date || '—'}} · {{panelInfo.n_codes || 0}} 只</span>
+      </div>
+    </header>
+
+    <nav aria-label="主导航">
+      <button :class="{active: tab==='dashboard'}" @click="switchTab('dashboard')">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>看板
+      </button>
+      <button :class="{active: tab==='pool'}" @click="switchTab('pool')">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h10"/><circle cx="18" cy="18" r="2.5"/></svg>策略池
+      </button>
+      <button :class="{active: tab==='stock'}" @click="switchTab('stock')">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="m7 15 3-4 3 2 5-7"/></svg>个股
+      </button>
+      <button :class="{active: tab==='backtest'}" @click="switchTab('backtest')">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19 9 13l4 4 7-9"/><path d="M15 5h5v5"/></svg>回测
+      </button>
+      <button :class="{active: tab==='composite'}" @click="switchTab('composite')">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 3 7v10l9 5 9-5V7z"/><path d="M12 22V12"/><path d="M3 7l9 5 9-5"/></svg>组合
+      </button>
+      <button :class="{active: tab==='code'}" @click="switchTab('code')">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m8 7-5 5 5 5"/><path d="m16 7 5 5-5 5"/></svg>代码
+      </button>
+      <button :class="{active: tab==='paper'}" @click="switchTab('paper')">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M8 9h8M8 13h5"/></svg>模拟盘
+      </button>
+      <button :class="{active: tab==='history'}" @click="switchTab('history')">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>历史
+      </button>
+      <button :class="{active: tab==='signals'}" @click="switchTab('signals')">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.5"/></svg>信号
+      </button>
+      <button :class="{active: tab==='account'}" @click="switchTab('account')">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="14" rx="2"/><path d="M16 12h5v3h-5a2 2 0 0 1 0-4z"/></svg>账户
+      </button>
+      <button :class="{active: tab==='data'}" @click="switchTab('data')">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg>数据
+      <button :class="{active: tab==='sentiment'}" @click="switchTab('sentiment')">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-8 8H4l2-3a8 8 0 1 1 15-5z"/></svg>舆情
+      </button>
+    </nav>
+  </div>
+
+  <main id="main">
+    <!-- 策略池 -->
+    <section v-if="tab==='pool'">
+      <div class="row" style="align-items:center; justify-content:space-between; margin-bottom:4px">
+        <h3>策略池</h3>
+        <span class="muted">全量池 = 代码注册策略 + 回测归档策略；配置池统一管理所有页面（回测 / 模拟盘 / 信号 / 对比 / 参数稳健性）的策略下拉</span>
+      </div>
+      <div class="grid" style="grid-template-columns:1.55fr 1fr">
+        <div class="card">
+          <h3>配置池 <span class="muted">（{{pool.pooled.length}}）</span></h3>
+          <div v-if="!pool.pooled.length" class="empty">配置池为空，从下方全量池选择策略加入。</div>
+          <div v-else>
+            <div class="table-wrap">
+              <table>
+                <tr><th>策略</th><th>分组</th><th>因子</th><th>来源</th><th>回测</th><th>夏普</th><th>总收益</th><th>年化</th><th>最大回撤</th></tr>
+                <tr v-for="s in pool.pooled" :key="s.name">
+                  <td>{{s.name}}</td><td>{{s.group}}</td><td>{{s.factor}}</td><td>{{s.source}}</td>
+                  <td>{{s.n_runs || 0}}</td><td>{{fmt(s.sharpe,2)}}</td><td>{{pct(s.total_return)}}</td><td>{{pct(s.annual)}}</td><td>{{pct(s.mdd)}}</td>
+                </tr>
+              </table>
+            </div>
+            <div class="row" style="gap:8px; margin-top:10px">
+              <select v-model="pool.rmSel" class="pool-rm-sel" multiple style="min-width:240px; height:auto">
+                <option v-for="s in pool.pooled" :value="s.name">{{s.name}}</option>
+              </select>
+              <button class="ghost" @click="removePool" :disabled="!pool.rmSel.length">移除所选（仅页面配置移除，全量池保留）</button>
+            </div>
+            <p class="muted" style="margin-top:6px">移除后，回测 / 模拟盘 / 信号等页面的策略下拉同步消失；策略仍在下方全量池，可随时重新加入。</p>
+          </div>
+        </div>
+        <div class="card">
+          <h3>回收站 <span class="muted">（{{pool.trash.length}}）</span></h3>
+          <div v-if="!pool.trash.length" class="empty">回收站为空（从全量池删除的策略在这里，彻底删除才真正移除）</div>
+          <div v-else>
+            <div class="table-wrap">
+              <table>
+                <tr><th>策略</th><th>来源</th><th>操作</th></tr>
+                <tr v-for="s in pool.trash" :key="s.name">
+                  <td>{{s.name}}</td><td>{{s.source}}</td>
+                  <td style="white-space:nowrap">
+                    <button class="ghost sm" @click="restorePool(s.name)">恢复</button>
+                    <button class="danger sm" @click="purgePool(s.name)">彻底删除</button>
+                  </td>
+                </tr>
+              </table>
+            </div>
+            <button class="danger" style="margin-top:10px" @click="emptyTrashPool">清空回收站</button>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>全量池 <span class="muted">（{{pool.full.length}}）</span></h3>
+        <div class="row" style="gap:8px; margin-bottom:8px">
+          <input v-model="pool.q" placeholder="搜索策略名称 / 说明…" style="flex:1">
+          <select v-model="pool.grp" style="width:180px">
+            <option>全部</option>
+            <option v-for="g in poolGroups" :value="g">{{g}}</option>
+          </select>
+        </div>
+        <div class="table-wrap" style="max-height:420px; overflow:auto">
+          <table>
+            <tr><th>策略</th><th>分组</th><th>因子</th><th>来源</th><th>股票池</th><th>回测</th><th>夏普</th><th>总收益</th><th>年化</th><th>最大回撤</th><th>说明</th></tr>
+            <tr v-for="s in fullFiltered()" :key="s.name">
+              <td>{{s.name}} <span v-if="pooledNames.includes(s.name)" class="chip">已配置</span></td>
+              <td>{{s.group}}</td><td>{{s.factor}}</td><td>{{s.source}}</td>
+              <td>{{s.universe || '-'}}</td><td>{{s.n_runs || 0}}</td>
+              <td>{{fmt(s.sharpe,2)}}</td><td>{{pct(s.total_return)}}</td><td>{{pct(s.annual)}}</td><td>{{pct(s.mdd)}}</td>
+              <td class="muted">{{s.desc || ''}}</td>
+            </tr>
+          </table>
+        </div>
+        <div class="row" style="gap:8px; margin-top:10px">
+          <select v-model="pool.addSel" class="pool-add-sel" multiple style="min-width:280px; height:auto">
+            <option v-for="s in fullUnpooled" :value="s.name">{{s.name}}</option>
+          </select>
+          <button class="primary" @click="addPool" :disabled="!pool.addSel.length">加入配置池</button>
+          <span class="muted">加入后，回测 / 模拟盘 / 信号 / 对比 / 参数稳健性的策略下拉同步生效</span>
+        </div>
+        <div class="row" style="gap:8px; margin-top:10px">
+          <select v-model="pool.delSel" class="pool-del-sel" multiple style="min-width:280px; height:auto">
+            <option v-for="s in fullFiltered()" :value="s.name">{{s.name}}</option>
+          </select>
+          <button class="danger" @click="deleteFromFull" :disabled="!pool.delSel.length">删除进回收站</button>
+          <span class="muted">全量池删除会同时从配置池移除；回收站可恢复</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- 看板 -->
+    <section v-if="tab==='dashboard'">
+      <div class="cards">
+        <div class="metric"><div class="label">账户总资产</div><div class="value" :class="{muted: accEmpty}">{{accEmpty ? '未开户' : fmt(accSummary?.latest_equity)}}</div></div>
+        <div class="metric"><div class="label">现金</div><div class="value" :class="{muted: accEmpty}">{{accEmpty ? '未开户' : fmt(accSummary?.cash)}}</div></div>
+        <div class="metric"><div class="label">持仓市值</div><div class="value" :class="{muted: accEmpty}">{{accEmpty ? '未开户' : fmt(accSummary?.market_value)}}</div></div>
+        <div class="metric"><div class="label">累计盈亏</div><div class="value" :class="accEmpty ? 'muted' : sign(accSummary?.pnl)">{{accEmpty ? '未开户' : fmt(accSummary?.pnl)}}</div></div>
+        <div class="metric"><div class="label">累计收益率</div><div class="value" :class="accEmpty ? 'muted' : sign(accSummary?.pnl_pct)">{{accEmpty ? '未开户' : pct(accSummary?.pnl_pct)}}</div></div>
+      </div>
+      <div class="card"><h3>资金曲线（真实账户）</h3><div id="dashEquity" class="chart"></div></div>
+      <div class="card" v-if="accEmpty"><p class="muted">还没有记账数据，去「账户」页录一笔入金和交易后这里会显示真实资金曲线。下方默认展示多策略模拟对比。</p></div>
+
+      <div class="card">
+        <h3>策略对比（模拟）</h3>
+        <div class="form-section">
+          <div class="form-section-title">参数</div>
+          <div class="form-grid">
+            <label class="field"><span>股票池</span><select v-model="cmp.universe"><option>科技TMT</option><option>沪深300+中证500+中证1000</option><option>ETF</option><option>场外基金</option></select></label>
+            <label class="field wide"><span>策略（可多选）</span><strategy-select v-model="cmp.strategies" :strategies="strategies" multiple :max="6" placeholder="点选策略"></strategy-select></label>
+            <label class="field"><span>TopN</span><select v-model.number="cmp.top_n"><option v-for="n in [3,5,8,10]" :value="n">{{n}}</option></select></label>
+            <label class="field"><span>初始资金</span><input type="number" v-model.number="cmp.capital" step="1000"></label>
+            <label class="field"><span>回看起点</span><input type="date" v-model="cmp.start_date" min="2020-01-01" :max="cmp.end_date || panelInfo.last_date || ''"></label>
+            <label class="field"><span>回看终点</span><input type="date" v-model="cmp.end_date" min="2020-01-01" :max="today() || ''"></label>
+            <label class="field"><span>基准</span>
+              <select v-model="cmp.bench">
+                <option>等权股票池</option>
+                <option v-for="i in indices" :value="i.name">{{i.name}}</option>
+              </select>
+            </label>
+          </div>
+        </div>
+        <div class="form-actions">
+          <p class="err left" v-if="cmpError">{{cmpError}}</p>
+          <button class="primary" @click="runCompare()" :disabled="cmpRunning"><span v-if="cmpRunning" class="spinner"></span>{{cmpRunning ? '跑批中…' : '跑对比'}}</button>
+        </div>
+      </div>
+
+      <div v-if="cmpResult && cmpResult.items && cmpResult.items.length">
+        <div class="card"><h3>多策略资金曲线（vs 基准）</h3><div id="cmpChart" class="chart"></div></div>
+        <div class="card"><h3>多策略回撤（%）</h3><div id="cmpDraw" class="chart small"></div></div>
+        <div class="cards" v-if="benchInfo.metrics">
+          <div class="metric"><div class="label">基准 {{benchInfo.name}} 总收益</div><div class="value" :class="sign(benchInfo.metrics.total)">{{pct(benchInfo.metrics.total)}}</div></div>
+          <div class="metric"><div class="label">基准年化</div><div class="value" :class="sign(benchInfo.metrics.annual)">{{pct(benchInfo.metrics.annual)}}</div></div>
+          <div class="metric"><div class="label">基准夏普</div><div class="value">{{fmt(benchInfo.metrics.sharpe, 2)}}</div></div>
+          <div class="metric"><div class="label">基准最大回撤</div><div class="value" :class="sign(benchInfo.metrics.mdd)">{{pct(benchInfo.metrics.mdd)}}</div></div>
+        </div>
+        <div class="card"><h3>策略指标对比</h3>
+          <div style="overflow-x:auto"><table>
+            <tr><th>策略</th><th>总收益</th><th>年化收益</th><th>年化波动</th><th>夏普</th><th>最大回撤</th><th>卡玛</th><th>胜率</th><th>信号日</th></tr>
+            <tr v-for="r in cmpRows()" :key="r['策略']">
+              <td>{{r['策略']}}</td>
+              <td :class="sign(r['总收益'])">{{pct(r['总收益'])}}</td>
+              <td :class="sign(r['年化收益'])">{{pct(r['年化收益'])}}</td>
+              <td>{{pct(r['年化波动'])}}</td>
+              <td>{{fmt(r['夏普'], 2)}}</td>
+              <td :class="sign(r['最大回撤'])">{{pct(r['最大回撤'])}}</td>
+              <td>{{fmt(r['卡玛'], 2)}}</td>
+              <td>{{pct(r['胜率'])}}</td>
+              <td>{{r['信号日']}}</td>
+            </tr>
+          </table></div>
+        </div>
+        <div class="card">
+          <h3>当前持仓（最近一次调仓）</h3>
+          <div class="hold-tabs">
+            <button v-for="(it,i) in cmpResult.items" :key="'t'+it.name" :class="{active: cmpHoldIdx===i}" @click="cmpHoldIdx=i">{{it.name}}</button>
+          </div>
+          <div v-for="(it,i) in cmpResult.items" v-show="cmpHoldIdx===i" :key="'h'+it.name">
+            <div style="overflow-x:auto" v-if="it.holdings && it.holdings.length">
+              <table><tr><th>代码</th><th>名称</th><th>权重%</th><th>价格</th><th>市值</th></tr>
+              <tr v-for="h in it.holdings" :key="h.code"><td>{{stock(h.code, h.name)}}</td><td>{{h.name||'-'}}</td><td>{{fmt(h.weight_pct)}}</td><td>{{fmt(h.price)}}</td><td>{{fmt(h.market_value)}}</td></tr></table>
+            </div>
+            <p class="muted" v-else>当前空仓</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 个股 -->
+    <section v-if="tab==='stock'">
+      <div class="card">
+        <h3>个股看板</h3>
+        <div class="stock-search">
+          <label class="field"><span>搜索（代码 / 名称）</span>
+            <input v-model="stockView.q" @input="stockView.open = true" @focus="stockView.open = true"
+                   @blur="stockView.open = false" @keydown.enter.prevent="pickStockMatch()"
+                   placeholder="如 601728 / 中国电信 / 平安" autocomplete="off">
+            <div v-if="stockView.open && stockView.q.trim()" class="stock-drop">
+              <template v-if="stockMatches.length">
+                <div v-for="m in stockMatches" :key="m.code" class="stock-drop-item"
+                     @mousedown.prevent="pickStock(m.code, m.name)">
+                  <span class="code">{{m.code}}</span><span class="name">{{m.name}}</span>
+                  <span class="ind" v-if="m.industry">{{m.industry}}</span>
+                </div>
+              </template>
+              <div v-else class="stock-empty">没有匹配的股票</div>
+            </div>
+          </label>
+        </div>
+      </div>
+
+      <div v-if="stockView.loading" class="card"><p class="muted">加载中…</p></div>
+      <div v-else-if="stockView.error" class="card"><p class="err">{{stockView.error}}</p></div>
+
+      <template v-else-if="stockView.detail">
+        <div class="cards">
+          <div class="metric">
+            <div class="label">{{stockView.detail.name || stockView.detail.code}} 最新收盘</div>
+            <div class="value" :class="sign(stockView.detail.latest?.change_pct)">{{fmt(stockView.detail.latest?.close)}}</div>
+          </div>
+          <div class="metric">
+            <div class="label">涨跌幅</div>
+            <div class="value" :class="sign(stockView.detail.latest?.change_pct)">{{stockView.detail.latest?.change_pct == null ? '-' : stockView.detail.latest.change_pct + '%'}}</div>
+          </div>
+          <div class="metric">
+            <div class="label">成交额（最新）</div>
+            <div class="value">{{fmtAmt(stockView.detail.latest?.amount)}}</div>
+          </div>
+          <div class="metric">
+            <div class="label">换手率（最新）</div>
+            <div class="value">{{pct(stockView.detail.latest?.turnover)}}</div>
+          </div>
+          <div class="metric">
+            <div class="label">20日均成交额</div>
+            <div class="value">{{fmtAmt(stockView.detail.latest?.am20)}}</div>
+          </div>
+          <div class="metric">
+            <div class="label">数据区间</div>
+            <div class="value" style="font-size:15px">{{stockView.detail.start}} ~ {{stockView.detail.end}}</div>
+          </div>
+        </div>
+
+        <div class="card" style="display:flex;align-items:center;gap:12px;padding:10px 14px">
+          <span class="muted">复权口径</span>
+          <select class="input" :value="stockView.adj"
+                  @change="loadStockDetail(stockView.code, $event.target.value)">
+            <option value="qfq">前复权（默认）</option>
+            <option value="raw">不复权（真实成交价，历史稳定）</option>
+            <option value="hfq">后复权（历史价永不漂移）</option>
+          </select>
+        </div>
+
+        <div class="card">
+          <h3>价格与均线（近 {{stockView.detail.history.length}} 个交易日）</h3>
+          <div id="stockChart" class="chart"></div>
+        </div>
+
+        <div class="card">
+          <h3>最近交易日明细</h3>
+          <div class="table-wrap"><table>
+            <tr><th>日期</th><th>开盘</th><th>最高</th><th>最低</th><th>收盘</th><th>涨跌幅</th><th>成交量</th><th>成交额</th><th>换手率</th><th>20日换手</th><th>20日均额</th></tr>
+            <tr v-for="x in stockRows()" :key="x.date">
+              <td>{{x.date}}</td><td>{{fmt(x.open)}}</td><td>{{fmt(x.high)}}</td><td>{{fmt(x.low)}}</td><td>{{fmt(x.close)}}</td>
+              <td :class="sign(x.change_pct)">{{x.change_pct == null ? '-' : x.change_pct + '%'}}</td>
+              <td>{{fmtVol(x.volume)}}</td><td>{{fmtAmt(x.amount)}}</td>
+              <td>{{pct(x.turnover)}}</td><td>{{pct(x.turn20)}}</td><td>{{fmtAmt(x.am20)}}</td>
+            </tr>
+          </table></div>
+        </div>
+      </template>
+
+      <div v-else class="card"><p class="muted">搜索并选择一只股票开始查看个股行情。</p></div>
+    </section>
+
+    <!-- 回测 -->
+    <section v-if="tab==='backtest'">
+      <div class="hold-tabs" style="margin-bottom:14px">
+        <button :class="{active: btSub==='bt'}" @click="btSub='bt'">基础回测</button>
+        <button :class="{active: btSub==='sweep'}" @click="btSub='sweep'">参数稳健性</button>
+      </div>
+      <template v-if="btSub==='bt'">
+      <div class="card">
+        <h3>回测参数</h3>
+        <div class="form-section">
+          <div class="form-section-title">标的与策略</div>
+          <div class="form-grid">
+            <label class="field"><span>股票池</span><select v-model="bt.universe"><option>科技TMT</option><option>沪深300+中证500+中证1000</option><option>ETF</option><option>场外基金</option></select></label>
+            <label class="field wide"><span>策略</span><strategy-select v-model="bt.strategy" :strategies="strategies" placeholder="选择策略"></strategy-select></label>
+            <label class="field"><span>TopN</span><select v-model.number="bt.top_n"><option v-for="n in [1,2,3,5,8,10]" :value="n">{{n}}</option></select></label>
+            <label class="field"><span>初始资金</span><input type="number" v-model.number="bt.capital" step="1000"></label>
+            <label class="field"><span>基准</span>
+              <select v-model="bt.bench">
+                <option>等权股票池</option>
+                <option v-for="i in indices" :value="i.name">{{i.name}}</option>
+              </select>
+            </label>
+          </div>
+        </div>
+        <div class="form-section">
+          <div class="form-section-title">时间与频率</div>
+          <div class="form-grid">
+            <label class="field"><span>频率</span><select v-model="bt.freq"><option value="monthly">月频</option><option value="weekly">周频</option></select></label>
+            <label class="field"><span>开始</span><input type="date" v-model="bt.start"></label>
+            <label class="field"><span>结束</span><input type="date" v-model="bt.end"></label>
+            <label class="field"><span>预热天数</span><select v-model.number="bt.warmup_days"><option :value="0">关闭</option><option :value="120">120 天</option><option :value="400">400 天</option><option :value="9999">全量</option></select></label>
+          </div>
+        </div>
+        <div class="form-section">
+          <div class="form-section-title">过滤条件</div>
+          <div class="form-grid">
+            <label class="field-check"><input type="checkbox" v-model="bt.exclude"> 剔除科创/创业</label>
+            <label class="field-check"><input type="checkbox" v-model="bt.affordable"> 一手过滤</label>
+            <label class="field"><span>成交额分位</span><input type="number" v-model.number="bt.amount_q" step="0.05" min="0" max="1"></label>
+          </div>
+        </div>
+        <div class="form-section">
+          <div class="form-section-title">组合构建</div>
+          <div class="form-check-row">
+            <label class="field-check"><input type="checkbox" v-model="bt.long_short"> 多空对冲（多头 TopN + 空头最弱 N 只，模拟融券）</label>
+            <label class="field-check"><input type="checkbox" v-model="bt.neutral"> 行业中性化选股</label>
+            <label class="field-check"><input type="checkbox" v-model="bt.risk_neutral"> 风险中性化（风格+行业）</label>
+            <label class="field-check"><input type="checkbox" v-model="bt.analyze"> 因子质量分析（IC/分组/多空价差）</label>
+            <label class="field-check"><input type="checkbox" v-model="bt.use_financial"> 财务因子（ROE/PB/EP 等）</label>
+          </div>
+          <div class="form-grid" style="margin-top:10px">
+            <label class="field"><span>空头只数</span><input type="number" v-model.number="bt.short_n" min="1" max="20" :disabled="!bt.long_short"></label>
+            <label class="field"><span>融券年化费率%</span><input type="number" v-model.number="bt.short_rate" step="0.5" min="0" :disabled="!bt.long_short"></label>
+            <label class="field"><span>每行业上限</span><input type="number" v-model.number="bt.industry_cap" min="0" max="5" placeholder="0=不限"></label>
+          </div>
+        </div>
+        <div class="form-actions">
+          <p class="err left" v-if="btError">{{btError}}</p>
+          <button class="primary" @click="runBacktest" :disabled="btRunning"><span v-if="btRunning" class="spinner"></span>{{btRunning ? '回测中…' : '跑回测'}}</button>
+        </div>
+      </div>
+      <div v-if="btResult">
+        <div class="row" style="justify-content:flex-end; gap:8px">
+          <button class="ghost" @click="genReport" :disabled="reportLoading"><span v-if="reportLoading" class="spinner"></span>{{reportLoading ? '生成中…' : 'QuantStats 绩效报告'}}</button>
+        </div>
+        <div class="cards">
+          <div class="metric" v-for="(v,k) in btResult.metrics" :key="k"><div class="label">{{k}}</div><div class="value" :class="sign(v)">{{metricText(k,v)}}</div></div>
+        </div>
+        <div class="cards" v-if="benchInfo.metrics">
+          <div class="metric"><div class="label">基准 {{benchInfo.name}} 总收益</div><div class="value" :class="sign(benchInfo.metrics.total)">{{pct(benchInfo.metrics.total)}}</div></div>
+          <div class="metric"><div class="label">基准年化</div><div class="value" :class="sign(benchInfo.metrics.annual)">{{pct(benchInfo.metrics.annual)}}</div></div>
+          <div class="metric"><div class="label">基准夏普</div><div class="value">{{fmt(benchInfo.metrics.sharpe, 2)}}</div></div>
+          <div class="metric"><div class="label">基准最大回撤</div><div class="value" :class="sign(benchInfo.metrics.mdd)">{{pct(benchInfo.metrics.mdd)}}</div></div>
+        </div>
+        <div class="card"><h3>资金曲线（策略 vs 基准）</h3><div id="btEquity" class="chart"></div></div>
+        <div class="card"><h3>月度收益热力图</h3><div id="btMonthly" class="chart heatmap"></div><p class="muted">按回测净值计算；首月和末月按实际区间统计，年度列为月度收益复合值。</p></div>
+        <div class="card"><h3>回撤</h3><div id="btDraw" class="chart small"></div></div>
+        <div class="card" v-if="btResult.factor_quality">
+          <h3>因子质量分析（未来 20 日收益 · Spearman IC / 5 分组）</h3>
+          <div class="cards">
+            <div class="metric"><div class="label">IC 均值</div><div class="value" :class="sign(btResult.factor_quality.ic?.mean_ic)">{{fmt(btResult.factor_quality.ic?.mean_ic, 4)}}</div></div>
+            <div class="metric"><div class="label">ICIR</div><div class="value">{{fmt(btResult.factor_quality.ic?.icir, 3)}}</div></div>
+            <div class="metric"><div class="label">t 值</div><div class="value">{{fmt(btResult.factor_quality.ic?.t_stat, 2)}}</div></div>
+            <div class="metric"><div class="label">IC>0 占比</div><div class="value">{{pct(btResult.factor_quality.ic?.win_rate)}}</div></div>
+            <div class="metric"><div class="label">多空价差（年化）</div><div class="value" :class="sign(btResult.factor_quality.direction_adjusted?.spread)">{{pct(btResult.factor_quality.direction_adjusted?.spread)}}</div></div>
+          </div>
+          <div class="grid" style="grid-template-columns:1.6fr 1fr">
+            <div><h4 class="muted">逐日 IC</h4><div id="btIc" class="chart small"></div></div>
+            <div>
+              <h4 class="muted">5 分组平均前瞻收益</h4>
+              <div class="table-wrap"><table><tr><th>分组</th><th>平均前瞻收益</th></tr>
+              <tr v-for="g in btResult.factor_quality.group?.groups || []" :key="g.group">
+                <td>第 {{g.group}} 组</td><td :class="sign(g.mean_fwd_ret)">{{pct(g.mean_fwd_ret)}}</td></tr></table></div>
+            </div>
+          </div>
+        </div>
+        <div class="card" v-if="btResult.risk_attribution">
+          <h3>风险归因（期末持仓 · 风险贡献）</h3>
+          <p class="muted">风格/行业因子 + specific 残差的组合风险占比，识别收益来源与集中度。</p>
+          <div class="table-wrap"><table>
+            <tr><th>因子</th><th>风险贡献%</th></tr>
+            <tr v-for="(item,i) in sortedRiskAttr()" :key="i">
+              <td>{{item[0]}}</td><td>{{pct(item[1])}}</td>
+            </tr>
+          </table></div>
+        </div>
+        <div class="card" v-if="btResult.brinson && btResult.brinson.summary && btResult.brinson.summary.length">
+          <h3>行业归因（Brinson · 月度 vs 股票池等权基准）</h3>
+          <div class="table-wrap"><table>
+            <tr><th>行业</th><th>配置效应%</th><th>选择效应%</th><th>交互%</th><th>合计%</th><th>组合均权</th><th>基准均权</th></tr>
+            <tr v-for="(s,i) in btResult.brinson.summary" :key="i">
+              <td>{{s.industry}}</td><td>{{pct(s.allocation)}}</td><td>{{pct(s.selection)}}</td><td>{{pct(s.interaction)}}</td><td>{{pct(s.total)}}</td><td>{{fmt(s.avg_combo_weight)}}</td><td>{{fmt(s.avg_bench_weight)}}</td>
+            </tr>
+          </table></div>
+        </div>
+        <div class="grid" style="grid-template-columns:1fr 1fr">
+          <div class="card"><h3>持仓明细</h3>
+            <div style="overflow-x:auto"><table><tr><th>代码</th><th>名称</th><th>方向</th><th>权重%</th><th>价格</th><th>市值</th></tr>
+            <tr v-for="h in btResult.holdings" :key="h.code"><td>{{stock(h.code, h.name)}}</td><td>{{h.name||'-'}}</td><td>{{h.direction||'多'}}</td><td>{{fmt(h.weight_pct)}}</td><td>{{fmt(h.price)}}</td><td>{{fmt(h.market_value)}}</td></tr></table></div>
+          </div>
+          <div class="card"><h3>调仓记录</h3>
+            <div style="overflow-x:auto"><table><tr><th>日期</th><th>信号日</th><th>持仓数</th><th>换手</th></tr>
+            <tr v-for="(t,i) in btResult.trades" :key="i"><td>{{t.date.slice(0,10)}}</td><td>{{t.signal_date.slice(0,10)}}</td><td>{{t.num_hold}}</td><td>{{fmt(t.turnover)}}</td></tr></table></div>
+          </div>
+        </div>
+      </div>
+      <div v-else class="card"><div class="empty">设置参数后点击「跑回测」查看净值、回撤、持仓与调仓结果</div></div>
+      </template>
+    </section>
+
+    <div v-if="reportHtml" class="modal" @click.self="reportHtml=''">
+      <div class="modal-box">
+        <div class="row"><h3>QuantStats 绩效报告</h3><button class="ghost" @click="reportHtml=''">关闭</button></div>
+        <iframe :srcdoc="reportHtml" style="width:100%; height:calc(100vh - 140px); border:0; background:#fff; border-radius:10px"></iframe>
+      </div>
+    </div>
+
+    <!-- 组合策略 -->
+    <section v-if="tab==='composite'">
+      <div class="card">
+        <h3>多因子自由组合</h3>
+        <p class="muted">勾选因子、设定方向与权重后可直接回测，组合可保存/加载/删除。每个因子先做横截面百分位排名（0~1），按方向翻转后乘以权重求和，再按综合得分降序选股（买高）。</p>
+        <div class="form-section">
+          <div class="form-section-title">参数</div>
+          <div class="form-grid">
+            <label class="field"><span>股票池</span><select v-model="comp.universe"><option>科技TMT</option><option>沪深300+中证500+中证1000</option><option>ETF</option><option>场外基金</option></select></label>
+            <label class="field"><span>TopN</span><select v-model.number="comp.top_n"><option v-for="n in [1,2,3,5,8,10]" :value="n">{{n}}</option></select></label>
+            <label class="field"><span>初始资金</span><input type="number" v-model.number="comp.capital" step="1000"></label>
+            <label class="field"><span>频率</span><select v-model="comp.freq"><option value="monthly">月频</option><option value="weekly">周频</option></select></label>
+            <label class="field"><span>开始</span><input type="date" v-model="comp.start"></label>
+            <label class="field"><span>结束</span><input type="date" v-model="comp.end"></label>
+            <label class="field"><span>基准</span>
+              <select v-model="comp.bench">
+                <option>等权股票池</option>
+                <option v-for="i in indices" :value="i.name">{{i.name}}</option>
+              </select>
+            </label>
+          </div>
+        </div>
+        <div class="form-section">
+          <div class="form-section-title">因子配置</div>
+          <div class="table-wrap"><table>
+            <tr><th>启用</th><th>因子</th><th>说明</th><th>方向</th><th>权重</th></tr>
+            <tr v-for="f in factorOptions" :key="f.name">
+              <td><input type="checkbox" v-model="comp.factors[f.name].enabled"></td>
+              <td>{{f.label}}</td>
+              <td class="muted">{{f.desc || '-'}}</td>
+              <td><select v-model="comp.factors[f.name].dir" :disabled="!comp.factors[f.name].enabled"><option>买高</option><option>买低</option></select></td>
+              <td><input type="number" v-model.number="comp.factors[f.name].weight" step="0.1" min="-10" max="10" :disabled="!comp.factors[f.name].enabled"></td>
+            </tr>
+          </table></div>
+        </div>
+        <div class="form-section">
+          <div class="form-section-title">组合管理</div>
+          <div class="form-grid">
+            <label class="field"><span>组合名称</span><input v-model="compName" placeholder="如：动量+低波"></label>
+            <label class="field"><span>已保存组合</span>
+              <select v-model="compPick">
+                <option value="" disabled>选择组合…</option>
+                <option v-for="c in composites" :key="c.name" :value="c.name">{{c.name}}</option>
+              </select>
+            </label>
+          </div>
+          <div class="form-actions">
+            <span class="left err" v-if="compError">{{compError}}</span>
+            <button @click="saveComposite">保存当前配置</button>
+            <button @click="loadComposite" :disabled="!compPick">加载</button>
+            <button @click="deleteComposite" :disabled="!compPick">删除</button>
+            <button class="primary" @click="runCompositeBacktest" :disabled="compRunning">
+              <span v-if="compRunning" class="spinner"></span>{{compRunning ? '计算中…' : '跑组合回测'}}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="compResult">
+        <div class="cards">
+          <div class="metric" v-for="(v,k) in compResult.metrics" :key="k"><div class="label">{{k}}</div><div class="value" :class="sign(v)">{{metricText(k,v)}}</div></div>
+        </div>
+        <div class="cards" v-if="benchInfo.metrics">
+          <div class="metric"><div class="label">基准 {{benchInfo.name}} 总收益</div><div class="value" :class="sign(benchInfo.metrics.total)">{{pct(benchInfo.metrics.total)}}</div></div>
+          <div class="metric"><div class="label">基准年化</div><div class="value" :class="sign(benchInfo.metrics.annual)">{{pct(benchInfo.metrics.annual)}}</div></div>
+          <div class="metric"><div class="label">基准夏普</div><div class="value">{{fmt(benchInfo.metrics.sharpe, 2)}}</div></div>
+          <div class="metric"><div class="label">基准最大回撤</div><div class="value" :class="sign(benchInfo.metrics.mdd)">{{pct(benchInfo.metrics.mdd)}}</div></div>
+        </div>
+        <div class="card"><h3>资金曲线（策略 vs 基准）</h3><div id="compEquity" class="chart"></div></div>
+        <div class="card"><h3>月度收益热力图</h3><div id="compMonthly" class="chart heatmap"></div><p class="muted">按组合净值计算；首月和末月按实际区间统计，年度列为月度收益复合值。</p></div>
+        <div class="card"><h3>回撤</h3><div id="compDraw" class="chart small"></div></div>
+        <div class="grid" style="grid-template-columns:1fr 1fr">
+          <div class="card"><h3>持仓明细</h3>
+            <div style="overflow-x:auto"><table><tr><th>代码</th><th>名称</th><th>权重%</th><th>价格</th><th>市值</th></tr>
+            <tr v-for="h in compResult.holdings" :key="h.code"><td>{{stock(h.code, h.name)}}</td><td>{{h.name||'-'}}</td><td>{{fmt(h.weight_pct)}}</td><td>{{fmt(h.price)}}</td><td>{{fmt(h.market_value)}}</td></tr></table></div>
+          </div>
+          <div class="card"><h3>调仓记录</h3>
+            <div style="overflow-x:auto"><table><tr><th>日期</th><th>信号日</th><th>持仓数</th><th>换手</th></tr>
+            <tr v-for="(t,i) in compResult.trades" :key="i"><td>{{t.date.slice(0,10)}}</td><td>{{t.signal_date.slice(0,10)}}</td><td>{{t.num_hold}}</td><td>{{fmt(t.turnover)}}</td></tr></table></div>
+          </div>
+        </div>
+      </div>
+      <div v-else class="card"><div class="empty">设置因子后点击「跑组合回测」查看结果</div></div>
+
+      <div class="card">
+        <h3>今日信号</h3>
+        <div class="form-actions" style="margin-top:0">
+          <button @click="loadCompositeSignals" :disabled="compSignalsLoading">
+            <span v-if="compSignalsLoading" class="spinner"></span>{{compSignalsLoading ? '获取中…' : '按当前组合刷新'}}
+          </button>
+          <span class="muted" v-if="compSigDate">信号日：{{compSigDate}} · 数据截至：{{panelInfo.last_date || '-'}}</span>
+        </div>
+        <div class="table-wrap"><table><tr><th>代码</th><th>名称</th><th>因子得分</th><th>收盘价</th><th>换手率</th></tr>
+        <tr v-for="(s,i) in compSignals" :key="i"><td>{{stock(s.code, s.name)}}</td><td>{{s.name||'-'}}</td><td>{{fmt(s.score, 4)}}</td><td>{{fmt(s.close)}}</td><td>{{pct(s.turnover)}}</td></tr>
+        </table></div>
+        <div v-if="!compSignals.length" class="empty">暂无信号，先按当前组合刷新</div>
+      </div>
+    </section>
+
+    <!-- 代码 -->
+    <section v-if="tab==='code'">
+      <div class="card">
+        <h3>研究代码（qweave / Python）</h3>
+        <p class="muted">这里运行 qweave 因子研究：代码只需要返回 qweave 表达式列表，不再绑定旧的 STRATEGIES / EVENT_STRATEGIES 交易引擎。</p>
+        <div class="form-grid" style="margin-top:12px">
+          <label class="field wide"><span>研究代码模板</span>
+            <select v-model="code.tplName" @change="loadTemplate">
+              <option value="" disabled>选择预制研究代码…</option>
+              <option v-for="s in code.tplOptions" :key="s.value" :value="s.value">{{s.label}}</option>
+            </select>
+          </label>
+          <label class="field"><span>保存名称</span><input v-model="code.savedName" placeholder="如：我的双均线 v1"></label>
+          <label class="field"><span>已保存</span>
+            <select v-model="code.savedName" @change="loadSaved">
+              <option value="" disabled>选择保存项…</option>
+              <option v-for="s in code.savedList" :key="s.name" :value="s.name">{{s.name}}</option>
+            </select>
+          </label>
+        </div>
+        <div class="tpl-info" v-if="code.tplInfo">
+          <div class="tpl-info-row">
+            <span class="chip">{{code.tplInfo.group}}</span>
+            <strong>{{code.tplInfo.name}}</strong>
+            <span class="muted">{{code.tplInfo.desc}}</span>
+          </div>
+          <div class="tpl-info-row">
+            <span class="muted">方向：{{code.tplInfo.ascending ? '买低分' : '买高分'}}</span>
+            <span class="muted">因子：{{code.tplInfo.factor}}</span>
+            <span class="muted">改文件头「参数」区即可，不用动函数体</span>
+          </div>
+        </div>
+        <div class="tpl-note">qweave 输入为长表行情（date/code/open/high/low/close/volume/amount/turnover/vwap），自动生成未来收益标签并计算 IC、分组收益、换手和覆盖率。研究代码只允许使用当前及之前的数据，避免未来函数。</div>
+        <details class="helpers">
+          <summary>📖 常用函数说明（点开查看）</summary>
+          <div class="helpers-body" v-html="helpersHtml"></div>
+        </details>
+        <div class="form-actions" style="margin-top:6px">
+          <span class="ok left" v-if="codeSaveMsg">{{codeSaveMsg}}</span>
+          <button class="ghost" @click="parseCode(false)" :disabled="codeRunning">解析因子</button>
+          <button class="ghost" @click="saveCode" :disabled="codeRunning">保存</button>
+          <button class="ghost" @click="loadCodeDefault">恢复默认</button>
+        </div>
+        <div style="margin-top:14px">
+          <code-editor v-model="code.code"></code-editor>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>运行参数</h3>
+        <div class="form-section">
+          <div class="form-section-title">研究标的</div>
+          <div class="form-grid">
+            <label class="field"><span>股票池</span><select v-model="code.universe"><option>科技TMT</option><option>沪深300+中证500+中证1000</option><option>ETF</option><option>场外基金</option></select></label>
+            <label class="field"><span>Alpha 集</span><select v-model="code.alpha_set"><option value="alpha158">Alpha158</option><option value="alpha101">Alpha101</option><option value="alpha191">Alpha191</option><option value="custom">自定义代码</option></select></label>
+            <label class="field"><span>因子数量上限</span><input type="number" v-model.number="code.alpha_limit" min="1" placeholder="自定义代码忽略"></label>
+            <label class="field wide"><span>回测信号因子</span><select v-model="code.score_factor"><option value="">自动使用评估排名第一的因子</option><option v-for="f in code.strategies" :key="f" :value="f">{{f}}</option></select></label>
+            <label class="field"><span>回测 TopN</span><input type="number" v-model.number="code.top_n" min="1"></label>
+            <label class="field"><span>选股数量模式</span><select v-model="code.selection_mode"><option value="top_n">固定 TopN</option><option value="top_pct">按有效股票比例</option></select></label>
+            <label class="field" v-if="code.selection_mode === 'top_pct'"><span>动态比例</span><input type="number" v-model.number="code.selection_pct" min="0.01" max="1" step="0.01"><small class="muted">例如 0.10 = 每次选有效股票的前 10%</small></label>
+            <label class="field"><span>最少持仓数</span><input type="number" v-model.number="code.min_positions" min="1"></label>
+            <label class="field"><span>最多持仓数（可选）</span><input type="number" v-model.number="code.max_positions" min="1" placeholder="不限制"></label>
+            <label class="field"><span>买入费率%</span><input type="number" v-model.number="code.buy_cost_pct" step="0.01" min="0"></label>
+            <label class="field"><span>卖出费率%</span><input type="number" v-model.number="code.sell_cost_pct" step="0.01" min="0"></label>
+            <label class="field"><span>滑点 bps</span><input type="number" v-model.number="code.slippage_bps" step="1" min="0"></label>
+            <label class="field"><span>单笔成交参与率</span><input type="number" v-model.number="code.max_participation" step="0.01" min="0" max="1" placeholder="0=不限"></label>
+            <label class="field"><span>成交额过滤分位</span><input type="number" v-model.number="code.amount_q" step="0.05" min="0" max="1"></label>
+            <label class="field"><span>回测频率</span><select v-model="code.freq"><option value="daily">每日</option><option value="weekly">每周</option><option value="monthly">每月</option></select></label>
+            <label class="field"><span>回测资金</span><input type="number" v-model.number="code.capital" step="10000"></label>
+          </div>
+        </div>
+        <div class="form-section">
+          <div class="form-section-title">时间与标签</div>
+          <div class="form-grid">
+            <label class="field"><span>开始</span><input type="date" v-model="code.start"></label>
+            <label class="field"><span>结束</span><input type="date" v-model="code.end"></label>
+            <label class="field wide"><span>标签 horizon（交易日，逗号分隔）</span><input v-model="code.horizonsText" placeholder="1,5,10,20"></label>
+          </div>
+        </div>
+        <div class="form-section">
+          <div class="form-section-title">评估参数</div>
+          <div class="form-grid">
+            <label class="field-check"><input type="checkbox" v-model="code.exclude"> 剔除科创/创业</label>
+            <label class="field"><span>分位数</span><input type="number" v-model.number="code.quantiles" min="2" max="20"></label>
+            <label class="field"><span>最小截面数</span><input type="number" v-model.number="code.min_cs_count" min="1"></label>
+            <label class="field"><span>成本 bps</span><input type="number" v-model.number="code.cost_bps" step="1" min="0"></label>
+          </div>
+        </div>
+        <div class="form-actions">
+          <p class="muted left">当前因子：<span v-if="code.strategies.length">{{code.strategies.join('、')}}</span><span v-else>（未解析，点「解析因子」）</span></p>
+          <p class="err left" v-if="codeError">{{codeError}}</p>
+          <button class="primary" @click="runCode" :disabled="codeRunning"><span v-if="codeRunning" class="spinner"></span>{{codeRunning ? '研究中…' : '运行 qweave'}}</button>
+          <button class="primary" @click="runQweaveBacktest" :disabled="codeRunning"><span v-if="codeRunning" class="spinner"></span>{{codeRunning ? '回测中…' : '研究并回测 TopN'}}</button>
+        </div>
+      </div>
+
+      <div v-if="codeResult">
+        <div class="cards"><div class="metric"><div class="label">因子数</div><div class="value">{{codeResult.factor_count}}</div></div><div class="metric"><div class="label">样本行数</div><div class="value">{{codeResult.rows}}</div></div><div class="metric"><div class="label">研究区间</div><div class="value">{{code.start}} ~ {{code.end}}</div></div><div class="metric"><div class="label">输出目录</div><div class="value" style="font-size:12px">{{codeResult.run_dir}}</div></div></div>
+        <div class="card"><h3>Top 因子评估</h3><div class="table-wrap"><table><tr><th>因子</th><th>H</th><th>IC 均值</th><th>Rank IC</th><th>ICIR</th><th>多空年化</th><th>多空 IR</th><th>换手</th></tr><tr v-for="(s,i) in codeResult.summary" :key="i"><td>{{s.factor}}</td><td>{{s.horizon}}</td><td :class="sign(s.ic_mean)">{{fmt(s.ic_mean,4)}}</td><td>{{fmt(s.rank_ic_mean,4)}}</td><td>{{fmt(s.ic_ir,3)}}</td><td>{{pct(s.ls_net_ann)}}</td><td>{{fmt(s.ls_ir,3)}}</td><td>{{fmt(s.ls_turnover,3)}}</td></tr></table></div></div>
+        <div class="card"><h3>最新交易日股票因子排名</h3><p class="muted">上面的 Top 因子是“因子级”统计，不会对应单个股票。这里展示 Top 因子在最新交易日的具体股票代码、因子值和截面排名。</p><div class="table-wrap"><table><tr><th>日期</th><th>方向</th><th>排名</th><th>代码</th><th>因子</th><th>因子值</th><th>截面分位</th></tr><tr v-for="(r,i) in topFactorRows()" :key="i"><td>{{r.date}}</td><td>{{r.side === 'top' ? '高值' : '低值'}}</td><td>{{r.rank}}</td><td>{{stock(r.code)}}</td><td>{{r.factor}}</td><td>{{fmt(r.value,6)}}</td><td>{{pct(r.percentile)}}</td></tr></table></div><div v-if="!topFactorRows().length" class="empty">暂无股票级因子明细</div></div>
+        <div class="card" v-if="codeResult.backtest"><h3>qweave 信号 → 日线交易回测</h3><p class="muted">因子：{{codeResult.backtest.factor}} · 选股：{{code.selection_mode === 'top_pct' ? '有效股票前 ' + (code.selection_pct * 100).toFixed(1) + '%' : '固定 TopN=' + code.top_n}} · {{code.freq}} · qweave 输出的股票级分数已交给交易执行层，模拟 T+1、整手、费用和交易限制。</p><div class="cards"><div class="metric" v-for="(v,k) in codeResult.backtest.metrics" :key="k"><div class="label">{{k}}</div><div class="value" :class="sign(v)">{{metricText(k,v)}}</div></div></div><div id="qweaveBacktestEquity" class="chart"></div></div>
+        <div class="grid" style="grid-template-columns:1fr 1fr"><div class="card"><h3>Rank IC（Top 因子）</h3><div id="codeIc" class="chart"></div></div><div class="card"><h3>分组收益（Top 因子）</h3><div id="codeQuantile" class="chart"></div></div></div>
+      </div>
+      <div v-else class="card"><div class="empty">编辑代码后点击「跑代码」查看回测结果</div></div>
+    </section>
+
+    <!-- 参数稳健性（回测页子页面） -->
+    <section v-if="tab==='backtest' && btSub==='sweep'">
+      <div class="card">
+        <h3>参数稳健性 / Walk-forward</h3>
+        <p class="muted">把时间轴切成多个连续窗口独立回测，看策略跨窗口的指标分布。判断依据：均值夏普、胜率、最差窗口——单段收益高但窗口间波动大的组合通常是过拟合信号。</p>
+        <div class="form-grid">
+          <label class="field"><span>模式</span><select v-model="sweep.mode">
+            <option value="event">双均线金叉参数扫描</option>
+            <option value="factor">因子策略 walk-forward</option>
+            <option value="rolling">滚动训练-测试（因子）</option>
+            <option value="rolling_event">滚动训练-测试（双均线）</option>
+          </select></label>
+          <label class="field"><span>起点</span><input type="date" v-model="sweep.start"></label>
+          <label class="field"><span>终点</span><input type="date" v-model="sweep.end"></label>
+          <label class="field"><span>窗口数</span><select v-model.number="sweep.folds">
+            <option v-for="n in [2,3,4,6]" :value="n">{{n}}</option>
+          </select></label>
+          <template v-if="sweep.mode==='event' || sweep.mode==='rolling_event'">
+            <label class="field"><span>短期均线</span><input v-model="sweep.shortList" placeholder="3,5,8,10,13"></label>
+            <label class="field"><span>长期均线</span><input v-model="sweep.longList" placeholder="10,20,30,60"></label>
+            <label class="field"><span>持仓数</span><select v-model.number="sweep.top_n">
+              <option v-for="n in [1,2,3,5]" :value="n">{{n}}</option>
+            </select></label>
+          </template>
+          <template v-else>
+            <label class="field wide"><span>策略</span><strategy-select v-model="sweep.strategy" :strategies="strategies" placeholder="选择策略"></strategy-select></label>
+          </template>
+        </div>
+        <div class="form-actions">
+          <button class="primary" @click="runSweep" :disabled="sweepRunning">
+            <span v-if="sweepRunning" class="spinner"></span>{{sweepRunning ? '扫描中（约 1-2 分钟）…' : '运行扫描'}}
+          </button>
+        </div>
+        <p class="err left" v-if="sweepError">{{sweepError}}</p>
+      </div>
+
+      <template v-if="sweepResult">
+        <div class="card" v-if="sweepResult.mode!=='rolling' && sweepResult.mode!=='rolling_event' && sweepResult.summary && sweepResult.summary.length">
+          <h3>参数组合汇总 <span class="muted">（点击表头排序）</span></h3>
+          <div class="table-wrap"><table>
+            <tr>
+              <th class="sortable" @click="sortSweep('short')">短期{{swArrow('short')}}</th>
+              <th class="sortable" @click="sortSweep('long')">长期{{swArrow('long')}}</th>
+              <th class="sortable" @click="sortSweep('mean_sharpe')">均值夏普{{swArrow('mean_sharpe')}}</th>
+              <th class="sortable" @click="sortSweep('median_sharpe')">中位夏普{{swArrow('median_sharpe')}}</th>
+              <th class="sortable" @click="sortSweep('std_sharpe')">夏普std{{swArrow('std_sharpe')}}</th>
+              <th class="sortable" @click="sortSweep('mean_total')">均值收益{{swArrow('mean_total')}}</th>
+              <th class="sortable" @click="sortSweep('worst_total')">最差窗口{{swArrow('worst_total')}}</th>
+              <th class="sortable" @click="sortSweep('win_rate')">胜率{{swArrow('win_rate')}}</th>
+              <th class="sortable" @click="sortSweep('mean_mdd')">均值回撤{{swArrow('mean_mdd')}}</th>
+            </tr>
+            <tr v-for="(r,i) in sortedSweep()" :key="i">
+              <td>{{r.short}}</td><td>{{r.long}}</td>
+              <td>{{fmt(r.mean_sharpe)}}</td><td>{{fmt(r.median_sharpe)}}</td>
+              <td>{{fmt(r.std_sharpe)}}</td><td>{{pct(r.mean_total)}}</td>
+              <td>{{pct(r.worst_total)}}</td><td>{{Math.round((r.win_rate||0)*100)}}%</td>
+              <td>{{pct(r.mean_mdd)}}</td>
+            </tr>
+          </table></div>
+        </div>
+
+        <div class="card" v-if="(sweepResult.mode==='rolling' || sweepResult.mode==='rolling_event') && sweepResult.summary && sweepResult.summary.length">
+          <h3>滚动训练-测试汇总</h3>
+          <div class="table-wrap"><table>
+            <tr><th>窗口数</th><th>已训练窗口</th><th>均值夏普</th><th>中位夏普</th><th>胜率</th><th>均值收益</th><th>最差窗口</th><th>最好窗口</th></tr>
+            <tr v-for="(r,i) in sweepResult.summary" :key="i">
+              <td>{{r.n_windows}}</td><td>{{r.trained_windows}}</td>
+              <td>{{fmt(r.mean_sharpe)}}</td><td>{{fmt(r.median_sharpe)}}</td>
+              <td>{{Math.round((r.win_rate||0)*100)}}%</td>
+              <td>{{pct(r.mean_total)}}</td><td>{{pct(r.worst_total)}}</td><td>{{pct(r.best_total)}}</td>
+            </tr>
+          </table></div>
+        </div>
+
+        <div class="card" v-if="sweepResult.param_history && sweepResult.param_history.length">
+          <h3>滚动训练-测试：逐窗口参数选择</h3>
+          <p class="muted">每个测试窗口用之前全部历史选参（按训练夏普），再跑当前窗口做样本外验证。</p>
+          <div class="table-wrap"><table>
+            <tr><th>窗口</th><th>训练起点</th><th>训练终点</th><th>测试起点</th><th>测试终点</th><th>选中参数</th><th>训练夏普</th></tr>
+            <tr v-for="(p,i) in sweepResult.param_history" :key="i">
+              <td>{{p.fold}}</td><td>{{p.train_start}}</td><td>{{p.train_end}}</td>
+              <td>{{p.test_start}}</td><td>{{p.test_end}}</td>
+              <td>{{p.chosen_top_n ? 'TopN='+p.chosen_top_n : 'MA '+p.chosen_short+'/'+p.chosen_long}}</td>
+              <td>{{p.train_sharpe == null ? '-' : fmt(p.train_sharpe)}}</td>
+            </tr>
+          </table></div>
+        </div>
+
+        <div class="card" v-if="sweepResult.heatmap && sweepResult.heatmap.length">
+          <h3>均值夏普热力图</h3>
+          <div class="table-wrap"><table>
+            <tr><th>short \ long</th><th v-for="c in sweepResult.heatmap_cols" :key="c">{{c}}</th></tr>
+            <tr v-for="row in sweepResult.heatmap" :key="row.short">
+              <td>{{row.short}}</td>
+              <td v-for="c in sweepResult.heatmap_cols" :key="c">{{fmt(row[c], 2)}}</td>
+            </tr>
+          </table></div>
+        </div>
+
+        <div class="card" v-if="sweepResult.windows && sweepResult.windows.length">
+          <h3>逐窗口明细</h3>
+          <div class="table-wrap"><table>
+            <tr><th v-for="c in windowCols()" :key="c">{{c}}</th></tr>
+            <tr v-for="(w,i) in sweepResult.windows" :key="i">
+              <td v-for="c in windowCols()" :key="c">{{fmtCell(c, w[c])}}</td>
+            </tr>
+          </table></div>
+        </div>
+      </template>
+      <div v-if="!sweepResult" class="card"><div class="empty">设置参数后运行扫描</div></div>
+    </section>
+
+    <!-- 日级模拟盘 -->
+    <section v-if="tab==='paper'">
+      <div class="card">
+        <h3>日级模拟盘</h3>
+        <p class="muted">信号日（T-1）收盘生成目标持仓 → T 日开盘成交 → 收盘估值。因子账户由同一回测引擎（cash_mode=True）重放，执行口径一致：现金/整手/费用/涨跌停/拒单；事件策略仍由事件引擎重放。每日数据更新后由 systemd 盘后自动执行，也可手动触发。</p>
+        <div class="form-section">
+          <div class="form-section-title">创建账户</div>
+          <div class="form-grid">
+            <label class="field"><span>名称</span><input v-model="paper.form.name" placeholder="模拟盘A"></label>
+            <label class="field"><span>类型</span><select v-model="paper.form.strategy_type">
+              <option value="factor">因子策略</option>
+              <option value="event">事件策略</option>
+            </select></label>
+            <template v-if="paper.form.strategy_type === 'factor'">
+              <label class="field"><span>策略</span><strategy-select v-model="paper.form.strategy" :strategies="strategies" placeholder="选择策略"></strategy-select></label>
+            </template>
+            <template v-else>
+              <label class="field"><span>代码模块</span><select v-model="paper.form.module" @change="paper.form.event_strategy=''">
+                <option value="" disabled>选择已保存代码</option>
+                <option v-for="m in paper.eventModules" :value="m.module">{{m.name}}</option>
+              </select></label>
+              <label class="field"><span>事件策略</span><select v-model="paper.form.event_strategy">
+                <option value="" disabled>选择事件策略</option>
+                <option v-for="s in paperEventStrategies()" :value="s">{{s}}</option>
+              </select></label>
+            </template>
+            <label class="field"><span>股票池</span><select v-model="paper.form.universe"><option>科技TMT</option><option>沪深300+中证500+中证1000</option><option>ETF</option><option>场外基金</option></select></label>
+            <label class="field"><span>频率</span><select v-model="paper.form.freq"><option value="daily">每日</option><option value="weekly">每周</option><option value="monthly">每月</option></select></label>
+            <label class="field"><span>资金</span><input type="number" v-model.number="paper.form.capital" step="10000"></label>
+            <label class="field"><span>TopN</span><select v-model.number="paper.form.top_n"><option v-for="n in [1,2,3,5,8,10]" :value="n">{{n}}</option></select></label>
+            <label class="field"><span>单票权重上限</span><input type="number" v-model.number="paper.form.max_weight" step="0.05" min="0.05" max="1"></label>
+            <label class="field"><span>流动性分位</span><input type="number" v-model.number="paper.form.amount_q" step="0.05" min="0" max="1"></label>
+          </div>
+          <div class="form-actions">
+            <button class="primary" @click="createPaperAccount" :disabled="paper.creating">
+              <span v-if="paper.creating" class="spinner"></span>{{paper.creating ? '创建中…' : '创建账户'}}
+            </button>
+          </div>
+        </div>
+        <p class="err left" v-if="paper.error">{{paper.error}}</p>
+      </div>
+
+      <template v-if="paper.accounts.length">
+        <div class="card">
+          <h3>账户</h3>
+          <div class="row">
+            <label class="field" style="min-width:300px"><span>账户</span>
+              <select v-model.number="paper.pick" @change="loadPaperDetail">
+                <option v-for="a in paper.accounts" :key="a.id" :value="a.id">#{{a.id}} · {{a.name}} · {{a.strategy_name}} · {{a.status}}</option>
+              </select>
+            </label>
+            <button class="primary" @click="runPaper" :disabled="paper.running">
+              <span v-if="paper.running" class="spinner"></span>{{paper.running ? '执行中…' : '手动执行一次'}}
+            </button>
+            <button class="ghost" @click="runPaperDry">Dry-run 预览</button>
+            <button class="ghost" @click="togglePaperStatus">{{paperDetail?.account?.status === 'active' ? '暂停' : '启用'}}</button>
+            <button class="ghost" @click="resetPaper">重置</button>
+            <button class="ghost danger" @click="deletePaper">删除</button>
+          </div>
+          <p class="err left" v-if="paper.runError">{{paper.runError}}</p>
+          <div class="cards" v-if="paper.lastRun">
+            <div class="metric"><div class="label">执行日</div><div class="value">{{paper.lastRun.run_date}}</div></div>
+            <div class="metric"><div class="label">状态</div><div class="value">{{paper.lastRun.accounts?.[0]?.processed}}</div></div>
+            <div class="metric"><div class="label">调仓</div><div class="value">{{paper.lastRun.accounts?.[0]?.rebalanced ? '是' : '否'}}</div></div>
+            <div class="metric"><div class="label">订单/成交/拒单</div><div class="value">{{paper.lastRun.accounts?.[0]?.orders}} / {{paper.lastRun.accounts?.[0]?.filled}} / {{paper.lastRun.accounts?.[0]?.rejected}}</div></div>
+          </div>
+        </div>
+
+        <div class="cards" v-if="paperDetail?.latest">
+          <div class="metric"><div class="label">最新权益</div><div class="value">{{fmt(paperDetail.latest.equity)}}</div></div>
+          <div class="metric"><div class="label">现金</div><div class="value">{{fmt(paperDetail.latest.cash)}}</div></div>
+          <div class="metric"><div class="label">持仓市值</div><div class="value">{{fmt(paperDetail.latest.market_value)}}</div></div>
+          <div class="metric"><div class="label">累计盈亏</div><div class="value" :class="sign(paperDetail.latest.pnl)">{{fmt(paperDetail.latest.pnl)}}</div></div>
+          <div class="metric"><div class="label">收益率</div><div class="value" :class="sign(paperDetail.latest.pnl_pct)">{{pct(paperDetail.latest.pnl_pct)}}</div></div>
+        </div>
+
+        <div class="card" v-if="paper.equity.length">
+          <h3>权益曲线</h3><div id="paperEquity" class="chart"></div>
+        </div>
+
+        <div class="grid" style="grid-template-columns:1fr 1fr">
+          <div class="card"><h3>持仓</h3>
+            <div style="overflow-x:auto"><table><tr><th>代码</th><th>名称</th><th>股数</th><th>成本价</th><th>现价</th><th>市值</th><th>浮动盈亏</th></tr>
+            <tr v-for="p in paperDetail?.positions || []" :key="p.code">
+              <td>{{p.code}}</td><td>{{p.name}}</td><td>{{fmt(p.shares, 0)}}</td><td>{{fmt(p.avg_cost)}}</td>
+              <td>{{fmt(p.price)}}</td><td>{{fmt(p.market_value)}}</td><td :class="sign(p.pnl)">{{fmt(p.pnl)}}</td>
+            </tr></table></div>
+          </div>
+          <div class="card"><h3>订单</h3>
+            <div style="overflow-x:auto"><table>
+              <tr>
+                <th class="sortable" @click="setOrderSort('code')">代码<span class="sort-arrow">{{orderArrow('code')}}</span></th>
+                <th class="sortable" @click="setOrderSort('name')">名称<span class="sort-arrow">{{orderArrow('name')}}</span></th>
+                <th class="sortable" @click="setOrderSort('side')">方向<span class="sort-arrow">{{orderArrow('side')}}</span></th>
+                <th class="sortable" @click="setOrderSort('exec_date')">执行日<span class="sort-arrow">{{orderArrow('exec_date')}}</span></th>
+                <th class="sortable" @click="setOrderSort('status')">状态<span class="sort-arrow">{{orderArrow('status')}}</span></th>
+                <th class="sortable" @click="setOrderSort('shares')">股数<span class="sort-arrow">{{orderArrow('shares')}}</span></th>
+                <th class="sortable" @click="setOrderSort('fill_price')">成交价<span class="sort-arrow">{{orderArrow('fill_price')}}</span></th>
+                <th class="sortable" @click="setOrderSort('amount')">成交金额<span class="sort-arrow">{{orderArrow('amount')}}</span></th>
+                <th>原因</th>
+              </tr>
+            <tr v-for="o in sortedPaperOrders()" :key="o.id">
+              <td>{{o.code}}</td><td>{{o.name || '-'}}</td><td>{{o.side}}</td><td>{{(o.exec_date||'').slice(0,10)}}</td>
+              <td>{{o.status}}</td><td>{{fmt(o.shares, 0)}}</td><td>{{fmt(o.fill_price)}}</td><td>{{fmt(o.amount)}}</td><td>{{o.reject_reason || '-'}}</td>
+            </tr></table></div>
+          </div>
+        </div>
+
+        <div class="grid" style="grid-template-columns:1fr 1fr">
+          <div class="card"><h3>成交</h3>
+            <div style="overflow-x:auto"><table>
+              <tr>
+                <th class="sortable" @click="setTradeSort('code')">代码<span class="sort-arrow">{{tradeArrow('code')}}</span></th>
+                <th class="sortable" @click="setTradeSort('name')">名称<span class="sort-arrow">{{tradeArrow('name')}}</span></th>
+                <th class="sortable" @click="setTradeSort('side')">方向<span class="sort-arrow">{{tradeArrow('side')}}</span></th>
+                <th class="sortable" @click="setTradeSort('exec_date')">成交日<span class="sort-arrow">{{tradeArrow('exec_date')}}</span></th>
+                <th class="sortable" @click="setTradeSort('shares')">股数<span class="sort-arrow">{{tradeArrow('shares')}}</span></th>
+                <th class="sortable" @click="setTradeSort('price')">价格<span class="sort-arrow">{{tradeArrow('price')}}</span></th>
+                <th class="sortable" @click="setTradeSort('amount')">总交易额<span class="sort-arrow">{{tradeArrow('amount')}}</span></th>
+                <th class="sortable" @click="setTradeSort('fee')">费用<span class="sort-arrow">{{tradeArrow('fee')}}</span></th>
+              </tr>
+            <tr v-for="t in sortedPaperTrades()" :key="t.id">
+              <td>{{t.code}}</td><td>{{t.name || '-'}}</td><td>{{t.side}}</td><td>{{(t.exec_date||'').slice(0,10)}}</td>
+              <td>{{fmt(t.shares, 0)}}</td><td>{{fmt(t.price)}}</td><td>{{fmt(t.amount)}}</td><td>{{fmt(t.fee)}}</td>
+            </tr></table></div>
+          </div>
+          <div class="card"><h3>事件日志</h3>
+            <div style="overflow-x:auto"><table><tr><th>日期</th><th>级别</th><th>消息</th></tr>
+            <tr v-for="e in paper.events" :key="e.id">
+              <td>{{(e.date||'').slice(0,10)}}</td><td>{{e.level}}</td><td>{{e.msg}}</td>
+            </tr></table></div>
+          </div>
+        </div>
+      </template>
+      <div v-else class="card"><div class="empty">还没有模拟盘账户，先创建一个</div></div>
+    </section>
+
+    <!-- 历史回测 -->
+    <section v-if="tab==='history'">
+      <div class="card">
+        <h2>历史回测（PG 归档）</h2>
+        <p class="muted">每次回测/对比/扫描自动落库，参数、指标、净值、交易可追溯。</p>
+        <div class="row">
+          <label class="field"><span>类型</span>
+            <select v-model="history.kind">
+              <option value="">全部</option>
+              <option value="backtest">单策略回测</option>
+              <option value="compare">多策略对比</option>
+              <option value="sweep">参数扫描</option>
+              <option value="sweep_cli">参数扫描(CLI)</option>
+            </select>
+          </label>
+          <label class="field"><span>条数</span>
+            <select v-model.number="history.limit">
+              <option :value="50">50</option>
+              <option :value="100">100</option>
+              <option :value="200">200</option>
+            </select>
+          </label>
+          <button class="primary" @click="loadHistory" :disabled="history.loading">刷新</button>
+        </div>
+        <p class="err left" v-if="history.error">{{history.error}}</p>
+        <div class="table-wrap" v-if="history.items && history.items.length">
+          <table>
+            <thead><tr>
+              <th class="sortable" @click="setHistorySort('run_id')">ID<span class="sort-arrow" v-if="history.sortKey==='run_id'">{{history.sortDir==='asc' ? '↑' : '↓'}}</span></th>
+              <th class="sortable" @click="setHistorySort('created_at')">时间<span class="sort-arrow" v-if="history.sortKey==='created_at'">{{history.sortDir==='asc' ? '↑' : '↓'}}</span></th>
+              <th class="sortable" @click="setHistorySort('kind')">类型<span class="sort-arrow" v-if="history.sortKey==='kind'">{{history.sortDir==='asc' ? '↑' : '↓'}}</span></th>
+              <th class="sortable" @click="setHistorySort('title')">标题<span class="sort-arrow" v-if="history.sortKey==='title'">{{history.sortDir==='asc' ? '↑' : '↓'}}</span></th>
+              <th class="sortable" @click="setHistorySort('period')">区间<span class="sort-arrow" v-if="history.sortKey==='period'">{{history.sortDir==='asc' ? '↑' : '↓'}}</span></th>
+              <th class="sortable" @click="setHistorySort('total_return')">总收益<span class="sort-arrow" v-if="history.sortKey==='total_return'">{{history.sortDir==='asc' ? '↑' : '↓'}}</span></th>
+              <th class="sortable" @click="setHistorySort('annual')">年化<span class="sort-arrow" v-if="history.sortKey==='annual'">{{history.sortDir==='asc' ? '↑' : '↓'}}</span></th>
+              <th class="sortable" @click="setHistorySort('sharpe')">夏普<span class="sort-arrow" v-if="history.sortKey==='sharpe'">{{history.sortDir==='asc' ? '↑' : '↓'}}</span></th>
+              <th class="sortable" @click="setHistorySort('max_drawdown')">最大回撤<span class="sort-arrow" v-if="history.sortKey==='max_drawdown'">{{history.sortDir==='asc' ? '↑' : '↓'}}</span></th>
+              <th class="sortable" @click="setHistorySort('data_version')">数据版本<span class="sort-arrow" v-if="history.sortKey==='data_version'">{{history.sortDir==='asc' ? '↑' : '↓'}}</span></th>
+              <th></th>
+            </tr></thead>
+            <tbody>
+              <tr v-for="r in historyItems()" :key="r.run_id" class="clickable-row" @click="openHistory(r.run_id)">
+                <td>{{r.run_id}}</td>
+                <td>{{(r.created_at||'').slice(0,16).replace('T',' ')}}</td>
+                <td>{{kindName(r.kind)}}</td>
+                <td>{{historyTitle(r)}}</td>
+                <td>{{(r.params?.start||'')}}~{{(r.params?.end||'')}}</td>
+                <td>{{pct(r.summary?.total_return)}}</td>
+                <td>{{pct(r.summary?.annual)}}</td>
+                <td>{{num(r.summary?.sharpe)}}</td>
+                <td>{{pct(r.summary?.max_drawdown)}}</td>
+                <td>{{r.data_version||''}}</td>
+                <td><button class="ghost" @click.stop="openHistory(r.run_id)">详情</button></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div v-if="history.items && !history.items.length" class="empty">暂无归档记录</div>
+      </div>
+
+      <template v-if="history.detail">
+        <div class="card" id="historyDetail">
+          <h2>详情 #{{history.detail.run_id}} <span class="muted">{{history.detail.created_at}}</span></h2>
+          <div class="cards" v-if="history.detail.metrics">
+            <div class="metric" v-for="(v,k) in history.detail.metrics" :key="k">
+              <div class="label">{{k}}</div><div class="value">{{num(v)}}</div>
+            </div>
+          </div>
+          <h3 v-if="history.detail.params">参数</h3>
+          <pre class="code-block">{{JSON.stringify(history.detail.params, null, 2)}}</pre>
+          <template v-if="isSweepHistory()">
+            <template v-if="histSweepRows('nav').length">
+              <h3>扫描结果<span class="muted">（{{history.detail.params?.mode || history.detail.kind}}）</span></h3>
+              <div class="table-wrap"><table>
+                <tr><th v-for="c in histSweepCols(histSweepRows('nav'))" :key="c" class="sortable" @click="setHistSweepSort(c)">{{c}}<span class="sort-arrow">{{histSweepArrow(c)}}</span></th></tr>
+                <tr v-for="(r,i) in sortedHistSweepRows('nav')" :key="i">
+                  <td v-for="c in histSweepCols(histSweepRows('nav'))" :key="c">{{histCell(c, r[c])}}</td>
+                </tr>
+              </table></div>
+            </template>
+            <template v-else>
+              <h3>扫描结果<span class="muted">（{{history.detail.params?.mode || history.detail.kind}}）</span></h3>
+              <div class="table-wrap" v-if="histSummaryRows().length"><table>
+                <tr><th>参数/概要</th><th>值</th></tr>
+                <tr v-for="(kv,i) in histSummaryRows()" :key="i">
+                  <td>{{kv[0]}}</td><td>{{histSummaryValue(kv[1])}}</td>
+                </tr>
+              </table></div>
+              <div v-else class="empty">该记录没有可展示的扫描结果（数据缺失）</div>
+            </template>
+            <template v-if="histSweepRows('bench').length">
+              <h3>热力矩阵（均值夏普）</h3>
+              <div class="table-wrap"><table>
+                <tr><th>short</th><th v-for="c in histHeatCols(histSweepRows('bench'))" :key="c">{{c}}</th></tr>
+                <tr v-for="(r,i) in histSweepRows('bench')" :key="i">
+                  <td>{{r.short}}</td>
+                  <td v-for="c in histHeatCols(histSweepRows('bench'))" :key="c">{{fmt(r[c.slice(5)], 3)}}</td>
+                </tr>
+              </table></div>
+            </template>
+            <template v-else><h3>热力矩阵（均值夏普）</h3><div class="empty">暂无热力矩阵数据（该模式可能不生成）</div></template>
+            <template v-if="histSweepRows('trades').length">
+              <h3>窗口明细</h3>
+              <div class="table-wrap"><table>
+                <tr><th v-for="c in histSweepCols(histSweepRows('trades'))" :key="c" class="sortable" @click="setHistSweepSort(c)">{{c}}<span class="sort-arrow">{{histSweepArrow(c)}}</span></th></tr>
+                <tr v-for="(r,i) in sortedHistSweepRows('trades')" :key="i">
+                  <td v-for="c in histSweepCols(histSweepRows('trades'))" :key="c">{{histCell(c, r[c])}}</td>
+                </tr>
+              </table></div>
+            </template>
+            <template v-else><h3>窗口明细</h3><div class="empty">暂无窗口明细数据</div></template>
+          </template>
+          <template v-else>
+            <template v-if="histNavSeries().length">
+              <h3>净值</h3>
+              <div id="histNav" style="height:320px"></div>
+            </template>
+            <template v-else><h3>净值</h3><div class="empty">暂无净值数据</div></template>
+            <template v-if="histDrawSeries().length">
+              <h3>回撤（%）</h3>
+              <div id="histDraw" class="chart small"></div>
+            </template>
+            <template v-else><h3>回撤（%）</h3><div class="empty">暂无回撤数据</div></template>
+            <div class="grid" style="grid-template-columns:1fr 1fr">
+              <div>
+                <h3>持仓明细</h3>
+                <div class="table-wrap" v-if="histHoldingRows().length"><table><tr><th v-if="hasNameCol(histHoldingRows())">策略</th><th>代码</th><th>名称</th><th>权重%</th><th>价格</th><th>市值</th></tr>
+                <tr v-for="(h,i) in histHoldingRows()" :key="i"><td v-if="hasNameCol(histHoldingRows())">{{h.name}}</td><td>{{stock(h.code, h.name)}}</td><td>{{h.name||'-'}}</td><td>{{fmt(h.weight_pct)}}</td><td>{{fmt(h.price)}}</td><td>{{fmt(h.market_value)}}</td></tr></table></div>
+                <div v-else class="empty">暂无持仓数据</div>
+              </div>
+              <div>
+                <h3>调仓记录</h3>
+                <div class="table-wrap" v-if="histTradeRows().length"><table><tr><th v-if="hasNameCol(histTradeRows())">策略</th><th>日期</th><th>信号日</th><th>持仓数</th><th>换手</th></tr>
+                <tr v-for="(t,i) in histTradeRows()" :key="i"><td v-if="hasNameCol(histTradeRows())">{{t.name}}</td><td>{{(t.date||'').slice(0,10)}}</td><td>{{(t.signal_date||'').slice(0,10)}}</td><td>{{t.num_hold}}</td><td>{{fmt(t.turnover)}}</td></tr></table></div>
+                <div v-else class="empty">暂无调仓记录</div>
+              </div>
+            </div>
+          </template>
+        </div>
+      </template>
+    </section>
+
+    <!-- 信号 -->
+    <section v-if="tab==='signals'">
+      <div class="card">
+        <div class="form-grid">
+          <label class="field"><span>股票池</span><select v-model="sig.universe"><option>科技TMT</option><option>沪深300+中证500+中证1000</option><option>ETF</option><option>场外基金</option></select></label>
+          <label class="field wide"><span>策略</span><strategy-select v-model="sig.strategy" :strategies="strategies" placeholder="选择策略"></strategy-select></label>
+          <label class="field"><span>条数</span><select v-model.number="sig.top_n"><option v-for="n in [5,10,15,20,30]" :value="n">{{n}}</option></select></label>
+          <label class="field-check"><input type="checkbox" v-model="sig.long_short"> 多空对冲</label>
+          <label class="field"><span>空头只数</span><input type="number" v-model.number="sig.short_n" min="1" max="20" :disabled="!sig.long_short"></label>
+        </div>
+        <div class="form-actions"><button class="primary" @click="loadSignals">刷新</button></div>
+        <p class="muted" v-if="sigDate">信号日：{{sigDate}} · 数据截至：{{panelInfo.last_date || '-'}} · 上次刷新：{{meta.last_update || '-'}}</p>
+      </div>
+      <div class="card"><div id="sigChart" class="chart small"></div></div>
+      <div class="card">
+        <div class="table-wrap"><table><tr><th>代码</th><th>方向</th><th>因子得分</th><th>收盘价</th><th>换手率</th></tr>
+        <tr v-for="(s,i) in signals" :key="i"><td>{{stock(s.code, s.name)}}</td><td>{{s.side || '多'}}</td><td>{{fmt(s.score, 4)}}</td><td>{{fmt(s.close)}}</td><td>{{pct(s.turnover)}}</td></tr>
+        </table></div>
+        <div v-if="!signals.length" class="empty">暂无信号，请先刷新</div>
+      </div>
+    </section>
+
+    <!-- 账户 -->
+    <section v-if="tab==='account'">
+      <div class="grid" style="grid-template-columns:1fr 1fr">
+        <div class="card">
+          <h3>出入金</h3>
+          <div class="form-grid">
+            <label class="field"><span>日期</span><input type="date" v-model="dep.date"></label>
+            <label class="field"><span>金额</span><input type="number" v-model.number="dep.amount"></label>
+          </div>
+          <div class="form-actions"><button class="primary" @click="addDeposit">入金</button></div>
+          <div class="table-wrap" style="margin-top:10px"><table><tr><th>日期</th><th>金额</th><th>备注</th></tr>
+          <tr v-for="(d,i) in deposits" :key="i"><td>{{d.date.slice(0,10)}}</td><td>{{fmt(d.amount)}}</td><td>{{d.note||'-'}}</td></tr></table></div>
+          <div v-if="!deposits.length" class="empty">暂无出入金记录</div>
+        </div>
+        <div class="card">
+          <h3>录入交易</h3>
+          <div class="form-grid">
+            <label class="field"><span>日期</span><input type="date" v-model="tx.date"></label>
+            <label class="field"><span>代码</span><input v-model="tx.code" placeholder="601728"></label>
+            <label class="field"><span>名称</span><input v-model="tx.name"></label>
+            <label class="field"><span>方向</span><select v-model="tx.action"><option value="buy">买入</option><option value="sell">卖出</option></select></label>
+            <label class="field"><span>股数</span><input type="number" v-model.number="tx.shares"></label>
+            <label class="field"><span>价格</span><input type="number" v-model.number="tx.price"></label>
+          </div>
+          <div class="form-actions"><button class="primary" @click="addTx">提交</button></div>
+          <div class="table-wrap" style="margin-top:10px"><table><tr><th>日期</th><th>代码</th><th>名称</th><th>方向</th><th>股数</th><th>价格</th></tr>
+          <tr v-for="(t,i) in transactions" :key="i"><td>{{t.date.slice(0,10)}}</td><td>{{stock(t.code, t.name)}}</td><td>{{t.name}}</td><td>{{t.action}}</td><td>{{t.shares}}</td><td>{{fmt(t.price)}}</td></tr></table></div>
+          <div v-if="!transactions.length" class="empty">暂无交易记录</div>
+        </div>
+      </div>
+      <div class="card"><h3>当前持仓</h3>
+        <div class="table-wrap"><table><tr><th>代码</th><th>名称</th><th>股数</th><th>成本</th><th>现价</th><th>市值</th><th>盈亏</th><th>盈亏%</th></tr>
+        <tr v-for="p in positions" :key="p.code"><td>{{stock(p.code, p.name)}}</td><td>{{p.name||'-'}}</td><td>{{p.shares}}</td><td>{{fmt(p.avg_cost)}}</td><td>{{fmt(p.price)}}</td><td>{{fmt(p.market_value)}}</td><td :class="sign(p.pnl)">{{fmt(p.pnl)}}</td><td :class="sign(p.pnl_pct)">{{pct(p.pnl_pct)}}</td></tr></table></div>
+        <div v-if="!positions.length" class="empty">当前空仓</div>
+      </div>
+    </section>
+
+    <!-- 数据 -->
+    <section v-if="tab==='data'">
+      <div class="card">
+        <h3>数据源状态</h3>
+        <div class="table-wrap"><table><tr><th>数据</th><th>位置</th><th>状态</th><th>大小MB</th><th>说明</th></tr>
+        <tr v-for="(v,k) in statusRows" :key="k">
+          <td>{{v.name}}</td>
+          <td class="mono">{{v.loc}}</td>
+          <td :class="v.exists?'ok':'err'">{{v.exists?'存在':'缺失'}}</td>
+          <td>{{v.size??'-'}}</td>
+          <td>{{v.desc}}<span class="muted"><br>{{v.source}} · {{v.update}}</span></td>
+        </tr></table></div>
+        <p class="muted" v-if="meta.last_update">上次刷新：{{meta.last_update}}</p>
+        <p class="muted">数据截至：{{meta.end || panelInfo.last_date || '-'}} · 代码 {{meta.n_codes}} · 行数 {{meta.n_rows}}</p>
+      </div>
+      <div class="card">
+        <h3>数据更新说明</h3>
+        <ul class="muted">
+          <li>「开始更新」会刷新：股票池、指数、行业分类、股票日线、ETF、场外基金净值，并同步 PostgreSQL <code>stock_daily</code>、重建基金衍生面板。</li>
+          <li>「增量」只追加最新行情；「全量重建」重新抓取全部日线，耗时更长。</li>
+          <li>舆情数据不跟随一键更新，由 <code>~/quant/sentiment-mvp/run_pipeline.py daily</code> 独立更新。</li>
+          <li>状态只表示文件/表是否存在；数据新旧以「上次刷新 / 数据截至」为准。</li>
+          <li>更新带内存保护：启动前可用内存低于约 700MB 会拒绝启动；运行中低于约 500MB 会自动中止。</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>更新数据</h3>
+        <div class="form-grid">
+          <label class="field"><span>模式</span><select v-model="updateMode"><option value="incremental">增量（推荐）</option><option value="full">全量重建</option></select></label>
+        </div>
+        <div class="form-actions"><button class="primary" @click="startUpdate" :disabled="updating"><span v-if="updating" class="spinner"></span>{{updating ? '更新中…' : '开始更新'}}</button></div>
+        <div class="progress" v-if="updating"><div class="bar" :style="{width: (updateProgress*100)+'%'}"></div></div>
+        <p class="muted" v-if="updating">{{updateText}}</p>
+        <p class="ok" v-if="updateDone">更新完成：{{updateResult?.n_codes}} 只 · {{updateResult?.n_rows}} 行</p>
+        <p class="err" v-if="updateError">{{updateError}}</p>
+        <p class="muted">本次更新含：行情源 + PostgreSQL 日线同步 + 基金衍生面板重建</p>
+      </div>
+    </section>
+
+    <!-- 舆情情绪 -->
+    <section v-if="tab==='sentiment'">
+      <div class="cards" v-if="sentStats.ok">
+        <div class="metric"><div class="label">新闻总数</div><div class="value">{{sentStats.n_articles}}</div></div>
+        <div class="metric"><div class="label">覆盖股票</div><div class="value">{{sentStats.n_codes}}</div></div>
+        <div class="metric"><div class="label">最近日期</div><div class="value">{{sentStats.last_date}}</div></div>
+        <div class="metric"><div class="label">情绪分均值</div><div class="value">{{fmt(sentStats.mean_score, 3)}}</div></div>
+      </div>
+      <div v-else class="card"><div class="empty">{{sentError || '暂无舆情数据，先运行 sentiment-mvp 流水线'}}</div></div>
+
+      <div class="grid" style="grid-template-columns:1fr 1fr">
+        <div class="card"><h3>情绪标签分布</h3><div id="sentLabel" class="chart small"></div></div>
+        <div class="card"><h3>每日新闻条数（近 30 天）</h3><div id="sentDaily" class="chart small"></div></div>
+      </div>
+
+      <div class="card">
+        <h3>舆情分桶回测 IC / 分组</h3>
+        <p class="muted">由 scripts/sentiment_backtest.py 输出，衡量舆情情绪因子对未来收益的预测力。</p>
+        <div class="table-wrap"><table>
+          <tr><th>策略</th><th>类型</th><th>IC 均值</th><th>ICIR</th><th>t 值</th><th>IC&gt;0 占比</th><th>多空价差</th><th>年化价差</th><th>方向调整 IC</th></tr>
+          <tr v-for="(r,i) in sentIc" :key="i">
+            <td>{{r['策略']}}</td><td>{{r['类型']}}</td>
+            <td :class="sign(r['IC均值'])">{{fmt(r['IC均值'], 4)}}</td><td>{{fmt(r['ICIR'], 3)}}</td><td>{{fmt(r['t值'], 2)}}</td>
+            <td>{{pct(r['IC>0占比'])}}</td><td>{{fmt(r['多空价差%'], 2)}}%</td><td>{{fmt(r['多空价差年化%'], 2)}}%</td><td :class="sign(r['方向调整IC'])">{{fmt(r['方向调整IC'], 4)}}</td>
+          </tr>
+        </table></div>
+        <div v-if="!sentIc.length" class="empty">暂无 IC 结果，先运行 scripts/sentiment_backtest.py</div>
+      </div>
+
+      <div class="grid" style="grid-template-columns:1fr 1fr">
+        <div class="card">
+          <h3>情绪最强新闻</h3>
+          <div class="news-list">
+            <a v-for="(n,i) in sentNewsHigh" :key="'h'+i" :href="n.url" target="_blank" class="news-item">
+              <div class="news-title">{{n.title}}</div>
+              <div class="news-meta">{{n.code}} · {{n.publish_time}} · {{n.media}} · score {{fmt(n.score, 3)}}</div>
+            </a>
+            <div v-if="!sentNewsHigh.length" class="empty">暂无</div>
+          </div>
+        </div>
+        <div class="card">
+          <h3>情绪最弱新闻</h3>
+          <div class="news-list">
+            <a v-for="(n,i) in sentNewsLow" :key="'l'+i" :href="n.url" target="_blank" class="news-item">
+              <div class="news-title">{{n.title}}</div>
+              <div class="news-meta">{{n.code}} · {{n.publish_time}} · {{n.media}} · score {{fmt(n.score, 3)}}</div>
+            </a>
+            <div v-if="!sentNewsLow.length" class="empty">暂无</div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script>
+const { createApp } = Vue;
+
+async function api(path, opts) {
+  const res = await fetch(path, { ...opts, credentials: 'include' });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+const charts = {};
+function chart(id) {
+  const el = document.getElementById(id);
+  if (!el) return null;
+  if (charts[id]) {
+    const bound = charts[id].getDom ? charts[id].getDom() : null;
+    if (!document.body.contains(el) || (bound && bound !== el)) {
+      // 详情切换后容器可能已被重建：丢弃绑定到旧 DOM 的实例，避免空图/异常
+      charts[id].dispose(); delete charts[id];
+    }
+  }
+  if (!charts[id]) charts[id] = echarts.init(el);
+  return charts[id];
+}
+function renderLine(id, series, height) {
+  const c = chart(id);
+  if (!c) return;
+  c.setOption({
+    tooltip: { trigger: 'axis' },
+    legend: { textStyle: { color: '#8494b5' }, top: 0 },
+    grid: { left: 50, right: 16, top: 30, bottom: 30 },
+    xAxis: { type: 'category', data: series[0]?.dates || [], axisLabel: { color: '#8494b5' } },
+    yAxis: { type: 'value', axisLabel: { color: '#8494b5' } },
+    series: series.map(s => {
+      const item = { name: s.name, type: 'line', data: s.values, showSymbol: false, smooth: true, lineStyle: { width: 2, type: s.dash ? 'dashed' : 'solid' } };
+      if (s.fill) item.areaStyle = { color: 'rgba(255, 93, 77, 0.16)' };
+      return item;
+    })
+  }, true);
+}
+function monthlyReturnCells(points) {
+  if (!Array.isArray(points) || points.length < 2) return null;
+  const months = {};
+  for (const p of points) {
+    const date = String(p.date || '').slice(0, 10);
+    const value = Number(p.value);
+    if (!date || !Number.isFinite(value) || value <= 0) continue;
+    const key = date.slice(0, 7);
+    if (!months[key]) months[key] = { first: value, last: value };
+    else months[key].last = value;
+  }
+  const keys = Object.keys(months).sort();
+  const years = [...new Set(keys.map(k => k.slice(0, 4)))].sort();
+  if (!keys.length || !years.length) return null;
+  const yearIndex = Object.fromEntries(years.map((y, i) => [y, i]));
+  const annual = Object.fromEntries(years.map(y => [y, 1]));
+  const data = [];
+  for (const key of keys) {
+    const ret = months[key].last / months[key].first - 1;
+    const year = key.slice(0, 4);
+    const month = Number(key.slice(5, 7)) - 1;
+    annual[year] *= 1 + ret;
+    data.push({ value: [month, yearIndex[year], ret * 100] });
+  }
+  for (const year of years) {
+    data.push({ value: [12, yearIndex[year], (annual[year] - 1) * 100] });
+  }
+  return { years, data };
+}
+function renderMonthlyHeatmap(id, points) {
+  const c = chart(id);
+  if (!c) return;
+  const result = monthlyReturnCells(points);
+  if (!result) { c.clear(); return; }
+  const maxAbs = Math.max(1, ...result.data.map(x => Math.abs(x.value[2])));
+  c.setOption({
+    tooltip: { formatter: p => `${result.years[p.value[1]]} · ${p.value[0] === 12 ? '年度' : `${p.value[0] + 1}月`}: <b>${Number(p.value[2]).toFixed(2)}%</b>` },
+    grid: { left: 54, right: 82, top: 24, bottom: 48 },
+    xAxis: { type: 'category', position: 'top', data: ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月','年度'], axisLabel: { color: '#8494b5' } },
+    yAxis: { type: 'category', data: result.years, inverse: true, axisLabel: { color: '#8494b5' } },
+    visualMap: { min: -maxAbs, max: maxAbs, calculable: false, orient: 'vertical', right: 0, top: 'middle', text: ['正','负'], textStyle: { color: '#8494b5' }, inRange: { color: ['#c94b55', '#27344d', '#35b779'] } },
+    series: [{ type: 'heatmap', data: result.data, label: { show: true, color: '#e6ecf7', formatter: p => `${Number(p.value[2]).toFixed(2)}%` }, emphasis: { itemStyle: { shadowBlur: 8, shadowColor: 'rgba(255,255,255,0.35)' } } }]
+  }, true);
+}
+function renderBar(id, names, values) {
+  const c = chart(id);
+  if (!c) return;
+  c.setOption({
+    tooltip: {},
+    grid: { left: 50, right: 16, top: 20, bottom: 40 },
+    xAxis: { type: 'category', data: names, axisLabel: { color: '#8494b5', rotate: 30 } },
+    yAxis: { type: 'value', axisLabel: { color: '#8494b5' } },
+    series: [{ type: 'bar', data: values, itemStyle: { color: '#4f8cff' } }]
+  }, true);
+}
+window.addEventListener('resize', () => Object.values(charts).forEach(c => c.resize()));
+
+const app = createApp({
+  data() {
+    return {
+      tab: 'dashboard',
+      panelInfo: {}, names: {},
+      indices: [], idxCache: {},
+      strategies: [],
+      pool: {
+        full: [], pooled: [], trash: [],
+        q: '', grp: '全部', addSel: [], rmSel: [], delSel: [], purgeSel: [],
+      },
+      accSummary: null, accItems: [], accEmpty: true,
+      cmp: { universe: '科技TMT', strategies: ['低换手冷门', '反转 20 日', '低波动', '动量 20 日'], top_n: 3, capital: 5000, start_date: '', end_date: '', bench: '沪深300' },
+      cmpResult: null, cmpRunning: false, cmpError: '', cmpHoldIdx: 0,
+      bt: { universe: '科技TMT', strategy: '低换手冷门', top_n: 3, capital: 5000, freq: 'monthly', start: '2026-02-02', end: today(), exclude: true, affordable: true, amount_q: 0.2, warmup_days: 400, long_short: false, neutral: false, risk_neutral: false, use_financial: false, short_n: 3, short_rate: 8.6, industry_cap: 0, analyze: false, bench: '沪深300' },
+      btSub: 'bt',
+      btResult: null, btRunning: false, btError: '', reportHtml: '', reportLoading: false,
+      benchInfo: { name: '', metrics: null },
+      factorOptions: [],
+      composites: [],
+      compName: '', compPick: '', compError: '', compRunning: false,
+      compSignals: [], compSigDate: '', compSignalsLoading: false,
+      comp: {
+        universe: '科技TMT', top_n: 5, capital: 5000, freq: 'monthly',
+        start: '2026-02-02', end: today(), bench: '沪深300',
+        factors: {
+          turn20: { enabled: true, dir: '买低', weight: 1 },
+          am20: { enabled: true, dir: '买高', weight: 1 },
+          mom20: { enabled: true, dir: '买高', weight: 1 },
+          mom60: { enabled: false, dir: '买高', weight: 1 },
+          vol20: { enabled: true, dir: '买低', weight: 1 },
+          ma_cross5_10: { enabled: false, dir: '买高', weight: 1 },
+          ma_cross5_20: { enabled: false, dir: '买高', weight: 1 },
+          ma_cross10_30: { enabled: false, dir: '买高', weight: 1 },
+          ma_cross20_60: { enabled: false, dir: '买高', weight: 1 },
+        }
+      },
+      compResult: null,
+      sig: { universe: '科技TMT', strategy: '低换手冷门', top_n: 10, long_short: false, short_n: 3 },
+      signals: [], sigDate: '', sigInfo: {},
+      stockView: { q: '', code: '', name: '', detail: null, loading: false, error: '', open: false, adj: 'qfq' },
+      deposits: [], transactions: [], positions: [],
+      dep: { date: today(), amount: 5000 }, tx: { date: today(), code: '', name: '', action: 'buy', shares: 100, price: 0, fee: 0 },
+      statusRows: [], meta: {}, updateMode: 'incremental',
+      updating: false, updateProgress: 0, updateText: '', updateDone: false, updateResult: null, updateError: '',
+      sentStats: { ok: false }, sentError: '', sentIc: [], sentNewsHigh: [], sentNewsLow: [],
+      code: {
+        code: '', tplName: '', tplOptions: [], presetList: [],
+        tplInfo: null,
+        strategy: '', strategies: [],
+        universe: '沪深300+中证500+中证1000', alpha_set: 'alpha158', alpha_limit: 30,
+        horizonsText: '1,5,10,20', quantiles: 10, min_cs_count: 30, cost_bps: 8,
+        start: '2022-01-01', end: today(), exclude: true, score_factor: '', top_n: 10, selection_mode: 'top_n', selection_pct: 0.10, min_positions: 1, max_positions: null, capital: 100000, freq: 'weekly', amount_q: 0.2, buy_cost_pct: 0.08, sell_cost_pct: 0.13, slippage_bps: 0, max_participation: 0,
+        savedName: '', savedList: [],
+      },
+      codeResult: null, codeRunning: false, codeError: '', codeSaveMsg: '',
+      helpersHtml: '',
+      attribution: null, attributionRunning: false, attributionError: '',
+      sweep: { mode: 'event', start: '2023-01-03', end: '', folds: 4,
+               shortList: '3,5,8,10,13', longList: '10,20,30,60', top_n: 3,
+               strategy: '双均线多头 5/20' },
+      sweepResult: null, sweepRunning: false, sweepError: '',
+      sweepSort: { key: 'mean_sharpe', dir: 'desc' },
+      history: { kind: '', limit: 50, items: [], loading: false, error: '', detail: null, sortKey: 'created_at', sortDir: 'desc' },
+      histSweepSort: { key: '', dir: 'asc' },
+      paper: {
+        accounts: [], pick: null, detail: null,
+        orders: [], trades: [], events: [], equity: [],
+        form: { name: '模拟盘A', strategy_type: 'factor', strategy: '动量 20 日',
+                module: '', event_strategy: '', universe: '科技TMT',
+                freq: 'monthly', capital: 100000, top_n: 3,
+                max_weight: 0.5, amount_q: 0.2 },
+        eventModules: [],
+        creating: false, running: false, error: '', runError: '', lastRun: null,
+        orderSort: { key: 'exec_date', dir: 'desc' },
+        tradeSort: { key: 'exec_date', dir: 'desc' },
+      },
+    };
+  },
+  mounted() {
+    this.init();
+    this.loadHelpers();
+  },
+  watch: {
+    'bt.universe'(universe) {
+      this.reloadStrategiesForUniverse(universe);
+    },
+    'cmp.universe'(universe) {
+      this.reloadStrategiesForUniverse(universe);
+    },
+    'sig.universe'(universe) {
+      this.reloadStrategiesForUniverse(universe);
+    },
+    'bt.strategy'(name) {
+      this.applyBtStrategyDefaults();
+    },
+    'bt.bench'() { if (this.btResult) this.renderBacktest(); },
+    'cmp.bench'() {
+      if (this.cmpResult && this.cmpResult.items && this.cmpResult.items.length) {
+        this.renderCompare(this.cmp.start_date || this.cmp.end_date, this.cmp.end_date || this.panelInfo.last_date);
+      }
+    },
+    'comp.bench'() { if (this.compResult) this.renderCompositeBacktest(); },
+    'btSub'(v) {
+      this.$nextTick(() => {
+        if (v === 'bt' && this.btResult) this.renderBacktest();
+      });
+    }
+  },
+  computed: {
+    pooledNames() {
+      return this.pool.pooled.map(s => s.name);
+    },
+    poolGroups() {
+      const set = new Set();
+      (this.pool.full || []).forEach(s => { if (s.group) set.add(s.group); });
+      return [...set].sort();
+    },
+    fullUnpooled() {
+      const pooled = new Set(this.pooledNames);
+      return this.fullFiltered().filter(s => !pooled.has(s.name));
+    },
+    stockMatches() {
+      const q = (this.stockView.q || '').trim().toLowerCase();
+      if (!q) return [];
+      const out = [];
+      for (const [code, name] of Object.entries(this.names)) {
+        const c = String(code).padStart(6, '0');
+        const n = String(name || '');
+        if (c.startsWith(q) || n.toLowerCase().includes(q)) {
+          out.push({ code: c, name: n });
+          if (out.length >= 20) break;
+        }
+      }
+      return out;
+    },
+  },
+  methods: {
+    async loadPoolData() {
+      try { const r = await api('/api/strategy-pool/full'); this.pool.full = r.items || []; } catch (e) {}
+      try { const r = await api('/api/strategy-pool'); this.pool.pooled = r.items || []; } catch (e) {}
+      try { const r = await api('/api/strategy-pool/trash'); this.pool.trash = r.items || []; } catch (e) {}
+      this.pool.q = ''; this.pool.grp = '全部'; this.pool.addSel = []; this.pool.rmSel = [];
+      this.pool.delSel = [];
+    },
+    fullFiltered() {
+      let arr = this.pool.full || [];
+      const q = (this.pool.q || '').trim().toLowerCase();
+      if (q) {
+        arr = arr.filter(s =>
+          (s.name || '').toLowerCase().includes(q) ||
+          (s.desc || '').toLowerCase().includes(q) ||
+          (s.factor || '').toLowerCase().includes(q));
+      }
+      if (this.pool.grp !== '全部') arr = arr.filter(s => s.group === this.pool.grp);
+      return arr;
+    },
+    ensureSelectedInPool() {
+      const names = this.strategies.map(s => s.name);
+      const fallback = names.length ? names[0] : '';
+      const fix = (ref, key) => {
+        if (ref[key] && !names.includes(ref[key])) ref[key] = fallback;
+      };
+      fix(this.bt, 'strategy');
+      fix(this.paper.form, 'strategy');
+      fix(this.sig, 'strategy');
+      fix(this.sweep, 'strategy');
+      if (this.cmp.strategies && this.cmp.strategies.length) {
+        this.cmp.strategies = this.cmp.strategies.filter(n => names.includes(n));
+        if (!this.cmp.strategies.length && fallback) this.cmp.strategies = [fallback];
+      }
+    },
+    async reloadStrategies() {
+      try { this.strategies = await api('/api/strategies'); } catch (e) {}
+      this.ensureSelectedInPool();
+      this.applyBtStrategyDefaults();
+    },
+    async reloadStrategiesForUniverse(universe) {
+      try { this.strategies = await api('/api/strategies?universe=' + encodeURIComponent(universe)); } catch (e) {}
+      this.ensureSelectedInPool();
+      this.applyBtStrategyDefaults();
+    },
+    async addPool() {
+      if (!this.pool.addSel.length) return;
+      const names = this.pool.addSel.slice();
+      let ok = 0, err = '';
+      for (const n of names) {
+        try {
+          const r = await api('/api/strategy-pool/add', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: n }) });
+          if (r && r.ok) ok++; else err = (r && r.error) || '';
+        } catch (e) { err = e.message || String(e); }
+      }
+      await this.loadPoolData();
+      await this.reloadStrategies();
+      if (ok) alert('已加入 ' + ok + ' 个策略到配置池');
+      if (err) alert('部分失败：' + err);
+    },
+    async removePool() {
+      if (!this.pool.rmSel.length) return;
+      const names = this.pool.rmSel.slice();
+      let ok = 0, err = '';
+      for (const n of names) {
+        try {
+          const r = await api('/api/strategy-pool/remove', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: n }) });
+          if (r && r.ok) ok++; else err = (r && r.error) || '';
+        } catch (e) { err = e.message || String(e); }
+      }
+      await this.loadPoolData();
+      await this.reloadStrategies();
+      if (ok) alert('已从配置池移除 ' + ok + ' 个（全量池保留）');
+      if (err) alert('移除失败：' + err);
+    },
+    async deleteFromFull() {
+      if (!this.pool.delSel.length) return;
+      const names = this.pool.delSel.slice();
+      let ok = 0, err = '';
+      for (const n of names) {
+        try {
+          const r = await api('/api/strategy-pool/full-delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: n }) });
+          if (r && r.ok) ok++; else err = (r && r.error) || '';
+        } catch (e) { err = e.message || String(e); }
+      }
+      await this.loadPoolData();
+      await this.reloadStrategies();
+      if (ok) alert('已删除 ' + ok + ' 个到回收站');
+      if (err) alert('删除失败：' + err);
+    },
+    async restorePool(name) {
+      try {
+        await api('/api/strategy-pool/restore', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+      } catch (e) {}
+      await this.loadPoolData();
+      await this.reloadStrategies();
+    },
+    async purgePool(name) {
+      try { await api('/api/strategy-pool/trash/purge', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) }); } catch (e) {}
+      await this.loadPoolData();
+      await this.reloadStrategies();
+    },
+    async emptyTrashPool() {
+      try { await api('/api/strategy-pool/trash/empty', { method: 'POST' }); } catch (e) {}
+      await this.loadPoolData();
+      await this.reloadStrategies();
+    },
+    async loadHelpers() {
+      if (this.helpersHtml) return;
+      try {
+        const r = await fetch('strategy_helpers.md', { credentials: 'include' });
+        if (!r.ok) return;
+        this.helpersHtml = this.renderMarkdown(await r.text());
+      } catch (e) { /* 说明文档加载失败时静默，不影响页面 */ }
+    },
+    renderMarkdown(src) {
+      const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const inline = s => esc(s)
+        .replace(/`([^`]+)`/g, '<code>$1</code>')
+        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+        .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+      const lines = src.replace(/\r\n/g, '\n').split('\n');
+      let html = '', inCode = false, codeBuf = [], listBuf = [], tableBuf = [], paraBuf = [];
+      const flushList = () => {
+        if (!listBuf.length) return;
+        html += '<ul>' + listBuf.map(x => '<li>' + inline(x) + '</li>').join('') + '</ul>';
+        listBuf = [];
+      };
+      const flushTable = () => {
+        if (!tableBuf.length) return;
+        const rows = tableBuf.map(r => r.map(c => '<td>' + inline(c.trim()) + '</td>').join(''));
+        html += '<table><tr>' + rows[0].replace(/<td>/g, '<th>').replace(/<\/td>/g, '</th>') + '</tr>' +
+          rows.slice(1).map(r => '<tr>' + r + '</tr>').join('') + '</table>';
+        tableBuf = [];
+      };
+      const flushPara = () => {
+        if (!paraBuf.length) return;
+        html += '<p>' + paraBuf.map(inline).join('<br>') + '</p>';
+        paraBuf = [];
+      };
+      const flushAll = () => { flushList(); flushTable(); flushPara(); };
+      for (const raw of lines) {
+        const line = raw.trim();
+        if (line.startsWith('```')) {
+          flushAll();
+          if (inCode) {
+            html += '<pre><code>' + codeBuf.join('\n') + '</code></pre>';
+            codeBuf = []; inCode = false;
+          } else { inCode = true; }
+          continue;
+        }
+        if (inCode) { codeBuf.push(esc(raw)); continue; }
+        if (!line) { flushAll(); continue; }
+        if (/^#{1,4}\s+/.test(line)) {
+          flushAll();
+          const m = line.match(/^(#{1,4})\s+(.*)$/);
+          html += '<h' + m[1].length + '>' + inline(m[2]) + '</h' + m[1].length + '>';
+          continue;
+        }
+        if (/^[-*]\s+/.test(line)) { flushTable(); flushPara(); listBuf.push(line.replace(/^[-*]\s+/, '')); continue; }
+        if (/^\|[\s:|-]+\|$/.test(line)) { continue; }
+        if (/^\|.*\|$/.test(line)) { flushList(); flushPara(); tableBuf.push(line.split('|').filter((_, i, a) => i > 0 && i < a.length - 1)); continue; }
+        flushList(); flushTable(); paraBuf.push(raw);
+      }
+      if (inCode) html += '<pre><code>' + codeBuf.join('\n') + '</code></pre>';
+      flushAll();
+      return html;
+    },
+    async init() {
+      this.loadIndices();
+      try { this.panelInfo = await api('/api/data/panel-info'); } catch (e) {}
+      if (this.panelInfo.last_date) {
+        if (!this.cmp.end_date) this.cmp.end_date = today();
+        if (!this.sweep.end) this.sweep.end = today();
+        if (!this.cmp.start_date) {
+          const d = new Date(this.cmp.end_date + 'T00:00:00Z');
+          d.setUTCMonth(d.getUTCMonth() - 6);
+          this.cmp.start_date = d.toISOString().slice(0, 10);
+        }
+      }
+      try { this.strategies = await api('/api/strategies?universe=' + encodeURIComponent(this.bt.universe)); } catch (e) {}
+      this.applyBtStrategyDefaults();
+      this.ensureSelectedInPool();
+      this.loadPoolData();
+      try { this.names = await api('/api/names'); } catch (e) {}
+      await this.loadFactors();
+      await this.loadComposites();
+      await this.loadAccount();
+      await this.loadSignals();
+      this.loadPaperAccounts();
+      this.loadStatus();
+      this.loadSentiment();
+      this.runCompare(true);
+    },
+    async loadIndices() {
+      try {
+        const r = await api('/api/data/indices');
+        this.indices = r.items || [];
+      } catch (e) {}
+    },
+    applyBtStrategyDefaults() {
+      const s = this.strategies.find(x => x.name === this.bt.strategy) || {};
+      this.bt.long_short = !!s.long_short;
+      this.bt.short_n = s.short_n || 3;
+      this.bt.short_rate = Math.round(((s.short_cost_rate || 0) * 100) * 10) / 10;
+    },
+    switchTab(t) {
+      if (t === 'sweep') { this.btSub = 'sweep'; t = 'backtest'; }
+      else if (t === 'backtest') { this.btSub = 'bt'; }
+      this.tab = t;
+      this.$nextTick(() => {
+        if (t === 'dashboard') {
+          if (!this.accEmpty) renderLine('dashEquity', this.accountSeries());
+          if (this.cmpResult && this.cmpResult.items && this.cmpResult.items.length) this.renderCompare();
+        }
+        if (t === 'backtest' && this.btResult) this.renderBacktest();
+        if (t === 'composite' && this.compResult) this.renderCompositeBacktest();
+        if (t === 'code') {
+          if (!this.code.code) this.loadCodeDefault();
+          if (this.codeResult) this.renderCode();
+        }
+        if (t === 'history') this.loadHistory();
+        if (t === 'paper') { if (!this.paper.accounts.length) this.loadPaperAccounts(); else this.loadPaperDetail(); }
+        if (t === 'signals') this.renderSignals();
+        if (t === 'stock') this.renderStockChart();
+        if (t === 'sentiment') this.renderSentiment();
+        if (t === 'data' && !this.statusRows.length) this.loadStatus();
+      });
+    },
+    async loadSentiment() {
+      try {
+        const s = await api('/api/sentiment/stats');
+        this.sentStats = s; this.sentError = s.error || '';
+        this.$nextTick(() => this.renderSentiment());
+      } catch (e) { this.sentError = e.message; }
+      try { const r = await api('/api/sentiment/ic'); this.sentIc = r.items || []; } catch (e) {}
+      try { const h = await api('/api/sentiment/news?top=8&sort=high&days=7'); this.sentNewsHigh = h.items || []; } catch (e) {}
+      try { const l = await api('/api/sentiment/news?top=8&sort=low&days=7'); this.sentNewsLow = l.items || []; } catch (e) {}
+    },
+    renderSentiment() {
+      const ld = this.sentStats.label_dist || {};
+      const keys = Object.keys(ld);
+      if (keys.length) renderBar('sentLabel', keys, keys.map(k => ld[k]));
+      const daily = this.sentStats.daily || [];
+      if (daily.length) renderLine('sentDaily', [{ name: '条数', dates: daily.map(d => d.date), values: daily.map(d => d.n) }], 220);
+    },
+    async loadAccount() {
+      try {
+        const eq = await api('/api/ledger/equity');
+        this.accSummary = eq.summary; this.accItems = eq.items || []; this.accEmpty = eq.items.length === 0;
+        if (this.accEmpty) { this.accSummary = null; }
+        else { this.$nextTick(() => renderLine('dashEquity', this.accountSeries())); }
+      } catch (e) { this.accEmpty = true; }
+      try { this.deposits = await api('/api/ledger/deposits'); } catch (e) {}
+      try { this.transactions = await api('/api/ledger/transactions'); } catch (e) {}
+      try { this.positions = await api('/api/ledger/positions'); } catch (e) {}
+    },
+    accountSeries() {
+      const items = this.accItems;
+      return [
+        { name: '总资产', dates: items.map(x => x.date.slice(0, 10)), values: items.map(x => +x.equity.toFixed(2)) },
+        { name: '持仓市值', dates: items.map(x => x.date.slice(0, 10)), values: items.map(x => +x.market_value.toFixed(2)) }
+      ];
+    },
+    async runCompare(silent) {
+      if (!this.strategies.length) return;
+      if (!this.cmp.strategies.length) { if (!silent) alert('请至少选择一个策略'); return; }
+      this.cmpRunning = true; this.cmpError = '';
+      try {
+        let end = this.cmp.end_date || this.panelInfo.last_date || today();
+        let start = this.cmp.start_date;
+        if (!start) {
+          const d = new Date(end + 'T00:00:00Z');
+          d.setUTCMonth(d.getUTCMonth() - 6);
+          start = d.toISOString().slice(0, 10);
+        }
+        if (start > end) { [start, end] = [end, start]; }
+        const r = await api('/api/backtest/compare', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+          universe: this.cmp.universe, strategies: this.cmp.strategies,
+          top_n: this.cmp.top_n, capital: this.cmp.capital, freq: 'monthly',
+          start, end, exclude_kechuang: true, affordable: true,
+          amount_q: 0.2, warmup_days: 400
+        })});
+        if (r.error) { this.cmpError = r.error; return; }
+        this.cmpResult = r; this.cmpHoldIdx = 0;
+        this.$nextTick(async () => this.renderCompare(start, end));
+      } catch (e) { if (!silent) this.cmpError = '对比失败: ' + e.message; }
+      finally { this.cmpRunning = false; }
+    },
+    async benchSeries(result, scope, start, end) {
+      if (scope.bench === '等权股票池') {
+        const b = result.bench;
+        return { name: '等权基准', points: b || [] };
+      }
+      if (!(this.indices || []).length) await this.loadIndices();
+      const idx = (this.indices || []).find(i => i.name === scope.bench);
+      if (!idx) return { name: scope.bench, points: [] };
+      const key = idx.code + '|' + start + '|' + end;
+      if (!this.idxCache[key]) {
+        try {
+          const r = await api('/api/data/indices/series?code=' + encodeURIComponent(idx.code) + '&start=' + encodeURIComponent(start) + '&end=' + encodeURIComponent(end));
+          if (r.ok && r.items) this.idxCache[key] = r.items;
+        } catch (e) {}
+      }
+      const pts = this.idxCache[key];
+      return { name: idx.name, points: pts || [] };
+    },
+    calcSeriesMetrics(points) {
+      if (!points || points.length < 2) return null;
+      const v = points.map(p => +p.value);
+      const n = v.length;
+      const total = v[n - 1] / v[0] - 1;
+      const years = (n - 1) / 252;
+      const annual = years > 0 ? Math.pow(1 + total, 1 / years) - 1 : 0;
+      const rets = [];
+      for (let i = 1; i < n; i++) rets.push(v[i] / v[i - 1] - 1);
+      const mean = rets.reduce((a, b) => a + b, 0) / rets.length;
+      const sd = Math.sqrt(rets.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / (rets.length - 1 || 1));
+      const sharpe = sd > 0 ? mean / sd * Math.sqrt(252) : 0;
+      let peak = v[0], mdd = 0;
+      for (const x of v) { if (x > peak) peak = x; const dd = x / peak - 1; if (dd < mdd) mdd = dd; }
+      return { total, annual, sharpe, mdd };
+    },
+    async renderCompare(start, end) {
+      const series = this.cmpResult.items.map(it => ({
+        name: it.name,
+        dates: it.nav.map(x => x.date),
+        values: it.nav.map(x => +(x.value * this.cmp.capital).toFixed(2))
+      }));
+      const bs = await this.benchSeries(this.cmpResult, this.cmp, start, end);
+      if (bs.points.length) {
+        series.push({ name: bs.name, dates: bs.points.map(x => x.date), values: bs.points.map(x => +(x.value * this.cmp.capital).toFixed(2)), dash: true });
+        this.benchInfo = { name: bs.name, metrics: this.calcSeriesMetrics(bs.points) };
+      } else {
+        this.benchInfo = { name: '', metrics: null };
+      }
+      renderLine('cmpChart', series);
+      const ddSeries = this.cmpResult.items
+        .filter(it => it.drawdown && it.drawdown.length)
+        .map(it => ({ name: it.name, dates: it.drawdown.map(x => x.date), values: it.drawdown.map(x => +(x.value * 100).toFixed(2)) }));
+      if (ddSeries.length) renderLine('cmpDraw', ddSeries.map(x => ({ ...x, fill: true })), 220);
+    },
+    cmpRows() {
+      const order = ['总收益', '年化收益', '年化波动', '夏普', '最大回撤', '卡玛', '胜率'];
+      return this.cmpResult.items.map(it => {
+        const row = { '策略': it.name };
+        for (const k of order) row[k] = it.metrics ? it.metrics[k] : null;
+        row['信号日'] = it.last_signal_date || '-';
+        return row;
+      });
+    },
+    async runBacktest() {
+      this.btRunning = true; this.btError = '';
+      try {
+        const payload = {
+          ...this.bt,
+          exclude_kechuang: this.bt.exclude,
+          industry_neutral: this.bt.neutral,
+          short_cost_rate: (this.bt.short_rate || 0) / 100,
+          industry_cap: this.bt.industry_cap > 0 ? this.bt.industry_cap : null,
+          analyze: !!this.bt.analyze,
+        };
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 120000);
+        let r;
+        try {
+          r = await api('/api/backtest', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), signal: ctrl.signal });
+        } finally { clearTimeout(timer); }
+        if (r.error) { this.btError = r.error; return; }
+        this.btResult = r;
+        this.$nextTick(async () => this.renderBacktest());
+      } catch (e) {
+        this.btError = (e && e.name === 'AbortError')
+          ? '回测超时（120 秒）。后台补数或内存不足时可能变慢，稍后重试。'
+          : '回测失败: ' + (e && e.message ? e.message : e);
+      } finally { this.btRunning = false; }
+    },
+    async renderBacktest() {
+      const nav = this.btResult.nav;
+      const series = [
+        { name: '策略资金', dates: nav.map(x => x.date), values: nav.map(x => +(x.value * this.bt.capital).toFixed(2)) },
+      ];
+      const bs = await this.benchSeries(this.btResult, this.bt, this.bt.start, this.bt.end);
+      if (bs.points.length) {
+        series.push({ name: bs.name, dates: bs.points.map(x => x.date), values: bs.points.map(x => +(x.value * this.bt.capital).toFixed(2)), dash: true });
+        this.benchInfo = { name: bs.name, metrics: this.calcSeriesMetrics(bs.points) };
+      } else {
+        this.benchInfo = { name: '', metrics: null };
+      }
+      renderLine('btEquity', series);
+      renderMonthlyHeatmap('btMonthly', nav);
+      const dd = this.btResult.drawdown;
+      renderLine('btDraw', [{ name: '回撤', dates: dd.map(x => x.date), values: dd.map(x => +(x.value * 100).toFixed(2)), fill: true }]);
+      const ic = this.btResult.factor_quality;
+      if (ic && ic.ic_series) {
+        renderLine('btIc', [{ name: 'IC', dates: ic.ic_series.map(x => x.date), values: ic.ic_series.map(x => +(x.ic || 0).toFixed(4)) }]);
+      }
+    },
+    async genReport() {
+      this.reportLoading = true;
+      try {
+        const payload = {
+          universe: this.bt.universe, strategy: this.bt.strategy,
+          top_n: this.bt.top_n, capital: this.bt.capital, freq: this.bt.freq,
+          start: this.bt.start, end: this.bt.end,
+          exclude_kechuang: this.bt.exclude, affordable: this.bt.affordable,
+          amount_q: this.bt.amount_q, warmup_days: this.bt.warmup_days,
+          long_short: this.bt.long_short, short_n: this.bt.short_n,
+          short_cost_rate: (this.bt.short_rate || 0) / 100,
+          industry_neutral: this.bt.neutral,
+          industry_cap: this.bt.industry_cap > 0 ? this.bt.industry_cap : null,
+          use_financial: !!this.bt.use_financial,
+          risk_neutral: !!this.bt.risk_neutral,
+        };
+        const r = await api('/api/backtest/quantstats', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        if (r.error) { alert(r.error); return; }
+        this.reportHtml = r.html;
+      } catch (e) { alert('生成报告失败: ' + e.message); }
+      finally { this.reportLoading = false; }
+    },
+    async loadFactors() {
+      try {
+        this.factorOptions = await api('/api/factors');
+        for (const f of this.factorOptions) {
+          if (!this.comp.factors[f.name]) this.comp.factors[f.name] = { enabled: false, dir: '买高', weight: 1 };
+        }
+      } catch (e) {}
+    },
+    async loadComposites() {
+      try { this.composites = await api('/api/composites'); } catch (e) {}
+    },
+    collectComposite() {
+      const weights = {}, directions = {};
+      for (const f of this.factorOptions) {
+        const cfg = this.comp.factors[f.name];
+        if (cfg && cfg.enabled) {
+          weights[f.name] = Number(cfg.weight) || 0;
+          directions[f.name] = cfg.dir === '买低';
+        }
+      }
+      return { weights, directions };
+    },
+    async saveComposite() {
+      this.compError = '';
+      const { weights, directions } = this.collectComposite();
+      if (!Object.keys(weights).length) { this.compError = '请至少勾选一个因子'; return; }
+      if (!this.compName.trim()) { this.compError = '请填组合名称'; return; }
+      try {
+        const r = await api('/api/composites', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: this.compName, weights, directions }) });
+        if (r.error) { this.compError = r.error; return; }
+        await this.loadComposites();
+        this.compPick = r.name;
+      } catch (e) { this.compError = '保存失败: ' + e.message; }
+    },
+    async loadComposite() {
+      this.compError = '';
+      if (!this.compPick) return;
+      const item = this.composites.find(c => c.name === this.compPick);
+      if (!item) return;
+      for (const name of Object.keys(this.comp.factors)) {
+        this.comp.factors[name].enabled = false;
+      }
+      for (const [name, w] of Object.entries(item.weights || {})) {
+        if (!this.comp.factors[name]) this.comp.factors[name] = { enabled: true, dir: '买高', weight: 1 };
+        this.comp.factors[name].enabled = true;
+        this.comp.factors[name].weight = w;
+        if (item.directions && name in item.directions) {
+          this.comp.factors[name].dir = item.directions[name] ? '买低' : '买高';
+        }
+      }
+    },
+    async deleteComposite() {
+      this.compError = '';
+      if (!this.compPick) return;
+      try {
+        await api('/api/composites/' + encodeURIComponent(this.compPick), { method: 'DELETE' });
+        this.compPick = '';
+        await this.loadComposites();
+      } catch (e) { this.compError = '删除失败: ' + e.message; }
+    },
+    async runCompositeBacktest() {
+      this.compError = '';
+      const { weights, directions } = this.collectComposite();
+      if (!Object.keys(weights).length) { this.compError = '请至少勾选一个因子'; return; }
+      this.compRunning = true;
+      try {
+        const r = await api('/api/backtest', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+          universe: this.comp.universe, strategy: '组合策略', top_n: this.comp.top_n,
+          capital: this.comp.capital, freq: this.comp.freq,
+          start: this.comp.start, end: this.comp.end,
+          exclude_kechuang: true, affordable: true,
+          composite_weights: weights, composite_directions: directions,
+          composite_name: this.compName || '未命名组合'
+        })});
+        if (r.error) { this.compError = r.error; return; }
+        this.compResult = r;
+        this.$nextTick(async () => this.renderCompositeBacktest());
+      } catch (e) { this.compError = '回测失败: ' + e.message; }
+      finally { this.compRunning = false; }
+    },
+    async renderCompositeBacktest() {
+      const nav = this.compResult.nav;
+      const series = [
+        { name: '组合资金', dates: nav.map(x => x.date), values: nav.map(x => +(x.value * this.comp.capital).toFixed(2)) },
+      ];
+      const bs = await this.benchSeries(this.compResult, this.comp, this.comp.start, this.comp.end);
+      if (bs.points.length) {
+        series.push({ name: bs.name, dates: bs.points.map(x => x.date), values: bs.points.map(x => +(x.value * this.comp.capital).toFixed(2)), dash: true });
+        this.benchInfo = { name: bs.name, metrics: this.calcSeriesMetrics(bs.points) };
+      } else {
+        this.benchInfo = { name: '', metrics: null };
+      }
+      renderLine('compEquity', series);
+      renderMonthlyHeatmap('compMonthly', nav);
+      const dd = this.compResult.drawdown;
+      renderLine('compDraw', [{ name: '回撤', dates: dd.map(x => x.date), values: dd.map(x => +(x.value * 100).toFixed(2)), fill: true }]);
+    },
+    async loadCompositeSignals() {
+      this.compError = '';
+      const { weights, directions } = this.collectComposite();
+      if (!Object.keys(weights).length) { this.compError = '请至少勾选一个因子'; return; }
+      this.compSignalsLoading = true;
+      try {
+        const r = await api('/api/signals', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+          universe: this.comp.universe, strategy: '组合策略', top_n: 10,
+          composite_weights: weights, composite_directions: directions
+        })});
+        if (r.error) { this.compError = r.error; return; }
+        this.compSignals = r.items; this.compSigDate = r.signal_date;
+      } catch (e) { this.compError = '信号获取失败: ' + e.message; }
+      finally { this.compSignalsLoading = false; }
+    },
+    async loadCodeDefault() {
+      try {
+        const d = await api('/api/code/qweave/default');
+        this.code.code = d.code || '';
+        this.code.tplInfo = { name: 'qweave Alpha 研究模板', group: 'qweave', desc: '因子表达式 → 未来收益标签 → IC / 分组 / 换手评估', factor: 'alpha', ascending: false };
+        this.code.end = today();
+        this.codeError = ''; this.codeSaveMsg = '';
+        await this.refreshSaved();
+        await this.refreshQweaveTemplates();
+        if (!this.code.tplName && this.code.tplOptions.length) this.code.tplName = this.code.tplOptions[0].value;
+        await this.parseCode(true);
+      } catch (e) { this.codeError = '加载默认代码失败: ' + e.message; }
+    },
+    buildTplOptions() {
+      const presets = (this.code.presetList || []).map(s => ({ value: 'preset:' + s.name, label: '预制 · ' + s.label }));
+      const labs = (this.code.savedList || []).filter(s => s.engine === 'qweave').map(s => ({ value: 'lab:' + s.name, label: '已保存 · ' + s.name }));
+      this.code.tplOptions = [...presets, ...labs];
+    },
+    async refreshQweaveTemplates() {
+      try {
+        const r = await api('/api/code/qweave/templates');
+        this.code.presetList = r.items || [];
+        this.buildTplOptions();
+      } catch (e) { this.codeError = '加载预制代码失败: ' + e.message; }
+    },
+    async refreshSaved() {
+      try { const r = await api('/api/code/saved'); this.code.savedList = r.items || []; this.buildTplOptions(); } catch (e) {}
+    },
+    async loadTemplate() {
+      const v = this.code.tplName;
+      if (!v) return;
+      this.codeError = '';
+      try {
+        const isLab = v.startsWith('lab:');
+        const isPreset = v.startsWith('preset:');
+        const name = isPreset ? v.slice(7) : v.slice(4);
+        const r = isLab ? await api('/api/code/saved/' + encodeURIComponent(name))
+                        : isPreset ? await api('/api/code/qweave/template?name=' + encodeURIComponent(name))
+                                   : await api('/api/code/qweave/default');
+        if (r.error) { this.codeError = r.error; return; }
+        this.code.code = r.code || '';
+        this.code.tplInfo = { name: r.label || r.name || name, group: isPreset ? '预制 qweave' : 'qweave', desc: isPreset ? '可直接运行，也可以继续修改代码' : '已保存的 qweave 研究代码', factor: 'alpha', ascending: false };
+        await this.parseCode(true);
+        this.codeSaveMsg = '已加载：' + r.name;
+        setTimeout(() => { if (this.codeSaveMsg) this.codeSaveMsg = ''; }, 3000);
+      } catch (e) { this.codeError = '加载失败: ' + e.message; }
+    },
+    async parseCode(silent) {
+      if (!this.code.code) { if (!silent) alert('代码为空'); return; }
+      this.codeRunning = true; this.codeError = '';
+      try {
+        const r = await api('/api/code/qweave/parse', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: this.code.code }) });
+        if (r.error || r.ok === false) { this.codeError = r.error || '解析失败'; return; }
+        this.code.strategies = r.factors || [];
+      } catch (e) { this.codeError = '解析失败: ' + e.message; }
+      finally { this.codeRunning = false; }
+    },
+    codeParams() {
+      const horizons = (this.code.horizonsText || '').split(',').map(x => Number(x.trim())).filter(x => Number.isFinite(x) && x > 0);
+      return {
+        code: this.code.code, universe: this.code.universe, alpha_set: this.code.alpha_set,
+        alpha_limit: this.code.alpha_limit, horizons, start: this.code.start, end: this.code.end,
+        exclude_kechuang: this.code.exclude, quantiles: this.code.quantiles,
+        min_cs_count: this.code.min_cs_count, cost_bps: this.code.cost_bps,
+        score_factor: this.code.score_factor, top_n: this.code.top_n,
+        selection_mode: this.code.selection_mode, selection_pct: this.code.selection_pct,
+        min_positions: this.code.min_positions, max_positions: this.code.max_positions,
+        amount_q: this.code.amount_q,
+        capital: this.code.capital, freq: this.code.freq,
+        buy_cost: (this.code.buy_cost_pct || 0) / 100,
+        sell_cost: (this.code.sell_cost_pct || 0) / 100,
+        slippage_bps: this.code.slippage_bps || 0,
+        max_participation: this.code.max_participation || 0,
+      };
+    },
+    async runCode() {
+      if (!this.code.strategies.length) { this.codeError = '请先点「解析因子」'; return; }
+      await this.executeQweave(false);
+    },
+    async runQweaveBacktest() {
+      if (!this.code.strategies.length) { this.codeError = '请先点「解析因子」'; return; }
+      await this.executeQweave(true);
+    },
+    async executeQweave(withBacktest) {
+      this.codeRunning = true; this.codeError = ''; this.codeSaveMsg = '';
+      try {
+        const r = await api('/api/code/qweave/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...this.codeParams(), run_backtest: withBacktest }) });
+        if (r.error || r.ok === false) { this.codeError = r.error || '运行失败'; return; }
+        if (r.strategies && r.strategies.length) this.code.strategies = r.strategies;
+        this.codeResult = r;
+        this.$nextTick(() => this.renderCode());
+      } catch (e) { this.codeError = '运行失败: ' + e.message; }
+      finally { this.codeRunning = false; }
+    },
+    async renderCode() {
+      const rows = this.codeResult.summary || [];
+      const factor = rows[0] && rows[0].factor;
+      const ic = (this.codeResult.ic || []).filter(x => x.factor === factor).slice(-500);
+      renderLine('codeIc', [{ name: 'Rank IC', dates: ic.map(x => x.date), values: ic.map(x => x.rank_ic) }]);
+      const qr = (this.codeResult.quantile_returns || []).filter(x => x.factor === factor).slice(-this.code.quantiles * 2);
+      renderBar('codeQuantile', qr.map(x => 'Q' + x.bin), qr.map(x => x.mean_ret_5));
+      if (this.codeResult.backtest) {
+        const bt = this.codeResult.backtest;
+        renderLine('qweaveBacktestEquity', [{ name: 'qweave score 回测', dates: bt.nav.map(x => x.date), values: bt.nav.map(x => x.value) }]);
+      }
+    },
+    topFactorRows() {
+      const factor = this.codeResult && this.codeResult.summary && this.codeResult.summary[0] && this.codeResult.summary[0].factor;
+      return (this.codeResult && this.codeResult.latest_factor_rows || []).filter(x => x.factor === factor);
+    },
+    async saveCode() {
+      if (!this.code.savedName.trim()) { this.codeError = '请填保存名称'; return; }
+      this.codeError = '';
+      try {
+        const r = await api('/api/code/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: this.code.savedName, code: this.code.code, engine: 'qweave' }) });
+        if (r.error) { this.codeError = r.error; return; }
+        this.codeSaveMsg = '已保存：' + r.name;
+        await this.refreshSaved();
+        setTimeout(() => { if (this.codeSaveMsg) this.codeSaveMsg = ''; }, 3000);
+      } catch (e) { this.codeError = '保存失败: ' + e.message; }
+    },
+    async loadSaved() {
+      if (!this.code.savedName) return;
+      this.codeError = '';
+      try {
+        const r = await api('/api/code/saved/' + encodeURIComponent(this.code.savedName));
+        if (r.error) { this.codeError = r.error; return; }
+        this.code.code = r.code || ((r.registry && r.factors) ? r.registry + '\n\n\n' + r.factors : '');
+        await this.parseCode(true);
+        this.codeSaveMsg = '已载入：' + r.name;
+        setTimeout(() => { if (this.codeSaveMsg) this.codeSaveMsg = ''; }, 3000);
+      } catch (e) { this.codeError = '载入失败: ' + e.message; }
+    },
+    async loadSignals() {
+      const strat = this.strategies.find(x => x.name === this.sig.strategy) || {};
+      const q = new URLSearchParams({ universe: this.sig.universe, strategy: this.sig.strategy, top_n: this.sig.top_n });
+      const ls = this.sig.long_short || strat.long_short;
+      if (ls) { q.set('long_short', 'true'); q.set('short_n', this.sig.short_n || strat.short_n || 3); }
+      try {
+        const r = await api('/api/signals?' + q.toString());
+        if (r.error) { alert(r.error); return; }
+        this.signals = r.items; this.sigDate = r.signal_date; this.sigInfo = r;
+        this.$nextTick(() => this.renderSignals());
+      } catch (e) { alert('信号获取失败: ' + e.message); }
+    },
+    renderSignals() {
+      renderBar('sigChart', this.signals.map(s => this.stock(s.code, s.name)), this.signals.map(s => +s.score.toFixed(4)));
+    },
+    async addDeposit() {
+      await api('/api/ledger/deposits', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(this.dep) });
+      await this.loadAccount(); this.switchTab('dashboard');
+    },
+    async addTx() {
+      if (!this.tx.code) { alert('请填代码'); return; }
+      await api('/api/ledger/transactions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(this.tx) });
+      await this.loadAccount(); this.switchTab('dashboard');
+    },
+    async startUpdate() {
+      this.updating = true; this.updateDone = false; this.updateError = '';
+      try {
+        await api('/api/data/update', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: this.updateMode }) });
+        const poll = setInterval(async () => {
+          const s = await api('/api/data/update/status');
+          this.updateProgress = s.progress; this.updateText = s.text;
+          if (!s.running) {
+            clearInterval(poll); this.updating = false;
+            if (s.error) this.updateError = s.error;
+            else { this.updateDone = true; this.updateResult = s.result; this.loadStatus(); this.loadDataInfo(); }
+          }
+        }, 2000);
+      } catch (e) { this.updating = false; this.updateError = e.message; }
+    },
+    async loadStatus() {
+      try {
+        const st = await api('/api/data/status');
+        this.meta = st.meta || {};
+        const rows = [];
+        for (const [name, src] of Object.entries(st)) {
+          if (name === 'meta') continue;
+          for (const [loc, s] of Object.entries(src)) {
+            let desc = s.desc || '';
+            if (s.info) {
+              if (s.info.last_date) desc += ' · 截至 ' + s.info.last_date;
+              if (s.info.n_rows != null) desc += ' · 约 ' + Number(s.info.n_rows).toLocaleString() + ' 行';
+            }
+            rows.push({
+              name: s.name || name, loc: s.path || loc, exists: s.exists,
+              size: s.size_mb, desc, source: s.source || '', update: s.update || ''
+            });
+          }
+        }
+        this.statusRows = rows;
+      } catch (e) {}
+    },
+    async loadDataInfo() { try { this.panelInfo = await api('/api/data/panel-info'); } catch (e) {} },
+    async loadPaperAccounts() {
+      try {
+        await this.loadPaperEventModules();
+        this.paper.accounts = await api('/api/paper/accounts');
+        if (this.paper.accounts.length) {
+          if (!this.paper.pick || !this.paper.accounts.some(a => a.id === this.paper.pick)) {
+            this.paper.pick = this.paper.accounts[0].id;
+          }
+          await this.loadPaperDetail();
+        } else {
+          this.paper.detail = null;
+        }
+      } catch (e) { this.paper.error = '加载账户失败: ' + e.message; }
+    },
+    async loadPaperDetail() {
+      if (!this.paper.pick) return;
+      const id = this.paper.pick;
+      try { this.paper.detail = await api('/api/paper/accounts/' + id + '/summary'); } catch (e) {}
+      try { this.paper.orders = await api('/api/paper/accounts/' + id + '/orders'); } catch (e) {}
+      try { this.paper.trades = await api('/api/paper/accounts/' + id + '/trades'); } catch (e) {}
+      try {
+        const eq = await api('/api/paper/accounts/' + id + '/equity');
+        this.paper.equity = eq.items || [];
+      } catch (e) {}
+      try { this.paper.events = await api('/api/paper/accounts/' + id + '/events'); } catch (e) {}
+      this.$nextTick(() => this.renderPaperEquity());
+    },
+    renderPaperEquity() {
+      const rows = this.paper.equity || [];
+      if (!rows.length) return;
+      renderLine('paperEquity', [{
+        name: '模拟盘权益',
+        dates: rows.map(x => x.date),
+        values: rows.map(x => +(this.toNum(x.equity)).toFixed(2)),
+      }]);
+    },
+    sortedPaperOrders() {
+      const rows = (this.paper.orders || []).slice();
+      const k = this.paper.orderSort.key;
+      const dir = this.paper.orderSort.dir === 'asc' ? 1 : -1;
+      return rows.sort((a, b) => this.sortCompare(a[k], b[k], dir));
+    },
+    setOrderSort(key) {
+      if (this.paper.orderSort.key === key) {
+        this.paper.orderSort.dir = this.paper.orderSort.dir === 'asc' ? 'desc' : 'asc';
+      } else {
+        this.paper.orderSort.key = key;
+        this.paper.orderSort.dir = 'desc';
+      }
+    },
+    orderArrow(key) {
+      return this.paper.orderSort.key === key ? (this.paper.orderSort.dir === 'asc' ? '↑' : '↓') : '';
+    },
+    sortedPaperTrades() {
+      const rows = (this.paper.trades || []).slice();
+      const k = this.paper.tradeSort.key;
+      const dir = this.paper.tradeSort.dir === 'asc' ? 1 : -1;
+      return rows.sort((a, b) => this.sortCompare(a[k], b[k], dir));
+    },
+    setTradeSort(key) {
+      if (this.paper.tradeSort.key === key) {
+        this.paper.tradeSort.dir = this.paper.tradeSort.dir === 'asc' ? 'desc' : 'asc';
+      } else {
+        this.paper.tradeSort.key = key;
+        this.paper.tradeSort.dir = 'desc';
+      }
+    },
+    tradeArrow(key) {
+      return this.paper.tradeSort.key === key ? (this.paper.tradeSort.dir === 'asc' ? '↑' : '↓') : '';
+    },
+    async loadPaperEventModules() {
+      try {
+        const r = await api('/api/paper/event-strategies');
+        this.paper.eventModules = r.items || [];
+      } catch (e) {}
+    },
+    paperEventStrategies() {
+      const m = this.paper.eventModules.find(x => x.module === this.paper.form.module);
+      return m ? m.strategies : [];
+    },
+    async createPaperAccount() {
+      this.paper.error = ''; this.paper.creating = true;
+      try {
+        const f = this.paper.form;
+        const body = {
+          name: f.name, strategy_type: f.strategy_type,
+          module: f.module || null, event_strategy: f.event_strategy || null,
+          strategy_name: f.strategy_type === 'event' ? f.event_strategy : f.strategy,
+          universe: f.universe, capital: f.capital, top_n: f.top_n, freq: f.freq,
+          risk_config: { max_weight: f.max_weight, amount_q: f.amount_q },
+        };
+        const r = await api('/api/paper/accounts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        if (r.error) { this.paper.error = r.error; return; }
+        await this.loadPaperAccounts();
+      } catch (e) { this.paper.error = '创建失败: ' + e.message; }
+      finally { this.paper.creating = false; }
+    },
+    async runPaper() {
+      if (!this.paper.pick) return;
+      this.paper.runError = ''; this.paper.running = true;
+      try {
+        this.paper.lastRun = await api('/api/paper/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ account_id: this.paper.pick }) });
+        if (this.paper.lastRun.error) { this.paper.runError = this.paper.lastRun.error; return; }
+        await this.loadPaperAccounts();
+      } catch (e) { this.paper.runError = '执行失败: ' + e.message; }
+      finally { this.paper.running = false; }
+    },
+    async runPaperDry() {
+      if (!this.paper.pick) return;
+      this.paper.runError = '';
+      try {
+        const r = await api('/api/paper/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ account_id: this.paper.pick, dry_run: true }) });
+        this.paper.lastRun = r;
+        if (r.error) this.paper.runError = r.error;
+      } catch (e) { this.paper.runError = 'dry-run 失败: ' + e.message; }
+    },
+    async togglePaperStatus() {
+      const a = this.paper.accounts.find(x => x.id === this.paper.pick);
+      if (!a) return;
+      const status = a.status === 'active' ? 'paused' : 'active';
+      try {
+        await api('/api/paper/accounts/' + this.paper.pick, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) });
+        await this.loadPaperAccounts();
+      } catch (e) { this.paper.runError = '状态切换失败: ' + e.message; }
+    },
+    async resetPaper() {
+      if (!this.paper.pick) return;
+      try {
+        await api('/api/paper/accounts/' + this.paper.pick + '/reset', { method: 'POST' });
+        await this.loadPaperAccounts();
+      } catch (e) { this.paper.runError = '重置失败: ' + e.message; }
+    },
+    async deletePaper() {
+      if (!this.paper.pick) return;
+      try {
+        await api('/api/paper/accounts/' + this.paper.pick, { method: 'DELETE' });
+        this.paper.pick = null;
+        await this.loadPaperAccounts();
+      } catch (e) { this.paper.runError = '删除失败: ' + e.message; }
+    },
+    async runSweep() {
+      this.sweepRunning = true; this.sweepError = ''; this.sweepResult = null;
+      try {
+        const body = {
+          mode: this.sweep.mode, start: this.sweep.start, end: this.sweep.end,
+          folds: this.sweep.folds, top_n: this.sweep.top_n,
+        };
+        if (this.sweep.mode === 'event' || this.sweep.mode === 'rolling_event') {
+          body.short_list = this.sweep.shortList.split(',').map(x => parseInt(x.trim(), 10)).filter(Number.isFinite);
+          body.long_list = this.sweep.longList.split(',').map(x => parseInt(x.trim(), 10)).filter(Number.isFinite);
+        } else {
+          body.strategy = this.sweep.strategy;
+        }
+        const r = await api('/api/sweep', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        if (r.error) { this.sweepError = r.error; return; }
+        this.sweepResult = r;
+      } catch (e) {
+        this.sweepError = e.message || String(e);
+      } finally {
+        this.sweepRunning = false;
+      }
+    },
+    windowCols() {
+      if (!this.sweepResult || !this.sweepResult.windows || !this.sweepResult.windows.length) return [];
+      const want = ['short','long','fold','start','end','n_days','chosen_top_n','chosen_freq','chosen_short','chosen_long','trained','total','annual','sharpe','mdd','calmar','win_rate','end_nav'];
+      return want.filter(k => k in this.sweepResult.windows[0]);
+    },
+    sortedSweep() {
+      const rows = (this.sweepResult?.summary || []).slice();
+      const key = this.sweepSort.key;
+      const dir = this.sweepSort.dir === 'asc' ? 1 : -1;
+      return rows.sort((a, b) => this.sortCompare(a[key], b[key], dir));
+    },
+    sortSweep(key) {
+      if (this.sweepSort.key === key) {
+        this.sweepSort.dir = this.sweepSort.dir === 'asc' ? 'desc' : 'asc';
+      } else {
+        this.sweepSort.key = key;
+        this.sweepSort.dir = (key === 'short' || key === 'long') ? 'asc' : 'desc';
+      }
+    },
+    swArrow(key) {
+      return this.sweepSort.key === key ? (this.sweepSort.dir === 'asc' ? '↑' : '↓') : '';
+    },
+    sortedRiskAttr() {
+      const o = this.btResult && this.btResult.risk_attribution || {};
+      return Object.entries(o).sort((a,b) => Math.abs(b[1]) - Math.abs(a[1]));
+    },
+    fmtCell(c, v) {
+      if (v == null) return '-';
+      if (['total','annual','mdd'].includes(c)) return this.pct(v);
+      if (c === 'win_rate') return (v * 100).toFixed(0) + '%';
+      if (['sharpe','calmar','end_nav','n_days'].includes(c)) return this.fmt(v, 2);
+      return v;
+    },
+    fmt(x, d) {
+      if (x == null || x === '') return '-';
+      const n = Number(x);
+      return Number.isFinite(n) ? n.toLocaleString('zh-CN', { minimumFractionDigits: d ?? 2, maximumFractionDigits: d ?? 2 }) : String(x);
+    },
+    today() { return new Date().toISOString().slice(0, 10); },
+    stock(code, name) { const nm = name || this.names[code] || ''; return nm ? `${code} ${nm}` : (code || '-'); },
+    pct(x) { if (x == null || x === '') return '-'; const n = Number(x); return Number.isFinite(n) ? (n * 100).toFixed(2) + '%' : '-'; },
+    sign(x) { return x == null ? '' : (x > 0 ? 'pos' : (x < 0 ? 'neg' : '')); },
+    metricText(k, v) { return ['总收益', '年化收益', '年化波动', '最大回撤', '卡玛', '胜率'].includes(k) ? this.pct(v) : this.fmt(v); },
+    num(v) { if (v == null || v === '') return '-'; const n = Number(v); return Number.isFinite(n) ? n.toFixed(4) : String(v); },
+    fmtAmt(x) {
+      if (x == null) return '-';
+      const a = Math.abs(x);
+      if (a >= 1e8) return (x / 1e8).toFixed(2) + '亿';
+      if (a >= 1e4) return (x / 1e4).toFixed(0) + '万';
+      return this.fmt(x, 0);
+    },
+    fmtVol(x) {
+      if (x == null) return '-';
+      const a = Math.abs(x);
+      if (a >= 1e4) return (x / 1e4).toFixed(1) + '万手';
+      return this.fmt(x, 0) + '手';
+    },
+    pickStockMatch() {
+      const ms = this.stockMatches;
+      if (ms.length) this.pickStock(ms[0].code, ms[0].name);
+    },
+    pickStock(code, name) {
+      this.stockView.code = code;
+      this.stockView.name = name || '';
+      this.stockView.q = `${code} ${this.stockView.name}`.trim();
+      this.stockView.open = false;
+      this.loadStockDetail(code);
+    },
+    async loadStockDetail(code, adj) {
+      if (adj) this.stockView.adj = adj;
+      this.stockView.loading = true;
+      this.stockView.error = '';
+      try {
+        const r = await api('/api/stock/' + code + '?days=250&adj=' + encodeURIComponent(this.stockView.adj));
+        this.stockView.detail = r;
+      } catch (e) {
+        this.stockView.error = '加载失败: ' + e.message;
+      }
+      this.stockView.loading = false;
+      this.$nextTick(() => { if (this.tab === 'stock') this.renderStockChart(); });
+    },
+    stockRows() {
+      const rows = (this.stockView.detail?.history || []).slice();
+      for (let i = rows.length - 1; i >= 0; i--) {
+        const prev = rows[i - 1];
+        rows[i].change_pct = (prev && prev.close) ? +(((rows[i].close / prev.close) - 1) * 100).toFixed(2) : null;
+      }
+      return rows.reverse();
+    },
+    renderStockChart() {
+      const d = this.stockView.detail;
+      if (!d || !d.history || !d.history.length) return;
+      const c = chart('stockChart');
+      if (!c) return;
+      const dates = d.history.map(x => x.date);
+      const kdata = d.history.map(x => [+x.open, +x.close, +x.low, +x.high]);
+      const vol = d.history.map(x => +(x.volume || 0));
+      const ma = n => {
+        const close = d.history.map(x => +x.close);
+        const out = [];
+        for (let i = 0; i < close.length; i++) {
+          if (i < n - 1) { out.push(null); continue; }
+          let s = 0;
+          for (let j = i - n + 1; j <= i; j++) s += close[j];
+          out.push(+(s / n).toFixed(3));
+        }
+        return out;
+      };
+      c.setOption({
+        tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
+        legend: { data: ['K线', 'MA5', 'MA10', 'MA20', '成交量'], textStyle: { color: '#8494b5' }, top: 0 },
+        grid: [
+          { left: 62, right: 20, top: 34, height: '56%' },
+          { left: 62, right: 20, top: '74%', height: '16%' }
+        ],
+        xAxis: [
+          { type: 'category', data: dates, gridIndex: 0, boundaryGap: false, axisLabel: { color: '#8494b5' } },
+          { type: 'category', data: dates, gridIndex: 1, boundaryGap: false, axisLabel: { show: false } }
+        ],
+        yAxis: [
+          { gridIndex: 0, scale: true, axisLabel: { color: '#8494b5' } },
+          {
+            gridIndex: 1, splitLine: { show: false },
+            axisLabel: {
+              color: '#8494b5',
+              formatter: v => {
+                const a = Math.abs(v);
+                if (a >= 1e8) return (v / 1e8).toFixed(1) + '亿';
+                if (a >= 1e4) return (v / 1e4).toFixed(1) + '万';
+                return v;
+              }
+            }
+          }
+        ],
+        dataZoom: [
+          { type: 'inside', xAxisIndex: [0, 1], start: 55, end: 100 },
+          { type: 'slider', xAxisIndex: [0, 1], bottom: 2, height: 14, borderColor: '#1f2c45', textStyle: { color: '#8494b5' } }
+        ],
+        series: [
+          {
+            name: 'K线', type: 'candlestick', data: kdata,
+            itemStyle: { color: '#ff5d4d', color0: '#2bb98a', borderColor: '#ff5d4d', borderColor0: '#2bb98a' }
+          },
+          { name: 'MA5', type: 'line', data: ma(5), showSymbol: false, lineStyle: { width: 1, color: '#e6b450' } },
+          { name: 'MA10', type: 'line', data: ma(10), showSymbol: false, lineStyle: { width: 1, color: '#ff5d4d' } },
+          { name: 'MA20', type: 'line', data: ma(20), showSymbol: false, lineStyle: { width: 1, color: '#2bb98a' } },
+          { name: '成交量', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: vol, itemStyle: { color: 'rgba(79,140,255,.35)' } }
+        ]
+      }, true);
+    },
+    kindName(k) { return ({ backtest: '单策略回测', compare: '多策略对比', sweep: '参数扫描', sweep_cli: '参数扫描(CLI)' })[k] || k || ''; },
+    historyTitle(r) {
+      const p = r.params || {}, s = r.summary || {};
+      if (r.kind === 'compare') return '对比 ' + (p.strategies || []).slice(0, 4).join('、');
+      if (r.kind === 'sweep' || r.kind === 'sweep_cli') {
+        return '扫描[' + (p.mode || '') + '] ' + (p.mode === 'factor'
+          ? (p.strategy || '')
+          : ((p.short_list || []).length + 'x' + (p.long_list || []).length));
+      }
+      if (s.composite) return '组合[' + (s.composite_name || '自定义') + '] ' + (p.universe || '');
+      return (p.strategy || '') + ' · ' + (p.universe || '');
+    },
+    historyItems() {
+      const items = (this.history.items || []).slice();
+      const key = this.history.sortKey;
+      const dir = this.history.sortDir === 'asc' ? 1 : -1;
+      const get = this.historySortValue(key);
+      return items.sort((a, b) => this.sortCompare(get(a), get(b), dir));
+    },
+    historySortValue(key) {
+      return (r) => {
+        const p = r.params || {}, s = r.summary || {};
+        switch (key) {
+          case 'run_id': return r.run_id;
+          case 'created_at': return r.created_at || '';
+          case 'kind': return this.kindName(r.kind);
+          case 'title': return this.historyTitle(r);
+          case 'period': return (p.start || '') + '~' + (p.end || '');
+          case 'total_return': return this.numOrNull(s.total_return);
+          case 'annual': return this.numOrNull(s.annual);
+          case 'sharpe': return this.numOrNull(s.sharpe);
+          case 'max_drawdown': return this.numOrNull(s.max_drawdown);
+          case 'data_version': return r.data_version || '';
+          default: return '';
+        }
+      };
+    },
+    numOrNull(x) {
+      if (x == null || x === '') return null;
+      const n = Number(x);
+      return Number.isFinite(n) ? n : null;
+    },
+    sortCompare(x, y, dir) {
+      const nx = this.numOrNull(x), ny = this.numOrNull(y);
+      if (nx !== null && ny !== null) return (nx - ny) * dir;
+      if (x == null && y == null) return 0;
+      if (x == null) return 1;
+      if (y == null) return -1;
+      return String(x).localeCompare(String(y), 'zh-Hans-CN') * dir;
+    },
+    toNum(x) {
+      const n = this.numOrNull(x);
+      return n === null ? 0 : n;
+    },
+    setHistorySort(key) {
+      if (this.history.sortKey === key) {
+        this.history.sortDir = this.history.sortDir === 'asc' ? 'desc' : 'asc';
+      } else {
+        this.history.sortKey = key;
+        this.history.sortDir = 'asc';
+      }
+    },
+    async loadHistory() {
+      this.history.loading = true; this.history.error = '';
+      try {
+        const r = await api('/api/backtest/runs?kind=' + encodeURIComponent(this.history.kind) + '&limit=' + this.history.limit);
+        this.history.items = r.items || [];
+      } catch (e) { this.history.error = '加载失败: ' + e.message; }
+      finally { this.history.loading = false; }
+    },
+    async openHistory(id) {
+      this.history.error = '';
+      this.history.detail = null;
+      try {
+        const r = await api('/api/backtest/runs/' + id);
+        if (r.error) { this.history.error = r.error; return; }
+        this.history.detail = r;
+        this.$nextTick(() => {
+          try {
+            if (!this.history.detail) return;
+            const isSweep = this.isSweepHistory();
+            const series = this.histNavSeries();
+            // sweep 详情模板没有图表容器，跳过渲染，避免在不存在/被重建的容器上初始化
+            if (series.length && !isSweep) renderLine('histNav', series);
+            const dd = this.histDrawSeries();
+            if (dd.length && !isSweep) renderLine('histDraw', dd, 220);
+            const el = document.getElementById('historyDetail');
+            if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          } catch (err) {
+            this.history.error = '详情渲染失败: ' + (err && err.message ? err.message : err);
+          }
+        });
+      } catch (e) { this.history.error = '详情失败: ' + e.message; }
+    },
+    histNavSeries() {
+      const d = this.history.detail;
+      if (!d) return [];
+      const nav = d.nav;
+      if (!Array.isArray(nav) || !nav.length) return [];
+      if ('points' in nav[0]) {
+        return nav.map(it => ({
+          name: String(it.name || ''),
+          dates: (it.points || []).map(p => p.date),
+          values: (it.points || []).map(p => this.toNum(p.value)),
+        }));
+      }
+      if ('value' in nav[0]) {
+        return [{ name: '净值', dates: nav.map(p => p.date), values: nav.map(p => this.toNum(p.value)) }];
+      }
+      return [];
+    },
+    histDrawSeries() {
+      const d = this.history.detail;
+      if (!d || !d.drawdown) return [];
+      if (Array.isArray(d.drawdown) && d.drawdown.length && 'points' in d.drawdown[0]) {
+        return d.drawdown.map(it => ({
+          name: String(it.name || ''),
+          dates: (it.points || []).map(p => p.date),
+          values: (it.points || []).map(p => +(this.toNum(p.value) * 100).toFixed(2)),
+        }));
+      }
+      if (Array.isArray(d.drawdown) && d.drawdown.length && 'value' in d.drawdown[0]) {
+        return [{ name: '回撤', dates: d.drawdown.map(p => p.date), values: d.drawdown.map(p => +(this.toNum(p.value) * 100).toFixed(2)) }];
+      }
+      return [];
+    },
+    histHoldingRows() {
+      const d = this.history.detail;
+      if (!d || !d.holdings) return [];
+      if (Array.isArray(d.holdings) && d.holdings.length && 'records' in d.holdings[0]) {
+        return d.holdings.flatMap(it => (it.records || []).map(r => ({ name: it.name, ...r })));
+      }
+      return d.holdings;
+    },
+    histTradeRows() {
+      const d = this.history.detail;
+      if (!d || !d.trades) return [];
+      if (Array.isArray(d.trades) && d.trades.length && 'records' in d.trades[0]) {
+        return d.trades.flatMap(it => (it.records || []).map(r => ({ name: it.name, ...r })));
+      }
+      return d.trades;
+    },
+    isSweepHistory() {
+      const k = this.history.detail && this.history.detail.kind;
+      return k === 'sweep' || k === 'sweep_cli';
+    },
+    histSweepRows(col) {
+      const d = this.history.detail;
+      if (!d || !Array.isArray(d[col])) return [];
+      if (d[col].length && 'records' in d[col][0]) {
+        return d[col].flatMap(it => (it.records || []).map(r => ({ name: it.name, ...r })));
+      }
+      return d[col];
+    },
+    sortedHistSweepRows(col) {
+      const rows = this.histSweepRows(col).slice();
+      if (!this.histSweepSort || this.histSweepSort.key !== col) return rows;
+      const dir = this.histSweepSort.dir === 'asc' ? 1 : -1;
+      return rows.sort((a, b) => this.sortCompare(a[col], b[col], dir));
+    },
+    setHistSweepSort(col) {
+      if (this.histSweepSort.key === col) {
+        this.histSweepSort.dir = this.histSweepSort.dir === 'asc' ? 'desc' : 'asc';
+      } else {
+        this.histSweepSort.key = col;
+        this.histSweepSort.dir = 'asc';
+      }
+    },
+    histSweepArrow(col) {
+      return this.histSweepSort.key === col ? (this.histSweepSort.dir === 'asc' ? '↑' : '↓') : '';
+    },
+    histSummaryRows() {
+      const d = this.history.detail;
+      if (!d) return [];
+      const rows = [];
+      const push = (prefix, obj) => {
+        if (!obj || typeof obj !== 'object') return;
+        for (const [k, v] of Object.entries(obj)) {
+          if (v === undefined || v === null) continue;
+          rows.push([prefix ? prefix + '.' + k : k, v]);
+        }
+      };
+      push('', d.params);
+      push('', d.summary);
+      return rows;
+    },
+    histSummaryValue(v) {
+      if (typeof v === 'object') {
+        const s = JSON.stringify(v);
+        return s && s.length > 120 ? s.slice(0, 120) + '…' : s;
+      }
+      if (typeof v === 'number') return this.fmt(v);
+      return v;
+    },
+    histSweepCols(rows) {
+      if (!rows || !rows.length) return [];
+      const order = ['short','long','freq','fold','n_windows','n_days','start','end',
+                     'train_start','train_end','test_start','test_end',
+                     'chosen_top_n','chosen_freq','chosen_short','chosen_long',
+                     'trained','mean_sharpe','median_sharpe','std_sharpe','sharpe',
+                     'train_sharpe','total','mean_total','median_total','best_total',
+                     'worst_total','annual','calmar','mdd','mean_mdd','max_drawdown',
+                     'win_rate','end_nav','top_n','capital'];
+      const first = rows[0] || {};
+      return order.filter(k => first[k] !== undefined)
+                  .concat(Object.keys(first).filter(k => !order.includes(k)));
+    },
+    histHeatCols(rows) {
+      if (!rows || !rows.length) return [];
+      return Object.keys(rows[0]).filter(k => k !== 'short').map(k => 'long=' + k);
+    },
+    histCell(key, v) {
+      if (v == null) return '-';
+      if (['total','annual','mdd','calmar','win_rate'].some(s => key.includes(s))) return this.pct(v);
+      if (['sharpe','nav'].some(s => key.includes(s))) return this.fmt(v, 2);
+      if (['days','windows'].some(s => key.includes(s))) return this.fmt(v, 0);
+      return v;
+    },
+    hasNameCol(rows) { return rows.length > 0 && 'name' in rows[0]; },
+  }
+});
+
+const StrategySelect = {
+  name: 'StrategySelect',
+  props: {
+    modelValue: { type: [String, Array], default: '' },
+    strategies: { type: Array, default: () => [] },
+    multiple: { type: Boolean, default: false },
+    placeholder: { type: String, default: '选择策略' },
+    max: { type: Number, default: 0 },
+    defaults: { type: Array, default: () => ['低换手冷门', '反转 20 日', '低波动', '动量 20 日'] },
+  },
+  emits: ['update:modelValue'],
+  data() { return { open: false, search: '', overMsg: '' }; },
+  computed: {
+    selected() {
+      return this.multiple ? (Array.isArray(this.modelValue) ? this.modelValue : []) : (this.modelValue || '');
+    },
+    filtered() {
+      const q = (this.search || '').trim().toLowerCase();
+      const arr = this.strategies.filter(s =>
+        !q || (s.name || '').toLowerCase().includes(q) ||
+        (s.desc || '').toLowerCase().includes(q) ||
+        (s.factor || '').toLowerCase().includes(q));
+      const groups = {};
+      for (const s of arr) {
+        const g = s.group || '其他';
+        (groups[g] = groups[g] || []).push(s);
+      }
+      return groups;
+    },
+  },
+  methods: {
+    toggle(name) {
+      if (!this.multiple) { this.$emit('update:modelValue', name); this.open = false; return; }
+      const sel = this.selected.slice();
+      const i = sel.indexOf(name);
+      if (i >= 0) { sel.splice(i, 1); }
+      else if (this.max && sel.length >= this.max) {
+        this.overMsg = '最多选 ' + this.max + ' 个';
+        setTimeout(() => { this.overMsg = ''; }, 2000);
+        return;
+      } else { sel.push(name); }
+      this.$emit('update:modelValue', sel);
+    },
+    selectAll() {
+      const names = this.strategies.map(s => s.name);
+      this.$emit('update:modelValue', this.max ? names.slice(0, this.max) : names);
+    },
+    allSelected(list) { return list.length > 0 && list.every(s => this.selected.includes(s.name)); },
+    toggleGroup(list) {
+      const turnOff = this.allSelected(list);
+      const others = this.selected.filter(n => !list.some(s => s.name === n));
+      if (turnOff) { this.$emit('update:modelValue', others); return; }
+      const added = [];
+      for (const s of list) {
+        if (!others.includes(s.name) && (!this.max || others.length + added.length < this.max)) added.push(s.name);
+      }
+      this.$emit('update:modelValue', others.concat(added));
+    },
+    setDefaults() {
+      this.$emit('update:modelValue', this.defaults.slice(0, this.max || this.defaults.length));
+    },
+    clearAll() { this.$emit('update:modelValue', this.multiple ? [] : ''); },
+    onDocClick(e) { if (this.$refs.root && !this.$refs.root.contains(e.target)) this.open = false; },
+  },
+  mounted() { document.addEventListener('click', this.onDocClick); },
+  beforeUnmount() { document.removeEventListener('click', this.onDocClick); },
+  template: `
+    <div class="picker" ref="root">
+      <div class="picker-trigger" @click.stop="open = !open">
+        <template v-if="multiple">
+          <span v-if="selected.length" class="picker-summary">{{selected.length}} / {{strategies.length}} 策略</span>
+          <span v-else class="picker-summary muted">{{placeholder}}</span>
+          <span v-if="selected.length" class="picker-selected-chips">
+            <span v-for="name in selected" :key="name" class="mini-chip" @click.stop="toggle(name)" :title="name">{{name}} ✕</span>
+          </span>
+        </template>
+        <template v-else>
+          <span class="picker-summary">{{selected || placeholder}}</span>
+        </template>
+        <span class="picker-arrow">▾</span>
+      </div>
+      <div v-if="open" class="picker-dropdown" @click.stop>
+        <input v-model="search" class="picker-search" :placeholder="multiple ? '搜索策略名称/说明…' : '搜索策略…'">
+        <div v-if="multiple" class="picker-actions">
+          <button type="button" class="picker-action" @click="setDefaults">默认</button>
+          <button type="button" class="picker-action" @click="selectAll">全选</button>
+          <button type="button" class="picker-action" @click="clearAll">清空</button>
+          <span class="picker-count">{{selected.length}} / {{strategies.length}}</span>
+        </div>
+        <div v-if="overMsg" class="warn picker-over">{{overMsg}}</div>
+        <div class="picker-list">
+          <template v-for="(list, g) in filtered" :key="g">
+            <div class="picker-group-row">
+              <span class="picker-group">{{g}}</span>
+              <button type="button" class="picker-group-toggle" @click="toggleGroup(list)">{{allSelected(list) ? '本组全取消' : '本组全选'}}</button>
+            </div>
+            <div v-for="s in list" :key="s.name" class="picker-item" :class="{selected: multiple ? selected.includes(s.name) : selected === s.name}" @click="toggle(s.name)">
+              <span class="picker-check">{{multiple ? (selected.includes(s.name) ? '☑' : '☐') : (selected === s.name ? '●' : '○')}}</span>
+              <span class="picker-name">{{s.name}}</span>
+              <span class="picker-desc">{{s.desc || s.factor}}</span>
+            </div>
+          </template>
+          <div v-if="!Object.keys(filtered).length" class="picker-empty">无匹配策略</div>
+        </div>
+      </div>
+    </div>
+  `,
+};
+
+const CodeEditor = {
+  name: 'CodeEditor',
+  props: { modelValue: { type: String, default: '' } },
+  emits: ['update:modelValue'],
+  template: `
+    <div class="editor">
+      <pre class="gutter" ref="gutter"></pre>
+      <textarea ref="ta" :value="modelValue" @input="onInput" @scroll="sync" @keydown.tab.prevent="insertTab" spellcheck="false" placeholder="在这里编辑 Python 代码…"></textarea>
+    </div>
+  `,
+  mounted() { this.$nextTick(this.sync); },
+  updated() { this.sync(); },
+  methods: {
+    sync() {
+      const ta = this.$refs.ta, g = this.$refs.gutter;
+      if (!ta || !g) return;
+      const lines = ta.value.split('\n').length;
+      const nums = [];
+      for (let i = 1; i <= lines; i++) nums.push(i);
+      g.textContent = nums.join('\n');
+      g.scrollTop = ta.scrollTop;
+    },
+    onInput(e) { this.$emit('update:modelValue', e.target.value); this.$nextTick(this.sync); },
+    insertTab() {
+      const ta = this.$refs.ta;
+      const s = ta.selectionStart, e = ta.selectionEnd;
+      const v = this.modelValue || '';
+      this.$emit('update:modelValue', v.slice(0, s) + '  ' + v.slice(e));
+      this.$nextTick(() => { ta.focus(); ta.selectionStart = ta.selectionEnd = s + 2; });
+    }
+  }
+};
+
+app.component('code-editor', CodeEditor);
+app.component('strategy-select', StrategySelect);
+app.mount('#app');
+
+function today() { return new Date().toISOString().slice(0, 10); }
+</script>
+</body>
+</html>

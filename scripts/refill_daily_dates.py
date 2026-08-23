@@ -1,4 +1,4 @@
-"""补拉指定交易日的 daily/daily_basic/adj_factor（幂等，直写 parquet）。"""
+"""补拉指定交易日的 daily/daily_basic/adj_factor（幂等，写入 CNE 年度档案）。"""
 from __future__ import annotations
 
 import subprocess
@@ -12,16 +12,15 @@ DATES = [
 ]
 
 ROOT = Path(__file__).resolve().parent.parent
-SCRIPT = ROOT / "scripts" / "sync_tushare_to_parquet.py"
+SCRIPT = ROOT / "scripts" / "sync_daily_to_cne.py"
 
 
 def main() -> int:
     failed = []
     for d in DATES:
-        since = d.replace("-", "")
         try:
             r = subprocess.run(
-                [sys.executable, str(SCRIPT), "--daily-since", since, "--force-daily"],
+                [sys.executable, str(SCRIPT), "--since", d, "--end", d],
                 capture_output=True, text=True, timeout=1800,
             )
             print(r.stdout.strip(), flush=True)

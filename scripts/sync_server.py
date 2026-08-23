@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""与腾讯云服务器双向同步 data/ 数据文件。
+"""[DEPRECATED 2026-08-22] 此脚本已废弃。
+
+日更已切换至 CNE 数据湖（scripts/run_cne_daily.ps1），不再需要与腾讯云服务器
+双向同步数据文件。此文件保留仅作参考，不再被任何计划任务或自动化流程调用。
+
+原功能：与腾讯云服务器双向同步 data/ 数据文件。
 
 用法:
     python scripts/sync_server.py                     # dry-run（默认，只打印动作）
@@ -520,7 +525,7 @@ def do_merge(server: str, base: str, rel: str, ts: str, keys: list[str]) -> None
 
 def update_local_meta() -> None:
     """panel 替换后刷新本机 meta.json，避免与文件内容不一致。"""
-    panel = LOCAL_BASE / "panel.parquet"
+    panel = LOCAL_BASE / "stock" / "panel.parquet"
     if not panel.exists():
         return
     try:
@@ -534,7 +539,7 @@ def update_local_meta() -> None:
             "n_codes": int(df["code"].nunique()),
             "n_rows": int(len(df)),
         }
-        (LOCAL_BASE / "meta.json").write_text(
+        (LOCAL_BASE / "stock" / "meta.json").write_text(
             json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         log(f"  [ok] 刷新本机 meta.json: {meta}")
@@ -596,7 +601,7 @@ def main() -> int:
             if p["action"] == "download":
                 item = next((i for i in items if i["path"] == p["rel"]), None)
                 do_download(server, base, p["rel"], ts, item)
-                if p["rel"] == "panel.parquet":
+                if p["rel"] == "stock/panel.parquet":
                     panel_replaced = True
             elif p["action"] == "upload":
                 do_upload(server, base, p["rel"], ts)

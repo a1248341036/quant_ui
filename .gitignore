@@ -18,3 +18,26 @@ data_status/logs/
 .idea/
 .vscode/
 mlruns/
+
+# Temporary / agent working files
+.temp/
+
+# Node.js
+static/node_modules/
+
+# Codefree cache
+.codefree/
+
+# CNEquity data (local parquet/meta, not source code)
+CNEquity/data/
+CNEquity/.venv/
+
+# Logs
+logs/
+
+# Build artifacts
+static/dist/
+
+# AlphaAgent artifacts
+artifacts/
+alphaagent/__pycache__/

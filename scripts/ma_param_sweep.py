@@ -43,7 +43,7 @@ def main() -> int:
     ap.add_argument("--adx-filter", type=float, default=25)
     ap.add_argument("--fasts", default="5,10,20")
     ap.add_argument("--slows", default="20,30,60,90,120")
-    ap.add_argument("--out", default="data/ma_sweep.csv")
+    ap.add_argument("--out", default="data/stock/ma_sweep.csv")
     args = ap.parse_args()
 
     etf = load_etf()

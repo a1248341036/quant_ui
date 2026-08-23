@@ -1,0 +1,28 @@
+name: 功能请求
+description: 提议新数据集、适配器或引擎改进
+title: "[feat] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 问题 / 使用场景
+      description: 下游选股或研究被什么卡住了？
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 提议
+      description: 数据集形态、来源，以及如何落入 L0–L8（见 docs/comparison.md）。
+    validations:
+      required: true
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: 范围确认
+      options:
+        - label: 这是**数据层**需求（采集/schema/查询），不是策略/信号功能
+          required: true
+        - label: 已查阅 docs/datasets/catalog.md 及相关 issue
+          required: false

@@ -39,34 +39,45 @@ def _dataset_path(item: dict) -> Path:
     return path if path.is_absolute() else QUANT_UI_ROOT / path
 
 
+def _dataset_files(item: dict) -> list[Path]:
+    raw = Path(item["path"])
+    if any(c in str(raw) for c in "*?["):
+        if raw.is_absolute():
+            raise ValueError(f"glob dataset paths must be relative: {raw}")
+        return sorted(QUANT_UI_ROOT.glob(str(raw)))
+    return [_dataset_path(item)]
+
+
 def _parquet_stats(item: dict) -> dict | None:
     name = item["id"]
-    path = _dataset_path(item)
-    if not path.exists():
+    files = [p for p in _dataset_files(item) if p.is_file()]
+    if not files:
         return None
-    stat = path.stat()
     base = {
-        "path": str(path),
-        "size_bytes": stat.st_size,
-        "mtime": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+        "path": str(_dataset_path(item)),
+        "size_bytes": sum(p.stat().st_size for p in files),
+        "mtime": datetime.fromtimestamp(max(p.stat().st_mtime for p in files)).strftime("%Y-%m-%d %H:%M:%S"),
     }
     if pq is None:
         return base
     try:
-        md = pq.ParquetFile(path).metadata
-        base["rows"] = md.num_rows
+        rows = 0
+        latest = None
         date_col = item.get("date_column") or TABLE_DATE_COLUMN.get(name)
-        if date_col:
-            col_idx = {md.schema.column(i).name: i for i in range(md.num_columns)}
-            if date_col in col_idx:
-                mx = None
-                ci = col_idx[date_col]
-                for rg in range(md.num_row_groups):
-                    s = md.row_group(rg).column(ci).statistics
-                    if s is None:
-                        continue
-                    mx = s.max if mx is None else max(mx, s.max)
-                base["max_date"] = str(mx) if mx is not None else None
+        for path in files:
+            md = pq.ParquetFile(path).metadata
+            rows += md.num_rows
+            if date_col:
+                col_idx = {md.schema.column(i).name: i for i in range(md.num_columns)}
+                if date_col in col_idx:
+                    ci = col_idx[date_col]
+                    for rg in range(md.num_row_groups):
+                        stat = md.row_group(rg).column(ci).statistics
+                        if stat is not None and (latest is None or stat.max > latest):
+                            latest = stat.max
+        base["rows"] = rows
+        if latest is not None:
+            base["max_date"] = str(latest)
     except Exception as exc:
         base["error"] = str(exc)
     return base
@@ -76,7 +87,7 @@ def collect_parquet() -> dict:
     out = {"status": "ok", "files": {}}
     items = [item for item in DATASETS if item.get("kind") == "parquet"]
     missing = [item["id"] for item in items
-               if item.get("required", True) and not _dataset_path(item).exists()]
+               if item.get("required", True) and not _dataset_files(item)]
     if missing:
         out["status"] = "warn"
         out["missing"] = missing

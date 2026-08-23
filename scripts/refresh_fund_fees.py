@@ -22,10 +22,11 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core.store import DATA_DIR, FUND_FILE  # noqa: E402
+from core.run_log import job  # noqa: E402
+from core.store import DATA_DIR, FUND_DIR, FUND_FILE  # noqa: E402
 
 
-FEE_FILE = DATA_DIR / "fund_fee.csv"
+FEE_FILE = FUND_DIR / "fund_fee.csv"
 OPS_INDICATOR = "\u8fd0\u4f5c\u8d39\u7528"
 REDEEM_INDICATOR = "\u8d4e\u56de\u8d39\u7387"
 PERCENT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*%")
@@ -150,80 +151,83 @@ def main() -> int:
     parser.add_argument("--refresh-existing", action="store_true")
     args = parser.parse_args()
 
-    if not FUND_FILE.exists():
-        print(f"missing fund universe: {FUND_FILE}", file=sys.stderr)
-        return 1
-    funds = pd.read_csv(FUND_FILE, dtype={"code": str})
-    funds["code"] = funds["code"].astype(str).str.zfill(6)
-    funds = funds.drop_duplicates("code")[["code", "name", "type"]]
-    existing = _load_existing()
+    with job("quant_ui:refresh_fund_fees", metadata={"workers": args.workers, "limit": args.limit, "refresh_existing": args.refresh_existing}) as run:
+        if not FUND_FILE.exists():
+            print(f"missing fund universe: {FUND_FILE}", file=sys.stderr)
+            return 1
+        funds = pd.read_csv(FUND_FILE, dtype={"code": str})
+        funds["code"] = funds["code"].astype(str).str.zfill(6)
+        funds = funds.drop_duplicates("code")[["code", "name", "type"]]
+        existing = _load_existing()
 
-    print("loading bulk purchase fees...", flush=True)
-    try:
-        purchase = _bulk_purchase_rates()
-    except Exception as exc:
-        print(f"bulk purchase fee load failed: {exc}", file=sys.stderr)
-        purchase = {}
+        print("loading bulk purchase fees...", flush=True)
+        try:
+            purchase = _bulk_purchase_rates()
+        except Exception as exc:
+            print(f"bulk purchase fee load failed: {exc}", file=sys.stderr)
+            purchase = {}
 
-    now = datetime.now().isoformat(timespec="seconds")
-    base = funds.copy()
-    base["purchase_fee_rate"] = base["code"].map(purchase)
-    if len(existing):
-        keep_cols = [c for c in existing.columns if c not in {"name", "type", "purchase_fee_rate"}]
-        base = base.merge(existing[keep_cols], on="code", how="left")
-        if "purchase_fee_rate" in existing:
-            old = existing[["code", "purchase_fee_rate"]].drop_duplicates("code")
-            base = base.merge(old, on="code", how="left", suffixes=("", "_old"))
-            base["purchase_fee_rate"] = base["purchase_fee_rate"].fillna(base["purchase_fee_rate_old"])
-            base = base.drop(columns=["purchase_fee_rate_old"])
+        now = datetime.now().isoformat(timespec="seconds")
+        base = funds.copy()
+        base["purchase_fee_rate"] = base["code"].map(purchase)
+        if len(existing):
+            keep_cols = [c for c in existing.columns if c not in {"name", "type", "purchase_fee_rate"}]
+            base = base.merge(existing[keep_cols], on="code", how="left")
+            if "purchase_fee_rate" in existing:
+                old = existing[["code", "purchase_fee_rate"]].drop_duplicates("code")
+                base = base.merge(old, on="code", how="left", suffixes=("", "_old"))
+                base["purchase_fee_rate"] = base["purchase_fee_rate"].fillna(base["purchase_fee_rate_old"])
+                base = base.drop(columns=["purchase_fee_rate_old"])
 
-    required = ["management_fee_rate", "custodian_fee_rate", "sales_service_fee_rate", "redemption_fee_rule"]
-    for col in required:
-        if col not in base:
-            base[col] = pd.Series(pd.NA, index=base.index, dtype="object")
-    if "fee_status" not in base:
-        base["fee_status"] = pd.Series(pd.NA, index=base.index, dtype="object")
-    if "last_error" not in base:
-        base["last_error"] = pd.Series("", index=base.index, dtype="object")
-    if "fee_updated_at" not in base:
-        base["fee_updated_at"] = pd.Series("", index=base.index, dtype="object")
+        required = ["management_fee_rate", "custodian_fee_rate", "sales_service_fee_rate", "redemption_fee_rule"]
+        for col in required:
+            if col not in base:
+                base[col] = pd.Series(pd.NA, index=base.index, dtype="object")
+        if "fee_status" not in base:
+            base["fee_status"] = pd.Series(pd.NA, index=base.index, dtype="object")
+        if "last_error" not in base:
+            base["last_error"] = pd.Series("", index=base.index, dtype="object")
+        if "fee_updated_at" not in base:
+            base["fee_updated_at"] = pd.Series("", index=base.index, dtype="object")
 
-    if args.refresh_existing:
-        mask = pd.Series(True, index=base.index)
-    else:
-        mask = base["fee_status"].fillna("").ne("ok")
-    codes = base.loc[mask, "code"].tolist()
-    if args.limit:
-        codes = codes[:args.limit]
-    print(f"funds={len(base)} fetch_fee_pages={len(codes)} workers={args.workers}", flush=True)
+        if args.refresh_existing:
+            mask = pd.Series(True, index=base.index)
+        else:
+            mask = base["fee_status"].fillna("").ne("ok")
+        codes = base.loc[mask, "code"].tolist()
+        if args.limit:
+            codes = codes[:args.limit]
+        print(f"funds={len(base)} fetch_fee_pages={len(codes)} workers={args.workers}", flush=True)
 
-    index = {str(code): i for i, code in enumerate(base["code"])}
-    done = 0
-    with ThreadPoolExecutor(max_workers=max(1, args.workers)) as pool:
-        futures = {pool.submit(_fetch_one, code): code for code in codes}
-        for future in as_completed(futures):
-            result = future.result()
-            i = index[result["code"]]
-            for key, value in result.items():
-                if key != "code":
-                    base.loc[i, key] = value
-            if result["fee_status"] == "ok":
-                base.loc[i, "fee_updated_at"] = now
-            done += 1
-            if done % 100 == 0 or done == len(codes):
-                print(f"  [{done}/{len(codes)}]", flush=True)
+        index = {str(code): i for i, code in enumerate(base["code"])}
+        done = 0
+        with ThreadPoolExecutor(max_workers=max(1, args.workers)) as pool:
+            futures = {pool.submit(_fetch_one, code): code for code in codes}
+            for future in as_completed(futures):
+                result = future.result()
+                i = index[result["code"]]
+                for key, value in result.items():
+                    if key != "code":
+                        base.loc[i, key] = value
+                if result["fee_status"] == "ok":
+                    base.loc[i, "fee_updated_at"] = now
+                done += 1
+                if done % 100 == 0 or done == len(codes):
+                    print(f"  [{done}/{len(codes)}]", flush=True)
 
-    columns = [
-        "code", "name", "type", "purchase_fee_rate", "management_fee_rate",
-        "custodian_fee_rate", "sales_service_fee_rate", "redemption_fee_rule",
-        "fee_status", "fee_updated_at", "last_error",
-    ]
-    base = base[[c for c in columns if c in base]]
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = FEE_FILE.with_suffix(".csv.tmp")
-    base.to_csv(tmp, index=False)
-    tmp.replace(FEE_FILE)
-    print(f"saved {FEE_FILE}: rows={len(base)} ok={(base['fee_status'] == 'ok').sum()}", flush=True)
+        columns = [
+            "code", "name", "type", "purchase_fee_rate", "management_fee_rate",
+            "custodian_fee_rate", "sales_service_fee_rate", "redemption_fee_rule",
+            "fee_status", "fee_updated_at", "last_error",
+        ]
+        base = base[[c for c in columns if c in base]]
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = FEE_FILE.with_suffix(".csv.tmp")
+        base.to_csv(tmp, index=False)
+        tmp.replace(FEE_FILE)
+        n_ok = (base['fee_status'] == 'ok').sum()
+        print(f"saved {FEE_FILE}: rows={len(base)} ok={n_ok}", flush=True)
+        run.set_rows(rows_written=len(base))
     return 0
 
 

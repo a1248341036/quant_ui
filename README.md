@@ -1,3 +1,14 @@
+---
+AIGC:
+  ContentProducer: '001191110102MAD55U9H0F10002'
+  ContentPropagator: '001191110102MAD55U9H0F10002'
+  Label: '1'
+  ProduceID: 'c4f08bd9-b46d-4985-ad93-92a10e3e7ce6'
+  PropagateID: 'c4f08bd9-b46d-4985-ad93-92a10e3e7ce6'
+  ReservedCode1: 'e6054e39-1808-4705-9ffc-034e417d7f67'
+  ReservedCode2: 'e6054e39-1808-4705-9ffc-034e417d7f67'
+---
+
 # quant_ui — A 股个人量化研究平台
 
 一个自托管的 A 股量化研究/回测 Web 平台：Vue3 单页应用 + FastAPI 后端 +
@@ -125,6 +136,62 @@ systemd `Environment=` 均可配置）：
 迁移数据时只需把 `data/` 移动到目标位置并设置 `QUANT_UI_DATA_DIR`，
 代码不再依赖 `/home/ubuntu/...` 绝对路径。
 
+### 3.1 Docker 部署（单容器全栈，可移植）
+
+镜像内**不含任何业务数据**：行情数据、回测结果、策略代码、日志全部走 volume，
+数据可随 volume 整体迁移，不依赖宿主机路径，amd64/arm64 均可构建。
+
+```bash
+# 前置：已安装 Docker（Desktop 或 Docker Engine）
+
+# 1. 准备 .env（含 Tushare token；另建议设置 CNE_TOKEN 作为数据湖看板令牌）
+cp .env.example .env
+
+# 2. 构建并启动（首次构建需下载依赖，约 10-20 分钟）
+docker compose up -d --build
+
+# 3. 访问
+#    Vue 工作台        http://<host>:17891
+#    数据状态看板      http://<host>:8001
+#    CNEquity 数据湖   http://<host>:8787   （非本机访问需 ?token=<CNE_TOKEN>）
+```
+
+容器内通过 supervisord 管理 4 组进程（FastAPI :17891 / data_status :8001 /
+CNEquity 看板 :8787 / supercronic 定时任务），定时任务按 Asia/Shanghai 时区运行。
+
+**数据卷与迁移**（关键设计）：
+
+| 卷 | 容器路径 | 内容 |
+| --- | --- | --- |
+| `quant_data` | `/app/data` 与 `/app/CNEquity/data` | 行情 parquet、quant.db、DuckDB、CNE 数据湖、data_status 状态 |
+| `quant_labs` | `/app/labs` | 用户保存的策略代码 |
+| `quant_results` | `/app/results` | 回测/归因/参数扫描结果 |
+| `quant_artifacts` | `/app/artifacts`、`/app/logs` | alphaagent 因子挖掘产物与日志 |
+
+`quant_data` 同时挂载到 `/app/data` 与 `/app/CNEquity/data`，使 CNE 数据湖
+（`CNEquity/data/quant_dataset/_cnequity`）与 quant_ui 数据根
+（`data/quant_dataset`）指向同一棵数据树——**迁移整机只需搬这一个 volume**。
+
+```bash
+# 迁移示例（在源/目标机器上分别执行）
+docker run --rm -v quant_data:/data -v "$PWD":/backup alpine tar czf /backup/quant_data.tar.gz -C /data .
+# 目标机器：docker volume create quant_data && docker run --rm -v quant_data:/data -v "$PWD":/backup alpine tar xzf /backup/quant_data.tar.gz -C /data
+
+# 首启无数据时，可从宿主机直接拷贝进卷：
+docker cp data/. quant_ui:/app/data/
+```
+
+`.env`（含 token）仅通过 `env_file` 注入，绝不进入镜像；`CNEquity/` 源码目录
+以只读 bind 挂载，改配置后 `docker compose restart` 即生效。运维与排障：
+
+```bash
+docker compose logs -f --tail=200        # 查看四组进程日志
+docker compose ps                        # 进程状态（supervisord 统一管理）
+docker exec -it quant_ui supervisorctl status
+docker exec -it quant_ui python scripts/refresh_data.py   # 手动数据刷新
+docker compose down                       # 停服（不删卷；加 -v 会清空数据）
+```
+
 ## 4. 数据架构
 
 - 主面板：`data/panel.parquet`（267 万行，1800 只，2015-09 ~ 2026-08，日线 + 滚动因子）
@@ -136,13 +203,13 @@ systemd `Environment=` 均可配置）：
 - 行情源：股票优先 Tushare（`.env` 配 token，请求限速），失败自动回退腾讯行情接口；
   ETF 走腾讯行情、场外基金走天天基金净值
 - 本地缓存：`data/universe.csv`、`data/tech.csv`、`data/index.csv`、`data/meta.json`
-- Tushare 直写 parquet：`scripts/sync_tushare_to_parquet.py` 按交易日增量写
-  `data/pg_parquet/stock_daily.parquet`（不复权原始价 + 每日复权因子），
-  财务/公告/调研宽表按股票逐只同步到 `data/pg_parquet/`
+- CNEquity 日线档案：`scripts/sync_daily_to_cne.py` 委托 CNE fetcher 按交易日增量写入
+  `data/quant_dataset/YYYY/YYYY/day/stock_daily.parquet`（不复权原始价 + 每日复权因子）；
+  财务/公告/调研宽表继续按股票同步到 `data/pg_parquet/`，由 CNE external bridge 只读接入
 - 业务数据统一 SQLite：`data/quant.db`（回测归档、账本、模拟盘等），
   不再依赖 PostgreSQL/TimescaleDB
-- 回测数据源由 `QUANT_DATA_SOURCE` 控制：`pg_parquet` 优先读 `data/pg_parquet/`；
-  `panel` 只用本地预计算面板
+- 回测数据源由 `QUANT_DATA_SOURCE` 控制：`cne` 读取 `data/quant_dataset/` 年度日线档案；
+  `pg_parquet` 是兼容别名，财务宽表仍从 `data/pg_parquet/` 只读加载；`panel` 只用本地预计算面板
 - 舆情：独立仓库 `~/quant/sentiment-mvp`，FastAPI 后端读取其 CSV/数据库
 
 ## 5. 回测引擎
@@ -257,7 +324,7 @@ GET  /api/sentiment/ic           舆情分桶回测 IC/分组
 
 | 脚本 | 作用 | 输出 |
 | --- | --- | --- |
-| `scripts/refresh_data.py` | 行情增量更新 + Tushare 直写 parquet | `data/panel.parquet` |
+| `scripts/refresh_data.py` | 行情增量更新 + CNE 年度档案同步 | `data/stock/panel.parquet` |
 | `scripts/selftest.py` | 新旧引擎一致性对照 | 控制台报告 |
 | `scripts/qweave_research.py` | **研究层（qweave 替代 Qlib）**：Alpha158/101/191 因子计算 + IC/分组/换手评估 + LightGBM 预测分数 | `data/qweave/`、`data/pred_demo.parquet` |
 | `scripts/performance_report.py` | QuantStats 报告 + IC/分组分析 | `results/performance/` |
@@ -265,7 +332,8 @@ GET  /api/sentiment/ic           舆情分桶回测 IC/分组
 | `scripts/paper_trade.py` | 日级模拟盘（创建/执行/查询） | SQLite `paper_*` 表 |
 | `scripts/attribution.py` | Brinson 归因 | `results/attribution/` |
 | `scripts/sentiment_backtest.py` | 舆情分桶回测 + IC/分组 | `results/sentiment_backtest.csv`、`results/sentiment_ic_group.csv` |
-| `scripts/sync_tushare_to_parquet.py` | Tushare 日线/财务/公告直写 parquet | `data/pg_parquet/` |
+| `scripts/sync_daily_to_cne.py` | CNE 日线年度档案增量同步 | `data/quant_dataset/` |
+| `scripts/sync_tushare_to_parquet.py` | Tushare 财务/公告宽表同步 | `data/pg_parquet/` |
 | `scripts/refresh_fund_fees.py` | AkShare 基金费率补齐（已成功记录跳过） | `data/fund_fee.csv` |
 | `scripts/healthcheck.py` | 健康检查 | — |
 
@@ -343,21 +411,20 @@ CI 配置见 `.github/workflows/ci.yml`，在 push/PR 时自动安装
 | 稳健性 | walk-forward + 参数网格 + 滚动训练-测试 | 参数优化/样本外验证 | 部分 | 训练期无特征工程/MI 选参，仅简单网格 |
 | 绩效归因 | UI：IC/分组/Brinson/风险归因/QuantStats | 归因报表 | 部分 | 无选股-行业-风格三维联动报表 |
 | 账户/风控 | 手动记账 + 日级模拟盘（T+1 撮合/费用/风控） | 模拟盘/实盘/风控 | 无 | 缺实时行情撮合与实盘 |
-| 自动更新 | systemd 定时增量 | — | — | 单机部署，无任务队列 |
-| 部署 | systemd + 本地进程 | SaaS | 本地库 | 缺容器化一键部署 |
+| 自动更新 | systemd 定时增量 / Docker 内 supercronic | — | — | 单机部署，无任务队列 |
+| 部署 | systemd + 本地进程 / Docker 单容器全栈 | SaaS | 本地库 | 多机编排/云平台托管 |
 
 结论：当前平台适合**个人单机研究**（数据→因子→回测→报告闭环已跑通，
 绩效/归因已进 UI）。P0 的 Barra 风格风险模型、财务因子与 P1 的归因 UI、
 滚动训练-测试框架已完成，日级模拟盘已上线（T+1 撮合/费用/风控/自动日结）。
 对标商业平台的主要短板剩：① 财务数据当前为样例覆盖，需 `--fina` 全市场补数据；
-② 模拟盘为日级，无实时行情撮合与实时风控；③ 无 Notebook/
-因子表达式库与 Docker 打包。
+② 模拟盘为日级，无实时行情撮合与实时风控；③ 无 Notebook/因子表达式库。
 
 ## 12. 已知限制（Demo）
 
 - 未做多进程/后台任务，大批量参数扫描同步执行，event 模式约 1-2 分钟
 - 行业分类接口在部分服务器不可达时回退本地缓存，科技股票池为缓存快照
-- 行情以 Tushare 直写 parquet `stock_daily` 的**不复权原始价 + 每日复权因子**为准；
+- 行情以 CNEquity 年度档案 `stock_daily` 的**不复权原始价 + 每日复权因子**为准；
   前复权锚点固定在同步快照的最新因子，同一历史日在不同查询区间价格一致。
   前复权在出现新分红/送转时仍会整体重标定（这是前复权定义使然）；若要求历史价
   绝对不随最新行情漂移，个股详情可选择「不复权」或「后复权」口径
@@ -365,4 +432,4 @@ CI 配置见 `.github/workflows/ci.yml`，在 push/PR 时自动安装
 - ST 涨跌停因缺标记暂按 10% 近似处理
 - 舆情数据依赖 `~/quant/sentiment-mvp` 独立流水线每日更新
 
-
+> AI生成

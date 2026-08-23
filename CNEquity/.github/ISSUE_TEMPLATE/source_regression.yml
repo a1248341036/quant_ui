@@ -1,0 +1,56 @@
+name: 数据源回归
+description: 报告上游接口变更、空响应、被拒或某个源的字段/覆盖异常
+title: "[source] "
+labels: ["source-health"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        这张表用于上游数据源回归，不要附带湖数据或代理凭据。
+        安全问题请走私密 [SECURITY.md](https://github.com/rootSunc/cnequity/security/advisories/new)。
+  - type: input
+    id: source
+    attributes:
+      label: 源 key
+      description: '`cne sources --only ...` 使用的 key，例如 tdx_protocol、sina、eastmoney_push2。'
+      placeholder: "sina"
+    validations:
+      required: true
+  - type: dropdown
+    id: status
+    attributes:
+      label: 健康状态
+      options:
+        - empty（HTTP 正常但没有数据）
+        - blocked（403 / 风控 / challenge）
+        - down（超时 / 连接失败）
+        - schema（字段或响应结构变化）
+        - coverage（历史窗口或标的覆盖变化）
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: 最小复现命令与输出
+      description: "请打码本地路径、代理地址、token；优先附 `cne sources --vantage <label> --only <source>` 的输出。"
+      placeholder: |
+        cne sources --vantage overseas --only sina
+        ...
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: 环境
+      placeholder: "cnequity 0.5.0, Python 3.12, macOS / Linux / Windows, cn / overseas"
+    validations:
+      required: true
+  - type: checkboxes
+    id: redaction
+    attributes:
+      label: 提交前检查
+      options:
+        - label: 已移除 token、代理凭据、完整本地路径和真实湖数据
+          required: true
+        - label: 已确认这不是策略、回测或下单功能请求
+          required: true

@@ -1,0 +1,3 @@
+# Direct AlphaAgent AgentScope mining dependencies.
+agentscope>=2.0.0
+openai>=1.0

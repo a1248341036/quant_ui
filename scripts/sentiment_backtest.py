@@ -27,9 +27,11 @@ from core.engine import run_backtest  # noqa: E402
 from core.metrics import compute_metrics  # noqa: E402
 from strategies.registry import get_strategy, list_strategies  # noqa: E402
 
-SENT_DB = ROOT.parent / "sentiment-mvp" / "data" / "articles.db"
-PANEL = ROOT / "data/panel.parquet"
-INDEX = ROOT / "data/index.csv"
+from core.store import SENTIMENT_DIR  # noqa: E402
+
+SENT_DB = SENTIMENT_DIR / "articles.db"
+PANEL = ROOT / "data/stock/panel.parquet"
+INDEX = ROOT / "data/stock/index.csv"
 
 
 def load_sentiment() -> pd.DataFrame:
@@ -90,7 +92,7 @@ def sentiment_factor_builder(close, am20, turn20):
 def main():
     panel = pd.read_parquet(PANEL)
     panel["code"] = panel["code"].astype(str).str.zfill(6)
-    uni = pd.read_csv(ROOT / "data/universe.csv", dtype={"code": str})
+    uni = pd.read_csv(ROOT / "data/stock/universe.csv", dtype={"code": str})
     uni["code"] = uni["code"].astype(str).str.zfill(6)
     index = pd.read_csv(INDEX)
     index["date"] = pd.to_datetime(index["date"])

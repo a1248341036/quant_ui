@@ -18,9 +18,15 @@ QUANT_UI_DATA_DIR = Path(
     os.getenv("QUANT_UI_DATA_DIR", str(QUANT_UI_ROOT / "data"))
 ).expanduser()
 PG_PARQUET_DIR = QUANT_UI_DATA_DIR / "pg_parquet"
-STATE_FILE = BASE_DIR / "state.json"
-TASKS_FILE = BASE_DIR / "tasks.json"
-LOGS_DIR = BASE_DIR / "logs"
+# 运行时状态目录（state.json / tasks.json / logs）。
+# 默认与代码同目录（本机直接运行行为不变）；
+# Docker 容器内通过 QUANT_DATA_STATUS_DIR 指向 volume，保证重建容器不丢状态。
+DATA_STATUS_DIR = Path(
+    os.getenv("QUANT_DATA_STATUS_DIR", str(BASE_DIR))
+).expanduser()
+STATE_FILE = DATA_STATUS_DIR / "state.json"
+TASKS_FILE = DATA_STATUS_DIR / "tasks.json"
+LOGS_DIR = DATA_STATUS_DIR / "logs"
 CATALOG_FILE = BASE_DIR / "catalog.json"
 PYTHON = os.getenv(
     "QUANT_UI_PYTHON",

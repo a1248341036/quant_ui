@@ -101,7 +101,7 @@ def main() -> None:
     OLD_REF.update(load_old_ref())
 
     # 数据准备
-    new_panel = pd.read_parquet(ROOT / "data/panel.parquet")
+    new_panel = pd.read_parquet(ROOT / "data/stock/panel.parquet")
     new_panel["code"] = new_panel["code"].astype(str).str.zfill(6)
     new_panel["date"] = pd.to_datetime(new_panel["date"])
     old_panel = pd.read_parquet(
@@ -116,7 +116,7 @@ def main() -> None:
         return sorted({c for c in set(tech["code"]) & set(panel["code"].unique())
                        if not c.startswith(("300", "301", "688", "689"))})
 
-    codes_new = codes_from(new_panel, ROOT / "data/tech.csv")
+    codes_new = codes_from(new_panel, ROOT / "data/stock/tech.csv")
     codes_old = codes_from(old_panel, LEGACY_DATA_DIR / "panel/tech_universe_sw.csv")
     print(f"codes: new={len(codes_new)} old={len(codes_old)}")
 

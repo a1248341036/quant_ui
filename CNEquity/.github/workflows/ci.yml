@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        # setup-python ships the pip bundled with each interpreter (24.0 on 3.11,
+        # 25.0.1 on 3.12); PEP 735 `--group` needs 25.1+.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . --group dev
+
+      - name: Lint
+        run: |
+          ruff check .
+          ruff format --check .
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Check dashboard bundle
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run check
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      # Keep the minimum supported interpreter and the current stable one.
+      # Windows below covers the platform-specific file-lock/path behavior.
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        # No extras: every runtime source is a hard dependency now. The pip
+        # upgrade is required — PEP 735 `--group` needs 25.1+.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . --group dev
+
+      - name: Test
+        run: pytest --cov=cnequity --cov-report=term-missing --cov-report=xml
+
+      - name: Upload coverage
+        if: matrix.python-version == '3.12'
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage.xml
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  # Windows is a first-class runtime target (file locks, path forms, wheels).
+  # One Python version is enough to catch platform regressions; Ubuntu covers
+  # the minimum supported and current stable interpreters. Network tests stay
+  # deselected via addopts.
+  test-windows:
+    runs-on: windows-latest
+    env:
+      # Force UTF-8 stdio so Chinese CLI/doctor strings never hit cp1252 EncodeError.
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . --group dev
+
+      - name: Test
+        run: pytest tests/unit -q

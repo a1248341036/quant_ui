@@ -812,6 +812,11 @@ def run_backtest(
         rejections = [r for r in rejections if r["date"] >= start_ts.date().isoformat()]
     else:
         dates_out = dates
+        # start_idx == 0：nav 有 T 个元素（含初始 nav[0]=1.0），
+        # 但 cash_history/positions_history 只有 T-1 个（循环从 t=1 开始记录）。
+        # 补齐初始状态，使长度与 nav/weight_history 一致。
+        cash_history = [float(capital)] + cash_history
+        positions_history = [{}] + positions_history
 
     if quality is not None:
         quality = slice_quality(quality, dates_out)

@@ -44,7 +44,7 @@ except Exception:  # noqa: BLE001
 sys.path.insert(0, str(PROJECT_ROOT))
 
 DEFAULT_RUN_ROOT = PROJECT_ROOT / "data" / "qweave"
-DEFAULT_OUT = PROJECT_ROOT / "data" / "pred_demo.parquet"
+DEFAULT_OUT = PROJECT_ROOT / "data" / "stock" / "pred_demo.parquet"
 
 ALPHA_SETS = {
     "alpha158": ("qlib_alpha158", ["close", "high", "low", "open", "volume", "vwap"]),
@@ -58,8 +58,8 @@ def load_codes(codes_arg: str | None, max_codes: int | None,
     """--codes 逗号列表；缺省用 universe.csv；文件也没有就 None（全市场）。"""
     if codes_arg:
         return [str(c).strip().zfill(6) for c in codes_arg.split(",") if c.strip()]
-    uni = (PROJECT_ROOT / "data" / "etf.csv" if asset_type == "etf"
-           else PROJECT_ROOT / "data" / "universe.csv")
+    uni = (PROJECT_ROOT / "data" / "etf" / "etf.csv" if asset_type == "etf"
+           else PROJECT_ROOT / "data" / "stock" / "universe.csv")
     if uni.exists():
         import pandas as pd
         codes = pd.read_csv(uni, dtype={"code": str})["code"].astype(str).str.zfill(6).tolist()

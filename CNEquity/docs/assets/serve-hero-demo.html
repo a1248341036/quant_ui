@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<style>
+  :root { --ink:#14213a; --muted:#65738d; --line:#dce3ec; --blue:#2563eb; --green:#30a46c; }
+  * { box-sizing:border-box; }
+  html, body { margin:0; width:1661px; height:947px; overflow:hidden; }
+  body { background:#f5f7fa; color:var(--ink); font:14px -apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue",Arial,sans-serif; }
+  .topbar { height:78px; background:#fff; border-bottom:1px solid #e4e8ef; display:flex; align-items:center; padding:0 46px; }
+  .brand { display:flex; align-items:center; gap:13px; min-width:510px; }
+  .mark { width:40px; height:40px; border-radius:11px; display:grid; place-items:center; background:#14213a; color:white; font-size:14px; font-weight:800; letter-spacing:.05em; }
+  .brand strong { display:block; font-size:19px; line-height:22px; }
+  .brand small { display:block; color:#7c8aa1; letter-spacing:.11em; font-size:11px; text-transform:uppercase; }
+  .nav { display:flex; gap:3px; padding:4px; border:1px solid #e0e6ef; border-radius:13px; box-shadow:0 4px 14px #172b4d12; }
+  .nav span { padding:10px 21px; border-radius:9px; font-weight:650; color:#617089; }
+  .nav .active { color:var(--blue); background:#edf3ff; }
+  .topnote { margin-left:auto; color:#6d7a91; }
+  main { padding:42px 116px 70px; }
+  .eyebrow { color:#53627a; font-size:12px; font-weight:750; letter-spacing:.14em; text-transform:uppercase; }
+  h1 { margin:10px 0 7px; font-size:42px; letter-spacing:-.03em; }
+  .sub { color:#64738e; font-size:16px; margin:0; }
+  .heading { display:flex; justify-content:space-between; align-items:end; }
+  .buttons { display:flex; gap:10px; }
+  button { border:1px solid var(--line); background:#fff; border-radius:9px; padding:11px 18px; color:var(--ink); font-weight:650; }
+  button.primary { background:var(--blue); border-color:var(--blue); color:#fff; }
+  .status { margin-top:34px; background:#fff; border:1px solid #b9e4cc; border-radius:14px; padding:21px 24px; display:flex; align-items:center; gap:15px; }
+  .check { width:34px; height:34px; border-radius:50%; display:grid; place-items:center; color:var(--green); background:#e8f8ef; font-size:20px; font-weight:800; }
+  .status strong { display:block; font-size:18px; }
+  .status span { display:block; color:#73819a; margin-top:4px; }
+  .anchor { margin-left:auto; color:#7b88a0; font-family:ui-monospace,Menlo,monospace; }
+  .metrics { margin-top:20px; display:grid; grid-template-columns:repeat(6,1fr); gap:14px; }
+  .metric { background:#fff; border:1px solid var(--line); border-radius:13px; padding:18px 20px; box-shadow:0 4px 14px #172b4d08; }
+  .metric label { display:block; color:#64738e; font-weight:650; }
+  .metric b { display:block; font-size:31px; margin:8px 0 2px; letter-spacing:-.04em; }
+  .metric small { color:#7a879d; }
+  .content { margin-top:19px; display:grid; grid-template-columns:1.55fr .65fr; gap:18px; }
+  .panel { background:#fff; border:1px solid var(--line); border-radius:14px; box-shadow:0 4px 14px #172b4d08; padding:22px 24px; }
+  .panelhead { display:flex; align-items:start; justify-content:space-between; }
+  .panel h2 { margin:7px 0 0; font-size:20px; }
+  .panelmeta { color:#71809a; }
+  .heat { margin-top:24px; display:grid; grid-template-columns:150px 1fr; grid-template-rows:repeat(20, 14px); gap:3px 5px; }
+  .rowlabel { text-align:right; color:#65738d; line-height:14px; font-size:12px; padding-right:3px; }
+  .cells { display:grid; grid-template-columns:repeat(76, 1fr); gap:2px; }
+  .cell { border-radius:1px; background:#42b979; }
+  .legend { margin-top:20px; display:flex; gap:19px; color:#74829b; font-size:12px; }
+  .legend i { display:inline-block; width:9px; height:9px; border-radius:2px; background:#42b979; margin-right:5px; }
+  .legend i.blue { background:#dce7fb; }
+  .attention { min-height:450px; }
+  .empty { margin:138px 20px 0; display:flex; align-items:center; gap:14px; color:#6f7e96; }
+  .empty .check { flex:0 0 auto; }
+  .empty strong { display:block; color:#263651; font-size:16px; }
+</style>
+<body>
+  <header class="topbar">
+    <div class="brand"><div class="mark">CNE</div><div><strong>CNEquity</strong><small>research lake</small></div></div>
+    <nav class="nav"><span class="active">概览</span><span>数据集</span><span>跑批</span><span>质量</span></nav>
+    <div class="topnote">只读控制台　<button>刷新</button></div>
+  </header>
+  <main>
+    <div class="heading"><div><div class="eyebrow">CNEquity / 数据湖控制台</div><h1>湖状态</h1><p class="sub">最新交易日 2026-08-14 · 42 个注册数据集 · 审计快照 2026-08-14</p></div><div class="buttons"><button>查看跑批</button><button class="primary">查看质量</button></div></div>
+    <section class="status"><div class="check">✓</div><div><strong>运行正常</strong><span>核心数据集已覆盖最新交易日。</span></div><div class="anchor">anchor 2026-08-14</div></section>
+    <section class="metrics"><div class="metric"><label>数据集</label><b>42</b><small>已注册</small></div><div class="metric"><label>Fresh</label><b>42</b><small>最新水位</small></div><div class="metric"><label>Stale</label><b>0</b><small>超过容忍窗口</small></div><div class="metric"><label>行数</label><b>10.6亿</b><small>curated</small></div><div class="metric"><label>存储</label><b>14.4 GB</b><small>curated</small></div><div class="metric"><label>审计</label><b>0 / 0</b><small>error / warning</small></div></section>
+    <section class="content"><article class="panel"><div class="panelhead"><div><div class="eyebrow">Coverage</div><h2>覆盖热力</h2></div><div class="panelmeta">42/42 个数据集 · 示意覆盖 <span style="color:#2563eb;background:#edf3ff;border-radius:5px;padding:4px 7px;font-size:11px">ILLUSTRATIVE DEMO</span></div></div><div class="heat" id="heat"></div><div class="legend"><span><i></i>有分区覆盖</span><span><i class="blue"></i>区间外 / 非日更节奏</span></div></article><aside class="panel attention"><div class="panelhead"><div><div class="eyebrow">Attention</div><h2>行动项</h2></div><div class="panelmeta">0 项</div></div><div class="empty"><div class="check">✓</div><div><strong>没有待处理事项</strong><span>数据、质量与审计快照均在预期状态。</span></div></div></aside></section>
+  </main>
+  <script>
+    const names = ['adj_factors','analyst_consensus','announcement_index','block_trades','commodity_bars','corporate_actions','daily_bars','dragon_tiger','earnings_disclosure_schedule','financial_statement_items','flash_news_wire','fund_flow','hot_rank','index_bars','index_constituents','industry_index','industry_members','institutional_holdings','macro_indicators','margin_trading'];
+    const heat = document.querySelector('#heat');
+    for (const name of names) { const label=document.createElement('div'); label.className='rowlabel'; label.textContent=name; const cells=document.createElement('div'); cells.className='cells'; for(let i=0;i<76;i++){const c=document.createElement('i'); c.className='cell'; cells.append(c);} heat.append(label,cells); }
+  </script>
+</body>
+</html>

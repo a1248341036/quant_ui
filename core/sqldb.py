@@ -24,7 +24,7 @@ if load_dotenv is not None:
     load_dotenv(PROJECT_ROOT / ".env")
 
 DB_PATH = Path(os.getenv("QUANT_SQLITE_PATH",
-                         str(PROJECT_ROOT / "data" / "quant.db"))).expanduser()
+                         str(PROJECT_ROOT / "data" / "db" / "quant.db"))).expanduser()
 SCHEMA_FILE = PROJECT_ROOT / "db" / "schema_sqlite.sql"
 
 

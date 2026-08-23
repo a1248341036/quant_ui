@@ -13,54 +13,28 @@ from .store import save_fund_panel
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-SYNC_SCRIPT = PROJECT_ROOT / "scripts" / "sync_tushare_to_parquet.py"
+CNE_SYNC_SCRIPT = PROJECT_ROOT / "scripts" / "sync_daily_to_cne.py"
 REBUILD_SCRIPT = PROJECT_ROOT / "scripts" / "rebuild_stock_panel_from_pg.py"
 FUND_FEES_SCRIPT = PROJECT_ROOT / "scripts" / "refresh_fund_fees.py"
-STOCK_DAILY_PARQUET = PROJECT_ROOT / "data" / "pg_parquet" / "stock_daily.parquet"
-
-
-def _parquet_max_trade_date() -> str:
-    """查询 pg_parquet/stock_daily.parquet 最新交易日（轻量单行查询）。"""
-    try:
-        import duckdb
-        con = duckdb.connect()
-        try:
-            row = con.execute(
-                "SELECT strftime(max(trade_date), '%Y-%m-%d') FROM "
-                "read_parquet(?)",
-                [str(STOCK_DAILY_PARQUET)],
-            ).fetchone()
-            return row[0] if row and row[0] else ""
-        finally:
-            con.close()
-    except Exception as exc:
-        print(f"查询 stock_daily.parquet 最新日期失败: {exc}",
-              file=sys.stderr, flush=True)
-        return ""
 
 
 def sync_market_data(end: str) -> None:
-    """Tushare 直写 parquet：按交易日增量拉日线并重建复权因子锚点。"""
+    """委托 CNEquity fetcher 增量合并日线到年度档案。"""
     try:
-        latest = _parquet_max_trade_date()
-        if latest:
-            since = (pd.Timestamp(latest) + pd.Timedelta(days=1)).strftime("%Y%m%d")
-        else:
-            since = (pd.Timestamp(end) - pd.Timedelta(days=10)).strftime("%Y%m%d")
         r = subprocess.run(
-            [sys.executable, str(SYNC_SCRIPT), "--daily-since", since, "--last-adj"],
+            [sys.executable, str(CNE_SYNC_SCRIPT), "--end", end],
             capture_output=True, text=True, timeout=3600,
         )
         print(r.stdout.strip(), flush=True)
         if r.returncode != 0:
             print(r.stderr.strip(), file=sys.stderr, flush=True)
     except Exception as exc:
-        print(f"Tushare 日线同步失败（不影响 panel 更新）: {exc}",
+        print(f"CNE 日线同步失败（不影响 panel 更新）: {exc}",
               file=sys.stderr, flush=True)
 
 
 def rebuild_stock_panel() -> None:
-    """从 pg_parquet/stock_daily.parquet 重建/增量更新股票 panel.parquet。"""
+    """从 CNE 年度 stock_daily 档案重建/增量更新股票 panel.parquet。"""
     try:
         r = subprocess.run(
             [sys.executable, str(REBUILD_SCRIPT)],

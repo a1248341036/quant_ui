@@ -1,0 +1,2598 @@
+{
+  "fetched_at": "2026-07-22",
+  "boards": [
+    {
+      "sector_code": "881101",
+      "sector_name": "种植业与林业",
+      "board_type": "industry",
+      "detail_code": "881101"
+    },
+    {
+      "sector_code": "881102",
+      "sector_name": "养殖业",
+      "board_type": "industry",
+      "detail_code": "881102"
+    },
+    {
+      "sector_code": "881103",
+      "sector_name": "农产品加工",
+      "board_type": "industry",
+      "detail_code": "881103"
+    },
+    {
+      "sector_code": "881105",
+      "sector_name": "煤炭开采加工",
+      "board_type": "industry",
+      "detail_code": "881105"
+    },
+    {
+      "sector_code": "881107",
+      "sector_name": "油气开采及服务",
+      "board_type": "industry",
+      "detail_code": "881107"
+    },
+    {
+      "sector_code": "881108",
+      "sector_name": "化学原料",
+      "board_type": "industry",
+      "detail_code": "881108"
+    },
+    {
+      "sector_code": "881109",
+      "sector_name": "化学制品",
+      "board_type": "industry",
+      "detail_code": "881109"
+    },
+    {
+      "sector_code": "881112",
+      "sector_name": "钢铁",
+      "board_type": "industry",
+      "detail_code": "881112"
+    },
+    {
+      "sector_code": "881114",
+      "sector_name": "金属新材料",
+      "board_type": "industry",
+      "detail_code": "881114"
+    },
+    {
+      "sector_code": "881115",
+      "sector_name": "建筑材料",
+      "board_type": "industry",
+      "detail_code": "881115"
+    },
+    {
+      "sector_code": "881116",
+      "sector_name": "建筑装饰",
+      "board_type": "industry",
+      "detail_code": "881116"
+    },
+    {
+      "sector_code": "881117",
+      "sector_name": "通用设备",
+      "board_type": "industry",
+      "detail_code": "881117"
+    },
+    {
+      "sector_code": "881118",
+      "sector_name": "专用设备",
+      "board_type": "industry",
+      "detail_code": "881118"
+    },
+    {
+      "sector_code": "881121",
+      "sector_name": "半导体",
+      "board_type": "industry",
+      "detail_code": "881121"
+    },
+    {
+      "sector_code": "881122",
+      "sector_name": "光学光电子",
+      "board_type": "industry",
+      "detail_code": "881122"
+    },
+    {
+      "sector_code": "881123",
+      "sector_name": "其他电子",
+      "board_type": "industry",
+      "detail_code": "881123"
+    },
+    {
+      "sector_code": "881124",
+      "sector_name": "消费电子",
+      "board_type": "industry",
+      "detail_code": "881124"
+    },
+    {
+      "sector_code": "881125",
+      "sector_name": "汽车整车",
+      "board_type": "industry",
+      "detail_code": "881125"
+    },
+    {
+      "sector_code": "881126",
+      "sector_name": "汽车零部件",
+      "board_type": "industry",
+      "detail_code": "881126"
+    },
+    {
+      "sector_code": "881128",
+      "sector_name": "汽车服务及其他",
+      "board_type": "industry",
+      "detail_code": "881128"
+    },
+    {
+      "sector_code": "881129",
+      "sector_name": "通信设备",
+      "board_type": "industry",
+      "detail_code": "881129"
+    },
+    {
+      "sector_code": "881130",
+      "sector_name": "计算机设备",
+      "board_type": "industry",
+      "detail_code": "881130"
+    },
+    {
+      "sector_code": "881131",
+      "sector_name": "白色家电",
+      "board_type": "industry",
+      "detail_code": "881131"
+    },
+    {
+      "sector_code": "881132",
+      "sector_name": "黑色家电",
+      "board_type": "industry",
+      "detail_code": "881132"
+    },
+    {
+      "sector_code": "881133",
+      "sector_name": "饮料制造",
+      "board_type": "industry",
+      "detail_code": "881133"
+    },
+    {
+      "sector_code": "881134",
+      "sector_name": "食品加工制造",
+      "board_type": "industry",
+      "detail_code": "881134"
+    },
+    {
+      "sector_code": "881135",
+      "sector_name": "纺织制造",
+      "board_type": "industry",
+      "detail_code": "881135"
+    },
+    {
+      "sector_code": "881136",
+      "sector_name": "服装家纺",
+      "board_type": "industry",
+      "detail_code": "881136"
+    },
+    {
+      "sector_code": "881137",
+      "sector_name": "造纸",
+      "board_type": "industry",
+      "detail_code": "881137"
+    },
+    {
+      "sector_code": "881138",
+      "sector_name": "包装印刷",
+      "board_type": "industry",
+      "detail_code": "881138"
+    },
+    {
+      "sector_code": "881139",
+      "sector_name": "家居用品",
+      "board_type": "industry",
+      "detail_code": "881139"
+    },
+    {
+      "sector_code": "881140",
+      "sector_name": "化学制药",
+      "board_type": "industry",
+      "detail_code": "881140"
+    },
+    {
+      "sector_code": "881141",
+      "sector_name": "中药",
+      "board_type": "industry",
+      "detail_code": "881141"
+    },
+    {
+      "sector_code": "881142",
+      "sector_name": "生物制品",
+      "board_type": "industry",
+      "detail_code": "881142"
+    },
+    {
+      "sector_code": "881143",
+      "sector_name": "医药商业",
+      "board_type": "industry",
+      "detail_code": "881143"
+    },
+    {
+      "sector_code": "881144",
+      "sector_name": "医疗器械",
+      "board_type": "industry",
+      "detail_code": "881144"
+    },
+    {
+      "sector_code": "881145",
+      "sector_name": "电力",
+      "board_type": "industry",
+      "detail_code": "881145"
+    },
+    {
+      "sector_code": "881146",
+      "sector_name": "燃气",
+      "board_type": "industry",
+      "detail_code": "881146"
+    },
+    {
+      "sector_code": "881148",
+      "sector_name": "港口航运",
+      "board_type": "industry",
+      "detail_code": "881148"
+    },
+    {
+      "sector_code": "881149",
+      "sector_name": "公路铁路运输",
+      "board_type": "industry",
+      "detail_code": "881149"
+    },
+    {
+      "sector_code": "881151",
+      "sector_name": "机场航运",
+      "board_type": "industry",
+      "detail_code": "881151"
+    },
+    {
+      "sector_code": "881152",
+      "sector_name": "物流",
+      "board_type": "industry",
+      "detail_code": "881152"
+    },
+    {
+      "sector_code": "881153",
+      "sector_name": "房地产",
+      "board_type": "industry",
+      "detail_code": "881153"
+    },
+    {
+      "sector_code": "881155",
+      "sector_name": "银行",
+      "board_type": "industry",
+      "detail_code": "881155"
+    },
+    {
+      "sector_code": "881156",
+      "sector_name": "保险",
+      "board_type": "industry",
+      "detail_code": "881156"
+    },
+    {
+      "sector_code": "881157",
+      "sector_name": "证券",
+      "board_type": "industry",
+      "detail_code": "881157"
+    },
+    {
+      "sector_code": "881158",
+      "sector_name": "零售",
+      "board_type": "industry",
+      "detail_code": "881158"
+    },
+    {
+      "sector_code": "881159",
+      "sector_name": "贸易",
+      "board_type": "industry",
+      "detail_code": "881159"
+    },
+    {
+      "sector_code": "881160",
+      "sector_name": "旅游及酒店",
+      "board_type": "industry",
+      "detail_code": "881160"
+    },
+    {
+      "sector_code": "881162",
+      "sector_name": "通信服务",
+      "board_type": "industry",
+      "detail_code": "881162"
+    },
+    {
+      "sector_code": "881164",
+      "sector_name": "文化传媒",
+      "board_type": "industry",
+      "detail_code": "881164"
+    },
+    {
+      "sector_code": "881165",
+      "sector_name": "综合",
+      "board_type": "industry",
+      "detail_code": "881165"
+    },
+    {
+      "sector_code": "881166",
+      "sector_name": "军工装备",
+      "board_type": "industry",
+      "detail_code": "881166"
+    },
+    {
+      "sector_code": "881167",
+      "sector_name": "非金属材料",
+      "board_type": "industry",
+      "detail_code": "881167"
+    },
+    {
+      "sector_code": "881168",
+      "sector_name": "工业金属",
+      "board_type": "industry",
+      "detail_code": "881168"
+    },
+    {
+      "sector_code": "881169",
+      "sector_name": "贵金属",
+      "board_type": "industry",
+      "detail_code": "881169"
+    },
+    {
+      "sector_code": "881170",
+      "sector_name": "小金属",
+      "board_type": "industry",
+      "detail_code": "881170"
+    },
+    {
+      "sector_code": "881171",
+      "sector_name": "自动化设备",
+      "board_type": "industry",
+      "detail_code": "881171"
+    },
+    {
+      "sector_code": "881172",
+      "sector_name": "电子化学品",
+      "board_type": "industry",
+      "detail_code": "881172"
+    },
+    {
+      "sector_code": "881173",
+      "sector_name": "小家电",
+      "board_type": "industry",
+      "detail_code": "881173"
+    },
+    {
+      "sector_code": "881174",
+      "sector_name": "厨卫电器",
+      "board_type": "industry",
+      "detail_code": "881174"
+    },
+    {
+      "sector_code": "881175",
+      "sector_name": "医疗服务",
+      "board_type": "industry",
+      "detail_code": "881175"
+    },
+    {
+      "sector_code": "881177",
+      "sector_name": "互联网电商",
+      "board_type": "industry",
+      "detail_code": "881177"
+    },
+    {
+      "sector_code": "881178",
+      "sector_name": "教育",
+      "board_type": "industry",
+      "detail_code": "881178"
+    },
+    {
+      "sector_code": "881179",
+      "sector_name": "其他社会服务",
+      "board_type": "industry",
+      "detail_code": "881179"
+    },
+    {
+      "sector_code": "881180",
+      "sector_name": "石油加工贸易",
+      "board_type": "industry",
+      "detail_code": "881180"
+    },
+    {
+      "sector_code": "881181",
+      "sector_name": "环境治理",
+      "board_type": "industry",
+      "detail_code": "881181"
+    },
+    {
+      "sector_code": "881182",
+      "sector_name": "美容护理",
+      "board_type": "industry",
+      "detail_code": "881182"
+    },
+    {
+      "sector_code": "881263",
+      "sector_name": "农化制品",
+      "board_type": "industry",
+      "detail_code": "881263"
+    },
+    {
+      "sector_code": "881264",
+      "sector_name": "化学纤维",
+      "board_type": "industry",
+      "detail_code": "881264"
+    },
+    {
+      "sector_code": "881265",
+      "sector_name": "塑料制品",
+      "board_type": "industry",
+      "detail_code": "881265"
+    },
+    {
+      "sector_code": "881266",
+      "sector_name": "橡胶制品",
+      "board_type": "industry",
+      "detail_code": "881266"
+    },
+    {
+      "sector_code": "881267",
+      "sector_name": "能源金属",
+      "board_type": "industry",
+      "detail_code": "881267"
+    },
+    {
+      "sector_code": "881268",
+      "sector_name": "工程机械",
+      "board_type": "industry",
+      "detail_code": "881268"
+    },
+    {
+      "sector_code": "881269",
+      "sector_name": "轨交设备",
+      "board_type": "industry",
+      "detail_code": "881269"
+    },
+    {
+      "sector_code": "881270",
+      "sector_name": "元件",
+      "board_type": "industry",
+      "detail_code": "881270"
+    },
+    {
+      "sector_code": "881271",
+      "sector_name": "IT服务",
+      "board_type": "industry",
+      "detail_code": "881271"
+    },
+    {
+      "sector_code": "881272",
+      "sector_name": "软件开发",
+      "board_type": "industry",
+      "detail_code": "881272"
+    },
+    {
+      "sector_code": "881273",
+      "sector_name": "白酒",
+      "board_type": "industry",
+      "detail_code": "881273"
+    },
+    {
+      "sector_code": "881274",
+      "sector_name": "影视院线",
+      "board_type": "industry",
+      "detail_code": "881274"
+    },
+    {
+      "sector_code": "881275",
+      "sector_name": "游戏",
+      "board_type": "industry",
+      "detail_code": "881275"
+    },
+    {
+      "sector_code": "881276",
+      "sector_name": "军工电子",
+      "board_type": "industry",
+      "detail_code": "881276"
+    },
+    {
+      "sector_code": "881277",
+      "sector_name": "电机",
+      "board_type": "industry",
+      "detail_code": "881277"
+    },
+    {
+      "sector_code": "881278",
+      "sector_name": "电网设备",
+      "board_type": "industry",
+      "detail_code": "881278"
+    },
+    {
+      "sector_code": "881279",
+      "sector_name": "光伏设备",
+      "board_type": "industry",
+      "detail_code": "881279"
+    },
+    {
+      "sector_code": "881280",
+      "sector_name": "风电设备",
+      "board_type": "industry",
+      "detail_code": "881280"
+    },
+    {
+      "sector_code": "881281",
+      "sector_name": "电池",
+      "board_type": "industry",
+      "detail_code": "881281"
+    },
+    {
+      "sector_code": "881282",
+      "sector_name": "其他电源设备",
+      "board_type": "industry",
+      "detail_code": "881282"
+    },
+    {
+      "sector_code": "881283",
+      "sector_name": "多元金融",
+      "board_type": "industry",
+      "detail_code": "881283"
+    },
+    {
+      "sector_code": "881284",
+      "sector_name": "环保设备",
+      "board_type": "industry",
+      "detail_code": "881284"
+    },
+    {
+      "sector_code": "885311",
+      "sector_name": "智能电网",
+      "board_type": "concept",
+      "detail_code": "300037"
+    },
+    {
+      "sector_code": "885312",
+      "sector_name": "物联网",
+      "board_type": "concept",
+      "detail_code": "300378"
+    },
+    {
+      "sector_code": "885333",
+      "sector_name": "移动支付",
+      "board_type": "concept",
+      "detail_code": "300188"
+    },
+    {
+      "sector_code": "885338",
+      "sector_name": "融资融券",
+      "board_type": "concept",
+      "detail_code": "300900"
+    },
+    {
+      "sector_code": "885343",
+      "sector_name": "稀土永磁",
+      "board_type": "concept",
+      "detail_code": "300382"
+    },
+    {
+      "sector_code": "885345",
+      "sector_name": "新疆振兴",
+      "board_type": "concept",
+      "detail_code": "300386"
+    },
+    {
+      "sector_code": "885355",
+      "sector_name": "石墨烯",
+      "board_type": "concept",
+      "detail_code": "300337"
+    },
+    {
+      "sector_code": "885362",
+      "sector_name": "云计算",
+      "board_type": "concept",
+      "detail_code": "300419"
+    },
+    {
+      "sector_code": "885372",
+      "sector_name": "页岩气",
+      "board_type": "concept",
+      "detail_code": "300402"
+    },
+    {
+      "sector_code": "885376",
+      "sector_name": "苹果概念",
+      "board_type": "concept",
+      "detail_code": "300309"
+    },
+    {
+      "sector_code": "885378",
+      "sector_name": "智慧城市",
+      "board_type": "concept",
+      "detail_code": "300642"
+    },
+    {
+      "sector_code": "885386",
+      "sector_name": "建筑节能",
+      "board_type": "concept",
+      "detail_code": "300261"
+    },
+    {
+      "sector_code": "885398",
+      "sector_name": "煤化工概念",
+      "board_type": "concept",
+      "detail_code": "300084"
+    },
+    {
+      "sector_code": "885402",
+      "sector_name": "智能医疗",
+      "board_type": "concept",
+      "detail_code": "300682"
+    },
+    {
+      "sector_code": "885406",
+      "sector_name": "食品安全",
+      "board_type": "concept",
+      "detail_code": "300023"
+    },
+    {
+      "sector_code": "885410",
+      "sector_name": "固废处理",
+      "board_type": "concept",
+      "detail_code": "300221"
+    },
+    {
+      "sector_code": "885412",
+      "sector_name": "污水处理",
+      "board_type": "concept",
+      "detail_code": "300374"
+    },
+    {
+      "sector_code": "885413",
+      "sector_name": "创投",
+      "board_type": "concept",
+      "detail_code": "300168"
+    },
+    {
+      "sector_code": "885418",
+      "sector_name": "文化传媒概念",
+      "board_type": "concept",
+      "detail_code": "300806"
+    },
+    {
+      "sector_code": "885423",
+      "sector_name": "安防",
+      "board_type": "concept",
+      "detail_code": "300800"
+    },
+    {
+      "sector_code": "885425",
+      "sector_name": "特高压",
+      "board_type": "concept",
+      "detail_code": "300353"
+    },
+    {
+      "sector_code": "885426",
+      "sector_name": "海工装备",
+      "board_type": "concept",
+      "detail_code": "300105"
+    },
+    {
+      "sector_code": "885427",
+      "sector_name": "高端装备",
+      "board_type": "concept",
+      "detail_code": "300890"
+    },
+    {
+      "sector_code": "885428",
+      "sector_name": "特钢概念",
+      "board_type": "concept",
+      "detail_code": "300845"
+    },
+    {
+      "sector_code": "885430",
+      "sector_name": "天然气",
+      "board_type": "concept",
+      "detail_code": "300358"
+    },
+    {
+      "sector_code": "885431",
+      "sector_name": "新能源汽车",
+      "board_type": "concept",
+      "detail_code": "300008"
+    },
+    {
+      "sector_code": "885439",
+      "sector_name": "土地流转",
+      "board_type": "concept",
+      "detail_code": "300858"
+    },
+    {
+      "sector_code": "885454",
+      "sector_name": "智能穿戴",
+      "board_type": "concept",
+      "detail_code": "301175"
+    },
+    {
+      "sector_code": "885456",
+      "sector_name": "互联网金融",
+      "board_type": "concept",
+      "detail_code": "301209"
+    },
+    {
+      "sector_code": "885457",
+      "sector_name": "手机游戏",
+      "board_type": "concept",
+      "detail_code": "301050"
+    },
+    {
+      "sector_code": "885459",
+      "sector_name": "网络安全",
+      "board_type": "concept",
+      "detail_code": "300756"
+    },
+    {
+      "sector_code": "885461",
+      "sector_name": "充电桩",
+      "board_type": "concept",
+      "detail_code": "300786"
+    },
+    {
+      "sector_code": "885462",
+      "sector_name": "乳业",
+      "board_type": "concept",
+      "detail_code": "300983"
+    },
+    {
+      "sector_code": "885467",
+      "sector_name": "特斯拉概念",
+      "board_type": "concept",
+      "detail_code": "301121"
+    },
+    {
+      "sector_code": "885472",
+      "sector_name": "上海自贸区",
+      "board_type": "concept",
+      "detail_code": "301128"
+    },
+    {
+      "sector_code": "885478",
+      "sector_name": "智能家居",
+      "board_type": "concept",
+      "detail_code": "300920"
+    },
+    {
+      "sector_code": "885480",
+      "sector_name": "在线教育",
+      "board_type": "concept",
+      "detail_code": "301227"
+    },
+    {
+      "sector_code": "885487",
+      "sector_name": "天津自贸区",
+      "board_type": "concept",
+      "detail_code": "301229"
+    },
+    {
+      "sector_code": "885490",
+      "sector_name": "民营医院",
+      "board_type": "concept",
+      "detail_code": "301346"
+    },
+    {
+      "sector_code": "885493",
+      "sector_name": "上海国企改革",
+      "board_type": "concept",
+      "detail_code": "301402"
+    },
+    {
+      "sector_code": "885494",
+      "sector_name": "一带一路",
+      "board_type": "concept",
+      "detail_code": "301365"
+    },
+    {
+      "sector_code": "885497",
+      "sector_name": "旅游概念",
+      "board_type": "concept",
+      "detail_code": "301223"
+    },
+    {
+      "sector_code": "885502",
+      "sector_name": "冷链物流",
+      "board_type": "concept",
+      "detail_code": "301179"
+    },
+    {
+      "sector_code": "885505",
+      "sector_name": "生态农业",
+      "board_type": "concept",
+      "detail_code": "300923"
+    },
+    {
+      "sector_code": "885508",
+      "sector_name": "禽流感",
+      "board_type": "concept",
+      "detail_code": "300075"
+    },
+    {
+      "sector_code": "885514",
+      "sector_name": "京津冀一体化",
+      "board_type": "concept",
+      "detail_code": "300061"
+    },
+    {
+      "sector_code": "885517",
+      "sector_name": "机器人概念",
+      "board_type": "concept",
+      "detail_code": "300816"
+    },
+    {
+      "sector_code": "885520",
+      "sector_name": "沪股通",
+      "board_type": "concept",
+      "detail_code": "301490"
+    },
+    {
+      "sector_code": "885521",
+      "sector_name": "粤港澳大湾区",
+      "board_type": "concept",
+      "detail_code": "301491"
+    },
+    {
+      "sector_code": "885522",
+      "sector_name": "养老概念",
+      "board_type": "concept",
+      "detail_code": "301494"
+    },
+    {
+      "sector_code": "885525",
+      "sector_name": "白酒概念",
+      "board_type": "concept",
+      "detail_code": "301496"
+    },
+    {
+      "sector_code": "885530",
+      "sector_name": "黄金概念",
+      "board_type": "concept",
+      "detail_code": "300248"
+    },
+    {
+      "sector_code": "885531",
+      "sector_name": "光伏概念",
+      "board_type": "concept",
+      "detail_code": "301079"
+    },
+    {
+      "sector_code": "885537",
+      "sector_name": "3D打印",
+      "board_type": "concept",
+      "detail_code": "300127"
+    },
+    {
+      "sector_code": "885539",
+      "sector_name": "医疗器械概念",
+      "board_type": "concept",
+      "detail_code": "301505"
+    },
+    {
+      "sector_code": "885540",
+      "sector_name": "三胎概念",
+      "board_type": "concept",
+      "detail_code": "300891"
+    },
+    {
+      "sector_code": "885543",
+      "sector_name": "家用电器",
+      "board_type": "concept",
+      "detail_code": "300814"
+    },
+    {
+      "sector_code": "885545",
+      "sector_name": "汽车电子",
+      "board_type": "concept",
+      "detail_code": "301471"
+    },
+    {
+      "sector_code": "885551",
+      "sector_name": "氟化工概念",
+      "board_type": "concept",
+      "detail_code": "300085"
+    },
+    {
+      "sector_code": "885552",
+      "sector_name": "小金属概念",
+      "board_type": "concept",
+      "detail_code": "300809"
+    },
+    {
+      "sector_code": "885555",
+      "sector_name": "PM2.5",
+      "board_type": "concept",
+      "detail_code": "300134"
+    },
+    {
+      "sector_code": "885556",
+      "sector_name": "5G",
+      "board_type": "concept",
+      "detail_code": "300843"
+    },
+    {
+      "sector_code": "885562",
+      "sector_name": "高铁",
+      "board_type": "concept",
+      "detail_code": "301518"
+    },
+    {
+      "sector_code": "885564",
+      "sector_name": "无人机",
+      "board_type": "concept",
+      "detail_code": "300889"
+    },
+    {
+      "sector_code": "885566",
+      "sector_name": "大飞机",
+      "board_type": "concept",
+      "detail_code": "300013"
+    },
+    {
+      "sector_code": "885570",
+      "sector_name": "期货概念",
+      "board_type": "concept",
+      "detail_code": "300220"
+    },
+    {
+      "sector_code": "885571",
+      "sector_name": "核电",
+      "board_type": "concept",
+      "detail_code": "300238"
+    },
+    {
+      "sector_code": "885572",
+      "sector_name": "水利",
+      "board_type": "concept",
+      "detail_code": "300345"
+    },
+    {
+      "sector_code": "885573",
+      "sector_name": "猪肉",
+      "board_type": "concept",
+      "detail_code": "300451"
+    },
+    {
+      "sector_code": "885574",
+      "sector_name": "卫星导航",
+      "board_type": "concept",
+      "detail_code": "300722"
+    },
+    {
+      "sector_code": "885578",
+      "sector_name": "基因测序",
+      "board_type": "concept",
+      "detail_code": "301146"
+    },
+    {
+      "sector_code": "885580",
+      "sector_name": "足球概念",
+      "board_type": "concept",
+      "detail_code": "301100"
+    },
+    {
+      "sector_code": "885586",
+      "sector_name": "职业教育",
+      "board_type": "concept",
+      "detail_code": "301539"
+    },
+    {
+      "sector_code": "885587",
+      "sector_name": "举牌",
+      "board_type": "concept",
+      "detail_code": "300269"
+    },
+    {
+      "sector_code": "885591",
+      "sector_name": "中韩自贸区",
+      "board_type": "concept",
+      "detail_code": "301541"
+    },
+    {
+      "sector_code": "885595",
+      "sector_name": "央企国企改革",
+      "board_type": "concept",
+      "detail_code": "301546"
+    },
+    {
+      "sector_code": "885598",
+      "sector_name": "新股与次新股",
+      "board_type": "concept",
+      "detail_code": "300870"
+    },
+    {
+      "sector_code": "885603",
+      "sector_name": "网络游戏",
+      "board_type": "concept",
+      "detail_code": "300019"
+    },
+    {
+      "sector_code": "885611",
+      "sector_name": "阿里巴巴概念",
+      "board_type": "concept",
+      "detail_code": "301558"
+    },
+    {
+      "sector_code": "885615",
+      "sector_name": "体育产业",
+      "board_type": "concept",
+      "detail_code": "301605"
+    },
+    {
+      "sector_code": "885617",
+      "sector_name": "福建自贸区",
+      "board_type": "concept",
+      "detail_code": "301236"
+    },
+    {
+      "sector_code": "885620",
+      "sector_name": "参股券商",
+      "board_type": "concept",
+      "detail_code": "300100"
+    },
+    {
+      "sector_code": "885623",
+      "sector_name": "参股保险",
+      "board_type": "concept",
+      "detail_code": "300018"
+    },
+    {
+      "sector_code": "885629",
+      "sector_name": "农村电商",
+      "board_type": "concept",
+      "detail_code": "301632"
+    },
+    {
+      "sector_code": "885633",
+      "sector_name": "染料",
+      "board_type": "concept",
+      "detail_code": "301292"
+    },
+    {
+      "sector_code": "885640",
+      "sector_name": "草甘膦",
+      "board_type": "concept",
+      "detail_code": "300157"
+    },
+    {
+      "sector_code": "885641",
+      "sector_name": "风电",
+      "board_type": "concept",
+      "detail_code": "300200"
+    },
+    {
+      "sector_code": "885642",
+      "sector_name": "跨境电商",
+      "board_type": "concept",
+      "detail_code": "301564"
+    },
+    {
+      "sector_code": "885650",
+      "sector_name": "碳纤维",
+      "board_type": "concept",
+      "detail_code": "300352"
+    },
+    {
+      "sector_code": "885652",
+      "sector_name": "钛白粉概念",
+      "board_type": "concept",
+      "detail_code": "300351"
+    },
+    {
+      "sector_code": "885661",
+      "sector_name": "医药电商",
+      "board_type": "concept",
+      "detail_code": "301565"
+    },
+    {
+      "sector_code": "885662",
+      "sector_name": "车联网(车路协同)",
+      "board_type": "concept",
+      "detail_code": "300163"
+    },
+    {
+      "sector_code": "885663",
+      "sector_name": "证金持股",
+      "board_type": "concept",
+      "detail_code": "301715"
+    },
+    {
+      "sector_code": "885690",
+      "sector_name": "PPP概念",
+      "board_type": "concept",
+      "detail_code": "301624"
+    },
+    {
+      "sector_code": "885692",
+      "sector_name": "地下管网",
+      "board_type": "concept",
+      "detail_code": "301623"
+    },
+    {
+      "sector_code": "885694",
+      "sector_name": "深股通",
+      "board_type": "concept",
+      "detail_code": "301636"
+    },
+    {
+      "sector_code": "885697",
+      "sector_name": "深圳国企改革",
+      "board_type": "concept",
+      "detail_code": "301171"
+    },
+    {
+      "sector_code": "885699",
+      "sector_name": "ST板块",
+      "board_type": "concept",
+      "detail_code": "300862"
+    },
+    {
+      "sector_code": "885700",
+      "sector_name": "军工",
+      "board_type": "concept",
+      "detail_code": "300082"
+    },
+    {
+      "sector_code": "885705",
+      "sector_name": "乡村振兴",
+      "board_type": "concept",
+      "detail_code": "300836"
+    },
+    {
+      "sector_code": "885706",
+      "sector_name": "农机",
+      "board_type": "concept",
+      "detail_code": "301306"
+    },
+    {
+      "sector_code": "885709",
+      "sector_name": "虚拟现实",
+      "board_type": "concept",
+      "detail_code": "301699"
+    },
+    {
+      "sector_code": "885710",
+      "sector_name": "锂电池概念",
+      "board_type": "concept",
+      "detail_code": "300733"
+    },
+    {
+      "sector_code": "885728",
+      "sector_name": "人工智能",
+      "board_type": "concept",
+      "detail_code": "302035"
+    },
+    {
+      "sector_code": "885730",
+      "sector_name": "量子科技",
+      "board_type": "concept",
+      "detail_code": "300830"
+    },
+    {
+      "sector_code": "885733",
+      "sector_name": "航运概念",
+      "board_type": "concept",
+      "detail_code": "300973"
+    },
+    {
+      "sector_code": "885734",
+      "sector_name": "广东自贸区",
+      "board_type": "concept",
+      "detail_code": "301630"
+    },
+    {
+      "sector_code": "885736",
+      "sector_name": "无人驾驶",
+      "board_type": "concept",
+      "detail_code": "301286"
+    },
+    {
+      "sector_code": "885737",
+      "sector_name": "电子竞技",
+      "board_type": "concept",
+      "detail_code": "302027"
+    },
+    {
+      "sector_code": "885738",
+      "sector_name": "OLED",
+      "board_type": "concept",
+      "detail_code": "301154"
+    },
+    {
+      "sector_code": "885739",
+      "sector_name": "股权转让(并购重组)",
+      "board_type": "concept",
+      "detail_code": "302154"
+    },
+    {
+      "sector_code": "885740",
+      "sector_name": "化债概念(AMC概念)",
+      "board_type": "concept",
+      "detail_code": "302046"
+    },
+    {
+      "sector_code": "885741",
+      "sector_name": "中字头股票",
+      "board_type": "concept",
+      "detail_code": "300704"
+    },
+    {
+      "sector_code": "885742",
+      "sector_name": "摘帽",
+      "board_type": "concept",
+      "detail_code": "301455"
+    },
+    {
+      "sector_code": "885743",
+      "sector_name": "军民融合",
+      "board_type": "concept",
+      "detail_code": "301786"
+    },
+    {
+      "sector_code": "885744",
+      "sector_name": "雄安新区",
+      "board_type": "concept",
+      "detail_code": "302182"
+    },
+    {
+      "sector_code": "885747",
+      "sector_name": "共享单车",
+      "board_type": "concept",
+      "detail_code": "302166"
+    },
+    {
+      "sector_code": "885748",
+      "sector_name": "可燃冰",
+      "board_type": "concept",
+      "detail_code": "300277"
+    },
+    {
+      "sector_code": "885749",
+      "sector_name": "蚂蚁集团概念",
+      "board_type": "concept",
+      "detail_code": "302150"
+    },
+    {
+      "sector_code": "885750",
+      "sector_name": "特色小镇",
+      "board_type": "concept",
+      "detail_code": "302674"
+    },
+    {
+      "sector_code": "885753",
+      "sector_name": "网约车",
+      "board_type": "concept",
+      "detail_code": "302142"
+    },
+    {
+      "sector_code": "885756",
+      "sector_name": "芯片概念",
+      "board_type": "concept",
+      "detail_code": "301085"
+    },
+    {
+      "sector_code": "885757",
+      "sector_name": "区块链",
+      "board_type": "concept",
+      "detail_code": "302045"
+    },
+    {
+      "sector_code": "885758",
+      "sector_name": "租售同权",
+      "board_type": "concept",
+      "detail_code": "302034"
+    },
+    {
+      "sector_code": "885759",
+      "sector_name": "人脸识别",
+      "board_type": "concept",
+      "detail_code": "301166"
+    },
+    {
+      "sector_code": "885760",
+      "sector_name": "装配式建筑",
+      "board_type": "concept",
+      "detail_code": "305794"
+    },
+    {
+      "sector_code": "885761",
+      "sector_name": "超级品牌",
+      "board_type": "concept",
+      "detail_code": "306750"
+    },
+    {
+      "sector_code": "885764",
+      "sector_name": "自由贸易港",
+      "board_type": "concept",
+      "detail_code": "306398"
+    },
+    {
+      "sector_code": "885767",
+      "sector_name": "互联网保险",
+      "board_type": "concept",
+      "detail_code": "301628"
+    },
+    {
+      "sector_code": "885768",
+      "sector_name": "无人零售",
+      "board_type": "concept",
+      "detail_code": "304756"
+    },
+    {
+      "sector_code": "885769",
+      "sector_name": "细胞免疫治疗",
+      "board_type": "concept",
+      "detail_code": "301543"
+    },
+    {
+      "sector_code": "885770",
+      "sector_name": "智能物流",
+      "board_type": "concept",
+      "detail_code": "301797"
+    },
+    {
+      "sector_code": "885771",
+      "sector_name": "智能音箱",
+      "board_type": "concept",
+      "detail_code": "302131"
+    },
+    {
+      "sector_code": "885772",
+      "sector_name": "语音技术",
+      "board_type": "concept",
+      "detail_code": "300917"
+    },
+    {
+      "sector_code": "885774",
+      "sector_name": "无线充电",
+      "board_type": "concept",
+      "detail_code": "300723"
+    },
+    {
+      "sector_code": "885775",
+      "sector_name": "燃料电池",
+      "board_type": "concept",
+      "detail_code": "300316"
+    },
+    {
+      "sector_code": "885779",
+      "sector_name": "腾讯概念",
+      "board_type": "concept",
+      "detail_code": "302010"
+    },
+    {
+      "sector_code": "885780",
+      "sector_name": "啤酒概念",
+      "board_type": "concept",
+      "detail_code": "301497"
+    },
+    {
+      "sector_code": "885781",
+      "sector_name": "石墨电极",
+      "board_type": "concept",
+      "detail_code": "307512"
+    },
+    {
+      "sector_code": "885782",
+      "sector_name": "水泥概念",
+      "board_type": "concept",
+      "detail_code": "307826"
+    },
+    {
+      "sector_code": "885783",
+      "sector_name": "工业互联网",
+      "board_type": "concept",
+      "detail_code": "301780"
+    },
+    {
+      "sector_code": "885785",
+      "sector_name": "小米概念",
+      "board_type": "concept",
+      "detail_code": "301278"
+    },
+    {
+      "sector_code": "885786",
+      "sector_name": "富士康概念",
+      "board_type": "concept",
+      "detail_code": "307954"
+    },
+    {
+      "sector_code": "885787",
+      "sector_name": "独角兽概念",
+      "board_type": "concept",
+      "detail_code": "308002"
+    },
+    {
+      "sector_code": "885789",
+      "sector_name": "宁德时代概念",
+      "board_type": "concept",
+      "detail_code": "306912"
+    },
+    {
+      "sector_code": "885791",
+      "sector_name": "知识产权保护",
+      "board_type": "concept",
+      "detail_code": "308172"
+    },
+    {
+      "sector_code": "885792",
+      "sector_name": "赛马概念",
+      "board_type": "concept",
+      "detail_code": "301602"
+    },
+    {
+      "sector_code": "885795",
+      "sector_name": "国产航母",
+      "board_type": "concept",
+      "detail_code": "300236"
+    },
+    {
+      "sector_code": "885797",
+      "sector_name": "百度概念",
+      "board_type": "concept",
+      "detail_code": "301259"
+    },
+    {
+      "sector_code": "885800",
+      "sector_name": "消费电子概念",
+      "board_type": "concept",
+      "detail_code": "308384"
+    },
+    {
+      "sector_code": "885805",
+      "sector_name": "芬太尼",
+      "board_type": "concept",
+      "detail_code": "308438"
+    },
+    {
+      "sector_code": "885806",
+      "sector_name": "华为概念",
+      "board_type": "concept",
+      "detail_code": "301459"
+    },
+    {
+      "sector_code": "885808",
+      "sector_name": "养鸡",
+      "board_type": "concept",
+      "detail_code": "301576"
+    },
+    {
+      "sector_code": "885809",
+      "sector_name": "柔性屏(折叠屏)",
+      "board_type": "concept",
+      "detail_code": "308467"
+    },
+    {
+      "sector_code": "885810",
+      "sector_name": "大豆",
+      "board_type": "concept",
+      "detail_code": "301123"
+    },
+    {
+      "sector_code": "885811",
+      "sector_name": "玉米",
+      "board_type": "concept",
+      "detail_code": "301572"
+    },
+    {
+      "sector_code": "885812",
+      "sector_name": "农业种植",
+      "board_type": "concept",
+      "detail_code": "308016"
+    },
+    {
+      "sector_code": "885814",
+      "sector_name": "信托概念",
+      "board_type": "concept",
+      "detail_code": "301377"
+    },
+    {
+      "sector_code": "885818",
+      "sector_name": "工业大麻",
+      "board_type": "concept",
+      "detail_code": "301477"
+    },
+    {
+      "sector_code": "885819",
+      "sector_name": "电力物联网",
+      "board_type": "concept",
+      "detail_code": "308477"
+    },
+    {
+      "sector_code": "885820",
+      "sector_name": "数字孪生",
+      "board_type": "concept",
+      "detail_code": "308479"
+    },
+    {
+      "sector_code": "885823",
+      "sector_name": "氢能源",
+      "board_type": "concept",
+      "detail_code": "308491"
+    },
+    {
+      "sector_code": "885825",
+      "sector_name": "冰雪产业",
+      "board_type": "concept",
+      "detail_code": "307550"
+    },
+    {
+      "sector_code": "885827",
+      "sector_name": "横琴新区",
+      "board_type": "concept",
+      "detail_code": "300087"
+    },
+    {
+      "sector_code": "885829",
+      "sector_name": "丙烯酸",
+      "board_type": "concept",
+      "detail_code": "305376"
+    },
+    {
+      "sector_code": "885832",
+      "sector_name": "长三角一体化",
+      "board_type": "concept",
+      "detail_code": "308432"
+    },
+    {
+      "sector_code": "885834",
+      "sector_name": "华为汽车",
+      "board_type": "concept",
+      "detail_code": "308507"
+    },
+    {
+      "sector_code": "885835",
+      "sector_name": "参股银行",
+      "board_type": "concept",
+      "detail_code": "301270"
+    },
+    {
+      "sector_code": "885838",
+      "sector_name": "眼科医疗",
+      "board_type": "concept",
+      "detail_code": "301252"
+    },
+    {
+      "sector_code": "885839",
+      "sector_name": "人造肉",
+      "board_type": "concept",
+      "detail_code": "308517"
+    },
+    {
+      "sector_code": "885842",
+      "sector_name": "数字乡村",
+      "board_type": "concept",
+      "detail_code": "308525"
+    },
+    {
+      "sector_code": "885843",
+      "sector_name": "华为海思概念股",
+      "board_type": "concept",
+      "detail_code": "308527"
+    },
+    {
+      "sector_code": "885844",
+      "sector_name": "国产操作系统",
+      "board_type": "concept",
+      "detail_code": "308531"
+    },
+    {
+      "sector_code": "885845",
+      "sector_name": "生物疫苗",
+      "board_type": "concept",
+      "detail_code": "300106"
+    },
+    {
+      "sector_code": "885846",
+      "sector_name": "动物疫苗",
+      "board_type": "concept",
+      "detail_code": "308537"
+    },
+    {
+      "sector_code": "885849",
+      "sector_name": "黑龙江自贸区",
+      "board_type": "concept",
+      "detail_code": "308547"
+    },
+    {
+      "sector_code": "885851",
+      "sector_name": "烟草",
+      "board_type": "concept",
+      "detail_code": "308560"
+    },
+    {
+      "sector_code": "885852",
+      "sector_name": "青蒿素",
+      "board_type": "concept",
+      "detail_code": "301794"
+    },
+    {
+      "sector_code": "885854",
+      "sector_name": "垃圾分类",
+      "board_type": "concept",
+      "detail_code": "308566"
+    },
+    {
+      "sector_code": "885856",
+      "sector_name": "仿制药一致性评价",
+      "board_type": "concept",
+      "detail_code": "308572"
+    },
+    {
+      "sector_code": "885860",
+      "sector_name": "中船系",
+      "board_type": "concept",
+      "detail_code": "301713"
+    },
+    {
+      "sector_code": "885861",
+      "sector_name": "ETC",
+      "board_type": "concept",
+      "detail_code": "308555"
+    },
+    {
+      "sector_code": "885863",
+      "sector_name": "磷化工",
+      "board_type": "concept",
+      "detail_code": "300098"
+    },
+    {
+      "sector_code": "885864",
+      "sector_name": "光刻胶",
+      "board_type": "concept",
+      "detail_code": "308582"
+    },
+    {
+      "sector_code": "885865",
+      "sector_name": "金属钴",
+      "board_type": "concept",
+      "detail_code": "302174"
+    },
+    {
+      "sector_code": "885866",
+      "sector_name": "数字货币",
+      "board_type": "concept",
+      "detail_code": "301997"
+    },
+    {
+      "sector_code": "885868",
+      "sector_name": "无线耳机",
+      "board_type": "concept",
+      "detail_code": "308612"
+    },
+    {
+      "sector_code": "885874",
+      "sector_name": "云游戏",
+      "board_type": "concept",
+      "detail_code": "308624"
+    },
+    {
+      "sector_code": "885875",
+      "sector_name": "MiniLED",
+      "board_type": "concept",
+      "detail_code": "308628"
+    },
+    {
+      "sector_code": "885876",
+      "sector_name": "网红经济",
+      "board_type": "concept",
+      "detail_code": "308630"
+    },
+    {
+      "sector_code": "885877",
+      "sector_name": "转基因",
+      "board_type": "concept",
+      "detail_code": "300435"
+    },
+    {
+      "sector_code": "885879",
+      "sector_name": "流感",
+      "board_type": "concept",
+      "detail_code": "300038"
+    },
+    {
+      "sector_code": "885881",
+      "sector_name": "云办公",
+      "board_type": "concept",
+      "detail_code": "308634"
+    },
+    {
+      "sector_code": "885882",
+      "sector_name": "消毒剂",
+      "board_type": "concept",
+      "detail_code": "308636"
+    },
+    {
+      "sector_code": "885884",
+      "sector_name": "航空发动机",
+      "board_type": "concept",
+      "detail_code": "301470"
+    },
+    {
+      "sector_code": "885886",
+      "sector_name": "超级电容",
+      "board_type": "concept",
+      "detail_code": "300926"
+    },
+    {
+      "sector_code": "885887",
+      "sector_name": "数据中心(AIDC)",
+      "board_type": "concept",
+      "detail_code": "308642"
+    },
+    {
+      "sector_code": "885890",
+      "sector_name": "抖音概念(字节概念)",
+      "board_type": "concept",
+      "detail_code": "308366"
+    },
+    {
+      "sector_code": "885893",
+      "sector_name": "国家大基金持股",
+      "board_type": "concept",
+      "detail_code": "307816"
+    },
+    {
+      "sector_code": "885894",
+      "sector_name": "海南自贸区",
+      "board_type": "concept",
+      "detail_code": "308428"
+    },
+    {
+      "sector_code": "885897",
+      "sector_name": "中芯国际概念",
+      "board_type": "concept",
+      "detail_code": "308690"
+    },
+    {
+      "sector_code": "885898",
+      "sector_name": "免税店",
+      "board_type": "concept",
+      "detail_code": "308657"
+    },
+    {
+      "sector_code": "885899",
+      "sector_name": "新型烟草(电子烟)",
+      "board_type": "concept",
+      "detail_code": "301362"
+    },
+    {
+      "sector_code": "885901",
+      "sector_name": "可降解塑料",
+      "board_type": "concept",
+      "detail_code": "301117"
+    },
+    {
+      "sector_code": "885902",
+      "sector_name": "汽车拆解概念",
+      "board_type": "concept",
+      "detail_code": "308694"
+    },
+    {
+      "sector_code": "885903",
+      "sector_name": "环氧丙烷",
+      "board_type": "concept",
+      "detail_code": "308202"
+    },
+    {
+      "sector_code": "885904",
+      "sector_name": "代糖概念",
+      "board_type": "concept",
+      "detail_code": "308696"
+    },
+    {
+      "sector_code": "885905",
+      "sector_name": "注册制次新股",
+      "board_type": "concept",
+      "detail_code": "308697"
+    },
+    {
+      "sector_code": "885907",
+      "sector_name": "科创次新股",
+      "board_type": "concept",
+      "detail_code": "308699"
+    },
+    {
+      "sector_code": "885908",
+      "sector_name": "第三代半导体",
+      "board_type": "concept",
+      "detail_code": "308700"
+    },
+    {
+      "sector_code": "885909",
+      "sector_name": "辅助生殖",
+      "board_type": "concept",
+      "detail_code": "308708"
+    },
+    {
+      "sector_code": "885910",
+      "sector_name": "拼多多概念",
+      "board_type": "concept",
+      "detail_code": "308709"
+    },
+    {
+      "sector_code": "885912",
+      "sector_name": "有机硅概念",
+      "board_type": "concept",
+      "detail_code": "301279"
+    },
+    {
+      "sector_code": "885913",
+      "sector_name": "医美概念",
+      "board_type": "concept",
+      "detail_code": "308712"
+    },
+    {
+      "sector_code": "885914",
+      "sector_name": "煤炭概念",
+      "board_type": "concept",
+      "detail_code": "308716"
+    },
+    {
+      "sector_code": "885915",
+      "sector_name": "物业管理",
+      "board_type": "concept",
+      "detail_code": "308717"
+    },
+    {
+      "sector_code": "885916",
+      "sector_name": "同花顺漂亮100",
+      "board_type": "concept",
+      "detail_code": "308718"
+    },
+    {
+      "sector_code": "885918",
+      "sector_name": "快手概念",
+      "board_type": "concept",
+      "detail_code": "308659"
+    },
+    {
+      "sector_code": "885919",
+      "sector_name": "碳中和",
+      "board_type": "concept",
+      "detail_code": "308728"
+    },
+    {
+      "sector_code": "885921",
+      "sector_name": "储能",
+      "board_type": "concept",
+      "detail_code": "306380"
+    },
+    {
+      "sector_code": "885922",
+      "sector_name": "盐湖提锂",
+      "board_type": "concept",
+      "detail_code": "307904"
+    },
+    {
+      "sector_code": "885923",
+      "sector_name": "鸿蒙概念",
+      "board_type": "concept",
+      "detail_code": "308731"
+    },
+    {
+      "sector_code": "885924",
+      "sector_name": "共同富裕示范区",
+      "board_type": "concept",
+      "detail_code": "308732"
+    },
+    {
+      "sector_code": "885925",
+      "sector_name": "MCU芯片",
+      "board_type": "concept",
+      "detail_code": "308300"
+    },
+    {
+      "sector_code": "885926",
+      "sector_name": "牙科医疗",
+      "board_type": "concept",
+      "detail_code": "308733"
+    },
+    {
+      "sector_code": "885928",
+      "sector_name": "钠离子电池",
+      "board_type": "concept",
+      "detail_code": "301096"
+    },
+    {
+      "sector_code": "885929",
+      "sector_name": "专精特新",
+      "board_type": "concept",
+      "detail_code": "308740"
+    },
+    {
+      "sector_code": "885930",
+      "sector_name": "工业母机",
+      "board_type": "concept",
+      "detail_code": "300941"
+    },
+    {
+      "sector_code": "885933",
+      "sector_name": "NFT概念",
+      "board_type": "concept",
+      "detail_code": "308748"
+    },
+    {
+      "sector_code": "885934",
+      "sector_name": "元宇宙",
+      "board_type": "concept",
+      "detail_code": "308752"
+    },
+    {
+      "sector_code": "885935",
+      "sector_name": "抽水蓄能",
+      "board_type": "concept",
+      "detail_code": "308753"
+    },
+    {
+      "sector_code": "885936",
+      "sector_name": "绿色电力",
+      "board_type": "concept",
+      "detail_code": "308760"
+    },
+    {
+      "sector_code": "885937",
+      "sector_name": "培育钻石",
+      "board_type": "concept",
+      "detail_code": "308774"
+    },
+    {
+      "sector_code": "885938",
+      "sector_name": "换电概念",
+      "board_type": "concept",
+      "detail_code": "308775"
+    },
+    {
+      "sector_code": "885939",
+      "sector_name": "海峡两岸",
+      "board_type": "concept",
+      "detail_code": "300066"
+    },
+    {
+      "sector_code": "885940",
+      "sector_name": "WiFi 6",
+      "board_type": "concept",
+      "detail_code": "308791"
+    },
+    {
+      "sector_code": "885942",
+      "sector_name": "数据安全",
+      "board_type": "concept",
+      "detail_code": "308801"
+    },
+    {
+      "sector_code": "885943",
+      "sector_name": "EDR概念",
+      "board_type": "concept",
+      "detail_code": "308803"
+    },
+    {
+      "sector_code": "885944",
+      "sector_name": "动力电池回收",
+      "board_type": "concept",
+      "detail_code": "307822"
+    },
+    {
+      "sector_code": "885945",
+      "sector_name": "汽车芯片",
+      "board_type": "concept",
+      "detail_code": "308725"
+    },
+    {
+      "sector_code": "885946",
+      "sector_name": "传感器",
+      "board_type": "concept",
+      "detail_code": "301016"
+    },
+    {
+      "sector_code": "885948",
+      "sector_name": "柔性直流输电",
+      "board_type": "concept",
+      "detail_code": "308810"
+    },
+    {
+      "sector_code": "885950",
+      "sector_name": "虚拟数字人",
+      "board_type": "concept",
+      "detail_code": "308794"
+    },
+    {
+      "sector_code": "885951",
+      "sector_name": "预制菜",
+      "board_type": "concept",
+      "detail_code": "308814"
+    },
+    {
+      "sector_code": "885952",
+      "sector_name": "幽门螺杆菌概念",
+      "board_type": "concept",
+      "detail_code": "308818"
+    },
+    {
+      "sector_code": "885953",
+      "sector_name": "电子纸",
+      "board_type": "concept",
+      "detail_code": "301135"
+    },
+    {
+      "sector_code": "885955",
+      "sector_name": "重组蛋白",
+      "board_type": "concept",
+      "detail_code": "308822"
+    },
+    {
+      "sector_code": "885956",
+      "sector_name": "智慧政务",
+      "board_type": "concept",
+      "detail_code": "308606"
+    },
+    {
+      "sector_code": "885957",
+      "sector_name": "东数西算(算力)",
+      "board_type": "concept",
+      "detail_code": "308828"
+    },
+    {
+      "sector_code": "885958",
+      "sector_name": "硅能源",
+      "board_type": "concept",
+      "detail_code": "308829"
+    },
+    {
+      "sector_code": "885959",
+      "sector_name": "PCB概念",
+      "board_type": "concept",
+      "detail_code": "308832"
+    },
+    {
+      "sector_code": "885960",
+      "sector_name": "民爆概念",
+      "board_type": "concept",
+      "detail_code": "308834"
+    },
+    {
+      "sector_code": "885961",
+      "sector_name": "净水概念",
+      "board_type": "concept",
+      "detail_code": "301032"
+    },
+    {
+      "sector_code": "885962",
+      "sector_name": "土壤修复",
+      "board_type": "concept",
+      "detail_code": "300925"
+    },
+    {
+      "sector_code": "885963",
+      "sector_name": "智慧灯杆",
+      "board_type": "concept",
+      "detail_code": "308841"
+    },
+    {
+      "sector_code": "885964",
+      "sector_name": "俄乌冲突概念",
+      "board_type": "concept",
+      "detail_code": "308850"
+    },
+    {
+      "sector_code": "885965",
+      "sector_name": "中俄贸易概念",
+      "board_type": "concept",
+      "detail_code": "308854"
+    },
+    {
+      "sector_code": "885967",
+      "sector_name": "化肥",
+      "board_type": "concept",
+      "detail_code": "301104"
+    },
+    {
+      "sector_code": "885968",
+      "sector_name": "托育服务",
+      "board_type": "concept",
+      "detail_code": "308862"
+    },
+    {
+      "sector_code": "885969",
+      "sector_name": "金属镍",
+      "board_type": "concept",
+      "detail_code": "301511"
+    },
+    {
+      "sector_code": "885970",
+      "sector_name": "金属锌",
+      "board_type": "concept",
+      "detail_code": "301582"
+    },
+    {
+      "sector_code": "885971",
+      "sector_name": "金属铅",
+      "board_type": "concept",
+      "detail_code": "308864"
+    },
+    {
+      "sector_code": "885972",
+      "sector_name": "金属回收",
+      "board_type": "concept",
+      "detail_code": "301107"
+    },
+    {
+      "sector_code": "885973",
+      "sector_name": "金属铜",
+      "board_type": "concept",
+      "detail_code": "301577"
+    },
+    {
+      "sector_code": "885974",
+      "sector_name": "两轮车",
+      "board_type": "concept",
+      "detail_code": "301248"
+    },
+    {
+      "sector_code": "885975",
+      "sector_name": "电子身份证",
+      "board_type": "concept",
+      "detail_code": "308869"
+    },
+    {
+      "sector_code": "885976",
+      "sector_name": "数字经济",
+      "board_type": "concept",
+      "detail_code": "308870"
+    },
+    {
+      "sector_code": "885977",
+      "sector_name": "国资云",
+      "board_type": "concept",
+      "detail_code": "308874"
+    },
+    {
+      "sector_code": "885980",
+      "sector_name": "华为鲲鹏",
+      "board_type": "concept",
+      "detail_code": "308883"
+    },
+    {
+      "sector_code": "885981",
+      "sector_name": "家庭医生",
+      "board_type": "concept",
+      "detail_code": "308885"
+    },
+    {
+      "sector_code": "885982",
+      "sector_name": "华为欧拉",
+      "board_type": "concept",
+      "detail_code": "308887"
+    },
+    {
+      "sector_code": "885985",
+      "sector_name": "毛发医疗",
+      "board_type": "concept",
+      "detail_code": "308893"
+    },
+    {
+      "sector_code": "885986",
+      "sector_name": "碳交易",
+      "board_type": "concept",
+      "detail_code": "300931"
+    },
+    {
+      "sector_code": "885988",
+      "sector_name": "统一大市场",
+      "board_type": "concept",
+      "detail_code": "308901"
+    },
+    {
+      "sector_code": "885989",
+      "sector_name": "肝炎概念",
+      "board_type": "concept",
+      "detail_code": "308915"
+    },
+    {
+      "sector_code": "885990",
+      "sector_name": "露营经济",
+      "board_type": "concept",
+      "detail_code": "308926"
+    },
+    {
+      "sector_code": "885991",
+      "sector_name": "新型城镇化",
+      "board_type": "concept",
+      "detail_code": "300841"
+    },
+    {
+      "sector_code": "885994",
+      "sector_name": "猴痘概念",
+      "board_type": "concept",
+      "detail_code": "308941"
+    },
+    {
+      "sector_code": "885995",
+      "sector_name": "粮食概念",
+      "board_type": "concept",
+      "detail_code": "308956"
+    },
+    {
+      "sector_code": "885996",
+      "sector_name": "超超临界发电",
+      "board_type": "concept",
+      "detail_code": "308969"
+    },
+    {
+      "sector_code": "885997",
+      "sector_name": "比亚迪概念",
+      "board_type": "concept",
+      "detail_code": "308972"
+    },
+    {
+      "sector_code": "885998",
+      "sector_name": "F5G概念",
+      "board_type": "concept",
+      "detail_code": "308977"
+    },
+    {
+      "sector_code": "885999",
+      "sector_name": "汽车热管理",
+      "board_type": "concept",
+      "detail_code": "308805"
+    },
+    {
+      "sector_code": "886000",
+      "sector_name": "一体化压铸",
+      "board_type": "concept",
+      "detail_code": "308984"
+    },
+    {
+      "sector_code": "886001",
+      "sector_name": "高压快充",
+      "board_type": "concept",
+      "detail_code": "308806"
+    },
+    {
+      "sector_code": "886003",
+      "sector_name": "钒电池",
+      "board_type": "concept",
+      "detail_code": "301174"
+    },
+    {
+      "sector_code": "886004",
+      "sector_name": "虚拟电厂",
+      "board_type": "concept",
+      "detail_code": "308761"
+    },
+    {
+      "sector_code": "886005",
+      "sector_name": "生物质能发电",
+      "board_type": "concept",
+      "detail_code": "308989"
+    },
+    {
+      "sector_code": "886006",
+      "sector_name": "钙钛矿电池",
+      "board_type": "concept",
+      "detail_code": "308991"
+    },
+    {
+      "sector_code": "886007",
+      "sector_name": "TOPCON电池",
+      "board_type": "concept",
+      "detail_code": "308992"
+    },
+    {
+      "sector_code": "886008",
+      "sector_name": "减速器",
+      "board_type": "concept",
+      "detail_code": "309000"
+    },
+    {
+      "sector_code": "886009",
+      "sector_name": "先进封装",
+      "board_type": "concept",
+      "detail_code": "309004"
+    },
+    {
+      "sector_code": "886010",
+      "sector_name": "空气能热泵",
+      "board_type": "concept",
+      "detail_code": "309007"
+    },
+    {
+      "sector_code": "886011",
+      "sector_name": "光热发电",
+      "board_type": "concept",
+      "detail_code": "300223"
+    },
+    {
+      "sector_code": "886012",
+      "sector_name": "宠物经济",
+      "board_type": "concept",
+      "detail_code": "308588"
+    },
+    {
+      "sector_code": "886016",
+      "sector_name": "供销社",
+      "board_type": "concept",
+      "detail_code": "301669"
+    },
+    {
+      "sector_code": "886018",
+      "sector_name": "高压氧舱",
+      "board_type": "concept",
+      "detail_code": "309023"
+    },
+    {
+      "sector_code": "886020",
+      "sector_name": "PET铜箔",
+      "board_type": "concept",
+      "detail_code": "309030"
+    },
+    {
+      "sector_code": "886023",
+      "sector_name": "数据确权",
+      "board_type": "concept",
+      "detail_code": "309037"
+    },
+    {
+      "sector_code": "886026",
+      "sector_name": "POE胶膜",
+      "board_type": "concept",
+      "detail_code": "309040"
+    },
+    {
+      "sector_code": "886028",
+      "sector_name": "血氧仪",
+      "board_type": "concept",
+      "detail_code": "309042"
+    },
+    {
+      "sector_code": "886030",
+      "sector_name": "成飞概念",
+      "board_type": "concept",
+      "detail_code": "309045"
+    },
+    {
+      "sector_code": "886034",
+      "sector_name": "数字水印",
+      "board_type": "concept",
+      "detail_code": "309050"
+    },
+    {
+      "sector_code": "886035",
+      "sector_name": "毫米波雷达",
+      "board_type": "concept",
+      "detail_code": "309051"
+    },
+    {
+      "sector_code": "886036",
+      "sector_name": "时空大数据",
+      "board_type": "concept",
+      "detail_code": "300180"
+    },
+    {
+      "sector_code": "886037",
+      "sector_name": "6G概念",
+      "board_type": "concept",
+      "detail_code": "309055"
+    },
+    {
+      "sector_code": "886038",
+      "sector_name": "超导概念",
+      "board_type": "concept",
+      "detail_code": "309056"
+    },
+    {
+      "sector_code": "886039",
+      "sector_name": "ERP概念",
+      "board_type": "concept",
+      "detail_code": "309058"
+    },
+    {
+      "sector_code": "886043",
+      "sector_name": "太赫兹",
+      "board_type": "concept",
+      "detail_code": "300795"
+    },
+    {
+      "sector_code": "886045",
+      "sector_name": "同花顺中特估100",
+      "board_type": "concept",
+      "detail_code": "309062"
+    },
+    {
+      "sector_code": "886047",
+      "sector_name": "脑机接口",
+      "board_type": "concept",
+      "detail_code": "308535"
+    },
+    {
+      "sector_code": "886048",
+      "sector_name": "英伟达概念",
+      "board_type": "concept",
+      "detail_code": "309065"
+    },
+    {
+      "sector_code": "886049",
+      "sector_name": "空间计算",
+      "board_type": "concept",
+      "detail_code": "309066"
+    },
+    {
+      "sector_code": "886050",
+      "sector_name": "算力租赁",
+      "board_type": "concept",
+      "detail_code": "309068"
+    },
+    {
+      "sector_code": "886051",
+      "sector_name": "减肥药",
+      "board_type": "concept",
+      "detail_code": "309081"
+    },
+    {
+      "sector_code": "886052",
+      "sector_name": "核污染防治",
+      "board_type": "concept",
+      "detail_code": "301424"
+    },
+    {
+      "sector_code": "886053",
+      "sector_name": "BC电池",
+      "board_type": "concept",
+      "detail_code": "309084"
+    },
+    {
+      "sector_code": "886054",
+      "sector_name": "光刻机",
+      "board_type": "concept",
+      "detail_code": "309085"
+    },
+    {
+      "sector_code": "886055",
+      "sector_name": "星闪概念",
+      "board_type": "concept",
+      "detail_code": "309086"
+    },
+    {
+      "sector_code": "886056",
+      "sector_name": "阿尔茨海默概念",
+      "board_type": "concept",
+      "detail_code": "308614"
+    },
+    {
+      "sector_code": "886058",
+      "sector_name": "华为昇腾",
+      "board_type": "concept",
+      "detail_code": "309090"
+    },
+    {
+      "sector_code": "886059",
+      "sector_name": "智能座舱",
+      "board_type": "concept",
+      "detail_code": "309092"
+    },
+    {
+      "sector_code": "886060",
+      "sector_name": "短剧游戏",
+      "board_type": "concept",
+      "detail_code": "309093"
+    },
+    {
+      "sector_code": "886062",
+      "sector_name": "多模态AI",
+      "board_type": "concept",
+      "detail_code": "309104"
+    },
+    {
+      "sector_code": "886063",
+      "sector_name": "PEEK材料",
+      "board_type": "concept",
+      "detail_code": "309105"
+    },
+    {
+      "sector_code": "886064",
+      "sector_name": "小米汽车",
+      "board_type": "concept",
+      "detail_code": "309106"
+    },
+    {
+      "sector_code": "886065",
+      "sector_name": "可控核聚变",
+      "board_type": "concept",
+      "detail_code": "309108"
+    },
+    {
+      "sector_code": "886066",
+      "sector_name": "飞行汽车(eVTOL)",
+      "board_type": "concept",
+      "detail_code": "309113"
+    },
+    {
+      "sector_code": "886068",
+      "sector_name": "AI视频",
+      "board_type": "concept",
+      "detail_code": "309118"
+    },
+    {
+      "sector_code": "886070",
+      "sector_name": "AI手机",
+      "board_type": "concept",
+      "detail_code": "309120"
+    },
+    {
+      "sector_code": "886071",
+      "sector_name": "AI PC",
+      "board_type": "concept",
+      "detail_code": "309121"
+    },
+    {
+      "sector_code": "886073",
+      "sector_name": "铜缆高速连接",
+      "board_type": "concept",
+      "detail_code": "309125"
+    },
+    {
+      "sector_code": "886074",
+      "sector_name": "AI语料",
+      "board_type": "concept",
+      "detail_code": "309126"
+    },
+    {
+      "sector_code": "886075",
+      "sector_name": "同花顺出海50",
+      "board_type": "concept",
+      "detail_code": "309127"
+    },
+    {
+      "sector_code": "886076",
+      "sector_name": "军工信息化",
+      "board_type": "concept",
+      "detail_code": "309128"
+    },
+    {
+      "sector_code": "886077",
+      "sector_name": "合成生物",
+      "board_type": "concept",
+      "detail_code": "309129"
+    },
+    {
+      "sector_code": "886098",
+      "sector_name": "小红书概念",
+      "board_type": "concept",
+      "detail_code": "309182"
+    },
+    {
+      "sector_code": "886101",
+      "sector_name": "兵装重组概念",
+      "board_type": "concept",
+      "detail_code": "309185"
+    },
+    {
+      "sector_code": "886102",
+      "sector_name": "中国AI 50",
+      "board_type": "concept",
+      "detail_code": "309187"
+    },
+    {
+      "sector_code": "886105",
+      "sector_name": "雅下水电概念",
+      "board_type": "concept",
+      "detail_code": "309261"
+    },
+    {
+      "sector_code": "886109",
+      "sector_name": "2026一季报预增",
+      "board_type": "concept",
+      "detail_code": "309265"
+    },
+    {
+      "sector_code": "886111",
+      "sector_name": "玻璃基板",
+      "board_type": "concept",
+      "detail_code": "309268"
+    }
+  ],
+  "note": "detail_code recovered offline from the catalog scrape; sector_code drives kline, detail_code drives listing pages"
+}

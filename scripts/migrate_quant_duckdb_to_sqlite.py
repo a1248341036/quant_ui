@@ -50,7 +50,7 @@ def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
 def main() -> int:
     ap = argparse.ArgumentParser(description="迁移 DuckDB 业务库到 SQLite")
     ap.add_argument("--duckdb", default=str(ROOT / "data" / "quant.duckdb"))
-    ap.add_argument("--sqlite", default=str(ROOT / "data" / "quant.db"))
+    ap.add_argument("--sqlite", default=str(ROOT / "data" / "db" / "quant.db"))
     args = ap.parse_args()
 
     duck_path = Path(args.duckdb)

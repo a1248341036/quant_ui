@@ -13,8 +13,8 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-AUTH_FILE = DATA_DIR / ".auth.json"
-SECRET_FILE = DATA_DIR / ".secret"
+AUTH_FILE = DATA_DIR / "db" / ".auth.json"
+SECRET_FILE = DATA_DIR / "db" / ".secret"
 
 COOKIE = "quant_ui_session"
 TTL = 60 * 60 * 24 * 7  # 7 天

@@ -501,7 +501,8 @@ def _sync_events_one(out_dir: Path, pro, code: str) -> dict[str, int]:
     for api in ("dividend", "share_float", "namechange"):
         try:
             df = _fetch_all(pro, api, ts_code=code)
-        except Exception:
+        except Exception as exc:
+            _log(f"WARNING {api} {code} 失败: {exc.__class__.__name__}: {exc}")
             continue
         if df is None or df.empty:
             continue
@@ -520,19 +521,22 @@ def cmd_events(out_dir: Path, limit: int, codes_file: str | None,
     _log(f"事件表处理 {len(codes)} 只（dividend/share_float/namechange, workers={workers}）")
     counts = {"dividend": 0, "share_float": 0, "namechange": 0}
     done = 0
+    failed = 0
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futs = {pool.submit(_sync_events_one, out_dir, pro, c): c for c in codes}
         for fut in as_completed(futs):
+            code = futs[fut]
             try:
                 sub = fut.result()
                 for k in counts:
                     counts[k] += sub.get(k, 0)
-            except Exception:
-                pass
+            except Exception as exc:
+                failed += 1
+                _log(f"WARNING events {code} 异常: {exc.__class__.__name__}: {exc}")
             done += 1
             if done % 100 == 0 or done == len(codes):
-                _log(f"进度 {done}/{len(codes)}")
-    _log(f"完成: {counts}")
+                _log(f"进度 {done}/{len(codes)} 失败 {failed}")
+    _log(f"完成: {counts} 失败 {failed}/{len(codes)}")
 
 
 def _sync_fina_one(out_dir: Path, pro, code: str) -> dict[str, int]:
@@ -540,7 +544,8 @@ def _sync_fina_one(out_dir: Path, pro, code: str) -> dict[str, int]:
     for api in counts:
         try:
             df = _fetch_all(pro, api, ts_code=code)
-        except Exception:
+        except Exception as exc:
+            _log(f"WARNING {api} {code} 失败: {exc.__class__.__name__}: {exc}")
             continue
         if df is None or df.empty:
             continue
@@ -561,19 +566,22 @@ def cmd_fina(out_dir: Path, limit: int, codes_file: str | None,
     _log(f"财务表处理 {len(codes)} 只（fina_indicator/income/balancesheet/cashflow, workers={workers}）")
     counts = {api: 0 for api in ("fina_indicator", "income", "balancesheet", "cashflow")}
     done = 0
+    failed = 0
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futs = {pool.submit(_sync_fina_one, out_dir, pro, c): c for c in codes}
         for fut in as_completed(futs):
+            code = futs[fut]
             try:
                 sub = fut.result()
                 for k in counts:
                     counts[k] += sub.get(k, 0)
-            except Exception:
-                pass
+            except Exception as exc:
+                failed += 1
+                _log(f"WARNING fina {code} 异常: {exc.__class__.__name__}: {exc}")
             done += 1
             if done % 50 == 0 or done == len(codes):
-                _log(f"进度 {done}/{len(codes)}")
-    _log(f"完成: {counts}")
+                _log(f"进度 {done}/{len(codes)} 失败 {failed}")
+    _log(f"完成: {counts} 失败 {failed}/{len(codes)}")
 
 
 def _sync_surv_one(out_dir: Path, pro, code: str) -> dict[str, int]:
@@ -581,7 +589,8 @@ def _sync_surv_one(out_dir: Path, pro, code: str) -> dict[str, int]:
     for api in ("forecast", "express", "stk_surv"):
         try:
             df = _fetch_all(pro, api, ts_code=code)
-        except Exception:
+        except Exception as exc:
+            _log(f"WARNING {api} {code} 失败: {exc.__class__.__name__}: {exc}")
             continue
         if df is None or df.empty:
             continue
@@ -600,19 +609,22 @@ def cmd_surv(out_dir: Path, limit: int, codes_file: str | None,
     _log(f"事件表处理 {len(codes)} 只（forecast/express/stk_surv, workers={workers}）")
     counts = {"forecast": 0, "express": 0, "stk_surv": 0}
     done = 0
+    failed = 0
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futs = {pool.submit(_sync_surv_one, out_dir, pro, c): c for c in codes}
         for fut in as_completed(futs):
+            code = futs[fut]
             try:
                 sub = fut.result()
                 for k in counts:
                     counts[k] += sub.get(k, 0)
-            except Exception:
-                pass
+            except Exception as exc:
+                failed += 1
+                _log(f"WARNING surv {code} 异常: {exc.__class__.__name__}: {exc}")
             done += 1
             if done % 100 == 0 or done == len(codes):
-                _log(f"进度 {done}/{len(codes)}")
-    _log(f"完成: {counts}")
+                _log(f"进度 {done}/{len(codes)} 失败 {failed}")
+    _log(f"完成: {counts} 失败 {failed}/{len(codes)}")
 
 
 def main() -> int:
@@ -637,8 +649,12 @@ def main() -> int:
         global TUSHARE_SLEEP
         TUSHARE_SLEEP = max(0.0, args.sleep)
 
-    if not any([args.basic, args.daily_since, args.last_adj, args.report_rc,
-                args.events, args.fina, args.surv]):
+    if args.daily_since or args.last_adj:
+        raise SystemExit(
+            "股票日线已迁移到 CNEquity 年度档案，请改用 "
+            "python scripts/sync_daily_to_cne.py [--since YYYY-MM-DD] [--end YYYY-MM-DD]"
+        )
+    if not any([args.basic, args.report_rc, args.events, args.fina, args.surv]):
         parser.print_help()
         return 1
 
