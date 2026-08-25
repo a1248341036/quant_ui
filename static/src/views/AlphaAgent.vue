@@ -1849,6 +1849,7 @@ export default {
 .agent-main { display:flex; flex-direction:column; min-width:0; min-height:0; }
 .agent-header { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:16px 24px; border-bottom:1px solid var(--line); }
 .agent-title { display:flex; align-items:center; gap:11px; min-width:0; }
+.agent-title > div { min-width:0; overflow:hidden; }
 .agent-orb, .welcome-orb { display:grid; place-items:center; flex:none; border-radius:50%; color:#d7c7ff; background:linear-gradient(145deg,#7b61ff,#3e83ff); box-shadow:0 0 22px rgb(100 100 255 / .32); }
 .agent-orb { width:31px; height:31px; }
 .agent-title h1 { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:15px; }
