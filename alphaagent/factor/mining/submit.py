@@ -4,14 +4,21 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+
+import numpy as np
 
 from alphaagent.factor.types import IngestPolicy
-from alphaagent.factor.ingest import ingest_factor, load_panel_for_zoo
+from alphaagent.factor.ingest import ingest_factor, load_panel_for_zoo, prepare_stored_values
 from alphaagent.factor.mining.service import StockEvalService
-from alphaagent.factor.zoo import DEFAULT_FACTORLIB_ROOT, FactorZoo, init_library
+from alphaagent.factor.zoo import DEFAULT_FACTORLIB_ROOT, FactorZoo
 from alphaagent.factor.zoo.realign import panel_paths_match, realign_factorlib_to_panel
-from alphaagent.factor.mining.registry_io import upsert_mining_registry
+from alphaagent.factor.mining.registry_io import (
+    set_candidate_review,
+    set_candidate_promotion,
+    upsert_mining_registry,
+    write_candidate_registry,
+)
 
 
 def slug_factor_id(name: str) -> str:
@@ -31,7 +38,7 @@ def _check_stage_one(
     if ic is None or abs(float(ic)) < float(criteria["min_abs_ic"]):
         reasons.append("ic")
     icir = metrics.get("icir")
-    if icir is None or float(icir) <= float(criteria["min_icir"]):
+    if icir is None or abs(float(icir)) <= float(criteria["min_icir"]):
         reasons.append("icir")
     cov = metrics.get("coverage")
     if cov is None or float(cov) <= float(criteria["min_coverage"]):
@@ -53,23 +60,32 @@ def _check_stage_two(
         "min_abs_ic": 0.035, "min_icir": 0.5, "min_fmb_t_stat": 2.5,
         "min_long_group_annual_excess_return": 0.03,
         "max_winsorized_abs_ic_decay": 0.10, "max_abs_corr": 0.4,
+        "min_topn_annual_excess_return": 0.05, "min_topn_sharpe": 0.5,
     }
     ic = metrics.get("ic")
     if ic is None or abs(float(ic)) < float(criteria["min_abs_ic"]):
         reasons.append("ic")
     icir = metrics.get("icir")
-    if icir is None or float(icir) <= float(criteria["min_icir"]):
+    if icir is None or abs(float(icir)) <= float(criteria["min_icir"]):
         reasons.append("icir")
     fmb_t = (metrics.get("mls_fmb") or {}).get("nw_t_ls")
     min_t = criteria.get("min_fmb_t_stat", 0)
     if min_t and (fmb_t is None or abs(float(fmb_t)) < float(min_t)):
         reasons.append("fmb_t_stat")
     long_excess = metrics.get("long_group_annual_excess_return")
-    if long_excess is None or float(long_excess) <= float(criteria["min_long_group_annual_excess_return"]):
+    if long_excess is None or abs(float(long_excess)) <= float(criteria["min_long_group_annual_excess_return"]):
         reasons.append("long_group_annual_excess_return")
     winsor_decay = metrics.get("winsorized_abs_ic_decay")
     if winsor_decay is None or float(winsor_decay) > float(criteria["max_winsorized_abs_ic_decay"]):
         reasons.append("winsorized_abs_ic_decay")
+    min_topn_excess = float(criteria.get("min_topn_annual_excess_return") or 0)
+    topn_excess = metrics.get("topn_annualized_excess_return")
+    if min_topn_excess and (topn_excess is None or not np.isfinite(float(topn_excess)) or float(topn_excess) < min_topn_excess):
+        reasons.append("topn_annual_excess_return")
+    min_topn_sharpe = float(criteria.get("min_topn_sharpe") or 0)
+    topn_sharpe = metrics.get("topn_sharpe")
+    if min_topn_sharpe and (topn_sharpe is None or not np.isfinite(float(topn_sharpe)) or float(topn_sharpe) < min_topn_sharpe):
+        reasons.append("topn_sharpe")
     corr = (similarity or {}).get("max_abs_corr", 0.0)
     if corr is None or float(corr) >= float(criteria["max_abs_corr"]):
         reasons.append("max_cs_corr")
@@ -116,20 +132,6 @@ class FactorSubmitService:
     def candidate_expr_dir(self) -> Path:
         return self.candidate_factorlib_path / "expressions"
 
-    def _open_or_init_candidate_zoo(self, *, panel, panel_path: Path, production_zoo: FactorZoo) -> FactorZoo:
-        try:
-            return FactorZoo.open(self.candidate_factorlib_path)
-        except FileNotFoundError:
-            init_library(
-                self.candidate_factorlib_path,
-                panel=panel,
-                panel_path=panel_path,
-                n_sample_rows=production_zoo.manifest.n_sample_rows,
-                max_factors=production_zoo.manifest.max_factors,
-                sample_seed=production_zoo.manifest.sample_seed,
-            )
-            return FactorZoo.open(self.candidate_factorlib_path)
-
     def submit(
         self,
         session_id: str,
@@ -137,6 +139,10 @@ class FactorSubmitService:
         multi_line_expr: str,
         factor_name: str,
         comment: str,
+        evaluation_evidence: dict[str, Any] | None = None,
+        review_hook: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        orthogonality_hook: Callable[[], dict[str, Any]] | None = None,
+        interaction: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         expr = multi_line_expr.strip()
         if not expr:
@@ -242,6 +248,7 @@ class FactorSubmitService:
         stage_one_policy = IngestPolicy.from_context(
             ctx, max_cs_corr=float(candidate_criteria.get("max_abs_corr", 0.6)), similar_top_k=self.similar_top_k
         )
+        prepared_values, _, _, _ = prepare_stored_values(expr, panel, zoo, stage_one_policy)
         assessment = ingest_factor(
             zoo,
             factor_id=factor_id,
@@ -249,6 +256,7 @@ class FactorSubmitService:
             expr=expr,
             panel=panel,
             policy=stage_one_policy,
+            stored_values=prepared_values,
             dry_run=True,
         )
         stage_one_ok, stage_one_reasons = _check_stage_one(assessment.metrics, assessment.similarity, candidate_criteria)
@@ -259,6 +267,7 @@ class FactorSubmitService:
             "factor_id": factor_id,
             "factor_name": name,
             "comment": comment.strip(),
+            "interaction": interaction,
             "eval_range": {"start": ctx.train_start, "end": ctx.val_end},
             "metrics": assessment.metrics,
             "similarity": assessment.similarity,
@@ -277,25 +286,40 @@ class FactorSubmitService:
             payload["error"] = payload["skipped_reason"]
             return payload
 
-        candidate_zoo = self._open_or_init_candidate_zoo(
-            panel=panel, panel_path=ctx.panel_path, production_zoo=zoo
+        review: dict[str, Any] | None = None
+        if review_hook is not None:
+            review = review_hook({
+                "multi_line_expr": expr,
+                "factor_name": name,
+                "comment": comment.strip(),
+                "interaction": interaction,
+                "candidate_stored": True,
+                "metrics": assessment.metrics,
+            })
+        review_verdict = str((review or {}).get("verdict") or "").lower()
+        review_status = (
+            {"approve": "approved", "revise": "revise", "reject": "rejected"}.get(review_verdict, "pending_review")
         )
-        candidate_result = ingest_factor(
-            candidate_zoo,
-            factor_id=factor_id,
-            name=name,
-            expr=expr,
-            panel=panel,
-            policy=IngestPolicy.from_context(ctx, max_cs_corr=1.0, similar_top_k=self.similar_top_k),
-            overwrite=True,
+        payload.update(
+            review_status=review_status,
         )
-        if not candidate_result.stored:
-            payload["skipped_reason"] = candidate_result.skipped_reason
-            payload["error_type"] = "CandidateIngestError"
-            payload["error"] = candidate_result.skipped_reason or "candidate_ingest_failed"
+
+        if review_verdict == "reject":
+            # 仅 reject 硬拦（抄袭/经典变换等垃圾候选不进任何库）；
+            # revise 只是"暂缓转正式"，候选池仍按统计门槛照常收纳。
+            payload["delivery_check"]["stage_two"] = {
+                "passed": False,
+                "fail_reasons": ["factor_review"],
+            }
+            payload["review"] = review
+            payload["promotion_status"] = "review_rejected"
+            payload["skipped_reason"] = f"factor_review:{review_verdict}"
+            payload["error_type"] = "FactorReviewRejected"
+            payload["error"] = f"factor_review_{review_verdict}_blocked"
             return payload
 
-        candidate_reg, candidate_dsl = upsert_mining_registry(
+        # 统计达标 → 先入候选池（registry_only）；Reviewer 意见只影响是否继续冲正式库。
+        candidate_reg, candidate_dsl = write_candidate_registry(
             self.candidate_registry_path,
             factor_id=factor_id,
             name=name,
@@ -306,15 +330,58 @@ class FactorSubmitService:
             policy=stage_one_policy,
             metrics=assessment.metrics,
             similarity=assessment.similarity,
-            ingest_status="candidate",
             source="submit_stage_one",
+            evaluation_evidence=evaluation_evidence,
+            interaction=interaction,
+            data_fingerprint={
+                "panel_path": str(ctx.panel_path),
+                "index_hash": zoo.manifest.index_hash,
+                "n_rows": int(zoo.manifest.n_rows),
+            },
         )
+        if review is not None:
+            set_candidate_review(
+                self.candidate_registry_path,
+                factor_id=factor_id,
+                review=review,
+                promotion_status="pending",
+            )
         payload.update(
             candidate_stored=True,
-            candidate_factorlib_path=str(self.candidate_factorlib_path),
+            candidate_storage="registry_only",
             candidate_registry_path=candidate_reg,
             candidate_dsl_path=candidate_dsl,
         )
+
+        if review_verdict != "approve":
+            payload["delivery_check"]["stage_two"] = {
+                "passed": False,
+                "fail_reasons": ["factor_review"],
+            }
+            payload["review"] = review
+            payload["promotion_status"] = "review_blocked"
+            payload["skipped_reason"] = (
+                f"factor_review:{review_verdict}:stored_as_candidate_awaiting_revision"
+            )
+            # 候选已入库，不算交付失败；返回提示 Reviewer 意见供后续修订。
+            payload["error_type"] = None
+            payload["error"] = None
+            return payload
+
+        orthogonality: dict[str, Any] = {
+            "passed": True,
+            "skipped_reason": "hook_not_configured",
+        }
+        if orthogonality_hook is not None:
+            orthogonality = orthogonality_hook()
+        payload["offline_orthogonality"] = orthogonality
+        if not bool(orthogonality.get("passed")):
+            reason = str(orthogonality.get("error") or orthogonality.get("skipped_reason") or "correlation_threshold")
+            payload["promotion_status"] = "offline_orthogonality_blocked"
+            payload["skipped_reason"] = f"offline_orthogonality_failed:{reason}"
+            payload["error_type"] = "OfflineOrthogonalityError"
+            payload["error"] = payload["skipped_reason"]
+            return payload
 
         stage_two_ok, stage_two_reasons = _check_stage_two(assessment.metrics, assessment.similarity, production_criteria)
         payload["delivery_check"]["stage_two"] = {
@@ -322,10 +389,41 @@ class FactorSubmitService:
             "fail_reasons": stage_two_reasons,
         }
         if not stage_two_ok:
+            set_candidate_promotion(
+                self.candidate_registry_path,
+                factor_id=factor_id,
+                promotion_status="stage_two_failed",
+            )
             payload["skipped_reason"] = f"stage_two_failed:{','.join(stage_two_reasons)}"
             payload["error_type"] = "StageTwoDeliveryCheckError"
             payload["error"] = payload["skipped_reason"]
             return payload
+
+        engine_gate_cfg = production_criteria.get("engine_gate")
+        if isinstance(engine_gate_cfg, dict) and engine_gate_cfg.get("enabled"):
+            from alphaagent.factor.mining.engine_gate import run_engine_gate
+            ic_sign = 1 if float(assessment.metrics.get("ic") or 0.0) >= 0 else -1
+            gate = run_engine_gate(
+                panel,
+                prepared_values,
+                val_start=ctx.val_start,
+                val_end=ctx.val_end,
+                direction=ic_sign,
+                policy=engine_gate_cfg,
+            )
+            payload["engine_backtest"] = gate
+            if not gate.get("passed"):
+                set_candidate_promotion(
+                    self.candidate_registry_path,
+                    factor_id=factor_id,
+                    promotion_status="engine_gate_failed",
+                )
+                payload["skipped_reason"] = (
+                    f"engine_gate_failed:{','.join(gate.get('fail_reasons') or [])}"
+                )
+                payload["error_type"] = "EngineGateError"
+                payload["error"] = payload["skipped_reason"]
+                return payload
 
         result = ingest_factor(
             zoo,
@@ -334,9 +432,15 @@ class FactorSubmitService:
             expr=expr,
             panel=panel,
             policy=IngestPolicy.from_context(ctx, max_cs_corr=float(production_criteria.get("max_abs_corr", 0.5)), similar_top_k=self.similar_top_k),
+            stored_values=prepared_values,
             overwrite=self.overwrite,
         )
         if not result.stored:
+            set_candidate_promotion(
+                self.candidate_registry_path,
+                factor_id=factor_id,
+                promotion_status="production_ingest_failed",
+            )
             payload["skipped_reason"] = result.skipped_reason
             payload["error_type"] = "ProductionIngestError"
             payload["error"] = result.skipped_reason or "production_ingest_failed"
@@ -356,10 +460,17 @@ class FactorSubmitService:
             similarity=result.similarity,
             ingest_status="production",
             source="submit_stage_two",
+            interaction=interaction,
+        )
+        set_candidate_promotion(
+            self.candidate_registry_path,
+            factor_id=factor_id,
+            promotion_status="promoted",
         )
         payload.update(
             ok=True,
             stored=True,
+            promotion_status="promoted",
             registry_path=reg_path,
             dsl_path=dsl_path,
             factorlib_path=str(self.factorlib_path),

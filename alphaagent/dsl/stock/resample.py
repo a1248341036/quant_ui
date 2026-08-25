@@ -169,15 +169,24 @@ def broadcast_timeframe_to_main_freq(
 
     # 右表：桶起点 + bar 全长 → 完成时间
     src = values.reset_index()
+    # CNE 面板可能使用 ms 索引，而 period.start_time 产生 ns；merge_asof 要求两侧单位一致。
+    src["datetime"] = pd.to_datetime(src["datetime"]).astype("datetime64[ns]")
     src["datetime"] = src["datetime"] + completion
     src = src.sort_values(["datetime", "instrument"], kind="mergesort").reset_index(
         drop=True
     )
 
     # 左表带行号，合并后恢复原顺序
+    tgt_index = target_index
+    # CNE 面板可能使用 ms 索引，而 period.start_time 产生 ns；merge_asof 要求两侧单位一致。
+    # 注意：set_levels 需要"去重后的 level 值"（levels[0]），不能传 get_level_values() 的逐行副本，
+    # 否则 MultiIndex 校验会报 Level values must be unique。
+    lv0 = tgt_index.levels[tgt_index.names.index("datetime")]
+    if isinstance(lv0, pd.DatetimeIndex) and lv0.dtype != "datetime64[ns]":
+        tgt_index = tgt_index.set_levels(lv0.astype("datetime64[ns]"), level="datetime")
     tgt = pd.DataFrame(
         {"__row__": np.arange(len(target_index), dtype=np.int64)},
-        index=target_index,
+        index=tgt_index,
     ).reset_index()
     tgt_sorted = tgt.sort_values(["datetime", "instrument"], kind="mergesort").reset_index(
         drop=True

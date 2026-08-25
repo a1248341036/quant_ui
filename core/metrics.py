@@ -36,5 +36,19 @@ def compute_metrics(nav: pd.Series, periods_per_year: int = 244) -> dict:
     }
 
 
+def compute_excess_metrics(nav: pd.Series, bench: pd.Series) -> dict:
+    """Compute active performance from aligned strategy and benchmark NAVs."""
+    aligned = pd.concat([nav.rename("nav"), bench.rename("bench")], axis=1).dropna()
+    if len(aligned) < 2:
+        return {"超额年化": np.nan, "超额夏普": np.nan}
+
+    active_nav = aligned["nav"] / aligned["bench"]
+    active_metrics = compute_metrics(active_nav)
+    return {
+        "超额年化": active_metrics["年化收益"],
+        "超额夏普": active_metrics["夏普"],
+    }
+
+
 def drawdown_series(nav: pd.Series) -> pd.Series:
     return nav / nav.cummax() - 1

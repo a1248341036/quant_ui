@@ -24,6 +24,10 @@
         <button class="lab-run-btn" :disabled="lab.busy || !lab.expr.trim()" @click="runEval">
           {{ lab.busy ? '评估中…' : '评估因子' }}
         </button>
+        <div v-if="lab.results" class="lab-actions">
+          <button v-if="anyPassed" class="lab-action-btn save" @click="openSaveDialog">保存到因子库</button>
+          <button class="lab-action-btn bt" @click="openBacktestDialog">回测</button>
+        </div>
         <p v-if="lab.error" class="lab-error">{{ lab.error }}</p>
       </div>
       <div class="lab-right">
@@ -48,6 +52,21 @@
                   <span class="lab-metric-value">{{ formatMetricValue(m) }}</span>
                 </div>
               </template>
+            </div>
+            <!-- 图表区 -->
+            <div v-if="result.ok && result.chart_data" class="lab-charts">
+              <div class="lab-chart-block">
+                <div class="lab-chart-title">逐日 IC / RankIC</div>
+                <div :id="'lab-ic-' + profileId" class="lab-chart-box"></div>
+              </div>
+              <div class="lab-chart-block">
+                <div class="lab-chart-title">累计多空收益</div>
+                <div :id="'lab-cum-' + profileId" class="lab-chart-box"></div>
+              </div>
+              <div class="lab-chart-block">
+                <div class="lab-chart-title">月度 IC 热力图</div>
+                <div :id="'lab-heat-' + profileId" class="lab-chart-box heatmap-box"></div>
+              </div>
             </div>
             <details v-if="result.ok && result.rule_results?.length" class="lab-rules">
               <summary>规则详情 ({{ result.rule_results.filter(r => r.passed).length }}/{{ result.rule_results.length }})</summary>
@@ -80,20 +99,24 @@
       <table v-if="lib.data?.factors?.length" class="lib-table">
         <thead>
           <tr>
-            <th>ID</th><th>名称</th><th>IC</th><th>ICIR</th><th>RankIC</th><th>覆盖率</th><th>状态</th><th>创建时间</th><th></th>
+            <th>名称</th><th>Train IC</th><th>Val IC</th><th>全区间 IC</th><th>ICIR</th><th>Label</th><th>状态</th><th>Reviewer 意见</th><th></th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="f in lib.data.factors" :key="f.factor_id">
-            <td class="lib-fid" @click="showFactorDetail(f)">{{ f.factor_id }}</td>
-            <td @click="showFactorDetail(f)">{{ f.name }}</td>
-            <td :class="icClass(f.metrics?.ic)">{{ formatMetricValue(f.metrics?.ic) }}</td>
-            <td :class="icClass(f.metrics?.icir)">{{ formatMetricValue(f.metrics?.icir) }}</td>
-            <td>{{ formatMetricValue(f.metrics?.rank_ic) }}</td>
-            <td>{{ formatMetricValue(f.metrics?.factor_coverage) }}</td>
+            <td class="lib-fid" @click="showFactorDetail(f)" :title="f.factor_id">{{ f.name }}</td>
+            <td :class="icClass(f.train_ic)">{{ formatMetricValue(f.train_ic ?? '—') }}</td>
+            <td :class="icClass(f.val_ic)">{{ formatMetricValue(f.val_ic ?? '—') }}</td>
+            <td :class="icClass(f.metrics?.ic)"><strong>{{ formatMetricValue(f.metrics?.ic) }}</strong></td>
+            <td>{{ formatMetricValue(f.metrics?.icir) }}</td>
+            <td class="lib-label" :title="f.label_col">{{ labelShort(f.label_col) }}</td>
             <td><span class="lib-status" :class="'status-' + f.status">{{ f.status }}</span></td>
-            <td class="lib-time">{{ formatTime(f.created_at) }}</td>
-            <td><button class="lib-del" @click="confirmDelete(f)">删除</button></td>
+            <td class="lib-review" :title="f.review_reasons">{{ f.review_reasons || '—' }}</td>
+            <td class="lib-actions">
+              <button class="lib-export" @click.stop="exportOne(f)" title="复制该因子的完整 registry JSON">{{ lib.exportCopied === f.factor_id ? '✓' : '导出' }}</button>
+              <button class="lib-backtest" @click.stop="openLibraryBacktest(f)">回测</button>
+              <button class="lib-del" @click="confirmDelete(f)">删除</button>
+            </td>
           </tr>
         </tbody>
       </table>
@@ -251,6 +274,10 @@
             </div>
           </div>
           <div class="header-actions">
+            <div class="mode-toggle">
+              <button :class="{active: agentMode==='research'}" @click="switchAgentMode('research')">研究</button>
+              <button :class="{active: agentMode==='normal'}" @click="switchAgentMode('normal')">普通</button>
+            </div>
             <span v-if="agentBusy" class="activity-line"><i></i>{{ currentActivity }}</span>
             <span v-if="agent.usage.calls" class="usage-chip" title="本次 Agent 模型调用累计 usage">
               ↑ {{ formatTokens(agent.usage.input_tokens) }} · ↓ {{ formatTokens(agent.usage.output_tokens) }}
@@ -265,7 +292,21 @@
         </header>
 
         <div ref="thread" class="agent-thread" @scroll="onThreadScroll">
-          <div v-if="!agent.events.length" class="welcome">
+          <div v-if="agentMode==='normal' && !agent.events.length" class="normal-mode-panel">
+            <h3>研究记忆</h3>
+            <p class="normal-mode-desc">查看和清理历史评估记忆。删除后 Agent 不再参考对应条目。</p>
+            <div v-if="!researchMemory.length" class="normal-mode-empty">暂无研究记忆</div>
+            <div v-for="entry in researchMemory" :key="entry.id" class="memory-entry-row">
+              <div class="memory-entry-main" @click="agent.memoryDetail = entry">
+                <strong>{{ entry.factor_name || 'unnamed' }}</strong>
+                <span class="memory-verdict-tag" :class="'memv-' + entry.verdict">{{ memoryVerdictLabel(entry.verdict) }}</span>
+                <small>{{ formatTime(entry.updated_at) }}</small>
+              </div>
+              <button class="memory-del-btn" title="删除此条目" @click.stop="deleteMemoryEntry(entry)">×</button>
+            </div>
+          </div>
+
+          <div v-else-if="!agent.events.length" class="welcome">
             <div class="welcome-orb">✦</div>
             <h2>开始一次因子研究</h2>
             <p>描述你想研究的方向，或者让 Agent 自己探索。它会实时展示思考摘要、工具调用和评估结果。</p>
@@ -277,6 +318,7 @@
           </div>
 
           <div v-for="(message, index) in timeline" :key="message.key + '-' + index" class="message-row" :class="'message-' + message.kind">
+            <button v-if="message.text" class="msg-copy-btn" title="复制内容" @click="copyMessage(message.text)">⧉</button>
             <div v-if="message.kind === 'user'" class="user-bubble">{{ message.text }}</div>
 
             <div v-else-if="message.kind === 'assistant'" class="assistant-message">
@@ -339,48 +381,62 @@
             </div>
           </div>
 
-          <div v-if="agentBusy && !timeline.some(x => x.kind === 'thinking' || x.kind === 'tool_call')" class="typing-row">
+          <div v-if="agentBusy" class="typing-row">
             <div class="avatar agent-avatar">✦</div>
             <div class="typing"><i></i><i></i><i></i></div>
-            <span>AlphaAgent 正在准备下一步…</span>
+            <span>{{ liveActivity }}</span>
           </div>
         </div>
 
-        <div class="composer-wrap">
-          <div v-if="agent.error" class="composer-error">{{ agent.error }}</div>
-          <div v-if="agentBusy" class="activity-bar"><i></i><span>{{ currentActivity }}</span></div>
-          <div class="composer">
-            <textarea
-              v-model="agent.form.user_message"
-              :disabled="agent.current?.status === 'stopping'"
-              rows="3"
-              :placeholder="composerPlaceholder"
-              @keydown.ctrl.enter.prevent="sendMessage"
-              @keydown.meta.enter.prevent="sendMessage"
-            ></textarea>
-            <div class="composer-bottom">
-              <div class="composer-options">
-                <label>训练 {{ agent.form.train_start }} → {{ agent.form.train_end }}</label>
-                <label>验证 {{ agent.form.val_start }} → {{ agent.form.val_end }}</label>
-                <button class="spec-toggle" :class="{ active: agent.showResearchSpec }" :disabled="agentBusy" @click="agent.showResearchSpec = !agent.showResearchSpec">研究规范</button>
+        <div class="composer-wrap" :class="{ collapsed: agent.composerCollapsed }">
+          <template v-if="!agent.composerCollapsed">
+            <div v-if="agent.error" class="composer-error">{{ agent.error }}</div>
+            <div v-if="agentBusy" class="activity-bar"><i></i><span>{{ currentActivity }}</span></div>
+            <div class="composer">
+              <textarea
+                v-model="agent.form.user_message"
+                :disabled="agent.current?.status === 'stopping'"
+                rows="3"
+                :placeholder="composerPlaceholder"
+                @keydown.ctrl.enter.prevent="sendMessage"
+                @keydown.meta.enter.prevent="sendMessage"
+              ></textarea>
+              <div class="composer-bottom">
+                <div v-if="agentMode==='research'" class="composer-options">
+                  <div class="mode-switch" role="tablist" aria-label="研究模式">
+                    <button v-for="m in researchModes" :key="m.value" class="mode-btn" :class="{ active: agent.form.research_mode === m.value }" :disabled="agentBusy" :title="m.hint" @click="switchResearchMode(m.value)">{{ m.label }}</button>
+                  </div>
+                  <span class="composer-label-hint" :title="'本次评估使用的 label 列，随研究模式自动切换'">{{ agent.form.label_col }}</span>
+                  <label class="composer-date">训练 <input v-model="agent.form.train_start" type="date" :disabled="agentBusy" class="composer-date-input"> → <input v-model="agent.form.train_end" type="date" :disabled="agentBusy" class="composer-date-input"></label>
+                  <label class="composer-date">验证 <input v-model="agent.form.val_start" type="date" :disabled="agentBusy" class="composer-date-input"> → <input v-model="agent.form.val_end" type="date" :disabled="agentBusy" class="composer-date-input"></label>
+                </div>
+                <div class="composer-actions">
+                  <button v-if="agentMode==='research'" class="spec-toggle" :class="{ active: agent.showResearchSpec }" :disabled="agentBusy" @click="agent.showResearchSpec = !agent.showResearchSpec">研究规范</button>
+                  <button v-if="agentMode==='research' && !agent.current" class="spec-toggle quick-start-btn" :disabled="agentBusy" @click="startDefaultResearch" title="使用默认研究规范和提示词立即启动">▶ 默认研究</button>
+                  <button class="composer-collapse-btn" title="收起对话框" @click="agent.composerCollapsed = true">▾</button>
+                  <button class="send-btn" :disabled="agent.current?.status === 'stopping' || !agent.form.user_message.trim()" @click="sendMessage" :title="composerActionTitle">
+                    <span>{{ agentBusy || agent.current ? '↵' : '↑' }}</span>
+                  </button>
+                </div>
               </div>
-              <button class="send-btn" :disabled="agent.current?.status === 'stopping' || !agent.form.user_message.trim()" @click="sendMessage" :title="composerActionTitle">
-                <span>{{ agentBusy || agent.current ? '↵' : '↑' }}</span>
-              </button>
             </div>
-          </div>
-          <div v-if="agent.showResearchSpec" class="research-spec-editor">
-            <div class="research-spec-head">
-              <strong>ResearchSpec</strong>
-              <div>
-                <span v-if="agent.specError" class="research-spec-error">{{ agent.specError }}</span>
-                <button title="恢复默认研究规范" @click="resetResearchSpec">恢复默认</button>
-                <button class="research-spec-close" title="关闭研究规范" aria-label="关闭研究规范" @click="agent.showResearchSpec = false">×</button>
+            <div v-if="agent.showResearchSpec" class="research-spec-editor">
+              <div class="research-spec-head">
+                <strong>ResearchSpec · {{ researchModes.find(m => m.value === agent.form.research_mode)?.label || agent.form.research_mode }}</strong>
+                <div>
+                  <span v-if="agent.specError" class="research-spec-error">{{ agent.specError }}</span>
+                  <button title="恢复默认研究规范" @click="resetResearchSpec">恢复默认</button>
+                  <button class="research-spec-close" title="关闭研究规范" aria-label="关闭研究规范" @click="agent.showResearchSpec = false">×</button>
+                </div>
               </div>
+              <textarea v-model="agent.researchSpecText" :disabled="agentBusy" spellcheck="false" aria-label="ResearchSpec JSON"></textarea>
             </div>
-            <textarea v-model="agent.researchSpecText" :disabled="agentBusy" spellcheck="false" aria-label="ResearchSpec JSON"></textarea>
-          </div>
-        <p class="composer-hint">AgentScope 实时事件 · 训练集评估 · 验证集检验 · FactorZoo 提交</p>
+            <p class="composer-hint">AgentScope 实时事件 · 训练集评估 · 验证集检验 · FactorZoo 提交</p>
+          </template>
+          <button v-else class="composer-expand-bar" title="展开对话框" @click="agent.composerCollapsed = false">
+            <span>输入消息…</span>
+            <span class="composer-expand-arrow">▴</span>
+          </button>
         </div>
       </main>
     </div>
@@ -412,11 +468,182 @@
         </div>
       </div>
     </Teleport>
+
+    <!-- 保存因子弹窗 -->
+    <Teleport to="body">
+      <div v-if="lab.saveDialog" class="factor-modal-overlay" @click="lab.saveDialog = false">
+        <div class="factor-modal" @click.stop style="width:min(460px,92vw)">
+          <div class="factor-modal-head">
+            <strong>保存到因子库</strong>
+            <button class="factor-modal-close" @click="lab.saveDialog = false">×</button>
+          </div>
+          <div class="factor-modal-body">
+            <div class="factor-modal-section">
+              <label>因子名称</label>
+              <input v-model="lab.saveName" type="text" class="lab-input" placeholder="factor_name">
+            </div>
+            <div class="factor-modal-section">
+              <label>注释（经济含义/结构说明）</label>
+              <textarea v-model="lab.saveComment" class="lab-input" rows="3" placeholder="描述因子的经济直觉和关键结构"></textarea>
+            </div>
+            <div class="factor-modal-section">
+              <label>目标库</label>
+              <div class="lab-radio-group">
+                <label><input type="radio" v-model="lab.saveLibrary" value="candidate"> 候选因子库</label>
+                <label><input type="radio" v-model="lab.saveLibrary" value="production"> 正式因子库</label>
+              </div>
+            </div>
+            <div v-if="lab.saveError" class="lab-save-error">{{ lab.saveError }}</div>
+            <button class="lab-run-btn" :disabled="lab.saving" @click="saveFactor">
+              {{ lab.saving ? '保存中…' : '确认保存' }}
+            </button>
+            <div v-if="lab.saveResult" class="lab-save-success">
+              已保存到{{ lab.saveResult.library === 'production' ? '正式' : '候选' }}因子库，ID: {{ lab.saveResult.factor_id }}
+            </div>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- 回测弹窗 -->
+    <Teleport to="body">
+      <div v-if="lab.btDialog" class="factor-modal-overlay" @click="lab.btDialog = false">
+        <div class="factor-modal" @click.stop style="width:min(460px,92vw)">
+          <div class="factor-modal-head">
+            <strong>因子回测</strong>
+            <button class="factor-modal-close" @click="lab.btDialog = false">×</button>
+          </div>
+          <div class="factor-modal-body">
+            <div class="factor-modal-section">
+              <label>回测区间</label>
+              <div class="lab-bt-dates">
+                <input v-model="lab.btStart" type="date" class="lab-input">
+                <span>→</span>
+                <input v-model="lab.btEnd" type="date" class="lab-input">
+              </div>
+            </div>
+            <div class="lab-bt-row">
+              <div class="factor-modal-section">
+                <label>持仓数</label>
+                <input v-model.number="lab.btTopN" type="number" min="1" max="100" class="lab-input">
+              </div>
+              <div class="factor-modal-section">
+                <label>调仓频率</label>
+                <select v-model="lab.btFreq" class="lab-input">
+                  <option value="monthly">月调</option>
+                  <option value="weekly">周调</option>
+                  <option value="daily">日调</option>
+                </select>
+              </div>
+            </div>
+            <div class="factor-modal-section">
+              <label>股票池</label>
+              <select v-model="lab.btUniverse" class="lab-input">
+                <option value="全部股票">全部股票</option>
+                <option value="科技TMT">科技TMT</option>
+                <option value="沪深300+中证500+中证1000">沪深300+中证500+中证1000</option>
+              </select>
+            </div>
+            <div class="lab-bt-row">
+              <div class="factor-modal-section">
+                <label>初始资金</label>
+                <input v-model.number="lab.btCapital" type="number" min="1000" step="10000" class="lab-input">
+              </div>
+              <div class="factor-modal-section">
+                <label>预热天数</label>
+                <select v-model.number="lab.btWarmupDays" class="lab-input">
+                  <option :value="0">关闭</option>
+                  <option :value="120">120 天</option>
+                  <option :value="400">400 天</option>
+                </select>
+              </div>
+            </div>
+            <div class="factor-modal-section">
+              <label>排序方向</label>
+              <div class="lab-radio-group">
+                <label><input type="radio" v-model="lab.btAscending" :value="false"> 因子值大→多头</label>
+                <label><input type="radio" v-model="lab.btAscending" :value="true"> 因子值小→多头</label>
+              </div>
+            </div>
+            <label class="lab-bt-check">
+              <input type="checkbox" v-model="lab.btExcludeKeChuang"> 剔除科创/创业
+            </label>
+            <div v-if="lab.btError" class="lab-save-error">{{ lab.btError }}</div>
+            <button class="lab-run-btn" :disabled="lab.btRunning" @click="runBacktest">
+              {{ lab.btRunning ? '回测中…' : '开始回测' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- 回测结果弹窗 -->
+    <Teleport to="body">
+      <div v-if="lab.btResult" class="factor-modal-overlay" @click="lab.btResult = null">
+        <div class="factor-modal bt-result-modal" @click.stop style="width:min(900px,94vw)">
+          <div class="factor-modal-head">
+            <strong>回测结果</strong>
+            <button class="factor-modal-close" @click="lab.btResult = null">×</button>
+          </div>
+          <div class="factor-modal-body">
+            <p class="lab-bt-config muted">
+              {{ lab.btResult.config?.universe }} · {{ lab.btResult.config?.n_codes }} 只 · TopN {{ lab.btResult.config?.top_n }} · {{ lab.btResult.config?.freq }} · 预热 {{ lab.btResult.config?.warmup_days }} 天 · 现金整手撮合
+            </p>
+            <div class="lab-bt-metrics">
+              <div class="lab-metric"><span class="lab-metric-label">总收益</span><span class="lab-metric-value">{{ formatMetricValue(lab.btResult.metrics?.['总收益']) }}</span></div>
+              <div class="lab-metric"><span class="lab-metric-label">年化收益</span><span class="lab-metric-value">{{ formatMetricValue(lab.btResult.metrics?.['年化收益']) }}</span></div>
+              <div class="lab-metric"><span class="lab-metric-label">夏普</span><span class="lab-metric-value">{{ formatMetricValue(lab.btResult.metrics?.['夏普']) }}</span></div>
+              <div class="lab-metric"><span class="lab-metric-label">最大回撤</span><span class="lab-metric-value">{{ formatMetricValue(lab.btResult.metrics?.['最大回撤']) }}</span></div>
+              <div class="lab-metric"><span class="lab-metric-label">超额年化</span><span class="lab-metric-value">{{ formatMetricValue(lab.btResult.metrics?.['超额年化']) }}</span></div>
+              <div class="lab-metric"><span class="lab-metric-label">超额夏普</span><span class="lab-metric-value">{{ formatMetricValue(lab.btResult.metrics?.['超额夏普']) }}</span></div>
+            </div>
+            <div class="lab-chart-block">
+              <div class="lab-chart-title">净值曲线</div>
+              <div id="lab-bt-nav" class="lab-chart-box"></div>
+            </div>
+            <div class="lab-chart-block">
+              <div class="lab-chart-title">回撤曲线</div>
+              <div id="lab-bt-dd" class="lab-chart-box"></div>
+            </div>
+            <details class="lab-bt-details" open>
+              <summary>最新持仓（{{ lab.btResult.holdings?.length || 0 }}）</summary>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>代码</th><th>名称</th><th>权重%</th></tr></thead>
+                  <tbody>
+                    <tr v-for="h in lab.btResult.holdings || []" :key="h.code">
+                      <td>{{ h.code }}</td><td>{{ h.name || '-' }}</td><td>{{ formatMetricValue(h.weight_pct) }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </details>
+            <details class="lab-bt-details">
+              <summary>调仓记录（{{ lab.btResult.trades?.length || 0 }}）</summary>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>日期</th><th>信号日</th><th>持仓数</th><th>换手%</th></tr></thead>
+                  <tbody>
+                    <tr v-for="(t, i) in lab.btResult.trades || []" :key="i">
+                      <td>{{ String(t.date).slice(0, 10) }}</td>
+                      <td>{{ String(t.signal_date).slice(0, 10) }}</td>
+                      <td>{{ t.num_hold }}</td>
+                      <td>{{ t.turnover == null ? '—' : (Number(t.turnover) * 100).toFixed(2) }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </details>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </section>
 </template>
 
 <script>
 import { api } from '../utils/api.js'
+import { chart, renderLine, renderMonthlyHeatmap } from '../utils/charts.js'
 
 export default {
   name: 'AlphaAgent',
@@ -441,6 +668,7 @@ export default {
         showArchived: false,
         memoryDetail: null,
         showResearchSpec: false,
+        composerCollapsed: false,
         researchSpecText: '',
         defaultResearchSpecText: '',
         specError: '',
@@ -454,9 +682,18 @@ export default {
           max_tool_calls_per_round: 8,
           max_parallel_eval: 2,
           allow_submit: false,
+          research_mode: 'technical',
+          label_col: 'label_1d_open_to_open',
         },
       },
       subtab: 'research',
+      agentMode: 'research',
+      researchModes: [
+        { value: 'technical', label: '日线技术', hint: '价量/波动/筹码等日线技术因子，label_1d 开盘到开盘' },
+        { value: 'fundamental', label: '基本面', hint: 'funda_* 财务基本面因子（PIT），label_10d 收盘到收盘' },
+      ],
+      specDefaultsByMode: {},
+      researchMemory: [],
       lab: {
         expr: '',
         factorName: 'expr',
@@ -468,12 +705,35 @@ export default {
         busy: false,
         error: '',
         results: null,
+        // 保存因子
+        saveDialog: false,
+        saveName: '',
+        saveComment: '',
+        saveLibrary: 'candidate',
+        saving: false,
+        saveError: '',
+        saveResult: null,
+        // 回测
+        btDialog: false,
+        btStart: '2023-01-01',
+        btEnd: '2025-12-31',
+        btUniverse: '全部股票',
+        btExcludeKeChuang: false,
+        btTopN: 5,
+        btFreq: 'monthly',
+        btCapital: 100000,
+        btWarmupDays: 400,
+        btAscending: false,
+        btRunning: false,
+        btError: '',
+        btResult: null,
       },
       lib: {
         library: 'production',
         data: null,
         loading: false,
         error: '',
+        exportCopied: '',
       },
       factorDetail: null,
     }
@@ -496,6 +756,7 @@ export default {
       if (!this.agent.events.length) return '正在加载数据并初始化 Agent…'
       const last = [...this.agent.events].reverse().find(e => !['heartbeat', 'stream_start', 'usage', 'reviewer_usage', 'usage_total'].includes(e.event)) || {}
       if (last.event === 'session_start') return '研究会话已建立 · 模型 ' + (last.model || '当前模型')
+      if (last.event === 'research_memory_retrieved') return '已按最新进展检索 ' + (last.entry_count || 0) + ' 条研究记忆'
       if (last.event === 'agent_thinking') return this.dynamicThinking(last.content)
       if (last.event === 'assistant_tool_call') {
         const args = this.parseArgs(last.arguments_raw)
@@ -515,6 +776,32 @@ export default {
       if (last.event === 'nudge') return 'Agent 正在根据当前结果继续推进研究'
       return last.event ? '事件：' + last.event : '正在研究…'
     },
+    liveActivity() {
+      if (!this.agent.events.length) return '正在加载数据并初始化 Agent…'
+      const last = [...this.agent.events].reverse().find(e => !['heartbeat', 'stream_start', 'usage', 'reviewer_usage', 'usage_total'].includes(e.event)) || {}
+      const turn = last.turn != null ? ' [Turn ' + (last.turn + 1) + ']' : ''
+      if (last.event === 'llm_request') return '正在调用模型 · ' + (last.model || '') + ' · 上下文 ' + (last.message_count || '?') + ' 条消息' + turn
+      if (last.event === 'assistant') {
+        const tcs = last.tool_calls || []
+        if (tcs.length) {
+          const names = tcs.map(c => { try { const args = JSON.parse(c.function?.arguments || '{}'); return c.function?.name + (args.factor_name ? '(' + args.factor_name + ')' : '') } catch(e) { return c.function?.name || '' } }).filter(Boolean)
+          return '发起工具调用: ' + names.join(', ') + turn
+        }
+        if (last.reasoning) return this.dynamicThinking(last.reasoning, '思考') + turn
+        if (last.content) return this.dynamicThinking(last.content, '输出') + turn
+        return '等待模型响应…' + turn
+      }
+      if (last.event === 'tool_results') {
+        const results = last.results || []
+        const ok = results.filter(r => r.ok).length
+        return '工具执行完毕 · ' + ok + '/' + results.length + ' 通过' + turn
+      }
+      if (last.event === 'session_start') return '会话已建立 · 模型 ' + (last.model || '')
+      if (last.event === 'research_memory_retrieved') return '已检索 ' + (last.entry_count || 0) + ' 条研究记忆'
+      if (last.event === 'nudge') return '继续推进研究（未达最低工具调用轮数）'
+      if (this.currentActivity) return this.currentActivity
+      return '正在研究…'
+    },
     canStopAgent() {
       return ['starting', 'running'].includes(this.agent.current?.status)
     },
@@ -527,6 +814,10 @@ export default {
       if (this.agentBusy) return '追加到当前研究会话'
       if (this.agent.current) return '从当前历史会话继续'
       return '启动研究'
+    },
+    anyPassed() {
+      if (!this.lab.results) return false
+      return Object.values(this.lab.results).some(r => r.ok && r.passed)
     },
     timeline() {
       const out = []
@@ -558,6 +849,8 @@ export default {
           out.push({ key, kind: 'system', text: '会话开始 · ' + (event.model || '-') })
         } else if (event.event === 'session_end') {
           out.push({ key, kind: 'system', text: '会话结束 · ' + (event.reason || '-') })
+        } else if (event.event === 'research_memory_retrieved') {
+          out.push({ key, kind: 'system', text: `动态检索长期记忆 ${event.entry_count || 0} 条` })
         } else if (event.event === 'nudge') {
           out.push({ key, kind: 'system', text: 'Agent 继续推进研究' })
         } else if (event.event === 'continuation_queued') {
@@ -604,19 +897,66 @@ export default {
       try {
         const payload = await api('/api/alphaagent/research-memory?limit=50&t=' + Date.now())
         this.agent.memory = payload.entries || []
+        this.researchMemory = payload.entries || []
       } catch (e) {
         this.agent.error = '读取长期研究记忆失败: ' + e.message
       }
     },
-    async loadDefaultResearchSpec() {
+    async deleteMemoryEntry(entry) {
       try {
-        const spec = await api('/api/alphaagent/research-spec/default?t=' + Date.now())
+        await api('/api/alphaagent/research-memory/' + encodeURIComponent(entry.id), { method: 'DELETE' })
+        this.researchMemory = this.researchMemory.filter(item => item.id !== entry.id)
+        this.agent.memory = this.agent.memory.filter(item => item.id !== entry.id)
+      } catch (e) {
+        this.agent.error = '删除记忆失败: ' + e.message
+      }
+    },
+    switchAgentMode(mode) {
+      this.agentMode = mode
+      if (mode === 'normal') this.loadResearchMemory()
+    },
+    async loadDefaultResearchSpec(mode) {
+      const m = mode || this.agent.form.research_mode || 'technical'
+      try {
+        const cached = this.specDefaultsByMode[m]
+        const spec = cached || await api('/api/alphaagent/research-spec/default?mode=' + encodeURIComponent(m) + '&t=' + Date.now())
+        this.specDefaultsByMode[m] = spec
         const text = JSON.stringify(spec, null, 2)
         this.agent.defaultResearchSpecText = text
-        if (!this.agent.researchSpecText) this.agent.researchSpecText = text
+        if (!this.agent.researchSpecText || this.agent.form.research_mode === m) {
+          this.agent.researchSpecText = text
+          this.agent.specError = ''
+        }
       } catch (e) {
         this.agent.error = '读取默认 ResearchSpec 失败: ' + e.message
       }
+    },
+    async switchResearchMode(mode) {
+      if (this.agentBusy || this.agent.form.research_mode === mode) return
+      if (!this.researchModes.some(item => item.value === mode)) return
+      const previousMode = this.agent.form.research_mode
+      const previousText = this.agent.researchSpecText
+      const previousDefault = this.agent.defaultResearchSpecText
+      this.agent.form.research_mode = mode
+      let spec = null
+      try {
+        const cached = this.specDefaultsByMode[mode]
+        spec = cached || await api('/api/alphaagent/research-spec/default?mode=' + encodeURIComponent(mode) + '&t=' + Date.now())
+      } catch (e) {
+        this.agent.form.research_mode = previousMode
+        this.agent.error = '切换研究模式失败: ' + e.message
+        return
+      }
+      this.specDefaultsByMode[mode] = spec
+      // 未手动编辑过规范时跟随模式整体切换；已编辑则保留自定义（后端会与该模式默认值深合并）。
+      const untouched = !previousText || previousText === previousDefault
+      const text = JSON.stringify(spec, null, 2)
+      this.agent.defaultResearchSpecText = text
+      if (untouched) {
+        this.agent.researchSpecText = text
+        this.agent.specError = ''
+      }
+      if (spec?.recommended_label_col) this.agent.form.label_col = spec.recommended_label_col
     },
     resetResearchSpec() {
       this.agent.researchSpecText = this.agent.defaultResearchSpecText
@@ -786,6 +1126,7 @@ export default {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             ...this.agent.form,
+            no_fundamentals: this.agent.form.research_mode !== 'fundamental',
             research_spec: researchSpec,
             allow_submit: Boolean(researchSpec.delivery_policy?.allow_submit),
           }),
@@ -803,6 +1144,12 @@ export default {
         this.agent.error = '启动失败: ' + e.message
         this.agent.running = false
       }
+    },
+    async startDefaultResearch() {
+      this.agent.form.user_message = this.agent.form.research_mode === 'fundamental'
+        ? '请基于已载入的基本面字段（盈利质量、杠杆、现金流、财报科目等，PIT 日频）结合价量信息挖掘A股日频因子，先训练集评估，再验证集检验；只有通过验证和去重门槛的因子才提交。'
+        : '请自主挖掘A股日频价量因子，先训练集评估，再验证集检验；只有通过验证和去重门槛的因子才提交。'
+      await this.startAgent()
     },
     async sendMessage() {
       if (!this.agent.form.user_message.trim()) return
@@ -1031,6 +1378,16 @@ export default {
       const n = Number(value)
       return isNaN(n) ? String(value) : Math.abs(n) < 1 ? n.toFixed(4) : n.toFixed(2)
     },
+    labelShort(col) {
+      if (!col) return '—'
+      const map = {
+        label_1d_open_to_open: '1d O2O',
+        label_1d_close_to_close: '1d C2C',
+        label_10d_close_to_close: '10d C2C',
+        label_20d_close_to_close: '20d C2C',
+      }
+      return map[col] || col.replace('label_', '')
+    },
     addUsage(total, event) {
       return {
         calls: (total.calls || 0) + 1,
@@ -1058,7 +1415,26 @@ export default {
       return '因子研究任务 ' + String(run.run_id || '').slice(0, 8)
     },
     formatTime(value) {
-      return value ? String(value).slice(0, 16).replace('T', ' ') : ''
+      if (!value) return ''
+      const d = new Date(value)
+      if (isNaN(d.getTime())) return String(value).slice(0, 16).replace('T', ' ')
+      const pad = n => String(n).padStart(2, '0')
+      return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes())
+    },
+    async copyMessage(text) {
+      try {
+        await navigator.clipboard.writeText(String(text || ''))
+        this._copiedTimer && clearTimeout(this._copiedTimer)
+        this._lastCopiedAt = Date.now()
+      } catch (e) {
+        const ta = document.createElement('textarea')
+        ta.value = String(text || '')
+        ta.style.cssText = 'position:fixed;left:-9999px'
+        document.body.appendChild(ta)
+        ta.select()
+        document.execCommand('copy')
+        document.body.removeChild(ta)
+      }
     },
     statusLabel(status) {
       return ({ starting: '准备中', running: '运行中', stopping: '停止中', completed: '已完成', failed: '失败', interrupted: '已中断' }[status] || status || '未开始')
@@ -1084,6 +1460,7 @@ export default {
           }),
         })
         this.lab.results = data.results
+        this.$nextTick(() => this.renderLabCharts())
       } catch (e) {
         this.lab.error = e.message
       } finally {
@@ -1093,6 +1470,7 @@ export default {
     async loadFactors() {
       this.lib.loading = true
       this.lib.error = ''
+      this.lib.data = null
       try {
         this.lib.data = await api('/api/alphaagent/factors?library=' + this.lib.library + '&t=' + Date.now())
       } catch (e) {
@@ -1100,6 +1478,31 @@ export default {
       } finally {
         this.lib.loading = false
       }
+    },
+    async exportOne(factor) {
+      const reg = this.lib.data?.registry
+      let entry = null
+      if (reg && typeof reg === 'object') {
+        entry = reg[factor.factor_id] || null
+      }
+      if (!entry) {
+        // fallback: 从 factors 列表找 extra
+        const f = (this.lib.data?.factors || []).find(x => x.factor_id === factor.factor_id)
+        entry = f?.extra || f || factor
+      }
+      const text = JSON.stringify(entry, null, 2)
+      try {
+        await navigator.clipboard.writeText(text)
+      } catch (_) {
+        const ta = document.createElement('textarea')
+        ta.value = text
+        document.body.appendChild(ta)
+        ta.select()
+        document.execCommand('copy')
+        document.body.removeChild(ta)
+      }
+      this.lib.exportCopied = factor.factor_id
+      setTimeout(() => { this.lib.exportCopied = '' }, 2000)
     },
     switchLibrary(lib) {
       this.lib.library = lib
@@ -1124,6 +1527,182 @@ export default {
     icClass(v) {
       if (v == null) return ''
       return v >= 0 ? 'ic-pos' : 'ic-neg'
+    },
+    // ── 因子实验室：保存因子 ──
+    openSaveDialog() {
+      this.lab.saveName = this.lab.factorName || 'expr'
+      this.lab.saveComment = ''
+      this.lab.saveError = ''
+      this.lab.saveResult = null
+      this.lab.saveLibrary = 'candidate'
+      this.lab.saveDialog = true
+    },
+    async saveFactor() {
+      this.lab.saving = true
+      this.lab.saveError = ''
+      this.lab.saveResult = null
+      try {
+        const data = await api('/api/alphaagent/factors', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            multi_line_expr: this.lab.expr,
+            factor_name: this.lab.saveName || 'expr',
+            comment: this.lab.saveComment,
+            library: this.lab.saveLibrary,
+            train_start: this.lab.trainStart,
+            train_end: this.lab.trainEnd,
+            val_start: this.lab.valStart,
+            val_end: this.lab.valEnd,
+            include_fundamentals: this.lab.includeFundamentals,
+          }),
+        })
+        if (!data.ok) {
+          this.lab.saveError = data.error || '保存失败'
+        } else {
+          this.lab.saveResult = data
+        }
+      } catch (e) {
+        this.lab.saveError = e.message
+      } finally {
+        this.lab.saving = false
+      }
+    },
+    // ── 因子实验室：回测 ──
+    openBacktestDialog() {
+      this.lab.btStart = this.lab.valStart || '2023-01-01'
+      this.lab.btEnd = this.lab.valEnd || '2025-12-31'
+      this.lab.btError = ''
+      this.lab.btResult = null
+      this.lab.btDialog = true
+    },
+    openLibraryBacktest(factor) {
+      this.lab.expr = factor.expr || ''
+      this.lab.factorName = factor.name || factor.factor_id
+      this.openBacktestDialog()
+    },
+    async runBacktest() {
+      this.lab.btRunning = true
+      this.lab.btError = ''
+      const ctrl = new AbortController()
+      const timer = setTimeout(() => ctrl.abort(), 600000)
+      try {
+        let data
+        try {
+          data = await api('/api/alphaagent/backtest-factor', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              multi_line_expr: this.lab.expr,
+              factor_name: this.lab.factorName || 'expr',
+              start: this.lab.btStart,
+              end: this.lab.btEnd,
+              top_n: this.lab.btTopN,
+              freq: this.lab.btFreq,
+              capital: this.lab.btCapital,
+              ascending: this.lab.btAscending,
+              universe: this.lab.btUniverse,
+              exclude_kechuang: this.lab.btExcludeKeChuang,
+              warmup_days: this.lab.btWarmupDays,
+            }),
+            signal: ctrl.signal,
+          })
+        } finally {
+          clearTimeout(timer)
+        }
+        if (!data.ok) {
+          this.lab.btError = data.error || data.detail || '回测失败'
+        } else {
+          this.lab.btResult = data
+          this.lab.btDialog = false
+          this.$nextTick(() => this.renderBtCharts(data))
+        }
+      } catch (e) {
+        this.lab.btError = (e && e.name === 'AbortError')
+          ? '回测超时（600 秒）。可缩短区间、减少股票池或降低调仓频率后重试。'
+          : e.message
+      } finally {
+        this.lab.btRunning = false
+      }
+    },
+    // ── 因子实验室：图表渲染 ──
+    renderLabCharts() {
+      if (!this.lab.results) return
+      for (const [profileId, result] of Object.entries(this.lab.results)) {
+        if (!result.ok || !result.chart_data) continue
+        const cd = result.chart_data
+
+        // 逐日 IC / RankIC
+        const icChart = chart('lab-ic-' + profileId)
+        if (icChart) {
+          const icSeries = []
+          if (cd.daily_ic?.length) icSeries.push({ name: 'IC', dates: cd.daily_ic.map(p => p.date), values: cd.daily_ic.map(p => p.value) })
+          if (cd.daily_rank_ic?.length) icSeries.push({ name: 'RankIC', dates: cd.daily_rank_ic.map(p => p.date), values: cd.daily_rank_ic.map(p => p.value) })
+          if (icSeries.length) {
+            icChart.setOption({
+              tooltip: { trigger: 'axis' },
+              legend: { textStyle: { color: '#8494b5' }, top: 0 },
+              grid: { left: 44, right: 14, top: 28, bottom: 28 },
+              xAxis: { type: 'category', data: icSeries[0].dates, axisLabel: { color: '#8494b5', fontSize: 9 } },
+              yAxis: { type: 'value', axisLabel: { color: '#8494b5', fontSize: 9 } },
+              series: icSeries.map(s => ({ name: s.name, type: 'line', data: s.values, showSymbol: false, smooth: true, lineStyle: { width: 1.5 } })),
+            }, true)
+          }
+        }
+
+        // 累计多空收益
+        const cumChart = chart('lab-cum-' + profileId)
+        if (cumChart) {
+          const cum = cd.cumulative_long_short || []
+          if (cum.length) {
+            cumChart.setOption({
+              tooltip: { trigger: 'axis' },
+              grid: { left: 50, right: 14, top: 14, bottom: 28 },
+              xAxis: { type: 'category', data: cum.map(p => p.date), axisLabel: { color: '#8494b5', fontSize: 9 } },
+              yAxis: { type: 'value', axisLabel: { color: '#8494b5', fontSize: 9, formatter: v => (v * 100).toFixed(0) + '%' } },
+              series: [{ type: 'line', data: cum.map(p => p.value), showSymbol: false, smooth: true, lineStyle: { width: 2 }, areaStyle: { color: 'rgba(79,140,255,0.12)' } }],
+            }, true)
+          }
+        }
+
+        // 月度 IC 热力图 — 用 monthly_ic 数据构建累计 IC 曲线点
+        const heatChart = chart('lab-heat-' + profileId)
+        if (heatChart) {
+          const monthly = cd.monthly_ic || []
+          if (monthly.length) {
+            // 将月度 IC 均值转为 points 数组，复用 renderMonthlyHeatmap 的接口（需要 {date, value} 格式且 value 为累计净值）
+            // 但 monthly_ic 是 mean 值不是累计净值，我们改用自定义热力图
+            const years = [...new Set(monthly.map(m => m.month.slice(0, 4)))].sort()
+            const months = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月']
+            const yearIdx = Object.fromEntries(years.map((y, i) => [y, i]))
+            const heatData = monthly.map(m => ({
+              value: [Number(m.month.slice(5, 7)) - 1, yearIdx[m.month.slice(0, 4)], m.mean != null ? m.mean : 0]
+            }))
+            heatChart.setOption({
+              tooltip: { formatter: p => `${years[p.value[1]]} · ${months[p.value[0]]}: <b>${p.value[2] != null ? Number(p.value[2]).toFixed(4) : '—'}</b>` },
+              grid: { left: 44, right: 70, top: 18, bottom: 8 },
+              xAxis: { type: 'category', position: 'top', data: months, axisLabel: { color: '#8494b5', fontSize: 9 } },
+              yAxis: { type: 'category', data: years, inverse: true, axisLabel: { color: '#8494b5', fontSize: 9 } },
+              visualMap: { type: 'piecewise', dimension: 2, pieces: [{ gt: 0, color: '#c94b55', label: '正IC' }, { value: 0, color: '#27344d', label: '0' }, { lt: 0, color: '#35b779', label: '负IC' }], orient: 'vertical', right: 0, top: 'middle', textStyle: { color: '#8494b5', fontSize: 9 } },
+              series: [{ type: 'heatmap', data: heatData, label: { show: true, color: '#e6ecf7', fontSize: 8, formatter: p => p.value[2] != null ? Number(p.value[2]).toFixed(3) : '—' } }],
+            }, true)
+          }
+        }
+      }
+    },
+    renderBtCharts(result) {
+      // 净值曲线
+      const navChart = chart('lab-bt-nav')
+      if (navChart && result.nav) {
+        const series = [{ name: '策略净值', dates: result.nav.map(p => p.date), values: result.nav.map(p => p.value) }]
+        if (result.bench?.length) series.push({ name: '基准', dates: result.bench.map(p => p.date), values: result.bench.map(p => p.value), dash: true })
+        renderLine('lab-bt-nav', series)
+      }
+      // 回撤曲线
+      const ddChart = chart('lab-bt-dd')
+      if (ddChart && result.drawdown) {
+        renderLine('lab-bt-dd', [{ name: '回撤', dates: result.drawdown.map(p => p.date), values: result.drawdown.map(p => +(p.value * 100).toFixed(2)), fill: true }])
+      }
     },
   },
   mounted() {
@@ -1206,6 +1785,23 @@ export default {
 .agent-title h1 { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:15px; }
 .agent-subtitle { margin-top:3px; color:var(--muted); font-size:11px; }
 .header-actions { display:flex; align-items:center; gap:10px; }
+.mode-toggle { display:flex; border:1px solid var(--line); border-radius:7px; overflow:hidden; }
+.mode-toggle button { padding:3px 10px; border:0; background:transparent; color:var(--muted); font-size:11px; cursor:pointer; }
+.mode-toggle button.active { background:rgb(79 140 255 / .16); color:#a8c4ff; font-weight:600; }
+.normal-mode-panel { max-width:820px; margin:0 auto; }
+.normal-mode-panel h3 { margin-bottom:6px; font-size:15px; }
+.normal-mode-desc { margin-bottom:14px; color:var(--muted); font-size:12px; }
+.normal-mode-empty { padding:20px 0; color:var(--muted); text-align:center; font-size:12px; }
+.memory-entry-row { display:flex; align-items:center; margin-bottom:4px; padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:var(--bg-soft); }
+.memory-entry-main { display:flex; flex:1; min-width:0; align-items:center; gap:8px; cursor:pointer; }
+.memory-entry-main strong { font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.memory-verdict-tag { flex:none; padding:1px 6px; border-radius:4px; font-size:10px; }
+.memv-production_approved, .memv-validated, .memv-candidate_approved { color:#5ee0a0; background:rgb(94 224 160 / .1); }
+.memv-promising { color:#e2c04a; background:rgb(226 192 74 / .1); }
+.memv-rejected, .memv-revise_required, .memv-weak { color:#ef8b92; background:rgb(239 139 146 / .1); }
+.memory-entry-main small { margin-left:auto; flex:none; color:var(--muted); font-size:10px; }
+.memory-del-btn { flex:none; width:20px; height:20px; margin-left:8px; padding:0; border:0; border-radius:5px; background:transparent; color:var(--muted); font-size:13px; cursor:pointer; }
+.memory-del-btn:hover { color:#ef8b92; background:rgb(239 139 146 / .12); }
 .usage-chip { display:flex; align-items:center; gap:5px; padding:5px 8px; border:1px solid var(--line); border-radius:7px; color:var(--muted); font:10px var(--font-mono); white-space:nowrap; }
 .usage-chip em { color:#91d4ac; font-style:normal; }
 .activity-line { display:flex; align-items:center; gap:6px; color:#b9a3e8; font-size:11px; white-space:nowrap; }
@@ -1223,6 +1819,10 @@ export default {
 .suggestions { display:flex; justify-content:center; gap:8px; flex-wrap:wrap; }
 .suggestions button { color:var(--muted); background:transparent; font-size:12px; }
 .message-row { margin:0 auto 20px; max-width:820px; }
+.message-row { position:relative; }
+.msg-copy-btn { position:absolute; top:-4px; right:0; z-index:2; display:none; align-items:center; justify-content:center; width:24px; height:24px; padding:0; border:1px solid var(--line); border-radius:6px; background:var(--bg-soft); color:var(--muted); font-size:12px; cursor:pointer; opacity:.85; transition:opacity .12s; }
+.msg-copy-btn:hover { opacity:1; color:var(--text); border-color:var(--accent); background:rgb(79 140 255 / .12); }
+.message-row:hover > .msg-copy-btn { display:flex; }
 .user-bubble { max-width:80%; margin-left:auto; padding:11px 14px; border-radius:13px 13px 3px 13px; background:rgb(79 140 255 / .18); border:1px solid rgb(79 140 255 / .26); white-space:pre-wrap; line-height:1.6; font-size:13px; }
 .assistant-message { display:flex; gap:10px; }
 .avatar { display:grid; place-items:center; flex:none; width:27px; height:27px; border-radius:50%; }
@@ -1262,14 +1862,31 @@ export default {
 .typing i { width:5px; height:5px; border-radius:50%; background:var(--accent); animation:agentPulse 1.2s infinite; }
 .typing i:nth-child(2) { animation-delay:.15s; }.typing i:nth-child(3) { animation-delay:.3s; }
 @keyframes agentPulse { 0%,80%,100%{opacity:.25;transform:translateY(0)}40%{opacity:1;transform:translateY(-3px)} }
-.composer-wrap { max-width:860px; width:calc(100% - 48px); margin:0 auto 18px; }
+.composer-wrap { max-width:860px; width:calc(100% - 48px); margin:auto auto 0; flex:none; }
+.composer-collapse-btn { display:grid; place-items:center; width:24px; height:24px; padding:0; border:1px solid var(--line); border-radius:6px; background:transparent; color:var(--muted); font-size:11px; cursor:pointer; }
+.composer-collapse-btn:hover { color:var(--text); background:rgb(79 140 255 / .1); }
+.composer-expand-bar { display:flex; align-items:center; justify-content:space-between; width:100%; padding:8px 14px; border:1px solid var(--line-strong); border-radius:13px; background:var(--bg-soft); color:var(--muted); font-size:12px; cursor:pointer; box-shadow:0 4px 18px rgb(0 0 0 / .12); }
+.composer-expand-bar:hover { border-color:var(--accent); color:var(--text); }
+.composer-expand-arrow { font-size:10px; opacity:.7; }
 .composer { border:1px solid var(--line-strong); border-radius:13px; background:var(--bg-soft); box-shadow:0 8px 28px rgb(0 0 0 / .15); }
 .composer textarea { display:block; width:100%; resize:none; border:0; outline:0; background:transparent; color:var(--text); padding:13px 14px 7px; line-height:1.55; font-size:13px; }
-.composer-bottom { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:6px 8px 8px 14px; }
-.composer-options { display:flex; align-items:center; gap:10px; flex-wrap:wrap; color:var(--muted); font-size:10px; }
+.composer-bottom { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; padding:6px 8px 8px 14px; }
+.composer-options { display:flex; align-items:center; gap:12px; flex-wrap:wrap; row-gap:5px; min-width:0; flex:1 1 auto; color:var(--muted); font-size:10px; }
+.mode-switch { display:inline-flex; flex:none; gap:2px; padding:2px; border:1px solid var(--line); border-radius:7px; background:rgb(255 255 255 / .02); }
+.mode-btn { padding:3px 9px; border:0; border-radius:5px; background:transparent; color:var(--muted); font-size:10px; cursor:pointer; white-space:nowrap; }
+.mode-btn:hover:not(:disabled) { color:var(--text); }
+.mode-btn.active { color:var(--text); background:rgb(79 140 255 / .18); }
+.mode-btn:disabled { opacity:.5; cursor:not-allowed; }
+.composer-label-hint { font:10px var(--font-mono); opacity:.75; white-space:nowrap; min-width:0; max-width:180px; overflow:hidden; text-overflow:ellipsis; }
+.composer-date { display:inline-flex; flex-direction:row; align-items:center; gap:3px; white-space:nowrap; }
+.composer-actions { display:flex; align-items:center; gap:8px; flex:none; margin-left:auto; }
+.composer-date-input { width:auto; min-width:0; max-width:110px; padding:1px 4px; border:1px solid var(--line); border-radius:4px; background:var(--bg); color:var(--text); font-size:10px; line-height:1.4; }
+.composer-date-input:disabled { opacity:.5; }
 .submit-toggle { display:flex; flex-direction:row; align-items:center; gap:4px; font-size:10px; }
 .spec-toggle { padding:2px 6px; border-color:transparent; background:transparent; color:var(--muted); font-size:10px; }
 .spec-toggle:hover, .spec-toggle.active { border-color:var(--line); color:var(--text); background:rgb(79 140 255 / .1); }
+.quick-start-btn { color:#7ea8ff; font-weight:600; }
+.quick-start-btn:hover { color:#a8c4ff; }
 .research-spec-editor { margin-top:8px; border:1px solid var(--line); border-radius:8px; background:var(--bg-soft); overflow:hidden; }
 .research-spec-head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:7px 9px; border-bottom:1px solid var(--line); color:var(--muted); font-size:11px; }
 .research-spec-head strong { color:var(--text); font:11px var(--font-mono); }
@@ -1353,6 +1970,40 @@ export default {
 .lab-rule.pass span:first-child { color:#a9e9bd; }
 .lab-rule.fail span:first-child { color:#e89a9f; }
 
+/* ── 实验室图表与操作 ── */
+.lab-actions { display:flex; gap:6px; margin-top:8px; }
+.lab-action-btn { flex:1; padding:7px 10px; border:1px solid var(--line); border-radius:7px; background:transparent; color:var(--text); font-size:11px; cursor:pointer; transition:all .12s; }
+.lab-action-btn.save { color:#72d69a; border-color:rgb(67 209 122 / .32); }
+.lab-action-btn.save:hover { background:rgb(67 209 122 / .1); }
+.lab-action-btn.bt { color:#7cb7ff; border-color:rgb(79 140 255 / .32); }
+.lab-action-btn.bt:hover { background:rgb(79 140 255 / .1); }
+.lab-charts { display:flex; flex-direction:column; gap:10px; margin-top:10px; }
+.lab-chart-block { border:1px solid var(--line); border-radius:8px; padding:8px; background:rgb(255 255 255 / .018); }
+.lab-chart-title { margin-bottom:5px; color:var(--muted); font-size:10px; letter-spacing:.04em; }
+.lab-chart-box { width:100%; height:180px; }
+.heatmap-box { height:220px; }
+.lab-input { width:100%; padding:6px 9px; border:1px solid var(--line-strong); border-radius:6px; background:var(--bg-soft); color:var(--text); font-size:12px; outline:none; }
+.lab-input:focus { border-color:var(--accent); }
+textarea.lab-input { resize:vertical; font:12px/1.5 var(--font-mono); }
+.lab-radio-group { display:flex; gap:14px; }
+.lab-radio-group label { display:flex; align-items:center; gap:5px; color:var(--text); font-size:12px; cursor:pointer; }
+.lab-bt-dates { display:flex; align-items:center; gap:8px; }
+.lab-bt-dates .lab-input { flex:1; }
+.lab-bt-row { display:flex; gap:12px; }
+.lab-bt-row .factor-modal-section { flex:1; }
+.lab-bt-check { display:flex; align-items:center; gap:7px; margin:-2px 0 14px; color:var(--muted); font-size:11px; }
+.lab-bt-config { margin:0 0 10px; color:var(--muted); font-size:10px; line-height:1.5; }
+.lab-bt-metrics { display:grid; grid-template-columns:repeat(auto-fill,minmax(130px,1fr)); gap:6px; margin-bottom:12px; }
+.lab-bt-details { margin-top:10px; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+.lab-bt-details summary { padding:8px 10px; cursor:pointer; color:var(--text); font-size:11px; background:rgb(255 255 255 / .02); }
+.lab-bt-details .table-wrap { max-height:260px; overflow:auto; }
+.lab-bt-details table { width:100%; border-collapse:collapse; font-size:11px; }
+.lab-bt-details th, .lab-bt-details td { padding:6px 9px; border-bottom:1px solid var(--line); text-align:left; white-space:nowrap; }
+.lab-bt-details th { position:sticky; top:0; z-index:1; color:var(--muted); background:var(--bg-soft); font-weight:550; }
+.lab-save-error { margin-bottom:8px; padding:6px 9px; border-radius:6px; background:rgb(239 107 115 / .1); color:#e89a9f; font-size:11px; }
+.lab-save-success { margin-top:8px; padding:6px 9px; border-radius:6px; background:rgb(67 209 122 / .1); color:#72d69a; font-size:11px; }
+.bt-result-modal .factor-modal-body { padding:16px; }
+
 /* ═══ 因子库管理 ═══ */
 .lib-panel { height:calc(100% - 40px); overflow:auto; padding:16px; border:1px solid var(--line); border-radius:12px; background:var(--card); }
 .lib-head { display:flex; align-items:center; gap:10px; margin-bottom:14px; }
@@ -1367,13 +2018,22 @@ export default {
 .lib-loading { color:var(--muted); font-size:12px; padding:20px 0; text-align:center; }
 .lib-empty { color:var(--muted); font-size:12px; padding:20px 0; text-align:center; }
 .lib-table { width:100%; border-collapse:collapse; }
-.lib-table th { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); color:var(--muted); font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:.05em; }
-.lib-table td { padding:8px 10px; border-bottom:1px solid var(--line); font-size:12px; }
+.lib-table th { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); color:var(--muted); font-size:9px; font-weight:600; text-transform:uppercase; letter-spacing:.04em; white-space:nowrap; }
+.lib-table td { padding:6px 8px; border-bottom:1px solid var(--line); font-size:11px; vertical-align:top; }
+.lib-table tr:hover td { background:rgb(79 140 255 / .06); }
+.lib-comment, .lib-review { max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--muted); font-size:10px; cursor:default; }
+.lib-label { font:10px var(--font-mono); color:#7ea8ff; white-space:nowrap; }
 .lib-table tr:hover td { background:rgb(79 140 255 / .06); }
 .lib-fid { color:var(--accent); font:11px var(--font-mono); cursor:pointer; }
 .lib-table td:nth-child(2) { cursor:pointer; }
 .lib-time { color:var(--muted); font:10px var(--font-mono); }
-.lib-del { padding:3px 8px; border:1px solid rgb(239 107 115 / .3); border-radius:5px; background:transparent; color:#ef8b92; font-size:10px; cursor:pointer; }
+.lib-actions { white-space:nowrap; }
+.lib-backtest, .lib-del, .lib-export { padding:3px 8px; border-radius:5px; background:transparent; font-size:10px; cursor:pointer; }
+.lib-export { margin-right:4px; border:1px solid rgb(126 168 255 / .35); color:#7ea8ff; }
+.lib-export:hover { background:rgb(126 168 255 / .12); }
+.lib-backtest { margin-right:6px; border:1px solid rgb(79 140 255 / .45); color:var(--accent); }
+.lib-backtest:hover { background:rgb(79 140 255 / .12); }
+.lib-del { border:1px solid rgb(239 107 115 / .3); color:#ef8b92; }
 .lib-del:hover { background:rgb(239 107 115 / .1); }
 .lib-status { padding:2px 7px; border-radius:4px; font-size:10px; }
 .status-active { color:#72d69a; background:rgb(67 209 122 / .12); }

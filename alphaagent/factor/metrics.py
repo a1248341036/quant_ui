@@ -670,3 +670,95 @@ def factor_skew_kurtosis(values: np.ndarray) -> tuple[float, float]:
         return float("nan"), float("nan")
     s = pd.Series(x)
     return float(s.skew()), float(s.kurtosis())
+
+
+def topn_portfolio_summary(
+    factor: pd.Series,
+    label: pd.Series,
+    *,
+    time_level: str = "datetime",
+    top_n: int = 30,
+    cost_bps: float = 15.0,
+    annualization_factor: float = 252.0,
+) -> dict[str, Any]:
+    """TopN 等权多头组合的日频模拟（含换手成本）。
+
+    每日按因子值取前 ``top_n`` 只、等权持有，收益用次日 open-to-open label。
+    成本按换手比例计双边 ``cost_bps``；未建模 T+1/涨跌停/停牌约束，
+    结果是"半实盘"口径，最终仍需旧交易引擎复核。
+    """
+    daily_rows: list[tuple[object, float, float]] = []
+    prev_names: set[str] | None = None
+    turnover_sum = 0.0
+    turnover_days = 0
+    for ts, f_sub in factor.groupby(level=time_level, sort=False):
+        inst = f_sub.index.get_level_values("instrument")
+        y_sub = label.xs(ts, level=time_level).reindex(inst)
+        xf = f_sub.to_numpy(dtype=np.float64, copy=False)
+        yl = y_sub.to_numpy(dtype=np.float64, copy=False)
+        mask = np.isfinite(xf) & np.isfinite(yl)
+        n_valid = int(mask.sum())
+        if n_valid < max(top_n, 10):
+            continue
+        names_arr = np.asarray(inst)[mask]
+        fac = xf[mask]
+        ret = yl[mask]
+        order = np.argsort(-fac, kind="stable")[:top_n]
+        selected = names_arr[order]
+        port_ret = float(ret[order].mean())
+        universe_ret = float(ret.mean())
+        current = set(selected.tolist())
+        if prev_names is not None:
+            changed = len(current - prev_names) / max(len(current), 1)
+            turnover_sum += changed
+            turnover_days += 1
+        prev_names = current
+        daily_rows.append((ts, port_ret, universe_ret))
+
+    empty = {
+        "top_n": int(top_n),
+        "n_days": 0,
+        "annualized_return": float("nan"),
+        "annualized_excess_return": float("nan"),
+        "sharpe": float("nan"),
+        "max_drawdown": float("nan"),
+        "annual_turnover": float("nan"),
+        "avg_names": float(top_n),
+        "cost_bps_per_side": float(cost_bps),
+        "note": "TopN 等权多头日频模拟；成本=换手×双边cost_bps；未含T+1/涨跌停/停牌约束。",
+    }
+    if not daily_rows:
+        return empty
+
+    side_cost = cost_bps / 10_000.0
+    avg_turnover = (turnover_sum / turnover_days) if turnover_days else 0.0
+    net: list[float] = []
+    excess: list[float] = []
+    for _, port_ret, universe_ret in daily_rows:
+        daily_cost = 2.0 * side_cost * avg_turnover
+        net.append(port_ret - daily_cost)
+        excess.append((port_ret - universe_ret) - daily_cost)
+
+    def _compound_ann(values: list[float]) -> float:
+        arr = np.asarray(values, dtype=np.float64)
+        if np.any(arr <= -1.0):
+            return float("nan")
+        return float(np.prod(1.0 + arr) ** (annualization_factor / len(arr)) - 1.0)
+
+    arr = np.asarray(net, dtype=np.float64)
+    std = float(arr.std(ddof=1)) if len(arr) > 1 else float("nan")
+    running_max = np.maximum.accumulate(np.cumprod(1.0 + arr))
+    drawdowns = 1.0 - np.cumprod(1.0 + arr) / running_max
+
+    return {
+        "top_n": int(top_n),
+        "n_days": int(len(daily_rows)),
+        "annualized_return": _compound_ann(net),
+        "annualized_excess_return": _compound_ann(excess),
+        "sharpe": float(arr.mean() / std * math.sqrt(annualization_factor)) if std > 0 and np.isfinite(std) else float("nan"),
+        "max_drawdown": float(drawdowns.max()) if len(drawdowns) else float("nan"),
+        "annual_turnover": round(avg_turnover * annualization_factor, 4) if turnover_days else float("nan"),
+        "avg_names": float(top_n),
+        "cost_bps_per_side": float(cost_bps),
+        "note": "TopN 等权多头日频模拟；成本=换手×双边cost_bps；未含T+1/涨跌停/停牌约束。",
+    }

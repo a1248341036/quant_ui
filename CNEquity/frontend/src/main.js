@@ -169,7 +169,7 @@ async function renderOverview() {
 
 async function renderDatasets() {
   const datasets = await api("/api/datasets");
-  const rows = (items) => items.map((d) => `<tr class="dataset-row"><td><span class="dot ${d.freshness === "fresh" ? "fresh" : d.freshness === "stale" ? "stale" : "empty"}"></span><span class="ds-link" data-ds="${esc(d.dataset)}">${esc(d.dataset)}</span>${d.description ? ` <span class="ds-desc">${esc(d.description)}</span>` : ""}</td><td>${esc(d.tier_label || d.tier)}</td><td>${esc(d.history_mode)}</td><td>${esc(d.granularity || "merge")}</td><td>${esc(d.watermark || "—")}</td><td class="n">${fmt(d.row_count)}</td><td class="n">${mb(d.bytes)}</td></tr>`).join("");
+  const rows = (items) => items.map((d) => `<tr class="dataset-row"><td><span class="dot ${d.freshness === "fresh" ? "fresh" : d.freshness === "stale" ? "stale" : "empty"}"></span><span class="ds-link" data-ds="${esc(d.dataset)}">${esc(d.dataset)}</span>${d.description ? ` <span class="ds-desc">${esc(d.description)}</span>` : ""}</td><td>${esc(d.tier_label || d.tier)}</td><td>${esc(d.history_mode)}</td><td>${esc(d.granularity || "merge")}</td><td><span title="${d.ahead_of_anchor ? `原始水位 ${esc(d.watermark)}，含锚点后数据` : ""}">${esc(d.unified_watermark || d.watermark || "—")}${d.ahead_of_anchor ? " ▲" : ""}</span></td><td class="n">${fmt(d.row_count)}</td><td class="n">${mb(d.bytes)}</td></tr>`).join("");
   setPage(`<section class="page-heading"><div class="eyebrow">数据湖控制台 / 数据集</div><div class="heading-row"><div><h1>数据集</h1><p class="sub">按注册契约浏览 ${datasets.length} 个数据集，点击名称查看状态、元数据与数据。</p></div></div></section>
     <section class="surface-panel catalog-panel"><div class="catalog-toolbar"><label class="search-field"><span aria-hidden="true">⌕</span><input id="dataset-search" type="search" placeholder="搜索数据集、层级或语义" autocomplete="off"></label><span class="panel-meta" id="dataset-count">${datasets.length} 个结果</span></div><div class="scroll"><table id="dataset-table"><thead><tr><th>数据集</th><th>分层</th><th>语义</th><th>粒度</th><th>水位</th><th class="n">行</th><th class="n">体积</th></tr></thead><tbody></tbody></table></div></section>`, "datasets");
   const table = document.querySelector("#dataset-table tbody");
@@ -190,12 +190,13 @@ function membersTable(rows) {
   const body = rows
     .map((d) => {
       const cls = d.freshness === "fresh" ? "fresh" : d.freshness === "stale" ? "stale" : "empty";
-      const cover = d.coverage_start ? `${d.coverage_start} → ${d.coverage_end}` : "—";
+      const unifiedEnd = d.unified_coverage_end || d.coverage_end;
+      const cover = d.coverage_start ? `${d.coverage_start} → ${unifiedEnd}` : "—";
       const opt = d.required ? "" : " <span style='opacity:.6'>(可选)</span>";
       const desc = d.description ? ` <span class="ds-desc">${esc(d.description)}</span>` : "";
       return `<tr><td><span class="dot ${cls}"></span><span class="ds-link" data-ds="${esc(d.dataset)}">${esc(d.dataset)}</span>${opt}${desc}</td>
       <td>${d.history_mode}</td><td>${d.granularity || "merge"}</td><td>${cover}</td>
-      <td>${d.watermark || "—"}</td><td class="n">${fmt(d.row_count)}</td>
+      <td>${d.unified_watermark || d.watermark || "—"}${d.ahead_of_anchor ? " ▲" : ""}</td><td class="n">${fmt(d.row_count)}</td>
       <td class="n">${mb(d.bytes)}</td></tr>`;
     })
     .join("");
@@ -207,7 +208,8 @@ function membersTable(rows) {
 function coverageBar(d) {
   if (!d.coverage_start) return '<p class="muted">尚无分区。</p>';
   const start = new Date(d.coverage_start).getTime();
-  const end = new Date(d.coverage_end).getTime();
+  const unifiedEnd = d.unified_coverage_end || d.coverage_end;
+  const end = new Date(unifiedEnd).getTime();
   const span = Math.max(end - start, 1);
   let horizon = "";
   if (d.earliest_available) {
@@ -218,7 +220,7 @@ function coverageBar(d) {
     }
   }
   return `<div class="cover"><div class="fill" style="left:0;right:0"></div>${horizon}</div>
-    <p class="legend"><span>${d.coverage_start}</span><span style="margin-left:auto">${d.coverage_end}</span></p>`;
+    <p class="legend"><span>${d.coverage_start}</span><span style="margin-left:auto">${unifiedEnd}</span></p>`;
 }
 
 function gapsNote(d) {
@@ -487,8 +489,8 @@ async function renderDetail(name, tab) {
     <section class="metric-grid detail-metrics" aria-label="数据集关键指标">
       ${kpi(`<span title="${fmt(d.row_count)} 行">${compact(d.row_count)}</span>`, "行数", "全部接入")}
       ${kpi(mb(d.bytes), "存储", "全部接入")}
-      ${kpi(esc(d.watermark || "—"), "水位", d.watermarked ? "维护中" : "不维护水位")}
-      ${kpi(esc(d.coverage_end || "—"), "覆盖至", d.granularity || "merge")}
+      ${kpi(esc(d.unified_watermark || d.watermark || "—"), "统一水位", d.ahead_of_anchor ? `原始 ${d.watermark}` : d.watermarked ? "维护中" : "不维护水位")}
+      ${kpi(esc(d.unified_coverage_end || d.coverage_end || "—"), "覆盖至", d.granularity || "merge")}
     </section>
     <section class="surface-panel detail-workspace">
     <nav class="tabs" aria-label="数据集详情标签页">

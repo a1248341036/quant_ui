@@ -24,7 +24,7 @@ class MiningConfig:
     """同时进行的 train/val 评估上限；None 时读环境变量 MAX_PARALLEL_EVAL。"""
     min_tool_call_rounds_before_allow_stop: int = 3
     factorlib_path: Path | None = None
-    enable_submit: bool = True
+    enable_submit: bool = True  # 始终启用，已移除关闭开关
     enable_reviewer: bool = True
     research_spec: dict[str, Any] | None = None
     max_cs_corr: float = 0.8

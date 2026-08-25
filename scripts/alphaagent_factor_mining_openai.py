@@ -79,7 +79,6 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--no-operator-catalog", action="store_true")
     p.add_argument("--quiet", action="store_true")
     p.add_argument("--factorlib", type=Path, default=None, help=f"默认 {FACTORZOO_DIR}")
-    p.add_argument("--no-submit", action="store_true")
     p.add_argument("--max-cs-corr", type=float, default=0.8)
     p.add_argument("--similar-top-k", type=int, default=3)
     p.add_argument("--ingest-overwrite", action="store_true")
@@ -144,7 +143,7 @@ def main() -> int:
         max_parallel_eval=args.max_parallel_eval,
         min_tool_call_rounds_before_allow_stop=args.min_tool_call_rounds,
         factorlib_path=_resolve(str(args.factorlib)) if args.factorlib else None,
-        enable_submit=not args.no_submit,
+        enable_submit=True,
         max_cs_corr=args.max_cs_corr,
         similar_top_k=args.similar_top_k,
         ingest_overwrite=args.ingest_overwrite,

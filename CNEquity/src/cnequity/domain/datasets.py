@@ -569,7 +569,11 @@ _SPECS = [
         primary_source="eastmoney",
         tier="L4",
         partition_col="trade_date",
-        max_staleness_days=2,
+        # Exchange publishes session T's balances on the T+1 morning, so the
+        # freshest possible evening mark is the previous trading day — a
+        # Monday-night run legitimately holds Friday. 4 days covers the
+        # weekend plus that publication lag without masking real outages.
+        max_staleness_days=4,
         description="融资融券",
     ),
     # Per-stock northbound holdings are quarterly since Aug 2024; tolerate the
@@ -647,6 +651,9 @@ _SPECS = [
         # CSI indices still accumulate via daily EM snapshots only.
         backfill_source="cni",
         cadence="monthly",
+        # Monthly cadence skips same-month refetches, so the day-based
+        # default tolerance (1) would flag it STALE all month long.
+        max_staleness_days=35,
         description="指数成分股快照",
     ),
     DatasetSpec(
@@ -658,6 +665,8 @@ _SPECS = [
         # Shenwan StockClassifyUse intervals → monthly as_of from 2020.
         backfill_source="sw",
         cadence="monthly",
+        # Same monthly-vs-daily-tolerance mismatch as index_constituents.
+        max_staleness_days=35,
         description="申万行业分类",
     ),
     # L6 macro

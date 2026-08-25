@@ -154,6 +154,12 @@ def run_trajectory(
         if extra_body:
             req["extra_body"] = extra_body
 
+        _emit("llm_request", {
+            "turn": turn,
+            "model": model,
+            "message_count": len(messages),
+            "tool_count": len(schemas),
+        })
         resp = _chat_with_retry(client, req)
         msg = resp.choices[0].message
         reasoning = getattr(msg, "reasoning_content", None) or getattr(msg, "reasoning", None)

@@ -218,8 +218,7 @@ def trading_calendar_horizon_findings(config: Config, trade_date: date) -> list[
 def valuation_day_coverage_ratio(config: Config, trade_date: date) -> float | None:
     """``|valuation ∩ bars| / |bars|`` on *trade_date*, or None if either side empty."""
     val_root = config.curated_root / "valuation_metrics"
-    bars_root = config.curated_root / "daily_bars"
-    if not dataset_has_parquet(val_root) or not dataset_has_parquet(bars_root):
+    if not dataset_has_parquet(val_root):
         return None
     val_syms = set(
         scan_parquet_root(val_root, partition_col="trade_date", start=trade_date, end=trade_date)
@@ -228,17 +227,35 @@ def valuation_day_coverage_ratio(config: Config, trade_date: date) -> float | No
         .collect()["symbol"]
         .to_list()
     )
-    bars_syms = set(
-        _traded_bars(
-            scan_parquet_root(
-                bars_root, partition_col="trade_date", start=trade_date, end=trade_date
+    # Standard reader resolves the external tushare-wide archive; older lakes
+    # only have curated hive partitions. Without this the denominator is empty
+    # whenever daily_bars lives externally and the ratio can never be computed.
+    bars_syms: set[str] = set()
+    try:
+        from cnequity.query.reader import load
+
+        bars = load("daily_bars", start=trade_date, end=trade_date, config=config)
+        if not bars.is_empty() and "symbol" in bars.columns:
+            if "volume" in bars.columns:
+                bars = bars.filter((pl.col("volume") > 0) | pl.col("volume").is_null())
+            bars_syms = set(bars["symbol"].unique().to_list())
+    except Exception:
+        pass
+    if not bars_syms:
+        bars_root = config.curated_root / "daily_bars"
+        if not dataset_has_parquet(bars_root):
+            return None
+        bars_syms = set(
+            _traded_bars(
+                scan_parquet_root(
+                    bars_root, partition_col="trade_date", start=trade_date, end=trade_date
+                )
             )
+            .select("symbol")
+            .unique()
+            .collect()["symbol"]
+            .to_list()
         )
-        .select("symbol")
-        .unique()
-        .collect()["symbol"]
-        .to_list()
-    )
     if not val_syms or not bars_syms:
         return None
     return len(val_syms & bars_syms) / len(bars_syms)

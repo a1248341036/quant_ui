@@ -24,6 +24,8 @@ class SessionCreateResponse:
     panel_rows: int
     load_ms: float
     columns_sample: list[str]
+    # 完整列清单（panel 加载后的真实字段），供提示词按可用性裁剪可选字段族文档。
+    available_columns: list[str] | None = None
 
 
 @dataclass

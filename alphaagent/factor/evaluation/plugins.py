@@ -19,6 +19,7 @@ from alphaagent.factor.metrics import (
     monthly_ic_robustness,
     mls_fmb_summary,
     newey_west_mean_tstat,
+    topn_portfolio_summary,
 )
 
 Transform = Callable[[EvaluationContext, dict[str, Any]], None]
@@ -232,3 +233,13 @@ def long_short_portfolio(context: EvaluationContext, params: dict[str, Any]) -> 
         "nw_se_net": nw["se_nw"],
         "nw_lags": nw["lags"],
     }
+
+
+@metric("topn_portfolio")
+def topn_portfolio(context: EvaluationContext, params: dict[str, Any]) -> dict[str, Any]:
+    return topn_portfolio_summary(
+        context.factor,
+        context.label,
+        top_n=int(params.get("top_n", 30)),
+        cost_bps=float(params.get("cost_bps", 15.0)),
+    )

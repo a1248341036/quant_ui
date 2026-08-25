@@ -40,6 +40,7 @@ _BASE_METRICS = (
     {"plugin": "mls_fmb"},
     {"plugin": "ic_series_diagnostics"},
     {"plugin": "long_short_portfolio", "params": {"groups": 10, "cost_bps": 0}},
+    {"plugin": "topn_portfolio", "params": {"top_n": 30, "cost_bps": 15.0}},
 )
 
 
@@ -105,7 +106,7 @@ def resolve_profiles(spec: dict[str, Any] | None = None) -> dict[str, Evaluation
     evaluation = (spec or {}).get("evaluation_policy", {})
     train_rules = [
         {"metric": "cross_sectional_core.ic", "op": "abs_gte", "value": evaluation.get("min_train_abs_ic", 0.015)},
-        {"metric": "cross_sectional_core.icir", "op": "gte", "value": evaluation.get("min_train_icir", 0.2)},
+        {"metric": "cross_sectional_core.icir", "op": "abs_gte", "value": evaluation.get("min_train_icir", 0.2)},
         {"metric": "cross_sectional_core.factor_coverage", "op": "gte", "value": evaluation.get("min_train_coverage", 0.85)},
     ]
     val_rules = [
@@ -118,9 +119,11 @@ def resolve_profiles(spec: dict[str, Any] | None = None) -> dict[str, Evaluation
     production = delivery.get("production", {})
     raw_defaults["production_delivery"]["rules"] = [
         {"metric": "cross_sectional_core.ic", "op": "abs_gte", "value": production.get("min_abs_ic", 0.035)},
-        {"metric": "cross_sectional_core.icir", "op": "gte", "value": production.get("min_icir", 0.5)},
+        {"metric": "cross_sectional_core.icir", "op": "abs_gte", "value": production.get("min_icir", 0.5)},
         {"metric": "mls_fmb.nw_t_ls", "op": "abs_gte", "value": production.get("min_fmb_t_stat", 2.5)},
-        {"metric": "long_short_portfolio.long_group_annual_excess_return", "op": "gte", "value": production.get("min_long_group_annual_excess_return", 0.03)},
+        {"metric": "long_short_portfolio.long_group_annual_excess_return", "op": "abs_gte", "value": production.get("min_long_group_annual_excess_return", 0.03)},
+        {"metric": "topn_portfolio.annualized_excess_return", "op": "gte", "value": production.get("min_topn_annual_excess_return", 0.05)},
+        {"metric": "topn_portfolio.sharpe", "op": "gte", "value": production.get("min_topn_sharpe", 0.5)},
     ]
     for profile_id, override in configured.items():
         if not isinstance(profile_id, str) or not profile_id:

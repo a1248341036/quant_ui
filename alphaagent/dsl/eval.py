@@ -64,6 +64,7 @@ def _dollar_columns_aux(panel: Optional[pd.DataFrame], tag: str) -> List[str]:
 
 # ``$name@5m`` 等，捕获频率片段并归一化（跳过字面量后扫描）
 _DOLLAR_AT_REF_RE = re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*@([A-Za-z0-9_]+)\b")
+_DOLLAR_REF_RE = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)(?:@[A-Za-z0-9_]+)?")
 
 
 def collect_aux_intervals_from_expr(multi_line_expr: str) -> List[str]:
@@ -229,6 +230,23 @@ def compile_multi_line_factor(
     columns: Optional[Sequence[str]] = None,
     verbose: bool = False,
 ) -> str:
+    if columns:
+        known = {str(col).lstrip("$").split("@", 1)[0] for col in columns}
+        cleaned = _strip_string_literals(multi_line_expr)
+        unknown = sorted({
+            match.group(1)
+            for match in _DOLLAR_REF_RE.finditer(cleaned)
+            if match.group(1) not in known
+        })
+        if unknown:
+            raise MultiLineFactorEvalError(
+                f"symbol 阶段失败: 表达式引用了不可用字段: {', '.join('$' + name for name in unknown)}",
+                phase="symbol",
+                problem="unknown_fields:" + ",".join(unknown),
+                exception_type="ValueError",
+                user_source=multi_line_expr,
+            )
+
     try:
         raw = parse_multi_line_expression(multi_line_expr, verbose=verbose)
     except Exception as e:
@@ -653,4 +671,3 @@ if __name__ == "__main__":
         eval_multi_line_factor(expr_bad, df_test)
     except MultiLineFactorEvalError as e:
         print("预期失败 (结构化错误信息):\n", e)
-   

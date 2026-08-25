@@ -1,4 +1,4 @@
-"""Market breadth metrics computed from curated daily_bars."""
+"""Market breadth metrics computed from daily_bars via the standard reader."""
 
 from __future__ import annotations
 
@@ -21,11 +21,25 @@ MARKET_BREADTH_METRICS = (
 )
 
 
-def _read_bars(root: Path, trade_date: date) -> pl.DataFrame:
+def _read_bars(config: Config, trade_date: date) -> pl.DataFrame:
+    """Load one day's raw bars, external archive first with curated fallback.
+
+    The standard reader resolves the tushare-wide archive this deployment
+    writes to; older/offline lakes only have curated hive partitions.
+    """
+    from cnequity.query.parquet_scan import collect_parquet_root
+    from cnequity.query.reader import load
+
+    try:
+        df = load("daily_bars", start=trade_date, end=trade_date, config=config)
+        if not df.is_empty():
+            return df
+    except Exception:  # noqa: BLE001 — no external source here, fall through
+        pass
+
+    root = config.curated_root / "daily_bars"
     if not root.exists():
         return pl.DataFrame()
-    from cnequity.query.parquet_scan import collect_parquet_root
-
     try:
         df = collect_parquet_root(
             root,
@@ -103,8 +117,7 @@ def _limit_threshold(symbol: str, status: str | None) -> float:
 
 
 def compute_market_breadth(config: Config, trade_date: date) -> pl.DataFrame:
-    bars_root = config.curated_root / "daily_bars"
-    today = _read_bars(bars_root, trade_date)
+    today = _read_bars(config, trade_date)
     if today.is_empty():
         return pl.DataFrame()
 
@@ -125,7 +138,7 @@ def compute_market_breadth(config: Config, trade_date: date) -> pl.DataFrame:
     if prev_date is None:
         return pl.DataFrame()
 
-    prev = _read_bars(bars_root, prev_date)
+    prev = _read_bars(config, prev_date)
     if prev.is_empty():
         return pl.DataFrame()
 

@@ -41,6 +41,8 @@ class AccountRequest(BaseModel):
     min_commission: float = 0.0
     lot_size: int = 100
     limit_flags: bool = True
+    alpha_factor_id: str | None = None
+    alpha_library: str = "candidate"
 
 
 class StatusRequest(BaseModel):
@@ -157,7 +159,22 @@ def account_create(req: AccountRequest):
             ("limit_flags", req.limit_flags),
         ):
             risk.setdefault(key, val)
-        if req.strategy_type == "event":
+        if req.alpha_factor_id:
+            # AlphaAgent 因子驱动账户：factor 列存因子名，运行时按 DSL 求值排名
+            from backend.alphaagent_service import get_factor_detail
+            detail = get_factor_detail(req.alpha_factor_id, library=req.alpha_library)
+            if "error" in detail:
+                return {"error": f"因子查询失败: {detail['error']}"}
+            acc = paper_core.create_account(
+                name=req.name, strategy_name=detail.get("name", req.name),
+                factor=req.alpha_factor_id, ascending=False,
+                universe=req.universe, capital=req.capital,
+                top_n=req.top_n, freq=req.freq, risk_config=risk,
+                strategy_type="alpha",
+                alpha_library=req.alpha_library,
+                start_date=req.start_date,
+            )
+        elif req.strategy_type == "event":
             if not req.module:
                 return {"error": "事件账户需要选择代码模块"}
             if not req.event_strategy:
@@ -249,17 +266,61 @@ def paper_run(req: RunRequest):
         accounts = paper_core.list_accounts()
         if req.account_id is not None:
             accounts = [a for a in accounts if a["id"] == int(req.account_id)]
-        stock_ids = [a["id"] for a in accounts if a.get("universe") != "ETF"]
+
+        # 分离 AlphaAgent 因子账户与普通/ETF 账户
+        alpha_accs = [a for a in accounts if a.get("strategy_type") == "alpha"]
+        normal_ids = [a["id"] for a in accounts if a.get("strategy_type") != "alpha" and a.get("universe") != "ETF"]
         etf_ids = [a["id"] for a in accounts if a.get("universe") == "ETF"]
+
         out_accounts: list[dict] = []
         run_date = req.exec_date
-        if stock_ids:
+
+        # ── AlphaAgent 因子账户：DSL 求值 → 注入 panel → 复用 paper_core ──
+        if alpha_accs:
+            from backend.routers.backtest import _eval_alpha_factor
+            import datetime as _dt
+            end_dt = pd.Timestamp(req.exec_date) if req.exec_date else pd.Timestamp.today()
+            start = (end_dt - pd.Timedelta(days=800)).date().isoformat()
+
+            for acc in alpha_accs:
+                aid = acc["id"]
+                fid = acc.get("factor", "")
+                lib = acc.get("alpha_library", "candidate")
+                codes_map = _stock_codes_by_universe()
+                all_codes = sorted(set().union(*codes_map.values()))
+                panel = _stock_panel(all_codes, req.exec_date)
+                try:
+                    factor_df = _eval_alpha_factor(fid, lib, panel, start, end_dt.date().isoformat())
+                except Exception as exc:
+                    out_accounts.append({"id": aid, "error": f"因子求值失败: {exc}"})
+                    continue
+                # 把因子矩阵 melt 成扁平行并 merge 到 panel
+                factor_col_name = f"_alpha_{aid}"
+                flat = factor_df.reset_index().melt(id_vars="date", var_name="code",
+                                                     value_name=factor_col_name).dropna()
+                flat["date"] = flat["date"].astype(str)
+                panel["date"] = panel["date"].astype(str)
+                panel = panel.merge(flat[["date", "code", factor_col_name]],
+                                    on=["date", "code"], how="left")
+
+                # 覆盖 factor 字段让 paper_core 用我们的列排名
+                paper_core._accounts[aid]["_override_factor"] = factor_col_name
+
+                res = paper_core.run_paper_trade(
+                    panel, codes_map, account_ids=[aid],
+                    exec_date=req.exec_date, dry_run=req.dry_run,
+                )
+                run_date = res.get("run_date")
+                out_accounts += res.get("accounts", [])
+
+        # ── 普通 + ETF 账户（原有路径） ──
+        if normal_ids:
             codes_map = _stock_codes_by_universe()
             all_codes = sorted(set().union(*codes_map.values()))
             panel = _stock_panel(all_codes, req.exec_date)
             res = paper_core.run_paper_trade(
                 panel, codes_map,
-                account_ids=stock_ids, exec_date=req.exec_date,
+                account_ids=normal_ids, exec_date=req.exec_date,
                 dry_run=req.dry_run,
             )
             run_date = res.get("run_date")

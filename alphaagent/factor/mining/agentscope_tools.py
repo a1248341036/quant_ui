@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
+import functools
+import json
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
+import numpy as np
+import pandas as pd
+
 from agentscope.message import TextBlock
 from agentscope.tool import FunctionTool, Toolkit, ToolChunk
 
 from alphaagent.factor.mining.tools import FactorEvalTools
+from alphaagent.factor.mining.interactions import lint_expression_interaction
 
 _EXECUTOR: ThreadPoolExecutor | None = None
 
@@ -135,11 +142,232 @@ def _preflight_check(multi_line_expr: str, factor_name: str) -> dict[str, Any] |
     return None
 
 
+def _interaction_contract(
+    multi_line_expr: str,
+    interaction: dict[str, Any] | str | None,
+    policy: dict[str, Any] | None,
+) -> tuple[dict[str, Any] | None, str | None, dict[str, Any] | None]:
+    """Return ``(normalized_contract, warning, blocked_error)``."""
+    try:
+        return lint_expression_interaction(
+            multi_line_expr,
+            interaction,
+            policy=policy,
+        )
+    except Exception as exc:
+        return None, None, {
+            "ok": False,
+            "blocked": True,
+            "warning": "interaction 契约校验失败。",
+            "suggestion": str(exc),
+            "error_type": type(exc).__name__,
+        }
+
+
+# ── 离线正交预判 ──────────────────────────────────────────────
+
+_ORTHO_N_DATES = 5       # 随机抽样锚点数
+_ORTHO_BLOCK_DAYS = 20   # 每个锚点向前取的连续交易日数，保留 TS_* 窗口语义
+_ORTHO_MAX_CORR = 0.7    # Spearman 相关性阈值
+
+
+def _sample_orthogonality_panel(panel: pd.DataFrame) -> pd.DataFrame:
+    """Sample contiguous date blocks so TS operators retain real lookback context."""
+    dates = panel.index.get_level_values("datetime").unique().sort_values()
+    required = _ORTHO_N_DATES * _ORTHO_BLOCK_DAYS
+    if len(dates) < required:
+        return panel
+
+    rng = np.random.default_rng(42)
+    anchors = rng.choice(
+        np.arange(_ORTHO_BLOCK_DAYS - 1, len(dates)),
+        size=_ORTHO_N_DATES,
+        replace=False,
+    )
+    selected: set[pd.Timestamp] = set()
+    for anchor in anchors:
+        selected.update(dates[max(0, int(anchor) - _ORTHO_BLOCK_DAYS + 1):int(anchor) + 1])
+    return panel[panel.index.get_level_values("datetime").isin(selected)]
+
+
+def _orthogonality_check(tools: FactorEvalTools, multi_line_expr: str) -> dict[str, Any]:
+    """Post-review sampled check against production/candidate zoos and registry candidates."""
+    result = {
+        "passed": True,
+        "skipped_reason": None,
+        "threshold": _ORTHO_MAX_CORR,
+        "max_abs_corr": 0.0,
+        "compared_factors": 0,
+        "blocked_factor_id": None,
+    }
+    try:
+        session = tools.service.sessions.get(tools.session_id)
+        sampled_panel = _sample_orthogonality_panel(session.panel)
+
+        from alphaagent.core.paths import FACTORZOO_DIR
+        from alphaagent.dsl import eval_factor
+        from alphaagent.factor.align import align_series_to_panel
+        from alphaagent.factor.metrics import spearman_ic
+        from alphaagent.factor.zoo import FactorZoo
+
+        roots = [FACTORZOO_DIR, FACTORZOO_DIR.parent / "candidate_1d"]
+        zoos = [FactorZoo.open(root) for root in roots]
+        registry_path = FACTORZOO_DIR.parent / "candidate_1d" / "mining_candidate_registry.json"
+        registry = json.loads(registry_path.read_text(encoding="utf-8")) if registry_path.is_file() else {}
+        if sum(zoo.n_factors for zoo in zoos) == 0 and not registry:
+            result["skipped_reason"] = "empty_factor_libraries"
+            return result
+
+        raw = eval_factor(multi_line_expr, sampled_panel)
+        if not isinstance(raw, pd.Series):
+            raise TypeError(f"factor_output_must_be_series:{type(raw)!r}")
+        new_aligned = align_series_to_panel(raw, sampled_panel)
+
+        compared: set[str] = set()
+        sampled_keys = sampled_panel.index
+        for zoo in zoos:
+            rows = zoo.index.rows
+            selected_dates = set(sampled_panel.index.get_level_values("datetime"))
+            subset = rows[rows["datetime"].isin(selected_dates)]
+            if subset.empty:
+                continue
+
+            row_ids = subset["row_id"].to_numpy(dtype=np.int64)
+
+            for factor_id in zoo.catalog.list_factor_ids()[:20]:
+                if factor_id in compared:
+                    continue
+                compared.add(factor_id)
+                try:
+                    subset_keys = pd.MultiIndex.from_arrays(
+                        [
+                            pd.to_datetime(subset["datetime"]).to_numpy(),
+                            subset["instrument"].astype(str).to_numpy(),
+                        ],
+                        names=["datetime", "instrument"],
+                    )
+                    old_by_key = pd.Series(
+                        np.asarray(zoo.read_factor(factor_id)[row_ids], dtype=np.float64),
+                        index=subset_keys,
+                    )
+                    old_values = np.asarray(old_by_key.reindex(sampled_keys), dtype=np.float64)
+                    new_values = np.asarray(new_aligned.reindex(sampled_keys), dtype=np.float64)
+                except Exception:
+                    continue
+                valid = np.isfinite(old_values) & np.isfinite(new_values)
+                if int(valid.sum()) < 30:
+                    continue
+                corr = abs(float(spearman_ic(old_values[valid], new_values[valid], min_pairs=30)))
+                if np.isfinite(corr) and corr > result["max_abs_corr"]:
+                    result["max_abs_corr"] = corr
+                    result["blocked_factor_id"] = factor_id
+
+        # Registry-only candidates have no dense values, so compare their DSL on
+        # the same sampled panel.
+        for factor_id, entry in sorted(registry.items()):
+            if factor_id in compared or not isinstance(entry, dict):
+                continue
+            expr = str(entry.get("expr") or "").strip()
+            if not expr:
+                continue
+            compared.add(factor_id)
+            try:
+                old_raw = eval_factor(expr, sampled_panel)
+                old_aligned = align_series_to_panel(old_raw, sampled_panel)
+                old_values = np.asarray(old_aligned.reindex(sampled_keys), dtype=np.float64)
+                new_values = np.asarray(new_aligned.reindex(sampled_keys), dtype=np.float64)
+            except Exception:
+                continue
+            valid = np.isfinite(old_values) & np.isfinite(new_values)
+            if int(valid.sum()) < 30:
+                continue
+            corr = abs(float(spearman_ic(old_values[valid], new_values[valid], min_pairs=30)))
+            if np.isfinite(corr) and corr > result["max_abs_corr"]:
+                result["max_abs_corr"] = corr
+                result["blocked_factor_id"] = factor_id
+
+        result["compared_factors"] = len(compared)
+        result["passed"] = result["max_abs_corr"] < _ORTHO_MAX_CORR
+        return result
+    except Exception as exc:  # noqa: BLE001
+        # This is now an explicit post-review gate, so an unverifiable check fails closed.
+        return {
+            **result,
+            "passed": False,
+            "skipped_reason": None,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
 def _dispatch_sync(tools: FactorEvalTools, name: str, arguments: dict[str, Any]) -> tuple[dict[str, Any], float]:
     t0 = time.perf_counter()
     result = tools.dispatch(name, arguments)
     elapsed = round(time.perf_counter() - t0, 4)
-    return result if isinstance(result, dict) else {"ok": False, "error": str(result)}, elapsed
+    result = result if isinstance(result, dict) else {"ok": False, "error": str(result)}
+    # 错误串可能携带整段重复索引等巨量调试信息（曾撑出 166MB 日志/上下文），统一截断。
+    err = result.get("error")
+    if isinstance(err, str) and len(err) > 2000:
+        result["error"] = err[:2000] + f" …[truncated, original {len(err)} chars]"
+    return result, elapsed
+
+
+# 单个因子评估的超时秒数：numba JIT 首次编译可能很慢，
+# submit 时需加载 CNE panel + realign + 重算，给更充裕的时间。
+_EVAL_TIMEOUT_SECONDS = 300
+
+
+async def _dispatch_with_timeout(
+    loop: asyncio.AbstractEventLoop,
+    executor: ThreadPoolExecutor,
+    tools: FactorEvalTools,
+    name: str,
+    args: dict[str, Any],
+    *,
+    timeout: float = _EVAL_TIMEOUT_SECONDS,
+) -> tuple[dict[str, Any], float]:
+    """带超时的 dispatch，超时返回错误而非永久阻塞。"""
+    try:
+        result, elapsed = await asyncio.wait_for(
+            loop.run_in_executor(executor, _dispatch_sync, tools, name, args),
+            timeout=timeout,
+        )
+        return result, elapsed
+    except asyncio.TimeoutError:
+        return {"ok": False, "error": f"评估超时（>{timeout:.0f}s），算子可能首次 JIT 编译或计算量过大，已自动跳过"}, timeout
+
+
+def _result_tool_chunk(result: dict[str, Any]) -> ToolChunk:
+    """Return machine-readable output; the UI observer parses this payload."""
+    return ToolChunk(content=[TextBlock(text=json.dumps(result, ensure_ascii=False, default=str))])
+
+
+def _expr_key(expr: str) -> str:
+    return re.sub(r"\s+", "", expr or "")
+
+
+def _compact_evaluation(result: dict[str, Any]) -> dict[str, Any]:
+    """Keep reviewer evidence small; dense tables never belong in candidate registry."""
+    profile = result.get("profile") if isinstance(result.get("profile"), dict) else {}
+    return {
+        "split": result.get("split"),
+        "passed": result.get("passed"),
+        "summary": result.get("summary") if isinstance(result.get("summary"), dict) else {},
+        "monthly_corr_robustness": result.get("monthly_corr_robustness"),
+        "label_quantile_buckets": result.get("label_quantile_buckets"),
+        "rule_results": result.get("rule_results"),
+        "profile_id": profile.get("profile_id"),
+    }
+
+
+def _evaluation_evidence(reviewer: Any | None, expr: str) -> dict[str, Any] | None:
+    if reviewer is None:
+        return None
+    evaluations = reviewer.evaluations.get(_expr_key(expr), {})
+    evidence = {
+        split: [_compact_evaluation(row) for row in rows[-2:]]
+        for split, rows in evaluations.items()
+    }
+    return evidence or None
 
 
 def build_factor_eval_toolkit(
@@ -147,42 +375,68 @@ def build_factor_eval_toolkit(
     *,
     max_workers: int = 4,
     reviewer: Any | None = None,
+    interaction_policy: dict[str, Any] | None = None,
 ) -> Toolkit:
-    """构建与 OpenAI 版一致的 eval / submit 工具集。"""
+    """构建与 OpenAI 版一致的 eval / submit / typed-interaction 工具集。"""
+
+    def _gate_interaction(
+        expr: str,
+        interaction: dict[str, Any] | str | None,
+    ) -> tuple[dict[str, Any] | None, str | None, ToolChunk | None]:
+        spec, warning, error = _interaction_contract(expr, interaction, interaction_policy)
+        if error is not None:
+            content = (
+                f"⛔ 交互契约拦截: {error.get('warning') or error.get('error')}\n"
+                f"建议: {error.get('suggestion')}\n"
+                f"(表达式: {expr[:160]}...)"
+            )
+            return spec, warning, ToolChunk(content=[TextBlock(text=content)])
+        return spec, warning, None
 
     async def eval_on_train_set(
         multi_line_expr: str,
         factor_name: str = "expr",
         include_detail_tables: bool = False,
         label_quantile_n: int = 10,
+        interaction: dict[str, Any] | str | None = None,
     ) -> ToolChunk:
         """训练集评估多行因子表达式，返回 summary、monthly_corr_robustness、label_quantile_buckets。"""
         loop = __import__("asyncio").get_running_loop()
-        result, _elapsed = await loop.run_in_executor(
-            _executor(max_workers),
-            _dispatch_sync,
-            tools,
-            "eval_on_train_set",
+        contract, interaction_warning, blocked = _gate_interaction(multi_line_expr, interaction)
+        if blocked is not None:
+            return blocked
+        result, _elapsed = await _dispatch_with_timeout(
+            loop, _executor(max_workers), tools, "eval_on_train_set",
             {
                 "multi_line_expr": multi_line_expr,
                 "factor_name": factor_name,
                 "include_detail_tables": include_detail_tables,
                 "label_quantile_n": label_quantile_n,
+                "interaction": contract,
             },
         )
+        if contract is not None:
+            result["interaction"] = contract
+        if interaction_warning:
+            result.setdefault("preflight_warning", interaction_warning)
         if reviewer is not None:
             reviewer.record_evaluation(
                 "train",
-                {"multi_line_expr": multi_line_expr, "factor_name": factor_name},
+                {
+                    "multi_line_expr": multi_line_expr,
+                    "factor_name": factor_name,
+                    "interaction": contract,
+                },
                 result,
             )
         result.setdefault("factor_name", factor_name)
-        return ToolChunk(content=[TextBlock(text=tools.result_to_content(result))])
+        return _result_tool_chunk(result)
 
     async def evaluate_factor(
         multi_line_expr: str,
         profile_id: str,
         factor_name: str = "expr",
+        interaction: dict[str, Any] | str | None = None,
     ) -> ToolChunk:
         """按已冻结 EvaluationProfile 执行 DSL 评估；profile 控制 split、transform、指标与规则。"""
         # ── 因子逻辑预审 ──
@@ -202,13 +456,29 @@ def build_factor_eval_toolkit(
                 return ToolChunk(content=[TextBlock(text=content)])
             content += "仍可继续评估，但强烈建议先修改表达式。"
             # 不拦截，但把警告附加到结果后面
+
+        contract, interaction_warning, blocked = _gate_interaction(multi_line_expr, interaction)
+        if blocked is not None:
+            return blocked
+
+        # Orthogonality is enforced by ingest similarity; offline re-evaluation
+        # is outside the tool timeout and can hang on heavy JIT operators.
         loop = __import__("asyncio").get_running_loop()
-        args = {"multi_line_expr": multi_line_expr, "profile_id": profile_id, "factor_name": factor_name}
-        result, _elapsed = await loop.run_in_executor(
-            _executor(max_workers), _dispatch_sync, tools, "evaluate_factor", args
+        args = {
+            "multi_line_expr": multi_line_expr,
+            "profile_id": profile_id,
+            "factor_name": factor_name,
+            "interaction": contract,
+        }
+        result, _elapsed = await _dispatch_with_timeout(
+            loop, _executor(max_workers), tools, "evaluate_factor", args
         )
         if preflight is not None and not preflight.get("blocked", False):
             result["preflight_warning"] = preflight["warning"]
+        if contract is not None:
+            result["interaction"] = contract
+        if interaction_warning:
+            result.setdefault("preflight_warning", interaction_warning)
         if reviewer is not None and result.get("ok", True):
             reviewer_result = _profile_result_for_reviewer(result)
             split = result.get("split")
@@ -218,16 +488,23 @@ def build_factor_eval_toolkit(
                 reviewer.record_evaluation("val", args, reviewer_result)
             if split == "val" and "validation" in reviewer.review_on:
                 result["factor_review"] = await reviewer.review(
-                    {"multi_line_expr": multi_line_expr, "factor_name": factor_name, "comment": ""},
+                    {
+                        "multi_line_expr": multi_line_expr,
+                        "factor_name": factor_name,
+                        "comment": "",
+                        "interaction": contract,
+                    },
                     turn=getattr(reviewer, "current_turn", 0),
                 )
+                # validation 阶段 reviewer 只给建议，不阻断 submit
+                # LLM 可根据 review意见改进因子，但 verdict != approve 不阻止提交候选池
                 candidate_id = result.get("candidate", {}).get("candidate_id")
                 if candidate_id:
                     state = tools.service.record_candidate_review(tools.session_id, candidate_id, result["factor_review"])
                     if state is not None:
                         result["candidate_state"] = state["state"]
         result.setdefault("factor_name", factor_name)
-        return ToolChunk(content=[TextBlock(text=tools.result_to_content(result))])
+        return _result_tool_chunk(result)
 
     async def eval_on_val_set(
         multi_line_expr: str,
@@ -235,23 +512,34 @@ def build_factor_eval_toolkit(
         include_detail_tables: bool = False,
         label_quantile_n: int = 10,
         expected_sign: int | None = None,
+        interaction: dict[str, Any] | str | None = None,
+        profile_id: str | None = None,
     ) -> ToolChunk:
         """验证集评估；须传 expected_sign（train IC 符号 1/-1），结果含 sign_check。"""
+        # 模型常从 evaluate_factor 习惯性带入 profile_id：显式接受并校验，避免 TypeError。
+        if profile_id is not None and profile_id != "validation":
+            return ToolChunk(content=[TextBlock(
+                text=(
+                    f"eval_on_val_set 固定使用冻结的 validation profile；"
+                    f"收到 profile_id={profile_id!r}。如需其他 split/规则，"
+                    f"请改用 evaluate_factor(profile_id=...)。"
+                )
+            )])
         loop = __import__("asyncio").get_running_loop()
+        contract, interaction_warning, blocked = _gate_interaction(multi_line_expr, interaction)
+        if blocked is not None:
+            return blocked
         args: dict[str, Any] = {
             "multi_line_expr": multi_line_expr,
             "factor_name": factor_name,
             "include_detail_tables": include_detail_tables,
             "label_quantile_n": label_quantile_n,
+            "interaction": contract,
         }
         if expected_sign is not None:
             args["expected_sign"] = expected_sign
-        result, _elapsed = await loop.run_in_executor(
-            _executor(max_workers),
-            _dispatch_sync,
-            tools,
-            "eval_on_val_set",
-            args,
+        result, _elapsed = await _dispatch_with_timeout(
+            loop, _executor(max_workers), tools, "eval_on_val_set", args,
         )
         if reviewer is not None:
             reviewer.record_evaluation("val", args, result)
@@ -261,11 +549,16 @@ def build_factor_eval_toolkit(
                         "multi_line_expr": multi_line_expr,
                         "factor_name": factor_name,
                         "comment": "",
+                        "interaction": contract,
                     },
                     turn=getattr(reviewer, "current_turn", 0),
                 )
         result.setdefault("factor_name", factor_name)
-        return ToolChunk(content=[TextBlock(text=tools.result_to_content(result))])
+        if contract is not None:
+            result["interaction"] = contract
+        if interaction_warning:
+            result.setdefault("preflight_warning", interaction_warning)
+        return _result_tool_chunk(result)
 
     func_tools: list[FunctionTool] = [
         FunctionTool(evaluate_factor, name="evaluate_factor", is_read_only=True),
@@ -279,40 +572,45 @@ def build_factor_eval_toolkit(
             multi_line_expr: str,
             factor_name: str,
             comment: str,
+            interaction: dict[str, Any] | str | None = None,
+            **_legacy_kwargs: Any,
         ) -> ToolChunk:
-            """【正式交付】先经独立原创性审核，再将保留级候选入库 factorzoo。"""
-            review: dict[str, Any] | None = None
-            if reviewer is not None and "pre_submit" in reviewer.review_on:
-                review = await reviewer.review(
-                    {"multi_line_expr": multi_line_expr, "factor_name": factor_name, "comment": comment},
-                    turn=getattr(reviewer, "current_turn", 0),
-                )
-                if review.get("verdict") != "approve":
-                    result = {
-                        "ok": False,
-                        "stored": False,
-                        "candidate_stored": False,
-                        "error": "factor_review_rejected",
-                        "error_type": "FactorReviewRejected",
-                        "factor_review": review,
-                    }
-                    return ToolChunk(content=[TextBlock(text=tools.result_to_content(result))])
+            """【正式交付】统计数据通过即写候选池；reviewer approve 才写正式 factorzoo。"""
+            # ── 先执行 submit（stage_one 候选池 + stage_two 正式库统计门槛） ──
             loop = __import__("asyncio").get_running_loop()
-            result, _elapsed = await loop.run_in_executor(
-                _executor(max_workers),
-                _dispatch_sync,
-                tools,
-                "submit_factor",
+            contract, interaction_warning, blocked = _gate_interaction(multi_line_expr, interaction)
+            if blocked is not None:
+                return blocked
+            review_hook = None
+            if reviewer is not None:
+                def review_hook(candidate: dict[str, Any]) -> dict[str, Any]:
+                    future = asyncio.run_coroutine_threadsafe(
+                        reviewer.review(candidate, turn=getattr(reviewer, "current_turn", 0)),
+                        loop,
+                    )
+                    return future.result()
+            result, _elapsed = await _dispatch_with_timeout(
+                loop, _executor(max_workers), tools, "submit_factor",
                 {
                     "multi_line_expr": multi_line_expr,
                     "factor_name": factor_name,
                     "comment": comment,
+                    "interaction": contract,
+                    "evaluation_evidence": _evaluation_evidence(reviewer, multi_line_expr),
+                    "review_hook": review_hook,
+                    "orthogonality_hook": lambda: _orthogonality_check(tools, multi_line_expr),
                 },
+                # 提交含全区间复检 + 首次 JIT 编译，300s 会白白失败一次（重试靠热缓存才过）。
+                timeout=900,
             )
-            if review is not None:
-                result["factor_review"] = review
+            if _legacy_kwargs:
+                result["ignored_arguments"] = sorted(_legacy_kwargs)
+            if contract is not None:
+                result["interaction"] = contract
+            if interaction_warning:
+                result.setdefault("preflight_warning", interaction_warning)
             result.setdefault("factor_name", factor_name)
-            return ToolChunk(content=[TextBlock(text=tools.result_to_content(result))])
+            return _result_tool_chunk(result)
 
         func_tools.append(FunctionTool(submit_factor, name="submit_factor"))
 

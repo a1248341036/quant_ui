@@ -82,7 +82,7 @@ nav button.active {
   box-shadow: 0 0 0 1px rgb(79 140 255 / .28) inset;
 }
 nav button .nav-icon { width: 15px; height: 15px; flex: none; opacity: .85; }
-main { padding: 18px 20px 48px; max-width: 1400px; margin: 0 auto; }
+main { padding: 18px 20px 48px; }
 .card {
   background: linear-gradient(180deg, rgb(255 255 255 / .018), transparent 90px), var(--card);
   border: 1px solid var(--line);

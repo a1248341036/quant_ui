@@ -10,9 +10,17 @@
           <label class="field"><span>类型</span><select v-model="paper.form.strategy_type">
             <option value="factor">因子策略</option>
             <option value="event">事件策略</option>
+            <option value="alpha">AlphaAgent 因子</option>
           </select></label>
           <template v-if="paper.form.strategy_type === 'factor'">
             <label class="field"><span>策略</span><strategy-select v-model="paper.form.strategy" :strategies="store.strategies" placeholder="选择策略"></strategy-select></label>
+          </template>
+          <template v-else-if="paper.form.strategy_type === 'alpha'">
+            <label class="field"><span>因子库</span><select v-model="paper.form.alpha_library"><option value="candidate">候选库</option><option value="production">正式库</option></select></label>
+            <label class="field"><span>AlphaAgent 因子</span><select v-model="paper.form.alpha_factor_id">
+              <option value="" disabled>选择因子</option>
+              <option v-for="f in paper.alphaFactors" :key="f.factor_id" :value="f.factor_id">{{f.name}} (IC={{f.metrics?.ic?.toFixed(4) || '—'}})</option>
+            </select></label>
           </template>
           <template v-else>
             <label class="field"><span>代码模块</span><select v-model="paper.form.module" @change="paper.form.event_strategy=''">
@@ -158,7 +166,9 @@ export default {
           module: '', event_strategy: '', universe: '科技TMT',
           freq: 'monthly', capital: 100000, top_n: 3,
           max_weight: 0.5, amount_q: 0.2,
+          alpha_factor_id: '', alpha_library: 'candidate',
         },
+        alphaFactors: [],
         eventModules: [],
         creating: false, running: false, error: '', runError: '', lastRun: null,
         orderSort: { key: 'exec_date', dir: 'desc' },
@@ -249,6 +259,10 @@ export default {
         const r = await api('/api/paper/event-strategies');
         this.paper.eventModules = r.items || [];
       } catch (e) {}
+      try {
+        const lib = this.paper.form.alpha_library || 'candidate';
+        this.paper.alphaFactors = await api('/api/backtest/alpha-factors?library=' + lib);
+      } catch (e) {}
     },
     paperEventStrategies() {
       const m = this.paper.eventModules.find(x => x.module === this.paper.form.module);
@@ -266,6 +280,11 @@ export default {
           universe: f.universe, capital: f.capital, top_n: f.top_n, freq: f.freq,
           risk_config: { max_weight: f.max_weight, amount_q: f.amount_q },
         };
+        if (f.strategy_type === 'alpha') {
+          body.alpha_factor_id = f.alpha_factor_id;
+          body.alpha_library = f.alpha_library;
+          body.strategy_name = 'AlphaAgent: ' + f.alpha_factor_id;
+        }
         const r = await api('/api/paper/accounts', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },

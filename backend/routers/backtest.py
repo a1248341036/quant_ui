@@ -536,6 +536,8 @@ def backtest(req: BacktestRequest):
             "total_return": metrics.get("总收益"),
             "annual": metrics.get("年化收益"),
             "sharpe": metrics.get("夏普"),
+            "excess_annual": metrics.get("超额年化"),
+            "excess_sharpe": metrics.get("超额夏普"),
             "max_drawdown": metrics.get("最大回撤"),
             "last_signal_date": last_signal,
         },
@@ -812,6 +814,59 @@ def signals_post(req: SignalsRequest):
         req.composite_weights, req.composite_directions,
         req.long_short, req.short_n, req.use_financial)
     return err if err is not None else data
+
+
+@router.get("/signals/alpha")
+def alpha_signals(factor_id: str, library: str = "candidate", top_n: int = 10):
+    """AlphaAgent 因子 → 实时信号：评估 DSL 表达式并返回最新截面 TopN 持仓。"""
+    from backend.alphaagent_service import get_factor_detail
+    from alphaagent.data.adapters.cnequity import load_panel_from_cne
+    from alphaagent.dsl import eval_factor
+    from alphaagent.factor.align import align_series_to_panel
+    import datetime as _dt
+
+    detail = get_factor_detail(factor_id, library=library)
+    if "error" in detail:
+        return {"error": detail["error"]}
+    expr = detail.get("expr", "")
+    if not expr:
+        return {"error": f"因子 {factor_id} 无 DSL 表达式"}
+    name = detail.get("name", factor_id)
+
+    end = _dt.date.today().isoformat()
+    start = (_dt.date.today() - _dt.timedelta(days=400)).isoformat()
+    try:
+        cne_panel = load_panel_from_cne(start=start, end=end, universe_mask=False)
+        cne_panel = cne_panel.sort_index()
+    except Exception as exc:
+        return {"error": f"CNE 面板加载失败: {exc}"}
+
+    raw = eval_factor(expr, cne_panel)
+    if not isinstance(raw, pd.Series):
+        return {"error": f"DSL 求值结果类型异常: {type(raw)!r}"}
+
+    # 取最新交易日截面
+    latest_date = cne_panel.index.get_level_values(0).max()
+    snap = raw.xs(latest_date, level=0, drop_level=True) if cne_panel.index.nlevels > 1 else raw
+    snap = snap.dropna().sort_values(ascending=False)
+
+    nm = services.get_name_map()
+    items = []
+    for code_6 in snap.index[:top_n]:
+        code_clean = str(code_6).split(".")[0]
+        items.append({
+            "code": code_clean,
+            "name": nm.get(code_clean, ""),
+            "score": round(float(snap[code_6]), 6),
+        })
+    return {
+        "signal_date": str(latest_date.date()) if hasattr(latest_date, 'date') else str(latest_date),
+        "factor": name,
+        "factor_id": factor_id,
+        "library": library,
+        "items": items,
+        "total_scored": int(len(snap)),
+    }
 
 
 @router.post("/sweep")

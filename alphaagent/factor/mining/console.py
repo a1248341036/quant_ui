@@ -113,6 +113,13 @@ class ConsolePrinter:
         self.show_thinking = show_thinking
         self._color = _use_color(self.stream)
 
+    def _print(self, *args: Any, **kwargs: Any) -> None:
+        # UI runs attach a pipe; losing diagnostics must not abort research.
+        try:
+            print(*args, file=self.stream, flush=True, **kwargs)
+        except (OSError, ValueError):
+            pass
+
     def _ansi(self, code: str, text: str) -> str:
         return f"\033[{code}m{text}\033[0m" if self._color else text
 
@@ -120,16 +127,16 @@ class ConsolePrinter:
         line = self._ansi(code, f"[{label}]")
         if detail:
             line = f"{line} {detail}"
-        print(line, file=self.stream, flush=True)
+        self._print(line)
 
     def _body(self, text: str | None) -> None:
         if not text:
             return
         for raw in str(text).strip().splitlines():
-            print(f"    {raw}", file=self.stream, flush=True)
+            self._print(f"    {raw}")
 
     def _blank(self) -> None:
-        print(file=self.stream, flush=True)
+        self._print()
 
     def session_start(self, model: str, n_operators: int) -> None:
         self._tag("1;32", "挖掘启动", f"model={model}  算子={n_operators}")
@@ -159,7 +166,14 @@ class ConsolePrinter:
                 args = {}
         if not isinstance(args, dict):
             args = {}
-        split = "train" if name == "eval_on_train_set" else ("val" if name == "eval_on_val_set" else "submit")
+        if name == "eval_on_train_set":
+            split = "train"
+        elif name == "eval_on_val_set":
+            split = "val"
+        elif name == "evaluate_factor":
+            split = str(args.get("profile_id") or "evaluate")
+        else:
+            split = "submit"
         factor_name = args.get("factor_name") or "expr"
         secs = f"{elapsed:.1f}s" if elapsed is not None else "—"
         if name == "submit_factor":
@@ -203,7 +217,7 @@ class ConsolePrinter:
             self._tag("1;31", "指标", self._ansi("1;31", f"✗ {result.get('error_type')}: {result.get('error')}"))
             self._blank()
             return
-        summ = result.get("summary") or {}
+        summ = result.get("summary") or result.get("metrics") or {}
         rob = result.get("monthly_corr_robustness") or {}
         parts = _metrics_parts(summ, rob, result.get("sign_check"))
         self._tag("1;33", "指标", "  ".join(parts))

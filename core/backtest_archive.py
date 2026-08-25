@@ -125,6 +125,38 @@ def list_runs(kind: str | None = None, limit: int = 50) -> pd.DataFrame:
     return df
 
 
+def backfill_excess_metrics() -> int:
+    """Derive missing active metrics from archived strategy and benchmark NAVs."""
+    if not pg.configured():
+        return 0
+    from .metrics import compute_excess_metrics
+
+    df = pg.query_df("SELECT run_id, metrics, nav, bench, summary FROM backtest_runs")
+    updated = 0
+    with pg.get_conn() as conn, conn.cursor() as cur:
+        for row in df.itertuples(index=False):
+            try:
+                metrics = json.loads(row.metrics) if isinstance(row.metrics, str) else (row.metrics or {})
+                if "超额年化" in metrics and "超额夏普" in metrics:
+                    continue
+                nav = json.loads(row.nav) if isinstance(row.nav, str) else row.nav
+                bench = json.loads(row.bench) if isinstance(row.bench, str) else row.bench
+                if not nav or not bench:
+                    continue
+                nav_s = pd.Series({pd.Timestamp(p["date"]): p["value"] for p in nav})
+                bench_s = pd.Series({pd.Timestamp(p["date"]): p["value"] for p in bench})
+                metrics.update(compute_excess_metrics(nav_s, bench_s))
+                summary = json.loads(row.summary) if isinstance(row.summary, str) else (row.summary or {})
+                summary["excess_annual"] = metrics["超额年化"]
+                summary["excess_sharpe"] = metrics["超额夏普"]
+                cur.execute("UPDATE backtest_runs SET metrics = %s, summary = %s WHERE run_id = %s",
+                            (_dumps(metrics), _dumps(summary), int(row.run_id)))
+                updated += 1
+            except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+                continue
+    return updated
+
+
 def get_run(run_id: int) -> dict | None:
     """取一条完整记录。"""
     if not pg.configured():

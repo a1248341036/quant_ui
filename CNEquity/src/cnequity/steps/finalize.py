@@ -221,6 +221,32 @@ def _reconcile_watermarks(config: Config) -> list[dict]:
     return findings
 
 
+def _sync_external_to_curated(config: Config, dataset: str, trade_date: date) -> int:
+    """Mirror one day's external-archive rows into the curated hive.
+
+    Direct-path readers (quality checks, derive inputs, bar universe) scan
+    ``curated/<dataset>``; without this mirror they silently miss every
+    session stored only in the external archive. Reads back through the
+    standard reader (which normalizes schema and resolves the correct source)
+    then writes a single-day curated partition.
+    """
+    from cnequity.query.reader import load
+
+    try:
+        df = load(dataset, start=trade_date, end=trade_date, config=config)
+    except Exception:
+        return 0
+    if df.is_empty():
+        return 0
+
+    pcol = PARTITION_COLS.get(dataset, "trade_date")
+    part_dir = config.curated_root / dataset / f"{pcol}={trade_date.isoformat()}"
+    part_dir.mkdir(parents=True, exist_ok=True)
+    out = part_dir / "part-sync.parquet"
+    df.write_parquet(str(out), compression="zstd")
+    return df.height
+
+
 @register_step("compact", group="finalize", parallelizable=False)
 def step_compact(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
     from cnequity.orchestrator.run_lock import run_lock
@@ -262,7 +288,10 @@ def _compact_locked(config: Config, trade_date: date, run_id: str, context: dict
         pcol = PARTITION_COLS[ds]
         spec = DATASETS.get(ds)
         if spec is not None and spec.compactable and spec.layer == "external":
-            # External compactable: merge staging into the adapter's own files.
+            # External compactable: merge staging into the adapter's own files,
+            # then mirror the freshly merged date into curated so all
+            # direct-path readers (quality checks, derive steps) see current
+            # data without needing to know where storage physically lives.
             from cnequity.external.registry import external_adapter
 
             adapter = external_adapter(config, ds)
@@ -278,6 +307,7 @@ def _compact_locked(config: Config, trade_date: date, run_id: str, context: dict
             )
             if rows:
                 compacted.add(ds)
+                _sync_external_to_curated(config, ds, trade_date)
             total += rows
         elif ds == "instruments":
             rows, inst_findings = compact_instruments(

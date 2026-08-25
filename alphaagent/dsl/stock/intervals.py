@@ -56,8 +56,9 @@ def bar_interval_to_timedelta(value: str | int) -> pd.Timedelta:
     """辅周期 bar 全长，用于无前视广播的「完成时刻 = 桶起点 + 全长」。"""
     tag = normalize_bar_interval(value)
     if tag == "1d":
-        return pd.Timedelta(days=1)
+        # 显式 unit，避免 pandas/numpy 的 generic-unit DeprecationWarning 刷屏
+        return pd.to_timedelta(1, unit="D")
     if tag == "1w":
         # 日历周：W-FRI 桶起点 + 7 天 = 该周 bar 完成
-        return pd.Timedelta(days=7)
+        return pd.to_timedelta(7, unit="D")
     raise ValueError(f"未知周期: {tag!r}")

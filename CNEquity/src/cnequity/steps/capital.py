@@ -497,12 +497,30 @@ def step_margin_trading(config: Config, trade_date: date, run_id: str, context: 
     if getattr(config, "_backfill", False):
         return _backfill_margin_trading(config, trade_date, run_id)
 
-    def _fetch(day: date, *, config: Config) -> pl.DataFrame:
-        return _validate_margin_snapshot(fetch_margin_trading(day, config=config), day)
+    # Exchanges publish each session's margin balances the NEXT morning, so an
+    # evening run can only ever see the previous trading session. Clamp the
+    # requested day instead of issuing a request that provably returns nothing.
+    prior = _latest_published_margin_day(config, trade_date)
 
-    return _run_capital_step(
-        config, trade_date, run_id, "margin_trading", _fetch, allow_empty=False
+    def _fetch(day: date, *, config: Config) -> pl.DataFrame:
+        effective = min(day, prior)
+        return _validate_margin_snapshot(
+            fetch_margin_trading(effective, config=config), effective
+        )
+
+    return _run_capital_step(config, trade_date, run_id, "margin_trading", _fetch)
+
+
+def _latest_published_margin_day(config: Config, trade_date: date) -> date:
+    """Latest trading session whose margin report has been published (T+1)."""
+    from datetime import timedelta
+
+    days = list_trading_dates(
+        config,
+        start=trade_date - timedelta(days=20),
+        end=trade_date - timedelta(days=1),
     )
+    return days[-1] if days else trade_date
 
 
 def _backfill_daily_report(

@@ -35,7 +35,10 @@ DEFAULT_OVERLAP_VERIFY_DAYS = 20
 
 def _resolve_panel_path(path: Path) -> Path:
     from alphaagent.data.adapters.cnequity import CNE_SOURCE
-    if str(path) == CNE_SOURCE:
+    # Path('cne://') 会被不同平台归一化成 'cne:'/'cne:/' 等变体；
+    # 统一识别逻辑源并返回规范字符串路径，避免 manifest 比较误报不一致。
+    s = str(path).replace("\\", "/").rstrip("/")
+    if s.rstrip("/") == "cne:".rstrip("/") or f"{s}/" == CNE_SOURCE:
         return Path(CNE_SOURCE)
     return Path(path).expanduser().resolve()
 

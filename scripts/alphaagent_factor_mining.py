@@ -37,7 +37,6 @@ from alphaagent.core.paths import FACTORZOO_DIR, PANEL_PATH  # noqa: E402
 from alphaagent.factor.mining import MiningConfig  # noqa: E402
 from alphaagent.factor.mining.agentscope_run import run_factor_mining_agentscope  # noqa: E402
 from alphaagent.factor.mining.context import StockEvalContext  # noqa: E402
-from alphaagent.factor.mining.research_memory import ResearchMemoryStore  # noqa: E402
 from alphaagent.factor.mining.research_spec import load_research_spec, research_policy_prompt  # noqa: E402
 from alphaagent.factor.mining.seed_factors import build_user_message_with_seed_factors  # noqa: E402
 from alphaagent.factor.types import DEFAULT_LABEL_COL  # noqa: E402
@@ -55,7 +54,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--train-end", default="2020-12-31")
     p.add_argument("--val-start", default="2021-01-01")
     p.add_argument("--val-end", default="2023-12-31")
-    p.add_argument("--label-col", default=DEFAULT_LABEL_COL)
+    p.add_argument("--label-col", default=None, help="评估 label 列；缺省时取 ResearchSpec.recommended_label_col")
     p.add_argument(
         "--no-fundamentals",
         action="store_true",
@@ -86,7 +85,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument(
         "--research-memory-file",
         type=Path,
-        default=ROOT / "artifacts" / "alphaagent" / "research_memory.json",
+        default=ROOT / "artifacts" / "alphaagent" / "research_memory.db",
         help="跨会话因子研究记忆；传空路径可在调用方禁用",
     )
     p.add_argument(
@@ -124,7 +123,6 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--no-operator-catalog", action="store_true", help="不在 system prompt 中注入算子清单")
     p.add_argument("--quiet", action="store_true", help="不在终端流式打印（仍写 JSONL 日志）")
     p.add_argument("--factorlib", type=Path, default=None, help=f"factorzoo 根目录（默认 {FACTORZOO_DIR}）")
-    p.add_argument("--no-submit", action="store_true", help="禁用 submit_factor 交付工具")
     p.add_argument("--no-reviewer", action="store_true", help="禁用提交前 FactorReviewer 子 Agent（仅调试）")
     p.add_argument("--max-cs-corr", type=float, default=0.8, help="submit 截面去重 |corr| 上限")
     p.add_argument("--similar-top-k", type=int, default=3, help="查重失败时返回的最相似因子数")
@@ -166,17 +164,8 @@ def main() -> int:
     except ValueError as exc:
         print(f"错误：{exc}", file=sys.stderr)
         return 2
+    label_col = args.label_col or str(research_spec.get("recommended_label_col") or "") or DEFAULT_LABEL_COL
     memory_path = _resolve(str(args.research_memory_file)) if args.research_memory_file else None
-    if memory_path is not None:
-        memory_context = ResearchMemoryStore(memory_path).context_for(
-            user_message,
-            limit=research_spec["memory_policy"]["retrieve_limit"],
-            include_rejected=research_spec["memory_policy"]["include_rejected_paths"],
-            prefer_orthogonal=research_spec["memory_policy"]["prefer_orthogonal_to_approved"],
-            include_expression=research_spec["memory_policy"].get("include_expression", False),
-        )
-        if memory_context:
-            user_message = f"{memory_context}\n\n# 当前研究任务\n{user_message}"
     if args.resume_context_file and args.resume_context_file.exists():
         history = args.resume_context_file.read_text(encoding="utf-8").strip()
         if history:
@@ -205,7 +194,7 @@ def main() -> int:
             train_end=args.train_end,
             val_start=args.val_start,
             val_end=args.val_end,
-            label_col=args.label_col,
+            label_col=label_col,
             include_fundamentals=not args.no_fundamentals,
         ),
         model=model,
@@ -217,7 +206,7 @@ def main() -> int:
         max_parallel_eval=args.max_parallel_eval,
         min_tool_call_rounds_before_allow_stop=args.min_tool_call_rounds,
         factorlib_path=_resolve(str(args.factorlib)) if args.factorlib else None,
-        enable_submit=not args.no_submit and research_spec["delivery_policy"]["allow_submit"],
+        enable_submit=True,
         enable_reviewer=not args.no_reviewer and research_spec["review_policy"]["enabled"],
         research_spec=research_spec,
         max_cs_corr=research_spec["delivery_policy"]["candidate"]["max_abs_corr"],

@@ -2004,6 +2004,148 @@ def CS_NEUTRALIZE(x: pd.DataFrame, group: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(result, index=x.index, columns=x.columns[:1])
 
 
+def CS_GROUP_RANK(x: pd.DataFrame, group: pd.DataFrame) -> pd.DataFrame:
+    """组内截面百分位秩：每个 datetime 内先按 ``group`` 分组，再对 ``x`` 做 rank(pct=True)。
+
+    用于双重排序交互，例如“同一流动性组内的反转强度”。NaN 不参与排名；
+    组内只有一个有效样本时输出 0.5。
+    """
+    _validate_cs_panel(x, name="CS_GROUP_RANK")
+    _validate_cs_panel(group, name="CS_GROUP_RANK")
+    if not x.index.equals(group.index):
+        raise ValueError("CS_GROUP_RANK: x 与 group 须同索引")
+
+    xs = _first_series(x).to_numpy(dtype=float, copy=False)
+    gs = _first_series(group).to_numpy(dtype=float, copy=False)
+    result = np.full(len(x), np.nan, dtype=np.float32)
+    for _, sub in x.groupby(level="datetime", sort=False):
+        pos = x.index.get_indexer(sub.index)
+        x_day = xs[pos]
+        g_day = gs[pos]
+        for g_val in np.unique(g_day[np.isfinite(g_day)]):
+            mask = np.isfinite(g_day) & (g_day == g_val) & np.isfinite(x_day)
+            if not mask.any():
+                continue
+            ranks = pd.Series(x_day[mask]).rank(pct=True, method="average")
+            result[pos[mask]] = ranks.to_numpy(dtype=np.float32)
+    return pd.DataFrame(result, index=x.index, columns=x.columns[:1])
+
+
+def CS_RESIDUALIZE(
+    x: pd.DataFrame,
+    control: pd.DataFrame,
+    control2: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """截面线性残差化：每个 datetime 内用控制变量回归 ``x``，输出残差。
+
+    这是剥离市值/流动性/波动率等共同暴露的首选方式；返回未标准化的残差，
+    后续通常接 ``RANK`` 或 ``CS_ZSCORE``。有效样本不足或控制变量共线时为 NaN。
+    """
+    controls = [control] if control2 is None else [control, control2]
+    _validate_cs_panel(x, name="CS_RESIDUALIZE")
+    names = ["CS_RESIDUALIZE.control", "CS_RESIDUALIZE.control2"]
+    for item, name in zip(controls, names):
+        _validate_cs_panel(item, name=name)
+        if not item.index.equals(x.index):
+            raise ValueError("CS_RESIDUALIZE: 控制变量须与 x 同索引")
+
+    ys = _first_series(x).to_numpy(dtype=float, copy=False)
+    ctrl = np.column_stack([
+        _first_series(item).to_numpy(dtype=float, copy=False) for item in controls
+    ])
+    result = np.full(len(x), np.nan, dtype=np.float32)
+    for _, sub in x.groupby(level="datetime", sort=False):
+        pos = x.index.get_indexer(sub.index)
+        y = ys[pos]
+        z = ctrl[pos]
+        mask = np.isfinite(y) & np.all(np.isfinite(z), axis=1)
+        n = int(mask.sum())
+        min_obs = z.shape[1] + 2
+        if n < min_obs:
+            continue
+        design = np.column_stack([np.ones(n), z[mask]])
+        if np.linalg.matrix_rank(design) < design.shape[1]:
+            continue
+        beta, _, _, _ = np.linalg.lstsq(design, y[mask], rcond=None)
+        residual = y[mask] - design @ beta
+        result[pos[mask]] = residual.astype(np.float32)
+    return pd.DataFrame(result, index=x.index, columns=x.columns[:1])
+
+
+def GATED_SIGNAL(
+    signal: pd.DataFrame,
+    state: pd.DataFrame,
+    threshold: float = 0.8,
+    high_state: bool = True,
+    neutral: float = 0.0,
+) -> pd.DataFrame:
+    """状态门控信号：仅在 state 截面秩达到阈值时启用 signal，否则取 neutral。
+
+    比 ``signal * state`` 更透明：state 是开关而不是连续放大器。signal 建议先
+    ``CS_ZSCORE`` 或 ``RANK`` 标准化；state 的截面秩高/低由 ``high_state`` 控制。
+    """
+    _validate_cs_panel(signal, name="GATED_SIGNAL.signal")
+    _validate_cs_panel(state, name="GATED_SIGNAL.state")
+    if not signal.index.equals(state.index):
+        raise ValueError("GATED_SIGNAL: signal 与 state 须同索引")
+    q = float(threshold)
+    if not (0.5 <= q <= 1.0):
+        raise ValueError("GATED_SIGNAL threshold 须在 [0.5, 1.0]")
+    want_high = bool(high_state)
+    ranks = RANK(state).iloc[:, 0].to_numpy(dtype=float, copy=False)
+    active = np.isfinite(ranks) & ((ranks >= q) if want_high else (ranks <= 1.0 - q))
+    out = np.full(len(signal), float(neutral), dtype=np.float32)
+    sig = _first_series(signal).to_numpy(dtype=float, copy=False)
+    out[active] = sig[active].astype(np.float32)
+    out[~np.isfinite(sig) & active] = np.nan
+    return pd.DataFrame(out, index=signal.index, columns=signal.columns[:1])
+
+
+def DIVERGENCE_RANK(a: pd.DataFrame, b: pd.DataFrame) -> pd.DataFrame:
+    """截面背离：``RANK(a)-RANK(b)``，用于两个应互相确认的信号之间的差。"""
+    _validate_cs_panel(a, name="DIVERGENCE_RANK.a")
+    _validate_cs_panel(b, name="DIVERGENCE_RANK.b")
+    if not a.index.equals(b.index):
+        raise ValueError("DIVERGENCE_RANK: a 与 b 须同索引")
+    ra = RANK(a).iloc[:, 0].to_numpy(dtype=float, copy=False)
+    rb = RANK(b).iloc[:, 0].to_numpy(dtype=float, copy=False)
+    out = (ra - rb).astype(np.float32)
+    out[~(np.isfinite(ra) & np.isfinite(rb))] = np.nan
+    return pd.DataFrame(out, index=a.index, columns=a.columns[:1])
+
+
+def PIECEWISE_STATE(
+    signal: pd.DataFrame,
+    state: pd.DataFrame,
+    low_q: float = 0.2,
+    high_q: float = 0.8,
+    low_sign: float = 1.0,
+    high_sign: float = -1.0,
+    mid_value: float = 0.0,
+) -> pd.DataFrame:
+    """分段状态信号：state 低区/中区/高区分别使用不同方向或中性值。
+
+    用于显式表达“A 在不同状态下方向相反”，比乘法更容易解释和审计。
+    """
+    _validate_cs_panel(signal, name="PIECEWISE_STATE.signal")
+    _validate_cs_panel(state, name="PIECEWISE_STATE.state")
+    if not signal.index.equals(state.index):
+        raise ValueError("PIECEWISE_STATE: signal 与 state 须同索引")
+    lo_q, hi_q = float(low_q), float(high_q)
+    if not (0.0 <= lo_q < hi_q <= 1.0):
+        raise ValueError("PIECEWISE_STATE 要求 0 <= low_q < high_q <= 1")
+    ranks = RANK(state).iloc[:, 0].to_numpy(dtype=float, copy=False)
+    sig = _first_series(signal).to_numpy(dtype=float, copy=False)
+    out = np.full(len(signal), float(mid_value), dtype=np.float32)
+    low_mask = np.isfinite(ranks) & (ranks <= lo_q)
+    high_mask = np.isfinite(ranks) & (ranks >= hi_q)
+    out[low_mask] = (float(low_sign) * sig[low_mask]).astype(np.float32)
+    out[high_mask] = (float(high_sign) * sig[high_mask]).astype(np.float32)
+    invalid_signal = ~np.isfinite(sig)
+    out[invalid_signal & (low_mask | high_mask)] = np.nan
+    return pd.DataFrame(out, index=signal.index, columns=signal.columns[:1])
+
+
 # -----------------------------------------------------------------------------
 # 二元与逻辑
 # -----------------------------------------------------------------------------

@@ -44,7 +44,9 @@ def _ensure_db_schema() -> None:
     from core import sqldb as duck_store
     duck_store.create_schema()
     from backend.alphaagent_service import bootstrap_research_memory
+    from core.backtest_archive import backfill_excess_metrics
     bootstrap_research_memory()
+    backfill_excess_metrics()
 
 
 @app.get("/api/health")

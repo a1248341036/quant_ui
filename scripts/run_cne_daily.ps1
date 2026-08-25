@@ -74,7 +74,7 @@ $env:PYTHONIOENCODING = "utf-8"
 
 # ── 配置 ──────────────────────────────────────────────────────────────
 # wave 依赖顺序（core 先跑提供 instruments，后续 wave 依赖它）
-$WaveList      = @("core", "fundamentals", "events", "capital", "macro_risk", "research", "finalize")
+$WaveList      = @("core", "fundamentals", "events", "capital", "macro_risk", "signals", "research", "finalize")
 $GateWaves     = @("core", "finalize")
 $SoftFailOk    = $true   # gate OK 时 soft wave 失败只告警
 $StaleRetry    = -not $NoStaleRetry

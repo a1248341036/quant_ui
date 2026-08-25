@@ -45,8 +45,6 @@ def main() -> int:
         args += ["--panel", str(DEFAULT_PANEL)]
     if "--factorlib" not in args:
         args += ["--factorlib", str(DEFAULT_FACTORLIB)]
-    if "--no-fundamentals" not in args:
-        args += ["--no-fundamentals"]
     sys.argv = [str(UPSTREAM_ENTRY), *args]
     runpy.run_path(str(UPSTREAM_ENTRY), run_name="__main__")
     return 0

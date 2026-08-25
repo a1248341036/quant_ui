@@ -18,6 +18,7 @@ from alphaagent.factor.metrics import (
     cross_sectional_winsorize_values,
     evaluate_on_panel,
     factor_skew_kurtosis,
+    topn_portfolio_summary,
 )
 from alphaagent.factor.types import DEFAULT_INGEST_POLICY, IngestPolicy, IngestResult, MaterializeResult
 from alphaagent.factor.zoo import FactorStatus, FactorZoo, SimilarityMatrix
@@ -144,11 +145,18 @@ def compute_ingest_metrics(
         else float("nan")
     )
     factor_series = pd.Series(eval_values, index=eval_panel.index, dtype=np.float32)
+    direction = 1 if float(metrics["ic"]) >= 0.0 else -1
     metrics["long_group_annual_excess_return"] = annualized_long_group_excess_return(
         factor_series,
         eval_panel[policy.label_col],
-        direction=1 if float(metrics["ic"]) >= 0.0 else -1,
+        direction=direction,
     )
+    topn = topn_portfolio_summary(
+        factor_series * direction,
+        eval_panel[policy.label_col],
+    )
+    for key in ("annualized_return", "annualized_excess_return", "sharpe", "max_drawdown", "annual_turnover", "n_days"):
+        metrics[f"topn_{key}"] = topn.get(key)
     skew, kurt = factor_skew_kurtosis(eval_values)
     metrics["skew"] = skew
     metrics["kurt"] = kurt
@@ -201,6 +209,7 @@ def ingest_factor(
     expr: str,
     panel: pd.DataFrame,
     policy: IngestPolicy | None = None,
+    stored_values: np.ndarray | None = None,
     label_col: str = DEFAULT_INGEST_POLICY.label_col,
     clip_pct: tuple[float, float] | None = None,
     mask_before_start: str | None = None,
@@ -227,7 +236,13 @@ def ingest_factor(
             clip_pct=clip_pct,
         )
 
-    stored_values, mat_expr, aux_tags, clip_extra = prepare_stored_values(expr, panel, zoo, pol)
+    if stored_values is None:
+        stored_values, mat_expr, aux_tags, clip_extra = prepare_stored_values(expr, panel, zoo, pol)
+    else:
+        stored_values = np.asarray(stored_values, dtype=np.float32)
+        mat_expr = expr
+        aux_tags = collect_aux_intervals_from_expr(expr)
+        clip_extra = {"clip_lower_pct": None, "clip_upper_pct": None}
     metrics = compute_ingest_metrics(stored_values, panel, pol)
     extra: dict[str, Any] = {
         **clip_extra,
@@ -353,7 +368,7 @@ def load_panel_for_zoo(
     end: str | None = None,
 ) -> pd.DataFrame:
     """加载与因子库对齐的 panel（可选日期切片）。"""
-    from alphaagent.data.adapters.cnequity import CNE_SOURCE, is_cne_source
+    from alphaagent.data.adapters.cnequity import CNE_SOURCE, is_cne_source, load_panel_from_cne
     if is_cne_source(panel_path):
         panel = load_panel_from_cne(start=start, end=end, universe_mask=False)
     else:

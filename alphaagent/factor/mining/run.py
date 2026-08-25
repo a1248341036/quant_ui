@@ -53,26 +53,24 @@ def run_factor_mining(
     )
 
     submit_service: FactorSubmitService | None = None
-    if config.enable_submit:
-        lib_path = (config.factorlib_path or default_factorlib_path(root)).resolve()
-        registry_path = config.registry_path or lib_path / "mining_delivered_registry.json"
-        expr_dir = config.expr_dir or lib_path / "expressions"
-        submit_service = FactorSubmitService(
-            service,
-            factorlib_path=lib_path,
-            registry_path=registry_path if registry_path.is_absolute() else root / registry_path,
-            expr_dir=expr_dir if expr_dir.is_absolute() else root / expr_dir,
-            repo_root=root,
-            max_cs_corr=config.max_cs_corr,
-            similar_top_k=config.similar_top_k,
-            overwrite=config.ingest_overwrite,
-            auto_realign_panel=config.auto_realign_panel,
-        )
+    lib_path = (config.factorlib_path or default_factorlib_path(root)).resolve()
+    registry_path = config.registry_path or lib_path / "mining_delivered_registry.json"
+    expr_dir = config.expr_dir or lib_path / "expressions"
+    submit_service = FactorSubmitService(
+        service,
+        factorlib_path=lib_path,
+        registry_path=registry_path if registry_path.is_absolute() else root / registry_path,
+        expr_dir=expr_dir if expr_dir.is_absolute() else root / expr_dir,
+        repo_root=root,
+        max_cs_corr=config.max_cs_corr,
+        similar_top_k=config.similar_top_k,
+        overwrite=config.ingest_overwrite,
+        auto_realign_panel=config.auto_realign_panel,
+    )
 
     tools = FactorEvalTools(service, session_resp.session_id, submit_service=submit_service)
     system_prompt = build_system_prompt(
         include_operator_catalog=include_operator_catalog,
-        enable_submit=config.enable_submit,
         extra_instructions=extra_instructions,
         label_col=ctx.label_col,
         include_fundamentals=ctx.include_fundamentals,

@@ -50,6 +50,7 @@ def upsert_mining_registry(
     ingest_status: str = "stored",
     source: str = "submit",
     merge: bool = True,
+    interaction: dict[str, Any] | None = None,
 ) -> tuple[str, str]:
     """写入或合并一条 registry 记录；返回 (registry_path, dsl_path)。"""
     registry_path = Path(registry_path).expanduser().resolve()
@@ -80,6 +81,8 @@ def upsert_mining_registry(
         entry["similarity"] = prev["similarity"]
     if source == "submit" and "source_runs" not in prev:
         entry["source"] = "submit"
+    if interaction is not None:
+        entry["interaction"] = interaction
     for key in ("source_runs", "mining_metrics"):
         if key in prev:
             entry[key] = prev[key]
@@ -91,6 +94,99 @@ def upsert_mining_registry(
     registry[factor_id] = entry
     save_mining_registry(registry_path, registry)
     return str(registry_path), str(dsl_path)
+
+
+def write_candidate_registry(
+    registry_path: Path,
+    *,
+    factor_id: str,
+    name: str,
+    expr: str,
+    expr_dir: Path,
+    repo_root: Path,
+    policy: IngestPolicy,
+    metrics: dict[str, Any] | None,
+    similarity: dict[str, Any] | None,
+    comment: str = "",
+    source: str = "submit_stage_one",
+    evaluation_evidence: dict[str, Any] | None = None,
+    data_fingerprint: dict[str, Any] | None = None,
+    interaction: dict[str, Any] | None = None,
+) -> tuple[str, str]:
+    """Registry-only candidate storage: evidence and DSL, never dense values."""
+    registry_path = Path(registry_path).expanduser().resolve()
+    expr_dir = Path(expr_dir).expanduser().resolve()
+    repo_root = Path(repo_root).resolve()
+    expr_dir.mkdir(parents=True, exist_ok=True)
+
+    dsl_path = expr_dir / f"{factor_id}.dsl"
+    dsl_path.write_text(expr.strip() + "\n", encoding="utf-8")
+
+    registry = load_mining_registry(registry_path)
+    prev = registry.get(factor_id, {})
+    entry: dict[str, Any] = {
+        "schema_version": 2,
+        "name": name,
+        "comment": comment or prev.get("comment") or name,
+        "expr": expr.strip(),
+        "expression_file": dsl_path.relative_to(repo_root).as_posix(),
+        "ingest_config": policy.ingest_config_dict(),
+        "ingested_at": datetime.now(timezone.utc).isoformat(),
+        "metrics": metrics or {},
+        "similarity": _trim_similarity(similarity),
+        "evaluation_evidence": evaluation_evidence or prev.get("evaluation_evidence"),
+        "interaction": interaction or prev.get("interaction"),
+        "data_fingerprint": data_fingerprint or prev.get("data_fingerprint"),
+        "review_status": str(prev.get("review_status") or "pending_review"),
+        "promotion_status": "pending",
+        "ingest_status": "candidate",
+        "source": source,
+    }
+    for key in ("source_runs", "mining_metrics", "review", "reviewed_at"):
+        if key in prev:
+            entry[key] = prev[key]
+    registry[factor_id] = entry
+    save_mining_registry(registry_path, registry)
+    return str(registry_path), str(dsl_path)
+
+
+def set_candidate_review(
+    registry_path: Path,
+    *,
+    factor_id: str,
+    review: dict[str, Any],
+    promotion_status: str,
+) -> dict[str, Any] | None:
+    """Attach reviewer output and update candidate lifecycle state."""
+    registry = load_mining_registry(registry_path)
+    entry = registry.get(factor_id)
+    if not isinstance(entry, dict):
+        return None
+    verdict = str(review.get("verdict") or "pending").lower()
+    entry["review"] = review
+    entry["review_status"] = verdict if verdict in {"approve", "revise", "reject"} else "pending_review"
+    entry["reviewed_at"] = datetime.now(timezone.utc).isoformat()
+    entry["promotion_status"] = promotion_status
+    save_mining_registry(registry_path, registry)
+    return entry
+
+
+def set_candidate_promotion(
+    registry_path: Path,
+    *,
+    factor_id: str,
+    promotion_status: str,
+) -> dict[str, Any] | None:
+    """Update lifecycle state when no reviewer is attached to the submit call."""
+    registry = load_mining_registry(registry_path)
+    entry = registry.get(factor_id)
+    if not isinstance(entry, dict):
+        return None
+    entry["promotion_status"] = promotion_status
+    if promotion_status == "promoted":
+        entry["promoted_at"] = datetime.now(timezone.utc).isoformat()
+    save_mining_registry(registry_path, registry)
+    return entry
 
 
 def sync_registry_from_zoo(

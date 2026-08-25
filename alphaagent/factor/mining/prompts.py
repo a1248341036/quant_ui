@@ -1,12 +1,20 @@
-"""股票因子挖掘 system prompt。"""
+"""股票因子挖掘 system prompt（模块化装配）。
+
+板块拆分与启用逻辑见 ``build_system_prompt`` 与 ``prompt_modules``；
+新增板块时优先注册为独立 PromptModule，而非继续膨胀核心模板。
+"""
 
 from __future__ import annotations
 
 import json
+import logging
+from typing import Any
 
 from alphaagent.dsl.catalog import operator_catalog_markdown
 from alphaagent.factor.mining.mls_thresholds import mls_fmb_thresholds_markdown
 from alphaagent.factor.types import DEFAULT_LABEL_COL
+
+logger = logging.getLogger(__name__)
 
 _LABEL_DESCRIPTIONS: dict[str, str] = {
     "label_1d_open_to_open": "T+1 开盘 → T+2 开盘（短周期 alpha，默认）",
@@ -50,6 +58,65 @@ FACTOR_MINING_INTERFACE_PROMPT = """你是一名量化研究自主智能体，�
 3. **跨族探索**：当连续 2 个因子 IC < 0.01 时，允许切换到完全不同的信号族作为新父本起点。但新父本仍须有经济直觉。
 4. **变异日志**：在 comment 中简述变异类型和父本来源（如"参数变异自 short_reversal_10_ema_val，窗口 10→20"）。
 
+## 第二层补充：多因子交互必须先选机制，再写公式
+
+**⚠️ 硬性规则：只要表达式中出现以下任何算子名（包括作为中间变量的一部分），
+就必须在调用 `evaluate_factor` / `submit_factor` 时同时传入 `interaction` 参数。**
+
+触发拦截的算子：`MULTIPLY`, `TS_CORR`, `TS_COV`, `TS_RANKCORR`, `MUTUAL_INFO_LAG`,
+`GATED_SIGNAL`, `CS_GROUP_RANK`, `CS_RESIDUALIZE`, `DIVERGENCE_RANK`, `PIECEWISE_STATE`, `IF_THEN_ELSE`。
+
+**未传 `interaction` 参数 → 工具直接拦截，不会执行表达式，返回错误信息。**
+
+interaction 契约格式：
+
+```json
+{
+  "interaction_type": "gated_signal",
+  "base_signal": "短期反转压力",
+  "condition_signal": "流动性/关注度状态",
+  "economic_mechanism": "过度反应在套利资金更容易进入的股票中被更快修正",
+  "expected_subgroup_pattern": {"high_state": "更强", "low_state": "更弱或无信号"},
+  "ablation_required": true
+}
+```
+
+**完整调用示例：**
+
+```
+evaluate_factor(
+  multi_line_expr="vp = TS_RANKCORR($volume, $adj_close, 20)\nRANK(vp)",
+  factor_name="vol_price_rankcorr",
+  interaction={
+    "interaction_type": "rolling_relation",
+    "base_signal": "$adj_close",
+    "condition_signal": "$volume",
+    "economic_mechanism": "量价相关性反映趋势确认或主力对倒，高相关时动量持续性更强"
+  }
+)
+```
+
+优先使用以下模板；模板中的 `base` / `state` 必须有独立经济含义：
+
+| interaction_type | 用途 | 推荐 DSL 骨架 |
+|---|---|---|
+| `gated_signal` | 只在状态出现时启用主信号 | `GATED_SIGNAL(base, state, 0.8, true, 0)` |
+| `conditional_group_rank` | 同一状态组内比较主信号 | `state_n = CS_BUCKET(state, 5)` → `CS_GROUP_RANK(base, state_n)` |
+| `residual_signal` | 剥离控制变量后保留独立信息 | `CS_RESIDUALIZE(base, control)` 或双控制版本 |
+| `divergence_signal` | 两个应互相确认的信号背离 | `DIVERGENCE_RANK(signal_a, signal_b)` |
+| `rolling_relation` | 两个变量的时序关系本身有信息 | `TS_RANKCORR(x, y, 20)` |
+| `piecewise_state` | 主信号在不同状态下方向不同 | `PIECEWISE_STATE(base, state, 0.2, 0.8, 1, -1, 0)` |
+| `necessary_condition_signal` | 满足必要条件才启用信号 | 条件面板 + `IF_THEN_ELSE(condition, base, 0)` |
+| ~~`multiplication`~~ | **默认禁用**：仅当 ResearchSpec 显式放开时可用 | 须完整消融且组合优于最强单腿 |
+
+**默认禁止 MULTIPLY 乘法交互**：本仓库默认不允许任何形式的算子相乘（含带契约的乘法），
+`MULTIPLY` 会被直接拦截。需要表达放大、抑制、条件依赖或状态切换时，一律改用结构化交互：
+门控 `GATED_SIGNAL`、组内排名 `CS_GROUP_RANK`、残差化 `CS_RESIDUALIZE`、背离 `DIVERGENCE_RANK`、
+分段状态 `PIECEWISE_STATE` 或必要条件 `IF_THEN_ELSE`。
+仅当本次 ResearchSpec 的 `interaction_policy.allowed_interaction_types` 显式包含
+`"multiplication"` 时才可使用，且必须提供 base-only / condition-only / combined 完整消融，
+并证明组合优于最强单腿；"两个 zscore 相乘"永远不算经济创新。
+
 ## 第三层：正交预判（Orthogonality Guard）
 
 系统会在 DSL 求值前自动检查新因子与因子库中已有因子的截面 Spearman 相关性。如果与任何已有因子的相关性 > 0.7，因子会被自动拦截并返回冗余诊断。因此：
@@ -62,7 +129,7 @@ FACTOR_MINING_INTERFACE_PROMPT = """你是一名量化研究自主智能体，�
 
 **优化目标：（1）train 上达到可用的相关水平，且（2）鲁棒性达标。** 鲁棒性覆盖：`monthly_corr_robustness`、`factor_coverage`、因子分布（`factor_skewness`/`factor_kurtosis`）、**`summary.mls_fmb`**，以及少数 val 调用上与 train 不出现灾难性背离。
 
-**【两阶段交付定义】** `submit_factor` 会在 train-start~val-end 全区间复核。第一阶段（海选宽松池）：`abs(IC) >= 0.015`、`ICIR > 0.2`、`Coverage > 0.85`、与正式库最大截面相关 `< 0.6`，通过写入候选池。第二阶段（精筛入库池）：`abs(IC) >= 0.03`、`ICIR > 0.5`、方向对应多头十分组相对当日全市场等权收益的复利年化超额 `> 3%`、每个交易日 1%/99% 截尾后 `abs(IC)` 衰减 `<= 10%`、与正式库最大截面相关 `< 0.5`；全部通过才写正式库并返回 `stored=true`。ICIR 按原始符号判断，不取绝对值。
+**【两阶段交付定义】** `submit_factor` 会先执行 pre-submit Reviewer，再在 train-start~val-end 全区间复核。第一阶段（候选登记）：`abs(IC) >= 0.015`、`ICIR > 0.2`、`Coverage > 0.85`、与正式库最大截面相关 `< 0.5`，通过后只写入轻量候选 registry（不物化全量因子值）。第二阶段（精筛正式库）：Reviewer `approve` 且 `abs(IC) >= 0.03`、`ICIR > 0.5`、方向对应多头十分组相对当日全市场等权收益的复利年化超额 `> 3%`、每个交易日 1%/99% 截尾后 `abs(IC)` 衰减 `<= 10%`、与正式库最大截面相关 `< 0.5`；全部通过才写正式库并返回 `stored=true`。ICIR 按原始符号判断，不取绝对值。
 
 **【会话完成条件】** 挖掘会话的正式交付方式是调用 **`submit_factor`**。统计门槛（第一阶段）通过即写入候选池（`candidate_stored=true`），视为成功交付候选因子。正式库（`stored=true`）需同时通过统计精筛和 FactorReviewer 审查。**只要 train+val 评估有潜力的因子，就应该调用 `submit_factor` 提交候选池**，不要因为 reviewer 在 validation 阶段给出 revise/reject 就放弃提交——reviewer 意见仅供参考改进，候选池入库只看统计数据。仅完成 train/val 评估、口头总结或停在「建议入库」**不算交付**。查重失败时根据返回意见改写后再提交。
 
@@ -115,15 +182,11 @@ FACTOR_MINING_INTERFACE_PROMPT = """你是一名量化研究自主智能体，�
 | `$ret` | 日 adj_close pct_change（按 instrument） |
 | `$is_trade` / `$not_st` | 可交易 / 非 ST 标记 |
 | `$industry_sw_l1` | 申万一级行业**离散码**（严格 PIT，`--with-industry` 时才有）；仅用于分组，不做数值运算 |
-| `$ff_main_net` | 主力净流入（元） |
-| `$ff_super_net` | 超大单净流入（元） |
-| `$ff_large_net` | 大单净流入（元） |
-| `$ff_medium_net` | 中单净流入（元） |
-| `$ff_small_net` | 小单净流入（元） |
+{{FF_FIELD_ROWS}}
 
 > **行业中性化**：行业码是离散组号，直接 `CS_NEUTRALIZE(factor, $industry_sw_l1)` 即为行业内去均值；**勿**对它套 `CS_BUCKET`。
 
-> **资金流向使用建议**：`$ff_*` 列为**绝对金额**（元），截面分布极端右偏，**禁止直接使用原始值**。必须先做截面标准化：`RANK($ff_super_net)` 或 `CS_ZSCORE(CS_WINSORIZE($ff_super_net, 0.01, 0.99))`。经济直觉：超大单净流入为正而小单净流出 → 机构吸筹散户出逃 → 正 alpha；反之亦然。可做**资金分歧因子**：`SUBTRACT(RANK($ff_super_net), RANK($ff_small_net))` 量化机构-散户方向分歧。
+{{FF_ADVICE}}
 
 ---
 
@@ -240,11 +303,11 @@ tri_gap = CHIP_COM_W_GAP($adj_close, $adj_low, $adj_high, $volume, 40, $vwap, 64
 当因子在 **train 与 val** 上表现有潜力后，调用 **`submit_factor`** 进入两阶段交付（勿手动改 registry，勿以文字总结代替）：
 
 1. **最后一轮**：对确认保留的因子调用 `submit_factor`（可与收尾说明同轮，但不可省略该 tool_call）
-2. 在 **train-start ~ val-end** 全区间求值；第一阶段通过后保存至 `candidate_1d`，未通过精筛仍保留候选记录。
-3. 第二阶段只在 `abs(IC)>=0.03`、`abs(ICIR)>0.5`、多头组年化超额 `>3%`、截尾后 IC 衰减 `<=10%` 和最大相关性 `<0.5` 时进入正式库。
+2. 在 **train-start ~ val-end** 全区间求值；第一阶段通过后只保存轻量候选记录，未通过精筛仍保留该记录。
+3. 第二阶段只在 Reviewer `approve` 且 `abs(IC)>=0.03`、`abs(ICIR)>0.5`、多头组年化超额 `>3%`、截尾后 IC 衰减 `<=10%` 和最大相关性 `<0.5` 时进入正式库。
 4. 自动截面去重以正式库为基准；第一阶段阈值 `<0.6`，第二阶段阈值 `<0.5`。
 5. 须传 **`comment`** 说明因子含义（经济直觉、算子、窗口、IC 方向）
-6. 候选池为 `artifacts/alphaagent/factorzoo/candidate_1d`；正式库为 `artifacts/alphaagent/factorzoo/stock_1d`。仅 `stored=true` 表示正式入库。
+6. 候选池是 `candidate_1d/mining_candidate_registry.json` 的轻量记录；正式库为 `artifacts/alphaagent/factorzoo/stock_1d`。仅 `stored=true` 表示正式入库。
 
 ---
 
@@ -261,7 +324,6 @@ tri_gap = CHIP_COM_W_GAP($adj_close, $adj_low, $adj_high, $volume, 40, $vwap, 64
    - 日内结构（`$adj_open` vs `$adj_close`, `$adj_high`/`$adj_low` 范围, `$adj_vwap` 偏离）
    - 隔夜跳空（`$adj_open` vs `DELAY($adj_close, 1)`）
    - 筹码分布（`CHIP_PEAK_LOC`, `CHIP_ENTROPY`, `CHIP_COM_W_GAP`）
-   - 资金流向（`$ff_super_net`, `$ff_large_net`, `$ff_small_net` 截面标准化后的分歧/动量）
    - 周线结构（`$adj_close@1w` 均线偏离）
    - 截面结构（`RANK`, `CS_ZSCORE`, `CS_NEUTRALIZE` 不同分组键）
 4. **连续 2 个因子 IC < 0.01 时，强制切换到完全未尝试过的信号族**，不要在同一信号族上微调。
@@ -295,8 +357,16 @@ def _tool_call_examples_section(*, include_fundamentals: bool = True) -> str:
             {
                 "name": "eval_on_train_set",
                 "arguments": {
-                    "multi_line_expr": "roe_z = CS_ZSCORE(CS_WINSORIZE($funda_roe, 0.01, 0.99))\ngro = CS_ZSCORE(CS_WINSORIZE($funda_netprofit_yoy, 0.01, 0.99))\nCS_NEUTRALIZE(MULTIPLY(roe_z, gro), CS_BUCKET(LOG($float_cap), 10))",
+                    "multi_line_expr": "roe_pure = CS_RESIDUALIZE(CS_ZSCORE(CS_WINSORIZE($funda_roe, 0.01, 0.99)), LOG($float_cap))\ngro_rank = RANK(CS_ZSCORE(CS_WINSORIZE($funda_netprofit_yoy, 0.01, 0.99)))\nADD(roe_pure, gro_rank)",
                     "factor_name": "funda_roe_growth_neutral",
+                    "interaction": {
+                        "interaction_type": "residual_signal",
+                        "base_signal": "盈利能力质量",
+                        "condition_signal": "市值暴露",
+                        "economic_mechanism": "剥离市值暴露后保留不可由规模解释的盈利质量",
+                        "expected_subgroup_pattern": {"purpose": "size-neutral quality"},
+                        "ablation_required": True
+                    }
                 },
             }
         )
@@ -304,29 +374,36 @@ def _tool_call_examples_section(*, include_fundamentals: bool = True) -> str:
         {
             "name": "eval_on_train_set",
             "arguments": {
-                "multi_line_expr": "TS_RANK($ret, 20)",
-                "factor_name": "ret_rank20",
+                "multi_line_expr": "base = NEG(TS_PCTCHANGE($adj_close, 5))\nstate = RANK(DIVIDE(TS_MEAN($amount, 20), LOG($float_cap)))\nGATED_SIGNAL(base, state, 0.8, true, 0)",
+                "factor_name": "reversal_high_liquidity_gate",
+                "interaction": {
+                    "interaction_type": "gated_signal",
+                    "base_signal": "短期过度反应后的修复压力",
+                    "condition_signal": "高流动性状态",
+                    "economic_mechanism": "高流动性股票的过度反应更容易被套利资金修正",
+                    "expected_subgroup_pattern": {"high_liquidity": "信号启用", "other": "中性"},
+                    "ablation_required": True
+                }
             },
         }
     )
     submit_note = ""
-    if include_submit:
-        examples.append(
-            {
-                "name": "submit_factor",
-                "arguments": {
-                    "multi_line_expr": "ma20 = TS_MEAN($adj_close, 20)\nSUBTRACT($adj_close, ma20)",
-                    "factor_name": "ma20_dev",
-                    "comment": "20日均价偏离：价格相对短期均线的回归/动量；负IC表示均值回归。",
-                },
-            }
-        )
-        submit_note = (
-            "\n\n**交付示例**：train/val 均达标后，须调用 `submit_factor`（上表第 4 条）；"
-            "查重失败则读 `similarity.top_neighbors[].expr` 改写后重试。"
-        )
+    examples.append(
+        {
+            "name": "submit_factor",
+            "arguments": {
+                "multi_line_expr": "ma20 = TS_MEAN($adj_close, 20)\nSUBTRACT($adj_close, ma20)",
+                "factor_name": "ma20_dev",
+                "comment": "20日均价偏离：价格相对短期均线的回归/动量；负IC表示均值回归。",
+            },
+        }
+    )
+    submit_note = (
+        "\n\n**交付示例**：train/val 均达标后，须调用 `submit_factor`（上表第 4 条）；"
+        "查重失败则读 `similarity.top_neighbors[].expr` 改写后重试。"
+    )
     body = json.dumps(examples, ensure_ascii=False, indent=2)
-    dims = "动量、周线偏离、基本面、收益秩" if include_fundamentals else "动量、周线偏离、收益秩"
+    dims = "动量、周线偏离、基本面残差、门控反转" if include_fundamentals else "动量、周线偏离、门控反转"
     note = (
         f"上表为同轮并行 `eval_on_train_set` 示例（{dims}）。"
         "建议每轮 3～5 条并行；仅当 train 有满意候选时，偶尔对少数 factor 做 val 抽检。"
@@ -397,44 +474,38 @@ def _label_section_markdown(label_col: str, *, include_fundamentals: bool = True
 
 _FUNDAMENTAL_SECTION_MD = """### 基本面与披露日历（`build_panel --with-fundamentals` 并入）
 
-季频 `fina_indicator` 经**严格 PIT** 展开为日频：财报公告日 D **不可用**，**D 的下一交易日**起该期字段才可引用；两期之间 **ffill** 保持最近已披露值。披露前为 NaN 属正常，勿当缺失错误。
+季频财务数据经**严格 PIT** 展开为日频：财报公告日 D **不可用**，**D 的下一交易日**起该期字段才可引用；两期之间 **ffill** 保持最近已披露值。披露前为 NaN 属正常，勿当缺失错误。
 
-**财务指标**（`fina_indicator` → 日频，前缀 `funda_`）：
+**盈利、质量与增长指标**（`fina_indicator` → 日频，前缀 `funda_`）：
 
 | 字段 | 说明 |
 |------|------|
-| `$funda_roe` / `$funda_roa` | 净资产收益率 / 总资产报酬率 |
+| `$funda_roe` / `$funda_roa` / `$funda_roic` | 净资产收益率 / 总资产报酬率 / 投入资本回报率 |
+| `$funda_gross_margin` / `$funda_net_margin` | 毛利率 / 净利率 |
 | `$funda_debt_to_assets` | 资产负债率 |
-| `$funda_eps` / `$funda_bps` | 每股收益 / 每股净资产 |
-| `$funda_grossprofit_margin` / `$funda_netprofit_margin` | 毛利率 / 净利率 |
-| `$funda_profit_dedt` | 扣非净利润 |
-| `$funda_ocfps` | 每股经营现金流 |
 | `$funda_current_ratio` / `$funda_quick_ratio` | 流动比率 / 速动比率 |
-| `$funda_netprofit_yoy` / `$funda_or_yoy` / `$funda_tr_yoy` | 归母净利 / 营收 / 营业总收入同比（%） |
+| `$funda_eps` / `$funda_eps_diluted` / `$funda_bps` | 每股收益 / 稀释EPS / 每股净资产 |
+| `$funda_ocfps` | 每股经营现金流 |
+| `$funda_profit_dedt` | 扣非净利润（绝对额，注意规模标准化） |
+| `$funda_netprofit_yoy` / `$funda_or_yoy` / `$funda_tr_yoy` | 归母净利 / 营业收入 / 营业总收入 同比%（财报期同比） |
+| `$funda_ocf_yoy` / `$funda_roe_yoy` | 经营现金流 / ROE 同比% |
 
-**财报科目**（前缀 `funda_fs_`，同为 PIT 日频；`--with-statements` 时含约 70 个三大表科目）：
+> 同比字段为**财报期同比**的 PIT 阶跃序列：披露生效日起跳变，两期之间恒定；勿当作日频变化率使用。
 
-| 字段 | 说明 |
+**财报科目**（绝对金额，用时先做规模标准化，如 `DIVIDE($funda_ocf, $funda_total_assets)`）：
+
+| 类别 | 字段 |
 |------|------|
-| `$funda_fs_working_capital` / `$funda_fs_ebit` | 营运资本 / 息税前利润 |
-| `$funda_fs_total_assets` / `$funda_fs_total_liabilities` / `$funda_fs_total_equity` | 资产 / 负债 / 权益（时点） |
-| `$funda_fs_oper_revenue_ytd` / `$funda_fs_net_profit_parent_ytd` | 营收 / 归母净利（年初至今累计，`_ytd`） |
-| `$funda_fs_ocf_net_ytd` | 经营现金流净额（累计） |
-
-> 三大表 `_ytd` 为**年初至今累计**（Q1=当季，中报/三季报/年报累计）；资产负债表科目为时点值。完整清单见 `docs/panel_fundamental_fields.md` §3。
-
-**披露日历特征**：
-
-| 字段 | 说明 |
-|------|------|
-| `$funda_days_since_disclose` | 距**上一期**财报披露**生效日**的交易日数（生效日=0）；严格 PIT |
-| `$funda_days_since_quarter_start` | 距当前季报区间首日（1/1、4/1、7/1、10/1）的交易日数 |
+| 利润表 | `$funda_total_revenue`、`$funda_net_profit`、`$funda_operate_profit`、`$funda_ebit`、`$funda_selling_expense`、`$funda_admin_expense`、`$funda_finance_expense`、`$funda_rd_expense` |
+| 资产负债表 | `$funda_total_assets`、`$funda_total_liabilities`、`$funda_total_equity`、`$funda_current_assets`、`$funda_current_liabilities`、`$funda_inventory`、`$funda_accounts_receivable`、`$funda_fixed_assets`、`$funda_goodwill`、`$funda_cash` |
+| 现金流量表 | `$funda_ocf`、`$funda_icf`、`$funda_fcf`、`$funda_free_cashflow` |
+| 日历锚点 | `$funda_end_date`、`$funda_ann_date`（报告期末 / 公告日） |
 
 **使用建议**（基本面/慢因子）：
 
-- 基本面列在日频上**阶跃+持有**，`TS_PCTCHANGE($funda_roe, 20)` 等窗口单位为**交易日**；约 60 日 ≈ 一季。
-- 截面组合建议 `CS_NEUTRALIZE(..., CS_BUCKET(LOG($float_cap), 10))` 市值中性；比率类可先 `CS_WINSORIZE` 再 `RANK` 截面排序。
-- 事件窗示例：`TS_PCTCHANGE($xxx, $funda_days_since_disclose)`（披露生效后变量 xxx 的变化）。
+- 基本面列在日频上**阶跃+持有**，窗口单位为**交易日**；约 60 日 ≈ 一季。
+- 科目金额是绝对值：先除以规模（总资产/营收/流通市值），再 `CS_WINSORIZE` + `RANK`。
+- 截面组合建议 `CS_NEUTRALIZE(..., CS_BUCKET(LOG($float_cap), 10))` 市值中性。
 
 > 行尾可写 `#` 注释；字符串内 `#` 保留。"""
 
@@ -446,31 +517,88 @@ _FUNDAMENTAL_DISABLED_MD = (
 )
 
 
+# 资金流向字段族：仅在 panel 实际载入 ff_* 列时注入提示词（与插件数据覆盖联动）。
+_FF_FIELD_ROWS_MD = """| `$ff_main_net` | 主力净流入（元） |
+| `$ff_super_net` | 超大单净流入（元） |
+| `$ff_large_net` | 大单净流入（元） |
+| `$ff_medium_net` | 中单净流入（元） |
+| `$ff_small_net` | 小单净流入（元） |
+"""
+
+_FF_ADVICE_MD = (
+    "> **资金流向使用建议**：`$ff_*` 列为**绝对金额**（元），截面分布极端右偏，"
+    "**禁止直接使用原始值**。必须先做截面标准化：`RANK($ff_super_net)` 或 "
+    "`CS_ZSCORE(CS_WINSORIZE($ff_super_net, 0.01, 0.99))`。经济直觉：超大单净流入为正而小单净流出 "
+    "→ 机构吸筹散户出逃 → 正 alpha；反之亦然。可做**资金分歧因子**："
+    "`SUBTRACT(RANK($ff_super_net), RANK($ff_small_net))` 量化机构-散户方向分歧。"
+)
+
+FF_PANEL_COLUMNS = (
+    "ff_main_net", "ff_super_net", "ff_large_net", "ff_medium_net", "ff_small_net",
+)
+
+
 def build_system_prompt(
     *,
     include_operator_catalog: bool = True,
     extra_instructions: str = "",
     label_col: str = DEFAULT_LABEL_COL,
     include_fundamentals: bool = True,
+    panel_columns: list[str] | None = None,
 ) -> str:
+    """按模块装配系统提示词；返回最终文本。
+
+    模块清单见 ``_prompt_modules``；板块启用与否由运行时事实
+    （panel 实际列、基本面开关）决定，而非静态配置。
+    """
+    cols = frozenset(panel_columns) if panel_columns is not None else None
+    funda_loaded = cols is None or any(c.startswith("funda_") for c in cols)
+    funda_effective = include_fundamentals and funda_loaded
+
     catalog = operator_catalog_markdown() if include_operator_catalog else "（本次未注入算子清单）"
     mls_block = mls_fmb_thresholds_markdown(label_col=label_col)
-    label_block = _label_section_markdown(label_col, include_fundamentals=include_fundamentals)
-    funda_block = _FUNDAMENTAL_SECTION_MD if include_fundamentals else _FUNDAMENTAL_DISABLED_MD
-    body = (
+    ff_available = cols is None or all(c in cols for c in FF_PANEL_COLUMNS)
+    ff_rows = _FF_FIELD_ROWS_MD if ff_available else ""
+    ff_advice = _FF_ADVICE_MD if ff_available else ""
+    funda_block = _FUNDAMENTAL_SECTION_MD if funda_effective else _FUNDAMENTAL_DISABLED_MD
+
+    core_body = (
         FACTOR_MINING_INTERFACE_PROMPT.replace("{{OPERATOR_CATALOG}}", catalog)
         .replace("{{MLS_FMB_THRESHOLDS}}", mls_block)
-        .replace("{{LABEL_SECTION}}", label_block)
+        .replace("{{LABEL_SECTION}}", _label_section_markdown(label_col, include_fundamentals=funda_effective))
         .replace("{{FUNDAMENTAL_SECTION}}", funda_block)
+        .replace("{{FF_FIELD_ROWS}}\n", ff_rows)
+        .replace("{{FF_FIELD_ROWS}}", ff_rows)
+        .replace("{{FF_ADVICE}}\n\n", ff_advice + "\n\n" if ff_advice else "")
+        .replace("{{FF_ADVICE}}", ff_advice)
     )
-    if not include_fundamentals:
-        body = body.replace("、**基本面（`funda_*`）**、", "、")
-    parts = [
-        body.strip(),
-        _tool_call_examples_section(
-            include_fundamentals=include_fundamentals,
-        ),
+    if not funda_effective:
+        core_body = core_body.replace("、**基本面（`funda_*`）**、", "、")
+
+    parts: list[str] = [core_body.strip()]
+    module_report: list[dict[str, Any]] = [
+        {"module": "interface_core", "enabled": True, "chars": len(core_body)},
+        {"module": "operator_catalog", "enabled": include_operator_catalog, "chars": len(catalog) if include_operator_catalog else 0},
+        {"module": "fields_fund_flow", "enabled": ff_available, "chars": len(ff_rows) + len(ff_advice)},
+        {"module": "fundamentals", "enabled": funda_effective, "chars": len(funda_block) if funda_effective else 0},
     ]
+
+    examples = _tool_call_examples_section(include_fundamentals=funda_effective)
+    parts.append(examples.strip())
+    module_report.append({"module": "tool_examples", "enabled": True, "chars": len(examples)})
+
     if extra_instructions.strip():
         parts.append(extra_instructions.strip())
+        module_report.append({"module": "extra_instructions", "enabled": True, "chars": len(extra_instructions)})
+
+    logger.info(
+        "system prompt assembled (%d chars): %s",
+        sum(p["chars"] for p in module_report),
+        ", ".join(f"{m['module']}={'on' if m['enabled'] else 'off'}({m['chars']})" for m in module_report),
+    )
+    last_assembly_report.clear()
+    last_assembly_report.extend(module_report)
     return "\n\n".join(parts)
+
+
+last_assembly_report: list[dict[str, Any]] = []

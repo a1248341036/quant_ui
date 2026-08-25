@@ -111,6 +111,15 @@ class Dataset(BaseModel):
     coverage_end: date | None
     watermarked: bool
     watermark: date | None
+    unified_watermark: date | None = Field(
+        description="Watermark capped at the dashboard anchor for comparable readiness.",
+    )
+    unified_coverage_end: date | None = Field(
+        description="Coverage end capped at the dashboard anchor.",
+    )
+    ahead_of_anchor: bool = Field(
+        description="Raw data contains dates after the latest completed trading day.",
+    )
     freshness: str
     row_count: int | None
     bytes: int | None

@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 from .limit import build_limit_flags
-from .metrics import compute_metrics, drawdown_series
+from .metrics import compute_excess_metrics, compute_metrics, drawdown_series
 from .assets import AssetExecutionProfile, STOCK_PROFILE
 from .execution import ETFExecutionAdapter, FundNavExecutionAdapter, StockExecutionAdapter
 from .selection import PortfolioBuilder
@@ -854,11 +854,14 @@ def run_backtest(
         risk_attribution = portfolio_risk_attribution(
             w_norm, _X_risk, factor_cov, spec_var, _risk_names)
 
+    metrics = compute_metrics(nav_s)
+    metrics.update(compute_excess_metrics(nav_s, bench_s))
+
     return {
         "nav": nav_s,
         "bench": bench_s,
         "drawdown": drawdown_series(nav_s),
-        "metrics": compute_metrics(nav_s),
+        "metrics": metrics,
         "bench_metrics": compute_metrics(bench_s),
         "trades": trades_df,
         "holdings": holdings_df,

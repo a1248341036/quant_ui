@@ -389,7 +389,13 @@ def _full_scalar_stats(files: list[Path], dataset: str) -> tuple[int, int, dict[
     try:
         con.execute("SET memory_limit='512MB'")
         con.execute("SET threads=1")
-        row = con.execute(query, [MOCK_SOURCE, [str(path) for path in files]]).fetchone()
+        # 参数个数必须与占位符一致：无 source 列的 dataset 查询里没有 mock 占位符，
+        # 多传一个位置参数会触发 duckdb 的 Parameter argument/count mismatch。
+        paths = [str(path) for path in files]
+        if "source" in identifiers:
+            row = con.execute(query, [MOCK_SOURCE, paths]).fetchone()
+        else:
+            row = con.execute(query, [paths]).fetchone()
     finally:
         con.close()
 

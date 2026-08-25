@@ -19,6 +19,28 @@ from alphaagent.factor.mining.schemas import EvalProfileRequest, EvalTrainReques
 from alphaagent.factor.mining.service import StockEvalService
 
 from alphaagent.factor.mining.submit import FactorSubmitService
+from alphaagent.factor.mining.interactions import INTERACTION_TYPES
+
+
+_INTERACTION_PARAMETER: dict[str, Any] = {
+    "type": "object",
+    "description": "多因子交互契约；结构化交互算子和 MULTIPLY 必须提供。",
+    "properties": {
+        "interaction_type": {
+            "type": "string",
+            "enum": sorted(INTERACTION_TYPES),
+        },
+        "base_signal": {"type": "string"},
+        "condition_signal": {"type": "string"},
+        "economic_mechanism": {
+            "type": "string",
+            "description": ">=20字的因果机制，而非指标复述。",
+        },
+        "expected_subgroup_pattern": {},
+        "ablation_required": {"type": "boolean", "default": True},
+    },
+    "required": ["interaction_type", "base_signal", "condition_signal", "economic_mechanism"],
+}
 
 
 
@@ -58,6 +80,9 @@ _EVAL_PARAMETERS: dict[str, Any] = {
 
         },
 
+
+        "interaction": _INTERACTION_PARAMETER,
+
     },
 
     "required": ["multi_line_expr"],
@@ -86,6 +111,9 @@ _VAL_PARAMETERS: dict[str, Any] = {
 
         },
 
+
+        "interaction": _INTERACTION_PARAMETER,
+
     },
 
     "required": ["multi_line_expr"],
@@ -93,7 +121,6 @@ _VAL_PARAMETERS: dict[str, Any] = {
     "additionalProperties": False,
 
 }
-
 
 _PROFILE_EVAL_PARAMETERS: dict[str, Any] = {
     "type": "object",
@@ -104,6 +131,7 @@ _PROFILE_EVAL_PARAMETERS: dict[str, Any] = {
             "type": "string",
             "description": "冻结的 EvaluationProfile ID；决定 split、transform、metrics 与 rule gate。",
         },
+        "interaction": _INTERACTION_PARAMETER,
     },
     "required": ["multi_line_expr", "profile_id"],
     "additionalProperties": False,
@@ -140,6 +168,8 @@ _SUBMIT_PARAMETERS: dict[str, Any] = {
             "description": "因子含义说明：经济直觉、关键算子与窗口、预期 IC 方向等，供后续查阅。",
 
         },
+
+        "interaction": _INTERACTION_PARAMETER,
 
     },
 
@@ -448,6 +478,14 @@ class FactorEvalTools:
 
             comment=comment.strip(),
 
+            evaluation_evidence=arguments.get("evaluation_evidence"),
+
+            review_hook=arguments.get("review_hook"),
+
+            orthogonality_hook=arguments.get("orthogonality_hook"),
+
+            interaction=arguments.get("interaction"),
+
         )
 
 
@@ -592,13 +630,39 @@ class FactorEvalTools:
         if ic is not None and abs(ic) < 0.01:
             tips.append("💡 IC 接近 0，当前信号无预测力。请换一个完全不同的经济假设或信息维度。")
         elif ic is not None and abs(ic) < 0.015:
-            tips.append("💡 IC 微弱，尝试：① 加平滑(TS_MEAN/EMA) ② 换窗口 ③ 与其他信号交互(MULTIPLY)")
+            tips.append("💡 IC 微弱，尝试：① 检查经济机制是否成立 ② 换信息维度 ③ 用门控/组内排名/残差化等可解释交互")
 
         return " ".join(tips) if tips else ""
 
     @staticmethod
     def result_to_content(result: dict[str, Any]) -> str:
         """精简评估结果为结构化文本，附带诊断建议和批次汇总。"""
+        # Submit has a different payload shape; preserving its delivery evidence
+        # is essential for the next LLM turn.
+        if "delivery_check" in result or "candidate_stored" in result:
+            metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
+            similarity = result.get("similarity") if isinstance(result.get("similarity"), dict) else {}
+            delivery = result.get("delivery_check") if isinstance(result.get("delivery_check"), dict) else {}
+            stage1 = delivery.get("stage_one") if isinstance(delivery.get("stage_one"), dict) else {}
+            stage2 = delivery.get("stage_two") if isinstance(delivery.get("stage_two"), dict) else {}
+            lines = [
+                f"提交结果: {result.get('factor_name', 'expr')}",
+                f"candidate_stored={bool(result.get('candidate_stored'))} stored={bool(result.get('stored'))}",
+                (
+                    f"IC={metrics.get('ic')} ICIR={metrics.get('icir')} "
+                    f"rankIC={metrics.get('rank_ic')} coverage={metrics.get('coverage')} "
+                    f"max_cs_corr={similarity.get('max_abs_corr')}"
+                ),
+                f"stage1: passed={stage1.get('passed')} fail_reasons={stage1.get('fail_reasons', [])}",
+                f"stage2: passed={stage2.get('passed')} fail_reasons={stage2.get('fail_reasons', [])}",
+            ]
+            if result.get("skipped_reason"):
+                lines.append(f"skipped_reason={result['skipped_reason']}")
+            review = result.get("factor_review")
+            if isinstance(review, dict) and review:
+                lines.append(f"Reviewer: verdict={review.get('verdict')} novelty={review.get('novelty')}")
+            return "\n".join(lines)
+
         if not result.get("ok"):
             err = str(result.get("error") or result.get("error_type") or "unknown")
             return f"❌ 评估失败: {err}"
@@ -689,9 +753,9 @@ class FactorEvalTools:
                 s1 = delivery.get("stage_one", {})
                 s2 = delivery.get("stage_two", {})
                 if isinstance(s1, dict):
-                    lines.append(f"  stage1: {s1.get('passed')} {s1.get('failed_reasons', '')}")
+                    lines.append(f"  stage1: {s1.get('passed')} {s1.get('fail_reasons', '')}")
                 if isinstance(s2, dict):
-                    lines.append(f"  stage2: {s2.get('passed')} {s2.get('failed_reasons', '')}")
+                    lines.append(f"  stage2: {s2.get('passed')} {s2.get('fail_reasons', '')}")
 
         return "\n".join(lines)
 

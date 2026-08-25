@@ -61,6 +61,7 @@ class StockEvalService:
             panel_rows=len(session.panel),
             load_ms=float(session.meta.get("load_ms", 0)),
             columns_sample=cols,
+            available_columns=list(session.panel.columns),
         )
 
     def _run_one(

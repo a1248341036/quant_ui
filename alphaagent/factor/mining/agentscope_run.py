@@ -92,11 +92,13 @@ async def create_mining_agent(
     base_url: str | None,
     extra_body: dict[str, Any] | None,
     reviewer: FactorReviewer | None = None,
+    interaction_policy: dict[str, Any] | None = None,
 ) -> Agent:
     toolkit = build_factor_eval_toolkit(
         factor_tools,
         max_workers=config.max_tool_workers,
         reviewer=reviewer,
+        interaction_policy=interaction_policy,
     )
     react_iters = max(config.max_turns * config.max_tool_calls_per_round, config.max_turns, 20)
     return Agent(
@@ -153,29 +155,28 @@ async def run_factor_mining_agentscope(
     )
 
     submit_service: FactorSubmitService | None = None
-    if config.enable_submit:
-        lib_path = (config.factorlib_path or default_factorlib_path(root)).resolve()
-        registry_path = config.registry_path or lib_path / "mining_delivered_registry.json"
-        expr_dir = config.expr_dir or lib_path / "expressions"
-        submit_service = FactorSubmitService(
-            service,
-            factorlib_path=lib_path,
-            registry_path=registry_path if registry_path.is_absolute() else root / registry_path,
-            expr_dir=expr_dir if expr_dir.is_absolute() else root / expr_dir,
-            repo_root=root,
-            max_cs_corr=config.max_cs_corr,
-            delivery_policy=(config.research_spec or {}).get("delivery_policy"),
-            similar_top_k=config.similar_top_k,
-            overwrite=config.ingest_overwrite,
-        )
+    lib_path = (config.factorlib_path or default_factorlib_path(root)).resolve()
+    registry_path = config.registry_path or lib_path / "mining_delivered_registry.json"
+    expr_dir = config.expr_dir or lib_path / "expressions"
+    submit_service = FactorSubmitService(
+        service,
+        factorlib_path=lib_path,
+        registry_path=registry_path if registry_path.is_absolute() else root / registry_path,
+        expr_dir=expr_dir if expr_dir.is_absolute() else root / expr_dir,
+        repo_root=root,
+        max_cs_corr=config.max_cs_corr,
+        delivery_policy=(config.research_spec or {}).get("delivery_policy"),
+        similar_top_k=config.similar_top_k,
+        overwrite=config.ingest_overwrite,
+    )
 
     factor_tools = FactorEvalTools(service, session_resp.session_id, submit_service=submit_service)
     system_prompt = build_system_prompt(
         include_operator_catalog=include_operator_catalog,
-        enable_submit=config.enable_submit,
         extra_instructions=extra_instructions,
         label_col=ctx.label_col,
         include_fundamentals=ctx.include_fundamentals,
+        panel_columns=session_resp.available_columns,
     )
 
     log_dir = Path(log_dir)
@@ -202,6 +203,15 @@ async def run_factor_mining_agentscope(
     workspace = LocalWorkspace(workdir=str(workspace_dir))
     await workspace.initialize()
 
+    factor_tools = FactorEvalTools(service, session_resp.session_id, submit_service=submit_service)
+    system_prompt = build_system_prompt(
+        include_operator_catalog=include_operator_catalog,
+        extra_instructions=extra_instructions,
+        label_col=ctx.label_col,
+        include_fundamentals=ctx.include_fundamentals,
+        panel_columns=session_resp.available_columns,
+    )
+
     printer = ConsolePrinter(stream=sys.stderr) if verbose else None
     if printer is not None:
         printer.session_start(config.model, len(list_operator_names()))
@@ -226,6 +236,15 @@ async def run_factor_mining_agentscope(
         with log_jsonl.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
             f.flush()
+
+    # ── Numba JIT 预热：在 Agent 启动前预编译慢算子，避免首次评估超时 ──
+    _emit("jit_warmup_start", {"turn": 0})
+    try:
+        from alphaagent.dsl.core.jit_warmup import warmup_numba_jit
+        warmup_results = warmup_numba_jit()
+        _emit("jit_warmup_done", {"turn": 0, "results": warmup_results})
+    except Exception as exc:
+        _emit("jit_warmup_failed", {"turn": 0, "error": str(exc)})
 
     started_at = _now()
     _emit("session_start", {
@@ -291,6 +310,7 @@ async def run_factor_mining_agentscope(
         base_url=base_url,
         extra_body=extra_body,
         reviewer=reviewer,
+        interaction_policy=(config.research_spec or {}).get("interaction_policy"),
     )
 
     def _take_control_messages() -> list[str]:
@@ -314,6 +334,30 @@ async def run_factor_mining_agentscope(
             if isinstance(content, str) and content.strip():
                 messages.append(content.strip())
         return messages
+
+    def _dynamic_memory_context() -> str:
+        """Retrieve compact evidence at every outer turn, not only at startup."""
+        if memory_store is None:
+            return ""
+        policy = (config.research_spec or {}).get("memory_policy") or {}
+        limit = int(policy.get("dynamic_retrieve_limit", 6))
+        if limit <= 0:
+            return ""
+
+        query = memory_store.query_for_attempts(
+            user_message,
+            tool_call_rows,
+            max_recent_attempts=8,
+            max_expression_chars=1200,
+        )
+        return memory_store.context_for(
+            query,
+            limit=limit,
+            include_rejected=bool(policy.get("include_rejected_paths", True)),
+            prefer_orthogonal=bool(policy.get("prefer_orthogonal_to_approved", True)),
+            include_expression=bool(policy.get("include_expression", True)),
+            max_expression_chars=int(policy.get("max_expression_chars", 320)),
+        )
 
     def _queued_prompt(messages: list[str]) -> str:
         return "用户在当前研究会话追加了指令，请优先结合已有评估结果执行：\n" + "\n\n".join(messages)
@@ -356,7 +400,14 @@ async def run_factor_mining_agentscope(
                     except json.JSONDecodeError:
                         args_obj = {}
                 args_hash = canonical_hash(args_raw or "")
-                summary_metrics = res.get("summary") if isinstance(res.get("summary"), dict) else res.get("metrics", {})
+                summary_metrics = res.get("summary") if isinstance(res.get("summary"), dict) else {}
+                if not summary_metrics.get("ic"):
+                    metrics = res.get("metrics") if isinstance(res.get("metrics"), dict) else {}
+                    cross_sectional = metrics.get("cross_sectional_core")
+                    if isinstance(cross_sectional, dict) and cross_sectional:
+                        summary_metrics = cross_sectional
+                    elif "ic" in metrics:
+                        summary_metrics = metrics
                 tool_call_rows.append(
                     {
                         "turn": outer_turn,
@@ -402,7 +453,20 @@ async def run_factor_mining_agentscope(
         if outer_turn > 0 or pending != user_message:
             _emit("user_message", {"turn": outer_turn, "content": pending})
 
-        user_msg = UserMsg(name="user", content=pending)
+        turn_memory = _dynamic_memory_context()
+        agent_prompt = pending
+        if turn_memory:
+            agent_prompt = f"{turn_memory}\n\n# 当前研究任务 / 最新反馈\n{pending}"
+            retrieved_count = sum(
+                1 for line in turn_memory.splitlines() if line.startswith("- [")
+            )
+            _emit("research_memory_retrieved", {
+                "turn": outer_turn,
+                "entry_count": retrieved_count,
+                "recent_attempt_count": len(tool_call_rows),
+            })
+
+        user_msg = UserMsg(name="user", content=agent_prompt)
         try:
             had_tools = await stream_to_cli(
                 agent,

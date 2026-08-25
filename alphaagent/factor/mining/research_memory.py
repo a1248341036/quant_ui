@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import re
+import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -101,27 +102,278 @@ def _parse_args(raw: Any) -> dict[str, Any]:
 class ResearchMemoryStore:
     """Stores compact research conclusions, never raw model thinking or prompts."""
 
+    _SCHEMA = """
+    CREATE TABLE IF NOT EXISTS memory_entries (
+        id TEXT PRIMARY KEY,
+        factor_name TEXT NOT NULL,
+        expression TEXT NOT NULL,
+        conclusion TEXT,
+        verdict TEXT NOT NULL,
+        stage TEXT,
+        profile_id TEXT,
+        profile_hash TEXT,
+        candidate_id TEXT,
+        metrics_json TEXT NOT NULL DEFAULT '{}',
+        interaction_json TEXT,
+        error TEXT,
+        failure_code TEXT,
+        last_run_id TEXT,
+        attempts INTEGER NOT NULL DEFAULT 1,
+        tokens_json TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT,
+        updated_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS store_meta (
+        k TEXT PRIMARY KEY,
+        v TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_memory_entries_verdict
+        ON memory_entries(verdict);
+    CREATE INDEX IF NOT EXISTS idx_memory_entries_stage
+        ON memory_entries(stage);
+    CREATE INDEX IF NOT EXISTS idx_memory_entries_updated_at
+        ON memory_entries(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_memory_entries_failure_code
+        ON memory_entries(failure_code);
+
+    CREATE TABLE IF NOT EXISTS memory_observations (
+        entry_id TEXT NOT NULL,
+        run_id TEXT,
+        observed_at TEXT,
+        stage TEXT,
+        verdict TEXT,
+        failure_code TEXT,
+        metrics_json TEXT NOT NULL DEFAULT '{}',
+        PRIMARY KEY (entry_id, observed_at, run_id),
+        FOREIGN KEY (entry_id) REFERENCES memory_entries(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_memory_observations_entry
+        ON memory_observations(entry_id);
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
+        entry_id UNINDEXED,
+        factor_name,
+        expression,
+        conclusion,
+        failure_code,
+        search_tokens,
+        tokenize='unicode61'
+    );
+
+    CREATE TRIGGER IF NOT EXISTS memory_entries_after_delete
+    AFTER DELETE ON memory_entries
+    BEGIN
+        DELETE FROM memory_fts WHERE entry_id = old.id;
+    END;
+    """
+
     def __init__(self, path: Path) -> None:
         self.path = Path(path).expanduser().resolve()
+        if self.path.suffix.lower() == ".json":
+            # 存储已迁至 SQLite；容忍调用方传旧 JSON 路径（迁移逻辑仍读该 JSON）。
+            self.path = self.path.with_suffix(".db")
+        self._schema_ready = False
+
+    @contextmanager
+    def _open(self):
+        conn = sqlite3.connect(str(self.path), timeout=30)
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA foreign_keys=ON")
+            self._ensure_schema(conn)
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def _ensure_schema(self, conn: sqlite3.Connection) -> None:
+        if self._schema_ready:
+            return
+        conn.executescript(self._SCHEMA)
+        columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(memory_entries)").fetchall()
+        }
+        if "interaction_json" not in columns:
+            conn.execute("ALTER TABLE memory_entries ADD COLUMN interaction_json TEXT")
+        self._migrate_legacy_json(conn)
+        conn.commit()
+        self._schema_ready = True
+
+    def _migrate_legacy_json(self, conn: sqlite3.Connection) -> None:
+        """One-time import from the original JSON store when switching to SQLite."""
+        legacy_path = self.path.with_suffix(".json")
+        if legacy_path == self.path or not legacy_path.is_file():
+            return
+        try:
+            raw = json.loads(legacy_path.read_text(encoding="utf-8"))
+            entries = raw.get("entries", []) if isinstance(raw, dict) else []
+        except (OSError, json.JSONDecodeError):
+            return
+        if not any(isinstance(item, dict) and item.get("id") for item in entries):
+            return
+
+        count = conn.execute("SELECT COUNT(*) FROM memory_entries").fetchone()[0]
+        if count:
+            return
+        for entry in entries:
+            if isinstance(entry, dict) and entry.get("id"):
+                self._write_entry(conn, self._normalize_entry(entry))
+
+    @staticmethod
+    def _normalize_entry(entry: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(entry)
+        observations = normalized.get("observations", [])
+        if isinstance(observations, int):
+            normalized["observations"] = [{
+                "at": normalized.get("updated_at"),
+                "verdict": normalized.get("verdict"),
+            }]
+        elif not isinstance(observations, list):
+            normalized["observations"] = []
+        return normalized
 
     def _load(self) -> list[dict[str, Any]]:
-        if not self.path.is_file():
-            return []
-        try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return []
-        entries = raw.get("entries", []) if isinstance(raw, dict) else []
-        return [item for item in entries if isinstance(item, dict)]
+        with self._open() as conn:
+            rows = conn.execute(
+                "SELECT * FROM memory_entries ORDER BY updated_at DESC"
+            ).fetchall()
+            return self._hydrate_entries(conn, rows)
 
-    def _save(self, entries: list[dict[str, Any]]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temp = self.path.with_suffix(self.path.suffix + ".tmp")
-        temp.write_text(
-            json.dumps({"version": 1, "updated_at": _now(), "entries": entries[-1000:]}, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
+    @staticmethod
+    def _metrics_json(metrics: dict[str, Any]) -> str:
+        return json.dumps(metrics, ensure_ascii=False, separators=(",", ":"))
+
+    def _write_entry(self, conn: sqlite3.Connection, entry: dict[str, Any]) -> None:
+        conn.execute(
+            """
+            INSERT INTO memory_entries (
+                id, factor_name, expression, conclusion, verdict, stage,
+                profile_id, profile_hash, candidate_id, metrics_json, interaction_json, error,
+                failure_code, last_run_id, attempts, tokens_json,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                factor_name=excluded.factor_name,
+                expression=excluded.expression,
+                conclusion=excluded.conclusion,
+                verdict=excluded.verdict,
+                stage=excluded.stage,
+                profile_id=excluded.profile_id,
+                profile_hash=excluded.profile_hash,
+                candidate_id=excluded.candidate_id,
+                metrics_json=excluded.metrics_json,
+                interaction_json=excluded.interaction_json,
+                error=excluded.error,
+                failure_code=excluded.failure_code,
+                last_run_id=excluded.last_run_id,
+                attempts=excluded.attempts,
+                tokens_json=excluded.tokens_json,
+                created_at=excluded.created_at,
+                updated_at=excluded.updated_at
+            """,
+            (
+                entry["id"], entry.get("factor_name"), entry.get("expression"),
+                entry.get("conclusion"), entry.get("verdict"), entry.get("stage"),
+                entry.get("profile_id"), entry.get("profile_hash"),
+                entry.get("candidate_id"), self._metrics_json(entry.get("metrics", {})),
+                json.dumps(entry.get("interaction"), ensure_ascii=False) if entry.get("interaction") is not None else None,
+                entry.get("error"), entry.get("failure_code"),
+                entry.get("last_run_id"), int(entry.get("attempts", 1)),
+                json.dumps(entry.get("tokens", []), ensure_ascii=False),
+                entry.get("created_at"), entry.get("updated_at"),
+            ),
         )
-        temp.replace(self.path)
+        conn.execute("DELETE FROM memory_observations WHERE entry_id = ?", (entry["id"],))
+        conn.executemany(
+            """
+            INSERT OR IGNORE INTO memory_observations (
+                entry_id, run_id, observed_at, stage, verdict, failure_code, metrics_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    entry["id"], obs.get("run_id"), obs.get("at"), obs.get("stage"),
+                    obs.get("verdict"), obs.get("failure_code"),
+                    self._metrics_json(obs.get("metrics", {})),
+                )
+                for obs in entry.get("observations", [])
+                if isinstance(obs, dict)
+            ],
+        )
+        conn.execute("DELETE FROM memory_fts WHERE entry_id = ?", (entry["id"],))
+        conn.execute(
+            """
+            INSERT INTO memory_fts (
+                entry_id, factor_name, expression, conclusion, failure_code, search_tokens
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                entry["id"], entry.get("factor_name") or "", entry.get("expression") or "",
+                entry.get("conclusion") or "", entry.get("failure_code") or "",
+                " ".join(entry.get("tokens", [])),
+            ),
+        )
+
+    def _hydrate_entries(
+        self,
+        conn: sqlite3.Connection,
+        rows: list[sqlite3.Row],
+    ) -> list[dict[str, Any]]:
+        if not rows:
+            return []
+        ids = [row["id"] for row in rows]
+        placeholders = ",".join("?" for _ in ids)
+        obs_rows = conn.execute(
+            f"""
+            SELECT * FROM memory_observations
+            WHERE entry_id IN ({placeholders})
+            ORDER BY observed_at
+            """,
+            ids,
+        ).fetchall()
+        observations: dict[str, list[dict[str, Any]]] = {row["id"]: [] for row in rows}
+        for row in obs_rows:
+            observations.setdefault(row["entry_id"], []).append({
+                "run_id": row["run_id"],
+                "at": row["observed_at"],
+                "stage": row["stage"],
+                "verdict": row["verdict"],
+                "failure_code": row["failure_code"],
+                "metrics": json.loads(row["metrics_json"] or "{}"),
+            })
+
+        output: list[dict[str, Any]] = []
+        for row in rows:
+            item = {
+                "id": row["id"],
+                "factor_name": row["factor_name"],
+                "expression": row["expression"],
+                "conclusion": row["conclusion"],
+                "verdict": row["verdict"],
+                "stage": row["stage"],
+                "profile_id": row["profile_id"],
+                "profile_hash": row["profile_hash"],
+                "candidate_id": row["candidate_id"],
+                "metrics": json.loads(row["metrics_json"] or "{}"),
+                "error": row["error"],
+                "failure_code": row["failure_code"],
+                "last_run_id": row["last_run_id"],
+                "attempts": row["attempts"],
+                "tokens": json.loads(row["tokens_json"] or "[]"),
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+                "observations": observations.get(row["id"], []),
+            }
+            output.append(item)
+        return output
 
     def record_tool_result(self, *, run_id: str, row: dict[str, Any]) -> dict[str, Any] | None:
         name = str(row.get("name") or "")
@@ -144,8 +396,12 @@ class ResearchMemoryStore:
         canonical_expression = "\n".join(line.strip() for line in expression.splitlines() if line.strip())
         signature = hashlib.sha256(canonical_expression.encode("utf-8")).hexdigest()[:20]
         failure_code = self._failure_code(name, result, error, verdict)
-        entries = self._load()
-        previous = next((item for item in entries if item.get("id") == signature), None)
+        with self._open() as conn:
+            previous_row = conn.execute(
+                "SELECT attempts, created_at FROM memory_entries WHERE id = ?",
+                (signature,),
+            ).fetchone()
+        previous_attempts = int(previous_row["attempts"]) if previous_row else 0
         observation = {
             "run_id": run_id,
             "at": _now(),
@@ -153,6 +409,7 @@ class ResearchMemoryStore:
             "verdict": verdict,
             "failure_code": failure_code,
             "metrics": self._compact_metrics(metrics),
+            "interaction": _parse_args(args.get("interaction")),
         }
         entry = {
             "id": signature,
@@ -169,23 +426,39 @@ class ResearchMemoryStore:
             "error": error[:500],
             "failure_code": failure_code,
             "last_run_id": run_id,
-            "attempts": int(previous.get("attempts", 0)) + 1 if 'previous' in locals() and previous is not None else 1,
+            "attempts": previous_attempts + 1,
             "updated_at": _now(),
             "observations": [observation],
         }
-        entries = self._load()
-        previous = next((item for item in entries if item.get("id") == signature), None)
-        if previous is not None:
-            old_observations = previous.get("observations", [])
-            if isinstance(old_observations, int):
-                old_observations = [{"at": previous.get("updated_at"), "verdict": previous.get("verdict")}]
-            entry["observations"] = [*old_observations[-99:], observation]
-            entry["created_at"] = previous.get("created_at", entry["updated_at"])
-            entries = [item for item in entries if item.get("id") != signature]
+
+        if previous_row:
+            entry["created_at"] = previous_row["created_at"] or entry["updated_at"]
+            with self._open() as conn:
+                old_rows = conn.execute(
+                    """
+                    SELECT * FROM memory_observations
+                    WHERE entry_id = ?
+                    ORDER BY observed_at
+                    """,
+                    (signature,),
+                ).fetchall()
+            old_observations = [
+                {
+                    "run_id": row["run_id"],
+                    "at": row["observed_at"],
+                    "stage": row["stage"],
+                    "verdict": row["verdict"],
+                    "failure_code": row["failure_code"],
+                    "metrics": json.loads(row["metrics_json"] or "{}"),
+                }
+                for row in old_rows
+            ]
+            entry["observations"] = [*old_observations[-98:], observation]
         else:
             entry["created_at"] = entry["updated_at"]
-        entries.append(entry)
-        self._save(entries)
+
+        with self._open() as conn:
+            self._write_entry(conn, entry)
         return entry
 
     @staticmethod
@@ -193,6 +466,8 @@ class ResearchMemoryStore:
         keys = (
             "ic", "icir", "rank_ic", "factor_coverage", "coverage",
             "long_group_annual_excess_return", "winsorized_abs_ic_decay",
+            "annualized_return", "annualized_excess_return", "sharpe",
+            "max_drawdown", "annual_turnover",
         )
         return {key: value for key in keys if (value := _safe_float(metrics.get(key))) is not None}
 
@@ -208,6 +483,8 @@ class ResearchMemoryStore:
         if "sign" in text:
             return "sign_flip"
         if name == "submit_factor":
+            if "engine_gate" in text:
+                return "backtest_failed"
             return "stage_one_failed" if not result.get("candidate_stored") else "stage_two_failed"
         if name == "eval_on_train_set":
             return "train_threshold"
@@ -247,6 +524,41 @@ class ResearchMemoryStore:
     _POSITIVE_VERDICTS = frozenset({"production_approved", "validated", "candidate_approved", "promising"})
     _NEGATIVE_VERDICTS = frozenset({"rejected", "revise_required", "weak"})
 
+    def delete_entry(self, entry_id: str) -> bool:
+        with self._open() as conn:
+            cursor = conn.execute("DELETE FROM memory_entries WHERE id = ?", (entry_id,))
+            return cursor.rowcount > 0
+
+    @staticmethod
+    def entry_signature(expr: str) -> str:
+        """与 record_tool_result 一致的表达式签名（规范换行后 sha256 前 20 位）。"""
+        canonical = "\n".join(line.strip() for line in (expr or "").splitlines() if line.strip())
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:20]
+
+    def purge_factor(
+        self,
+        *,
+        factor_names: list[str] | tuple[str, ...] = (),
+        expressions: list[str] | tuple[str, ...] = (),
+    ) -> int:
+        """删除与指定因子相关的全部记忆条目（含 FTS 与观察记录，经级联/触发器）。
+
+        匹配规则：表达式签名精确命中，或 factor_name 精确命中。返回删除条数。
+        """
+        ids = {self.entry_signature(e) for e in expressions if e}
+        names = [n for n in factor_names if n]
+        if not ids and not names:
+            return 0
+        deleted = 0
+        with self._open() as conn:
+            for eid in ids:
+                cursor = conn.execute("DELETE FROM memory_entries WHERE id = ?", (eid,))
+                deleted += cursor.rowcount
+            for name in names:
+                cursor = conn.execute("DELETE FROM memory_entries WHERE factor_name = ?", (name,))
+                deleted += cursor.rowcount
+        return deleted
+
     def context_for(
         self,
         research_goal: str,
@@ -255,6 +567,7 @@ class ResearchMemoryStore:
         include_rejected: bool = True,
         prefer_orthogonal: bool = True,
         include_expression: bool = True,
+        max_expression_chars: int | None = None,
     ) -> str:
         """Build a compact, retrieval-based research memory context block.
 
@@ -267,19 +580,15 @@ class ResearchMemoryStore:
         Output is split into two sections — positive then negative — to make
         the contrast immediately legible to the LLM.
         """
-        entries = self._load()
+        entries = self._retrieval_candidates(research_goal, include_rejected)
         if not include_rejected:
             entries = [entry for entry in entries if entry.get("verdict") not in self._NEGATIVE_VERDICTS]
         if not entries:
             return ""
-        query_tokens = set(_tokens(research_goal))
-
         verdict_rank = {
             "production_approved": 5, "validated": 4, "candidate_approved": 3,
             "promising": 2, "revise_required": 1, "rejected": 1, "weak": 0,
         }
-
-        bm25 = self._bm25_scores(entries, query_tokens)
 
         def _key(entry: dict[str, Any], bm: float) -> tuple[float, int, int, str]:
             observations = entry.get("observations", [])
@@ -288,8 +597,8 @@ class ResearchMemoryStore:
 
         # Split into positive / negative pools and score independently so
         # that a large negative pool can't crowd out all positives.
-        positive_pool = [(e, b) for e, b in zip(entries, bm25) if e.get("verdict") in self._POSITIVE_VERDICTS]
-        negative_pool = [(e, b) for e, b in zip(entries, bm25) if e.get("verdict") in self._NEGATIVE_VERDICTS]
+        positive_pool = [(e, float(e.pop("_bm25", 0.0))) for e in entries if e.get("verdict") in self._POSITIVE_VERDICTS]
+        negative_pool = [(e, float(e.pop("_bm25", 0.0))) for e in entries if e.get("verdict") in self._NEGATIVE_VERDICTS]
 
         positive_pool.sort(key=lambda pair: _key(pair[0], pair[1]), reverse=True)
         negative_pool.sort(key=lambda pair: _key(pair[0], pair[1]), reverse=True)
@@ -331,7 +640,7 @@ class ResearchMemoryStore:
             if prefer_orthogonal:
                 lines.append("扩展时优先引入正交变量，避免仅改窗口长度的同质微调。")
             for entry, _ in positive:
-                lines.append(self._format_entry(entry, include_expression))
+                lines.append(self._format_entry(entry, include_expression, max_expression_chars))
 
         # ── 否定段 ──
         if negative:
@@ -342,78 +651,131 @@ class ResearchMemoryStore:
                 "否则不要重复尝试相同结构。"
             )
             for entry, _ in negative:
-                lines.append(self._format_entry(entry, include_expression))
+                lines.append(self._format_entry(entry, include_expression, max_expression_chars))
 
         return "\n".join(lines)
 
     @staticmethod
-    def _format_entry(entry: dict[str, Any], include_expression: bool) -> str:
+    def _fts_match_query(tokens: set[str]) -> str:
+        return " OR ".join(
+            '"' + str(token).replace('"', '""') + '"'
+            for token in sorted(tokens)
+        )
+
+    def _retrieval_candidates(
+        self,
+        research_goal: str,
+        include_rejected: bool,
+        *,
+        scan_limit: int = 256,
+    ) -> list[dict[str, Any]]:
+        """Fetch a small FTS-ranked plus recency candidate set, never all history."""
+        filters = "" if include_rejected else (
+            f"AND e.verdict NOT IN ({','.join('?' for _ in self._NEGATIVE_VERDICTS)})"
+        )
+        filter_args = tuple() if include_rejected else tuple(sorted(self._NEGATIVE_VERDICTS))
+        candidates: dict[str, dict[str, Any]] = {}
+
+        with self._open() as conn:
+            recent_rows = conn.execute(
+                f"""
+                SELECT e.*, 0.0 AS relevance
+                FROM memory_entries e
+                WHERE 1=1 {filters}
+                ORDER BY e.updated_at DESC
+                LIMIT ?
+                """,
+                (*filter_args, int(scan_limit)),
+            ).fetchall()
+            hydrated_recent = self._hydrate_entries(conn, recent_rows)
+            for row, entry in zip(recent_rows, hydrated_recent):
+                entry["_bm25"] = float(row["relevance"])
+                candidates[entry["id"]] = entry
+
+            tokens = set(_tokens(research_goal))
+            match_query = self._fts_match_query(tokens)
+            if match_query:
+                matched_rows = conn.execute(
+                    f"""
+                    SELECT e.*, -bm25(memory_fts) AS relevance
+                    FROM memory_fts
+                    JOIN memory_entries e ON e.id = memory_fts.entry_id
+                    WHERE memory_fts MATCH ? {filters}
+                    ORDER BY relevance DESC
+                    LIMIT ?
+                    """,
+                    (match_query, *filter_args, int(scan_limit)),
+                ).fetchall()
+                hydrated_matched = self._hydrate_entries(conn, matched_rows)
+                for row, entry in zip(matched_rows, hydrated_matched):
+                    existing = candidates.get(entry["id"])
+                    entry["_bm25"] = float(row["relevance"])
+                    if existing is None:
+                        candidates[entry["id"]] = entry
+                    else:
+                        existing["_bm25"] = max(
+                            float(existing.get("_bm25", 0.0)),
+                            float(row["relevance"]),
+                        )
+
+        return list(candidates.values())
+
+    def query_for_attempts(
+        self,
+        research_goal: str,
+        recent_rows: list[dict[str, Any]],
+        *,
+        max_recent_attempts: int = 8,
+        max_expression_chars: int = 1200,
+    ) -> str:
+        """Build a retrieval query from the goal plus the current run's latest work."""
+        parts = [str(research_goal or "A股日频因子挖掘")]
+        for row in list(recent_rows)[-max(0, int(max_recent_attempts)):]:
+            args = _parse_args(row.get("arguments_raw"))
+            factor_name = str(args.get("factor_name") or "").strip()
+            expression = str(args.get("multi_line_expr") or "").strip()
+            error = str(row.get("error") or "").strip()
+            if factor_name:
+                parts.append(factor_name)
+            if expression:
+                parts.append(expression[:max_expression_chars])
+            if error:
+                parts.append(error[:300])
+            interaction = args.get("interaction")
+            if isinstance(interaction, dict):
+                parts.append(str(interaction.get("interaction_type") or ""))
+                parts.append(str(interaction.get("base_signal") or ""))
+                parts.append(str(interaction.get("condition_signal") or ""))
+                parts.append(str(interaction.get("economic_mechanism") or ""))
+        return "\n".join(part for part in parts if part)
+
+    @staticmethod
+    def _format_entry(
+        entry: dict[str, Any],
+        include_expression: bool,
+        max_expression_chars: int | None = None,
+    ) -> str:
         m = entry.get("metrics", {})
         metric_text = " ".join(
             f"{key}={value:.4g}" for key, value in m.items() if isinstance(value, (int, float))
         )
+        interaction = entry.get("interaction") if isinstance(entry.get("interaction"), dict) else {}
+        interaction_text = ""
+        if interaction:
+            interaction_text = f"；交互类型={interaction.get('interaction_type')}；条件={interaction.get('condition_signal')}"
         expr = entry.get("expression")
+        if include_expression and expr and max_expression_chars is not None:
+            text = str(expr)
+            if int(max_expression_chars) <= 0:
+                expr = None
+            elif len(text) > int(max_expression_chars):
+                text = text[:max(int(max_expression_chars) - 3, 0)] + "..."
+            expr = text
         expr_tail = f"；表达式：{expr}" if (include_expression and expr) else ""
         return (
             f"- [{entry.get('verdict')}] {entry.get('factor_name')}: {entry.get('conclusion')} "
-            f"指标({metric_text or '无'}){expr_tail}"
+            f"指标({metric_text or '无'}){interaction_text}{expr_tail}"
         )
-
-    @staticmethod
-    def _entry_token_set(entry: dict[str, Any]) -> set[str]:
-        """Return the token set for an entry, re-splitting compound tokens on
-        the fly so that legacy entries written before underscore-splitting was
-        added still match sub-word queries (e.g. ``reversal_5`` → ``reversal``).
-        """
-        stored = set(entry.get("tokens", []))
-        if not stored:
-            # Fallback: re-tokenise from factor_name + expression + conclusion
-            stored = set(_tokens(
-                entry.get("factor_name", ""),
-                entry.get("expression", ""),
-                entry.get("conclusion", ""),
-            ))
-        # Ensure underscore-split sub-words are present
-        extra: set[str] = set()
-        for token in stored:
-            parts = token.split("_")
-            if len(parts) > 1:
-                extra.update(p for p in parts if len(p) >= 2)
-        return stored | extra
-
-    @staticmethod
-    def _bm25_scores(entries: list[dict[str, Any]], query_tokens: set[str]) -> list[float]:
-        """BM25 IDF/term-frequency scoring over entry token sets.
-
-        k1=1.5, b=0.75. tf is 1 for present tokens (we store deduplicated token
-        sets). Without query overlap a small negative floor avoids zero scores
-        dominating ordering; priority still acts as the tie-breaker.
-        """
-        if not query_tokens:
-            return [0.0] * len(entries)
-        docs = [ResearchMemoryStore._entry_token_set(entry) for entry in entries]
-        n = len(docs)
-        if n == 0:
-            return []
-        from collections import Counter
-        df = Counter()
-        for doc in docs:
-            df.update(doc)
-        avgdl = sum(len(doc) for doc in docs) / n
-        k1, b = 1.5, 0.75
-        out = []
-        for doc in docs:
-            dl = len(doc)
-            score = 0.0
-            for q in query_tokens:
-                if q not in doc:
-                    continue
-                idf = math.log(1 + (n - df[q] + 0.5) / (df[q] + 0.5))
-                tf = 1.0
-                norm = k1 * (1 - b + b * dl / avgdl) if avgdl else 1.0
-                score += idf * (tf * (k1 + 1)) / (tf + norm)
-            out.append(score if score > 0 else -1.0)
-        return out
 
     # Verdict display order — positive first, then negative.
     _VERDICT_ORDER = {
@@ -431,26 +793,37 @@ class ResearchMemoryStore:
         recency, so the frontend always shows validated/promising factors
         even when recent runs produced mostly rejections.
         """
-        entries = self._load()
-        # Two-pass sort: first by updated_at descending, then stable sort by
-        # verdict priority ascending — Python's sort is stable, so entries
-        # with the same verdict rank keep their recency order.
-        entries.sort(key=lambda e: str(e.get("updated_at", "")), reverse=True)
-        entries.sort(key=lambda e: self._VERDICT_ORDER.get(str(e.get("verdict")), 99))
-        return entries[:limit]
+        case_parts = " ".join(
+            f"WHEN '{verdict}' THEN {rank}"
+            for verdict, rank in self._VERDICT_ORDER.items()
+        )
+        with self._open() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT * FROM memory_entries
+                ORDER BY CASE verdict {case_parts} ELSE 99 END,
+                         updated_at DESC
+                LIMIT ?
+                """,
+                (max(0, int(limit)),),
+            ).fetchall()
+            return self._hydrate_entries(conn, rows)
 
     def statistics(self) -> dict[str, Any]:
-        entries = self._load()
-        counts: dict[str, int] = {}
-        attempts = 0
-        for entry in entries:
-            verdict = str(entry.get("verdict") or "unknown")
-            observations = entry.get("observations", [])
-            n = observations if isinstance(observations, int) else len(observations)
-            attempts += n
-            counts[verdict] = counts.get(verdict, 0) + n
+        with self._open() as conn:
+            entry_count = int(conn.execute("SELECT COUNT(*) FROM memory_entries").fetchone()[0])
+            obs_rows = conn.execute(
+                """
+                SELECT e.verdict AS verdict, COUNT(*) AS n
+                FROM memory_observations o
+                JOIN memory_entries e ON e.id = o.entry_id
+                GROUP BY e.verdict
+                """
+            ).fetchall()
+        counts = {str(row["verdict"] or "unknown"): int(row["n"]) for row in obs_rows}
+        attempts = sum(counts.values())
         return {
-            "entries": len(entries),
+            "entries": entry_count,
             "observations": attempts,
             "verdict_counts": counts,
             "train_to_validated_rate": round(counts.get("validated", 0) / attempts, 4) if attempts else None,
@@ -458,8 +831,20 @@ class ResearchMemoryStore:
         }
 
     def backfill_from_logs(self, log_root: Path) -> int:
-        """Populate an empty memory store from prior UI JSONL event logs once."""
-        if self._load():
+        """Populate an empty memory store from prior UI JSONL event logs once.
+
+        以 store_meta.backfill_done 标记防止「删空记忆后重启又被全量复活」：
+        只要标记存在（无论库内是否还有条目），就不再回放历史日志。
+        """
+        with self._open() as conn:
+            existing = conn.execute("SELECT 1 FROM memory_entries LIMIT 1").fetchone()
+            done = conn.execute("SELECT v FROM store_meta WHERE k = 'backfill_done'").fetchone()
+        if existing or done:
+            if not done:
+                with self._open() as conn:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO store_meta(k, v) VALUES ('backfill_done', '1')"
+                    )
             return 0
         count = 0
         for log_path in sorted(Path(log_root).glob("*/run_*.jsonl")):
@@ -477,4 +862,8 @@ class ResearchMemoryStore:
                 for row in event.get("results") or []:
                     if isinstance(row, dict) and self.record_tool_result(run_id=log_path.parent.name, row=row):
                         count += 1
+        with self._open() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO store_meta(k, v) VALUES ('backfill_done', '1')"
+            )
         return count

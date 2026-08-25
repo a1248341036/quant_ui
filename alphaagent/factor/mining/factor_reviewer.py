@@ -19,20 +19,30 @@ from alphaagent.factor.mining.cli_stream import MiningStreamObserver, stream_to_
 from alphaagent.factor.mining.config import MiningConfig
 
 
-REVIEW_PROMPT = """你是独立的量化因子评估子 Agent（FactorReviewer），职责是阻止伪创新、经典风险暴露改名和数据挖掘后的无效交付。
+REVIEW_PROMPT = """你是独立的量化因子评估子 Agent（FactorReviewer），职责是阻止伪创新和经典风险暴露改名进入正式因子库。
 
 只审查用户给出的一个候选因子。重点检查：
 1. 表达式是否只是教科书因子或其单调变换，例如规模、原始动量、短期反转、低波、流动性；
 2. 它是否仅通过 LOG/NEG/RANK/CS_ZSCORE/CS_WINSORIZE 等保序或尺度变换包装已有信号；
 3. train 到 val 是否明显衰减，统计显著性和经济量级是否足够；
-4. 是否有明确且可检验的新增经济假设，而非只复述指标；
-5. 是否应允许进入候选池。
+4. 是否有明确且可检验的新增经济假设，而非只复述指标。
+5. 多因子交互是否有 interaction 契约；未声明契约的
+   MULTIPLY(CS_ZSCORE(...), CS_ZSCORE(...)) 属于随机组合，应 reject。
+   即使有契约，乘法也必须有 base-only / condition-only / combined 消融证据，
+   且 combined 相对最强单腿有稳定增量。
 
-对 `NEG(LOG($float_cap))` 一类仅由流通市值构成的因子，必须判定为 `reject`：这是经典小市值暴露，CS 标准化和 winsorize 不构成创新。
+判定原则：
+- 对 `NEG(LOG($float_cap))` 一类仅由流通市值构成的因子，判定为 `reject`。
+- 筹码/成交量类因子天然高偏度（|skew|>5, kurtosis>100 是常态），**不应仅因分布偏态判定 reject**；应关注 IC 稳定性和月度一致性。
+- 两个已知信号的交互/条件组合属于组合创新，若验证集稳定且方向一致，应判 `revise` 而非 `reject`。
+- 两个已知信号的交互必须区分门控、组内排名、残差化、背离、滚动关系、分段状态和乘法；
+  缺少交互类型、因果机制或消融证据时不得 approve。
+- 只有确认是教科书因子的纯单调变换（无新增信息源）时才判 `reject`。
+- 统计指标达标（abs(IC)>0.02, abs(ICIR)>0.25, val IC 未灾难性衰减）且有合理经济逻辑的因子，倾向于 `approve` 或 `revise`，不要 `reject`。
 
 输出严格 JSON，不能使用 Markdown：
 {"verdict":"approve|revise|reject","novelty":"high|medium|low","canonical_form":"一句话标准因子名称","reasons":["最多三条可审计原因"],"required_changes":["具体可执行的重构方向"]}
-只有在结构性原创、验证稳定、且有清晰经济假设时才允许 approve。JSON 无法保证时用 reject。"""
+只有在确认是教科书因子单调变换、无任何新增信息源时才 `reject`。JSON 无法保证时用 reject。"""
 
 
 def _expr_key(expr: str) -> str:
@@ -80,6 +90,7 @@ class FactorReviewer:
         self.workspace = workspace
         self.emit = emit
         self.evaluations: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(lambda: defaultdict(list))
+        self.eval_expr_head: dict[str, str] = {}
         self.reviews: dict[str, dict[str, Any]] = {}
         self.current_turn = 0
 
@@ -94,7 +105,45 @@ class FactorReviewer:
     def record_evaluation(self, split: str, arguments: dict[str, Any], result: dict[str, Any]) -> None:
         expr = arguments.get("multi_line_expr")
         if isinstance(expr, str) and expr.strip() and result.get("ok", True):
-            self.evaluations[_expr_key(expr)][split].append(result)
+            key = _expr_key(expr)
+            self.evaluations[key][split].append(result)
+            self.eval_expr_head.setdefault(key, expr.replace("\n", " | ")[:200])
+
+    @staticmethod
+    def _extract_eval_metrics(entry: dict[str, Any]) -> dict[str, Any]:
+        """从评估结果中提取审查可读的指标摘要（兼容 summary/metrics 两种存放位）。"""
+        summary = entry.get("summary") or entry.get("metrics") or {}
+
+        def _num(name: str) -> Any:
+            v = summary.get(name)
+            return round(float(v), 4) if isinstance(v, (int, float)) else None
+
+        out = {k: _num(k) for k in ("ic", "icir", "rank_ic", "factor_coverage", "coverage")}
+        rob = entry.get("monthly_corr_robustness") or {}
+        share = rob.get("share_months_ic_positive")
+        if isinstance(share, (int, float)):
+            out["monthly_ic_positive"] = round(float(share), 3)
+        return {k: v for k, v in out.items() if v is not None}
+
+    def ablation_matrix(self, exclude_key: str, limit: int = 20) -> list[dict[str, Any]]:
+        """本会话全部其它表达式的消融矩阵：逐表达式给出各口径（train/val/profile）最新指标。
+
+        让提交期审查包携带完整的逐腿/变体消融对照表，而非仅组合自身记录——
+        此前证据包缺失该矩阵，Reviewer 反复以「缺少消融」为由 revise。
+        """
+        rows: list[dict[str, Any]] = []
+        for key, by_split in self.evaluations.items():
+            if key == exclude_key:
+                continue
+            row: dict[str, Any] = {"expr_head": self.eval_expr_head.get(key, ""), "splits": {}}
+            for split, entries in by_split.items():
+                if entries:
+                    metrics = self._extract_eval_metrics(entries[-1])
+                    if metrics:
+                        row["splits"][split] = metrics
+            if row["splits"]:
+                rows.append(row)
+        return rows[-limit:]
 
     def _model(self) -> OpenAIChatModel:
         params: dict[str, Any] = {"max_tokens": min(self.config.max_tokens, 2048), "parallel_tool_calls": False}
@@ -113,19 +162,24 @@ class FactorReviewer:
         expr = str(arguments.get("multi_line_expr") or "")
         factor_name = str(arguments.get("factor_name") or "expr")
         key = _expr_key(expr)
+        has_comment = bool(str(arguments.get("comment") or "").strip())
+        # 仅缓存「带 comment 的提交期审查」：val 抽检等无 comment 的早期审查不落缓存，
+        # 否则其 revise 判定会遮蔽后续携带完整证据的正式审查（author_comment 恒为空的老毛病）。
         if key in self.reviews:
             return self.reviews[key]
         review_policy = self.policy.get("review_policy", {})
         precheck = _classic_precheck(expr) if review_policy.get("block_classic_transforms", True) else None
         if precheck is not None:
             self.emit("factor_review", {"turn": turn, "factor_name": factor_name, "multi_line_expr": expr, **precheck})
-            self.reviews[key] = precheck
+            if has_comment:
+                self.reviews[key] = precheck
             return precheck
 
         metric_precheck = self._metric_precheck(expr)
         if metric_precheck is not None:
             self.emit("factor_review", {"turn": turn, "factor_name": factor_name, "multi_line_expr": expr, **metric_precheck})
-            self.reviews[key] = metric_precheck
+            if has_comment:
+                self.reviews[key] = metric_precheck
             return metric_precheck
 
         packet = {
@@ -134,6 +188,10 @@ class FactorReviewer:
             "author_comment": arguments.get("comment", ""),
             "evaluations": self.evaluations.get(_expr_key(expr), {}),
         }
+        # 注入本会话全部其它表达式的消融矩阵（逐腿/变体 × 各口径最新指标）。
+        ablation_rows = self.ablation_matrix(_expr_key(expr))
+        if ablation_rows:
+            packet["ablation_matrix"] = ablation_rows
         self.emit("reviewer_start", {"turn": turn, "factor_name": factor_name})
 
         def review_emit(event: str, payload: dict[str, Any]) -> None:
@@ -171,7 +229,8 @@ class FactorReviewer:
                 f"当前新颖性低于本次 ResearchSpec 要求的 {review_policy.get('minimum_novelty', 'medium')}。"
             )
         self.emit("factor_review", {"turn": turn, "factor_name": factor_name, "multi_line_expr": expr, **verdict})
-        self.reviews[key] = verdict
+        if has_comment:
+            self.reviews[key] = verdict
         return verdict
 
     def _metric_precheck(self, expr: str) -> dict[str, Any] | None:
@@ -190,8 +249,8 @@ class FactorReviewer:
         reasons: list[str] = []
         if abs(train_ic) < float(policy.get("min_train_abs_ic", 0.015)):
             reasons.append("训练集 abs(IC) 未达到 ResearchSpec 门槛。")
-        if train_icir < float(policy.get("min_train_icir", 0.2)):
-            reasons.append("训练集 ICIR 未达到 ResearchSpec 门槛。")
+        if abs(train_icir) < float(policy.get("min_train_icir", 0.2)):
+            reasons.append("训练集 abs(ICIR) 未达到 ResearchSpec 门槛。")
         if coverage < float(policy.get("min_train_coverage", 0.85)):
             reasons.append("训练集 Coverage 未达到 ResearchSpec 门槛。")
         if abs(val_ic) < float(policy.get("min_val_abs_ic", 0.01)):

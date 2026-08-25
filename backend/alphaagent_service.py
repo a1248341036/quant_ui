@@ -26,7 +26,7 @@ if not PYTHON_EXECUTABLE.exists():
     PYTHON_EXECUTABLE = Path(sys.executable)
 DEFAULT_PANEL = "cne://"  # 从 CNE 数据湖实时构建 panel，不再依赖预构建的 parquet
 DEFAULT_FACTORLIB = ROOT / "artifacts" / "alphaagent" / "factorzoo" / "stock_1d"
-RESEARCH_MEMORY_FILE = ROOT / "artifacts" / "alphaagent" / "research_memory.json"
+RESEARCH_MEMORY_FILE = ROOT / "artifacts" / "alphaagent" / "research_memory.db"
 LOG_ROOT = ROOT / "logs" / "factor_mining" / "ui"
 
 # ── 单因子评估服务（懒初始化） ──────────────────────────────────────
@@ -237,11 +237,24 @@ def start_run(
 ) -> AgentRun:
     params = dict(params)
     raw_spec = params.get("research_spec")
-    if raw_spec is None:
-        raw_spec = {"delivery_policy": {"allow_submit": bool(params.get("allow_submit", False))}}
+    raw_spec = dict(raw_spec) if isinstance(raw_spec, dict) else {}
+    # 表单模式开关是权威来源；spec 内缺失时回填，保证模式/label/基本面加载三者一致。
+    mode = str(params.get("research_mode") or raw_spec.get("research_mode") or "technical")
+    raw_spec["research_mode"] = mode
     spec = normalize_research_spec(raw_spec)
     params["research_spec"] = spec
-    params["allow_submit"] = bool(spec["delivery_policy"]["allow_submit"])
+    # 研究模式决定评估 label：基本面模式的季频数据必须配慢因子 label，
+    # 调用方传了不匹配的 label 时强制覆盖并记录警告。
+    recommended = spec.get("recommended_label_col") or "label_1d_open_to_open"
+    caller_label = str(params.get("label_col") or "").strip()
+    if mode == "fundamental" and caller_label != recommended:
+        logger.warning(
+            "label_col 覆盖: 基本面模式要求 %s，调用方传了 %s → 已强制覆盖",
+            recommended, caller_label,
+        )
+        params["label_col"] = recommended
+    elif not caller_label:
+        params["label_col"] = recommended
     params["max_tool_calls_per_round"] = min(
         int(params["max_tool_calls_per_round"]),
         int(spec["search_policy"]["max_candidates_per_round"]),
@@ -272,14 +285,15 @@ def start_run(
     ]
     if params.get("max_parallel_eval") is not None:
         command.extend(["--max-parallel-eval", str(params["max_parallel_eval"])])
-    if params.get("no_fundamentals", True):
+    # 研究模式决定是否载入基本面列：技术模式省内存，基本面模式必须载入 funda_* 字段。
+    wants_fundamentals = spec.get("research_mode") == "fundamental"
+    if not wants_fundamentals or params.get("no_fundamentals"):
         command.append("--no-fundamentals")
-    if not params.get("allow_submit", False):
-        command.append("--no-submit")
     if resume_context_file is not None:
         command.extend(["--resume-context-file", str(resume_context_file)])
     env = os.environ.copy()
     env.setdefault("ALPHA_LLM_PROVIDER", "codex")
+    env.setdefault("PYTHONIOENCODING", "utf-8")
     run = AgentRun(
         run_id=run_id,
         command=command,
@@ -611,6 +625,86 @@ def evaluate_multi_profile(
 #  因子库管理
 # ══════════════════════════════════════════════════════════════════════
 
+def _candidate_root() -> Path:
+    return DEFAULT_FACTORLIB.parent / "candidate_1d"
+
+
+def _candidate_registry() -> dict[str, Any]:
+    path = _candidate_root() / "mining_candidate_registry.json"
+    if not path.is_file():
+        return {}
+    loaded = json.loads(path.read_text(encoding="utf-8"))
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _candidate_expr(entry: dict[str, Any], factor_id: str) -> str:
+    expr = str(entry.get("expr") or "")
+    if expr:
+        return expr
+    rel = str(entry.get("expression_file") or "")
+    path = ROOT / rel if rel else _candidate_root() / "expressions" / f"{factor_id}.dsl"
+    return path.read_text(encoding="utf-8").strip() if path.exists() else ""
+
+
+def _candidate_factor_view(factor_id: str, entry: dict[str, Any]) -> dict[str, Any]:
+    metrics = entry.get("metrics") if isinstance(entry.get("metrics"), dict) else {}
+    fingerprint = entry.get("data_fingerprint") if isinstance(entry.get("data_fingerprint"), dict) else {}
+    finite_count: int | None = None
+    if metrics.get("finite_ratio") is not None and fingerprint.get("n_rows") is not None:
+        finite_count = int(float(metrics["finite_ratio"]) * int(fingerprint["n_rows"]))
+    review = entry.get("review") if isinstance(entry.get("review"), dict) else {}
+
+    # ── 提取 train/val 分拆指标 ──
+    ee = entry.get("evaluation_evidence") if isinstance(entry.get("evaluation_evidence"), dict) else {}
+    train_ic = val_ic = val_icir = None
+    for split_entry in ee.get("train", []):
+        s = split_entry.get("summary") or {}
+        train_ic = _safe_float(s.get("ic"))
+        break
+    for split_entry in ee.get("validation", []):
+        s = split_entry.get("summary") or {}
+        val_ic = _safe_float(s.get("ic"))
+        val_icir = _safe_float(s.get("icir"))
+        break
+
+    # ── label 与研究模式 ──
+    ingest_cfg = entry.get("ingest_config") or {}
+    label_col = str(ingest_cfg.get("label_col") or "")
+
+    # ── comment 预览 ──
+    comment_full = str(entry.get("comment") or "")
+    comment_preview = comment_full[:150] + ("…" if len(comment_full) > 150 else "")
+
+    # ── reviewer 意见摘要 ──
+    reasons_list = review.get("reasons") or []
+    review_summary = "; ".join(str(r) for r in reasons_list[:3]) if reasons_list else ""
+
+    return {
+        "factor_id": factor_id,
+        "name": str(entry.get("name") or factor_id),
+        "expr": _candidate_expr(entry, factor_id),
+        "col_idx": None,
+        "status": str(entry.get("review_status") or "pending_review"),
+        "promotion_status": str(entry.get("promotion_status") or "pending"),
+        "review_verdict": str(review.get("verdict") or ""),
+        "finite_count": finite_count or 0,
+        "created_at": str(entry.get("ingested_at") or ""),
+        "comment_preview": comment_preview,
+        "comment_full": comment_full,
+        "label_col": label_col,
+        "train_ic": train_ic,
+        "val_ic": val_ic,
+        "val_icir": val_icir,
+        "review_reasons": review_summary,
+        "metrics": {
+            "ic": _safe_float(metrics.get("ic")),
+            "icir": _safe_float(metrics.get("icir")),
+            "rank_ic": _safe_float(metrics.get("rank_ic")),
+            "factor_coverage": _safe_float(metrics.get("factor_coverage", metrics.get("coverage"))),
+        },
+        "extra": entry,
+    }
+
 def list_factors(*, library: str = "production") -> dict[str, Any]:
     """列出因子库中的所有因子。
 
@@ -618,12 +712,24 @@ def list_factors(*, library: str = "production") -> dict[str, Any]:
       - "production": 正式因子库 (stock_1d)
       - "candidate": 候选因子库 (candidate_1d)
     """
-    from alphaagent.factor.zoo import FactorZoo, DEFAULT_FACTORLIB_ROOT
+    from alphaagent.factor.zoo import FactorZoo
 
-    root = DEFAULT_FACTORLIB_ROOT if library == "production" else DEFAULT_FACTORLIB_ROOT.parent / "candidate_1d"
+    root = DEFAULT_FACTORLIB if library == "production" else DEFAULT_FACTORLIB.parent / "candidate_1d"
+
+    if library == "candidate":
+        registry = _candidate_registry()
+        factors = [_candidate_factor_view(fid, entry) for fid, entry in sorted(registry.items())]
+        return {
+            "library": library,
+            "root": str(root),
+            "n_factors": len(factors),
+            "factors": factors,
+            "registry": registry,
+        }
 
     try:
-        zoo = FactorZoo.open(root)
+        # Listing must not re-hash the 82 MB canonical row index on every request.
+        zoo = FactorZoo.open(root, verify_hash=False)
     except FileNotFoundError:
         return {"library": library, "root": str(root), "factors": [], "n_factors": 0, "error": "library_not_initialized"}
 
@@ -675,12 +781,20 @@ def list_factors(*, library: str = "production") -> dict[str, Any]:
 
 def get_factor_detail(factor_id: str, *, library: str = "production") -> dict[str, Any]:
     """获取单个因子详情。"""
-    from alphaagent.factor.zoo import FactorZoo, DEFAULT_FACTORLIB_ROOT
+    from alphaagent.factor.zoo import FactorZoo
 
-    root = DEFAULT_FACTORLIB_ROOT if library == "production" else DEFAULT_FACTORLIB_ROOT.parent / "candidate_1d"
+    root = DEFAULT_FACTORLIB if library == "production" else DEFAULT_FACTORLIB.parent / "candidate_1d"
+
+    if library == "candidate":
+        entry = _candidate_registry().get(factor_id)
+        if not isinstance(entry, dict):
+            return {"error": "factor_not_found"}
+        view = _candidate_factor_view(factor_id, entry)
+        view["registry_entry"] = entry
+        return view
 
     try:
-        zoo = FactorZoo.open(root)
+        zoo = FactorZoo.open(root, verify_hash=False)
     except FileNotFoundError:
         return {"error": "library_not_initialized"}
 
@@ -709,29 +823,63 @@ def get_factor_detail(factor_id: str, *, library: str = "production") -> dict[st
 
 
 def delete_factor(factor_id: str, *, library: str = "production") -> dict[str, Any]:
-    """删除一个因子。"""
-    from alphaagent.factor.zoo import FactorZoo, DEFAULT_FACTORLIB_ROOT
+    """删除一个因子，并同步清除研究记忆/RAG 中的相关条目。"""
+    from alphaagent.factor.mining.research_memory import ResearchMemoryStore
+    from alphaagent.factor.zoo import FactorZoo
 
-    root = DEFAULT_FACTORLIB_ROOT if library == "production" else DEFAULT_FACTORLIB_ROOT.parent / "candidate_1d"
+    root = DEFAULT_FACTORLIB if library == "production" else DEFAULT_FACTORLIB.parent / "candidate_1d"
+    factor_names: list[str] = []
+    expressions: list[str] = []
 
-    try:
-        zoo = FactorZoo.open(root)
-    except FileNotFoundError:
-        return {"error": "library_not_initialized"}
-
-    try:
-        zoo.delete_factor(factor_id)
-    except KeyError:
-        return {"error": "factor_not_found"}
-
-    # 从 registry 中删除
-    registry_path = root / "mining_delivered_registry.json"
-    if registry_path.is_file():
-        registry = json.loads(registry_path.read_text(encoding="utf-8"))
-        registry.pop(factor_id, None)
+    if library == "candidate":
+        registry = _candidate_registry()
+        if factor_id not in registry:
+            return {"error": "factor_not_found"}
+        entry = registry.pop(factor_id)
+        if str(entry.get("name") or "").strip():
+            factor_names.append(str(entry["name"]).strip())
+        if str(entry.get("expr") or "").strip():
+            expressions.append(str(entry["expr"]))
+        registry_path = root / "mining_candidate_registry.json"
         registry_path.write_text(json.dumps(registry, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        rel = str(entry.get("expression_file") or "")
+        dsl_path = ROOT / rel if rel else root / "expressions" / f"{factor_id}.dsl"
+        if dsl_path.exists():
+            dsl_path.unlink()
+    else:
+        try:
+            zoo = FactorZoo.open(root, verify_hash=False)
+        except FileNotFoundError:
+            return {"error": "library_not_initialized"}
 
-    return {"ok": True, "factor_id": factor_id, "deleted": True}
+        try:
+            meta = zoo.catalog.get(factor_id)
+            if meta is not None:
+                if str(meta.name or "").strip():
+                    factor_names.append(str(meta.name).strip())
+                if str(meta.expr or "").strip():
+                    expressions.append(str(meta.expr))
+            zoo.delete_factor(factor_id)
+        except KeyError:
+            return {"error": "factor_not_found"}
+
+        # 从 registry 中删除
+        registry_path = root / "mining_delivered_registry.json"
+        if registry_path.is_file():
+            registry = json.loads(registry_path.read_text(encoding="utf-8"))
+            removed = registry.pop(factor_id, None)
+            if isinstance(removed, dict):
+                if str(removed.get("name") or "").strip():
+                    factor_names.append(str(removed["name"]).strip())
+                if str(removed.get("expr") or "").strip():
+                    expressions.append(str(removed["expr"]))
+            registry_path.write_text(json.dumps(registry, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    purged = ResearchMemoryStore(RESEARCH_MEMORY_FILE).purge_factor(
+        factor_names=factor_names,
+        expressions=expressions,
+    )
+    return {"ok": True, "factor_id": factor_id, "deleted": True, "memory_purged": purged}
 
 
 def _safe_float(v: Any) -> float | None:
@@ -744,3 +892,296 @@ def _safe_float(v: Any) -> float | None:
         return f if math.isfinite(f) else None
     except (TypeError, ValueError):
         return None
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  因子实验室：保存因子到因子库
+# ══════════════════════════════════════════════════════════════════════
+
+def save_factor(
+    *,
+    multi_line_expr: str,
+    factor_name: str,
+    comment: str = "",
+    library: str = "candidate",
+    train_start: str = "2018-01-01",
+    train_end: str = "2022-12-31",
+    val_start: str = "2023-01-01",
+    val_end: str = "2025-12-31",
+    label_col: str = "label_1d_open_to_open",
+    include_fundamentals: bool = False,
+) -> dict[str, Any]:
+    """将因子表达式保存到因子库（候选池或正式库）。
+
+    复用挖掘流程的 ingest_factor + upsert_mining_registry 链路。
+    """
+    from alphaagent.factor.mining.submit import slug_factor_id
+    from alphaagent.factor.ingest import ingest_factor, load_panel_for_zoo, prepare_stored_values
+    from alphaagent.factor.types import IngestPolicy
+    from alphaagent.factor.zoo import FactorZoo
+    from alphaagent.factor.mining.registry_io import upsert_mining_registry, write_candidate_registry
+
+    factor_id = slug_factor_id(factor_name)
+    name = str(factor_name).strip() or factor_id
+
+    # 获取 eval_service 的 session 以复用已加载的 panel
+    svc = _get_eval_service(
+        train_start=train_start, train_end=train_end,
+        val_start=val_start, val_end=val_end,
+        label_col=label_col, include_fundamentals=include_fundamentals,
+    )
+    session_ids = list(svc.sessions._sessions.keys())
+    if not session_ids:
+        raise RuntimeError("eval_service_session_empty")
+    session = svc.sessions.get(session_ids[-1])
+    ctx = session.ctx
+
+    # Candidate records are registry-only; production remains a dense FactorZoo.
+    if library == "production":
+        zoo_root = DEFAULT_FACTORLIB
+        registry_path = zoo_root / "mining_delivered_registry.json"
+        expr_dir = zoo_root / "expressions"
+    else:
+        zoo_root = DEFAULT_FACTORLIB.parent / "candidate_1d"
+        registry_path = zoo_root / "mining_candidate_registry.json"
+        expr_dir = zoo_root / "expressions"
+
+    try:
+        zoo = FactorZoo.open(zoo_root)
+    except FileNotFoundError:
+        return {"ok": False, "factor_id": factor_id, "error": f"factorlib_not_initialized:{zoo_root}"}
+
+    # 加载 panel
+    panel = load_panel_for_zoo(zoo, panel_path=ctx.panel_path)
+
+    # 构建 ingest policy
+    policy = IngestPolicy.from_context(ctx, max_cs_corr=1.0, similar_top_k=3)
+
+    prepared_values, _, _, _ = prepare_stored_values(multi_line_expr.strip(), panel, zoo, policy)
+    assessment = ingest_factor(
+        zoo,
+        factor_id=factor_id,
+        name=name,
+        expr=multi_line_expr.strip(),
+        panel=panel,
+        policy=policy,
+        stored_values=prepared_values,
+        dry_run=library == "candidate",
+        overwrite=True,
+    )
+
+    if library == "candidate":
+        fingerprint = {
+            "panel_path": str(ctx.panel_path),
+            "index_hash": zoo.manifest.index_hash,
+            "n_rows": int(zoo.manifest.n_rows),
+        }
+        reg_path, dsl_path = write_candidate_registry(
+            registry_path,
+            factor_id=factor_id,
+            name=name,
+            comment=comment or name,
+            expr=multi_line_expr.strip(),
+            expr_dir=expr_dir,
+            repo_root=ROOT,
+            policy=policy,
+            metrics=assessment.metrics,
+            similarity=assessment.similarity,
+            source="lab_save",
+            data_fingerprint=fingerprint,
+        )
+        return {
+            "ok": True,
+            "factor_id": factor_id,
+            "factor_name": name,
+            "library": library,
+            "candidate_stored": True,
+            "candidate_storage": "registry_only",
+            "review_status": "pending_review",
+            "stored": False,
+            "metrics": assessment.metrics,
+            "similarity": assessment.similarity,
+            "registry_path": reg_path,
+            "dsl_path": dsl_path,
+        }
+
+    if not assessment.stored and assessment.skipped_reason not in (None, "already_exists"):
+        return {
+            "ok": False,
+            "factor_id": factor_id,
+            "error": assessment.skipped_reason or "production_ingest_failed",
+        }
+
+    reg_path, dsl_path = upsert_mining_registry(
+        registry_path,
+        factor_id=factor_id,
+        name=name,
+        comment=comment or name,
+        expr=multi_line_expr.strip(),
+        expr_dir=expr_dir,
+        repo_root=ROOT,
+        policy=policy,
+        metrics=assessment.metrics,
+        similarity=assessment.similarity,
+        ingest_status="production",
+        source="lab_save",
+    )
+
+    return {
+        "ok": True,
+        "factor_id": factor_id,
+        "factor_name": name,
+        "library": library,
+        "stored": True,
+        "metrics": assessment.metrics,
+        "similarity": assessment.similarity,
+        "registry_path": reg_path,
+        "dsl_path": dsl_path,
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  因子实验室：因子回测
+# ══════════════════════════════════════════════════════════════════════
+
+
+def _eval_factor_matrix(
+    *,
+    multi_line_expr: str,
+    factor_name: str,
+    calc_start: str,
+    end: str,
+) -> pd.DataFrame:
+    """Evaluate a DSL expression and return a date × code score matrix."""
+    import numpy as np
+    from alphaagent.data.adapters.cnequity import load_panel_from_cne
+    from alphaagent.dsl import eval_factor
+    from alphaagent.factor.align import align_series_to_panel
+
+    panel = load_panel_from_cne(start=calc_start, end=end, universe_mask=False)
+    panel = panel.sort_index()
+    if panel.empty:
+        raise ValueError(f"CNE 面板在区间内无数据: {calc_start} ~ {end}")
+
+    raw = eval_factor(multi_line_expr, panel)
+    if not isinstance(raw, pd.Series):
+        raise TypeError(f"factor_output_must_be_series:{type(raw)!r}")
+
+    values = align_series_to_panel(raw, panel)
+    factor = pd.Series(values, index=panel.index, name=factor_name, dtype=np.float32)
+    factor_df = factor.unstack(level="instrument")
+    factor_df.index.name = "date"
+    factor_df.columns.name = "code"
+
+    # AlphaAgent 使用 000001.SZ，本地回测面板使用六位代码。
+    factor_df.columns = [str(code).split(".")[0] for code in factor_df.columns]
+    return factor_df
+
+
+def backtest_factor(
+    *,
+    multi_line_expr: str,
+    factor_name: str = "expr",
+    start: str = "2023-01-01",
+    end: str = "2025-12-31",
+    top_n: int = 5,
+    freq: str = "monthly",
+    capital: float = 100000.0,
+    ascending: bool = False,
+    universe: str = "全部股票",
+    exclude_kechuang: bool = False,
+    warmup_days: int = 400,
+) -> dict[str, Any]:
+    """用因子表达式驱动主回测引擎 core.engine.run_backtest。"""
+    from backend import services as sv
+    from core.assets import STOCK_PROFILE
+    from core.engine import run_backtest
+
+    start_ts = pd.Timestamp(start)
+    calc_ts = (start_ts - pd.Timedelta(days=max(0, int(warmup_days)))
+               if warmup_days > 0 else start_ts)
+    calc_start = calc_ts.date().isoformat()
+
+    codes = sv.build_codes(universe=universe, exclude_kechuang=exclude_kechuang)
+    if not codes:
+        raise ValueError(f"股票池为空: {universe}")
+
+    data = sv.load_data(
+        start=calc_start,
+        end=end,
+        codes=codes,
+        need_panel=True,
+        need_heavy=False,
+    )
+    bt_panel = data.get("panel")
+    if bt_panel is None or bt_panel.empty:
+        raise ValueError("本地回测面板在区间内无数据")
+
+    factor_df = _eval_factor_matrix(
+        multi_line_expr=multi_line_expr,
+        factor_name="_lab_factor",
+        calc_start=calc_start,
+        end=end,
+    )
+    bt_dates = pd.DatetimeIndex(sorted(bt_panel["date"].unique()))
+    bt_codes = [str(code) for code in bt_panel["code"].unique()]
+    factor_df = factor_df.reindex(index=bt_dates, columns=bt_codes)
+
+    # 因子矩阵包含预热段；run_backtest 只从 start 开始输出净值。
+    res = run_backtest(
+        panel=bt_panel,
+        codes=codes,
+        factor="pred",
+        external_scores=factor_df,
+        ascending=ascending,
+        start=start,
+        end=end,
+        capital=capital,
+        top_n=top_n,
+        freq=freq,
+        affordable=True,
+        amount_q=0.2,
+        warmup_days=int(warmup_days),
+        cash_mode=True,
+        limit_flags=True,
+        lot_size=100,
+        buy_cost=0.0008,
+        sell_cost=0.0013,
+        slippage_bps=0.0,
+        max_participation=0.0,
+        execution_profile=STOCK_PROFILE,
+    )
+
+    nm = sv.get_name_map()
+    holdings = res["holdings"].copy()
+    holdings["name"] = [nm.get(str(c), "") for c in holdings["code"]]
+
+    metrics = {k: _safe_float(v) for k, v in res["metrics"].items()}
+    bench_metrics = {k: _safe_float(v) for k, v in res["bench_metrics"].items()}
+
+    nav_points = sv.series_to_points(res["nav"])
+    bench_points = sv.series_to_points(res["bench"])
+    dd_points = sv.series_to_points(res["drawdown"])
+
+    return {
+        "ok": True,
+        "metrics": metrics,
+        "bench_metrics": bench_metrics,
+        "nav": nav_points,
+        "bench": bench_points,
+        "drawdown": dd_points,
+        "holdings": holdings.to_dict(orient="records"),
+        "trades": res["trades"].to_dict(orient="records"),
+        "last_signal_date": str(res["last_signal_date"].date()) if res["last_signal_date"] else None,
+        "config": {
+            "universe": universe,
+            "n_codes": len(codes),
+            "start": start,
+            "end": end,
+            "top_n": top_n,
+            "freq": freq,
+            "capital": capital,
+            "warmup_days": int(warmup_days),
+            "cash_mode": True,
+        },
+    }

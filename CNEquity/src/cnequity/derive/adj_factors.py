@@ -142,20 +142,32 @@ def _load_daily_bar_dates(
     start: date | None = None,
     symbols: list[str] | None = None,
 ) -> pl.DataFrame:
-    """Load symbol×trade_date pairs from daily_bars (lazy hive scan when possible)."""
-    # Lazy import: query.reader imports STORED_ADJUST_TYPE from this module.
-    from cnequity.query.parquet_scan import collect_parquet_root
+    """Load symbol×trade_date pairs, external archive first, curated fallback.
 
-    bars_path = config.curated_root / "daily_bars"
+    In this deployment daily_bars lives in the external tushare-wide archive;
+    scanning curated partitions directly silently missed every session after
+    the archive switch and froze the factor watermark in the past.
+    """
+    # Lazy imports: query.reader imports STORED_ADJUST_TYPE from this module.
+    from cnequity.query.parquet_scan import collect_parquet_root
+    from cnequity.query.reader import load
+
+    bars = pl.DataFrame()
     try:
-        bars = collect_parquet_root(
-            bars_path,
-            partition_col="trade_date",
-            start=start,
-            symbols=symbols,
-        )
-    except FileNotFoundError:
-        return _EMPTY_BAR_DATES.clone()
+        bars = load("daily_bars", start=start, symbols=symbols, config=config)
+    except Exception:  # noqa: BLE001 — no external source here, fall through
+        pass
+    if bars.is_empty():
+        bars_path = config.curated_root / "daily_bars"
+        try:
+            bars = collect_parquet_root(
+                bars_path,
+                partition_col="trade_date",
+                start=start,
+                symbols=symbols,
+            )
+        except FileNotFoundError:
+            return _EMPTY_BAR_DATES.clone()
     if bars.is_empty() or not {"symbol", "trade_date"}.issubset(bars.columns):
         return _EMPTY_BAR_DATES.clone()
     if "volume" in bars.columns:
@@ -163,14 +175,12 @@ def _load_daily_bar_dates(
         # rows still need the carried-forward factor for adjusted queries. But
         # a symbol represented only by zero-volume placeholders is not a real
         # factor task and must not trigger a Sina request.
-        traded = collect_parquet_root(
-            bars_path,
-            partition_col="trade_date",
-            start=start,
-            symbols=symbols,
-            traded_only=True,
+        traded_symbols = set(
+            bars.filter((pl.col("volume") > 0) | pl.col("volume").is_null())
+            .get_column("symbol")
+            .unique()
+            .to_list()
         )
-        traded_symbols = set(traded.get_column("symbol").unique().to_list())
         bars = bars.filter(pl.col("symbol").is_in(traded_symbols))
         if bars.is_empty():
             return _EMPTY_BAR_DATES.clone()

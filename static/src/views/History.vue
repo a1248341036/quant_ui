@@ -34,6 +34,8 @@
             <th class="sortable" @click="setHistorySort('total_return')">总收益<span class="sort-arrow" v-if="history.sortKey==='total_return'">{{history.sortDir==='asc' ? '↑' : '↓'}}</span></th>
             <th class="sortable" @click="setHistorySort('annual')">年化<span class="sort-arrow" v-if="history.sortKey==='annual'">{{history.sortDir==='asc' ? '↑' : '↓'}}</span></th>
             <th class="sortable" @click="setHistorySort('sharpe')">夏普<span class="sort-arrow" v-if="history.sortKey==='sharpe'">{{history.sortDir==='asc' ? '↑' : '↓'}}</span></th>
+            <th class="sortable" @click="setHistorySort('excess_annual')">超额年化<span class="sort-arrow" v-if="history.sortKey==='excess_annual'">{{history.sortDir==='asc' ? '↑' : '↓'}}</span></th>
+            <th class="sortable" @click="setHistorySort('excess_sharpe')">超额夏普<span class="sort-arrow" v-if="history.sortKey==='excess_sharpe'">{{history.sortDir==='asc' ? '↑' : '↓'}}</span></th>
             <th class="sortable" @click="setHistorySort('max_drawdown')">最大回撤<span class="sort-arrow" v-if="history.sortKey==='max_drawdown'">{{history.sortDir==='asc' ? '↑' : '↓'}}</span></th>
             <th class="sortable" @click="setHistorySort('data_version')">数据版本<span class="sort-arrow" v-if="history.sortKey==='data_version'">{{history.sortDir==='asc' ? '↑' : '↓'}}</span></th>
             <th></th>
@@ -48,6 +50,8 @@
               <td>{{pct(r.summary?.total_return)}}</td>
               <td>{{pct(r.summary?.annual)}}</td>
               <td>{{num(r.summary?.sharpe)}}</td>
+              <td>{{pct(r.summary?.excess_annual)}}</td>
+              <td>{{num(r.summary?.excess_sharpe)}}</td>
               <td>{{pct(r.summary?.max_drawdown)}}</td>
               <td>{{r.data_version||''}}</td>
               <td><button class="ghost" @click.stop="openHistory(r.run_id)">详情</button></td>
@@ -204,6 +208,8 @@ export default {
           case 'total_return': return this.numOrNull(s.total_return);
           case 'annual': return this.numOrNull(s.annual);
           case 'sharpe': return this.numOrNull(s.sharpe);
+          case 'excess_annual': return this.numOrNull(s.excess_annual);
+          case 'excess_sharpe': return this.numOrNull(s.excess_sharpe);
           case 'max_drawdown': return this.numOrNull(s.max_drawdown);
           case 'data_version': return r.data_version || '';
           default: return '';

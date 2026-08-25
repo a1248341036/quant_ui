@@ -54,13 +54,45 @@ _ST_BACKFILL_CHUNK = 20
 @register_step("instruments", group="core", requires_workers=False)
 def step_instruments(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
     rl = config.tdx_rate_limit_spec()
-    df = fetch_instruments(rate_limit=rl, allow_mock=config.tdx_allow_mock, config=config)
-    df = normalize_with_source(df)
+    try:
+        df = fetch_instruments(rate_limit=rl, allow_mock=config.tdx_allow_mock, config=config)
+        df = normalize_with_source(df)
+    except Exception as exc:
+        df = _instruments_from_baostock(config, exc)
     df = enrich_instrument_list_dates(config, df)
     df = _merge_untdxable_instruments(config, df)
     if getattr(config, "_backfill", False):
         df = _merge_delisted_instruments(config, df)
     return write_simple(config, run_id, "instruments", df)
+
+
+def _instruments_from_baostock(config: Config, cause: Exception) -> pl.DataFrame:
+    """TDX unreachable → degrade to baostock's full roster instead of failing.
+
+    A dead TDX network used to fail the core gate and freeze every downstream
+    watermark for the day. ``query_stock_basic`` carries listed *and* delisted
+    names (the source --backfill already trusts), so a snapshot built from it
+    keeps compaction's absence-means-delisted inference honest.
+
+    Fail-loud when baostock is disabled or broken too: silently returning an
+    empty frame would let compact infer mass delistings.
+    """
+    if not config.sources.get("baostock", False):
+        raise RuntimeError(
+            f"instruments: TDX unavailable ({cause}) and "
+            "[sources.baostock] disabled — no fallback roster"
+        ) from cause
+    logger.warning("instruments: TDX unavailable (%s); degrading to baostock roster", cause)
+
+    from cnequity.adapters.baostock.instruments import fetch_instrument_basics
+
+    config.rate_limit("baostock")
+    basics = fetch_instrument_basics()
+    if basics.is_empty():
+        raise RuntimeError(
+            "instruments fallback: baostock query_stock_basic returned no rows"
+        ) from cause
+    return with_provenance(basics, source="baostock", data_version="v1")
 
 
 def _merge_untdxable_instruments(config: Config, df: pl.DataFrame) -> pl.DataFrame:

@@ -471,13 +471,26 @@ def load_bar_universe(config: Config) -> set[str]:
     Returns an empty set when no bars exist yet; callers must treat that as
     "cannot reconcile" and skip filtering rather than dropping every row.
     """
+    # Lazy import: query.reader imports STORED_ADJUST_TYPE from this module.
+    from cnequity.query.reader import load
+
+    # Standard reader resolves the external tushare-wide archive; older lakes
+    # only have curated hive partitions.
+    try:
+        df = load("daily_bars", config=config)
+        if not df.is_empty() and "symbol" in df.columns:
+            if "volume" in df.columns:
+                df = df.filter((pl.col("volume") > 0) | pl.col("volume").is_null())
+            if not df.is_empty():
+                return set(df["symbol"].unique().to_list())
+    except Exception:
+        pass
+
+    # Fallback: curated hive scan (offline/test lakes without external bridge).
     bars_root = config.curated_root / "daily_bars"
     files = list(bars_root.glob("**/*.parquet")) if bars_root.exists() else []
     if not files:
         return set()
-    # Apply the volume contract per file. A diagonal union would turn legacy
-    # files without ``volume`` into nulls, and a global ``volume > 0`` filter
-    # would then silently discard their valid row-based evidence.
     scans: list[pl.LazyFrame] = []
     for path in files:
         scan = pl.scan_parquet(str(path))

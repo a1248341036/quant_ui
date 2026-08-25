@@ -16,7 +16,61 @@ from alphaagent.factor.evaluation.context import EvaluationContext
 from alphaagent.factor.evaluation.plugins import get_metric, get_transform
 from alphaagent.factor.evaluation.profile import EvaluationProfile
 from alphaagent.factor.evaluation.rules import evaluate_rules
+from alphaagent.factor.metrics import (
+    daily_long_short_series,
+    monthly_ic_robustness,
+)
 from alphaagent.data.panel import slice_panel
+
+
+def _series_to_points(s: pd.Series) -> list[dict[str, Any]]:
+    """pd.Series → [{date, value}, ...]，跳过 NaN。"""
+    out: list[dict[str, Any]] = []
+    for idx, val in s.items():
+        v = float(val) if np.isfinite(val) else None
+        ts = idx
+        if hasattr(ts, "strftime"):
+            ts = ts.strftime("%Y-%m-%d")
+        else:
+            ts = str(ts)[:10]
+        out.append({"date": ts, "value": v})
+    return out
+
+
+def _monthly_breakdown(daily_series: pd.Series) -> list[dict[str, Any]]:
+    """逐日序列 → 月度聚合 [{month, mean, n_days, positive_ratio}]。"""
+    if daily_series.empty:
+        return []
+    s = daily_series.copy()
+    s.index = pd.to_datetime(s.index, errors="coerce")
+    finite = s[np.isfinite(s.to_numpy(dtype=float, copy=False))]
+    if finite.empty:
+        return []
+    out: list[dict[str, Any]] = []
+    for period, grp in finite.groupby(finite.index.to_period("M"), sort=True):
+        vals = grp.to_numpy(dtype=float, copy=False)
+        mean_v = float(np.mean(vals)) if len(vals) else float("nan")
+        pos_ratio = float(np.mean(vals > 0)) if len(vals) else 0.0
+        out.append({
+            "month": str(period),
+            "mean": round(mean_v, 6) if np.isfinite(mean_v) else None,
+            "n_days": int(len(vals)),
+            "positive_ratio": round(pos_ratio, 4),
+        })
+    return out
+
+
+def _cumulative_returns(daily_ls: pd.Series) -> list[dict[str, Any]]:
+    """逐日多空收益 → 累计收益曲线。"""
+    if daily_ls.empty:
+        return []
+    s = daily_ls.copy()
+    s.index = pd.to_datetime(s.index, errors="coerce")
+    valid = s[np.isfinite(s.to_numpy(dtype=float, copy=False))]
+    if valid.empty:
+        return []
+    cum = (1.0 + valid).cumprod() - 1.0
+    return _series_to_points(cum)
 
 
 class EvaluationEngine:
@@ -72,6 +126,23 @@ class EvaluationEngine:
         timing["total_ms"] = (time.perf_counter() - started) * 1000
         rule_results = evaluate_rules(metrics, profile.rules)
         dataset_id = hashlib.sha256(f"{session.ctx.panel_path}|{label_col}|{date_range['start']}|{date_range['end']}".encode("utf-8")).hexdigest()[:20]
+
+        # ── 生成详细可视化数据 ──
+        daily_ic_series = context.daily_ic()
+        daily_rank_ic_series = context.daily_rank_ic()
+        daily_ls = daily_long_short_series(
+            context.factor, context.label, n_deciles=10, min_stocks=30,
+        )
+
+        chart_data: dict[str, Any] = {
+            "daily_ic": _series_to_points(daily_ic_series),
+            "daily_rank_ic": _series_to_points(daily_rank_ic_series),
+            "daily_long_short": _series_to_points(daily_ls),
+            "cumulative_long_short": _cumulative_returns(daily_ls),
+            "monthly_ic": _monthly_breakdown(daily_ic_series),
+            "monthly_long_short": _monthly_breakdown(daily_ls),
+        }
+
         return {
             "ok": True,
             "candidate": {"factor_name": factor_name, "expression": multi_line_expr},
@@ -86,6 +157,7 @@ class EvaluationEngine:
             "passed": all(row["passed"] for row in rule_results) if rule_results else True,
             "transforms_applied": context.transforms_applied,
             "timing_ms": timing,
+            "chart_data": chart_data,
         }
 
     @staticmethod

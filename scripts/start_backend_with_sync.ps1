@@ -5,6 +5,24 @@ $python = Join-Path $root ".venv\Scripts\python.exe"
 $env:PYTHONIOENCODING = "utf-8"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
+# --- Kill existing services on ports 17891 and 8787 before launching ---
+function Stop-PortListener([int]$Port) {
+    try {
+        $conns = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
+        foreach ($conn in $conns) {
+            if ($conn.OwningProcess -and $conn.OwningProcess -ne 0) {
+                Write-Host "[launcher] Killing PID $($conn.OwningProcess) on port $Port" -ForegroundColor Yellow
+                Stop-Process -Id $conn.OwningProcess -Force -ErrorAction SilentlyContinue
+            }
+        }
+    } catch { }
+}
+
+Write-Host '[launcher] Stopping existing services' -ForegroundColor DarkGray
+Stop-PortListener 17891
+Stop-PortListener 8787
+Start-Sleep -Seconds 1
+
 # [DEPRECATED 2026-08-22] 远程 sync 已废弃，服务器停用，日更切换至 CNE 数据湖流水线
 # & $python (Join-Path $PSScriptRoot "startup_remote_sync.py")
 
@@ -31,9 +49,10 @@ while (-not $backend.HasExited -and -not $cne.HasExited) {
 }
 
 if ($backend.HasExited) {
-    Write-Host "[launcher] backend exited (code $($backend.ExitCode))" -ForegroundColor Red
+    Write-Host ('[launcher] backend exited (code ' + $backend.ExitCode + ')') -ForegroundColor Red
 } else {
-    Write-Host "[launcher] CNE exited (code $($cne.ExitCode))" -ForegroundColor Red
+    $cneExitCode = $cne.ExitCode
+    Write-Host ('[launcher] CNE exited (code ' + $cneExitCode + ')') -ForegroundColor Red
 }
 
 # Kill the survivor

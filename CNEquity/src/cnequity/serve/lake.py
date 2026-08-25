@@ -567,6 +567,11 @@ class LakeView:
         out = []
         for row in self._catalog().iter_rows(named=True):
             spec = DATASETS[row["dataset"]]
+            raw_mark = row["watermark"] or row["coverage_end"]
+            unified_watermark = min(raw_mark, anchor) if raw_mark else None
+            unified_coverage_end = (
+                min(row["coverage_end"], anchor) if row["coverage_end"] else None
+            )
             out.append(
                 {
                     **row,
@@ -580,6 +585,9 @@ class LakeView:
                     # keying the catalog on `intraday` alone showed it as daily.
                     "row_grain": spec.row_grain,
                     "granularity": spec.partition_granularity if spec.partition_col else None,
+                    "unified_watermark": unified_watermark,
+                    "unified_coverage_end": unified_coverage_end,
+                    "ahead_of_anchor": bool(raw_mark and raw_mark > anchor),
                     "freshness": self._freshness_of(row, anchor),
                 }
             )
