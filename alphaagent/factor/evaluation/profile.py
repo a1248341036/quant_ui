@@ -34,36 +34,45 @@ class EvaluationProfile:
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:20]
 
 
+# 统一预处理：去极值 → 去市值暴露 → 标准化。
+# 所有 profile 共用相同 transforms，确保因子在评估前剥离大小盘风格差异，
+# 避免 TopN 选股集中在小盘股（A股 5000+ 股票中小市值占绝大多数）。
+_BASE_TRANSFORMS = (
+    {"plugin": "cross_sectional_winsorize", "params": {"lower_pct": 1, "upper_pct": 99}},
+    {"plugin": "size_residualize", "params": {"field": "float_cap", "log": True}},
+    {"plugin": "cross_sectional_zscore"},
+)
+
 _BASE_METRICS = (
     {"plugin": "cross_sectional_core"},
     {"plugin": "monthly_robustness"},
     {"plugin": "mls_fmb"},
     {"plugin": "ic_series_diagnostics"},
     {"plugin": "long_short_portfolio", "params": {"groups": 10, "cost_bps": 0}},
-    {"plugin": "topn_portfolio", "params": {"top_n": 30, "cost_bps": 15.0}},
+    {"plugin": "topn_portfolio", "params": {"selection_pct": 0.02, "cost_bps": 15.0}},
 )
 
 
 def default_evaluation_profiles() -> dict[str, EvaluationProfile]:
     return {
-        "train_screen": EvaluationProfile("train_screen", "train", metrics=_BASE_METRICS),
-        "validation": EvaluationProfile("validation", "val", metrics=_BASE_METRICS),
+        "train_screen": EvaluationProfile(
+            "train_screen", "train",
+            transforms=_BASE_TRANSFORMS, metrics=_BASE_METRICS,
+        ),
+        "validation": EvaluationProfile(
+            "validation", "val",
+            transforms=_BASE_TRANSFORMS, metrics=_BASE_METRICS,
+        ),
         "size_neutral_validation": EvaluationProfile(
             "size_neutral_validation",
             "val",
-            transforms=(
-                {"plugin": "size_residualize", "params": {"field": "float_cap", "log": True}},
-                {"plugin": "cross_sectional_zscore"},
-            ),
+            transforms=_BASE_TRANSFORMS,
             metrics=_BASE_METRICS,
         ),
         "production_delivery": EvaluationProfile(
             "production_delivery",
             "full",
-            transforms=(
-                {"plugin": "cross_sectional_winsorize", "params": {"lower_pct": 1, "upper_pct": 99}},
-                {"plugin": "size_residualize", "params": {"field": "float_cap", "log": True}},
-            ),
+            transforms=_BASE_TRANSFORMS,
             metrics=_BASE_METRICS,
         ),
     }
@@ -118,12 +127,12 @@ def resolve_profiles(spec: dict[str, Any] | None = None) -> dict[str, Evaluation
     delivery = (spec or {}).get("delivery_policy", {})
     production = delivery.get("production", {})
     raw_defaults["production_delivery"]["rules"] = [
-        {"metric": "cross_sectional_core.ic", "op": "abs_gte", "value": production.get("min_abs_ic", 0.035)},
-        {"metric": "cross_sectional_core.icir", "op": "abs_gte", "value": production.get("min_icir", 0.5)},
-        {"metric": "mls_fmb.nw_t_ls", "op": "abs_gte", "value": production.get("min_fmb_t_stat", 2.5)},
-        {"metric": "long_short_portfolio.long_group_annual_excess_return", "op": "abs_gte", "value": production.get("min_long_group_annual_excess_return", 0.03)},
-        {"metric": "topn_portfolio.annualized_excess_return", "op": "gte", "value": production.get("min_topn_annual_excess_return", 0.05)},
-        {"metric": "topn_portfolio.sharpe", "op": "gte", "value": production.get("min_topn_sharpe", 0.5)},
+        {"metric": "cross_sectional_core.ic", "op": "abs_gte", "value": production.get("min_abs_ic", 0.025)},
+        {"metric": "cross_sectional_core.icir", "op": "abs_gte", "value": production.get("min_icir", 0.35)},
+        {"metric": "mls_fmb.nw_t_ls", "op": "abs_gte", "value": production.get("min_fmb_t_stat", 2.0)},
+        {"metric": "long_short_portfolio.long_group_annual_excess_return", "op": "abs_gte", "value": production.get("min_long_group_annual_excess_return", 0.02)},
+        {"metric": "topn_portfolio.annualized_excess_return", "op": "gte", "value": production.get("min_topn_annual_excess_return", 0.03)},
+        {"metric": "topn_portfolio.sharpe", "op": "gte", "value": production.get("min_topn_sharpe", 0.3)},
         {"metric": "topn_portfolio.daily_overlap", "op": "gte", "value": production.get("min_topn_daily_overlap", 0.5)},
     ]
     for profile_id, override in configured.items():

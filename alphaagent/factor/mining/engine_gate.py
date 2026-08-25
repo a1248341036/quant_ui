@@ -72,22 +72,31 @@ def run_engine_gate(
     if engine_frame is None:
         engine_frame = panel_to_engine_frame(panel)
 
+    # 选股模式：支持固定 top_n 或动态百分比 top_pct。
+    # 默认用动态百分比（selection_pct=0.02 ≈ A股 5000 只的 2% ≈ 100 只），
+    # 停牌/涨跌停导致当曰候选池缩小时自动适配，避免固定 N 选到不可交易的尾部股票。
+    selection_mode = str(policy.get("selection_mode", "top_pct"))
+    selection_pct = float(policy.get("selection_pct", 0.02))
+    top_n_fixed = int(policy.get("top_n", 100))
+
     try:
-        result = run_backtest(
-            engine_frame,
+        bt_kwargs: dict[str, Any] = dict(
             codes=codes,
             factor="pred",
             ascending=False,
             start=str(val_start),
             end=str(val_end),
             capital=float(policy.get("capital", 1_000_000)),
-            top_n=int(policy.get("top_n", 30)),
+            top_n=top_n_fixed,
             freq=str(policy.get("freq", "daily")),
             warmup_days=25,
             external_scores=wide,
             slippage_bps=float(policy.get("slippage_bps", 10.0)),
             max_participation=float(policy.get("max_participation", 0.02)),
+            selection_mode=selection_mode,
+            selection_pct=selection_pct,
         )
+        result = run_backtest(engine_frame, **bt_kwargs)
     except Exception as exc:  # noqa: BLE001
         return {
             "enabled": True,
@@ -114,7 +123,13 @@ def run_engine_gate(
     sharpe = m.get("夏普")
 
     from alphaagent.factor.metrics import topn_selection_overlap
-    overlap = topn_selection_overlap(scores, top_n=int(policy.get("top_n", 30)), rebalance=str(policy.get("freq", "daily")))
+    selection_pct_val = float(policy.get("selection_pct", 0.02)) if selection_mode == "top_pct" else None
+    overlap = topn_selection_overlap(
+        scores,
+        top_n=top_n_fixed if selection_mode != "top_pct" else None,
+        selection_pct=selection_pct_val,
+        rebalance=str(policy.get("freq", "daily")),
+    )
     min_overlap = float(policy.get("min_daily_overlap") or 0)
     if min_overlap and (not np.isfinite(overlap) or overlap < min_overlap):
         reasons.append("tail_stability")
@@ -144,7 +159,9 @@ def run_engine_gate(
             "total_return": m.get("总收益"),
             "daily_overlap": overlap,
         },
-        "top_n": int(policy.get("top_n", 30)),
+        "selection_mode": selection_mode,
+        "selection_pct": selection_pct if selection_mode == "top_pct" else None,
+        "top_n": top_n_fixed,
         "freq": str(policy.get("freq", "daily")),
         "window": {"start": str(val_start), "end": str(val_end)},
     }

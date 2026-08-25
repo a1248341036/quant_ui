@@ -694,10 +694,17 @@ def topn_selection_overlap(
     factor: pd.Series,
     *,
     time_level: str = "datetime",
-    top_n: int = 30,
+    top_n: int | None = None,
+    selection_pct: float | None = None,
     rebalance: str = "daily",
 ) -> float:
-    """TopN 选股名单的相邻调仓重合率（纯排名统计，不涉及价格/收益）。"""
+    """TopN 选股名单的相邻调仓重合率（纯排名统计，不涉及价格/收益）。
+
+    支持两种选股模式：
+    - 固定 N：传 top_n=30 每日选 30 只
+    - 动态百分比：传 selection_pct=0.02 每日选前 2%（适配停牌/涨跌停导致的候选池缩放）
+    两者都传时以 selection_pct 为准。
+    """
     rb_dates = _rebalance_dates(list(factor.groupby(level=time_level, sort=False).groups.keys()), rebalance)
     prev: set[str] | None = None
     overlap_sum = 0.0
@@ -708,9 +715,14 @@ def topn_selection_overlap(
         xf = f_sub.to_numpy(dtype=np.float64, copy=False)
         inst = np.asarray(f_sub.index.get_level_values("instrument"))
         valid = np.isfinite(xf)
-        if int(valid.sum()) < max(top_n, 10):
+        n_valid = int(valid.sum())
+        if selection_pct is not None:
+            n_pick = max(1, int(np.ceil(n_valid * float(selection_pct))))
+        else:
+            n_pick = int(top_n or 30)
+        if n_valid < max(n_pick, 10):
             continue
-        order = np.argsort(-xf[valid], kind="stable")[:top_n]
+        order = np.argsort(-xf[valid], kind="stable")[:n_pick]
         current = set(inst[valid][order].tolist())
         if prev is not None:
             overlap_sum += len(current & prev) / max(len(current), 1)

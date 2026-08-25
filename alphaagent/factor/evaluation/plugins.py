@@ -236,10 +236,11 @@ def long_short_portfolio(context: EvaluationContext, params: dict[str, Any]) -> 
 
 @metric("topn_portfolio")
 def topn_portfolio(context: EvaluationContext, params: dict[str, Any]) -> dict[str, Any]:
-    """完整回测引擎（core.engine）口径的 TopN 组合评估。
+    """完整回测引擎（core.engine）口径的组合评估。
 
-    取代旧 topn_portfolio_summary 简化模拟：T+1、整手、涨跌停、停牌、
-    费率滑点与流动性参与率全部生效。输出键保持原规则路径兼容。
+    选股方式默认为动态百分比（selection_pct），自动适配停牌/涨跌停导致的
+    候选池缩放，避免固定 N 选到不可交易的尾部股票。
+    T+1、整手、涨跌停、停牌、费率滑点与流动性参与率全部生效。
     """
     import numpy as np
 
@@ -251,17 +252,31 @@ def topn_portfolio(context: EvaluationContext, params: dict[str, Any]) -> dict[s
     ic_series = context.daily_ic()
     ic_mean = float(np.nanmean(ic_series.to_numpy(dtype=float))) if ic_series.notna().any() else 0.0
     direction = 1 if ic_mean >= 0 else -1
-    values = (context.factor.to_numpy(dtype=np.float64) * direction)
-    top_n = int(params.get("top_n", 30))
+    # direction 统一交给 engine_gate 处理（engine_gate.py scores * direction），
+    # 此处不预乘，避免双重相乘。
+    values = context.factor.to_numpy(dtype=np.float64)
+    selection_pct = float(params.get("selection_pct", 0.02))
+    selection_mode = str(params.get("selection_mode", "top_pct"))
+    top_n_fallback = int(params.get("top_n", 100))
 
     # 门禁阈值交给 profile rules；此处只产出指标，阈值放行所有结果。
-    lenient = {"enabled": True, "top_n": top_n, "min_annual_return": -9.0,
-               "min_excess_annual": -9.0, "min_sharpe": -9.0,
-               "max_drawdown": 9.0, "min_daily_overlap": 0.0}
+    lenient = {
+        "enabled": True,
+        "selection_mode": selection_mode,
+        "selection_pct": selection_pct,
+        "top_n": top_n_fallback,
+        "min_annual_return": -9.0,
+        "min_excess_annual": -9.0,
+        "min_sharpe": -9.0,
+        "max_drawdown": 9.0,
+        "min_daily_overlap": 0.0,
+    }
 
     def _unavailable(error: str) -> dict[str, Any]:
         base: dict[str, Any] = {
-            "top_n": top_n,
+            "selection_mode": selection_mode,
+            "selection_pct": selection_pct,
+            "top_n": top_n_fallback,
             "direction": direction,
             "source": "core.engine",
             "window": {"start": start, "end": end},
@@ -280,7 +295,7 @@ def topn_portfolio(context: EvaluationContext, params: dict[str, Any]) -> dict[s
 
     def _run(freq: str) -> dict[str, Any]:
         gate = run_engine_gate(
-            panel, values, val_start=start, val_end=end, direction=1,
+            panel, values, val_start=start, val_end=end, direction=direction,
             policy={**lenient, "freq": freq}, engine_frame=engine_frame,
         )
         m = gate.get("metrics") or {}
@@ -303,7 +318,9 @@ def topn_portfolio(context: EvaluationContext, params: dict[str, Any]) -> dict[s
 
     out = dict(by_freq["daily"])
     out.update({
-        "top_n": top_n,
+        "selection_mode": selection_mode,
+        "selection_pct": selection_pct,
+        "top_n": top_n_fallback,
         "direction": direction,
         "source": "core.engine",
         "window": {"start": start, "end": end},

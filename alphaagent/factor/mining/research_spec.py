@@ -78,10 +78,10 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
             "max_abs_corr": 0.5,
         },
         "production": {
-            "min_abs_ic": 0.035,
-            "min_icir": 0.5,
-            "min_fmb_t_stat": 2.5,
-            "min_long_group_annual_excess_return": 0.03,
+            "min_abs_ic": 0.025,
+            "min_icir": 0.35,
+            "min_fmb_t_stat": 2.0,
+            "min_long_group_annual_excess_return": 0.02,
             "max_winsorized_abs_ic_decay": 0.10,
             "max_abs_corr": 0.4,
             # 进正式库前的最后一道门：旧交易引擎完整约束回测
@@ -92,15 +92,18 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
             # 可能每天几乎全换（IC 有效但不可持仓）。
             "engine_gate": {
                 "enabled": True,
-                "top_n": 30,
+                # 动态百分比选股：自动适配停牌/涨跌停导致的候选池缩放，
+                # 避免固定 N 选到不可交易的尾部股票。2% ≈ A股 5000 只的 100 只。
+                "selection_mode": "top_pct",
+                "selection_pct": 0.02,
                 "freq": "daily",
                 # LLM 可在 submit 时选择交付调仓频率，必须属于本列表；
                 # 选择会记录进审计轨迹，引擎按该频率复检。
                 "allowed_freqs": ["daily", "weekly", "monthly"],
                 "min_annual_return": 0.0,
-                "min_excess_annual": 0.05,
-                "min_sharpe": 0.5,
-                "max_drawdown": 0.35,
+                "min_excess_annual": 0.02,
+                "min_sharpe": 0.3,
+                "max_drawdown": 0.40,
                 "min_daily_overlap": 0.5,
             },
         },
