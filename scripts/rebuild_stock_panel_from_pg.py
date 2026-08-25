@@ -87,11 +87,15 @@ def load_last_adj_snapshot() -> pd.DataFrame | None:
     """从 CNE 年度档案计算当前复权因子锚点。"""
     if not list(QUANT_DATASET_DIR.glob("*/**/day/stock_daily.parquet")):
         return None
-    rows = duckdb.query(
-        "SELECT ts_code, max(trade_date) AS ref_date, arg_max(adj_factor, trade_date) AS last_adj "
-        "FROM read_parquet(?) GROUP BY ts_code",
-        [STOCK_GLOB],
-    ).fetchdf()
+    con = duckdb.connect()
+    try:
+        rows = con.execute(
+            "SELECT ts_code, max(trade_date) AS ref_date, arg_max(adj_factor, trade_date) AS last_adj "
+            "FROM read_parquet(?) GROUP BY ts_code",
+            [STOCK_GLOB],
+        ).fetchdf()
+    finally:
+        con.close()
     return rows[["ts_code", "last_adj", "ref_date"]]
 
 
