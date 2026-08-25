@@ -355,6 +355,31 @@
               <div class="result-metrics" v-if="message.metrics.length">
                 <span v-for="metric in message.metrics" :key="metric">{{ metric }}</span>
               </div>
+              <!-- 完整引擎回测结果 -->
+              <details v-if="message.backtest" class="result-backtest">
+                <summary>完整引擎回测 · {{ message.backtest.freq }} · TopN {{ message.backtest.top_n }} · 方向 {{ message.backtest.direction === 1 ? '多' : '空' }}</summary>
+                <div class="backtest-metrics">
+                  <span :class="{neg: message.backtest.annual < 0}">年化 {{ pct(message.backtest.annual) }}</span>
+                  <span :class="{neg: message.backtest.excess < 0}">超额 {{ pct(message.backtest.excess) }}</span>
+                  <span>夏普 {{ fmt(message.backtest.sharpe) }}</span>
+                  <span :class="{neg: message.backtest.drawdown < -0.2}">回撤 {{ pct(message.backtest.drawdown) }}</span>
+                  <span>重合率 {{ fmt(message.backtest.overlap) }}</span>
+                  <span>胜率 {{ pct(message.backtest.winRate) }}</span>
+                </div>
+                <div v-if="message.backtest.byFreq" class="backtest-freq-grid">
+                  <div v-for="(f, freq) in message.backtest.byFreq" :key="freq" class="backtest-freq-item">
+                    <strong>{{ freq }}</strong>
+                    <span :class="{neg: f.annualized_return < 0}">年化 {{ pct(f.annualized_return) }}</span>
+                    <span :class="{neg: f.annualized_excess_return < 0}">超额 {{ pct(f.annualized_excess_return) }}</span>
+                    <span>夏普 {{ fmt(f.sharpe) }}</span>
+                    <span>重合 {{ fmt(f.daily_overlap) }}</span>
+                  </div>
+                </div>
+                <div v-if="message.backtest.gateReasons?.length" class="backtest-gate">
+                  <span class="backtest-gate-label">门禁未通过：</span>
+                  <span v-for="r in message.backtest.gateReasons" :key="r" class="backtest-gate-reason">{{ r }}</span>
+                </div>
+              </details>
               <div v-if="message.text" class="result-note">{{ message.text }}</div>
             </div>
 
@@ -644,6 +669,7 @@
 <script>
 import { api } from '../utils/api.js'
 import { chart, renderLine, renderMonthlyHeatmap } from '../utils/charts.js'
+import { fmt, pct } from '../utils/format.js'
 
 export default {
   name: 'AlphaAgent',
@@ -886,6 +912,8 @@ export default {
     },
   },
   methods: {
+    fmt,
+    pct,
     async loadAgentRuns() {
       try {
         this.agent.runs = await api('/api/alphaagent/runs?archived_only=' + this.agent.showArchived + '&t=' + Date.now())
@@ -1313,19 +1341,55 @@ export default {
       const summary = result.summary || result.metrics?.cross_sectional_core || {}
       const args = this.parseArgs(row.arguments_raw || '')
       const profile = result.profile?.profile_id || args.profile_id || ''
+      const topn = result.metrics?.topn_portfolio
+      const engineBt = result.engine_backtest
       const metrics = [
         profile ? 'Profile ' + profile : '',
-        summary.ic != null ? 'IC ' + summary.ic : '',
-        summary.rank_ic != null ? 'RankIC ' + summary.rank_ic : '',
-        summary.icir != null ? 'ICIR ' + summary.icir : '',
-        summary.factor_coverage != null ? 'Coverage ' + summary.factor_coverage : '',
+        summary.ic != null ? 'IC ' + this.fmt4(summary.ic) : '',
+        summary.rank_ic != null ? 'RankIC ' + this.fmt4(summary.rank_ic) : '',
+        summary.icir != null ? 'ICIR ' + this.fmt4(summary.icir) : '',
+        summary.factor_coverage != null ? 'Coverage ' + this.fmt4(summary.factor_coverage) : '',
+        result.metrics?.long_group_annual_excess_return != null ? '多头年化超额 ' + this.pct(result.metrics.long_group_annual_excess_return) : '',
+        result.metrics?.winsorized_abs_ic_decay != null ? '截尾IC衰减 ' + this.fmt4(result.metrics.winsorized_abs_ic_decay) : '',
         result.stored != null ? 'stored ' + result.stored : '',
         result.candidate_stored ? '候选池已保存' : '',
-        result.metrics?.long_group_annual_excess_return != null ? '多头年化超额 ' + result.metrics.long_group_annual_excess_return : '',
-        result.metrics?.winsorized_abs_ic_decay != null ? '截尾IC衰减 ' + result.metrics.winsorized_abs_ic_decay : '',
         result.candidate_state ? '状态 ' + result.candidate_state : '',
+        result.rebalance_freq ? '调仓 ' + result.rebalance_freq : '',
         result.rule_results?.length ? '规则 ' + result.rule_results.filter(x => x.passed).length + '/' + result.rule_results.length : '',
       ].filter(Boolean)
+
+      // 构建完整引擎回测展示数据（evaluate 的 topn_portfolio 或 submit 的 engine_backtest）
+      let backtest = null
+      if (engineBt) {
+        const m = engineBt.metrics || {}
+        backtest = {
+          freq: engineBt.freq || 'daily',
+          top_n: engineBt.top_n || 30,
+          direction: engineBt.direction || 1,
+          annual: m.annual_return,
+          excess: m.excess_annual,
+          sharpe: m.sharpe,
+          drawdown: m.max_drawdown,
+          overlap: m.daily_overlap,
+          winRate: m.win_rate,
+          gateReasons: engineBt.fail_reasons || [],
+        }
+      } else if (topn && typeof topn === 'object' && topn.available !== false) {
+        backtest = {
+          freq: topn.rebalance || 'daily',
+          top_n: topn.top_n || 30,
+          direction: topn.direction || 1,
+          annual: topn.annualized_return,
+          excess: topn.annualized_excess_return,
+          sharpe: topn.sharpe,
+          drawdown: topn.max_drawdown,
+          overlap: topn.daily_overlap,
+          winRate: topn.win_rate,
+          byFreq: topn.by_freq || null,
+          gateReasons: [],
+        }
+      }
+
       return {
         key: key + '-' + (row.tool_call_id || row.name || Math.random()),
         kind: 'tool_result',
@@ -1335,8 +1399,13 @@ export default {
         ok: result.ok !== false || result.candidate_stored === true,
         elapsed: row.elapsed_seconds != null ? Number(row.elapsed_seconds).toFixed(1) : '',
         metrics,
+        backtest,
         text: result.error || result.skipped_reason || '',
       }
+    },
+    fmt4(v) {
+      const n = Number(v)
+      return isNaN(n) ? String(v) : Math.abs(n) < 1 ? n.toFixed(4) : n.toFixed(2)
     },
     toolLabel(name) {
       return ({
@@ -1848,6 +1917,19 @@ export default {
 .result-metrics { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
 .result-metrics span { padding:3px 6px; border-radius:5px; color:#a9e9bd; background:rgb(67 209 122 / .1); font:11px var(--font-mono); overflow-wrap:break-word; word-break:break-all; }
 .result-note { margin-top:7px; color:#e89a9f; font-size:11px; overflow-wrap:break-word; word-break:break-all; }
+.result-backtest { margin-top:8px; padding:8px 10px; border:1px solid var(--line); border-radius:7px; background:rgb(255 255 255 / .025); }
+.result-backtest summary { cursor:pointer; font-size:12px; color:#d7e3ff; font-weight:600; }
+.backtest-metrics { display:flex; flex-wrap:wrap; gap:6px; margin-top:7px; }
+.backtest-metrics span { padding:3px 7px; border-radius:5px; font:11px var(--font-mono); background:rgb(99 179 237 / .1); color:#9cc7ee; }
+.backtest-metrics span.neg { background:rgb(239 107 115 / .14); color:#ef8b92; }
+.backtest-freq-grid { display:flex; gap:10px; margin-top:8px; flex-wrap:wrap; }
+.backtest-freq-item { display:flex; flex-direction:column; gap:3px; padding:6px 9px; border:1px solid var(--line); border-radius:6px; background:rgb(255 255 255 / .02); }
+.backtest-freq-item strong { font-size:11px; color:#d7c7ff; text-transform:uppercase; letter-spacing:.5px; }
+.backtest-freq-item span { font:11px var(--font-mono); color:#9cc7ee; }
+.backtest-freq-item span.neg { color:#ef8b92; }
+.backtest-gate { margin-top:8px; display:flex; flex-wrap:wrap; gap:5px; align-items:center; }
+.backtest-gate-label { font-size:11px; color:#f5bd4f; font-weight:600; }
+.backtest-gate-reason { padding:2px 6px; border-radius:4px; font:11px var(--font-mono); background:rgb(245 189 79 / .12); color:#f5bd4f; }
 .review-card { margin-left:37px; padding:11px 12px; border:1px solid var(--line); border-radius:8px; background:rgb(255 255 255 / .018); font-size:12px; }
 .review-head { display:flex; align-items:center; gap:8px; }
 .review-head strong { color:#d7c7ff; }.review-head span { font-weight:650; }.review-head em { margin-left:auto; color:var(--muted); font:10px var(--font-mono); }
