@@ -106,7 +106,8 @@ COPY CNEquity/configs/ CNEquity/configs/
 COPY docker/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 COPY docker/crontab          /app/docker/crontab
 COPY docker/entrypoint.sh    /app/docker/entrypoint.sh
-RUN chmod +x /app/docker/entrypoint.sh
+COPY docker/run_cne_daily.sh /app/docker/run_cne_daily.sh
+RUN chmod +x /app/docker/entrypoint.sh /app/docker/run_cne_daily.sh
 
 # 环境变量默认值（运行时通过 .env 或 -e 覆盖）
 ENV QUANT_UI_DATA_DIR=/app/data \
