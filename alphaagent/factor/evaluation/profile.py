@@ -124,6 +124,7 @@ def resolve_profiles(spec: dict[str, Any] | None = None) -> dict[str, Evaluation
         {"metric": "long_short_portfolio.long_group_annual_excess_return", "op": "abs_gte", "value": production.get("min_long_group_annual_excess_return", 0.03)},
         {"metric": "topn_portfolio.annualized_excess_return", "op": "gte", "value": production.get("min_topn_annual_excess_return", 0.05)},
         {"metric": "topn_portfolio.sharpe", "op": "gte", "value": production.get("min_topn_sharpe", 0.5)},
+        {"metric": "topn_portfolio.daily_overlap", "op": "gte", "value": production.get("min_topn_daily_overlap", 0.5)},
     ]
     for profile_id, override in configured.items():
         if not isinstance(profile_id, str) or not profile_id:

@@ -171,6 +171,16 @@ _SUBMIT_PARAMETERS: dict[str, Any] = {
 
         "interaction": _INTERACTION_PARAMETER,
 
+        "rebalance_freq": {
+
+            "type": "string",
+
+            "enum": ["daily", "weekly", "monthly"],
+
+            "description": "交付调仓频率：对比 evaluate 结果中 topn_portfolio.by_freq 三种频率的收益/换手/重合率后选择；缺省 daily。",
+
+        },
+
     },
 
     "required": ["multi_line_expr", "factor_name", "comment"],
@@ -485,6 +495,8 @@ class FactorEvalTools:
             orthogonality_hook=arguments.get("orthogonality_hook"),
 
             interaction=arguments.get("interaction"),
+
+            rebalance_freq=arguments.get("rebalance_freq"),
 
         )
 

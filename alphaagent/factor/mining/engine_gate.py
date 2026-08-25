@@ -54,11 +54,14 @@ def run_engine_gate(
     val_end: str,
     direction: int = 1,
     policy: dict[str, Any] | None = None,
+    engine_frame: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
-    """验证集窗口的旧引擎日频 TopN 回测门禁。
+    """验证集窗口的旧引擎 TopN 回测门禁（完整 T+1/涨跌停/停牌/整手约束）。
 
     policy 来自 ResearchSpec delivery_policy.production.engine_gate：
-    {enabled, top_n, min_annual_return, min_excess_annual, max_drawdown}
+    {enabled, top_n, freq, min_annual_return, min_excess_annual, min_sharpe,
+     max_drawdown, min_daily_overlap}
+    engine_frame 可传入缓存的 panel_to_engine_frame 输出，多频率复评时避免重复变换。
     """
     policy = policy or {}
     from core.engine import run_backtest
@@ -66,11 +69,12 @@ def run_engine_gate(
     scores = pd.Series(np.asarray(factor_values, dtype=np.float64), index=panel.index) * float(direction)
     wide = scores.unstack("instrument")
     codes = [str(c) for c in wide.columns]
-    engine_panel = panel_to_engine_frame(panel)
+    if engine_frame is None:
+        engine_frame = panel_to_engine_frame(panel)
 
     try:
         result = run_backtest(
-            engine_panel,
+            engine_frame,
             codes=codes,
             factor="pred",
             ascending=False,
@@ -78,7 +82,7 @@ def run_engine_gate(
             end=str(val_end),
             capital=float(policy.get("capital", 1_000_000)),
             top_n=int(policy.get("top_n", 30)),
-            freq="daily",
+            freq=str(policy.get("freq", "daily")),
             warmup_days=25,
             external_scores=wide,
             slippage_bps=float(policy.get("slippage_bps", 10.0)),
@@ -107,6 +111,17 @@ def run_engine_gate(
     drawdown = m.get("最大回撤")
     if drawdown is None or not np.isfinite(float(drawdown)) or abs(float(drawdown)) > max_dd:
         reasons.append("max_drawdown")
+    sharpe = m.get("夏普")
+
+    from alphaagent.factor.metrics import topn_selection_overlap
+    overlap = topn_selection_overlap(scores, top_n=int(policy.get("top_n", 30)), rebalance=str(policy.get("freq", "daily")))
+    min_overlap = float(policy.get("min_daily_overlap") or 0)
+    if min_overlap and (not np.isfinite(overlap) or overlap < min_overlap):
+        reasons.append("tail_stability")
+
+    min_sharpe = float(policy.get("min_sharpe") or 0)
+    if min_sharpe and (sharpe is None or not np.isfinite(float(sharpe)) or float(sharpe) < min_sharpe):
+        reasons.append("sharpe")
 
     return {
         "enabled": True,
@@ -115,17 +130,21 @@ def run_engine_gate(
         "thresholds": {
             "min_annual_return": min_annual,
             "min_excess_annual": min_excess,
+            "min_sharpe": min_sharpe,
             "max_drawdown": max_dd,
+            "min_daily_overlap": min_overlap,
         },
         "metrics": {
             "annual_return": annual,
             "excess_annual": excess,
-            "sharpe": m.get("夏普"),
+            "sharpe": sharpe,
             "max_drawdown": drawdown,
             "calmar": m.get("卡玛"),
             "win_rate": m.get("胜率"),
             "total_return": m.get("总收益"),
+            "daily_overlap": overlap,
         },
         "top_n": int(policy.get("top_n", 30)),
+        "freq": str(policy.get("freq", "daily")),
         "window": {"start": str(val_start), "end": str(val_end)},
     }

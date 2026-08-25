@@ -18,9 +18,15 @@ def _session() -> StockEvalSession:
     index = pd.MultiIndex.from_product([dates, instruments], names=["datetime", "instrument"])
     cross_section = np.tile(np.linspace(-1, 1, len(instruments)), len(dates))
     drift = np.repeat(np.linspace(0, 0.05, len(dates)), len(instruments))
+    close = 10 + cross_section + drift
     panel = pd.DataFrame(
         {
-            "adj_close": 10 + cross_section + drift,
+            "adj_close": close,
+            "open": close * (1 + 0.001 * cross_section),
+            "high": close * 1.01,
+            "low": close * 0.99,
+            "amount": np.tile(np.linspace(2e7, 8e7, len(instruments)), len(dates)),
+            "turnover_rate": np.tile(np.linspace(0.5, 3.0, len(instruments)), len(dates)),
             "float_cap": np.tile(np.linspace(1e8, 5e10, len(instruments)), len(dates)),
             "label_1d_open_to_open": 0.002 * cross_section + 0.0001 * drift,
         },

@@ -19,7 +19,6 @@ from alphaagent.factor.metrics import (
     monthly_ic_robustness,
     mls_fmb_summary,
     newey_west_mean_tstat,
-    topn_portfolio_summary,
 )
 
 Transform = Callable[[EvaluationContext, dict[str, Any]], None]
@@ -237,9 +236,78 @@ def long_short_portfolio(context: EvaluationContext, params: dict[str, Any]) -> 
 
 @metric("topn_portfolio")
 def topn_portfolio(context: EvaluationContext, params: dict[str, Any]) -> dict[str, Any]:
-    return topn_portfolio_summary(
-        context.factor,
-        context.label,
-        top_n=int(params.get("top_n", 30)),
-        cost_bps=float(params.get("cost_bps", 15.0)),
-    )
+    """完整回测引擎（core.engine）口径的 TopN 组合评估。
+
+    取代旧 topn_portfolio_summary 简化模拟：T+1、整手、涨跌停、停牌、
+    费率滑点与流动性参与率全部生效。输出键保持原规则路径兼容。
+    """
+    import numpy as np
+
+    from alphaagent.factor.mining.engine_gate import panel_to_engine_frame, run_engine_gate
+
+    panel = context.panel
+    dts = panel.index.get_level_values("datetime")
+    start, end = str(dts.min().date()), str(dts.max().date())
+    ic_series = context.daily_ic()
+    ic_mean = float(np.nanmean(ic_series.to_numpy(dtype=float))) if ic_series.notna().any() else 0.0
+    direction = 1 if ic_mean >= 0 else -1
+    values = (context.factor.to_numpy(dtype=np.float64) * direction)
+    top_n = int(params.get("top_n", 30))
+
+    # 门禁阈值交给 profile rules；此处只产出指标，阈值放行所有结果。
+    lenient = {"enabled": True, "top_n": top_n, "min_annual_return": -9.0,
+               "min_excess_annual": -9.0, "min_sharpe": -9.0,
+               "max_drawdown": 9.0, "min_daily_overlap": 0.0}
+
+    def _unavailable(error: str) -> dict[str, Any]:
+        base: dict[str, Any] = {
+            "top_n": top_n,
+            "direction": direction,
+            "source": "core.engine",
+            "window": {"start": start, "end": end},
+            "available": False,
+            "error": error,
+        }
+        for key in ("annualized_return", "annualized_excess_return", "sharpe",
+                    "max_drawdown", "daily_overlap"):
+            base[key] = float("nan")
+        return base
+
+    try:
+        engine_frame = panel_to_engine_frame(panel)
+    except Exception as exc:  # noqa: BLE001
+        return _unavailable(f"engine_frame_failed: {exc}")
+
+    def _run(freq: str) -> dict[str, Any]:
+        gate = run_engine_gate(
+            panel, values, val_start=start, val_end=end, direction=1,
+            policy={**lenient, "freq": freq}, engine_frame=engine_frame,
+        )
+        m = gate.get("metrics") or {}
+        return {
+            "rebalance": freq,
+            "annualized_return": m.get("annual_return"),
+            "annualized_excess_return": m.get("excess_annual"),
+            "sharpe": m.get("sharpe"),
+            "max_drawdown": m.get("max_drawdown"),
+            "daily_overlap": m.get("daily_overlap"),
+            "win_rate": m.get("win_rate"),
+            "total_return": m.get("total_return"),
+            "passed": gate.get("passed"),
+        }
+
+    try:
+        by_freq = {freq: _run(freq) for freq in ("daily", "weekly", "monthly")}
+    except Exception as exc:  # noqa: BLE001
+        return _unavailable(f"engine_backtest_failed: {exc}")
+
+    out = dict(by_freq["daily"])
+    out.update({
+        "top_n": top_n,
+        "direction": direction,
+        "source": "core.engine",
+        "window": {"start": start, "end": end},
+        "available": True,
+        "by_freq": by_freq,
+    })
+    return out

@@ -18,7 +18,6 @@ from alphaagent.factor.metrics import (
     cross_sectional_winsorize_values,
     evaluate_on_panel,
     factor_skew_kurtosis,
-    topn_portfolio_summary,
 )
 from alphaagent.factor.types import DEFAULT_INGEST_POLICY, IngestPolicy, IngestResult, MaterializeResult
 from alphaagent.factor.zoo import FactorStatus, FactorZoo, SimilarityMatrix
@@ -145,18 +144,11 @@ def compute_ingest_metrics(
         else float("nan")
     )
     factor_series = pd.Series(eval_values, index=eval_panel.index, dtype=np.float32)
-    direction = 1 if float(metrics["ic"]) >= 0.0 else -1
     metrics["long_group_annual_excess_return"] = annualized_long_group_excess_return(
         factor_series,
         eval_panel[policy.label_col],
-        direction=direction,
+        direction=1 if float(metrics["ic"]) >= 0.0 else -1,
     )
-    topn = topn_portfolio_summary(
-        factor_series * direction,
-        eval_panel[policy.label_col],
-    )
-    for key in ("annualized_return", "annualized_excess_return", "sharpe", "max_drawdown", "annual_turnover", "n_days"):
-        metrics[f"topn_{key}"] = topn.get(key)
     skew, kurt = factor_skew_kurtosis(eval_values)
     metrics["skew"] = skew
     metrics["kurt"] = kurt

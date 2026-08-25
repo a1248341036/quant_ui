@@ -672,6 +672,53 @@ def factor_skew_kurtosis(values: np.ndarray) -> tuple[float, float]:
     return float(s.skew()), float(s.kurtosis())
 
 
+def _rebalance_dates(ts_list: list, rebalance: str) -> set:
+    """按调仓周期标记调仓日：daily=每日；weekly=每周最后交易日；monthly=每月最后交易日。"""
+    if rebalance == "daily":
+        return set(ts_list)
+    idx = pd.DatetimeIndex(ts_list)
+    s = pd.Series(idx, index=idx)
+    if rebalance == "weekly":
+        groups = [s.groupby([idx.year, idx.isocalendar().week.astype(int)]).max()]
+    elif rebalance == "monthly":
+        groups = [s.groupby([idx.year, idx.month]).max()]
+    else:
+        raise ValueError(f"unknown rebalance freq: {rebalance!r}")
+    out: set = set()
+    for g in groups:
+        out.update(g.tolist())
+    return out
+
+
+def topn_selection_overlap(
+    factor: pd.Series,
+    *,
+    time_level: str = "datetime",
+    top_n: int = 30,
+    rebalance: str = "daily",
+) -> float:
+    """TopN 选股名单的相邻调仓重合率（纯排名统计，不涉及价格/收益）。"""
+    rb_dates = _rebalance_dates(list(factor.groupby(level=time_level, sort=False).groups.keys()), rebalance)
+    prev: set[str] | None = None
+    overlap_sum = 0.0
+    count = 0
+    for ts, f_sub in factor.groupby(level=time_level, sort=False):
+        if ts not in rb_dates:
+            continue
+        xf = f_sub.to_numpy(dtype=np.float64, copy=False)
+        inst = np.asarray(f_sub.index.get_level_values("instrument"))
+        valid = np.isfinite(xf)
+        if int(valid.sum()) < max(top_n, 10):
+            continue
+        order = np.argsort(-xf[valid], kind="stable")[:top_n]
+        current = set(inst[valid][order].tolist())
+        if prev is not None:
+            overlap_sum += len(current & prev) / max(len(current), 1)
+            count += 1
+        prev = current
+    return round(overlap_sum / count, 6) if count else float("nan")
+
+
 def topn_portfolio_summary(
     factor: pd.Series,
     label: pd.Series,
@@ -680,17 +727,20 @@ def topn_portfolio_summary(
     top_n: int = 30,
     cost_bps: float = 15.0,
     annualization_factor: float = 252.0,
+    rebalance: str = "daily",
 ) -> dict[str, Any]:
-    """TopN 等权多头组合的日频模拟（含换手成本）。
+    """TopN 等权多头组合模拟（含换手成本），支持 daily/weekly/monthly 调仓。
 
-    每日按因子值取前 ``top_n`` 只、等权持有，收益用次日 open-to-open label。
-    成本按换手比例计双边 ``cost_bps``；未建模 T+1/涨跌停/停牌约束，
-    结果是"半实盘"口径，最终仍需旧交易引擎复核。
+    .. deprecated:: 已被 core.engine 完整约束回测取代（见
+       alphaagent.factor.mining.engine_gate）。仅保留给离线对照实验使用，
+       评估管线与入库门禁不再调用。
+
+    调仓日按当日因子取前 ``top_n`` 只并持有到下一调仓日，收益用次日
+    open-to-open label；非调仓日沿用既有持仓（停牌股自然缺席当日均值）。
+    成本仅在调仓日按实际换手比例计双边 ``cost_bps``。未建模 T+1 涨跌停
+    锁定与冲击成本，最终仍需旧交易引擎复核。
     """
-    daily_rows: list[tuple[object, float, float]] = []
-    prev_names: set[str] | None = None
-    turnover_sum = 0.0
-    turnover_days = 0
+    per_day: list[tuple[object, np.ndarray, np.ndarray]] = []
     for ts, f_sub in factor.groupby(level=time_level, sort=False):
         inst = f_sub.index.get_level_values("instrument")
         y_sub = label.xs(ts, level=time_level).reindex(inst)
@@ -700,44 +750,59 @@ def topn_portfolio_summary(
         n_valid = int(mask.sum())
         if n_valid < max(top_n, 10):
             continue
-        names_arr = np.asarray(inst)[mask]
-        fac = xf[mask]
-        ret = yl[mask]
-        order = np.argsort(-fac, kind="stable")[:top_n]
-        selected = names_arr[order]
-        port_ret = float(ret[order].mean())
-        universe_ret = float(ret.mean())
-        current = set(selected.tolist())
-        if prev_names is not None:
-            changed = len(current - prev_names) / max(len(current), 1)
-            turnover_sum += changed
-            turnover_days += 1
-        prev_names = current
-        daily_rows.append((ts, port_ret, universe_ret))
+        per_day.append((ts, np.asarray(inst)[mask], xf[mask], yl[mask]))
+    if not per_day:
+        return {
+            "top_n": int(top_n),
+            "rebalance": str(rebalance),
+            "n_days": 0,
+            "annualized_return": float("nan"),
+            "annualized_excess_return": float("nan"),
+            "sharpe": float("nan"),
+            "max_drawdown": float("nan"),
+            "annual_turnover": float("nan"),
+            "daily_overlap": float("nan"),
+            "avg_names": float(top_n),
+            "cost_bps_per_side": float(cost_bps),
+            "note": "TopN 等权多头模拟；成本=调仓日换手×双边cost_bps；未含T+1涨跌停锁定/冲击成本。",
+        }
 
-    empty = {
-        "top_n": int(top_n),
-        "n_days": 0,
-        "annualized_return": float("nan"),
-        "annualized_excess_return": float("nan"),
-        "sharpe": float("nan"),
-        "max_drawdown": float("nan"),
-        "annual_turnover": float("nan"),
-        "avg_names": float(top_n),
-        "cost_bps_per_side": float(cost_bps),
-        "note": "TopN 等权多头日频模拟；成本=换手×双边cost_bps；未含T+1/涨跌停/停牌约束。",
-    }
-    if not daily_rows:
-        return empty
-
-    side_cost = cost_bps / 10_000.0
-    avg_turnover = (turnover_sum / turnover_days) if turnover_days else 0.0
+    rb_dates = _rebalance_dates([row[0] for row in per_day], rebalance)
+    held_names: set[str] = set()
+    prev_held: set[str] | None = None
+    turnover_sum = 0.0
+    rebalance_count = 0
+    overlap_sum = 0.0
+    overlap_count = 0
     net: list[float] = []
     excess: list[float] = []
-    for _, port_ret, universe_ret in daily_rows:
-        daily_cost = 2.0 * side_cost * avg_turnover
-        net.append(port_ret - daily_cost)
-        excess.append((port_ret - universe_ret) - daily_cost)
+
+    for ts, names_arr, fac, ret in per_day:
+        universe_ret = float(ret.mean())
+        is_rebalance_day = ts in rb_dates
+        day_cost = 0.0
+        if is_rebalance_day:
+            order = np.argsort(-fac, kind="stable")[:top_n]
+            current = set(names_arr[order].tolist())
+            if prev_held is not None:
+                changed = len(current - prev_held) / max(len(current), 1)
+                overlap_sum += len(current & prev_held) / max(len(current), 1)
+                overlap_count += 1
+                day_cost = 2.0 * (cost_bps / 10_000.0) * changed
+            else:
+                changed = 1.0  # 建仓：单边买入
+                day_cost = (cost_bps / 10_000.0) * changed
+            turnover_sum += changed
+            rebalance_count += 1
+            prev_held = current
+            held_names = current
+        name_to_ret = dict(zip(names_arr.tolist(), ret.tolist(), strict=False))
+        held_returns = [name_to_ret[n] for n in held_names if n in name_to_ret]
+        if not held_returns:
+            continue
+        port_ret = float(np.mean(held_returns))
+        net.append(port_ret - day_cost)
+        excess.append((port_ret - universe_ret) - day_cost)
 
     def _compound_ann(values: list[float]) -> float:
         arr = np.asarray(values, dtype=np.float64)
@@ -749,16 +814,19 @@ def topn_portfolio_summary(
     std = float(arr.std(ddof=1)) if len(arr) > 1 else float("nan")
     running_max = np.maximum.accumulate(np.cumprod(1.0 + arr))
     drawdowns = 1.0 - np.cumprod(1.0 + arr) / running_max
+    years = max(len(per_day) / annualization_factor, 1e-9)
 
     return {
         "top_n": int(top_n),
-        "n_days": int(len(daily_rows)),
+        "rebalance": str(rebalance),
+        "n_days": int(len(per_day)),
         "annualized_return": _compound_ann(net),
         "annualized_excess_return": _compound_ann(excess),
         "sharpe": float(arr.mean() / std * math.sqrt(annualization_factor)) if std > 0 and np.isfinite(std) else float("nan"),
         "max_drawdown": float(drawdowns.max()) if len(drawdowns) else float("nan"),
-        "annual_turnover": round(avg_turnover * annualization_factor, 4) if turnover_days else float("nan"),
+        "annual_turnover": round(turnover_sum / years, 4) if rebalance_count else float("nan"),
+        "daily_overlap": round(overlap_sum / overlap_count, 6) if overlap_count else float("nan"),
         "avg_names": float(top_n),
         "cost_bps_per_side": float(cost_bps),
-        "note": "TopN 等权多头日频模拟；成本=换手×双边cost_bps；未含T+1/涨跌停/停牌约束。",
+        "note": "TopN 等权多头模拟；成本=调仓日换手×双边cost_bps；未含T+1涨跌停锁定/冲击成本。",
     }

@@ -53,14 +53,17 @@ def _check_stage_two(
     metrics: dict[str, Any],
     similarity: dict[str, Any] | None,
     criteria: dict[str, Any] | None = None,
+    rebalance_freq: str = "daily",
 ) -> tuple[bool, list[str]]:
-    """精筛入库池：满足实盘级统计、收益、稳健性和独立性要求。"""
+    """精筛统计门槛。TopN 可交易性（超额/Sharpe/回撤/尾部稳定）由
+    engine_gate 用完整回测引擎裁决，此处只做统计族检查。
+    rebalance_freq 仅用于审计透传。"""
+    _ = rebalance_freq
     reasons: list[str] = []
     criteria = criteria or {
         "min_abs_ic": 0.035, "min_icir": 0.5, "min_fmb_t_stat": 2.5,
         "min_long_group_annual_excess_return": 0.03,
         "max_winsorized_abs_ic_decay": 0.10, "max_abs_corr": 0.4,
-        "min_topn_annual_excess_return": 0.05, "min_topn_sharpe": 0.5,
     }
     ic = metrics.get("ic")
     if ic is None or abs(float(ic)) < float(criteria["min_abs_ic"]):
@@ -78,14 +81,6 @@ def _check_stage_two(
     winsor_decay = metrics.get("winsorized_abs_ic_decay")
     if winsor_decay is None or float(winsor_decay) > float(criteria["max_winsorized_abs_ic_decay"]):
         reasons.append("winsorized_abs_ic_decay")
-    min_topn_excess = float(criteria.get("min_topn_annual_excess_return") or 0)
-    topn_excess = metrics.get("topn_annualized_excess_return")
-    if min_topn_excess and (topn_excess is None or not np.isfinite(float(topn_excess)) or float(topn_excess) < min_topn_excess):
-        reasons.append("topn_annual_excess_return")
-    min_topn_sharpe = float(criteria.get("min_topn_sharpe") or 0)
-    topn_sharpe = metrics.get("topn_sharpe")
-    if min_topn_sharpe and (topn_sharpe is None or not np.isfinite(float(topn_sharpe)) or float(topn_sharpe) < min_topn_sharpe):
-        reasons.append("topn_sharpe")
     corr = (similarity or {}).get("max_abs_corr", 0.0)
     if corr is None or float(corr) >= float(criteria["max_abs_corr"]):
         reasons.append("max_cs_corr")
@@ -143,6 +138,7 @@ class FactorSubmitService:
         review_hook: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
         orthogonality_hook: Callable[[], dict[str, Any]] | None = None,
         interaction: dict[str, Any] | None = None,
+        rebalance_freq: str | None = None,
     ) -> dict[str, Any]:
         expr = multi_line_expr.strip()
         if not expr:
@@ -162,6 +158,17 @@ class FactorSubmitService:
 
         factor_id = slug_factor_id(factor_name)
         name = str(factor_name).strip() or factor_id
+
+        engine_cfg = self.delivery_policy.get("production", {}).get("engine_gate") or {}
+        allowed_freqs = [str(f).lower() for f in (engine_cfg.get("allowed_freqs") or ["daily"])]
+        chosen_freq = str(rebalance_freq or engine_cfg.get("freq") or "daily").lower()
+        if chosen_freq not in allowed_freqs:
+            return {
+                "ok": False,
+                "stored": False,
+                "error": f"invalid_rebalance_freq: {chosen_freq} (allowed={allowed_freqs})",
+                "error_type": "ToolArgumentsError",
+            }
 
         try:
             session = self.service.sessions.get(session_id)
@@ -272,6 +279,7 @@ class FactorSubmitService:
             "metrics": assessment.metrics,
             "similarity": assessment.similarity,
             "candidate_stored": False,
+            "rebalance_freq": chosen_freq,
             "delivery_check": {
                 "stage_one": {"passed": stage_one_ok, "fail_reasons": stage_one_reasons},
                 "stage_two": {"passed": False, "fail_reasons": []},
@@ -383,7 +391,7 @@ class FactorSubmitService:
             payload["error"] = payload["skipped_reason"]
             return payload
 
-        stage_two_ok, stage_two_reasons = _check_stage_two(assessment.metrics, assessment.similarity, production_criteria)
+        stage_two_ok, stage_two_reasons = _check_stage_two(assessment.metrics, assessment.similarity, production_criteria, rebalance_freq=chosen_freq)
         payload["delivery_check"]["stage_two"] = {
             "passed": stage_two_ok,
             "fail_reasons": stage_two_reasons,
@@ -409,7 +417,7 @@ class FactorSubmitService:
                 val_start=ctx.val_start,
                 val_end=ctx.val_end,
                 direction=ic_sign,
-                policy=engine_gate_cfg,
+                policy={**engine_gate_cfg, "freq": chosen_freq},
             )
             payload["engine_backtest"] = gate
             if not gate.get("passed"):

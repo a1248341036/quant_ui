@@ -313,7 +313,9 @@ def _dispatch_sync(tools: FactorEvalTools, name: str, arguments: dict[str, Any])
 
 # 单个因子评估的超时秒数：numba JIT 首次编译可能很慢，
 # submit 时需加载 CNE panel + realign + 重算，给更充裕的时间。
-_EVAL_TIMEOUT_SECONDS = 300
+# topn_portfolio 指标接入 core.engine 全量回测引擎（daily/weekly/monthly 三频率），
+# 单次评估计算量显著增加，300s 已不够用。
+_EVAL_TIMEOUT_SECONDS = 600
 
 
 async def _dispatch_with_timeout(
@@ -573,6 +575,7 @@ def build_factor_eval_toolkit(
             factor_name: str,
             comment: str,
             interaction: dict[str, Any] | str | None = None,
+            rebalance_freq: str | None = None,
             **_legacy_kwargs: Any,
         ) -> ToolChunk:
             """【正式交付】统计数据通过即写候选池；reviewer approve 才写正式 factorzoo。"""
@@ -596,11 +599,12 @@ def build_factor_eval_toolkit(
                     "factor_name": factor_name,
                     "comment": comment,
                     "interaction": contract,
+                    "rebalance_freq": rebalance_freq,
                     "evaluation_evidence": _evaluation_evidence(reviewer, multi_line_expr),
                     "review_hook": review_hook,
                     "orthogonality_hook": lambda: _orthogonality_check(tools, multi_line_expr),
                 },
-                # 提交含全区间复检 + 首次 JIT 编译，300s 会白白失败一次（重试靠热缓存才过）。
+                # 提交含全区间复检 + 首次 JIT 编译，600s 会白白失败一次（重试靠热缓存才过）。
                 timeout=900,
             )
             if _legacy_kwargs:

@@ -84,16 +84,24 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
             "min_long_group_annual_excess_return": 0.03,
             "max_winsorized_abs_ic_decay": 0.10,
             "max_abs_corr": 0.4,
-            "min_topn_annual_excess_return": 0.05,
-            "min_topn_sharpe": 0.5,
-            # 进正式库前的最后一道门：旧交易引擎在验证集窗口的完整约束回测
+            # 进正式库前的最后一道门：旧交易引擎完整约束回测
             # （T+1/整手/涨跌停/停牌/费率/滑点/流动性），纯内存，不落盘。
+            # TopN 可交易性（超额/Sharpe/回撤/尾部稳定）全部由 engine_gate
+            # 用完整引擎裁决，不再使用简化模拟代理指标。
+            # 尾部稳定性说明：全局截面自相关高不代表尾部稳定——极端前 N 名
+            # 可能每天几乎全换（IC 有效但不可持仓）。
             "engine_gate": {
                 "enabled": True,
                 "top_n": 30,
+                "freq": "daily",
+                # LLM 可在 submit 时选择交付调仓频率，必须属于本列表；
+                # 选择会记录进审计轨迹，引擎按该频率复检。
+                "allowed_freqs": ["daily", "weekly", "monthly"],
                 "min_annual_return": 0.0,
-                "min_excess_annual": 0.03,
+                "min_excess_annual": 0.05,
+                "min_sharpe": 0.5,
                 "max_drawdown": 0.35,
+                "min_daily_overlap": 0.5,
             },
         },
     },
@@ -237,8 +245,6 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
         production[key] = _bounded_number(production.get(key), f"delivery_policy.production.{key}", 0, 1)
     production["min_icir"] = _bounded_number(production.get("min_icir"), "delivery_policy.production.min_icir", -10, 20)
     production["min_fmb_t_stat"] = _bounded_number(production.get("min_fmb_t_stat", 0), "delivery_policy.production.min_fmb_t_stat", 0, 20)
-    for key in ("min_topn_annual_excess_return", "min_topn_sharpe"):
-        production[key] = _bounded_number(production.get(key, 0.05 if key.endswith("excess_return") else 0.5), f"delivery_policy.production.{key}", 0, 20)
     profiles = resolve_profiles(spec)
     spec["evaluation_profiles"] = {profile_id: profile.as_dict() for profile_id, profile in profiles.items()}
 

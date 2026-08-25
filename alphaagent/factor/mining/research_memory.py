@@ -467,7 +467,7 @@ class ResearchMemoryStore:
             "ic", "icir", "rank_ic", "factor_coverage", "coverage",
             "long_group_annual_excess_return", "winsorized_abs_ic_decay",
             "annualized_return", "annualized_excess_return", "sharpe",
-            "max_drawdown", "annual_turnover",
+            "max_drawdown", "annual_turnover", "daily_overlap",
         )
         return {key: value for key in keys if (value := _safe_float(metrics.get(key))) is not None}
 
