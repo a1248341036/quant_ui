@@ -842,3 +842,142 @@ def topn_portfolio_summary(
         "cost_bps_per_side": float(cost_bps),
         "note": "TopN 等权多头模拟；成本=调仓日换手×双边cost_bps；未含T+1涨跌停锁定/冲击成本。",
     }
+
+
+def daily_quantile_group_returns(
+    factor: pd.Series,
+    label: pd.Series,
+    *,
+    time_level: str = "datetime",
+    n_groups: int = 10,
+    min_stocks: int = 30,
+) -> pd.DataFrame:
+    """逐日截面 N 分组等权收益矩阵。
+
+    返回 DataFrame: index=datetime, columns=group(1..N), values=该组当日等权 label 均值。
+    group 1 = 因子值最低组, group N = 因子值最高组。
+    """
+    rows: list[dict[str, Any]] = []
+    for ts, f_sub in factor.groupby(level=time_level, sort=False):
+        y_sub = label.xs(ts, level=time_level)
+        means = _cross_section_decile_mean_labels(
+            f_sub.to_numpy(dtype=np.float64, copy=False),
+            y_sub.to_numpy(dtype=np.float64, copy=False),
+            n_deciles=n_groups,
+            min_stocks=min_stocks,
+        )
+        if means is not None:
+            row: dict[str, Any] = {time_level: ts}
+            for i, m in enumerate(means):
+                row[i + 1] = m
+            rows.append(row)
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows).set_index(time_level)
+    df.columns = [int(c) for c in df.columns]
+    return df
+
+
+def quantile_portfolio_metrics(
+    factor: pd.Series,
+    label: pd.Series,
+    *,
+    time_level: str = "datetime",
+    n_groups: int = 10,
+    min_stocks: int = 30,
+    cost_bps: float = 15.0,
+    annualization_factor: float = 252.0,
+) -> dict[str, Any]:
+    """分位组合评估（纯多头，A股口径）。
+
+    核心逻辑：
+    - 每日按因子值 N 等分组，取最高组（Q_N）做纯多头等权持有
+    - 全市场等权作为基准
+    - 不涉及做空，完全适配 A 股约束
+
+    返回:
+        top_group_*: 最高组（因子值最大）多头组合指标
+        bottom_group_*: 最低组参考指标
+        group_means: 各组全样本平均收益
+        monotonicity: 分组单调性（Spearman rank of group vs mean_ret）
+    """
+    grp_df = daily_quantile_group_returns(
+        factor, label,
+        time_level=time_level,
+        n_groups=n_groups,
+        min_stocks=min_stocks,
+    )
+    if grp_df.empty or n_groups not in grp_df.columns:
+        return {
+            "n_groups": n_groups,
+            "available": False,
+            "error": "insufficient_data",
+        }
+
+    # 最高组和最低组的逐日收益序列
+    top_col = n_groups       # 最高组 = 因子值最大
+    bottom_col = 1           # 最低组 = 因子值最小
+
+    top_ret = grp_df[top_col].dropna()
+    bottom_ret = grp_df[bottom_col].dropna()
+
+    # 全市场基准 = 所有组的等权平均（近似全市场等权）
+    universe_ret = grp_df.mean(axis=1).dropna()
+
+    # 交易成本：每日调仓的简化假设（换手≈2.0，双边成本）
+    day_cost = 2.0 * cost_bps / 10_000.0
+    top_net = top_ret - day_cost
+
+    # 超额收益 = 最高组 - 全市场基准
+    # 对齐日期
+    common_idx = top_net.index.intersection(universe_ret.index)
+    top_net_aligned = top_net.loc[common_idx]
+    universe_aligned = universe_ret.loc[common_idx]
+    excess = top_net_aligned - universe_aligned
+
+    def _compound_ann(series: pd.Series) -> float:
+        arr = series.to_numpy(dtype=np.float64)
+        if np.any(arr <= -1.0):
+            return float("nan")
+        return float(np.prod(1.0 + arr) ** (annualization_factor / len(arr)) - 1.0)
+
+    def _sharpe(series: pd.Series) -> float:
+        arr = series.to_numpy(dtype=np.float64)
+        std = float(arr.std(ddof=1)) if len(arr) > 1 else float("nan")
+        if std > 0 and np.isfinite(std):
+            return float(arr.mean() / std * math.sqrt(annualization_factor))
+        return float("nan")
+
+    def _max_drawdown(series: pd.Series) -> float:
+        arr = series.to_numpy(dtype=np.float64)
+        nav = np.cumprod(1.0 + arr)
+        running_max = np.maximum.accumulate(nav)
+        drawdowns = 1.0 - nav / running_max
+        return float(drawdowns.max()) if len(drawdowns) else float("nan")
+
+    # 分组单调性：Spearman(组号, 组平均收益)
+    group_means_vals = grp_df.mean(axis=0).to_numpy(dtype=np.float64)
+    valid_gm = np.isfinite(group_means_vals)
+    monotonicity = float("nan")
+    if valid_gm.sum() >= 3:
+        ranks_g = np.arange(1, len(group_means_vals) + 1, dtype=np.float64)[valid_gm]
+        monotonicity = float(spearman_ic(ranks_g, group_means_vals[valid_gm], min_pairs=3))
+
+    return {
+        "n_groups": n_groups,
+        "available": True,
+        "cost_bps_per_side": float(cost_bps),
+        "n_days": int(len(top_net)),
+        "top_group_annualized_return": _compound_ann(top_net),
+        "top_group_annualized_excess_return": _compound_ann(excess),
+        "top_group_sharpe": _sharpe(top_net),
+        "top_group_excess_sharpe": _sharpe(excess),
+        "top_group_max_drawdown": _max_drawdown(top_net),
+        "top_group_daily_mean": float(top_net.mean()) if len(top_net) else float("nan"),
+        "bottom_group_annualized_return": _compound_ann(bottom_ret - day_cost),
+        "bottom_group_daily_mean": float((bottom_ret - day_cost).mean()) if len(bottom_ret) else float("nan"),
+        "group_means": {int(g): float(v) for g, v in zip(grp_df.columns, group_means_vals)},
+        "monotonicity": monotonicity,
+        "spread_daily_mean": float((top_ret - bottom_ret).mean()) if len(top_ret) else float("nan"),
+        "spread_annualized": _compound_ann(top_ret - bottom_ret) if len(top_ret) else float("nan"),
+    }

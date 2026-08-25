@@ -328,3 +328,32 @@ def topn_portfolio(context: EvaluationContext, params: dict[str, Any]) -> dict[s
         "by_freq": by_freq,
     })
     return out
+
+
+@metric("quantile_portfolio")
+def quantile_portfolio(context: EvaluationContext, params: dict[str, Any]) -> dict[str, Any]:
+    """分位组合评估（纯多头，A 股口径）。
+
+    每日按因子值 N 等分组，取最高组（Q_N）做纯多头等权持有，
+    全市场等权作为基准。不涉及做空，不依赖固定选股数量。
+
+    输出键（供 profile rules 引用）:
+      - top_group_annualized_return
+      - top_group_annualized_excess_return
+      - top_group_sharpe
+      - top_group_max_drawdown
+      - monotonicity
+    """
+    from alphaagent.factor.metrics import quantile_portfolio_metrics
+
+    n_groups = int(params.get("groups", 10))
+    cost_bps = float(params.get("cost_bps", 15.0))
+    min_stocks = int(params.get("min_stocks", 30))
+
+    return quantile_portfolio_metrics(
+        context.factor,
+        context.label,
+        n_groups=n_groups,
+        min_stocks=min_stocks,
+        cost_bps=cost_bps,
+    )

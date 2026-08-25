@@ -81,12 +81,15 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
             "min_abs_ic": 0.025,
             "min_icir": 0.35,
             "min_fmb_t_stat": 2.0,
-            "min_long_group_annual_excess_return": 0.02,
+            "min_ls_t_stat": 2.0,
+            "min_quantile_excess_return": 0.03,
+            "min_quantile_sharpe": 0.3,
+            "min_monotonicity": 0.3,
             "max_winsorized_abs_ic_decay": 0.10,
             "max_abs_corr": 0.4,
             # 进正式库前的最后一道门：旧交易引擎完整约束回测
             # （T+1/整手/涨跌停/停牌/费率/滑点/流动性），纯内存，不落盘。
-            # TopN 可交易性（超额/Sharpe/回撤/尾部稳定）全部由 engine_gate
+            # 纯多头 TopN 可交易性（超额/Sharpe/回撤/尾部稳定）全部由 engine_gate
             # 用完整引擎裁决，不再使用简化模拟代理指标。
             # 尾部稳定性说明：全局截面自相关高不代表尾部稳定——极端前 N 名
             # 可能每天几乎全换（IC 有效但不可持仓）。
@@ -244,10 +247,14 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
     candidate["min_coverage"] = _bounded_number(candidate.get("min_coverage"), "delivery_policy.candidate.min_coverage", 0, 1)
     candidate["max_abs_corr"] = _bounded_number(candidate.get("max_abs_corr"), "delivery_policy.candidate.max_abs_corr", 0, 1)
     production = _require_dict(delivery.get("production"), "delivery_policy.production")
-    for key in ("min_abs_ic", "min_long_group_annual_excess_return", "max_winsorized_abs_ic_decay", "max_abs_corr"):
+    for key in ("min_abs_ic", "max_winsorized_abs_ic_decay", "max_abs_corr"):
         production[key] = _bounded_number(production.get(key), f"delivery_policy.production.{key}", 0, 1)
     production["min_icir"] = _bounded_number(production.get("min_icir"), "delivery_policy.production.min_icir", -10, 20)
     production["min_fmb_t_stat"] = _bounded_number(production.get("min_fmb_t_stat", 0), "delivery_policy.production.min_fmb_t_stat", 0, 20)
+    production["min_ls_t_stat"] = _bounded_number(production.get("min_ls_t_stat", 0), "delivery_policy.production.min_ls_t_stat", 0, 20)
+    production["min_quantile_excess_return"] = _bounded_number(production.get("min_quantile_excess_return", 0), "delivery_policy.production.min_quantile_excess_return", -1, 1)
+    production["min_quantile_sharpe"] = _bounded_number(production.get("min_quantile_sharpe", 0), "delivery_policy.production.min_quantile_sharpe", -10, 20)
+    production["min_monotonicity"] = _bounded_number(production.get("min_monotonicity", 0), "delivery_policy.production.min_monotonicity", -1, 1)
     profiles = resolve_profiles(spec)
     spec["evaluation_profiles"] = {profile_id: profile.as_dict() for profile_id, profile in profiles.items()}
 

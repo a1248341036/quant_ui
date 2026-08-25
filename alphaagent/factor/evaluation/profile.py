@@ -49,7 +49,7 @@ _BASE_METRICS = (
     {"plugin": "mls_fmb"},
     {"plugin": "ic_series_diagnostics"},
     {"plugin": "long_short_portfolio", "params": {"groups": 10, "cost_bps": 0}},
-    {"plugin": "topn_portfolio", "params": {"selection_pct": 0.02, "cost_bps": 15.0}},
+    {"plugin": "quantile_portfolio", "params": {"groups": 10, "cost_bps": 15.0}},
 )
 
 
@@ -130,10 +130,10 @@ def resolve_profiles(spec: dict[str, Any] | None = None) -> dict[str, Evaluation
         {"metric": "cross_sectional_core.ic", "op": "abs_gte", "value": production.get("min_abs_ic", 0.025)},
         {"metric": "cross_sectional_core.icir", "op": "abs_gte", "value": production.get("min_icir", 0.35)},
         {"metric": "mls_fmb.nw_t_ls", "op": "abs_gte", "value": production.get("min_fmb_t_stat", 2.0)},
-        {"metric": "long_short_portfolio.long_group_annual_excess_return", "op": "abs_gte", "value": production.get("min_long_group_annual_excess_return", 0.02)},
-        {"metric": "topn_portfolio.annualized_excess_return", "op": "gte", "value": production.get("min_topn_annual_excess_return", 0.03)},
-        {"metric": "topn_portfolio.sharpe", "op": "gte", "value": production.get("min_topn_sharpe", 0.3)},
-        {"metric": "topn_portfolio.daily_overlap", "op": "gte", "value": production.get("min_topn_daily_overlap", 0.5)},
+        {"metric": "long_short_portfolio.nw_t_net", "op": "abs_gte", "value": production.get("min_ls_t_stat", 2.0)},
+        {"metric": "quantile_portfolio.top_group_annualized_excess_return", "op": "gte", "value": production.get("min_quantile_excess_return", 0.03)},
+        {"metric": "quantile_portfolio.top_group_sharpe", "op": "gte", "value": production.get("min_quantile_sharpe", 0.3)},
+        {"metric": "quantile_portfolio.monotonicity", "op": "gte", "value": production.get("min_monotonicity", 0.3)},
     ]
     for profile_id, override in configured.items():
         if not isinstance(profile_id, str) or not profile_id:
