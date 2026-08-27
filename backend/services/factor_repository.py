@@ -30,7 +30,7 @@ class FactorRepository:
         if path_str not in self._zoo_cache:
             from alphaagent.factor.zoo import FactorZoo
 
-            self._zoo_cache[path_str] = FactorZoo(library_path)
+            self._zoo_cache[path_str] = FactorZoo.open(library_path)
         return self._zoo_cache[path_str]
 
     def list_factors(
@@ -46,24 +46,21 @@ class FactorRepository:
         Returns:
             因子列表（包含基本信息）
         """
-        from core import factor_categories
-
-        prod_root = factor_categories.production_dir(category)
-        if not prod_root.exists():
+        try:
+            zoo = self._get_zoo(library_path)
+        except FileNotFoundError:
             return []
 
-        zoo = self._get_zoo(prod_root)
         factors = []
-
-        for factor_id in zoo.list_factors():
+        for factor_id in zoo.catalog.list_factor_ids():
             try:
-                meta = zoo.get_factor_meta(factor_id)
+                meta = zoo.catalog.get(factor_id)
                 factors.append(
                     {
                         "factor_id": factor_id,
-                        "name": meta.get("name", factor_id),
-                        "created_at": meta.get("created_at"),
-                        "status": meta.get("status", "active"),
+                        "name": meta.name if meta else factor_id,
+                        "created_at": meta.created_at if meta else None,
+                        "status": str(meta.status) if meta else "active",
                     }
                 )
             except Exception:
@@ -82,19 +79,17 @@ class FactorRepository:
         Returns:
             因子详细信息（包含表达式、指标等）
         """
-        from core import factor_categories
+        zoo = self._get_zoo(library_path)
 
-        prod_root = factor_categories.production_dir("technical")
-        zoo = self._get_zoo(prod_root)
-
-        meta = zoo.get_factor_meta(factor_id)
-        expr = zoo.get_factor_expr(factor_id)
+        meta = zoo.catalog.get(factor_id)
+        if meta is None:
+            return {"error": "factor_not_found"}
 
         return {
             "factor_id": factor_id,
-            "meta": meta,
-            "expr": expr,
-            "registry": zoo.get_factor_registry(factor_id),
+            "name": meta.name,
+            "expr": meta.expr,
+            "created_at": meta.created_at,
         }
 
     def delete_factor(self, factor_id: str, library_path: Path) -> bool:
@@ -108,13 +103,10 @@ class FactorRepository:
         Returns:
             是否删除成功
         """
-        from core import factor_categories
-
-        prod_root = factor_categories.production_dir("technical")
-        zoo = self._get_zoo(prod_root)
+        zoo = self._get_zoo(library_path)
 
         try:
-            zoo.remove(factor_id)
+            zoo.delete_factor(factor_id)
             return True
         except Exception:
             return False
@@ -133,23 +125,21 @@ class FactorRepository:
         Returns:
             匹配的因子列表
         """
-        from core import factor_categories
-
-        prod_root = factor_categories.production_dir("technical")
-        zoo = self._get_zoo(prod_root)
+        zoo = self._get_zoo(library_path)
 
         results = []
-        for factor_id in zoo.list_factors():
+        for factor_id in zoo.catalog.list_factor_ids():
             try:
-                meta = zoo.get_factor_meta(factor_id)
-                expr = zoo.get_factor_expr(factor_id)
+                meta = zoo.catalog.get(factor_id)
+                expr = meta.expr if meta else ""
+                name = meta.name if meta else factor_id
 
                 # 简单关键词匹配
-                if query.lower() in str(meta).lower() or query.lower() in expr.lower():
+                if query.lower() in str(name).lower() or query.lower() in expr.lower():
                     results.append(
                         {
                             "factor_id": factor_id,
-                            "meta": meta,
+                            "name": name,
                             "expr": expr,
                         }
                     )
