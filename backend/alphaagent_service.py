@@ -27,6 +27,8 @@ from alphaagent.factor.types import (
 from alphaagent.factor.mining.research_spec import default_research_spec, normalize_research_spec
 
 from alphaagent.factor.mining.research_memory import ResearchMemoryStore
+from backend.logging_decorators import log_function_call
+from backend.logging_config import backtest_logger
 from core import factor_categories, trading_config
 from backend.services import (
     SessionManager,
@@ -765,6 +767,7 @@ def evaluate_single_factor(
     return evaluator.eval_profile(eval_req)
 
 
+@log_function_call(logger=backtest_logger)
 def evaluate_multi_profile(
     *,
     multi_line_expr: str,
@@ -776,10 +779,7 @@ def evaluate_multi_profile(
     label_col: str = "label_1d_open_to_open",
     include_fundamentals: bool = False,
 ) -> dict[str, Any]:
-    """一次评估多个 profile（train_screen + validation + size_neutral_validation）。
-    
-    使用 LRU 缓存的会话，相同参数请求无需重新加载 panel。
-    """
+    """一次评估多个 profile（train_screen + validation + size_neutral_validation）。"""
     from alphaagent.factor.mining.schemas import (
         SessionCreateRequest,
         EvalProfileRequest,
