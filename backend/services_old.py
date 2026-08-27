@@ -13,6 +13,11 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+# 导入统一日志系统
+from backend.logging_config import error_logger, main_logger, api_logger, data_logger
+from backend.logging_decorators import log_function_call, log_data_operation
+
+# 保持原有导入不变
 from core.data import (data_status, load_etf, load_etf_panel, load_fund,
                        load_fund_nav, load_fund_panel, load_index, load_panel,
                        load_tech, load_universe)
@@ -80,6 +85,7 @@ def _mtimes() -> tuple:
                            ETF_FILE, ETF_PANEL_FILE, FUND_FILE, FUND_NAV_FILE, FUND_PANEL_FILE))
 
 
+@log_data_operation
 def load_data(force: bool = False, start: str | None = None,
               end: str | None = None, need_panel: bool = True,
               codes: list[str] | None = None,
@@ -125,8 +131,6 @@ def load_data(force: bool = False, start: str | None = None,
         "fund_panel": fund_panel,
         "mtimes": m,
     }
-    # 只保留最近一份数据集：不同回测区间/股票池会各自缓存一份全量数据，
-    # 无界缓存会在请求结束后仍占几份几百 MB 的内存（小内存机器直接卡死）。
     if key not in DATA_CACHE:
         DATA_CACHE.clear()
     DATA_CACHE[key] = out
@@ -243,12 +247,14 @@ def clean_records(records: list[dict]) -> list[dict]:
     return out
 
 
+@log_function_call(logger=data_logger)
 def run_update_background(mode: str, end: str) -> None:
     run_id = start_run("quant_ui:update", metadata={"mode": mode, "end": end})
 
     def worker():
         try:
             avail = _available_memory_mb()
+            
             if avail < MIN_START_MEMORY_MB:
                 with _lock:
                     UPDATE_STATE.update({
@@ -259,19 +265,23 @@ def run_update_background(mode: str, end: str) -> None:
                 finish_run(run_id, status="failed",
                            error_message=f"insufficient memory: {avail:.0f}MB")
                 return
+            
             with _lock:
                 UPDATE_STATE.update({"running": True, "progress": 0.0, "text": "启动",
                                      "result": None, "error": None})
+            
             def guarded_progress(p: float, t: float, label: str) -> None:
                 avail = _available_memory_mb()
                 if avail < MIN_RUN_MEMORY_MB:
                     raise MemoryError(
                         f"运行中可用内存不足（{avail:.0f}MB < {MIN_RUN_MEMORY_MB}MB），已中止更新")
                 _set_progress(p, t, label)
+            
             result = refresh_all(
                 mode=mode, end=end, max_workers=UPDATE_MAX_WORKERS,
                 progress=guarded_progress,
             )
+            
             invalidate_data()
             UPDATE_STATE.update({"running": False, "progress": 1.0,
                                  "result": result, "error": None})

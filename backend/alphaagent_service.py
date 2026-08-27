@@ -27,7 +27,13 @@ from alphaagent.factor.types import (
 from alphaagent.factor.mining.research_spec import default_research_spec, normalize_research_spec
 
 from alphaagent.factor.mining.research_memory import ResearchMemoryStore
-from core import factor_categories
+from core import factor_categories, trading_config
+from backend.services import (
+    SessionManager,
+    FactorEvaluator,
+    FactorRepository,
+    FactorSubmitter,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,10 +47,11 @@ DEFAULT_FACTORLIB = factor_categories.production_dir("technical")  # 向后兼�
 RESEARCH_MEMORY_FILE = ROOT / "artifacts" / "alphaagent" / "research_memory.db"
 LOG_ROOT = ROOT / "logs" / "factor_mining" / "ui"
 
-# ── 单因子评估服务（懒初始化） ──────────────────────────────────────
-_eval_service: Any = None
-_eval_service_lock = threading.Lock()
-_eval_service_params: dict[str, Any] | None = None
+# ── 服务管理器（使用 LRU 缓存） ──────────────────────────────────────
+_session_manager: SessionManager | None = None
+_factor_evaluator: FactorEvaluator | None = None
+_factor_repository: FactorRepository | None = None
+_service_lock = threading.Lock()
 
 
 def _now() -> str:
@@ -103,24 +110,41 @@ class AgentRun:
         return files[-1] if files else None
 
     def refresh(self) -> None:
-        if self.process is None:
+        # 有进程句柄：以进程退出码为准。
+        if self.process is not None:
+            code = self.process.poll()
+            if code is None:
+                self.status = "running"
+            elif code == 0:
+                self.status = "completed"
+            else:
+                self.status = "failed"
+                if not self.error:
+                    detail = ""
+                    if self.console_log and self.console_log.exists():
+                        try:
+                            lines = self.console_log.read_text(encoding="utf-8", errors="replace").splitlines()
+                            detail = " ".join(line.strip() for line in lines[-4:] if line.strip())
+                        except OSError:
+                            pass
+                    self.error = f"AlphaAgent exited with code {code}" + (f": {detail[-1200:]}" if detail else "")
             return
-        code = self.process.poll()
-        if code is None:
-            self.status = "running"
-        elif code == 0:
-            self.status = "completed"
-        else:
-            self.status = "failed"
-            if not self.error:
-                detail = ""
-                if self.console_log and self.console_log.exists():
-                    try:
-                        lines = self.console_log.read_text(encoding="utf-8", errors="replace").splitlines()
-                        detail = " ".join(line.strip() for line in lines[-4:] if line.strip())
-                    except OSError:
-                        pass
-                self.error = f"AlphaAgent exited with code {code}" + (f": {detail[-1200:]}" if detail else "")
+        # 无进程句柄（后端重启后从磁盘恢复，或 CLI 启动）：
+        # 事件日志已写入终态（session_end/session_error/run_summary）则跟随终态，
+        # 否则若轨迹仍在推进视为 running，避免误标 interrupted。
+        jsonl = self._jsonl()
+        if jsonl is None or not jsonl.exists():
+            return
+        try:
+            if time.time() - jsonl.stat().st_mtime < 900:
+                self.status = "running"
+                return
+        except OSError:
+            pass
+        status = _status_from_events(list(read_events(jsonl)))
+        if status == "interrupted":
+            return
+        self.status = status
 
     def snapshot(self, tail: int = 80) -> dict[str, Any]:
         self.refresh()
@@ -153,6 +177,44 @@ class AgentRun:
             "events": recent_events,
             "log_dir": str(self.log_dir),
             "error": self.error,
+        }
+
+
+def get_session_cache_stats() -> dict[str, Any]:
+    """获取会话缓存统计信息。
+    
+    用于监控内存使用情况。
+    """
+    try:
+        manager = _get_session_manager()
+        stats = manager.get_cache_stats()
+        return {
+            "success": True,
+            "cache_stats": stats,
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+        }
+
+
+def evict_all_sessions() -> dict[str, Any]:
+    """清空所有会话缓存，释放内存。
+    
+    通常在内存压力大或参数大幅变化时调用。
+    """
+    try:
+        manager = _get_session_manager()
+        manager.evict_all()
+        return {
+            "success": True,
+            "message": "All sessions evicted",
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
         }
 
 
@@ -414,8 +476,19 @@ def get_run(run_id: str) -> AgentRun | None:
 
 def stop_run(run_id: str) -> bool:
     run = get_run(run_id)
-    if run is None or run.process is None or run.process.poll() is not None:
+    if run is None:
         return False
+    run.refresh()
+    if run.status in {"completed", "failed", "stopped"}:
+        return True
+    if run.process is None:
+        # 无进程句柄：磁盘轨迹已终态时视为已结束；否则标记为停止（进程可能已死）。
+        run.status = "stopped"
+        run.save_meta()
+        return True
+    if run.process.poll() is not None:
+        run.refresh()
+        return True
     run.process.terminate()
     run.status = "stopping"
     return True
@@ -423,7 +496,10 @@ def stop_run(run_id: str) -> bool:
 
 def queue_message(run_id: str, content: str) -> bool:
     run = get_run(run_id)
-    if run is None or run.process is None or run.process.poll() is not None:
+    if run is None:
+        return False
+    run.refresh()
+    if run.status not in {"running", "starting", "stopping"}:
         return False
     row = {"ts": _now(), "content": content.strip()}
     with run.control_file.open("a", encoding="utf-8") as handle:
@@ -468,6 +544,15 @@ def delete_run(run_id: str) -> dict[str, Any] | None:
         return None
     if run.process is not None and run.process.poll() is None:
         return {"run_id": run_id, "deleted": False, "reason": "run_still_running"}
+    # 无进程句柄但磁盘轨迹仍在推进（后端重启后恢复的活跃 run）：
+    # 直接删会连日志一起清掉，禁止删除，避免边写边删。
+    jsonl = run._jsonl()
+    if run.process is None and jsonl is not None and jsonl.exists():
+        try:
+            if time.time() - jsonl.stat().st_mtime < 900:
+                return {"run_id": run_id, "deleted": False, "reason": "run_still_running"}
+        except OSError:
+            pass
     shutil.rmtree(run.log_dir, ignore_errors=True)
     with _LOCK:
         _RUNS.pop(run_id, None)
@@ -596,52 +681,42 @@ async def event_stream(run_id: str):
 #  单因子评估（独立于挖掘流程）
 # ══════════════════════════════════════════════════════════════════════
 
-def _get_eval_service(
-    train_start: str = DEFAULT_TRAIN_START,
-    train_end: str = DEFAULT_TRAIN_END,
-    val_start: str = DEFAULT_VAL_START,
-    val_end: str = DEFAULT_VAL_END,
-    label_col: str = "label_1d_open_to_open",
-    include_fundamentals: bool = False,
-) -> Any:
-    """懒初始化 StockEvalService 并复用 session。
-
-    panel 加载很重（~11M 行），首次调用时创建 session 后复用。
-    如果参数变更则重建 session。
+def _get_session_manager() -> SessionManager:
+    """获取会话管理器（LRU 缓存）。
+    
+    全局单例，自动管理多个会话的生命周期。
     """
-    global _eval_service, _eval_service_params
+    global _session_manager
+    with _service_lock:
+        if _session_manager is None:
+            # 最多缓存 3 个会话（约 6-15GB 内存）
+            _session_manager = SessionManager(max_cached_sessions=3)
+        return _session_manager
 
-    params_key = {
-        "train_start": train_start,
-        "train_end": train_end,
-        "val_start": val_start,
-        "val_end": val_end,
-        "label_col": label_col,
-        "include_fundamentals": include_fundamentals,
-    }
 
-    with _eval_service_lock:
-        if _eval_service is not None and _eval_service_params == params_key:
-            # 参数一致，复用
-            return _eval_service
+def _get_factor_evaluator() -> FactorEvaluator:
+    """获取因子评估器。
+    
+    全局单例，使用 LRU 缓存管理会话。
+    """
+    global _factor_evaluator
+    with _service_lock:
+        if _factor_evaluator is None:
+            session_manager = _get_session_manager()
+            _factor_evaluator = FactorEvaluator(session_manager)
+        return _factor_evaluator
 
-        from alphaagent.factor.mining.service import StockEvalService
-        from alphaagent.factor.mining.schemas import SessionCreateRequest
 
-        svc = StockEvalService()
-        req = SessionCreateRequest(
-            panel_path=DEFAULT_PANEL,
-            train_start=train_start,
-            train_end=train_end,
-            val_start=val_start,
-            val_end=val_end,
-            label_col=label_col,
-            include_fundamentals=include_fundamentals,
-        )
-        resp = svc.create_session(req)
-        _eval_service = svc
-        _eval_service_params = params_key
-        return svc
+def _get_factor_repository() -> FactorRepository:
+    """获取因子仓库。
+    
+    全局单例。
+    """
+    global _factor_repository
+    with _service_lock:
+        if _factor_repository is None:
+            _factor_repository = FactorRepository()
+        return _factor_repository
 
 
 def evaluate_single_factor(
@@ -656,10 +731,20 @@ def evaluate_single_factor(
     label_col: str = "label_1d_open_to_open",
     include_fundamentals: bool = False,
 ) -> dict[str, Any]:
-    """独立评估一个因子表达式。"""
-    from alphaagent.factor.mining.schemas import EvalProfileRequest
+    """独立评估一个因子表达式。
+    
+    使用 LRU 缓存的会话，相同参数请求无需重新加载 panel。
+    """
+    from alphaagent.factor.mining.schemas import (
+        SessionCreateRequest,
+        EvalProfileRequest,
+    )
 
-    svc = _get_eval_service(
+    evaluator = _get_factor_evaluator()
+    
+    # 创建或获取会话（LRU 缓存）
+    create_req = SessionCreateRequest(
+        panel_path=DEFAULT_PANEL,
         train_start=train_start,
         train_end=train_end,
         val_start=val_start,
@@ -667,21 +752,17 @@ def evaluate_single_factor(
         label_col=label_col,
         include_fundamentals=include_fundamentals,
     )
-
-    # 使用已有的 session（第一个）
-    session_ids = list(svc.sessions._sessions.keys())
-    if not session_ids:
-        raise RuntimeError("eval_service_session_empty")
-    session_id = session_ids[-1]
-
-    # 如果 profile_id 包含 "train" 或 "val" 分别走不同 split
-    req = EvalProfileRequest(
+    create_resp = evaluator.create_session(create_req)
+    session_id = create_resp["session_id"]
+    
+    # 评估因子
+    eval_req = EvalProfileRequest(
         session_id=session_id,
         profile_id=profile_id,
         multi_line_expr=multi_line_expr,
         factor_name=factor_name,
     )
-    return svc.eval_profile(req)
+    return evaluator.eval_profile(eval_req)
 
 
 def evaluate_multi_profile(
@@ -695,10 +776,20 @@ def evaluate_multi_profile(
     label_col: str = "label_1d_open_to_open",
     include_fundamentals: bool = False,
 ) -> dict[str, Any]:
-    """一次评估多个 profile（train_screen + validation + size_neutral_validation）。"""
-    from alphaagent.factor.mining.schemas import EvalProfileRequest
+    """一次评估多个 profile（train_screen + validation + size_neutral_validation）。
+    
+    使用 LRU 缓存的会话，相同参数请求无需重新加载 panel。
+    """
+    from alphaagent.factor.mining.schemas import (
+        SessionCreateRequest,
+        EvalProfileRequest,
+    )
 
-    svc = _get_eval_service(
+    evaluator = _get_factor_evaluator()
+    
+    # 创建或获取会话（LRU 缓存）
+    create_req = SessionCreateRequest(
+        panel_path=DEFAULT_PANEL,
         train_start=train_start,
         train_end=train_end,
         val_start=val_start,
@@ -706,21 +797,18 @@ def evaluate_multi_profile(
         label_col=label_col,
         include_fundamentals=include_fundamentals,
     )
-
-    session_ids = list(svc.sessions._sessions.keys())
-    if not session_ids:
-        raise RuntimeError("eval_service_session_empty")
-    session_id = session_ids[-1]
+    create_resp = evaluator.create_session(create_req)
+    session_id = create_resp["session_id"]
 
     results: dict[str, Any] = {}
     for profile_id in ("train_screen", "validation", "size_neutral_validation"):
-        req = EvalProfileRequest(
+        eval_req = EvalProfileRequest(
             session_id=session_id,
             profile_id=profile_id,
             multi_line_expr=multi_line_expr,
             factor_name=factor_name,
         )
-        results[profile_id] = svc.eval_profile(req)
+        results[profile_id] = evaluator.eval_profile(eval_req)
 
     return results
 
@@ -823,6 +911,8 @@ def _candidate_factor_view(factor_id: str, entry: dict[str, Any], *, category: s
 
 def list_factors(*, library: str = "production", category: str = "technical") -> dict[str, Any]:
     """列出因子库中的所有因子。
+    
+    使用 FactorRepository 服务，支持缓存和统一接口。
 
     library:
       - "production": 正式因子库
@@ -838,6 +928,7 @@ def list_factors(*, library: str = "production", category: str = "technical") ->
 
     root = prod_root if library == "production" else cand_root
 
+    # 候选库仍使用原有逻辑（包含 registry）
     if library == "candidate":
         registry = _candidate_registry(category)
         factors = [_candidate_factor_view(fid, entry, category=category) for fid, entry in sorted(registry.items())]
@@ -850,43 +941,10 @@ def list_factors(*, library: str = "production", category: str = "technical") ->
             "registry": registry,
         }
 
-    try:
-        # Listing must not re-hash the 82 MB canonical row index on every request.
-        zoo = FactorZoo.open(root, verify_hash=False)
-    except FileNotFoundError:
-        return {"library": library, "category": category, "root": str(root), "factors": [], "n_factors": 0, "error": "library_not_initialized"}
-
-    df = zoo.catalog.to_dataframe()
-    factors: list[dict[str, Any]] = []
-    for _, row in df.iterrows():
-        extra = row.get("extra")
-        if isinstance(extra, str) and extra:
-            try:
-                import json as _json
-                extra = _json.loads(extra)
-            except (ValueError, TypeError):
-                extra = {}
-        elif extra is None or (isinstance(extra, float) and pd.isna(extra)):
-            extra = {}
-
-        metrics = (extra or {}).get("metrics", {})
-        factors.append({
-            "factor_id": str(row["factor_id"]),
-            "name": str(row["name"]),
-            "expr": str(row["expr"]),
-            "col_idx": int(row["col_idx"]),
-            "status": str(row.get("status", "")),
-            "finite_count": int(row.get("finite_count", 0)),
-            "created_at": str(row.get("created_at", "")),
-            "metrics": {
-                "ic": _safe_float(metrics.get("ic")),
-                "icir": _safe_float(metrics.get("icir")),
-                "rank_ic": _safe_float(metrics.get("rank_ic")),
-                "factor_coverage": _safe_float(metrics.get("factor_coverage")),
-            } if metrics else {},
-            "extra": extra,
-        })
-
+    # 正式库使用 FactorRepository
+    repo = _get_factor_repository()
+    factors = repo.list_factors(root, category)
+    
     # 读取 registry（如有）
     registry_path = root / "mining_delivered_registry.json"
     registry: dict[str, Any] = {}
@@ -904,7 +962,10 @@ def list_factors(*, library: str = "production", category: str = "technical") ->
 
 
 def get_factor_detail(factor_id: str, *, library: str = "production", category: str = "technical") -> dict[str, Any]:
-    """获取单个因子详情。"""
+    """获取单个因子详情。
+    
+    使用 FactorRepository 服务。
+    """
     from alphaagent.factor.zoo import FactorZoo
 
     prod_root = factor_categories.production_dir(category)
@@ -912,6 +973,7 @@ def get_factor_detail(factor_id: str, *, library: str = "production", category: 
 
     root = prod_root if library == "production" else cand_root
 
+    # 候选库仍使用原有逻辑
     if library == "candidate":
         entry = _candidate_registry(category).get(factor_id)
         if not isinstance(entry, dict):
@@ -920,33 +982,12 @@ def get_factor_detail(factor_id: str, *, library: str = "production", category: 
         view["registry_entry"] = entry
         return view
 
+    # 正式库使用 FactorRepository
+    repo = _get_factor_repository()
     try:
-        zoo = FactorZoo.open(root, verify_hash=False)
-    except FileNotFoundError:
-        return {"error": "library_not_initialized"}
-
-    meta = zoo.catalog.get(factor_id)
-    if meta is None:
-        return {"error": "factor_not_found"}
-
-    # 读取 registry 获取完整评估信息
-    registry_path = root / "mining_delivered_registry.json"
-    reg_entry: dict[str, Any] = {}
-    if registry_path.is_file():
-        registry = json.loads(registry_path.read_text(encoding="utf-8"))
-        reg_entry = registry.get(factor_id, {})
-
-    return {
-        "factor_id": meta.factor_id,
-        "name": meta.name,
-        "expr": meta.expr,
-        "col_idx": meta.col_idx,
-        "status": meta.status.value,
-        "finite_count": meta.finite_count,
-        "created_at": meta.created_at,
-        "extra": meta.extra,
-        "registry_entry": reg_entry,
-    }
+        return repo.get_factor_detail(factor_id, root)
+    except Exception as e:
+        return {"error": f"factor_not_found: {str(e)}"}
 
 
 def delete_factor(factor_id: str, *, library: str = "production", category: str = "technical") -> dict[str, Any]:
@@ -1032,6 +1073,55 @@ def _safe_float(v: Any) -> float | None:
 #  因子实验室：保存因子到因子库
 # ══════════════════════════════════════════════════════════════════════
 
+def _lab_save_review_hook(metrics: dict, similarity: dict | None) -> dict[str, any]:
+    """因子实验室保存时的规则评审钩子（模拟挖掘流程的 LLM Reviewer）。
+    
+    基于统计门槛自动判断因子质量，返回评审意见。
+    """
+    ic = metrics.get("ic") or metrics.get("train_ic") or 0
+    icir = metrics.get("icir") or metrics.get("train_icir") or 0
+    coverage = metrics.get("factor_coverage") or metrics.get("coverage") or 0
+    max_corr = similarity.get("max_abs_corr") if similarity else 0
+    
+    # 候选池门槛（与挖掘流程 stage_one 对齐）
+    min_abs_ic = 0.015
+    min_icir = 0.25
+    min_coverage = 0.85
+    max_abs_corr = 0.6
+    
+    issues = []
+    
+    if abs(ic) < min_abs_ic:
+        issues.append(f"|IC|={abs(ic):.4f} < {min_abs_ic}")
+    if abs(icir) < min_icir:
+        issues.append(f"ICIR={abs(icir):.4f} < {min_icir}")
+    if coverage < min_coverage:
+        issues.append(f"coverage={coverage:.4f} < {min_coverage}")
+    if max_corr and max_corr > max_abs_corr:
+        issues.append(f"max_cs_corr={max_corr:.4f} > {max_abs_corr}")
+    
+    if not issues:
+        return {
+            "verdict": "approve",
+            "conclusion": "因子达到候选池门槛，建议入库",
+            "reviewer": "lab_auto_review",
+        }
+    elif len(issues) == 1:
+        return {
+            "verdict": "revise",
+            "conclusion": f"因子存在小问题：{issues[0]}，建议修订后重新提交",
+            "reviewer": "lab_auto_review",
+            "issues": issues,
+        }
+    else:
+        return {
+            "verdict": "reject",
+            "conclusion": f"因子未达门槛：{'；'.join(issues)}，建议重新设计",
+            "reviewer": "lab_auto_review",
+            "issues": issues,
+        }
+
+
 def save_factor(
     *,
     multi_line_expr: str,
@@ -1052,7 +1142,7 @@ def save_factor(
     category 按 research_mode 路由到对应类别的目录。
     """
     from alphaagent.factor.mining.submit import slug_factor_id
-    from alphaagent.factor.ingest import ingest_factor, load_panel_for_zoo, prepare_stored_values
+    from alphaagent.factor.ingest import ingest_factor, prepare_stored_values
     from alphaagent.factor.types import IngestPolicy
     from alphaagent.factor.zoo import FactorZoo
     from alphaagent.factor.mining.registry_io import upsert_mining_registry, write_candidate_registry
@@ -1060,16 +1150,26 @@ def save_factor(
     factor_id = slug_factor_id(factor_name)
     name = str(factor_name).strip() or factor_id
 
-    # 获取 eval_service 的 session 以复用已加载的 panel
-    svc = _get_eval_service(
-        train_start=train_start, train_end=train_end,
-        val_start=val_start, val_end=val_end,
-        label_col=label_col, include_fundamentals=include_fundamentals,
+    # 获取 session 以复用已加载的 panel（使用 LRU 缓存）
+    from alphaagent.factor.mining.schemas import SessionCreateRequest
+    
+    evaluator = _get_factor_evaluator()
+    create_req = SessionCreateRequest(
+        panel_path=DEFAULT_PANEL,
+        train_start=train_start,
+        train_end=train_end,
+        val_start=val_start,
+        val_end=val_end,
+        label_col=label_col,
+        include_fundamentals=include_fundamentals,
     )
-    session_ids = list(svc.sessions._sessions.keys())
-    if not session_ids:
-        raise RuntimeError("eval_service_session_empty")
-    session = svc.sessions.get(session_ids[-1])
+    create_resp = evaluator.create_session(create_req)
+    session_id = create_resp["session_id"]
+    
+    # 从 session_manager 获取 session
+    session = evaluator.session_manager._cache.get(create_resp["session_id"])
+    if session is None:
+        raise RuntimeError("session_not_found")
     ctx = session.ctx
 
     # Candidate records are registry-only; production remains a dense FactorZoo.
@@ -1087,8 +1187,8 @@ def save_factor(
     except FileNotFoundError:
         return {"ok": False, "factor_id": factor_id, "error": f"factorlib_not_initialized:{zoo_root}"}
 
-    # 加载 panel
-    panel = load_panel_for_zoo(zoo, panel_path=ctx.panel_path)
+    # 复用 session 中已加载的 panel（避免重复加载 cne:// 数据源）
+    panel = session.panel
 
     # 构建 ingest policy
     policy = IngestPolicy.from_context(ctx, max_cs_corr=1.0, similar_top_k=3)
@@ -1107,6 +1207,14 @@ def save_factor(
     )
 
     if library == "candidate":
+        # 模拟挖掘流程的评审钩子：基于统计门槛的规则评审
+        metrics = assessment.metrics
+        review = _lab_save_review_hook(metrics, assessment.similarity)
+        review_verdict = str((review or {}).get("verdict") or "").lower()
+        review_status = (
+            {"approve": "approved", "revise": "revise", "reject": "rejected"}.get(review_verdict, "pending_review")
+        )
+
         fingerprint = {
             "panel_path": str(ctx.panel_path),
             "index_hash": zoo.manifest.index_hash,
@@ -1121,19 +1229,33 @@ def save_factor(
             expr_dir=expr_dir,
             repo_root=ROOT,
             policy=policy,
-            metrics=assessment.metrics,
+            metrics=metrics,
             similarity=assessment.similarity,
             source="lab_save",
             data_fingerprint=fingerprint,
+            evaluation_evidence={"metrics": metrics, "similarity": assessment.similarity},
         )
+        
+        # 记录评审结果
+        if review:
+            from alphaagent.factor.mining.registry_io import set_candidate_review
+            set_candidate_review(
+                registry_path,
+                factor_id=factor_id,
+                review=review,
+                promotion_status=review_status,
+            )
+
         return {
             "ok": True,
             "factor_id": factor_id,
             "factor_name": name,
             "library": library,
+            "review_status": review_status,
+            "review_verdict": review_verdict,
+            "review": review,
             "candidate_stored": True,
             "candidate_storage": "registry_only",
-            "review_status": "pending_review",
             "stored": False,
             "metrics": assessment.metrics,
             "similarity": assessment.similarity,

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import pandas as pd
 from pathlib import Path
 import tempfile
@@ -10,6 +9,8 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from backend import services
+from backend.logging_config import error_logger
+from backend.logging_decorators import log_function_call, log_backtest_operation
 from core import backtest_archive
 from core.attribution import brinson_attribution
 from core.assets import ETF_PROFILE, STOCK_PROFILE
@@ -24,8 +25,6 @@ from core.performance import quantstats_html
 from core.store import normalize_universe
 from core.strategy_pool import resolve_strategy as resolve_pool_strategy
 from strategies.registry import STRATEGIES, list_strategies_by_type
-
-logger = logging.getLogger(__name__)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -327,6 +326,7 @@ def names():
 
 
 @router.post("/backtest")
+@log_backtest_operation
 def backtest(req: BacktestRequest):
     is_composite = bool(req.composite_weights)
     is_alpha = bool(req.alpha_factor_id)
@@ -383,6 +383,7 @@ def backtest(req: BacktestRequest):
                     else str(panel["date"].max().date()))
     fund_cost = is_fund and req.buy_cost == trading_config.BUY_COST and req.sell_cost == trading_config.SELL_COST
     etf_cost = _is_etf(req.universe) and req.buy_cost == trading_config.BUY_COST and req.sell_cost == trading_config.SELL_COST
+    
     if is_fund:
         res = run_fund_backtest(
             nav=data["fund_nav"],
@@ -419,7 +420,7 @@ def backtest(req: BacktestRequest):
                     req.alpha_factor_id, req.alpha_library,
                     panel, calc_start, req.end)
             except Exception as exc:
-                return {"error": f"AlphaAgent 因子求值失败: {exc}"}
+                return {"error": f"AlphaAgent 因子求值失败：{exc}"}
         res = run_backtest(
             panel=panel,
             codes=codes,
@@ -465,7 +466,7 @@ def backtest(req: BacktestRequest):
         regime_scale=req.regime_scale,
         execution_profile=ETF_PROFILE if _is_etf(req.universe) else STOCK_PROFILE,
         external_scores=external_scores,
-)
+    )
     brinson = None
     if (not is_fund and not _is_etf(req.universe)
             and res.get("weight_history")
@@ -557,6 +558,7 @@ def backtest(req: BacktestRequest):
         },
         data_version=data_version,
     )
+    
     return {
         "run_id": run_id,
         "composite": is_composite,

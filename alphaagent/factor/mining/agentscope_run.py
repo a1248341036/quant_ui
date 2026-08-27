@@ -392,6 +392,7 @@ async def run_factor_mining_agentscope(
             prefer_orthogonal=bool(policy.get("prefer_orthogonal_to_approved", True)),
             include_expression=bool(policy.get("include_expression", True)),
             max_expression_chars=int(policy.get("max_expression_chars", 320)),
+            enable_factor_retrieval=bool(policy.get("enable_factor_retrieval", False)),
         )
 
     def _queued_prompt(messages: list[str]) -> str:
@@ -605,6 +606,35 @@ async def run_factor_mining_agentscope(
                 reflection_lines.append(f"💡 已探索维度: {explored_dims or {'unknown'}}。未探索: 动量(TS_MEAN($ret,N)), 波动率(TS_STD($ret,N)), 量价关系(TS_CORR), 隔夜跳空($adj_open vs prev_close), VWAP偏离, 筹码(CHIP_*). 请选一个未尝试的维度。")
             reflection_lines.append("请基于以上分析，发起下一轮 evaluate_factor 调用（建议并行2-3条不同维度的假设）。")
             pending = "\n".join(reflection_lines)
+
+            # ── 批次蒸馏：从本轮结果提炼模式记忆（改进二）──
+            if memory_store is not None:
+                batch_for_distill = [
+                    {
+                        "factor_name": r.get("factor_name", ""),
+                        "expression": str(r.get("arguments_raw", "")),
+                        "metrics": r.get("metrics", {}),
+                    }
+                    for r in turn_rows
+                ]
+                try:
+                    distilled = memory_store.distill_batch_patterns(
+                        run_id=log_dir.name,
+                        turn=outer_turn - 1,
+                        batch_results=batch_for_distill,
+                    )
+                    if distilled:
+                        _emit("patterns_distilled", {
+                            "turn": outer_turn - 1,
+                            "pattern_ids": distilled,
+                            "count": len(distilled),
+                        })
+                except Exception as exc:
+                    _emit("patterns_distill_error", {
+                        "turn": outer_turn - 1,
+                        "error": str(exc),
+                    })
+        # ── end: if turn_rows ──
     else:
         end_reason = "max_turns_reached"
 

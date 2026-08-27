@@ -298,6 +298,28 @@ def factor_detail(factor_id: str, library: str = "production", category: str = "
     return result
 
 
+# ══════════════════════════════════════════════════════════════════════
+#  会话缓存管理 API
+# ══════════════════════════════════════════════════════════════════════
+
+@router.get("/session-cache/stats")
+def get_session_cache_stats() -> dict[str, Any]:
+    """获取会话缓存统计信息。
+    
+    用于监控内存使用情况，显示当前缓存的会话数量和参数。
+    """
+    return service.get_session_cache_stats()
+
+
+@router.post("/session-cache/evict")
+def evict_all_sessions() -> dict[str, Any]:
+    """清空所有会话缓存，释放内存。
+    
+    通常在内存压力大或参数大幅变化时调用。
+    """
+    return service.evict_all_sessions()
+
+
 class DeleteFactorRequest(BaseModel):
     library: str = "production"
 
@@ -385,3 +407,119 @@ def backtest_factor(req: BacktestFactorRequest) -> dict[str, Any]:
     )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+# ══════════════════════════════════════════════════════════════════════
+#  通用日志查看 API
+# ══════════════════════════════════════════════════════════════════════
+
+@router.get("/logs")
+def get_logs(
+    run_id: str | None = None,
+    level: str | None = None,
+    limit: int = 100,
+    tail: bool = True,
+) -> dict[str, Any]:
+    """查看系统日志。
+    
+    支持按 run_id 过滤、按日志级别过滤、限制返回条数。
+    
+    Args:
+        run_id: 可选，按运行 ID 过滤日志
+        level: 可选，日志级别 (DEBUG, INFO, WARNING, ERROR)
+        limit: 返回最大条数，默认 100，最大 1000
+        tail: 是否从末尾开始读取（最新日志在前）
+    
+    Returns:
+        日志列表，每条包含 timestamp, level, message, run_id 等字段
+    """
+    from backend.logging_config import get_log_file_path, parse_log_file
+    
+    try:
+        log_file = get_log_file_path()
+        if not log_file.exists():
+            return {
+                "log_file": str(log_file),
+                "total_lines": 0,
+                "logs": []
+            }
+        
+        logs = parse_log_file(
+            log_file=log_file,
+            run_id=run_id,
+            level=level,
+            limit=min(limit, 1000),
+            tail=tail,
+        )
+        
+        return {
+            "log_file": str(log_file),
+            "total_lines": len(logs),
+            "filters": {
+                "run_id": run_id,
+                "level": level,
+                "limit": limit,
+            },
+            "logs": logs
+        }
+    except Exception as exc:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=f"Failed to read logs: {exc}") from exc
+
+
+@router.get("/logs/tail")
+async def tail_logs(
+    run_id: str | None = None,
+    level: str | None = None,
+):
+    """实时流式输出日志（类似 tail -f）。
+    
+    适用于监控正在运行的挖掘任务。
+    """
+    from backend.logging_config import get_log_file_path
+    import asyncio
+    from pathlib import Path
+    
+    log_file = get_log_file_path()
+    
+    async def log_stream():
+        if not log_file.exists():
+            # 文件不存在时等待创建
+            while not log_file.exists():
+                await asyncio.sleep(1)
+            position = 0
+        else:
+            # 从文件末尾开始
+            position = log_file.stat().st_size
+        
+        while True:
+            try:
+                await asyncio.sleep(0.5)  # 每 500ms 检查一次
+                
+                if not log_file.exists():
+                    continue
+                
+                with open(log_file, "r", encoding="utf-8") as f:
+                    f.seek(position)
+                    new_lines = f.readlines()
+                    position = f.tell()
+                
+                for line in new_lines:
+                    # 可选：按 run_id 或 level 过滤
+                    if run_id and run_id not in line:
+                        continue
+                    if level and level.upper() not in line:
+                        continue
+                    
+                    yield f"data: {line.strip()}\n\n"
+            
+            except Exception as e:
+                yield f"data: Error: {str(e)}\n\n"
+    
+    return StreamingResponse(
+        log_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )

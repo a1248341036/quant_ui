@@ -61,6 +61,28 @@ def _candidate_registry_similarity(
     new_series = pd.Series(np.asarray(cand_values, dtype=np.float64), index=panel.index)
     corrs: list[tuple[str, float, str]] = []  # (factor_id, corr, name)
 
+    # 逐日截面 Pearson 相关均值（在 panel 的 MultiIndex 上直接计算，
+    # 不依赖 cross_sectional_pearson_mean，因为后者需要 RowIndex 而非 MultiIndex）。
+    def _panel_cs_pearson_mean(a: pd.Series, b: pd.Series, *, min_pairs: int = 30) -> float:
+        vals: list[float] = []
+        for ts, a_sub in a.groupby(level="datetime", sort=False):
+            b_sub = b.xs(ts, level="datetime")
+            av = a_sub.to_numpy(dtype=np.float64)
+            bv = b_sub.to_numpy(dtype=np.float64)
+            mask = np.isfinite(av) & np.isfinite(bv)
+            if mask.sum() < min_pairs:
+                continue
+            av, bv = av[mask], bv[mask]
+            av = av - av.mean()
+            bv = bv - bv.mean()
+            denom = float(np.sqrt((av * av).sum() * (bv * bv).sum()))
+            if denom <= 0.0:
+                continue
+            vals.append(float((av * bv).sum() / denom))
+        if not vals:
+            return float("nan")
+        return float(np.mean(vals))
+
     for fid, entry in sorted(registry.items()):
         if fid == exclude_factor_id or not isinstance(entry, dict):
             continue
@@ -74,12 +96,8 @@ def _candidate_registry_similarity(
             old_aligned = align_series_to_panel(old_raw, panel)
         except Exception:
             continue
-        corr = cross_sectional_pearson_mean(
-            np.asarray(new_series, dtype=np.float64),
-            np.asarray(old_aligned, dtype=np.float64),
-            panel.index,
-            min_pairs=min_pairs,
-        )
+        old_series = pd.Series(np.asarray(old_aligned, dtype=np.float64), index=panel.index)
+        corr = _panel_cs_pearson_mean(new_series, old_series, min_pairs=min_pairs)
         if np.isfinite(corr):
             name = str(entry.get("name") or fid)
             corrs.append((fid, float(corr), name))
@@ -238,6 +256,60 @@ def _check_stage_two(
     return len(reasons) == 0, reasons
 
 
+def _detect_replacement(
+    similarity_report: dict[str, Any],
+    new_metrics: dict[str, Any],
+    zoo: "FactorZoo",
+) -> dict[str, Any] | None:
+    """检测新因子是否显著优于高相关旧因子，标记替换候选。
+
+    触发条件：与正式库因子相关性 >= 0.4 且新因子 IC/ICIR 均比旧因子高 50% 以上。
+    仅标记不执行——返回 replacement_candidate dict 供人工确认。
+    """
+    max_corr = float(similarity_report.get("max_abs_corr", 0))
+    if max_corr < 0.4:
+        return None
+
+    top_neighbors = similarity_report.get("top_neighbors") or []
+    if not top_neighbors:
+        return None
+
+    old_neighbor = top_neighbors[0]
+    old_factor_id = str(old_neighbor.get("factor_id") or "")
+    if not old_factor_id:
+        return None
+
+    # 从 catalog 读取旧因子元信息，指标存在 extra["metrics"] 中
+    old_meta = zoo.catalog.get(old_factor_id)
+    if old_meta is None:
+        return None
+
+    old_metrics = old_meta.extra.get("metrics", {}) if isinstance(old_meta.extra, dict) else {}
+    old_ic = abs(float(old_metrics.get("ic", 0) or 0))
+    old_icir = abs(float(old_metrics.get("icir", 0) or 0))
+    if old_ic < 0.001:
+        return None
+
+    new_ic = abs(float(new_metrics.get("ic", 0) or 0))
+    new_icir = abs(float(new_metrics.get("icir", 0) or 0))
+
+    # 替换条件：新因子 IC 和 ICIR 均比旧因子高 50% 以上，且新因子 IC >= 0.03
+    if new_ic > old_ic * 1.5 and new_icir > old_icir * 1.5 and new_ic >= 0.03:
+        return {
+            "old_factor_id": old_factor_id,
+            "old_factor_name": old_neighbor.get("name"),
+            "old_cs_corr": abs(float(old_neighbor.get("cs_corr", 0))),
+            "old_ic": round(old_ic, 6),
+            "old_icir": round(old_icir, 6),
+            "new_ic": round(new_ic, 6),
+            "new_icir": round(new_icir, 6),
+            "improvement_ratio": round(new_ic / old_ic, 2) if old_ic else None,
+            "action": "replace_after_approval",
+            "note": "检测到新因子显著优于旧因子，建议人工确认后 deprecate 旧因子",
+        }
+    return None
+
+
 class FactorSubmitService:
     """两阶段提交：海选候选池，再精筛进入正式 FactorZoo。"""
 
@@ -348,14 +420,62 @@ class FactorSubmitService:
         ctx = session.ctx
         try:
             zoo = FactorZoo.open(self.factorlib_path)
-        except FileNotFoundError as e:
-            return {
-                "ok": False,
-                "stored": False,
-                "error": f"factorlib_not_initialized: {self.factorlib_path}",
-                "error_type": "FactorLibError",
-                "detail": str(e),
-            }
+        except FileNotFoundError:
+            # 因子库未初始化（首次使用新 research_mode 的 production 目录）。
+            # 用会话域 panel 自动初始化，避免 LLM 反复碰壁。
+            from alphaagent.factor.zoo.index import init_library
+
+            panel = session.panel
+            if panel is None or len(panel) == 0:
+                return {
+                    "ok": False,
+                    "stored": False,
+                    "error": "session_panel_empty",
+                    "error_type": "SessionError",
+                }
+            from alphaagent.data.adapters.cnequity import is_cne_source
+
+            panel_path_str = ""
+            if ctx.panel_path and is_cne_source(ctx.panel_path):
+                panel_path_str = "D:\\Quant\\quant_ui\\cne:"
+            elif ctx.panel_path:
+                panel_path_str = str(Path(ctx.panel_path).resolve())
+            init_library(
+                self.factorlib_path,
+                panel=panel,
+                panel_path=Path(panel_path_str) if panel_path_str else None,
+                n_sample_rows=200_000,
+                max_factors=2048,
+            )
+            zoo = FactorZoo.open(self.factorlib_path)
+        except FileNotFoundError:
+            # 因子库未初始化（首次使用新 research_mode 的 production 目录）。
+            # 用会话域 panel 自动初始化，避免 LLM 反复碰壁。
+            from alphaagent.factor.zoo.index import init_library
+
+            panel = session.panel
+            if panel is None or len(panel) == 0:
+                return {
+                    "ok": False,
+                    "stored": False,
+                    "error": "session_panel_empty",
+                    "error_type": "SessionError",
+                }
+            from alphaagent.data.adapters.cnequity import is_cne_source
+
+            panel_path_str = ""
+            if ctx.panel_path and is_cne_source(ctx.panel_path):
+                panel_path_str = "D:\\Quant\\quant_ui\\cne:"
+            elif ctx.panel_path:
+                panel_path_str = str(Path(ctx.panel_path).resolve())
+            init_library(
+                self.factorlib_path,
+                panel=panel,
+                panel_path=Path(panel_path_str) if panel_path_str else None,
+                n_sample_rows=200_000,
+                max_factors=2048,
+            )
+            zoo = FactorZoo.open(self.factorlib_path)
 
         # ③ 会话域复用：submit 全程在挖掘会话驻内存 panel 上评估，
         #    不再全量重载因子库域 panel（两者行集本就不同——库含全部历史；
@@ -641,6 +761,15 @@ class FactorSubmitService:
             payload["error_type"] = "StageTwoDeliveryCheckError"
             payload["error"] = payload["skipped_reason"]
             return payload
+
+        # ── 替换检测：新因子质量显著优于高相关旧因子时标记替换候选 ──
+        # 仅检测和标记，不自动删除旧因子；需人工确认后再执行 deprecate。
+        if similarity_report and similarity_report.get("top_neighbors"):
+            _replacement = _detect_replacement(
+                similarity_report, metrics_train, zoo
+            )
+            if _replacement is not None:
+                payload["replacement_candidate"] = _replacement
 
         engine_gate_cfg = production_criteria.get("engine_gate")
         if isinstance(engine_gate_cfg, dict) and engine_gate_cfg.get("enabled"):

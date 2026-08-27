@@ -168,7 +168,44 @@ class ResearchMemoryStore:
     BEGIN
         DELETE FROM memory_fts WHERE entry_id = old.id;
     END;
+
+    CREATE TABLE IF NOT EXISTS memory_patterns (
+        id TEXT PRIMARY KEY,
+        layer TEXT NOT NULL,
+        category TEXT,
+        content TEXT NOT NULL,
+        evidence_json TEXT,
+        success_rate REAL,
+        total_attempts INTEGER NOT NULL DEFAULT 1,
+        success_count INTEGER NOT NULL DEFAULT 0,
+        saturation_score REAL NOT NULL DEFAULT 0,
+        confidence REAL NOT NULL DEFAULT 0.5,
+        created_at TEXT,
+        updated_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_memory_patterns_layer
+        ON memory_patterns(layer);
+    CREATE INDEX IF NOT EXISTS idx_memory_patterns_category
+        ON memory_patterns(category);
+    CREATE INDEX IF NOT EXISTS idx_memory_patterns_confidence
+        ON memory_patterns(confidence);
     """
+
+    # 因子族分类规则：用于蒸馏算子和饱和度跟踪
+    _FAMILY_RULES: dict[str, tuple[str, ...]] = {
+        "gap_overnight": ("gap", "overnight", "open_close"),
+        "vwap": ("vwap",),
+        "chip": ("chip", "peak", "entropy"),
+        "momentum": ("momentum", "pctchange", "ma_w", "ma20", "ma_dev"),
+        "reversal": ("reversal", "neg_ts"),
+        "volume": ("volume", "amount", "turnover"),
+        "volatility": ("std", "var", "vol_"),
+        "fundamental": ("funda_", "roe", "roa", "growth", "quality", "value"),
+        "correlation": ("corr", "cov", "rankcorr"),
+        "liquidity": ("liquidity", "float", "amihud"),
+        "breadth": ("breadth", "advance", "decline"),
+    }
 
     def __init__(self, path: Path) -> None:
         self.path = Path(path).expanduser().resolve()
@@ -568,8 +605,113 @@ class ResearchMemoryStore:
         prefer_orthogonal: bool = True,
         include_expression: bool = True,
         max_expression_chars: int | None = None,
+        enable_factor_retrieval: bool = False,
     ) -> str:
         """Build a compact, retrieval-based research memory context block.
+
+        三层记忆架构（渐进式模块化）：
+        1. **单因子检索层**（``enable_factor_retrieval=True`` 时启用）
+           — BM25 + recency 混合检索，分 positive/negative 两池展示。
+           默认关闭，因逐因子记录中 46% 是同一句话，信息密度低；
+           需要时可经 ``memory_policy.enable_factor_retrieval`` 开启。
+        2. **模式层**（始终启用）
+           — 跨因子经验提炼，全量按置信度注入，不走 BM25。
+        3. **饱和度层**（始终启用）
+           — 因子族拥挤度，> 0.6 时注入警告。
+        """
+        lines: list[str] = []
+
+        # ── ① 单因子检索层（可开关，默认关闭）──
+        if enable_factor_retrieval:
+            factor_lines = self._factor_retrieval_block(
+                research_goal,
+                limit=limit,
+                include_rejected=include_rejected,
+                prefer_orthogonal=prefer_orthogonal,
+                include_expression=include_expression,
+                max_expression_chars=max_expression_chars,
+            )
+            if factor_lines:
+                lines.append("# 长期研究记忆（来自真实评估与提交结果）")
+                lines.append("以下结论必须作为实验先验。")
+                lines.append(factor_lines)
+
+        # ── ② 模式层（跨因子经验提炼，全量按置信度注入，不走 BM25）──
+        patterns = self.query_patterns(min_confidence=0.3, limit=10)
+        if patterns:
+            if not lines:
+                lines.append("# 长期研究记忆（来自真实评估与提交结果）")
+                lines.append("以下结论必须作为实验先验。")
+            lines.append("")
+            lines.append("## 研究模式记忆（跨因子经验提炼）")
+            lines.append("以下模式来自历史多轮挖掘的统计提炼，优先级高于单因子记忆。")
+
+            recommends = [p for p in patterns if p["layer"] == "recommend" and (p.get("success_rate") or 0) >= 0]
+            forbids = [p for p in patterns if p["layer"] == "forbid"]
+            insights = [p for p in patterns if p["layer"] == "insight"]
+
+            if recommends:
+                lines.append("")
+                lines.append("### 推荐方向（成功率 > 0，在其邻近空间继续探索）")
+                for p in recommends:
+                    rate = p.get("success_rate") or 0
+                    conf = p.get("confidence") or 0
+                    lines.append(
+                        f"- [{p['category']}] {p['content']} "
+                        f"(成功率 {rate:.0%}，置信度 {conf:.0%})"
+                    )
+
+            if forbids:
+                lines.append("")
+                lines.append("### 禁止方向（已验证无效，除非改变核心机制否则不要重复）")
+                for p in forbids:
+                    conf = p.get("confidence") or 0
+                    n = p.get("total_attempts") or 0
+                    lines.append(
+                        f"- [{p['category']}] {p['content']} "
+                        f"(已尝试 {n} 次，置信度 {conf:.0%})"
+                    )
+
+            if insights:
+                lines.append("")
+                lines.append("### 战略洞察")
+                for p in insights:
+                    lines.append(f"- {p['content']}")
+
+        # ── ③ 饱和度层 ──
+        saturation = self.compute_saturation()
+        crowded = {
+            f: d for f, d in saturation.items()
+            if d.get("saturation_score", 0) > 0.6
+        }
+        if crowded:
+            if not lines:
+                lines.append("# 长期研究记忆（来自真实评估与提交结果）")
+                lines.append("以下结论必须作为实验先验。")
+            lines.append("")
+            lines.append("### 饱和度警告")
+            lines.append("以下因子族已拥挤（多个相似因子入库），继续微调边际收益低：")
+            for family, data in sorted(crowded.items(), key=lambda x: -x[1].get("saturation_score", 0)):
+                lines.append(
+                    f"- {family}: {int(data['n_promising'])} 个有潜力 + "
+                    f"{int(data['n_validated'])} 个已验证，"
+                    f"饱和度 {data['saturation_score']:.0%}"
+                )
+            lines.append("建议切换到饱和度 < 0.3 的未探索族。")
+
+        return "\n".join(lines)
+
+    def _factor_retrieval_block(
+        self,
+        research_goal: str,
+        *,
+        limit: int = 12,
+        include_rejected: bool = True,
+        prefer_orthogonal: bool = True,
+        include_expression: bool = True,
+        max_expression_chars: int | None = None,
+    ) -> str:
+        """单因子 BM25 检索段（模块化抽取，可经 enable_factor_retrieval 开关）。
 
         Retrieval uses a local BM25 scoring over each entry's token set (zero
         API cost).  Entries are split into **positive** (validated, promising…)
@@ -577,14 +719,13 @@ class ResearchMemoryStore:
         merged with a guaranteed minimum quota for positive entries — so that
         known-good factor families always surface even when negatives vastly
         outnumber them (which is the common case after many dead-end attempts).
-        Output is split into two sections — positive then negative — to make
-        the contrast immediately legible to the LLM.
         """
         entries = self._retrieval_candidates(research_goal, include_rejected)
         if not include_rejected:
             entries = [entry for entry in entries if entry.get("verdict") not in self._NEGATIVE_VERDICTS]
         if not entries:
             return ""
+
         verdict_rank = {
             "production_approved": 5, "validated": 4, "candidate_approved": 3,
             "promising": 2, "revise_required": 1, "rejected": 1, "weak": 0,
@@ -595,20 +736,13 @@ class ResearchMemoryStore:
             n = observations if isinstance(observations, int) else len(observations)
             return (bm, verdict_rank.get(str(entry.get("verdict")), 0), n, str(entry.get("updated_at", "")))
 
-        # Split into positive / negative pools and score independently so
-        # that a large negative pool can't crowd out all positives.
         positive_pool = [(e, float(e.pop("_bm25", 0.0))) for e in entries if e.get("verdict") in self._POSITIVE_VERDICTS]
         negative_pool = [(e, float(e.pop("_bm25", 0.0))) for e in entries if e.get("verdict") in self._NEGATIVE_VERDICTS]
 
         positive_pool.sort(key=lambda pair: _key(pair[0], pair[1]), reverse=True)
         negative_pool.sort(key=lambda pair: _key(pair[0], pair[1]), reverse=True)
 
-        # Guarantee at least 40% of slots go to positive entries (when available),
-        # but don't waste slots on irrelevant positives with zero BM25 overlap.
         positive_quota = max(1, int(limit * 0.4)) if positive_pool else 0
-        # Only include positive entries with non-zero BM25 relevance, or fall
-        # back to top verdict-only entries if none overlap (still useful as
-        # "here's what worked before" even if off-topic).
         positive_relevant = [(e, b) for e, b in positive_pool if b > 0]
         if not positive_relevant and positive_pool:
             positive_relevant = positive_pool[:positive_quota]
@@ -616,44 +750,39 @@ class ResearchMemoryStore:
         n_pos = len(positive_selected)
         n_neg = limit - n_pos
         negative_selected = negative_pool[:n_neg]
-        # If we didn't fill all positive slots (fewer available), give
-        # remaining slots to negatives.
         if n_pos < positive_quota:
             negative_selected = negative_pool[:limit - n_pos]
 
         positive = positive_selected
         negative = negative_selected
 
-        lines = [
-            "# 长期研究记忆（来自真实评估与提交结果）",
-            "以下结论必须作为实验先验。",
-        ]
+        block_lines: list[str] = []
 
         # ── 肯定段 ──
         if positive:
-            lines.append("")
-            lines.append("## 已验证 / 有潜力的因子（优先在其邻近空间继续挖掘相似机制）")
-            lines.append(
+            block_lines.append("")
+            block_lines.append("## 已验证 / 有潜力的因子（优先在其邻近空间继续挖掘相似机制）")
+            block_lines.append(
                 "这些因子在训练集或验证集上表现可用。**鼓励**基于它们的经济逻辑，"
                 "通过更换窗口、算子族或原始字段，在相似但不重复的方向上继续探索。"
             )
             if prefer_orthogonal:
-                lines.append("扩展时优先引入正交变量，避免仅改窗口长度的同质微调。")
+                block_lines.append("扩展时优先引入正交变量，避免仅改窗口长度的同质微调。")
             for entry, _ in positive:
-                lines.append(self._format_entry(entry, include_expression, max_expression_chars))
+                block_lines.append(self._format_entry(entry, include_expression, max_expression_chars))
 
         # ── 否定段 ──
         if negative:
-            lines.append("")
-            lines.append("## 已否定 / 不足的因子（避免机械重复同一死路）")
-            lines.append(
+            block_lines.append("")
+            block_lines.append("## 已否定 / 不足的因子（避免机械重复同一死路）")
+            block_lines.append(
                 "以下路径已被评估否定。除非改变了核心变量、经济机制或处理方式，"
                 "否则不要重复尝试相同结构。"
             )
             for entry, _ in negative:
-                lines.append(self._format_entry(entry, include_expression, max_expression_chars))
+                block_lines.append(self._format_entry(entry, include_expression, max_expression_chars))
 
-        return "\n".join(lines)
+        return "\n".join(block_lines)
 
     @staticmethod
     def _fts_match_query(tokens: set[str]) -> str:
@@ -867,3 +996,279 @@ class ResearchMemoryStore:
                 "INSERT OR REPLACE INTO store_meta(k, v) VALUES ('backfill_done', '1')"
             )
         return count
+
+    # ──────────────────────────────────────────────────────────────────────
+    # 改进一：模式层记忆 CRUD
+    # ──────────────────────────────────────────────────────────────────────
+
+    def record_pattern(
+        self,
+        *,
+        layer: str,
+        category: str,
+        content: str,
+        evidence: dict[str, Any] | None = None,
+    ) -> str:
+        """写入或更新一条模式记忆。
+
+        ``layer`` ∈ {"recommend", "forbid", "insight"}。
+        同 ``layer|category|content`` 签名去重；已存在则 total_attempts += 1。
+        """
+        if layer not in ("recommend", "forbid", "insight"):
+            raise ValueError(f"invalid layer: {layer}")
+        pattern_id = hashlib.sha256(
+            f"{layer}|{category}|{content}".encode("utf-8")
+        ).hexdigest()[:20]
+        now = _now()
+        evidence_json = json.dumps(evidence or {}, ensure_ascii=False, separators=(",", ":"))
+        with self._open() as conn:
+            existing = conn.execute(
+                "SELECT total_attempts, success_count FROM memory_patterns WHERE id = ?",
+                (pattern_id,),
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    """
+                    UPDATE memory_patterns
+                    SET evidence_json = ?, total_attempts = total_attempts + 1, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (evidence_json, now, pattern_id),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO memory_patterns
+                        (id, layer, category, content, evidence_json,
+                         total_attempts, success_count, saturation_score,
+                         confidence, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, 1, 0, 0, 0.5, ?, ?)
+                    """,
+                    (pattern_id, layer, category, content, evidence_json, now, now),
+                )
+        return pattern_id
+
+    def update_pattern_stats(self, pattern_id: str, *, success: bool) -> None:
+        """评估结果返回后更新模式的成功/失败计数和置信度。"""
+        with self._open() as conn:
+            row = conn.execute(
+                "SELECT total_attempts, success_count FROM memory_patterns WHERE id = ?",
+                (pattern_id,),
+            ).fetchone()
+            if not row:
+                return
+            total = int(row["total_attempts"]) + 1
+            succ = int(row["success_count"]) + (1 if success else 0)
+            rate = succ / total if total else 0.0
+            conf = max(0.1, min(0.95, 1.0 - 1.0 / (total ** 0.5)))
+            conn.execute(
+                """
+                UPDATE memory_patterns
+                SET total_attempts = ?, success_count = ?, success_rate = ?,
+                    confidence = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (total, succ, round(rate, 4), round(conf, 4), _now(), pattern_id),
+            )
+
+    def query_patterns(
+        self,
+        *,
+        layer: str | None = None,
+        category: str | None = None,
+        min_confidence: float = 0.3,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """检索模式记忆，按置信度降序。"""
+        clauses = ["confidence >= ?"]
+        params: list[Any] = [min_confidence]
+        if layer:
+            clauses.append("layer = ?")
+            params.append(layer)
+        if category:
+            clauses.append("category = ?")
+            params.append(category)
+        where = " AND ".join(clauses)
+        with self._open() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM memory_patterns WHERE {where} "
+                f"ORDER BY confidence DESC, success_rate DESC LIMIT ?",
+                (*params, int(limit)),
+            ).fetchall()
+        return [
+            {
+                "id": r["id"],
+                "layer": r["layer"],
+                "category": r["category"],
+                "content": r["content"],
+                "evidence": json.loads(r["evidence_json"] or "{}"),
+                "success_rate": r["success_rate"],
+                "total_attempts": r["total_attempts"],
+                "success_count": r["success_count"],
+                "saturation_score": r["saturation_score"],
+                "confidence": r["confidence"],
+                "created_at": r["created_at"],
+                "updated_at": r["updated_at"],
+            }
+            for r in rows
+        ]
+
+    # ──────────────────────────────────────────────────────────────────────
+    # 改进二：每批蒸馏算子（规则式，零 LLM 成本）
+    # ──────────────────────────────────────────────────────────────────────
+
+    @classmethod
+    def _classify_family(cls, factor_name: str, expression: str) -> str:
+        """根据因子名和表达式启发式分类到信号族。"""
+        text = (str(factor_name or "") + " " + str(expression or "")).lower()
+        for family, keywords in cls._FAMILY_RULES.items():
+            if any(kw in text for kw in keywords):
+                return family
+        return "other"
+
+    def _group_by_family(self, results: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+        families: dict[str, list[dict[str, Any]]] = {}
+        for r in results:
+            family = self._classify_family(
+                str(r.get("factor_name", "")),
+                str(r.get("expression", "")),
+            )
+            families.setdefault(family, []).append(r)
+        return families
+
+    def distill_batch_patterns(
+        self,
+        *,
+        run_id: str,
+        turn: int,
+        batch_results: list[dict[str, Any]],
+    ) -> list[str]:
+        """从一批评估结果中蒸馏模式记忆，返回写入的 pattern_ids。
+
+        规则蒸馏（不调用 LLM，零成本）：
+        1. 同族因子 >= 3 个且全部 IC < 0.01 → forbid 模式
+        2. 同族因子有 >= 1 个 IC > 0.02 → recommend 模式
+        3. 全部因子 IC < 0.005 → insight 模式
+        """
+        pattern_ids: list[str] = []
+        if not batch_results:
+            return pattern_ids
+
+        families = self._group_by_family(batch_results)
+
+        for family_name, members in families.items():
+            ics = [
+                abs(float(m.get("metrics", {}).get("ic", 0) or 0))
+                for m in members
+            ]
+            n = len(members)
+            if n < 2:
+                continue
+
+            all_weak = all(ic < 0.01 for ic in ics)
+            any_promising = any(ic >= 0.02 for ic in ics)
+
+            if all_weak and n >= 3:
+                content = (
+                    f"{family_name} 信号族在 {n} 次尝试中 IC 均低于 0.01，"
+                    f"最高 {max(ics):.4f}。该族在当前数据和 label 下可能已饱和，"
+                    f"除非引入新变量或交互机制，否则不建议机械重复。"
+                )
+                pid = self.record_pattern(
+                    layer="forbid",
+                    category=family_name,
+                    content=content,
+                    evidence={
+                        "factor_names": [m.get("factor_name") for m in members],
+                        "ic_range": [round(min(ics), 6), round(max(ics), 6)],
+                        "n_attempts": n,
+                        "run_id": run_id,
+                        "turn": turn,
+                    },
+                )
+                pattern_ids.append(pid)
+
+            if any_promising:
+                best = max(
+                    members,
+                    key=lambda m: abs(float(m.get("metrics", {}).get("ic", 0) or 0)),
+                )
+                best_ic = float(best.get("metrics", {}).get("ic", 0) or 0)
+                content = (
+                    f"{family_name} 信号族中有因子 IC 达 {best_ic:+.4f}，"
+                    f"其经济机制值得在邻近空间继续探索。"
+                    f"建议变异方向：换窗口、换修饰算子、引入正交交互。"
+                )
+                pid = self.record_pattern(
+                    layer="recommend",
+                    category=family_name,
+                    content=content,
+                    evidence={
+                        "best_factor": best.get("factor_name"),
+                        "best_ic": round(best_ic, 6),
+                        "n_attempts": n,
+                        "run_id": run_id,
+                        "turn": turn,
+                    },
+                )
+                pattern_ids.append(pid)
+
+        # 全局洞察
+        all_ics = [
+            abs(float(r.get("metrics", {}).get("ic", 0) or 0))
+            for r in batch_results
+        ]
+        if len(all_ics) >= 5 and max(all_ics) < 0.005:
+            content = (
+                f"连续 {len(all_ics)} 个因子 IC 均低于 0.005，"
+                f"当前数据/label 组合下 alpha 可能极度稀薄。"
+                f"建议：切换 label 列、扩展数据源、或尝试交互信号。"
+            )
+            pid = self.record_pattern(
+                layer="insight",
+                category="global",
+                content=content,
+                evidence={
+                    "n_consecutive": len(all_ics),
+                    "max_ic": round(max(all_ics), 6),
+                    "run_id": run_id,
+                    "turn": turn,
+                },
+            )
+            pattern_ids.append(pid)
+
+        return pattern_ids
+
+    # ──────────────────────────────────────────────────────────────────────
+    # 改进四：饱和度跟踪
+    # ──────────────────────────────────────────────────────────────────────
+
+    def compute_saturation(self) -> dict[str, dict[str, float]]:
+        """计算各因子族的饱和度。
+
+        saturation_score = min(1.0, n_promising / 5 + n_validated / 3)
+        > 0.6 时标记为"拥挤"，建议切换方向。
+        """
+        families: dict[str, dict[str, float]] = {}
+        with self._open() as conn:
+            rows = conn.execute(
+                "SELECT factor_name, expression, verdict FROM memory_entries"
+            ).fetchall()
+
+        for row in rows:
+            family = self._classify_family(row["factor_name"], row["expression"])
+            fam = families.setdefault(
+                family, {"n_entries": 0, "n_promising": 0, "n_validated": 0}
+            )
+            fam["n_entries"] += 1
+            if row["verdict"] in ("promising", "candidate_approved"):
+                fam["n_promising"] += 1
+            if row["verdict"] in ("validated", "production_approved"):
+                fam["n_validated"] += 1
+
+        for fam_data in families.values():
+            n_p = fam_data["n_promising"]
+            n_v = fam_data["n_validated"]
+            fam_data["saturation_score"] = round(min(1.0, n_p / 5.0 + n_v / 3.0), 3)
+
+        return families

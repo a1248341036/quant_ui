@@ -26,6 +26,7 @@
         </button>
         <div v-if="lab.results" class="lab-actions">
           <button v-if="anyPassed" class="lab-action-btn save" @click="openSaveDialog">保存到因子库</button>
+          <button class="lab-action-btn export" @click="exportLabResult" :disabled="!lab.resultsJSON">导出评估结果</button>
           <button class="lab-action-btn bt" @click="openBacktestDialog">回测</button>
         </div>
         <p v-if="lab.error" class="lab-error">{{ lab.error }}</p>
@@ -193,15 +194,28 @@
           <div v-if="!agent.runs.length" class="sidebar-empty">{{ agent.showArchived ? '还没有归档任务' : '还没有研究任务' }}</div>
         </div>
 
-        <section class="memory-panel" aria-label="长期研究记忆">
-          <div class="memory-head"><span>长期研究记忆</span><b>{{ agent.memory.length }}</b></div>
-          <div v-if="agent.memory.length" class="memory-items">
-            <div v-for="entry in agent.memory" :key="entry.id" class="memory-item" :class="'memory-' + entry.verdict" role="button" tabindex="0" @click="showMemoryDetail(entry)" @keydown.enter.prevent="showMemoryDetail(entry)">
-              <strong>{{ memoryVerdictLabel(entry.verdict) }} · {{ entry.factor_name }}</strong>
-              <small>{{ entry.conclusion }}</small>
-            </div>
+        <section class="memory-panel" :class="{ collapsed: agent.memoryCollapsed }" aria-label="长期研究记忆">
+          <div class="memory-head" @click="agent.memoryCollapsed = !agent.memoryCollapsed" role="button" tabindex="0" @keydown.enter.prevent="agent.memoryCollapsed = !agent.memoryCollapsed">
+            <span class="memory-head-label"><span class="memory-caret">{{ agent.memoryCollapsed ? '▸' : '▾' }}</span>长期研究记忆</span>
+            <b>{{ agent.memory.length }}</b>
           </div>
-          <small v-else>评估结果会在这里沉淀为跨会话研究记忆</small>
+          <template v-if="!agent.memoryCollapsed">
+            <div v-if="agent.memory.length" class="memory-items">
+              <div v-for="entry in agent.memory" :key="entry.id" class="memory-item" :class="'memory-' + entry.verdict" role="button" tabindex="0" @click="showMemoryDetail(entry)" @keydown.enter.prevent="showMemoryDetail(entry)">
+                <strong>{{ memoryVerdictLabel(entry.verdict) }} · {{ entry.factor_name }}</strong>
+                <small>{{ entry.conclusion }}</small>
+              </div>
+            </div>
+            <small v-else>评估结果会在这里沉淀为跨会话研究记忆</small>
+          </template>
+        </section>
+
+        <section class="memory-panel" aria-label="研究总结">
+          <div class="memory-head" @click="toggleResearchSummary" role="button" tabindex="0" @keydown.enter.prevent="toggleResearchSummary">
+            <span class="memory-head-label"><span class="memory-caret">{{ showResearchSummary ? '▾' : '▸' }}</span>研究总结</span>
+            <b>{{ researchMemory.length }}</b>
+          </div>
+          <small v-if="!showResearchSummary" class="memory-hint-text">点击查看所有试过的因子状态与指标</small>
         </section>
 
         <div class="sidebar-footer">
@@ -323,7 +337,53 @@
         </header>
 
         <div ref="thread" class="agent-thread" @scroll="onThreadScroll">
-          <div v-if="agentMode==='normal' && !agent.events.length" class="normal-mode-panel">
+          <!-- ═══ 研究总结面板 ═══ -->
+          <div v-if="showResearchSummary" class="summary-panel">
+            <div class="summary-panel-head">
+              <h3>研究总结</h3>
+              <button class="summary-close-btn" @click="showResearchSummary = false" title="关闭">×</button>
+            </div>
+            <div class="summary-stats" v-if="researchMemory.length">
+              <span class="summary-stat"><b>{{ researchMemory.length }}</b> 个因子</span>
+              <span class="summary-stat" v-for="(count, verdict) in summaryVerdictCounts" :key="verdict">
+                <span class="summary-verdict-dot" :class="'memv-' + verdict"></span>{{ memoryVerdictLabel(verdict) }}: <b>{{ count }}</b>
+              </span>
+            </div>
+            <div v-if="!researchMemory.length" class="normal-mode-empty">暂无研究记忆</div>
+            <table v-else-if="summaryFiltered.length" class="summary-table">
+              <thead>
+                <tr>
+                  <th>因子名称</th>
+                  <th>状态</th>
+                  <th>阶段</th>
+                  <th>IC</th>
+                  <th>ICIR</th>
+                  <th>覆盖率</th>
+                  <th>多头年化超额</th>
+                  <th>拒绝原因</th>
+                  <th>评估次数</th>
+                  <th>更新时间</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="entry in summaryFiltered" :key="entry.id" @click="agent.memoryDetail = entry" class="summary-row">
+                  <td class="summary-name" :title="entry.factor_name">{{ entry.factor_name || 'unnamed' }}</td>
+                  <td><span class="summary-verdict-tag" :class="'memv-' + entry.verdict">{{ memoryVerdictLabel(entry.verdict) }}</span></td>
+                  <td class="summary-stage">{{ entry.stage || '—' }}</td>
+                  <td :class="icClass(entry.metrics?.ic)">{{ formatMetricValue(entry.metrics?.ic ?? '—') }}</td>
+                  <td>{{ formatMetricValue(entry.metrics?.icir ?? '—') }}</td>
+                  <td>{{ formatMetricValue(entry.metrics?.coverage ?? entry.metrics?.factor_coverage ?? '—') }}</td>
+                  <td :class="{ neg: (entry.metrics?.long_group_annual_excess_return ?? 0) < 0 }">{{ formatMetricValue(entry.metrics?.long_group_annual_excess_return ?? '—') }}</td>
+                  <td class="summary-reason" :title="entry.conclusion">{{ entry.conclusion || entry.error || '—' }}</td>
+                  <td class="summary-attempts">{{ entry.attempts || 1 }}</td>
+                  <td class="summary-time">{{ formatTime(entry.updated_at) }}</td>
+                </tr>
+              </tbody>
+            </table>
+            <div v-if="!summaryFiltered.length && researchMemory.length" class="normal-mode-empty">没有匹配的因子</div>
+          </div>
+
+          <div v-else-if="agentMode==='normal' && !agent.events.length" class="normal-mode-panel">
             <h3>研究记忆</h3>
             <p class="normal-mode-desc">查看和清理历史评估记忆。删除后 Agent 不再参考对应条目。</p>
             <div v-if="!researchMemory.length" class="normal-mode-empty">暂无研究记忆</div>
@@ -659,12 +719,15 @@
               {{ lab.btResult.config?.universe }} · {{ lab.btResult.config?.n_codes }} 只 · TopN {{ lab.btResult.config?.top_n }} · {{ lab.btResult.config?.freq }} · 预热 {{ lab.btResult.config?.warmup_days }} 天 · 现金整手撮合
             </p>
             <div class="lab-bt-metrics">
-              <div class="lab-metric"><span class="lab-metric-label">总收益</span><span class="lab-metric-value">{{ formatMetricValue(lab.btResult.metrics?.['总收益']) }}</span></div>
-              <div class="lab-metric"><span class="lab-metric-label">年化收益</span><span class="lab-metric-value">{{ formatMetricValue(lab.btResult.metrics?.['年化收益']) }}</span></div>
-              <div class="lab-metric"><span class="lab-metric-label">夏普</span><span class="lab-metric-value">{{ formatMetricValue(lab.btResult.metrics?.['夏普']) }}</span></div>
-              <div class="lab-metric"><span class="lab-metric-label">最大回撤</span><span class="lab-metric-value">{{ formatMetricValue(lab.btResult.metrics?.['最大回撤']) }}</span></div>
-              <div class="lab-metric"><span class="lab-metric-label">超额年化</span><span class="lab-metric-value">{{ formatMetricValue(lab.btResult.metrics?.['超额年化']) }}</span></div>
-              <div class="lab-metric"><span class="lab-metric-label">超额夏普</span><span class="lab-metric-value">{{ formatMetricValue(lab.btResult.metrics?.['超额夏普']) }}</span></div>
+              <div class="lab-metric"><span class="lab-metric-label">总收益</span><span class="lab-metric-value">{{ formatBacktestMetric(lab.btResult.metrics?.['总收益'], 'pct') }}</span></div>
+              <div class="lab-metric"><span class="lab-metric-label">年化收益</span><span class="lab-metric-value">{{ formatBacktestMetric(lab.btResult.metrics?.['年化收益'], 'pct') }}</span></div>
+              <div class="lab-metric"><span class="lab-metric-label">夏普比率</span><span class="lab-metric-value">{{ formatBacktestMetric(lab.btResult.metrics?.['夏普'], 'ratio') }}</span></div>
+              <div class="lab-metric"><span class="lab-metric-label">最大回撤</span><span class="lab-metric-value">{{ formatBacktestMetric(lab.btResult.metrics?.['最大回撤'], 'pct') }}</span></div>
+              <div class="lab-metric"><span class="lab-metric-label">超额年化</span><span class="lab-metric-value">{{ formatBacktestMetric(lab.btResult.metrics?.['超额年化'], 'pct') }}</span></div>
+              <div class="lab-metric"><span class="lab-metric-label">超额夏普</span><span class="lab-metric-value">{{ formatBacktestMetric(lab.btResult.metrics?.['超额夏普'], 'ratio') }}</span></div>
+            </div>
+            <div class="lab-bt-actions">
+              <button class="lab-action-btn export" @click="exportBacktestResult">导出回测结果</button>
             </div>
             <div class="lab-chart-block">
               <div class="lab-chart-title">净值曲线</div>
@@ -736,6 +799,7 @@ export default {
         renameTitle: '',
         renamePosition: { top: 0, left: 0 },
         showArchived: false,
+        memoryCollapsed: false,
         memoryDetail: null,
         showResearchSpec: false,
         composerCollapsed: false,
@@ -765,6 +829,7 @@ export default {
       ],
       specDefaultsByMode: {},
       researchMemory: [],
+      showResearchSummary: false,
       lab: {
         expr: '',
         factorName: 'expr',
@@ -872,6 +937,26 @@ export default {
         if (s && t < s) return false
         if (e && t > e) return false
         return true
+      })
+    },
+    summaryVerdictCounts() {
+      const counts = {}
+      for (const entry of this.researchMemory) {
+        const v = entry.verdict || 'unknown'
+        counts[v] = (counts[v] || 0) + 1
+      }
+      return counts
+    },
+    summaryFiltered() {
+      const order = {
+        production_approved: 0, validated: 1, candidate_approved: 2,
+        promising: 3, revise_required: 4, rejected: 5, weak: 6,
+      }
+      return [...this.researchMemory].sort((a, b) => {
+        const ra = order[a.verdict] ?? 99
+        const rb = order[b.verdict] ?? 99
+        if (ra !== rb) return ra - rb
+        return (Date.parse(b.updated_at || '') || 0) - (Date.parse(a.updated_at || '') || 0)
       })
     },
     currentActivity() {
@@ -1041,6 +1126,12 @@ export default {
     switchAgentMode(mode) {
       this.agentMode = mode
       if (mode === 'normal') this.loadResearchMemory()
+    },
+    toggleResearchSummary() {
+      this.showResearchSummary = !this.showResearchSummary
+      if (this.showResearchSummary && !this.researchMemory.length) {
+        this.loadResearchMemory()
+      }
     },
     async loadDefaultResearchSpec(mode) {
       const m = mode || this.agent.form.research_mode || 'technical'
@@ -1578,6 +1669,20 @@ export default {
       const n = Number(value)
       return isNaN(n) ? String(value) : Math.abs(n) < 1 ? n.toFixed(4) : n.toFixed(2)
     },
+    formatBacktestMetric(value, type) {
+      const n = Number(value)
+      if (isNaN(n)) return '—'
+      if (type === 'pct') {
+        // 百分比格式：0.1234 → 12.34%
+        return (n * 100).toFixed(2) + '%'
+      } else if (type === 'ratio') {
+        // 比率格式：1.234 → 1.23
+        return n.toFixed(2)
+      } else {
+        // 默认格式
+        return Math.abs(n) < 1 ? n.toFixed(4) : n.toFixed(2)
+      }
+    },
     labelShort(col) {
       if (!col) return '—'
       const map = {
@@ -1808,6 +1913,141 @@ export default {
       if (v == null) return ''
       return v >= 0 ? 'ic-pos' : 'ic-neg'
     },
+    // ── 因子实验室：导出评估结果（与候选库 registry 格式对齐） ──
+    exportLabResult() {
+      if (!this.lab.results) return
+      
+      // 优先使用 validation 结果，其次用 train_screen
+      const primaryResult = this.lab.results.validation || this.lab.results.train_screen
+      if (!primaryResult || !primaryResult.ok) {
+        alert('没有可用的评估结果，请确保至少有一个 profile 评估通过')
+        return
+      }
+
+      const factorId = this.lab.factorName || 'expr'
+      const now = new Date().toISOString()
+      
+      // 构建与候选库一致的 registry 格式
+      const payload = {
+        exported_at: now,
+        library: 'candidate',
+        root: 'artifacts/alphaagent/factorzoo/candidate_1d',
+        n_factors: 1,
+        factors: [{
+          factor_id: factorId,
+          name: this.lab.factorName || 'expr',
+          expr: this.lab.expr,
+          label_col: this.lab.labelCol || 'label_1d_open_to_open',
+          train_ic: primaryResult.metrics?.ic,
+          train_icir: primaryResult.metrics?.icir,
+          val_ic: this.lab.results.validation?.metrics?.ic,
+          val_icir: this.lab.results.validation?.metrics?.icir,
+          metrics: primaryResult.metrics,
+          status: 'pending_review',
+          created_at: now,
+        }],
+        registry: {
+          [factorId]: {
+            factor_id: factorId,
+            name: this.lab.factorName || 'expr',
+            expr: this.lab.expr,
+            comment: this.lab.factorName || 'expr',
+            created_at: now,
+            source: 'lab_export',
+            panel_path: this.lab.labelCol || 'label_1d_open_to_open',
+            train_period: `${this.lab.trainStart} → ${this.lab.trainEnd}`,
+            val_period: `${this.lab.valStart} → ${this.lab.valEnd}`,
+            include_fundamentals: this.lab.includeFundamentals,
+            evaluation_results: this.lab.results,
+            metrics: primaryResult.metrics,
+            profile: primaryResult.profile,
+            passed: primaryResult.passed,
+            rule_results: primaryResult.rule_results,
+            similarity: null,
+            review_verdict: 'pending',
+            review_reasons: '',
+            promotion_status: 'candidate',
+          }
+        }
+      }
+      
+      const text = JSON.stringify(payload, null, 2)
+      const blob = new Blob([text], { type: 'application/json;charset=utf-8' })
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(blob)
+      const dateStr = new Date().toISOString().slice(0, 10)
+      a.download = `factor_candidate_${factorId}_${dateStr}.json`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(a.href)
+    },
+
+    // ── 因子实验室：导出回测结果（与候选库 registry 格式对齐） ──
+    exportBacktestResult() {
+      if (!this.lab.btResult) return
+      
+      const factorId = this.lab.factorName || 'expr'
+      const now = new Date().toISOString()
+      const btStart = this.lab.btStart || 'start'
+      const btEnd = this.lab.btEnd || 'end'
+      
+      // 构建与候选库一致的 registry 格式，额外包含回测详情
+      const payload = {
+        exported_at: now,
+        library: 'candidate',
+        root: 'artifacts/alphaagent/factorzoo/candidate_1d',
+        n_factors: 1,
+        factors: [{
+          factor_id: factorId,
+          name: this.lab.factorName || 'expr',
+          expr: this.lab.expr,
+          label_col: this.lab.labelCol || 'label_1d_open_to_open',
+          metrics: this.lab.btResult.metrics,
+          annualized_return: this.lab.btResult.metrics?.['年化收益'],
+          annualized_excess_return: this.lab.btResult.metrics?.['超额年化'],
+          sharpe: this.lab.btResult.metrics?.['夏普'],
+          status: 'backtested',
+          created_at: now,
+        }],
+        registry: {
+          [factorId]: {
+            factor_id: factorId,
+            name: this.lab.factorName || 'expr',
+            expr: this.lab.expr,
+            comment: `回测区间：${btStart} → ${btEnd}`,
+            created_at: now,
+            source: 'lab_backtest_export',
+            panel_path: this.lab.labelCol || 'label_1d_open_to_open',
+            backtest_period: `${btStart} → ${btEnd}`,
+            include_fundamentals: this.lab.includeFundamentals,
+            backtest_config: this.lab.btResult.config,
+            metrics: this.lab.btResult.metrics,
+            bench_metrics: this.lab.btResult.bench_metrics,
+            nav: this.lab.btResult.nav,
+            bench: this.lab.btResult.bench,
+            drawdown: this.lab.btResult.drawdown,
+            holdings: this.lab.btResult.holdings,
+            trades: this.lab.btResult.trades,
+            similarity: null,
+            review_verdict: 'pending',
+            review_reasons: '',
+            promotion_status: 'candidate',
+          }
+        }
+      }
+      
+      const text = JSON.stringify(payload, null, 2)
+      const blob = new Blob([text], { type: 'application/json;charset=utf-8' })
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(blob)
+      a.download = `factor_backtest_${factorId}_${btStart}_${btEnd}.json`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(a.href)
+    },
+
     // ── 因子实验室：保存因子 ──
     openSaveDialog() {
       this.lab.saveName = this.lab.factorName || 'expr'
@@ -2050,7 +2290,11 @@ export default {
 .session-count { color:var(--muted); font-size:10px; }
 .sidebar-empty { padding:18px 8px; color:var(--muted); font-size:12px; text-align:center; }
 .memory-panel { margin:10px 12px 0; padding:9px; border-top:1px solid var(--line); color:var(--muted); font-size:10px; }
-.memory-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:7px; color:var(--text); font-size:11px; }
+.memory-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:7px; color:var(--text); font-size:11px; cursor:pointer; user-select:none; }
+.memory-head:hover { color:var(--accent); }
+.memory-head-label { display:flex; align-items:center; gap:4px; }
+.memory-caret { font-size:9px; color:var(--muted); }
+.memory-panel.collapsed .memory-head { margin-bottom:0; }
 .memory-head b { color:var(--accent); font:10px var(--font-mono); }
 .memory-items { display:grid; gap:6px; max-height:220px; overflow-y:auto; }
 .memory-item { padding:5px 6px 5px 7px; border-left:2px solid var(--muted); border-radius:0 4px 4px 0; cursor:pointer; transition:background .12s; }
@@ -2062,6 +2306,7 @@ export default {
 .memory-candidate_approved, .memory-promising { border-color:#f5bd4f; }
 .memory-rejected, .memory-weak { border-color:#ef6b73; }
 .memory-revise_required { border-color:#f5bd4f; }
+.memory-hint-text { display:block; margin-top:2px; font-size:9px; color:var(--muted); opacity:.7; }
 .sidebar-footer { margin-top:auto; display:flex; align-items:center; gap:8px; padding:14px 16px; border-top:1px solid var(--line); color:var(--muted); font-size:11px; }
 .agent-main { display:flex; flex-direction:column; min-width:0; min-height:0; }
 .agent-header { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:16px 24px; border-bottom:1px solid var(--line); }
@@ -2089,6 +2334,33 @@ export default {
 .memory-entry-main small { margin-left:auto; flex:none; color:var(--muted); font-size:10px; }
 .memory-del-btn { flex:none; width:20px; height:20px; margin-left:8px; padding:0; border:0; border-radius:5px; background:transparent; color:var(--muted); font-size:13px; cursor:pointer; }
 .memory-del-btn:hover { color:#ef8b92; background:rgb(239 139 146 / .12); }
+/* ═══ 研究总结面板 ═══ */
+.summary-panel { max-width:1100px; margin:0 auto; }
+.summary-panel-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
+.summary-panel-head h3 { font-size:16px; }
+.summary-close-btn { width:28px; height:28px; padding:0; border:1px solid var(--line); border-radius:7px; background:transparent; color:var(--muted); font-size:16px; cursor:pointer; }
+.summary-close-btn:hover { color:var(--text); background:rgb(79 140 255 / .1); }
+.summary-stats { display:flex; flex-wrap:wrap; gap:10px; margin-bottom:14px; padding:10px 14px; border:1px solid var(--line); border-radius:9px; background:var(--bg-soft); }
+.summary-stat { display:inline-flex; align-items:center; gap:5px; font-size:11px; color:var(--muted); }
+.summary-stat b { color:var(--text); font:11px var(--font-mono); }
+.summary-verdict-dot { width:7px; height:7px; border-radius:50%; }
+.summary-verdict-dot.memv-production_approved, .summary-verdict-dot.memv-validated, .summary-verdict-dot.memv-candidate_approved { background:#5ee0a0; }
+.summary-verdict-dot.memv-promising { background:#e2c04a; }
+.summary-verdict-dot.memv-rejected, .summary-verdict-dot.memv-revise_required, .summary-verdict-dot.memv-weak { background:#ef8b92; }
+.summary-table { width:100%; border-collapse:collapse; font-size:11px; }
+.summary-table thead th { position:sticky; top:0; z-index:1; padding:8px 8px; text-align:left; border-bottom:1px solid var(--line-strong); background:var(--bg); color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.04em; white-space:nowrap; }
+.summary-table tbody tr { border-bottom:1px solid var(--line); cursor:pointer; transition:background .1s; }
+.summary-table tbody tr:hover { background:rgb(79 140 255 / .06); }
+.summary-table td { padding:7px 8px; white-space:nowrap; }
+.summary-name { max-width:160px; overflow:hidden; text-overflow:ellipsis; font-weight:550; color:var(--text); }
+.summary-stage { color:var(--muted); font-size:10px; }
+.summary-verdict-tag { display:inline-block; padding:1px 6px; border-radius:4px; font-size:10px; white-space:nowrap; }
+.summary-reason { max-width:260px; overflow:hidden; text-overflow:ellipsis; color:var(--muted); }
+.summary-time { color:var(--muted); font-size:10px; }
+.summary-attempts { text-align:center; color:var(--muted); font-size:10px; }
+.summary-row td.ic-pos { color:#5ee0a0; }
+.summary-row td.ic-neg { color:#ef8b92; }
+.summary-row td.neg { color:#ef8b92; }
 .usage-chip { display:flex; align-items:center; gap:5px; padding:5px 8px; border:1px solid var(--line); border-radius:7px; color:var(--muted); font:10px var(--font-mono); white-space:nowrap; }
 .usage-chip em { color:#91d4ac; font-style:normal; }
 .activity-line { display:flex; align-items:center; gap:6px; color:#b9a3e8; font-size:11px; white-space:nowrap; }
@@ -2295,7 +2567,13 @@ textarea.lab-input { resize:vertical; font:12px/1.5 var(--font-mono); }
 .lab-bt-row .factor-modal-section { flex:1; }
 .lab-bt-check { display:flex; align-items:center; gap:7px; margin:-2px 0 14px; color:var(--muted); font-size:11px; }
 .lab-bt-config { margin:0 0 10px; color:var(--muted); font-size:10px; line-height:1.5; }
-.lab-bt-metrics { display:grid; grid-template-columns:repeat(auto-fill,minmax(130px,1fr)); gap:6px; margin-bottom:12px; }
+.lab-bt-metrics { display:grid; grid-template-columns:repeat(auto-fill,minmax(130px,1fr)); gap:8px; margin-bottom:16px; padding:12px; background:rgb(255 255 255 / .02); border-radius:10px; }
+.lab-bt-actions { display:flex; justify-content:center; gap:10px; margin-top:12px; }
+.lab-bt-actions .lab-action-btn { padding:8px 16px; border-radius:6px; border:1px solid var(--line); background:rgb(79 140 255 / .14); color:var(--text); font-size:12px; cursor:pointer; }
+.lab-bt-actions .lab-action-btn:hover { background:rgb(79 140 255 / .24); border-color:rgb(79 140 255 / .4); }
+.lab-bt-metrics .lab-metric { padding:8px 10px; background:transparent; border:1px solid var(--line); border-radius:8px; }
+.lab-bt-metrics .lab-metric-label { color:var(--muted); font-size:11px; margin-bottom:4px; }
+.lab-bt-metrics .lab-metric-value { color:#a9e9bd; font:13px var(--font-mono); font-weight:600; }
 .lab-bt-details { margin-top:10px; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
 .lab-bt-details summary { padding:8px 10px; cursor:pointer; color:var(--text); font-size:11px; background:rgb(255 255 255 / .02); }
 .lab-bt-details .table-wrap { max-height:260px; overflow:auto; }

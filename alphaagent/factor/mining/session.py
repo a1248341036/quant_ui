@@ -74,7 +74,7 @@ class SessionStore:
                 "coverage_start": cov_start,
                 "coverage_end": cov_end,
                 "include_fundamentals": ctx.include_fundamentals,
-                "dropped_fundamental_cols": dropped_funda,
+                "dropped_fundamental_cols": dropped_fundamental_cols,
             },
         )
         with self._lock:
