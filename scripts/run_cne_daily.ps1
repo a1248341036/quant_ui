@@ -229,7 +229,23 @@ foreach ($wave in $WaveList) {
     }
 }
 
-# ── 2. stale 补抓 ────────────────────────────────────────────────────
+# ── 2. ETF/基金/指数刷新 ─────────────────────────────────────────────
+# 排在 stale probe 之前：stale 等待加重试动辄半小时以上，而该时段（~17:00 前后）
+# 曾连续两天被系统睡眠打断，整个尾部（含本阶段）随之丢失。面板数据是下游最
+# 关心的产出，先落袋；stale 重试只影响 CNE 湖内的补漏，排在后面更安全。
+$etfStatus = "skipped"
+if (-not $SkipEtfFund) {
+    Write-Log "--- ETF/基金/指数刷新 ---"
+    $etfExit = Invoke-EtfFund
+    if ($etfExit -eq 0) {
+        $etfStatus = "OK"
+    } else {
+        $etfStatus = "FAILED"
+        $failedSoft += "etf-fund"
+    }
+}
+
+# ── 3. stale 补抓 ────────────────────────────────────────────────────
 $staleStatus = "skipped"
 if ($StaleRetry -and $failedGates.Count -eq 0) {
     Write-Log "--- stale probe ---"
@@ -251,19 +267,6 @@ if ($StaleRetry -and $failedGates.Count -eq 0) {
             $staleStatus = "FAILED"
             $failedSoft += "stale-retry"
         }
-    }
-}
-
-# ── 2.5 ETF/基金/指数刷新（可选）───────────────────────────────────
-$etfStatus = "skipped"
-if (-not $SkipEtfFund) {
-    Write-Log "--- ETF/基金/指数刷新 ---"
-    $etfExit = Invoke-EtfFund
-    if ($etfExit -eq 0) {
-        $etfStatus = "OK"
-    } else {
-        $etfStatus = "FAILED"
-        $failedSoft += "etf-fund"
     }
 }
 

@@ -316,12 +316,18 @@ def topn_portfolio(context: EvaluationContext, params: dict[str, Any]) -> dict[s
     except Exception as exc:  # noqa: BLE001
         return _unavailable(f"engine_backtest_failed: {exc}")
 
-    out = dict(by_freq["daily"])
+    # 头条数字默认取 weekly：daily 全约束调仓摩擦过大，会把好因子也打成深负；
+    # daily/weekly/monthly 完整结果保留在 by_freq 供下游展示与审计。
+    headline_freq = str(params.get("headline_freq", "weekly"))
+    if headline_freq not in by_freq:
+        headline_freq = "weekly"
+    out = dict(by_freq[headline_freq])
     out.update({
         "selection_mode": selection_mode,
         "selection_pct": selection_pct,
         "top_n": top_n_fallback,
         "direction": direction,
+        "headline_freq": headline_freq,
         "source": "core.engine",
         "window": {"start": start, "end": end},
         "available": True,
@@ -347,8 +353,10 @@ def quantile_portfolio(context: EvaluationContext, params: dict[str, Any]) -> di
     from alphaagent.factor.metrics import quantile_portfolio_metrics
 
     n_groups = int(params.get("groups", 10))
-    cost_bps = float(params.get("cost_bps", 15.0))
+    cost_bps = float(params.get("cost_bps", 0.0))
     min_stocks = int(params.get("min_stocks", 30))
+    raw_direction = params.get("direction")
+    direction = None if raw_direction is None else int(raw_direction)
 
     return quantile_portfolio_metrics(
         context.factor,
@@ -356,4 +364,5 @@ def quantile_portfolio(context: EvaluationContext, params: dict[str, Any]) -> di
         n_groups=n_groups,
         min_stocks=min_stocks,
         cost_bps=cost_bps,
+        direction=direction,
     )

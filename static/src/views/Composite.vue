@@ -121,7 +121,7 @@ export default {
       comp: {
         universe: '科技TMT',
         top_n: 5,
-        capital: 5000,
+        capital: 100000,
         freq: 'monthly',
         start: '2026-02-02',
         end: today(),

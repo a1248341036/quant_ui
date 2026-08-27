@@ -9,6 +9,7 @@ from typing import Any
 
 from alphaagent.factor.evaluation.profile import default_evaluation_profiles, resolve_profiles
 from alphaagent.factor.mining.interactions import INTERACTION_TYPES
+from core import trading_config
 
 
 def _default_evaluation_profile_spec() -> dict[str, Any]:
@@ -51,7 +52,9 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
         "enabled": True,
         "review_on": ["validation", "pre_submit"],
         "block_classic_transforms": True,
-        "minimum_novelty": "medium",
+        # 新颖度门槛暂关（2026-08）：先积累一批统计有效的候选，再回头筛新颖性。
+        # 恢复严格筛选时改回 "medium"/"high"；Reviewer 仍输出 novelty 供参考。
+        "minimum_novelty": "low",
     },
     "interaction_policy": {
         # 用户约束：尽量不用乘法——默认禁用 MULTIPLY 交互（含契约形式）。
@@ -73,41 +76,63 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
     "delivery_policy": {
         "candidate": {
             "min_abs_ic": 0.015,
-            "min_icir": 0.2,
+            # 海选 ICIR 与 train_screen 规则对齐（0.20 偏松，弱稳定因子堆积候选池）
+            "min_icir": 0.25,
             "min_coverage": 0.85,
             "max_abs_corr": 0.5,
+            # 换手可行性硬门槛：低于此值的因子截面排名日度剧变，不可交付
+            "min_cs_autocorr": 0.18,
+            # 样本外保留比：val_ic / train_ic 的绝对比值下限（方向反转直接拦截）
+            "min_val_ic_retention": 0.5,
         },
         "production": {
-            "min_abs_ic": 0.025,
-            "min_icir": 0.35,
-            "min_fmb_t_stat": 2.0,
-            "min_ls_t_stat": 2.0,
-            "min_quantile_excess_return": 0.03,
-            "min_quantile_sharpe": 0.3,
-            "min_monotonicity": 0.3,
+            # ── 统计族：双窗口各自达标（混合窗口会稀释 val 衰减，2026-08 重构）──
+            # train 窗口统计门槛
+            "min_train_abs_ic": 0.025,
+            "min_train_icir": 0.30,
+            # val 窗口：绝对水平 + 相对 train 的保留比
+            "min_val_abs_ic": 0.015,
+            "min_val_ic_retention": 0.60,
+            # val 多头端毛值超额（方向自适应十分组，复利年化）：
+            # IC 为正不代表多头端赚钱——alpha 可能全在空头端/中段排名，
+            # 纯多头可交易组合必须单独为正（2026-08 审计发现的 IC 盲区）
+            "min_val_long_excess": 0.0,
+            # 截尾 IC 衰减（全窗口口径）与去重
             "max_winsorized_abs_ic_decay": 0.10,
             "max_abs_corr": 0.4,
+            # 已移除的摆设/失真门槛（研究结论 2026-08）：
+            # - min_fmb_t_stat / min_ls_t_stat：t ≈ ICIR×√N，700+ 天下永不拦截
+            # - min_quantile_excess_return / min_quantile_sharpe /
+            #   min_monotonicity / min_long_group_annual_excess_return：
+            #   毛值十分组口径系统性高估可交易性（同因子净值 weekly 净超额仅 ~4%）
+            #   → 组合可行性全部交给 engine_gate 净值裁决。
+            #
             # 进正式库前的最后一道门：旧交易引擎完整约束回测
             # （T+1/整手/涨跌停/停牌/费率/滑点/流动性），纯内存，不落盘。
-            # 纯多头 TopN 可交易性（超额/Sharpe/回撤/尾部稳定）全部由 engine_gate
-            # 用完整引擎裁决，不再使用简化模拟代理指标。
-            # 尾部稳定性说明：全局截面自相关高不代表尾部稳定——极端前 N 名
-            # 可能每天几乎全换（IC 有效但不可持仓）。
+            # 口径要点（2026-08）：alpha 的意义在超额而非绝对收益——样本含熊市时
+            # 绝对年化/绝对夏普门会把所有因子拒之门外，故只设净值超额门 +
+            # 超额夏普门；回撤与尾部稳定照旧。
             "engine_gate": {
                 "enabled": True,
-                # 动态百分比选股：自动适配停牌/涨跌停导致的候选池缩放，
-                # 避免固定 N 选到不可交易的尾部股票。2% ≈ A股 5000 只的 100 只。
-                "selection_mode": "top_pct",
-                "selection_pct": 0.02,
-                "freq": "daily",
-                # LLM 可在 submit 时选择交付调仓频率，必须属于本列表；
-                # 选择会记录进审计轨迹，引擎按该频率复检。
+                # 动态百分比选股：自动适配停牌/涨跌停导致的候选池缩放。
+                # 散户口径：top 0.4% ≈ 20只，统一配置在 core/trading_config.py。
+                "selection_mode": trading_config.SELECTION_MODE,
+                "selection_pct": trading_config.GATE_SELECTION_PCT,
+                # weekly 为默认交付调仓频率：daily 全约束调仓的摩擦远大于因子超额。
+                "freq": trading_config.GATE_FREQ,
                 "allowed_freqs": ["daily", "weekly", "monthly"],
-                "min_annual_return": 0.0,
-                "min_excess_annual": 0.02,
-                "min_sharpe": 0.3,
-                "max_drawdown": 0.40,
-                "min_daily_overlap": 0.5,
+                # 净值超额年化下限（vs 全市场等权基准，扣全费）
+                "min_excess_annual": trading_config.GATE_MIN_EXCESS_ANNUAL,
+                # 超额夏普下限（active NAV 口径）
+                "min_excess_sharpe": trading_config.GATE_MIN_EXCESS_SHARPE,
+                "max_drawdown": trading_config.GATE_MAX_DRAWDOWN,
+                "min_daily_overlap": trading_config.GATE_MIN_DAILY_OVERLAP,
+                # 散户口径：10万资金，统一配置在 core/trading_config.py
+                "capital": trading_config.GATE_CAPITAL,
+                # 仓位利用率硬门：平均投入占比低于此值 = 执行不可行
+                "min_invested_ratio": trading_config.GATE_MIN_INVESTED_RATIO,
+                # 候选流动性下限：散户口径 500万
+                "min_am20_yuan": trading_config.GATE_MIN_AM20_YUAN,
             },
         },
     },
@@ -128,6 +153,37 @@ def default_research_spec(mode: str = "technical") -> dict[str, Any]:
         "forbidden_signal_families": ["pure_size", "pure_price_momentum"],
         "min_distinct_raw_fields": 2,
         "require_time_series_structure": True,
+    })
+    # ── 基本面专属门槛（2026-08）：慢因子评估口径与 technical 差异化 ──
+    # 季频 PIT 阶跃数据对 10d label 的信号强度天然弱于日频价量对 1d label，
+    # 若沿用 technical 门槛会把真实基本面 alpha 全部拒之门外。
+    # 设计原则：统计门槛适度放宽，但可交易性（engine_gate）只小幅放松，
+    # 防止"统计有效但实盘不赚钱"的假因子进正式库。
+    spec["evaluation_policy"].update({
+        "min_train_abs_ic": 0.015,   # technical 0.02 → 基本面 0.015（慢因子弱信号）
+        "min_train_icir": 0.22,      # technical 0.25 → 0.22（季频横截面少，ICIR 天然低）
+        "min_val_abs_ic": 0.008,     # technical 0.01 → 0.008
+        "min_val_ic_retention_ratio": 0.5,  # 保留比不变（防方向反转）
+    })
+    spec["delivery_policy"]["candidate"].update({
+        "min_abs_ic": 0.012,         # technical 0.015 → 0.012（海选放宽松，让 reviewer 筛）
+        "min_icir": 0.20,            # technical 0.25 → 0.20
+        "min_cs_autocorr": 0.18,     # 保留通用换手性硬门（防排名日度剧变）
+    })
+    spec["delivery_policy"]["production"].update({
+        "min_train_abs_ic": 0.020,   # technical 0.025 → 0.020
+        "min_train_icir": 0.28,      # technical 0.30 → 0.28
+        "min_val_abs_ic": 0.012,     # technical 0.015 → 0.012
+        "min_val_ic_retention": 0.60,  # 保留
+        "min_val_long_excess": 0.0,  # 保留（纯多头必须为正）
+        "max_winsorized_abs_ic_decay": 0.12,  # technical 0.10 → 0.12（慢因子 IC 衰减本来就快）
+    })
+    # engine_gate：慢因子按周调仓摩擦过大 → 默认月频；超额/夏普门槛小幅放松，
+    # 但回撤与仓位利用率保持原样（这些是执行可行性硬约束，与因子频率无关）。
+    spec["delivery_policy"]["production"]["engine_gate"].update({
+        "freq": "monthly",           # technical weekly → 基本面 monthly
+        "min_excess_annual": 0.02,   # technical 0.03 → 0.02
+        "min_excess_sharpe": 0.4,    # technical 0.5 → 0.4
     })
     return spec
 
@@ -207,6 +263,15 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
     review["block_classic_transforms"] = _require_bool(review.get("block_classic_transforms"), "review_policy.block_classic_transforms")
     if review.get("minimum_novelty") not in {"low", "medium", "high"}:
         raise ValueError("research_spec.review_policy.minimum_novelty_invalid")
+    if review.get("reviewer_max_tokens") is not None:
+        raw_tokens = review["reviewer_max_tokens"]
+        try:
+            coerced = int(raw_tokens)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("research_spec.review_policy.reviewer_max_tokens_invalid") from exc
+        review["reviewer_max_tokens"] = int(
+            _bounded_number(coerced, "review_policy.reviewer_max_tokens", 256, 200_000)
+        )
 
     interaction = _require_dict(spec.get("interaction_policy"), "interaction_policy")
     allowed_types = _string_list(
@@ -246,15 +311,41 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
     candidate["min_icir"] = _bounded_number(candidate.get("min_icir"), "delivery_policy.candidate.min_icir", -10, 20)
     candidate["min_coverage"] = _bounded_number(candidate.get("min_coverage"), "delivery_policy.candidate.min_coverage", 0, 1)
     candidate["max_abs_corr"] = _bounded_number(candidate.get("max_abs_corr"), "delivery_policy.candidate.max_abs_corr", 0, 1)
+    # 换手可行性与样本外保留比（0.18 / 0.5 由 DEFAULT_RESEARCH_SPEC 提供默认值）
+    candidate["min_cs_autocorr"] = _bounded_number(candidate.get("min_cs_autocorr"), "delivery_policy.candidate.min_cs_autocorr", 0, 1)
+    candidate["min_val_ic_retention"] = _bounded_number(candidate.get("min_val_ic_retention"), "delivery_policy.candidate.min_val_ic_retention", 0, 1)
     production = _require_dict(delivery.get("production"), "delivery_policy.production")
-    for key in ("min_abs_ic", "max_winsorized_abs_ic_decay", "max_abs_corr"):
+    # 双窗口统计门槛（2026-08 重构：混合窗口稀释 val 衰减，已弃用单口径 min_abs_ic/min_icir）
+    for key in ("min_train_abs_ic", "min_val_abs_ic", "max_winsorized_abs_ic_decay", "max_abs_corr"):
         production[key] = _bounded_number(production.get(key), f"delivery_policy.production.{key}", 0, 1)
-    production["min_icir"] = _bounded_number(production.get("min_icir"), "delivery_policy.production.min_icir", -10, 20)
-    production["min_fmb_t_stat"] = _bounded_number(production.get("min_fmb_t_stat", 0), "delivery_policy.production.min_fmb_t_stat", 0, 20)
-    production["min_ls_t_stat"] = _bounded_number(production.get("min_ls_t_stat", 0), "delivery_policy.production.min_ls_t_stat", 0, 20)
-    production["min_quantile_excess_return"] = _bounded_number(production.get("min_quantile_excess_return", 0), "delivery_policy.production.min_quantile_excess_return", -1, 1)
-    production["min_quantile_sharpe"] = _bounded_number(production.get("min_quantile_sharpe", 0), "delivery_policy.production.min_quantile_sharpe", -10, 20)
-    production["min_monotonicity"] = _bounded_number(production.get("min_monotonicity", 0), "delivery_policy.production.min_monotonicity", -1, 1)
+    production["min_train_icir"] = _bounded_number(production.get("min_train_icir"), "delivery_policy.production.min_train_icir", -10, 20)
+    production["min_val_ic_retention"] = _bounded_number(production.get("min_val_ic_retention"), "delivery_policy.production.min_val_ic_retention", 0, 2)
+    if production.get("min_val_long_excess") is not None:
+        production["min_val_long_excess"] = _bounded_number(
+            production.get("min_val_long_excess"), "delivery_policy.production.min_val_long_excess", -1, 1
+        )
+    # 兼容旧 spec 的遗留键：存在则归一化（新默认值不再生成它们）
+    for key, lo, hi in (
+        ("min_abs_ic", 0, 1), ("min_icir", -10, 20),
+        ("min_fmb_t_stat", 0, 20), ("min_ls_t_stat", 0, 20),
+        ("min_quantile_excess_return", -1, 1), ("min_quantile_sharpe", -10, 20),
+        ("min_monotonicity", -1, 1), ("min_long_group_annual_excess_return", -1, 1),
+    ):
+        if production.get(key) is not None:
+            production[key] = _bounded_number(production.get(key), f"delivery_policy.production.{key}", lo, hi)
+    eg = _require_dict(production.get("engine_gate"), "delivery_policy.production.engine_gate")
+    production["engine_gate"] = eg
+    for key in ("min_excess_annual",):
+        eg[key] = _bounded_number(eg.get(key), f"engine_gate.{key}", -1, 5)
+    for key in ("min_excess_sharpe", "max_drawdown", "min_daily_overlap"):
+        if eg.get(key) is not None:
+            eg[key] = _bounded_number(eg.get(key), f"engine_gate.{key}", 0, 10)
+    if eg.get("min_invested_ratio") is not None:
+        eg["min_invested_ratio"] = _bounded_number(eg.get("min_invested_ratio"), "engine_gate.min_invested_ratio", 0, 1)
+    if eg.get("capital") is not None:
+        eg["capital"] = _bounded_number(eg.get("capital"), "engine_gate.capital", 10_000, 1_000_000_000)
+    if eg.get("min_am20_yuan") is not None:
+        eg["min_am20_yuan"] = _bounded_number(eg.get("min_am20_yuan"), "engine_gate.min_am20_yuan", 0, 1_000_000_000_000)
     profiles = resolve_profiles(spec)
     spec["evaluation_profiles"] = {profile_id: profile.as_dict() for profile_id, profile in profiles.items()}
 

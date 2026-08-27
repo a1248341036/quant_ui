@@ -1,14 +1,15 @@
-"""Read-only adapter for local index CSV (data/stock/index.csv).
+"""Read-only + write-back adapter for the local benchmark index panel.
 
 The quant_ui framework maintains a small index CSV with 6 major indices
-used as benchmark data for backtesting. This adapter exposes that file as the
-``index_bars_external`` dataset so it appears alongside other CNE datasets
-in the dashboard and can be read via the unified ``cnequity.query.reader``
-API.
+used as benchmark data for backtesting. Since 2026-08-26 the file is owned
+by CNE: ``step_index_bars_external`` stages a Tencent-kline snapshot and
+``compact`` merges it into ``<root>/stock/index.parquet`` through this
+adapter's write protocol. The legacy ``index.csv`` is only read once as a
+bootstrap source when the parquet does not exist yet.
 
 File -> dataset
 ---------------
-    data/stock/index.csv -> ``index_bars_external``  (L1, external)
+    data/stock/index.parquet -> ``index_bars_external``  (L1, external)
 
 Column conventions
 -------------------
@@ -27,13 +28,15 @@ from pathlib import Path
 import polars as pl
 
 from cnequity.config import Config
+from cnequity.query.parquet_scan import scan_parquet_files
 
 logger = logging.getLogger(__name__)
 
 DATASET = "index_bars_external"
-FILE_REL = "stock/index.csv"
+FILE_REL = "stock/index.parquet"
+LEGACY_CSV_REL = "stock/index.csv"
 SOURCE = "local_index"
-VERSION = "local-v1"
+VERSION = "local-v2"
 _EXTERNAL_EPOCH = datetime(2000, 1, 1, tzinfo=timezone.utc)
 
 
@@ -58,7 +61,12 @@ class IndexLocalAdapter:
         if root is None:
             return None
         path = root / FILE_REL
-        return path if path.is_file() else None
+        if path.is_file():
+            return path
+        # One-time bootstrap source: the legacy CSV maintained by quant_ui's
+        # refresh_data before CNE took ownership.
+        legacy = root / LEGACY_CSV_REL
+        return legacy if legacy.is_file() else None
 
     def has_data(self, config: Config, dataset: str) -> bool:
         return self._resolve_path(config) is not None
@@ -87,7 +95,16 @@ class IndexLocalAdapter:
         if not paths:
             raise FileNotFoundError(f"no index file for dataset {dataset!r}")
 
-        raw = pl.scan_csv(str(paths[0]), try_parse_dates=True, ignore_errors=True)
+        path = paths[0]
+        if path.suffix == ".csv":
+            raw = pl.scan_csv(str(path), try_parse_dates=True, ignore_errors=True)
+            # Legacy writer doubled carriage returns on Windows, leaving the
+            # last header cell as 'close\r'.
+            rename = {c: c.strip() for c in raw.collect_schema().names() if c != c.strip()}
+            if rename:
+                raw = raw.rename(rename)
+        else:
+            raw = scan_parquet_files([path], missing_columns="insert", extra_columns="ignore")
         schema_names = raw.collect_schema().names()
 
         out = raw.with_columns(
@@ -117,7 +134,12 @@ class IndexLocalAdapter:
             return None, None
 
         try:
-            df = pl.read_csv(str(paths[0]), try_parse_dates=True, ignore_errors=True)
+            path = paths[0]
+            if path.suffix == ".csv":
+                df = pl.read_csv(str(path), try_parse_dates=True, ignore_errors=True)
+                df = df.rename({c: c.strip() for c in df.columns})
+            else:
+                df = pl.read_parquet(str(path))
             if "date" not in df.columns:
                 return None, None
             if df.schema["date"] != pl.Date:
@@ -140,6 +162,22 @@ class IndexLocalAdapter:
         except Exception as exc:
             logger.warning("index_bars_external coverage_bounds failed: %s", exc)
             return None, None
+
+    # ── write protocol (compactable) ───────────────────────────────────
+
+    def compact_layout(self) -> str:
+        # Single small file; every year group resolves to the same target and
+        # the sequential anti-join merges compose correctly.
+        return "yearly_file"
+
+    def compact_pk(self, dataset: str) -> list[str]:
+        return ["code", "date"]
+
+    def compact_target(self, config: Config, dataset: str, trade_date: date) -> Path:
+        root: str | Path | None = getattr(config, "external_local_assets_root", None)
+        if root is None:
+            raise RuntimeError("external_local_assets_root not configured")
+        return Path(root) / FILE_REL
 
 
 # Module-level singleton for auto-discovery.

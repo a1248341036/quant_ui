@@ -49,7 +49,9 @@ _BASE_METRICS = (
     {"plugin": "mls_fmb"},
     {"plugin": "ic_series_diagnostics"},
     {"plugin": "long_short_portfolio", "params": {"groups": 10, "cost_bps": 0}},
-    {"plugin": "quantile_portfolio", "params": {"groups": 10, "cost_bps": 15.0}},
+    # 筛选阶段 quantile 组合用毛值口径（cost_bps=0，成本按换手计）；
+    # 真实费率/滑点/约束由 delivery 的 engine_gate 完整回测把关。
+    {"plugin": "quantile_portfolio", "params": {"groups": 10, "cost_bps": 0.0}},
 )
 
 
@@ -126,14 +128,13 @@ def resolve_profiles(spec: dict[str, Any] | None = None) -> dict[str, Evaluation
     raw_defaults["size_neutral_validation"]["rules"] = val_rules
     delivery = (spec or {}).get("delivery_policy", {})
     production = delivery.get("production", {})
+    # production_delivery profile 只做 train 口径粗筛；train/val 双窗终审在
+    # submit._check_stage_two，组合可行性净值裁决在 engine_gate。
+    # 已移除 fmb/ls t 值规则（t≈ICIR×√N 在长样本上永不拦截）与毛值 quantile
+    # 三项规则（十分组毛超额系统性高估可交易性）——研究结论见 research_spec。
     raw_defaults["production_delivery"]["rules"] = [
-        {"metric": "cross_sectional_core.ic", "op": "abs_gte", "value": production.get("min_abs_ic", 0.025)},
-        {"metric": "cross_sectional_core.icir", "op": "abs_gte", "value": production.get("min_icir", 0.35)},
-        {"metric": "mls_fmb.nw_t_ls", "op": "abs_gte", "value": production.get("min_fmb_t_stat", 2.0)},
-        {"metric": "long_short_portfolio.nw_t_net", "op": "abs_gte", "value": production.get("min_ls_t_stat", 2.0)},
-        {"metric": "quantile_portfolio.top_group_annualized_excess_return", "op": "gte", "value": production.get("min_quantile_excess_return", 0.03)},
-        {"metric": "quantile_portfolio.top_group_sharpe", "op": "gte", "value": production.get("min_quantile_sharpe", 0.3)},
-        {"metric": "quantile_portfolio.monotonicity", "op": "gte", "value": production.get("min_monotonicity", 0.3)},
+        {"metric": "cross_sectional_core.ic", "op": "abs_gte", "value": production.get("min_train_abs_ic", 0.025)},
+        {"metric": "cross_sectional_core.icir", "op": "abs_gte", "value": production.get("min_train_icir", 0.30)},
     ]
     for profile_id, override in configured.items():
         if not isinstance(profile_id, str) or not profile_id:

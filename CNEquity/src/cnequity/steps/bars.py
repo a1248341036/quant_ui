@@ -1220,6 +1220,29 @@ def _fetch_fund_daily_one_date(config: Config, d: date) -> pl.DataFrame:
     return df
 
 
+@register_step(
+    "etf_bars",
+    group="core",
+    depends_on=["instruments"],
+    description="ETF bars are produced by step_fund_bars (Tushare fund_daily split); never schedule both.",
+)
+def step_etf_bars(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
+    """Registry-completeness alias for ``etf_bars``.
+
+    Tushare's date-level ``fund_daily`` call returns ETF and other fund bars
+    together; ``step_fund_bars`` stages both datasets in one pass. This stub
+    exists so every curated dataset answers "which step produces it" without
+    duplicating the fetch — scheduling it alongside fund_bars would double the
+    request for half the data.
+    """
+    return {
+        "dataset": "etf_bars",
+        "rows_read": 0,
+        "rows_written": 0,
+        "note": "produced by step_fund_bars (fund_daily split); nothing to do",
+    }
+
+
 @register_step("fund_bars", group="core", depends_on=["instruments"])
 def step_fund_bars(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
     """Fetch ETF and fund daily bars via Tushare ``fund_daily``.

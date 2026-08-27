@@ -914,11 +914,17 @@ _SPECS = [
     ),
     DatasetSpec(
         "fund_nav",
-        primary_source="local_assets",
+        primary_source="akshare",
         tier="L1",
         layer="external",
         partition_col="date",
-        watermark=False,
+        # EM's open-fund daily table carries the last two trading sessions and
+        # publishes through the evening, so a run can legitimately hold
+        # yesterday while today is still filling in. PK-level upsert on
+        # (code, date) lets the next snapshot overwrite partial cells.
+        max_staleness_days=3,
+        compactable=True,
+        adapter_name="local_assets",
         required=False,
         description="基金净值",
     ),
@@ -931,6 +937,20 @@ _SPECS = [
         watermark=False,
         required=False,
         description="基金清单",
+    ),
+    # Fund fee reference table (purchase/management/custodian/sales-service
+    # rates + redemption rules), one row per fund. Not a time series: the step
+    # merges into the adapter's single parquet file directly and gates itself
+    # to a weekly cadence via its own state key.
+    DatasetSpec(
+        "fund_fees",
+        primary_source="akshare",
+        tier="L0",
+        layer="external",
+        partition_col=None,
+        watermark=False,
+        required=False,
+        description="基金费率",
     ),
     # AlphaAgent 因子面板（panel_1d.parquet, 1.17GB, 37 列）：日频特征矩阵，
     # 由 external/alphaagent.py 适配器只读映射。注册为 external 层数据集，
@@ -954,9 +974,13 @@ _SPECS = [
         tier="L1",
         layer="external",
         partition_col="date",
-        watermark=False,
+        # Benchmark panel for 6 major indices, fetched from Tencent kline and
+        # compacted into <root>/stock/index.parquet by the local_index adapter.
+        max_staleness_days=3,
+        compactable=True,
+        adapter_name="local_index",
         required=False,
-        description="指数日K线（本地CSV）",
+        description="指数日K线（本地基准面板）",
     ),
     # Full Tushare-wide source row used by derived research panels. Canonical
     # daily_bars stays normalized above; this bridge preserves adj_factor,

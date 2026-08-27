@@ -146,7 +146,16 @@ class FactorReviewer:
         return rows[-limit:]
 
     def _model(self) -> OpenAIChatModel:
-        params: dict[str, Any] = {"max_tokens": min(self.config.max_tokens, 2048), "parallel_tool_calls": False}
+        # 思考型模型（hy3 等）的推理 token 计入 max_tokens：旧版硬钳 2048 会把
+        # 正文截没，审查输出恒为空 → parse_guard 兜底 revise/novelty=low。
+        # 默认放开到主循环同款预算；需要收紧成本时用
+        # ResearchSpec.review_policy.reviewer_max_tokens 显式指定。
+        policy_max = (self.policy.get("review_policy") or {}).get("reviewer_max_tokens")
+        if isinstance(policy_max, (int, float)) and int(policy_max) > 0:
+            max_tokens = int(policy_max)
+        else:
+            max_tokens = int(self.config.max_tokens)
+        params: dict[str, Any] = {"max_tokens": max_tokens, "parallel_tool_calls": False}
         if self.config.temperature is not None:
             params["temperature"] = self.config.temperature
         return OpenAIChatModel(
@@ -156,6 +165,8 @@ class FactorReviewer:
             stream=True,
             extra_body=self.extra_body,
             client_kwargs={"default_headers": {"User-Agent": "quant-ui/1.0"}},
+            max_retries=self.config.model_max_retries,
+            retry_delay=self.config.model_retry_delay,
         )
 
     async def review(self, arguments: dict[str, Any], *, turn: int) -> dict[str, Any]:

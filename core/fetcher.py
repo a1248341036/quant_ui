@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable
@@ -11,7 +12,7 @@ import pandas as pd
 import requests
 
 from .store import (ETF_FILE, ETF_PANEL_FILE, FUND_FILE, FUND_NAV_FILE,
-                    INDEX_FILE, LEGACY_DATA_DIR, TECH_FILE, UNIVERSE_FILE, save_csv,
+                    LEGACY_DATA_DIR, TECH_FILE, UNIVERSE_FILE, save_csv,
                     save_meta, save_panel)
 from . import tushare_client
 
@@ -344,6 +345,32 @@ def fetch_fund_universe(keywords: tuple[str, ...] | None = None) -> pd.DataFrame
         raise RuntimeError("无法获取场外基金列表且本地无缓存")
 
 
+def _parse_open_fund_daily(raw: pd.DataFrame) -> pd.DataFrame:
+    """把 fund_open_fund_daily_em 宽表解析成长表 [date, code, nav]。
+
+    净值列形如 '2026-08-25-单位净值'，接口通常携带最近两个交易日的全市场
+    快照；日历列缺失或净值空/'--' 的行丢弃。
+    """
+    empty = pd.DataFrame(columns=["date", "code", "nav"])
+    code_col = next((c for c in raw.columns if "代码" in str(c)), None)
+    if code_col is None:
+        return empty
+    nav_cols = [c for c in raw.columns
+                if re.fullmatch(r"\d{4}-\d{2}-\d{2}-单位净值", str(c))]
+    frames = []
+    for col in nav_cols:
+        day = pd.Timestamp(str(col)[:10])
+        part = raw[[code_col, col]].copy()
+        part.columns = ["code", "nav"]
+        part["code"] = part["code"].astype(str).str.zfill(6)
+        part["nav"] = pd.to_numeric(part["nav"], errors="coerce")
+        part["date"] = day
+        frames.append(part.dropna(subset=["nav"])[["date", "code", "nav"]])
+    if not frames:
+        return empty
+    return pd.concat(frames, ignore_index=True)
+
+
 def fetch_fund_navs(
     codes: list[str],
     start: str,
@@ -352,12 +379,39 @@ def fetch_fund_navs(
     max_workers: int = 6,
     progress: Callable[[int, int, str], None] | None = None,
 ) -> pd.DataFrame:
-    """场外基金历史单位净值（天天基金，逐只抓取）。"""
-    end_ts = pd.Timestamp(end)
-    last_by_code: dict[str, pd.Timestamp] = {}
-    if existing is not None and len(existing):
-        last_by_code = existing.groupby("code", observed=True)["date"].max().to_dict()
+    """场外基金历史单位净值。
 
+    优先走 fund_open_fund_daily_em 市场快照：一次请求携带最近两个交易日
+    的全市场净值（约 9 秒），日常增量不再逐只拉全量历史。快照之后仍落后
+    >3 天的少数基金（新发/暂停披露/快照未收录）才回落到逐只全量接口。
+    """
+    end_ts = pd.Timestamp(end)
+
+    def _last_map(df: pd.DataFrame | None) -> dict:
+        if df is None or not len(df):
+            return {}
+        return df.groupby("code", observed=True)["date"].max().to_dict()
+
+    base = existing
+    try:
+        import akshare as ak
+
+        snap = _parse_open_fund_daily(ak.fund_open_fund_daily_em())
+        snap = snap[snap["code"].isin(set(codes))]
+        snap = snap[(snap["date"] >= pd.Timestamp(start)) & (snap["date"] <= end_ts)]
+        print(f"基金净值快照: {len(snap)} 行 "
+              f"({snap['date'].min().date()} ~ {snap['date'].max().date()})"
+              if len(snap) else "基金净值快照: 0 行", flush=True)
+        if len(snap):
+            if base is not None and len(base):
+                base = pd.concat([base, snap], ignore_index=True).drop_duplicates(
+                    ["code", "date"], keep="last")
+            else:
+                base = snap
+    except Exception as exc:
+        print(f"[fetcher] 基金净值快照失败，整批回退逐只全量: {exc}", file=sys.stderr)
+
+    last_by_code = _last_map(base)
     tasks: list[str] = []
     for code in codes:
         last = last_by_code.get(code)
@@ -401,15 +455,14 @@ def fetch_fund_navs(
             if progress:
                 progress(done, total, code)
 
-    if not frames and existing is not None:
-        return existing
+    if not frames and base is not None and len(base):
+        return base
     new = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(
         columns=["date", "code", "nav"])
-    if existing is not None and len(existing):
-        panel = pd.concat([existing, new], ignore_index=True)
+    panel = new
+    if base is not None and len(base):
+        panel = pd.concat([base, new], ignore_index=True)
         panel = panel.drop_duplicates(["code", "date"], keep="last")
-    else:
-        panel = new
     panel = panel.sort_values(["code", "date"]).reset_index(drop=True)
     panel["code"] = panel["code"].astype("category")
     return panel
@@ -554,11 +607,9 @@ def update_data(
         if universe is None:
             raise
     if progress:
-        progress(1, 6, "股票池完成，更新指数...")
-    index = fetch_indices(start, end)
-    save_csv(index, INDEX_FILE)
+        progress(1, 6, "指数由 CNE 流水线维护（step_index_bars_external），跳过...")
     if progress:
-        progress(2, 6, "指数完成，更新行业分类...")
+        progress(2, 6, "更新行业分类...")
     tech = fetch_tech_universe(universe)
     save_csv(tech, TECH_FILE)
     if progress:
@@ -619,33 +670,17 @@ def update_data(
         print(f"[fetcher] ETF 更新失败（不影响股票面板）: {exc}", file=sys.stderr)
         etf_stats = {"n_codes": 0, "n_rows": 0}
 
-    # ---- 场外基金：科技相关池 + 净值 ----
+    # ---- 场外基金池 ----
+    # 净值本体已迁移到 CNE 流水线（step_fund_nav：EM 快照 → staging → compact
+    # 直接合并回 fund_nav.parquet），这里只维护基金池清单供其过滤。
     if progress:
         progress(5.2, 6, "更新场外基金池...")
     try:
         fund = fetch_fund_universe()
         save_csv(fund, FUND_FILE)
-        fund_existing = None
-        if FUND_NAV_FILE.exists():
-            fund_existing = pd.read_parquet(FUND_NAV_FILE)
-            fund_existing["code"] = fund_existing["code"].astype(str).str.zfill(6)
-        fund_panel = fetch_fund_navs(
-            sorted(fund["code"]),
-            start=start,
-            end=end,
-            existing=fund_existing,
-            max_workers=max_workers,
-            progress=lambda d, t, c: progress(5.3 + d / max(t, 1) * 0.6, 6,
-                                               f"基金净值 {c} ({d}/{t})")
-            if progress else None,
-        )
-        if len(fund_panel):
-            FUND_NAV_FILE.parent.mkdir(parents=True, exist_ok=True)
-            fund_panel.to_parquet(FUND_NAV_FILE, index=False)
-        fund_stats = {"n_codes": int(fund_panel["code"].nunique()) if len(fund_panel) else 0,
-                      "n_rows": int(len(fund_panel))}
+        fund_stats = {"n_codes": int(len(fund)), "n_rows": 0}
     except Exception as exc:
-        print(f"[fetcher] 场外基金更新失败（不影响股票面板）: {exc}", file=sys.stderr)
+        print(f"[fetcher] 场外基金池更新失败（不影响股票面板）: {exc}", file=sys.stderr)
         fund_stats = {"n_codes": 0, "n_rows": 0}
     if progress:
         progress(6, 6, "完成")

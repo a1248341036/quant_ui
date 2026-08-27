@@ -88,7 +88,15 @@
           <button :class="{active: lib.library==='production'}" @click="switchLibrary('production')">正式因子库</button>
           <button :class="{active: lib.library==='candidate'}" @click="switchLibrary('candidate')">候选因子库</button>
         </div>
+        <div class="lib-cat-tabs">
+          <button :class="{active: lib.category==='technical'}" @click="switchCategory('technical')">日线技术</button>
+          <button :class="{active: lib.category==='fundamental'}" @click="switchCategory('fundamental')">基本面</button>
+        </div>
         <span class="lib-count" v-if="lib.data">{{ lib.data.n_factors || 0 }} 个因子</span>
+        <button class="lib-export-json" @click="exportAllJSON" :disabled="!lib.data?.factors?.length"
+                :title="'导出当前' + (lib.library==='production'?'正式':'候选') + '因子库全部 ' + (lib.data?.n_factors || 0) + ' 个因子的 registry 和结果到 JSON'">
+          导出{{ lib.library==='production' ? '正式库' : '候选库' }}JSON
+        </button>
         <button class="lib-refresh" @click="loadFactors">刷新</button>
       </div>
       <div v-if="lib.error" class="lib-error">{{ lib.error }}</div>
@@ -96,19 +104,38 @@
       <div v-if="lib.data && !lib.data.factors?.length && !lib.loading" class="lib-empty">
         {{ lib.data.error === 'library_not_initialized' ? '因子库尚未初始化，请在挖掘流程中启用因子提交。' : '暂无因子。' }}
       </div>
+      <div class="lib-toolbar">
+        <span class="lib-toolbar-label">按加入时间导出</span>
+        <input type="date" v-model="lib.exportStart">
+        <span class="lib-range-sep">~</span>
+        <input type="date" v-model="lib.exportEnd">
+        <button class="lib-export-all" @click="exportLibraryByTime"
+                :title="'将导出 ' + (libExportRows?.length || 0) + ' 个因子'">
+          导出 CSV（{{ libExportRows?.length || 0 }}）
+        </button>
+      </div>
       <table v-if="lib.data?.factors?.length" class="lib-table">
         <thead>
           <tr>
-            <th>名称</th><th>Train IC</th><th>Val IC</th><th>全区间 IC</th><th>ICIR</th><th>Label</th><th>状态</th><th>Reviewer 意见</th><th></th>
+            <th v-for="c in lib.columns" :key="c.key"
+                :class="{ sortable: c.sortable, active: lib.sortKey === c.key }"
+                @click="c.sortable && toggleLibSort(c.key)"
+                :title="c.sortable ? '点击排序' : ''">
+              {{ c.label }}<span v-if="lib.sortKey === c.key">{{ lib.sortDir > 0 ? ' ▲' : ' ▼' }}</span>
+            </th>
+            <th></th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="f in lib.data.factors" :key="f.factor_id">
+          <tr v-for="f in libFactorsSorted" :key="f.factor_id">
             <td class="lib-fid" @click="showFactorDetail(f)" :title="f.factor_id">{{ f.name }}</td>
             <td :class="icClass(f.train_ic)">{{ formatMetricValue(f.train_ic ?? '—') }}</td>
             <td :class="icClass(f.val_ic)">{{ formatMetricValue(f.val_ic ?? '—') }}</td>
             <td :class="icClass(f.metrics?.ic)"><strong>{{ formatMetricValue(f.metrics?.ic) }}</strong></td>
             <td>{{ formatMetricValue(f.metrics?.icir) }}</td>
+            <td :class="{neg: (f.annualized_return ?? 0) < 0}">{{ formatMetricValue(f.annualized_return ?? '—') }}</td>
+            <td>{{ formatMetricValue(f.sharpe ?? '—') }}</td>
+            <td class="lib-time" :title="f.created_at">{{ fmtTime(f.created_at) }}</td>
             <td class="lib-label" :title="f.label_col">{{ labelShort(f.label_col) }}</td>
             <td><span class="lib-status" :class="'status-' + f.status">{{ f.status }}</span></td>
             <td class="lib-review" :title="f.review_reasons">{{ f.review_reasons || '—' }}</td>
@@ -139,9 +166,12 @@
 
         <div class="session-label">
           <span>{{ agent.showArchived ? '已归档任务' : '最近任务' }}</span>
-          <button class="archived-toggle" :title="agent.showArchived ? '返回最近任务' : '查看已归档任务'" @click="toggleArchived">
-            {{ agent.showArchived ? '返回' : '归档' }}
-          </button>
+          <span class="label-actions">
+            <button v-if="agent.showArchived && agent.runs.length" class="archived-toggle danger" title="删除全部已归档任务" @click="deleteAllArchived">一键删除</button>
+            <button class="archived-toggle" :title="agent.showArchived ? '返回最近任务' : '查看已归档任务'" @click="toggleArchived">
+              {{ agent.showArchived ? '返回' : '归档' }}
+            </button>
+          </span>
         </div>
         <div class="session-list">
           <div
@@ -191,6 +221,7 @@
           <button @click="branchRun(menuRun)">新建分支</button>
           <button @click="beginRename(menuRun)">重命名</button>
           <button class="archive-action" @click="archiveRun(menuRun)">归档</button>
+          <button v-if="menuRun.archived" class="delete-action" @click="deleteRun(menuRun)">删除</button>
         </div>
       </Teleport>
 
@@ -434,6 +465,12 @@
                   <span class="composer-label-hint" :title="'本次评估使用的 label 列，随研究模式自动切换'">{{ agent.form.label_col }}</span>
                   <label class="composer-date">训练 <input v-model="agent.form.train_start" type="date" :disabled="agentBusy" class="composer-date-input"> → <input v-model="agent.form.train_end" type="date" :disabled="agentBusy" class="composer-date-input"></label>
                   <label class="composer-date">验证 <input v-model="agent.form.val_start" type="date" :disabled="agentBusy" class="composer-date-input"> → <input v-model="agent.form.val_end" type="date" :disabled="agentBusy" class="composer-date-input"></label>
+                  <label class="composer-date" title="种群批量筛选：每轮一次参数网格扫描（propose_population）；关闭则仅单点迭代">种群 <select v-model.number="agent.form.population_max" :disabled="agentBusy" class="composer-date-input">
+                    <option :value="0">关</option>
+                    <option :value="12">×12</option>
+                    <option :value="24">×24</option>
+                    <option :value="36">×36</option>
+                  </select></label>
                 </div>
                 <div class="composer-actions">
                   <button v-if="agentMode==='research'" class="spec-toggle" :class="{ active: agent.showResearchSpec }" :disabled="agentBusy" @click="agent.showResearchSpec = !agent.showResearchSpec">研究规范</button>
@@ -510,6 +547,13 @@
             <div class="factor-modal-section">
               <label>注释（经济含义/结构说明）</label>
               <textarea v-model="lab.saveComment" class="lab-input" rows="3" placeholder="描述因子的经济直觉和关键结构"></textarea>
+            </div>
+            <div class="factor-modal-section">
+              <label>类别</label>
+              <select v-model="lab.saveCategory" class="lab-input lab-cat-select">
+                <option value="technical">日线技术</option>
+                <option value="fundamental">基本面</option>
+              </select>
             </div>
             <div class="factor-modal-section">
               <label>目标库</label>
@@ -703,6 +747,7 @@ export default {
           train_end: '2022-12-31',
           val_start: '2023-01-01',
           val_end: '2025-12-31',
+          population_max: 24,
           user_message: '',
           max_turns: 5,
           max_tool_calls_per_round: 8,
@@ -736,6 +781,7 @@ export default {
         saveName: '',
         saveComment: '',
         saveLibrary: 'candidate',
+        saveCategory: 'technical',
         saving: false,
         saveError: '',
         saveResult: null,
@@ -756,10 +802,28 @@ export default {
       },
       lib: {
         library: 'production',
+        category: 'technical',
         data: null,
         loading: false,
         error: '',
         exportCopied: '',
+        sortKey: 'created_at',
+        sortDir: -1,
+        exportStart: '',
+        exportEnd: '',
+        columns: [
+          { key: 'name', label: '名称', sortable: true },
+          { key: 'train_ic', label: 'Train IC', sortable: true },
+          { key: 'val_ic', label: 'Val IC', sortable: true },
+          { key: 'ic', label: '全区间 IC', sortable: true },
+          { key: 'icir', label: 'ICIR', sortable: true },
+          { key: 'annualized_return', label: '多头年化', sortable: true },
+          { key: 'sharpe', label: '夏普', sortable: true },
+          { key: 'created_at', label: '加入时间', sortable: true },
+          { key: 'label_col', label: 'Label', sortable: true },
+          { key: 'status', label: '状态', sortable: true },
+          { key: 'review', label: 'Reviewer 意见', sortable: false },
+        ],
       },
       factorDetail: null,
     }
@@ -774,6 +838,41 @@ export default {
     agentBusy() {
       const status = this.agent.current?.status
       return this.agent.running || ['starting', 'running', 'stopping'].includes(status)
+    },
+    libFactorsSorted() {
+      const fs = this.lib.data?.factors || []
+      const key = this.lib.sortKey
+      if (!key) return fs
+      const dir = this.lib.sortDir
+      const val = (f) => {
+        switch (key) {
+          case 'name': return String(f.name || '').toLowerCase()
+          case 'label_col': return String(f.label_col || '')
+          case 'status': return String(f.status || '')
+          case 'created_at': { const t = Date.parse(f.created_at || ''); return Number.isFinite(t) ? t : -Infinity }
+          default: {
+            const raw = key === 'ic' ? f.metrics?.ic : key === 'icir' ? f.metrics?.icir : f[key]
+            const v = parseFloat(raw)
+            return Number.isFinite(v) ? v : -Infinity
+          }
+        }
+      }
+      return [...fs].sort((a, b) => {
+        const x = val(a), y = val(b)
+        return (x < y ? -1 : x > y ? 1 : 0) * dir
+      })
+    },
+    libExportRows() {
+      const s = this.lib.exportStart ? new Date(this.lib.exportStart + 'T00:00:00').getTime() : null
+      const e = this.lib.exportEnd ? new Date(this.lib.exportEnd + 'T23:59:59').getTime() : null
+      if (!s && !e) return this.libFactorsSorted
+      return (this.lib.data?.factors || []).filter(f => {
+        const t = Date.parse(f.created_at || '')
+        if (!Number.isFinite(t)) return false
+        if (s && t < s) return false
+        if (e && t > e) return false
+        return true
+      })
     },
     currentActivity() {
       const status = this.agent.current?.status
@@ -1008,7 +1107,7 @@ export default {
       }
       const rect = event.currentTarget.getBoundingClientRect()
       const width = 128
-      const height = 142
+      const height = 178
       this.agent.menuPosition = {
         top: Math.max(8, Math.min(rect.top, window.innerHeight - height - 8)),
         left: Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8)),
@@ -1081,6 +1180,38 @@ export default {
       } catch (e) {
         this.agent.error = '归档失败: ' + e.message
       }
+    },
+    async deleteRun(run) {
+      this.agent.menuRunId = ''
+      if (!window.confirm('确定删除该归档任务？日志轨迹将一并删除且不可恢复。')) return
+      try {
+        await api('/api/alphaagent/runs/' + encodeURIComponent(run.run_id), { method: 'DELETE' })
+        this.dropCurrentIfDeleted([run.run_id])
+        await this.loadAgentRuns()
+      } catch (e) {
+        this.agent.error = e.message.includes('run_still_running') ? '任务仍在运行，请先停止再删除' : '删除失败: ' + e.message
+      }
+    },
+    async deleteAllArchived() {
+      const count = this.agent.runs.length
+      if (!count) return
+      if (!window.confirm('确定一键删除全部 ' + count + ' 个已归档任务？日志轨迹将一并删除且不可恢复。')) return
+      try {
+        const result = await api('/api/alphaagent/runs/archived', { method: 'DELETE' })
+        this.dropCurrentIfDeleted(result.deleted || [])
+        await this.loadAgentRuns()
+        if (result.skipped && result.skipped.length) {
+          this.agent.error = '已删除 ' + result.count + ' 个，' + result.skipped.length + ' 个因仍在运行被跳过'
+        }
+      } catch (e) {
+        this.agent.error = '一键删除失败: ' + e.message
+      }
+    },
+    dropCurrentIfDeleted(deletedIds) {
+      if (!this.agent.current || !deletedIds.includes(this.agent.current.run_id)) return
+      if (this.agent.stream) { this.agent.stream.close(); this.agent.stream = null }
+      this.agent.current = null
+      this.agent.events = []
     },
     async branchRun(run) {
       this.agent.menuRunId = ''
@@ -1536,12 +1667,88 @@ export default {
         this.lab.busy = false
       }
     },
+    toggleLibSort(key) {
+      if (this.lib.sortKey === key) {
+        this.lib.sortDir = -this.lib.sortDir
+      } else {
+        this.lib.sortKey = key
+        this.lib.sortDir = key === 'created_at' ? -1 : 1
+      }
+    },
+    fmtTime(iso) {
+      const t = Date.parse(iso || '')
+      if (!Number.isFinite(t)) return '—'
+      const d = new Date(t)
+      const p = n => String(n).padStart(2, '0')
+      return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) +
+             ' ' + p(d.getHours()) + ':' + p(d.getMinutes())
+    },
+    exportLibraryByTime() {
+      const rows = this.libExportRows || []
+      if (!rows.length) {
+        alert('所选时间范围内没有因子')
+        return
+      }
+      const cols = ['加入时间', 'factor_id', '名称', '准入状态', '审查判定',
+                    'Train IC', 'Val IC', '全区间 IC', 'ICIR', 'RankIC', 'Coverage',
+                    '多头年化', '超额年化', '夏普', 'val保留比', 'val多头超额',
+                    'Label', 'Expr']
+      const esc = v => {
+        const s = v === null || v === undefined ? '' : String(v)
+        return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s
+      }
+      const num = v => (v === null || v === undefined || Number.isNaN(Number(v))) ? '' : Number(v)
+      const lines = [cols.join(',')]
+      for (const f of rows) {
+        lines.push([
+          this.fmtTime(f.created_at), f.factor_id, f.name,
+          f.promotion_status || f.status, f.review_verdict || '',
+          num(f.train_ic), num(f.val_ic), num(f.metrics?.ic), num(f.metrics?.icir),
+          num(f.metrics?.rank_ic), num(f.metrics?.factor_coverage),
+          num(f.annualized_return), num(f.annualized_excess_return), num(f.sharpe),
+          num(f.val_ic_retention), num(f.val_long_excess),
+          f.label_col || '', f.expr || '',
+        ].map(esc).join(','))
+      }
+      const blob = new Blob(['\ufeff' + lines.join('\r\n')],
+                            { type: 'text/csv;charset=utf-8' })
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(blob)
+      a.download = 'factors_' + this.lib.library + '_' +
+                   (this.lib.exportStart || 'all') + '_' + (this.lib.exportEnd || 'all') + '.csv'
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(a.href)
+    },
+    exportAllJSON() {
+      const data = this.lib.data
+      if (!data || !data.factors?.length) return
+      const payload = {
+        exported_at: new Date().toISOString(),
+        library: data.library,
+        root: data.root,
+        n_factors: data.n_factors,
+        factors: data.factors,
+        registry: data.registry,
+      }
+      const text = JSON.stringify(payload, null, 2)
+      const blob = new Blob([text], { type: 'application/json;charset=utf-8' })
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(blob)
+      a.download = 'factors_' + this.lib.library + '_' +
+                   new Date().toISOString().slice(0, 10) + '.json'
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(a.href)
+    },
     async loadFactors() {
       this.lib.loading = true
       this.lib.error = ''
       this.lib.data = null
       try {
-        this.lib.data = await api('/api/alphaagent/factors?library=' + this.lib.library + '&t=' + Date.now())
+        this.lib.data = await api('/api/alphaagent/factors?library=' + this.lib.library + '&category=' + this.lib.category + '&t=' + Date.now())
       } catch (e) {
         this.lib.error = e.message
       } finally {
@@ -1577,9 +1784,13 @@ export default {
       this.lib.library = lib
       this.loadFactors()
     },
+    switchCategory(cat) {
+      this.lib.category = cat
+      this.loadFactors()
+    },
     async showFactorDetail(f) {
       try {
-        this.factorDetail = await api('/api/alphaagent/factors/' + encodeURIComponent(f.factor_id) + '?library=' + this.lib.library + '&t=' + Date.now())
+        this.factorDetail = await api('/api/alphaagent/factors/' + encodeURIComponent(f.factor_id) + '?library=' + this.lib.library + '&category=' + this.lib.category + '&t=' + Date.now())
       } catch (e) {
         this.lib.error = e.message
       }
@@ -1587,7 +1798,7 @@ export default {
     async confirmDelete(f) {
       if (!confirm('确认删除因子 ' + f.name + ' (' + String(f.factor_id).slice(0, 8) + ')？')) return
       try {
-        await api('/api/alphaagent/factors/' + encodeURIComponent(f.factor_id) + '?library=' + this.lib.library, { method: 'DELETE' })
+        await api('/api/alphaagent/factors/' + encodeURIComponent(f.factor_id) + '?library=' + this.lib.library + '&category=' + this.lib.category, { method: 'DELETE' })
         this.loadFactors()
       } catch (e) {
         this.lib.error = e.message
@@ -1604,6 +1815,7 @@ export default {
       this.lab.saveError = ''
       this.lab.saveResult = null
       this.lab.saveLibrary = 'candidate'
+      this.lab.saveCategory = 'technical'
       this.lab.saveDialog = true
     },
     async saveFactor() {
@@ -1619,6 +1831,7 @@ export default {
             factor_name: this.lab.saveName || 'expr',
             comment: this.lab.saveComment,
             library: this.lab.saveLibrary,
+            category: this.lab.saveCategory,
             train_start: this.lab.trainStart,
             train_end: this.lab.trainEnd,
             val_start: this.lab.valStart,
@@ -1804,6 +2017,8 @@ export default {
 .session-label { display:flex; align-items:center; justify-content:space-between; padding: 0 16px 8px; color: var(--muted); font-size: 11px; }
 .archived-toggle { padding:0; border:0; background:transparent; color:var(--muted); font-size:10px; }
 .archived-toggle:hover { color:var(--text); }
+.label-actions { display:inline-flex; gap:10px; align-items:center; }
+.archived-toggle.danger:hover { color:#ef6b73; }
 .session-list { overflow: auto; padding: 0 8px; }
 .session-item { position:relative; display:flex; width:100%; align-items:center; margin-bottom:3px; border:1px solid transparent; border-radius:7px; }
 .session-item:hover, .session-item.active { background: rgb(79 140 255 / .11); border-color: rgb(79 140 255 / .24); }
@@ -1814,6 +2029,8 @@ export default {
 .session-menu-popover button { display:block; width:100%; padding:7px 8px; border:0; border-radius:4px; background:transparent; color:var(--text); text-align:left; font-size:11px; }
 .session-menu-popover button:hover { background:rgb(79 140 255 / .14); }
 .session-menu-popover .archive-action { color:#ef9ca1; }
+.session-menu-popover .delete-action { color:#ef6b73; }
+.session-menu-popover .delete-action:hover { background:rgb(239 107 115 / .16); }
 .session-rename-popover { position:fixed; z-index:10000; display:flex; width:260px; height:30px; padding:2px; border:1px solid var(--accent); border-radius:6px; background:var(--bg-soft); box-shadow:0 10px 25px rgb(0 0 0 / .32); }
 .session-rename-popover input { flex:1; min-width:0; border:0; outline:0; padding:0 7px; background:transparent; color:var(--text); font:600 12px/1 var(--font-sans); letter-spacing:0; }
 .session-rename-popover button { width:27px; padding:0; border:0; border-radius:4px; background:rgb(79 140 255 / .18); color:var(--accent); font:16px/1 var(--font-mono); }
@@ -2070,6 +2287,8 @@ export default {
 textarea.lab-input { resize:vertical; font:12px/1.5 var(--font-mono); }
 .lab-radio-group { display:flex; gap:14px; }
 .lab-radio-group label { display:flex; align-items:center; gap:5px; color:var(--text); font-size:12px; cursor:pointer; }
+.lab-cat-label { color:var(--muted); font-size:12px; }
+.lab-cat-select { width:auto; min-width:100px; }
 .lab-bt-dates { display:flex; align-items:center; gap:8px; }
 .lab-bt-dates .lab-input { flex:1; }
 .lab-bt-row { display:flex; gap:12px; }
@@ -2094,6 +2313,10 @@ textarea.lab-input { resize:vertical; font:12px/1.5 var(--font-mono); }
 .lib-tabs button { padding:5px 12px; border:1px solid var(--line); border-radius:7px; background:transparent; color:var(--muted); font-size:11px; cursor:pointer; }
 .lib-tabs button:hover { color:var(--text); }
 .lib-tabs button.active { color:var(--text); border-color:var(--accent); background:rgb(79 140 255 / .14); }
+.lib-cat-tabs { display:flex; gap:3px; margin-left:8px; }
+.lib-cat-tabs button { padding:4px 10px; border:1px solid var(--line); border-radius:6px; background:transparent; color:var(--muted); font-size:10px; cursor:pointer; }
+.lib-cat-tabs button:hover { color:var(--text); }
+.lib-cat-tabs button.active { color:var(--text); border-color:var(--accent); background:rgb(79 140 255 / .10); }
 .lib-count { color:var(--muted); font-size:11px; }
 .lib-refresh { margin-left:auto; padding:4px 10px; border:1px solid var(--line); border-radius:6px; background:transparent; color:var(--muted); font-size:11px; cursor:pointer; }
 .lib-refresh:hover { color:var(--text); border-color:var(--line-strong); }
@@ -2101,6 +2324,18 @@ textarea.lab-input { resize:vertical; font:12px/1.5 var(--font-mono); }
 .lib-loading { color:var(--muted); font-size:12px; padding:20px 0; text-align:center; }
 .lib-empty { color:var(--muted); font-size:12px; padding:20px 0; text-align:center; }
 .lib-table { width:100%; border-collapse:collapse; }
+.lib-toolbar { display:flex; align-items:center; gap:8px; margin:0 0 10px; padding:7px 10px; border:1px solid var(--line); border-radius:8px; background:rgb(255 255 255 / .02); }
+.lib-toolbar-label { color:var(--muted); font-size:11px; }
+.lib-toolbar input[type="date"] { background:var(--bg-soft); border:1px solid var(--line); color:var(--text); border-radius:6px; font-size:11px; padding:3px 6px; }
+.lib-range-sep { color:var(--muted); font-size:11px; }
+.lib-export-all { padding:4px 12px; border:1px solid rgb(126 168 255 / .45); border-radius:6px; background:rgb(79 140 255 / .1); color:#7ea8ff; font-size:11px; cursor:pointer; }
+.lib-export-all:hover { background:rgb(79 140 255 / .2); }
+.lib-export-json { margin-left:auto; padding:4px 12px; border:1px solid rgb(94 224 160 / .45); border-radius:6px; background:rgb(94 224 160 / .1); color:#5ee0a0; font-size:11px; cursor:pointer; }
+.lib-export-json:hover { background:rgb(94 224 160 / .2); }
+.lib-export-json:disabled { opacity:.4; cursor:not-allowed; }
+.lib-table th.sortable { cursor:pointer; user-select:none; }
+.lib-table th.sortable:hover { color:var(--text); }
+.lib-table th.active { color:var(--accent); }
 .lib-table th { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); color:var(--muted); font-size:9px; font-weight:600; text-transform:uppercase; letter-spacing:.04em; white-space:nowrap; }
 .lib-table td { padding:6px 8px; border-bottom:1px solid var(--line); font-size:11px; vertical-align:top; }
 .lib-table tr:hover td { background:rgb(79 140 255 / .06); }

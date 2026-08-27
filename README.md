@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: 'c4f08bd9-b46d-4985-ad93-92a10e3e7ce6'
-  PropagateID: 'c4f08bd9-b46d-4985-ad93-92a10e3e7ce6'
-  ReservedCode1: 'e6054e39-1808-4705-9ffc-034e417d7f67'
-  ReservedCode2: 'e6054e39-1808-4705-9ffc-034e417d7f67'
+  ProduceID: 'ae17f4c3-70f7-4cf8-9dda-dc06d9b26a06'
+  PropagateID: 'ae17f4c3-70f7-4cf8-9dda-dc06d9b26a06'
+  ReservedCode1: 'bba64321-af64-4be2-a329-14d6d505ce6d'
+  ReservedCode2: 'bba64321-af64-4be2-a329-14d6d505ce6d'
 ---
 
 # quant_ui — A 股个人量化研究平台
@@ -214,8 +214,18 @@ docker compose down                       # 停服（不删卷；加 -v 会清�
 
 ## 5. 回测引擎
 
+### 统一交易参数（`core/trading_config.py`）
+- 全平台唯一默认交易参数来源：资金 10 万、买入佣金万 2.5、卖出费率万 12.5（含印花税）、
+  滑点 3bps、参与率 10%、选股 top 0.4%（约 20 只）、流动性下限 500 万
+- 回测引擎、模拟盘、因子门禁、前端默认值均从此取，改参数只需改这一个文件
+- 后端 API `/api/trading-defaults` 供前端启动时自动获取
+
 ### 因子轮动（`core/engine.py`）
 - 月频/周频选股：按因子得分排序取 TopN（`ascending` 控制买高/买低）
+- 选股策略统一走 `SelectionPolicy` + `PortfolioBuilder.build_targets`，
+  支持 count_mode（top_n/top_pct）、min/max positions、min_score 门槛、ADX 趋势门控
+- 新增因子：趋势突破强度 `brk20`（收盘相对 20 日最高价突破幅度）、
+  放量确认突破 `brk20_vol`（量比 ≥1.5 时保留突破信号）
 - 过滤：剔除科创/创业、一手 100 股、成交额分位（`amount_q`）、因子预热（`warmup_days`）
 - 组合构建：行业分散（`industry_cap`）、多空对冲（`long_short`/`short_n`/`short_cost_rate`）、行业中性化（`industry_neutral`）
 - 财务因子（`use_financial`）：PB/EP/ROE/毛利率/营收同比/净利同比，按公告日 point-in-time
@@ -226,6 +236,7 @@ docker compose down                       # 停服（不删卷；加 -v 会清�
 - 基准：股票池等权；支持沪深300/中证500 等指数线
 - 输出：净值/基准/回撤/指标/持仓/调仓记录/最近信号日 + **Brinson 行业归因**（自动），
   `analyze=true` 时附带因子质量（IC/分组）
+- 市场冲击模型：`impact_coef` + `impact_vol` 参数支持线性冲击成本
 
 ### 风险模型（`core/risk_model.py`）
 - 轻量 Barra：风格因子（流动性/动量/波动/换手 + 可选价值/质量/成长）+ 行业哑变量
@@ -254,8 +265,10 @@ docker compose down                       # 停服（不删卷；加 -v 会清�
 ### 事件驱动（`core/event_engine.py`）
 - 每个交易日 `on_bar(ctx, bar)`；信号日收盘 → 执行日（T+1）开盘成交
 - 撮合语义：一手 100 股、先卖后买、停牌不可交易、**涨跌停约束**（`core/limit.py`）
-- 成本：买入 `buy_cost`、卖出 `sell_cost`（默认 8bp / 13bp），每日收盘估值
-- 增强：滑点（`slippage_bps`）、流动性约束（`max_participation`）、限价单、空头融券费率
+- 成本：买入 `buy_cost`、卖出 `sell_cost`（默认从 `trading_config.py` 取），每日收盘估值
+- 增强：滑点（`slippage_bps`）、流动性约束（`max_participation`）、限价单、空头融券费率、市场冲击模型
+- ctx API：`history(code, fields, window)` 多字段历史 DataFrame、`close_series(code)` 收价序列、
+  `available_fields` 可用字段列表
 - 组合优化 ctx API：`optimize_risk_parity` / `optimize_mean_variance` / `optimize_max_diversification`
 - 内置示例：`GoldenCrossStrategy`、`RiskParityStrategy`、`LongShortMomentumStrategy`
 
@@ -272,8 +285,16 @@ docker compose down                       # 停服（不删卷；加 -v 会清�
 | 动量/趋势 | 动量 20 日、动量 60 日、双均线多头 5/10 · 5/20 · 10/30 · 20/60 |
 | 反转/均值回归 | 反转 20 日、双均线反转 5/10 · 5/20 · 10/30 · 20/60 |
 | 波动/风控 | 低波动 |
+| 趋势突破 | 趋势突破 20 日（brk20）、放量趋势突破（brk20_vol） |
 | 复合/综合 | 复合因子 |
 | 多空/对冲 | 多空动量 20 日、多空低换手 |
+
+### 6.1 米筐对齐（`strategies/ricequant/`）
+
+「动量 20 日 · 科技TMT · Top3 月度」策略与米筐在线回测平台做引擎结果对齐验证：
+- `mom20_top3_techtmt.py`：粘贴到米筐策略编辑器的源码
+- `scripts/ricequant_picks_export.py`：本地引擎基准导出脚本
+- `compare_run.py`：三层对比工具（净值/逐笔/持仓）
 
 ## 7. 后端 API（FastAPI :17891，文档 `/docs`）
 
@@ -336,6 +357,11 @@ GET  /api/sentiment/ic           舆情分桶回测 IC/分组
 | `scripts/sync_tushare_to_parquet.py` | Tushare 财务/公告宽表同步 | `data/pg_parquet/` |
 | `scripts/refresh_fund_fees.py` | AkShare 基金费率补齐（已成功记录跳过） | `data/fund_fee.csv` |
 | `scripts/healthcheck.py` | 健康检查 | — |
+| `scripts/dedup_candidate_factors.py` | 候选因子库去重（两两截面 Pearson，阈值 0.6） | 清理 registry + DSL |
+| `scripts/alpha191_screen.py` | GTJA Alpha191 全量批量筛选 | 控制台报告 |
+| `scripts/ricequant_picks_export.py` | 本地引擎基准导出（米筐对齐） | `strategies/ricequant/baseline/` |
+| `scripts/wf_lowvol_check.py` | 低换手/低波动 walk-forward 样本外验证 | 控制台报告 |
+| `scripts/recheck_engine_gate.py` | 重新检查 engine_gate 门禁结果 | 控制台报告 |
 
 ### 8.1 qweave 研究层（替代 Qlib）
 

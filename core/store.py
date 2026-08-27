@@ -37,12 +37,12 @@ DB_DIR = DATA_DIR / "db"
 PANEL_FILE = STOCK_DIR / "panel.parquet"
 UNIVERSE_FILE = STOCK_DIR / "universe.csv"
 TECH_FILE = STOCK_DIR / "tech.csv"
-INDEX_FILE = STOCK_DIR / "index.csv"
+INDEX_FILE = STOCK_DIR / "index.parquet"  # 由 CNE step_index_bars_external 维护
 META_FILE = STOCK_DIR / "meta.json"
 ETF_FILE = ETF_DIR / "etf.csv"
 ETF_PANEL_FILE = ETF_DIR / "etf_panel.parquet"
 FUND_FILE = FUND_DIR / "fund.csv"
-FUND_FEE_FILE = FUND_DIR / "fund_fee.csv"
+FUND_FEE_FILE = FUND_DIR / "fund_fee.parquet"  # 由 CNE step_fund_fees 维护
 FUND_NAV_FILE = FUND_DIR / "fund_nav.parquet"
 FUND_PANEL_FILE = FUND_DIR / "fund_panel.parquet"
 PRED_FILE = STOCK_DIR / "pred_demo.parquet"  # qweave 研究层输出的 ML 预测分数（date/code/score）
@@ -118,7 +118,11 @@ def save_fund_panel(panel: pd.DataFrame) -> None:
 
 def save_csv(df: pd.DataFrame, path: Path) -> None:
     ensure_dir()
-    _atomic_write_text(path, df.to_csv(index=False))
+    # lineterminator="\n": pandas defaults to os.linesep on Windows, and
+    # to_csv already emits "\r\n" inside the string, so _atomic_write_text
+    # (text mode) would double every carriage return ("\r\r\n") and poison
+    # the last column name for downstream readers.
+    _atomic_write_text(path, df.to_csv(index=False, lineterminator="\n"))
 
 
 def save_meta(extra: dict | None = None) -> None:

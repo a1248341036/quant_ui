@@ -13,6 +13,7 @@ from backend import services
 from core.data import load_etf_panel
 from core import paper as paper_core
 from core.strategy_pool import resolve_strategy as resolve_pool_strategy
+from core import trading_config
 
 
 router = APIRouter()
@@ -27,16 +28,16 @@ class AccountRequest(BaseModel):
     module: str | None = None
     event_strategy: str | None = None
     universe: str = "科技TMT"
-    capital: float = 100000.0
+    capital: float = trading_config.CAPITAL
     top_n: int = 3
     freq: str = "monthly"
     risk_config: dict | None = None
     start_date: str | None = None
-    slippage_bps: float = 0.0
-    max_participation: float = 0.0
-    warmup_days: int | None = 400
-    buy_cost: float = 0.0008
-    sell_cost: float = 0.0013
+    slippage_bps: float = trading_config.SLIPPAGE_BPS
+    max_participation: float = trading_config.MAX_PARTICIPATION
+    warmup_days: int | None = trading_config.WARMUP_DAYS
+    buy_cost: float = trading_config.BUY_COST
+    sell_cost: float = trading_config.SELL_COST
     spread_bps: float = 0.0
     min_commission: float = 0.0
     lot_size: int = 100
@@ -139,9 +140,9 @@ def account_create(req: AccountRequest):
         risk = dict(req.risk_config or {})
         if req.universe == "ETF":
             from core.assets import ETF_PROFILE
-            if "buy_cost" not in risk and req.buy_cost == 0.0008:
+            if "buy_cost" not in risk and req.buy_cost == trading_config.BUY_COST:
                 risk["buy_cost"] = ETF_PROFILE.buy_cost
-            if "sell_cost" not in risk and req.sell_cost == 0.0013:
+            if "sell_cost" not in risk and req.sell_cost == trading_config.SELL_COST:
                 risk["sell_cost"] = ETF_PROFILE.sell_cost
             if "spread_bps" not in risk and req.spread_bps == 0.0:
                 risk["spread_bps"] = ETF_PROFILE.spread_bps

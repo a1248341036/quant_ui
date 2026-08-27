@@ -26,7 +26,7 @@ from alphaagent.factor.mining.service import StockEvalService
 from alphaagent.factor.mining.agentscope_tools import build_factor_eval_toolkit, context_to_openai_messages
 from alphaagent.factor.mining.cli_stream import MiningStreamObserver, stream_to_cli
 from alphaagent.factor.mining.config import MiningConfig
-from alphaagent.factor.mining.console import ConsolePrinter
+from alphaagent.factor.mining.console import ConsolePrinter, ensure_utf8_stream
 from alphaagent.factor.mining.loop import _NUDGE, _submit_record
 from alphaagent.factor.mining.operators import list_operator_names
 from alphaagent.factor.mining.prompts import build_system_prompt
@@ -35,6 +35,7 @@ from alphaagent.factor.mining.tools import FactorEvalTools
 from alphaagent.factor.mining.factor_reviewer import FactorReviewer
 from alphaagent.factor.mining.research_memory import ResearchMemoryStore
 from alphaagent.factor.evaluation.profile import resolve_profiles
+from core import factor_categories
 
 _NUDGE_MSG = _NUDGE
 
@@ -79,6 +80,8 @@ def _build_model(
         stream=True,
         extra_body=extra_body,
         client_kwargs=_client_kwargs(),
+        max_retries=config.model_max_retries,
+        retry_delay=config.model_retry_delay,
     )
 
 
@@ -99,6 +102,7 @@ async def create_mining_agent(
         max_workers=config.max_tool_workers,
         reviewer=reviewer,
         interaction_policy=interaction_policy,
+        population_max=config.population_max,
     )
     react_iters = max(config.max_turns * config.max_tool_calls_per_round, config.max_turns, 20)
     return Agent(
@@ -155,15 +159,17 @@ async def run_factor_mining_agentscope(
     )
 
     submit_service: FactorSubmitService | None = None
-    lib_path = (config.factorlib_path or default_factorlib_path(root)).resolve()
-    registry_path = config.registry_path or lib_path / "mining_delivered_registry.json"
-    expr_dir = config.expr_dir or lib_path / "expressions"
+    research_mode = (config.research_spec or {}).get("research_mode", "technical")
+    lib_path = (config.factorlib_path or factor_categories.production_dir(research_mode)).resolve()
+    registry_path = config.registry_path or factor_categories.production_registry_path(research_mode)
+    expr_dir = config.expr_dir or factor_categories.production_expr_dir(research_mode)
     submit_service = FactorSubmitService(
         service,
         factorlib_path=lib_path,
-        registry_path=registry_path if registry_path.is_absolute() else root / registry_path,
-        expr_dir=expr_dir if expr_dir.is_absolute() else root / expr_dir,
+        registry_path=registry_path if Path(registry_path).is_absolute() else root / Path(registry_path),
+        expr_dir=expr_dir if Path(expr_dir).is_absolute() else root / Path(expr_dir),
         repo_root=root,
+        research_mode=research_mode,
         max_cs_corr=config.max_cs_corr,
         delivery_policy=(config.research_spec or {}).get("delivery_policy"),
         similar_top_k=config.similar_top_k,
@@ -177,6 +183,8 @@ async def run_factor_mining_agentscope(
         label_col=ctx.label_col,
         include_fundamentals=ctx.include_fundamentals,
         panel_columns=session_resp.available_columns,
+        population_max=config.population_max,
+        research_spec=config.research_spec,
     )
 
     log_dir = Path(log_dir)
@@ -210,8 +218,13 @@ async def run_factor_mining_agentscope(
         label_col=ctx.label_col,
         include_fundamentals=ctx.include_fundamentals,
         panel_columns=session_resp.available_columns,
+        population_max=config.population_max,
+        research_spec=config.research_spec,
     )
 
+    # Windows 控制台默认 GBK：模型/工具输出含 emoji 时会中断会话，统一转 UTF-8 容错。
+    ensure_utf8_stream(sys.stdout)
+    ensure_utf8_stream(sys.stderr)
     printer = ConsolePrinter(stream=sys.stderr) if verbose else None
     if printer is not None:
         printer.session_start(config.model, len(list_operator_names()))
@@ -257,6 +270,28 @@ async def run_factor_mining_agentscope(
         "manifest": "run_manifest.json",
     })
     _emit("user_message", {"turn": 0, "content": user_message})
+
+    # 写 run_meta.json：与 backend/alphaagent_service.save_meta 同 schema，
+    # 让 CLI 直启的 run 也能被后端 hydrate_runs 恢复进前端任务列表。
+    try:
+        (log_dir / "run_meta.json").write_text(
+            json.dumps(
+                {
+                    "run_id": log_dir.name,
+                    "created_at": started_at,
+                    "params": {"user_message": user_message},
+                    "parent_run_id": None,
+                    "title": user_message.strip().replace("\n", " ")[:32] or log_dir.name,
+                    "archived": False,
+                    "pinned": False,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
 
     tool_call_rounds = 0
     outer_turn = 0

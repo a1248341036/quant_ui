@@ -79,8 +79,9 @@ def test_step_fund_flow_writes_staging(cfg, monkeypatch):
 @pytest.mark.parametrize(
     ("dataset", "step_name", "fetch_name"),
     [
+        # margin_trading is deliberately absent: its T+1 publication cadence
+        # makes an empty response legitimate (see the dedicated tests below).
         ("fund_flow", "step_fund_flow", "fetch_fund_flow"),
-        ("margin_trading", "step_margin_trading", "fetch_margin_trading"),
     ],
 )
 def test_capital_steps_reject_empty_canonical_feeds(
@@ -95,15 +96,60 @@ def test_capital_steps_reject_empty_canonical_feeds(
         getattr(cap, step_name)(cfg, date(2024, 6, 28), "run-empty", {})
 
 
-def test_margin_trading_rejects_partial_daily_feed(cfg, monkeypatch):
+def test_margin_trading_skips_unpublished_day_without_fetch(cfg, monkeypatch):
+    """T+1 publication: the walked tail day has no report yet. Skip it outright —
+    clamping the request to the prior session stamps prior-day rows that
+    incremental validation then rejects wholesale, failing every evening run
+    (regression 2026-08-24/25)."""
     from cnequity.steps import capital as cap
     from cnequity.storage.state import StateStore
 
     StateStore(cfg.meta_root).set_date("margin_trading", date(2024, 6, 27))
-    monkeypatch.setattr(
-        cap,
-        "fetch_margin_trading",
-        lambda trade_date, **kwargs: pl.DataFrame(
+
+    def fail_fetch(trade_date, **_kwargs):
+        raise AssertionError(f"fetch must not be issued for unpublished {trade_date}")
+
+    monkeypatch.setattr(cap, "fetch_margin_trading", fail_fetch)
+    result = cap.step_margin_trading(cfg, date(2024, 6, 28), "run-unpublished", {})
+    assert result["rows_written"] == 0
+
+
+def test_margin_trading_writes_published_gap_days(cfg, monkeypatch):
+    from cnequity.steps import capital as cap
+    from cnequity.storage.state import StateStore
+
+    StateStore(cfg.meta_root).set_date("margin_trading", date(2024, 6, 25))
+    symbols = [f"{600000 + i}.SH" for i in range(60)]
+
+    def fake_fetch(trade_date, **_kwargs):
+        return pl.DataFrame(
+            {
+                "symbol": symbols,
+                "trade_date": [trade_date] * len(symbols),
+                "margin_balance": [1.0] * len(symbols),
+                "margin_buy": [0.0] * len(symbols),
+                "short_balance": [0.0] * len(symbols),
+                "short_sell_volume": [0.0] * len(symbols),
+            }
+        )
+
+    monkeypatch.setattr(cap, "fetch_margin_trading", fake_fetch)
+    cfg.staging_root.mkdir(parents=True)
+    result = cap.step_margin_trading(cfg, date(2024, 6, 28), "run-gap", {})
+    # 06-26 and 06-27 are published (<= prior session); 06-28 is not.
+    assert result["rows_written"] == 2 * len(symbols)
+    staged = list(cfg.staging_root.glob("margin_trading/**/*.parquet"))
+    assert len(staged) == 1
+
+
+def test_margin_trading_rejects_partial_daily_feed(cfg, monkeypatch):
+    from cnequity.steps import capital as cap
+    from cnequity.storage.state import StateStore
+
+    StateStore(cfg.meta_root).set_date("margin_trading", date(2024, 6, 25))
+
+    def fake_fetch(trade_date, **_kwargs):
+        return pl.DataFrame(
             {
                 "symbol": ["600519.SH"],
                 "trade_date": [trade_date],
@@ -112,8 +158,11 @@ def test_margin_trading_rejects_partial_daily_feed(cfg, monkeypatch):
                 "short_balance": [0.0],
                 "short_sell_volume": [0.0],
             }
-        ),
-    )
+        )
+
+    monkeypatch.setattr(cap, "fetch_margin_trading", fake_fetch)
+    # The first published gap day (06-26) comes back with far too few symbols:
+    # a truncated snapshot must abort the step instead of landing.
     with pytest.raises(RuntimeError, match="margin_trading: incomplete daily snapshot"):
         cap.step_margin_trading(cfg, date(2024, 6, 28), "run-partial", {})
 

@@ -146,13 +146,11 @@ def step_northbound_flows(config: Config, trade_date: date, run_id: str, context
     if not config.sources.get("eastmoney", True):
         raise RuntimeError("northbound_flows: eastmoney source disabled in config")
 
-    # Cadence check: source retired (cadence="skip") — skip the fetch entirely.
-    state = StateStore(config.meta_root)
-    wm = state.get_date("northbound_flows")
-    if not should_fetch("northbound_flows", wm, trade_date):
-        logger.info("northbound_flows: cadence skip (source retired)")
-        state.set_date("northbound_flows", trade_date)
-        return {"rows_read": 0, "rows_written": 0, "status": "success"}
+    # NOTE: no cadence gate here. The feed's retirement is already enforced
+    # structurally below — ``end`` is clamped to NORTHBOUND_LAST_PUBLISHED, so
+    # any post-retirement window resolves to start > end and returns without a
+    # source request. An unconditional should_fetch() skip would also kill
+    # explicit backfills over the published window.
 
     if getattr(config, "_backfill", False):
         start = getattr(config, "_backfill_start", None) or NORTHBOUND_HISTORY_START
@@ -498,15 +496,17 @@ def step_margin_trading(config: Config, trade_date: date, run_id: str, context: 
         return _backfill_margin_trading(config, trade_date, run_id)
 
     # Exchanges publish each session's margin balances the NEXT morning, so an
-    # evening run can only ever see the previous trading session. Clamp the
-    # requested day instead of issuing a request that provably returns nothing.
+    # evening run can only ever see the previous trading session. Skip an
+    # unpublished day outright instead of clamping it to `prior`:
+    # fetch_incremental_daily validates every frame against the exact walked
+    # day, so a prior-stamped clamp would be rejected as a wholesale
+    # trade_date mismatch and abort the whole step (regression 2026-08-24/25).
     prior = _latest_published_margin_day(config, trade_date)
 
     def _fetch(day: date, *, config: Config) -> pl.DataFrame:
-        effective = min(day, prior)
-        return _validate_margin_snapshot(
-            fetch_margin_trading(effective, config=config), effective
-        )
+        if day > prior:
+            return pl.DataFrame()
+        return _validate_margin_snapshot(fetch_margin_trading(day, config=config), day)
 
     return _run_capital_step(config, trade_date, run_id, "margin_trading", _fetch)
 

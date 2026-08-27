@@ -13,6 +13,8 @@ from agentscope.agent import Agent
 from agentscope.event import ConfirmResult, EventType, UserConfirmResultEvent
 from agentscope.message import UserMsg
 
+from alphaagent.factor.mining.console import ensure_utf8_stream
+
 _INDENT = "    "
 _USE_COLOR = sys.stdout.isatty()
 _ANSI_RE = re.compile(r"\033\[[0-9;]*m")
@@ -299,7 +301,7 @@ async def stream_to_cli(
     inject_comment: str | None = None
     body_needs_indent = False
     had_tool_calls = False
-    out = stream or sys.stdout
+    out = ensure_utf8_stream(stream or sys.stdout)
     use_printer = observer is not None and observer.printer is not None
 
     while True:

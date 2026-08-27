@@ -8,6 +8,7 @@ from cnequity.steps import (  # noqa: F401
     finalize,
     fundamentals,
     intraday,
+    local_assets,
     macro_risk,
     newsboard,
     reference,

@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
+import shutil
 import subprocess
 import sys
 import threading
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,17 +18,26 @@ from typing import Any, Iterator
 
 import pandas as pd
 
+from alphaagent.factor.types import (
+    DEFAULT_TRAIN_END,
+    DEFAULT_TRAIN_START,
+    DEFAULT_VAL_END,
+    DEFAULT_VAL_START,
+)
 from alphaagent.factor.mining.research_spec import default_research_spec, normalize_research_spec
 
 from alphaagent.factor.mining.research_memory import ResearchMemoryStore
+from core import factor_categories
+
+logger = logging.getLogger(__name__)
 
 
 ROOT = Path(__file__).resolve().parents[1]
 PYTHON_EXECUTABLE = ROOT / ".venv" / "Scripts" / "python.exe"
 if not PYTHON_EXECUTABLE.exists():
     PYTHON_EXECUTABLE = Path(sys.executable)
-DEFAULT_PANEL = "cne://"  # 从 CNE 数据湖实时构建 panel，不再依赖预构建的 parquet
-DEFAULT_FACTORLIB = ROOT / "artifacts" / "alphaagent" / "factorzoo" / "stock_1d"
+DEFAULT_PANEL = "cne://"
+DEFAULT_FACTORLIB = factor_categories.production_dir("technical")  # 向后兼容
 RESEARCH_MEMORY_FILE = ROOT / "artifacts" / "alphaagent" / "research_memory.db"
 LOG_ROOT = ROOT / "logs" / "factor_mining" / "ui"
 
@@ -112,7 +124,7 @@ class AgentRun:
 
     def snapshot(self, tail: int = 80) -> dict[str, Any]:
         self.refresh()
-        events = list(read_events(self._jsonl()))
+        event_count, recent_events = scan_event_tail(self._jsonl(), tail)
         summary_path = self.log_dir / "run_summary.json"
         summary: dict[str, Any] = {}
         if summary_path.exists():
@@ -124,6 +136,7 @@ class AgentRun:
         return {
             "run_id": self.run_id,
             "status": self.status,
+            "source": "api" if self.command else "cli",
             "outcome": summary.get("outcome"),
             "success": summary.get("success"),
             "failure_counts": summary.get("failure_counts", {}),
@@ -136,8 +149,8 @@ class AgentRun:
             "archived": self.archived,
             "pinned": self.pinned,
             "research_spec": self.params.get("research_spec"),
-            "event_count": len(events),
-            "events": events[-tail:],
+            "event_count": event_count,
+            "events": recent_events,
             "log_dir": str(self.log_dir),
             "error": self.error,
         }
@@ -178,13 +191,22 @@ def _load_run_from_disk(run_dir: Path) -> AgentRun | None:
     ).isoformat())
     params = metadata.get("params") if isinstance(metadata.get("params"), dict) else {}
     params.setdefault("user_message", str(first_user or ""))
+    status = _status_from_events(events)
+    # 外部启动（CLI/脚本）的 run 没有进程句柄：轨迹仍在推进时视为运行中，
+    # 而不是误标 interrupted。15 分钟无新事件才回落到事件推导状态。
+    if status == "interrupted":
+        try:
+            if time.time() - jsonl_files[-1].stat().st_mtime < 900:
+                status = "running"
+        except OSError:
+            pass
     return AgentRun(
         run_id=str(metadata.get("run_id") or run_dir.name),
         command=[],
         log_dir=run_dir,
         params=params,
         created_at=created,
-        status=_status_from_events(events),
+        status=status,
         parent_run_id=metadata.get("parent_run_id"),
         title=str(metadata.get("title") or ""),
         archived=bool(metadata.get("archived", False)),
@@ -193,13 +215,25 @@ def _load_run_from_disk(run_dir: Path) -> AgentRun | None:
 
 
 def hydrate_runs() -> None:
-    """Restore past UI runs after a FastAPI restart from their JSONL logs."""
+    """Restore past UI runs after a FastAPI restart from their JSONL logs.
+
+    Dirs already tracked in memory are skipped: their in-process AgentRun stays
+    authoritative, so repeated listings never re-parse old trajectories.
+    """
     if not LOG_ROOT.exists():
         return
-    restored = [_load_run_from_disk(path) for path in LOG_ROOT.iterdir()]
+    with _LOCK:
+        known_dirs = {run.log_dir for run in _RUNS.values()}
+    restored: list[AgentRun] = []
+    for path in LOG_ROOT.iterdir():
+        if path in known_dirs:
+            continue
+        run = _load_run_from_disk(path)
+        if run is not None:
+            restored.append(run)
     with _LOCK:
         for run in restored:
-            if run is not None and run.run_id not in _RUNS:
+            if run.run_id not in _RUNS:
                 _RUNS[run.run_id] = run
 
 
@@ -227,6 +261,40 @@ def read_events(path: Path | None) -> Iterator[dict[str, Any]]:
                     yield row
     except OSError:
         return
+
+
+def scan_event_tail(path: Path | None, tail: int) -> tuple[int, list[dict[str, Any]]]:
+    """Count rows in an event JSONL and decode only its last *tail* rows.
+
+    Listing every run must not JSON-decode entire histories: raw lines are
+    counted cheaply and only the trailing window is parsed. Non-dict or
+    undecodable trailing lines are excluded from the count, matching read_events.
+    """
+    if path is None or not path.exists() or tail <= 0:
+        return 0, []
+    recent: deque[str] = deque(maxlen=tail)
+    total = 0
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                total += 1
+                recent.append(line)
+    except OSError:
+        return 0, []
+    events: list[dict[str, Any]] = []
+    for line in recent:
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            total -= 1
+            continue
+        if isinstance(row, dict):
+            events.append(row)
+        else:
+            total -= 1
+    return total, events
 
 
 def start_run(
@@ -264,10 +332,12 @@ def start_run(
     log_dir.mkdir(parents=True, exist_ok=True)
     spec_path = log_dir / "research_spec.json"
     spec_path.write_text(json.dumps(spec, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    # 因子库路径按 research_mode 路由到对应类别目录
+    factorlib_path = factor_categories.production_dir(mode)
     command = [
         str(PYTHON_EXECUTABLE), str(ROOT / "scripts" / "run_alphaagent.py"),
         "--panel", str(DEFAULT_PANEL),
-        "--factorlib", str(DEFAULT_FACTORLIB),
+        "--factorlib", str(factorlib_path),
         "--train-start", str(params["train_start"]),
         "--train-end", str(params["train_end"]),
         "--val-start", str(params["val_start"]),
@@ -285,6 +355,8 @@ def start_run(
     ]
     if params.get("max_parallel_eval") is not None:
         command.extend(["--max-parallel-eval", str(params["max_parallel_eval"])])
+    if params.get("population_max") is not None:
+        command.extend(["--population-max", str(int(params["population_max"]))])
     # 研究模式决定是否载入基本面列：技术模式省内存，基本面模式必须载入 funda_* 字段。
     wants_fundamentals = spec.get("research_mode") == "fundamental"
     if not wants_fundamentals or params.get("no_fundamentals"):
@@ -368,11 +440,11 @@ def rename_run(run_id: str, title: str) -> AgentRun | None:
     return run
 
 
-def archive_run(run_id: str) -> AgentRun | None:
+def archive_run(run_id: str, *, archived: bool = True) -> AgentRun | None:
     run = get_run(run_id)
     if run is None:
         return None
-    run.archived = True
+    run.archived = bool(archived)
     run.save_meta()
     return run
 
@@ -384,6 +456,38 @@ def pin_run(run_id: str, pinned: bool) -> AgentRun | None:
     run.pinned = pinned
     run.save_meta()
     return run
+
+
+def delete_run(run_id: str) -> dict[str, Any] | None:
+    """删除一个任务：从内存移除并清掉它的日志目录。
+
+    进程还活着时拒绝删除——先 stop 再删，避免边写边删。
+    """
+    run = get_run(run_id)
+    if run is None:
+        return None
+    if run.process is not None and run.process.poll() is None:
+        return {"run_id": run_id, "deleted": False, "reason": "run_still_running"}
+    shutil.rmtree(run.log_dir, ignore_errors=True)
+    with _LOCK:
+        _RUNS.pop(run_id, None)
+    return {"run_id": run_id, "deleted": True}
+
+
+def delete_archived_runs() -> dict[str, Any]:
+    """一键删除全部已归档任务；仍在运行的归档任务跳过。"""
+    hydrate_runs()
+    with _LOCK:
+        targets = [run for run in _RUNS.values() if run.archived]
+    deleted: list[str] = []
+    skipped: list[str] = []
+    for run in targets:
+        outcome = delete_run(run.run_id)
+        if outcome is not None and outcome.get("deleted"):
+            deleted.append(outcome["run_id"])
+        else:
+            skipped.append(run.run_id)
+    return {"ok": True, "deleted": deleted, "skipped": skipped, "count": len(deleted)}
 
 
 def _run_resume_context(run: AgentRun) -> str:
@@ -493,10 +597,10 @@ async def event_stream(run_id: str):
 # ══════════════════════════════════════════════════════════════════════
 
 def _get_eval_service(
-    train_start: str = "2018-01-01",
-    train_end: str = "2022-12-31",
-    val_start: str = "2023-01-01",
-    val_end: str = "2025-12-31",
+    train_start: str = DEFAULT_TRAIN_START,
+    train_end: str = DEFAULT_TRAIN_END,
+    val_start: str = DEFAULT_VAL_START,
+    val_end: str = DEFAULT_VAL_END,
     label_col: str = "label_1d_open_to_open",
     include_fundamentals: bool = False,
 ) -> Any:
@@ -545,10 +649,10 @@ def evaluate_single_factor(
     multi_line_expr: str,
     factor_name: str = "expr",
     profile_id: str = "train_screen",
-    train_start: str = "2018-01-01",
-    train_end: str = "2022-12-31",
-    val_start: str = "2023-01-01",
-    val_end: str = "2025-12-31",
+    train_start: str = DEFAULT_TRAIN_START,
+    train_end: str = DEFAULT_TRAIN_END,
+    val_start: str = DEFAULT_VAL_START,
+    val_end: str = DEFAULT_VAL_END,
     label_col: str = "label_1d_open_to_open",
     include_fundamentals: bool = False,
 ) -> dict[str, Any]:
@@ -584,10 +688,10 @@ def evaluate_multi_profile(
     *,
     multi_line_expr: str,
     factor_name: str = "expr",
-    train_start: str = "2018-01-01",
-    train_end: str = "2022-12-31",
-    val_start: str = "2023-01-01",
-    val_end: str = "2025-12-31",
+    train_start: str = DEFAULT_TRAIN_START,
+    train_end: str = DEFAULT_TRAIN_END,
+    val_start: str = DEFAULT_VAL_START,
+    val_end: str = DEFAULT_VAL_END,
     label_col: str = "label_1d_open_to_open",
     include_fundamentals: bool = False,
 ) -> dict[str, Any]:
@@ -625,28 +729,28 @@ def evaluate_multi_profile(
 #  因子库管理
 # ══════════════════════════════════════════════════════════════════════
 
-def _candidate_root() -> Path:
-    return DEFAULT_FACTORLIB.parent / "candidate_1d"
+def _candidate_root(category: str = "technical") -> Path:
+    return factor_categories.candidate_dir(category)
 
 
-def _candidate_registry() -> dict[str, Any]:
-    path = _candidate_root() / "mining_candidate_registry.json"
+def _candidate_registry(category: str = "technical") -> dict[str, Any]:
+    path = _candidate_root(category) / "mining_candidate_registry.json"
     if not path.is_file():
         return {}
     loaded = json.loads(path.read_text(encoding="utf-8"))
     return loaded if isinstance(loaded, dict) else {}
 
 
-def _candidate_expr(entry: dict[str, Any], factor_id: str) -> str:
+def _candidate_expr(entry: dict[str, Any], factor_id: str, *, category: str = "technical") -> str:
     expr = str(entry.get("expr") or "")
     if expr:
         return expr
     rel = str(entry.get("expression_file") or "")
-    path = ROOT / rel if rel else _candidate_root() / "expressions" / f"{factor_id}.dsl"
+    path = ROOT / rel if rel else _candidate_root(category) / "expressions" / f"{factor_id}.dsl"
     return path.read_text(encoding="utf-8").strip() if path.exists() else ""
 
 
-def _candidate_factor_view(factor_id: str, entry: dict[str, Any]) -> dict[str, Any]:
+def _candidate_factor_view(factor_id: str, entry: dict[str, Any], *, category: str = "technical") -> dict[str, Any]:
     metrics = entry.get("metrics") if isinstance(entry.get("metrics"), dict) else {}
     fingerprint = entry.get("data_fingerprint") if isinstance(entry.get("data_fingerprint"), dict) else {}
     finite_count: int | None = None
@@ -654,18 +758,26 @@ def _candidate_factor_view(factor_id: str, entry: dict[str, Any]) -> dict[str, A
         finite_count = int(float(metrics["finite_ratio"]) * int(fingerprint["n_rows"]))
     review = entry.get("review") if isinstance(entry.get("review"), dict) else {}
 
-    # ── 提取 train/val 分拆指标 ──
+    # ── 提取 train/val 分拆指标：优先读 submit 写入的分窗口字段，回退评估证据包 ──
     ee = entry.get("evaluation_evidence") if isinstance(entry.get("evaluation_evidence"), dict) else {}
-    train_ic = val_ic = val_icir = None
-    for split_entry in ee.get("train", []):
-        s = split_entry.get("summary") or {}
-        train_ic = _safe_float(s.get("ic"))
-        break
-    for split_entry in ee.get("validation", []):
-        s = split_entry.get("summary") or {}
-        val_ic = _safe_float(s.get("ic"))
-        val_icir = _safe_float(s.get("icir"))
-        break
+    train_ic = _safe_float(metrics.get("train_ic"))
+    val_ic = _safe_float(metrics.get("val_ic"))
+    val_icir = _safe_float(metrics.get("val_icir"))
+    val_retention = _safe_float(metrics.get("val_ic_retention"))
+    if train_ic is None:
+        for split_entry in ee.get("train", []):
+            s = split_entry.get("summary") or {}
+            train_ic = _safe_float(s.get("ic"))
+            break
+    if val_ic is None:
+        for split_entry in ee.get("validation", []):
+            s = split_entry.get("summary") or {}
+            val_ic = _safe_float(s.get("ic"))
+            val_icir = _safe_float(s.get("icir"))
+            break
+
+    # ── 组合层收益指标（quantile_portfolio 由提交/回填写入）──
+    qp = metrics.get("quantile_portfolio") if isinstance(metrics.get("quantile_portfolio"), dict) else {}
 
     # ── label 与研究模式 ──
     ingest_cfg = entry.get("ingest_config") or {}
@@ -695,6 +807,10 @@ def _candidate_factor_view(factor_id: str, entry: dict[str, Any]) -> dict[str, A
         "train_ic": train_ic,
         "val_ic": val_ic,
         "val_icir": val_icir,
+        "val_ic_retention": val_retention,
+        "annualized_return": _safe_float(qp.get("top_group_annualized_return")),
+        "annualized_excess_return": _safe_float(qp.get("top_group_annualized_excess_return")),
+        "sharpe": _safe_float(qp.get("top_group_sharpe")),
         "review_reasons": review_summary,
         "metrics": {
             "ic": _safe_float(metrics.get("ic")),
@@ -705,22 +821,29 @@ def _candidate_factor_view(factor_id: str, entry: dict[str, Any]) -> dict[str, A
         "extra": entry,
     }
 
-def list_factors(*, library: str = "production") -> dict[str, Any]:
+def list_factors(*, library: str = "production", category: str = "technical") -> dict[str, Any]:
     """列出因子库中的所有因子。
 
     library:
-      - "production": 正式因子库 (stock_1d)
-      - "candidate": 候选因子库 (candidate_1d)
+      - "production": 正式因子库
+      - "candidate": 候选因子库
+    category:
+      - "technical": 日线技术因子
+      - "fundamental": 基本面因子
     """
     from alphaagent.factor.zoo import FactorZoo
 
-    root = DEFAULT_FACTORLIB if library == "production" else DEFAULT_FACTORLIB.parent / "candidate_1d"
+    prod_root = factor_categories.production_dir(category)
+    cand_root = _candidate_root(category)
+
+    root = prod_root if library == "production" else cand_root
 
     if library == "candidate":
-        registry = _candidate_registry()
-        factors = [_candidate_factor_view(fid, entry) for fid, entry in sorted(registry.items())]
+        registry = _candidate_registry(category)
+        factors = [_candidate_factor_view(fid, entry, category=category) for fid, entry in sorted(registry.items())]
         return {
             "library": library,
+            "category": category,
             "root": str(root),
             "n_factors": len(factors),
             "factors": factors,
@@ -731,7 +854,7 @@ def list_factors(*, library: str = "production") -> dict[str, Any]:
         # Listing must not re-hash the 82 MB canonical row index on every request.
         zoo = FactorZoo.open(root, verify_hash=False)
     except FileNotFoundError:
-        return {"library": library, "root": str(root), "factors": [], "n_factors": 0, "error": "library_not_initialized"}
+        return {"library": library, "category": category, "root": str(root), "factors": [], "n_factors": 0, "error": "library_not_initialized"}
 
     df = zoo.catalog.to_dataframe()
     factors: list[dict[str, Any]] = []
@@ -772,6 +895,7 @@ def list_factors(*, library: str = "production") -> dict[str, Any]:
 
     return {
         "library": library,
+        "category": category,
         "root": str(root),
         "n_factors": len(factors),
         "factors": factors,
@@ -779,17 +903,20 @@ def list_factors(*, library: str = "production") -> dict[str, Any]:
     }
 
 
-def get_factor_detail(factor_id: str, *, library: str = "production") -> dict[str, Any]:
+def get_factor_detail(factor_id: str, *, library: str = "production", category: str = "technical") -> dict[str, Any]:
     """获取单个因子详情。"""
     from alphaagent.factor.zoo import FactorZoo
 
-    root = DEFAULT_FACTORLIB if library == "production" else DEFAULT_FACTORLIB.parent / "candidate_1d"
+    prod_root = factor_categories.production_dir(category)
+    cand_root = _candidate_root(category)
+
+    root = prod_root if library == "production" else cand_root
 
     if library == "candidate":
-        entry = _candidate_registry().get(factor_id)
+        entry = _candidate_registry(category).get(factor_id)
         if not isinstance(entry, dict):
             return {"error": "factor_not_found"}
-        view = _candidate_factor_view(factor_id, entry)
+        view = _candidate_factor_view(factor_id, entry, category=category)
         view["registry_entry"] = entry
         return view
 
@@ -822,17 +949,24 @@ def get_factor_detail(factor_id: str, *, library: str = "production") -> dict[st
     }
 
 
-def delete_factor(factor_id: str, *, library: str = "production") -> dict[str, Any]:
-    """删除一个因子，并同步清除研究记忆/RAG 中的相关条目。"""
+def delete_factor(factor_id: str, *, library: str = "production", category: str = "technical") -> dict[str, Any]:
+    """删除一个因子，并同步清除研究记忆/RAG 中的相关条目。
+
+    进程还活着时拒绝删除——先 stop 再删，避免边写边删。
+    """
     from alphaagent.factor.mining.research_memory import ResearchMemoryStore
+    from core import trading_config
     from alphaagent.factor.zoo import FactorZoo
 
-    root = DEFAULT_FACTORLIB if library == "production" else DEFAULT_FACTORLIB.parent / "candidate_1d"
+    prod_root = factor_categories.production_dir(category)
+    cand_root = _candidate_root(category)
+
+    root = prod_root if library == "production" else cand_root
     factor_names: list[str] = []
     expressions: list[str] = []
 
     if library == "candidate":
-        registry = _candidate_registry()
+        registry = _candidate_registry(category)
         if factor_id not in registry:
             return {"error": "factor_not_found"}
         entry = registry.pop(factor_id)
@@ -904,16 +1038,18 @@ def save_factor(
     factor_name: str,
     comment: str = "",
     library: str = "candidate",
-    train_start: str = "2018-01-01",
-    train_end: str = "2022-12-31",
-    val_start: str = "2023-01-01",
-    val_end: str = "2025-12-31",
+    category: str = "technical",
+    train_start: str = DEFAULT_TRAIN_START,
+    train_end: str = DEFAULT_TRAIN_END,
+    val_start: str = DEFAULT_VAL_START,
+    val_end: str = DEFAULT_VAL_END,
     label_col: str = "label_1d_open_to_open",
     include_fundamentals: bool = False,
 ) -> dict[str, Any]:
     """将因子表达式保存到因子库（候选池或正式库）。
 
     复用挖掘流程的 ingest_factor + upsert_mining_registry 链路。
+    category 按 research_mode 路由到对应类别的目录。
     """
     from alphaagent.factor.mining.submit import slug_factor_id
     from alphaagent.factor.ingest import ingest_factor, load_panel_for_zoo, prepare_stored_values
@@ -938,11 +1074,11 @@ def save_factor(
 
     # Candidate records are registry-only; production remains a dense FactorZoo.
     if library == "production":
-        zoo_root = DEFAULT_FACTORLIB
+        zoo_root = factor_categories.production_dir(category)
         registry_path = zoo_root / "mining_delivered_registry.json"
         expr_dir = zoo_root / "expressions"
     else:
-        zoo_root = DEFAULT_FACTORLIB.parent / "candidate_1d"
+        zoo_root = _candidate_root(category)
         registry_path = zoo_root / "mining_candidate_registry.json"
         expr_dir = zoo_root / "expressions"
 
@@ -1145,10 +1281,10 @@ def backtest_factor(
         cash_mode=True,
         limit_flags=True,
         lot_size=100,
-        buy_cost=0.0008,
-        sell_cost=0.0013,
-        slippage_bps=0.0,
-        max_participation=0.0,
+        buy_cost=trading_config.BUY_COST,
+        sell_cost=trading_config.SELL_COST,
+        slippage_bps=trading_config.SLIPPAGE_BPS,
+        max_participation=trading_config.MAX_PARTICIPATION,
         execution_profile=STOCK_PROFILE,
     )
 

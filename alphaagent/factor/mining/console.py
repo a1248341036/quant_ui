@@ -14,6 +14,19 @@ def _use_color(stream: TextIO) -> bool:
     return bool(getattr(stream, "isatty", lambda: False)())
 
 
+def ensure_utf8_stream(stream: TextIO | None) -> TextIO | None:
+    """Windows 控制台默认 GBK，模型输出含 ❌ 等 emoji 时会 UnicodeEncodeError。
+
+    对可配置的文本流统一切到 UTF-8 并降级为 replace，保证诊断打印永不中断挖掘。
+    """
+    try:
+        if stream is not None and hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+    except (ValueError, OSError, AttributeError):
+        pass
+    return stream
+
+
 def _fmt_num(value: Any, digits: int = 4) -> str:
     try:
         return f"{float(value):.{digits}g}"

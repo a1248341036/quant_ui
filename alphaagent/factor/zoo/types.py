@@ -1,4 +1,4 @@
-"""因子库核心类型（股票日频 stock_1d）。"""
+"""因子库核心类型（按类别分目录：production_technical / production_fundamental 等）。"""
 
 from __future__ import annotations
 

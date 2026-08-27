@@ -8,3 +8,16 @@ export async function api(path, opts) {
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
+
+// 统一交易参数默认值（从后端 /api/trading-defaults 获取，缓存到模块级）
+let _tradingDefaults = null;
+
+export async function getTradingDefaults() {
+  if (_tradingDefaults) return _tradingDefaults;
+  try {
+    _tradingDefaults = await api('/api/trading-defaults');
+  } catch {
+    _tradingDefaults = {};
+  }
+  return _tradingDefaults;
+}

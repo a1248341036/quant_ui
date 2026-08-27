@@ -163,7 +163,7 @@ def test_first_rebalance_with_warmup(panel):
         start=str(dates30[1].date()), end=str(dates30[-1].date()),
         capital=1_000_000, top_n=1, freq="monthly",
         cash_mode=True, affordable=False, limit_flags=False,
-        buy_cost=0.0008, sell_cost=0.0013,
+        buy_cost=0.0008, sell_cost=0.0013, slippage_bps=0.0,
     )
 
     trades_detail = res["trades_detail"]
@@ -227,6 +227,7 @@ def test_nav_identity(panel):
         start=str(dates30[2].date()), end=str(dates30[-1].date()),
         capital=1_000_000, top_n=1, freq="monthly",
         cash_mode=True, affordable=False, limit_flags=False,
+        slippage_bps=0.0,
     )
 
     nav = res["nav"]
@@ -299,6 +300,7 @@ def test_benchmark_calculation(panel):
         start=str(dates30[1].date()), end=str(dates30[-1].date()),
         capital=1_000_000, top_n=1, freq="monthly",
         cash_mode=True, affordable=False, limit_flags=False,
+        slippage_bps=0.0,
     )
 
     bench = res["bench"]
@@ -377,7 +379,7 @@ def test_limit_up_rejection():
         start=str(dates[1].date()), end=str(dates[-1].date()),
         capital=1_000_000, top_n=1, freq="monthly",
         cash_mode=True, affordable=False, limit_flags=True,
-        buy_cost=0.0008, sell_cost=0.0013,
+        buy_cost=0.0008, sell_cost=0.0013, slippage_bps=0.0,
     )
 
     rejections = res["rejections"]
@@ -432,7 +434,7 @@ def test_sell_before_buy_order():
         start=str(dates[1].date()), end=str(dates[-1].date()),
         capital=1_000_000, top_n=1, freq="monthly",
         cash_mode=True, affordable=False, limit_flags=False,
-        buy_cost=0.0008, sell_cost=0.0013,
+        buy_cost=0.0008, sell_cost=0.0013, slippage_bps=0.0,
     )
 
     trades_detail = res["trades_detail"]
@@ -447,6 +449,7 @@ def test_sell_before_buy_order():
             start=str(dates[1].date()), end=str(dates[-1].date()),
             capital=1_000_000, top_n=1, freq="daily",
             cash_mode=True, affordable=False, limit_flags=False,
+            slippage_bps=0.0,
         )
         trades_detail = res["trades_detail"]
         sells = [t for t in trades_detail if t["side"] == "sell"]
@@ -504,6 +507,7 @@ def test_no_negative_cash():
         start=str(dates[1].date()), end=str(dates[-1].date()),
         capital=100_000, top_n=3, freq="monthly",  # 小资金 + 多持仓
         cash_mode=True, affordable=False, limit_flags=False,
+        slippage_bps=0.0,
     )
 
     cash_hist = res["cash_history"]
@@ -551,7 +555,7 @@ def test_fee_calculation():
         start=str(dates[1].date()), end=str(dates[-1].date()),
         capital=1_000_000, top_n=1, freq="monthly",
         cash_mode=True, affordable=False, limit_flags=False,
-        buy_cost=buy_cost, sell_cost=sell_cost,
+        buy_cost=buy_cost, sell_cost=sell_cost, slippage_bps=0.0,
     )
 
     trades_detail = res["trades_detail"]

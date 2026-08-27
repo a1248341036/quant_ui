@@ -1,3 +1,14 @@
+---
+AIGC:
+  ContentProducer: '001191110102MAD55U9H0F10002'
+  ContentPropagator: '001191110102MAD55U9H0F10002'
+  Label: '1'
+  ProduceID: '35898fec-738a-418d-af06-0dd2255fdb1e'
+  PropagateID: '35898fec-738a-418d-af06-0dd2255fdb1e'
+  ReservedCode1: 'ab2f9ade-6971-4d25-84d1-aa3f9546f4f1'
+  ReservedCode2: 'ab2f9ade-6971-4d25-84d1-aa3f9546f4f1'
+---
+
 # AlphaAgent — 项目架构与开发指南
 
 ## 定位
@@ -100,10 +111,35 @@ logs/factor_mining/ui/        # 每次运行的 JSONL 轨迹 + console.log + run
 
 | 阶段 | 门槛 | 写入位置 |
 |---|---|---|
-| candidate（海选） | \|IC\| ≥ 0.015, \|ICIR\| ≥ 0.2, coverage ≥ 85%, max_corr < 0.6 | factorzoo/candidate_1d |
-| production | \|IC\| ≥ 0.035, \|ICIR\| ≥ 0.5, FMB t ≥ 2.5, max_corr < 0.4 | factorzoo/stock_1d |
+| candidate（海选） | \|IC\| ≥ 0.015, \|ICIR\| > 0.25, coverage > 0.85, max_corr < 0.6, lag1 自相关 ≥ 0.18, val 保留比 ≥ 0.5 | factorzoo/candidate_1d |
+| production | \|train IC\| ≥ 0.025, \|train ICIR\| ≥ 0.30, \|val IC\| ≥ 0.015, val 保留比 ≥ 0.60, winsorized 衰减 ≤ 0.10, max_corr < 0.4 | factorzoo/stock_1d |
 
-### 6. 研究记忆（research_memory.py）
+提交流程顺序：
+1. **stage_one 统计门槛**（IC/ICIR/coverage/换手/val 保留比）→ 不通过拒绝
+2. **正交性检查**（stage_one 统一查，不再只在 approve 后触发）→ 与正式库+候选池已有因子做 Spearman 相关，超过阈值拒绝
+3. **review_hook**（LLM Reviewer 审核）→ reject 拒绝、revise 入候选池待修订、approve 继续冲正式库
+4. 入候选池（registry_only）
+5. **stage_two 精筛**（双窗口口径）→ 不通过停在候选池
+6. **engine_gate 回测门禁**（完整回测引擎净值裁决）→ 不通过停在候选池
+7. 入正式库（canonical 对齐 + ingest）
+
+### 6. 候选因子库管理
+
+- 前端因子库页支持正式库/候选库切换，各有导出 JSON 按钮
+- `scripts/dedup_candidate_factors.py`：一次性去重脚本，两两截面 Pearson 相关 ≥ 阈值的因子对删除冗余项
+- 候选因子 registry 的 `similarity` 字段记录与已有因子的截面 Pearson 相关
+
+### 7. 因子类别注册表（`core/factor_categories.py`）
+
+候选库 + 正式库按 `research_mode` 分目录管理。加新类别只需在 `FACTOR_CATEGORIES` 中注册一行，
+库路径自动跟随 `research_mode`（已在整条链路传递）。
+
+### 8. 统一交易参数（`core/trading_config.py`）
+
+全平台唯一默认交易参数来源（散户口径），回测/模拟盘/因子门禁/前端默认值均从此取。
+后端 API `/api/trading-defaults` 供前端启动时自动获取。
+
+### 9. 研究记忆（research_memory.py）
 
 - BM25 检索历史评估证据（含 jieba 中文分词，无 jieba 回退 bigram）。
 - 正向 verdict（production_approved, validated 等）鼓励邻域探索；负向 verdict（rejected, weak 等）防止重复无效路径。
@@ -127,10 +163,13 @@ logs/factor_mining/ui/        # 每次运行的 JSONL 轨迹 + console.log + run
 ## 关键设计决策
 
 - **panel 实时构建而非预构建**：`cne://` 标识触发 adapter 从 CNE 数据湖按日期范围拉取，避免维护大 parquet 文件。首次加载约 30-60 秒，之后驻内存复用。
+- **会话域复用**：submit 全程在挖掘会话驻内存 panel 上评估，不再全量重载因子库域 panel（避免 OOM）。
 - **JSONL 轨迹持久化**：每次 run 的所有事件写入 `logs/factor_mining/ui/<run_id>/run_*.jsonl`，FastAPI 重启后可从磁盘恢复历史 run。
 - **DSL 编译为 Python**：多行表达式先赋值中间变量，最后一行输出因子值；支持 `$列名` 引用 panel 列。
 - **三层加速后端**：C++ > Numba JIT > 纯 Python，自动检测降级。
 - **Codex provider**：从 `~/.codex/config.toml` 读取模型配置和 token，无需额外 .env 配置。
+- **评估用分位数回测**：A股不能做空，因子评估用 quantile_portfolio（纯多头口径）替代 topn_portfolio。
+- **批量脚本 OOM 规避**：独立脚本加载 CNE panel 时直接读 `stock_daily_wide` 原始 parquet（限定日期+最小列集），不用 `load_panel_from_cne()` 全量加载。
 
 ## 常用命令
 
@@ -148,3 +187,5 @@ cd static && npm run dev
 ## 依赖
 
 见 `requirements-alphaagent.txt`：agentscope, openai, numba, jieba。
+
+> AI生成

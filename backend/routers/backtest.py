@@ -17,6 +17,7 @@ from core.composites import (FACTOR_OPTIONS, delete_composite,
                              load_composites, save_composite)
 from core.data import load_signal_panel
 from core.engine import latest_signals, run_backtest
+from core import trading_config
 from core.event_engine import run_event_backtest
 from core.fund_engine import run_fund_backtest
 from core.performance import quantstats_html
@@ -166,65 +167,68 @@ class BacktestRequest(BaseModel):
     universe: str = "科技TMT"
     strategy: str = "低换手冷门"
     top_n: int = 3
-    capital: float = 5000.0
+    capital: float = trading_config.COMPARE_CAPITAL
     freq: str = "monthly"
     start: str
     end: str
     exclude_kechuang: bool = True
     affordable: bool = True
-    amount_q: float = 0.2   # am20 成交额分位过滤，旧脚本口径 0.2
-    warmup_days: int | None = 400  # 因子预热天数，短窗口动量因子需预热
-    cash_mode: bool = True  # 现金/整手执行模型（与模拟盘同口径）
-    limit_flags: bool = True  # 涨跌停过滤：涨停不可买入、跌停不可卖出
-    slippage_bps: float = 0.0  # 固定滑点（基点），买入价=开盘×(1+bps/1e4)
-    max_participation: float = 0.0  # 流动性约束：单笔买入 <= 20日均成交额×该比例
-    max_weight: float | None = None  # 单票权重上限，None 表示不限制
-    lot_size: int = 100
-    buy_cost: float = 0.0008
-    sell_cost: float = 0.0013
+    amount_q: float = trading_config.AMOUNT_Q
+    warmup_days: int | None = trading_config.WARMUP_DAYS
+    cash_mode: bool = trading_config.CASH_MODE
+    limit_flags: bool = trading_config.LIMIT_FLAGS
+    slippage_bps: float = trading_config.SLIPPAGE_BPS
+    max_participation: float = trading_config.MAX_PARTICIPATION
+    max_weight: float | None = None
+    lot_size: int = trading_config.LOT_SIZE
+    buy_cost: float = trading_config.BUY_COST
+    sell_cost: float = trading_config.SELL_COST
     spread_bps: float | None = None
     min_commission: float | None = None
-    industry_cap: int | None = None  # 行业分散：每行业最多选 N 只
-    analyze: bool = False   # 额外输出 IC/分组因子质量分析
-    composite_weights: dict[str, float] | None = None  # 多因子自由组合权重
+    impact_coef: float = 0.0
+    impact_vol: float = 0.02
+    industry_cap: int | None = None
+    analyze: bool = False
+    composite_weights: dict[str, float] | None = None
     composite_directions: dict[str, bool] | None = None
-    composite_name: str | None = None  # 组合显示名（可选）
-    long_short: bool | None = None  # 多空对冲：多头 TopN + 空头最弱 N 只
-    short_n: int | None = None  # 空头只数（默认同 top_n）
-    short_cost_rate: float | None = None  # 空头年化融券费率
-    industry_neutral: bool | None = None  # 行业中性化选股
-    use_financial: bool = False  # 使用财务因子（PG fina_indicator/income）
-    risk_neutral: bool = False  # 风格+行业风险中性化，并返回期末风险归因
-    adx_filter: float | None = None  # ADX 趋势强度过滤：信号日 ADX >= 阈值才允许买入
-    chandelier_mult: float = 0.0  # ATR Chandelier 出场乘数（0=关闭）
+    composite_name: str | None = None
+    long_short: bool | None = None
+    short_n: int | None = None
+    short_cost_rate: float | None = None
+    industry_neutral: bool | None = None
+    use_financial: bool = False
+    risk_neutral: bool = False
+    adx_filter: float | None = None
+    min_score: float | None = None
+    chandelier_mult: float = 0.0
     chandelier_period: int = 22
-    regime_adx: float | None = None  # 市场 ADX 低于该阈值时降仓
+    regime_adx: float | None = None
     regime_scale: float = 0.5
-    alpha_factor_id: str | None = None  # AlphaAgent 因子库 ID，选中后用 DSL 因子回测
-    alpha_library: str = "production"  # 因子库: production / candidate
-    alpha_ascending: bool = False  # AlphaAgent 因子方向：False=买高，True=买低
+    alpha_factor_id: str | None = None
+    alpha_library: str = "production"
+    alpha_ascending: bool = False
 
 
 class CompareRequest(BaseModel):
     universe: str = "科技TMT"
     strategies: list[str] = ["低换手冷门", "反转 20 日", "低波动"]
-    top_n: int = 3
-    capital: float = 5000.0
+    top_n: int = trading_config.COMPARE_TOP_N
+    capital: float = trading_config.COMPARE_CAPITAL
     freq: str = "monthly"
     start: str
     end: str
     exclude_kechuang: bool = True
     affordable: bool = True
-    amount_q: float = 0.2
-    warmup_days: int | None = 400
-    cash_mode: bool = True
-    limit_flags: bool = True
-    slippage_bps: float = 0.0
-    max_participation: float = 0.0
+    amount_q: float = trading_config.AMOUNT_Q
+    warmup_days: int | None = trading_config.WARMUP_DAYS
+    cash_mode: bool = trading_config.CASH_MODE
+    limit_flags: bool = trading_config.LIMIT_FLAGS
+    slippage_bps: float = trading_config.SLIPPAGE_BPS
+    max_participation: float = trading_config.MAX_PARTICIPATION
     max_weight: float | None = None
-    lot_size: int = 100
-    buy_cost: float = 0.0008
-    sell_cost: float = 0.0013
+    lot_size: int = trading_config.LOT_SIZE
+    buy_cost: float = trading_config.BUY_COST
+    sell_cost: float = trading_config.SELL_COST
     spread_bps: float | None = None
     min_commission: float | None = None
     adx_filter: float | None = None
@@ -354,6 +358,13 @@ def backtest(req: BacktestRequest):
             adx_filter = float(strat["adx_filter"])
         except (TypeError, ValueError):
             pass
+    min_score = req.min_score
+    if (min_score is None and strat is not None
+            and strat.get("min_score") is not None):
+        try:
+            min_score = float(strat["min_score"])
+        except (TypeError, ValueError):
+            pass
     is_fund = _is_fund(req.universe)
     if _is_etf(req.universe) and (
         req.industry_cap or req.industry_neutral or req.risk_neutral
@@ -370,8 +381,8 @@ def backtest(req: BacktestRequest):
     data_version = (str(data["fund_nav"]["date"].max().date())
                     if is_fund and len(data["fund_nav"])
                     else str(panel["date"].max().date()))
-    fund_cost = is_fund and req.buy_cost == 0.0008 and req.sell_cost == 0.0013
-    etf_cost = _is_etf(req.universe) and req.buy_cost == 0.0008 and req.sell_cost == 0.0013
+    fund_cost = is_fund and req.buy_cost == trading_config.BUY_COST and req.sell_cost == trading_config.SELL_COST
+    etf_cost = _is_etf(req.universe) and req.buy_cost == trading_config.BUY_COST and req.sell_cost == trading_config.SELL_COST
     if is_fund:
         res = run_fund_backtest(
             nav=data["fund_nav"],
@@ -429,6 +440,8 @@ def backtest(req: BacktestRequest):
             max_weight=req.max_weight,
             spread_bps=req.spread_bps,
             min_commission=req.min_commission,
+            impact_coef=req.impact_coef,
+            impact_vol=req.impact_vol,
             lot_size=req.lot_size,
             buy_cost=0.0003 if etf_cost else req.buy_cost,
             sell_cost=0.0003 if etf_cost else req.sell_cost,
@@ -445,6 +458,7 @@ def backtest(req: BacktestRequest):
             use_financial=req.use_financial,
             risk_neutral=req.risk_neutral,
             adx_filter=adx_filter,
+            min_score=min_score,
         chandelier_mult=req.chandelier_mult,
         chandelier_period=req.chandelier_period,
         regime_adx=req.regime_adx,
@@ -724,21 +738,21 @@ class AttributionRequest(BaseModel):
     code: str
     strategy: str
     universe: str = "科技TMT"
-    capital: float = 5000.0
+    capital: float = trading_config.COMPARE_CAPITAL
     start: str
     end: str
     exclude_kechuang: bool = True
     affordable: bool = True
-    amount_q: float = 0.2
-    warmup_days: int | None = 400
-    cash_mode: bool = True
-    limit_flags: bool = True
+    amount_q: float = trading_config.AMOUNT_Q
+    warmup_days: int | None = trading_config.WARMUP_DAYS
+    cash_mode: bool = trading_config.CASH_MODE
+    limit_flags: bool = trading_config.LIMIT_FLAGS
     max_weight: float | None = None
-    lot_size: int = 100
-    slippage_bps: float = 0.0
-    max_participation: float = 0.0
-    buy_cost: float = 0.0008
-    sell_cost: float = 0.0013
+    lot_size: int = trading_config.LOT_SIZE
+    slippage_bps: float = trading_config.SLIPPAGE_BPS
+    max_participation: float = trading_config.MAX_PARTICIPATION
+    buy_cost: float = trading_config.BUY_COST
+    sell_cost: float = trading_config.SELL_COST
 
 
 def _compute_signals(universe, strategy, top_n, composite_weights=None,
@@ -1072,7 +1086,7 @@ def backtest_quantstats(req: BacktestRequest):
             fund_names=services.get_fund_name_map(),
         )
     else:
-        etf_cost = _is_etf(req.universe) and req.buy_cost == 0.0008 and req.sell_cost == 0.0013
+        etf_cost = _is_etf(req.universe) and req.buy_cost == trading_config.BUY_COST and req.sell_cost == trading_config.SELL_COST
         res = run_backtest(
             panel=panel, codes=codes, factor=strat["factor"],
             ascending=strat["ascending"], start=req.start, end=req.end,

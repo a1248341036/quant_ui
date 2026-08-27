@@ -11,6 +11,7 @@ from typing import Literal
 
 import pandas as pd
 
+from . import trading_config
 
 AssetType = Literal["stock", "etf", "fund_nav"]
 
@@ -30,8 +31,10 @@ class AssetExecutionProfile:
 
 
 STOCK_PROFILE = AssetExecutionProfile(
-    "stock", "A股股票", 100, 0.0008, 0.0013, True, True,
-    "T+1、整手、涨跌停和停牌规则由交易执行层处理。",
+    "stock", "A股股票", trading_config.LOT_SIZE,
+    trading_config.BUY_COST, trading_config.SELL_COST, True, True,
+    "T+1、整手、涨跌停和停牌规则由交易执行层处理；散户口径佣金万2.5/万12.5（统一配置 core/trading_config.py）。",
+    min_commission=5.0,
 )
 ETF_PROFILE = AssetExecutionProfile(
     "etf", "场内ETF", 100, 0.0003, 0.0003, False, True,

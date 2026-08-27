@@ -5,7 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from alphaagent.factor.types import DEFAULT_LABEL_COL
+from alphaagent.factor.types import (
+    DEFAULT_LABEL_COL,
+    DEFAULT_TRAIN_END,
+    DEFAULT_TRAIN_START,
+    DEFAULT_VAL_END,
+    DEFAULT_VAL_START,
+)
 
 
 @dataclass
@@ -13,10 +19,10 @@ class StockEvalContext:
     """一次挖掘会话的数据与标签配置。"""
 
     panel_path: Path
-    train_start: str = "2019-01-01"
-    train_end: str = "2021-12-31"
-    val_start: str = "2022-01-01"
-    val_end: str = "2023-12-31"
+    train_start: str = DEFAULT_TRAIN_START
+    train_end: str = DEFAULT_TRAIN_END
+    val_start: str = DEFAULT_VAL_START
+    val_end: str = DEFAULT_VAL_END
     label_col: str = DEFAULT_LABEL_COL
     include_fundamentals: bool = True
     """是否载入基本面列（``funda_*``）。挖价量因子时可关闭以省内存。"""

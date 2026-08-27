@@ -39,7 +39,13 @@ from alphaagent.factor.mining.agentscope_run import run_factor_mining_agentscope
 from alphaagent.factor.mining.context import StockEvalContext  # noqa: E402
 from alphaagent.factor.mining.research_spec import load_research_spec, research_policy_prompt  # noqa: E402
 from alphaagent.factor.mining.seed_factors import build_user_message_with_seed_factors  # noqa: E402
-from alphaagent.factor.types import DEFAULT_LABEL_COL  # noqa: E402
+from alphaagent.factor.types import (
+    DEFAULT_LABEL_COL,
+    DEFAULT_TRAIN_END,
+    DEFAULT_TRAIN_START,
+    DEFAULT_VAL_END,
+    DEFAULT_VAL_START,
+)  # noqa: E402
 
 
 def _load_env() -> None:
@@ -50,10 +56,10 @@ def _load_env() -> None:
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="LLM 股票因子挖掘（AgentScope 流式 CLI）")
     p.add_argument("--panel", default="cne://")
-    p.add_argument("--train-start", default="2018-01-01")
-    p.add_argument("--train-end", default="2020-12-31")
-    p.add_argument("--val-start", default="2021-01-01")
-    p.add_argument("--val-end", default="2023-12-31")
+    p.add_argument("--train-start", default=DEFAULT_TRAIN_START)
+    p.add_argument("--train-end", default=DEFAULT_TRAIN_END)
+    p.add_argument("--val-start", default=DEFAULT_VAL_START)
+    p.add_argument("--val-end", default=DEFAULT_VAL_END)
     p.add_argument("--label-col", default=None, help="评估 label 列；缺省时取 ResearchSpec.recommended_label_col")
     p.add_argument(
         "--no-fundamentals",
@@ -61,7 +67,7 @@ def _parse_args() -> argparse.Namespace:
         help="不载入基本面列(funda_*)，省内存；prompt 也会隐藏基本面字段（适合只挖价量因子）",
     )
     p.add_argument("--temperature", type=float, default=None)
-    p.add_argument("--max-tokens", type=int, default=8192)
+    p.add_argument("--max-tokens", type=int, default=16384)  # hy3 thinking 需 >8K
     p.add_argument(
         "--max-turns",
         type=int,
@@ -74,6 +80,12 @@ def _parse_args() -> argparse.Namespace:
     )
     p.add_argument("--max-tool-calls-per-round", type=int, default=8)
     p.add_argument("--max-tool-workers", type=int, default=4)
+    p.add_argument(
+        "--population-max",
+        type=int,
+        default=24,
+        help="种群批量筛选(propose_population)单轮候选上限；0=关闭路径B",
+    )
     p.add_argument(
         "--max-parallel-eval",
         type=int,
@@ -203,6 +215,7 @@ def main() -> int:
         max_turns=args.max_turns,
         max_tool_calls_per_round=args.max_tool_calls_per_round,
         max_tool_workers=args.max_tool_workers,
+        population_max=args.population_max,
         max_parallel_eval=args.max_parallel_eval,
         min_tool_call_rounds_before_allow_stop=args.min_tool_call_rounds,
         factorlib_path=_resolve(str(args.factorlib)) if args.factorlib else None,

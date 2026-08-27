@@ -8,6 +8,7 @@ import pandas as pd
 from .limit import build_limit_flags
 from .metrics import compute_excess_metrics, compute_metrics, drawdown_series
 from .assets import AssetExecutionProfile, STOCK_PROFILE
+from . import trading_config
 
 
 # ============================================================
@@ -89,6 +90,7 @@ class Context:
         amount_q: float,
         slippage: float = 0.0,
         max_participation: float = 0.0,
+        field_mats: dict[str, np.ndarray] | None = None,
     ):
         self.codes = list(codes)
         self._idx = {c: i for i, c in enumerate(self.codes)}
@@ -98,6 +100,11 @@ class Context:
         self._valid_open = valid_open
         self._turnover = turnover_mat
         self._am20 = am20_mat
+        self._field_mats: dict[str, np.ndarray] = dict(field_mats) if field_mats else {}
+        for name, mat in (("close", close_mat), ("open", open_mat),
+                          ("turnover", turnover_mat), ("am20", am20_mat)):
+            self._field_mats.setdefault(name, mat)
+        self.available_fields: list[str] = sorted(self._field_mats)
         self._limit_up = limit_up
         self._limit_down = limit_down
         self._dates = dates
@@ -151,6 +158,30 @@ class Context:
                     break
         out.reverse()
         return out
+
+    def history(self, code: str, fields: str | list[str],
+                window: int = 20) -> pd.DataFrame:
+        """截至信号日（含）最近 window 个交易日的多字段历史。
+
+        返回 DataFrame：行 = 交易日（旧→新，末行即信号日），列 = 字段。
+        与 close_series 的差异：按日历交易日截窗，停牌/缺失保留 NaN，
+        不做有效值跳过。fields 可为单个字符串或列表；
+        未知字段抛 ValueError（可用字段见 ctx.available_fields）。
+        """
+        k = self._idx.get(code)
+        if k is None:
+            return pd.DataFrame()
+        if isinstance(fields, str):
+            fields = [fields]
+        missing = [f for f in fields if f not in self._field_mats]
+        if missing:
+            raise ValueError(
+                f"history 字段不可用: {missing}；可用字段: {self.available_fields}")
+        if window <= 0 or self.sig < 0:
+            return pd.DataFrame()
+        start = max(0, self.sig - window + 1)
+        data = {f: self._field_mats[f][start:self.sig + 1, k] for f in fields}
+        return pd.DataFrame(data, index=self._dates[start:self.sig + 1])
 
     def is_tradable(self, code: str) -> bool:
         k = self._idx.get(code)
@@ -382,14 +413,14 @@ def run_event_backtest(
     start: str,
     end: str,
     capital: float,
-    buy_cost: float = 0.0008,
-    sell_cost: float = 0.0013,
+    buy_cost: float = trading_config.BUY_COST,
+    sell_cost: float = trading_config.SELL_COST,
     lot_size: int = 100,
     warmup_days: int | None = None,
     amount_q: float = 0.3,
     limit_flags: bool = True,
-    slippage_bps: float = 0.0,
-    max_participation: float = 0.0,
+    slippage_bps: float = trading_config.SLIPPAGE_BPS,
+    max_participation: float = trading_config.MAX_PARTICIPATION,
     short_rate: float = 0.0,
     execution_profile: AssetExecutionProfile | None = None,
 ) -> dict:
@@ -416,34 +447,53 @@ def run_event_backtest(
 
     cal = pd.DatetimeIndex(sorted(sub["date"].unique()))
 
+    for req_col in ("close", "open"):
+        if req_col not in sub.columns:
+            raise ValueError(f"事件回测需要列: {req_col}")
+
     def pivot(col: str) -> pd.DataFrame:
         return sub.pivot_table(index="date", columns="code", values=col,
                                aggfunc="last", observed=True).reindex(cal).sort_index()
 
-    close = pivot("close")
-    open_ = pivot("open")
-    turnover = pivot("turnover")
-    am20 = pivot("am20")
-    codes_used = close.columns.tolist()
-    close_mat = close.values
-    open_mat = open_.values
-    turn_mat = turnover.values
-    am20_mat = am20.values
+    close_df = pivot("close")
+    cols_ref = close_df.columns.tolist()
+    codes_used = cols_ref
+    # 除日期/代码外，全部数值列转成矩阵，供 ctx.history 多字段查询
+    field_mats: dict[str, np.ndarray] = {}
+    for col in sub.columns:
+        if col in ("date", "code"):
+            continue
+        try:
+            arr = pivot(col).to_numpy(dtype=np.float64)
+        except Exception:
+            continue
+        if np.isfinite(arr).any():
+            field_mats[col] = arr
+    missing = [f for f in ("close", "open", "turnover", "am20") if f not in field_mats]
+    if missing:
+        raise ValueError(f"事件回测缺少字段: {missing}")
+
+    close_mat = field_mats["close"]
+    open_mat = field_mats["open"]
+    turn_mat = field_mats["turnover"]
+    am20_mat = field_mats["am20"]
+    df_close = pd.DataFrame(close_mat, index=cal, columns=cols_ref)
+    df_open = pd.DataFrame(open_mat, index=cal, columns=cols_ref)
     valid_close = ~np.isnan(close_mat)
     valid_open = ~np.isnan(open_mat)
 
-    dates = close.index
-    T, K = close.shape
+    dates = close_df.index
+    T, K = close_mat.shape
     if T < 5:
         raise ValueError("数据区间太短")
 
-    open_ff = open_.ffill()
+    open_ff = df_open.ffill()
     o2o = np.nan_to_num(open_ff.pct_change().values, nan=0.0)
     start_idx = int(np.argmax(dates >= start_ts)) if (dates >= start_ts).any() else 0
 
     limit_up = limit_down = None
     if limit_flags:
-        limit_up, limit_down, _, _ = build_limit_flags(close, open_)
+        limit_up, limit_down, _, _ = build_limit_flags(df_close, df_open)
 
     ctx = Context(
         codes=codes_used, close_mat=close_mat, open_mat=open_mat,
@@ -453,6 +503,7 @@ def run_event_backtest(
         dates=dates, capital=capital, buy_cost=buy_cost,
         sell_cost=sell_cost, lot_size=lot_size, amount_q=amount_q,
         slippage=slippage_bps / 1e4, max_participation=max_participation,
+        field_mats=field_mats,
     )
     strategy = strategy_class()
     strategy.init(ctx)

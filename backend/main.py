@@ -54,6 +54,13 @@ def health() -> dict:
     return {"status": "ok"}
 
 
+@app.get("/api/trading-defaults")
+def trading_defaults() -> dict:
+    """返回统一交易参数默认值，供前端初始化表单。"""
+    from core.trading_config import defaults
+    return defaults()
+
+
 static_dir = Path(__file__).resolve().parent.parent / "static" / "dist"
 if static_dir.exists():
     app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")

@@ -887,97 +887,165 @@ def quantile_portfolio_metrics(
     min_stocks: int = 30,
     cost_bps: float = 15.0,
     annualization_factor: float = 252.0,
+    direction: int | None = None,
 ) -> dict[str, Any]:
-    """分位组合评估（纯多头，A股口径）。
+    """分位组合评估（纯多头，A 股口径，方向自适应 + 换手计成本）。
 
-    核心逻辑：
-    - 每日按因子值 N 等分组，取最高组（Q_N）做纯多头等权持有
-    - 全市场等权作为基准
-    - 不涉及做空，完全适配 A 股约束
+    与旧实现的差异：
+    - 方向自适应：未显式传 ``direction`` 时按全样本截面 Rank IC 符号选多头侧
+      （RankIC>=0 买最高组 Q_N；<0 买最低组 Q1）。``top_group_*`` 键恒指
+      多头组合——负 IC 因子不再被系统性判负。
+    - 成本按换手计：每日成本 = cost_bps × 单边换手比例（首日建仓计单边全额，
+      之后双边），不再每天固定扣全额双边费用。cost_bps=0 时为纯毛值口径。
+    - ``monotonicity`` 为方向调整后的单调性（多头侧沿因子方向收益递增为正）；
+      未调向的原始高减低单调性见 ``raw_monotonicity``。
 
-    返回:
-        top_group_*: 最高组（因子值最大）多头组合指标
-        bottom_group_*: 最低组参考指标
-        group_means: 各组全样本平均收益
-        monotonicity: 分组单调性（Spearman rank of group vs mean_ret）
+    参数 ``direction``：+1 买最高组，-1 买最低组；None 表示自动按 Rank IC 判定。
+
+    返回键（供 profile rules 引用）:
+      - top_group_annualized_return / top_group_annualized_excess_return
+      - top_group_gross_excess_return（未扣成本的费前超额）
+      - top_group_sharpe / top_group_excess_sharpe
+      - top_group_max_drawdown / monotonicity / raw_monotonicity
+      - direction / long_side / avg_daily_side_turnover / group_means
     """
-    grp_df = daily_quantile_group_returns(
-        factor, label,
-        time_level=time_level,
-        n_groups=n_groups,
-        min_stocks=min_stocks,
-    )
-    if grp_df.empty or n_groups not in grp_df.columns:
+    if not isinstance(factor.index, pd.MultiIndex):
+        raise ValueError("quantile_portfolio_metrics 需要 MultiIndex 面板 (datetime, instrument)")
+    if time_level not in factor.index.names:
+        raise ValueError(f"索引缺少 level={time_level!r}")
+
+    if direction is None:
+        daily_ric = cross_sectional_rank_ic(factor, label, time_level=time_level)
+        ric_vals = daily_ric[np.isfinite(daily_ric.to_numpy(dtype=float, copy=False))]
+        direction = 1 if len(ric_vals) == 0 or float(ric_vals.mean()) >= 0 else -1
+    direction = 1 if int(direction) >= 0 else -1
+
+    net: list[float] = []
+    excess: list[float] = []
+    gross_excess: list[float] = []
+    high_minus_low: list[float] = []
+    grp_sum: dict[int, float] = {}
+    grp_cnt: dict[int, int] = {}
+
+    prev_members: set | None = None
+    turnover_sum = 0.0
+    n_days = 0
+
+    for ts, f_sub in factor.groupby(level=time_level, sort=False):
+        y_sub = label.xs(ts, level=time_level)
+        xf = f_sub.to_numpy(dtype=np.float64, copy=False)
+        yl = y_sub.to_numpy(dtype=np.float64, copy=False)
+        inst = np.asarray(f_sub.index.get_level_values("instrument"))
+        mask = np.isfinite(xf) & np.isfinite(yl)
+        if int(mask.sum()) < max(min_stocks, n_groups):
+            continue
+        fac, ret, names = xf[mask], yl[mask], inst[mask]
+        try:
+            bins = pd.qcut(fac, n_groups, labels=False, duplicates="drop")
+        except ValueError:
+            bins = pd.qcut(pd.Series(fac).rank(method="first"), n_groups, labels=False, duplicates="drop")
+        b = np.asarray(bins, dtype=float)
+        if not np.isfinite(b).any():
+            continue
+        k = int(np.nanmax(b)) + 1
+        long_bin = k - 1 if direction >= 0 else 0
+        short_bin = 0 if direction >= 0 else k - 1
+        long_mask_arr = b == long_bin
+        if not long_mask_arr.any():
+            continue
+
+        members = set(names[long_mask_arr].tolist())
+        if prev_members is None:
+            side_turnover = 1.0  # 建仓：单边买入
+        else:
+            changed = len(members - prev_members) / max(len(members), 1)
+            side_turnover = 2.0 * changed  # 双边
+        turnover_sum += side_turnover
+        prev_members = members
+        day_cost = cost_bps / 10_000.0 * side_turnover
+
+        def _bin_mean(idx: int) -> float:
+            sel = b == idx
+            return float(ret[sel].mean()) if sel.any() else float("nan")
+
+        long_ret = float(ret[long_mask_arr].mean())
+        universe_ret = float(ret.mean())
+        high_ret, low_ret = _bin_mean(k - 1), _bin_mean(0)
+        if np.isfinite(high_ret) and np.isfinite(low_ret):
+            high_minus_low.append(high_ret - low_ret)
+
+        net.append(long_ret - day_cost)
+        excess.append((long_ret - universe_ret) - day_cost)
+        gross_excess.append(long_ret - universe_ret)
+
+        for g in range(k):
+            sel = b == g
+            if sel.any():
+                key = g + 1
+                grp_sum[key] = grp_sum.get(key, 0.0) + float(ret[sel].sum())
+                grp_cnt[key] = grp_cnt.get(key, 0) + int(sel.sum())
+        n_days += 1
+
+    if n_days == 0:
         return {
-            "n_groups": n_groups,
+            "n_groups": int(n_groups),
             "available": False,
             "error": "insufficient_data",
+            "direction": direction,
         }
 
-    # 最高组和最低组的逐日收益序列
-    top_col = n_groups       # 最高组 = 因子值最大
-    bottom_col = 1           # 最低组 = 因子值最小
+    grp_keys = sorted(grp_sum)
+    group_means_vals = np.array([grp_sum[k2] / grp_cnt[k2] for k2 in grp_keys], dtype=np.float64)
+    raw_monotonicity = float("nan")
+    if len(group_means_vals) >= 3:
+        ranks_g = np.arange(1, len(group_means_vals) + 1, dtype=np.float64)
+        raw_monotonicity = float(spearman_ic(ranks_g, group_means_vals, min_pairs=3))
 
-    top_ret = grp_df[top_col].dropna()
-    bottom_ret = grp_df[bottom_col].dropna()
-
-    # 全市场基准 = 所有组的等权平均（近似全市场等权）
-    universe_ret = grp_df.mean(axis=1).dropna()
-
-    # 交易成本：每日调仓的简化假设（换手≈2.0，双边成本）
-    day_cost = 2.0 * cost_bps / 10_000.0
-    top_net = top_ret - day_cost
-
-    # 超额收益 = 最高组 - 全市场基准
-    # 对齐日期
-    common_idx = top_net.index.intersection(universe_ret.index)
-    top_net_aligned = top_net.loc[common_idx]
-    universe_aligned = universe_ret.loc[common_idx]
-    excess = top_net_aligned - universe_aligned
-
-    def _compound_ann(series: pd.Series) -> float:
-        arr = series.to_numpy(dtype=np.float64)
+    def _compound_ann(series: list[float]) -> float:
+        arr = np.asarray(series, dtype=np.float64)
         if np.any(arr <= -1.0):
             return float("nan")
         return float(np.prod(1.0 + arr) ** (annualization_factor / len(arr)) - 1.0)
 
-    def _sharpe(series: pd.Series) -> float:
-        arr = series.to_numpy(dtype=np.float64)
+    def _sharpe(series: list[float]) -> float:
+        arr = np.asarray(series, dtype=np.float64)
         std = float(arr.std(ddof=1)) if len(arr) > 1 else float("nan")
         if std > 0 and np.isfinite(std):
             return float(arr.mean() / std * math.sqrt(annualization_factor))
         return float("nan")
 
-    def _max_drawdown(series: pd.Series) -> float:
-        arr = series.to_numpy(dtype=np.float64)
+    def _max_drawdown(series: list[float]) -> float:
+        arr = np.asarray(series, dtype=np.float64)
         nav = np.cumprod(1.0 + arr)
         running_max = np.maximum.accumulate(nav)
         drawdowns = 1.0 - nav / running_max
         return float(drawdowns.max()) if len(drawdowns) else float("nan")
 
-    # 分组单调性：Spearman(组号, 组平均收益)
-    group_means_vals = grp_df.mean(axis=0).to_numpy(dtype=np.float64)
-    valid_gm = np.isfinite(group_means_vals)
-    monotonicity = float("nan")
-    if valid_gm.sum() >= 3:
-        ranks_g = np.arange(1, len(group_means_vals) + 1, dtype=np.float64)[valid_gm]
-        monotonicity = float(spearman_ic(ranks_g, group_means_vals[valid_gm], min_pairs=3))
-
     return {
-        "n_groups": n_groups,
+        "n_groups": int(n_groups),
         "available": True,
+        "direction": direction,
+        "long_side": f"Q{n_groups}" if direction >= 0 else "Q1",
+        "cost_model": "per_rebalance_turnover",
         "cost_bps_per_side": float(cost_bps),
-        "n_days": int(len(top_net)),
-        "top_group_annualized_return": _compound_ann(top_net),
+        "avg_daily_side_turnover": round(turnover_sum / max(n_days, 1), 4),
+        "n_days": int(n_days),
+        "top_group_annualized_return": _compound_ann(net),
         "top_group_annualized_excess_return": _compound_ann(excess),
-        "top_group_sharpe": _sharpe(top_net),
+        "top_group_gross_excess_return": _compound_ann(gross_excess),
+        "top_group_sharpe": _sharpe(net),
         "top_group_excess_sharpe": _sharpe(excess),
-        "top_group_max_drawdown": _max_drawdown(top_net),
-        "top_group_daily_mean": float(top_net.mean()) if len(top_net) else float("nan"),
-        "bottom_group_annualized_return": _compound_ann(bottom_ret - day_cost),
-        "bottom_group_daily_mean": float((bottom_ret - day_cost).mean()) if len(bottom_ret) else float("nan"),
-        "group_means": {int(g): float(v) for g, v in zip(grp_df.columns, group_means_vals)},
-        "monotonicity": monotonicity,
-        "spread_daily_mean": float((top_ret - bottom_ret).mean()) if len(top_ret) else float("nan"),
-        "spread_annualized": _compound_ann(top_ret - bottom_ret) if len(top_ret) else float("nan"),
+        "top_group_max_drawdown": _max_drawdown(net),
+        "top_group_daily_mean": float(np.mean(net)) if net else float("nan"),
+        "bottom_group_gross_annualized_return": (
+            _compound_ann([-v for v in high_minus_low])
+            if direction >= 0 else _compound_ann(list(high_minus_low))
+        ),
+        "group_means": {int(k2): float(grp_sum[k2] / grp_cnt[k2]) for k2 in grp_keys},
+        "monotonicity": (
+            float(direction * raw_monotonicity) if np.isfinite(raw_monotonicity) else float("nan")
+        ),
+        "raw_monotonicity": raw_monotonicity,
+        "spread_daily_mean": float(np.mean(high_minus_low)) if high_minus_low else float("nan"),
+        "spread_annualized": _compound_ann(high_minus_low) if high_minus_low else float("nan"),
     }

@@ -50,7 +50,7 @@ def _parse_args() -> argparse.Namespace:
         help="不载入基本面列(funda_*)，省内存；prompt 也会隐藏基本面字段",
     )
     p.add_argument("--temperature", type=float, default=None)
-    p.add_argument("--max-tokens", type=int, default=8192)
+    p.add_argument("--max-tokens", type=int, default=16384)  # hy3 thinking 需 >8K
     p.add_argument("--max-turns", type=int, default=10)
     p.add_argument("--max-tool-calls-per-round", type=int, default=8)
     p.add_argument("--max-tool-workers", type=int, default=4)

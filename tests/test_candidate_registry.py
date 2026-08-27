@@ -10,7 +10,7 @@ from alphaagent.factor.types import IngestPolicy
 
 
 def test_candidate_registry_is_value_free(tmp_path: Path) -> None:
-    root = tmp_path / "candidate_1d"
+    root = tmp_path / "candidate_technical"
     policy = IngestPolicy(train_start="2020-01-01", val_end="2024-12-31")
 
     _, dsl = write_candidate_registry(

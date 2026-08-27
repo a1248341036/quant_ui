@@ -41,3 +41,19 @@ static/dist/
 # AlphaAgent artifacts
 artifacts/
 alphaagent/__pycache__/
+
+# Temporary experiment outputs
+pytmp/
+
+# Backtest result data (keep code, not CSV/JSON outputs)
+strategies/ricequant/baseline*/
+strategies/ricequant/__pycache__/
+
+# Misc temporary files
+baseline_failures.txt
+
+# Documents and images (not source code)
+*.docx
+*.jpg
+*.jpeg
+*.png

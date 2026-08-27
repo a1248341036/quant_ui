@@ -126,7 +126,7 @@ export default {
         universe: '科技TMT',
         strategies: ['低换手冷门', '反转 20 日', '低波动', '动量 20 日'],
         top_n: 3,
-        capital: 5000,
+        capital: 100000,
         start_date: '',
         end_date: '',
         bench: '沪深300',

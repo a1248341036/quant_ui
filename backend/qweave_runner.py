@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from core import trading_config
 from scripts.qweave_research import ALPHA_SETS, build_alphas, load_panel, to_qweave_df
 
 
@@ -269,13 +270,13 @@ def run(req: dict) -> dict:
             max_positions=req.get("max_positions"),
             freq=req.get("freq", "weekly"), affordable=bool(req.get("affordable", True)),
             amount_q=float(req.get("amount_q", 0.2)), warmup_days=0,
-            slippage_bps=float(req.get("slippage_bps", 0.0)),
-            max_participation=float(req.get("max_participation", 0.0)),
+            slippage_bps=float(req.get("slippage_bps", trading_config.SLIPPAGE_BPS)),
+            max_participation=float(req.get("max_participation", trading_config.MAX_PARTICIPATION)),
             spread_bps=req.get("spread_bps"),
             min_commission=req.get("min_commission"),
             max_weight=req.get("max_weight"),
-            buy_cost=float(req.get("buy_cost", 0.0008)),
-            sell_cost=float(req.get("sell_cost", 0.0013)),
+            buy_cost=float(req.get("buy_cost", trading_config.BUY_COST)),
+            sell_cost=float(req.get("sell_cost", trading_config.SELL_COST)),
             industry_map=services.get_industry_map() if req.get("industry_cap") else None,
             industry_cap=req.get("industry_cap"), external_scores=score_matrix,
             execution_profile=ETF_PROFILE if str(req.get("universe")) == "ETF" else STOCK_PROFILE,

@@ -46,6 +46,7 @@ _DATASET_FILES: dict[str, tuple[str, str | None, str, str]] = {
     "fund_bars": ("fund/fund_panel.parquet", "date", "code", "parquet"),
     "fund_nav": ("fund/fund_nav.parquet", "date", "code", "parquet"),
     "fund_list": ("fund/fund.csv", None, "code", "csv"),
+    "fund_fees": ("fund/fund_fee.parquet", None, "code", "parquet"),
 }
 
 
@@ -184,6 +185,32 @@ class LocalAssetsAdapter:
         except Exception as exc:
             logger.warning("local_assets coverage_bounds failed for %s: %s", dataset, exc)
             return None, None
+
+
+    # ── write protocol (compactable: fund_nav) ─────────────────────────
+
+    # fund_nav is the only dataset this adapter owns writes for. The target is
+    # a single parquet file: every year group from ``_compact_yearly_file``
+    # resolves to the same path, and the sequential anti-join merges compose
+    # correctly because each call re-reads the file the previous one wrote.
+    _COMPACTABLE_DATASETS = frozenset({"fund_nav"})
+
+    def compact_layout(self) -> str:
+        return "yearly_file"
+
+    def compact_pk(self, dataset: str) -> list[str]:
+        return ["code", "date"]
+
+    def compact_target(self, config: Config, dataset: str, trade_date: date) -> Path:
+        if dataset not in self._COMPACTABLE_DATASETS:
+            raise RuntimeError(
+                f"local_assets adapter does not own writes for {dataset!r}"
+            )
+        root: str | Path | None = getattr(config, "external_local_assets_root", None)
+        if root is None:
+            raise RuntimeError("external_local_assets_root not configured")
+        rel_path, *_rest = _DATASET_FILES[dataset]
+        return Path(root) / rel_path
 
 
 # Module-level singleton for auto-discovery.

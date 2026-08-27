@@ -4,16 +4,22 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from alphaagent.factor.types import DEFAULT_LABEL_COL
+from alphaagent.factor.types import (
+    DEFAULT_LABEL_COL,
+    DEFAULT_TRAIN_END,
+    DEFAULT_TRAIN_START,
+    DEFAULT_VAL_END,
+    DEFAULT_VAL_START,
+)
 
 
 @dataclass
 class SessionCreateRequest:
     panel_path: str
-    train_start: str = "2019-01-01"
-    train_end: str = "2021-12-31"
-    val_start: str = "2022-01-01"
-    val_end: str = "2023-12-31"
+    train_start: str = DEFAULT_TRAIN_START
+    train_end: str = DEFAULT_TRAIN_END
+    val_start: str = DEFAULT_VAL_START
+    val_end: str = DEFAULT_VAL_END
     label_col: str = DEFAULT_LABEL_COL
     include_fundamentals: bool = True
 

@@ -75,7 +75,7 @@ CNEquity 从 A 股开始，解决的是一件很具体的事：把分散在不�
 | **L1 · 行情** | | | | | |
 | `adj_factors` | 复权因子 | sina | — | 可回补 | — |
 | `commodity_bars` ○ | 商品期货主连 | sina | eastmoney | 可回补 | macro_risk |
-| `daily_bars` | 日线 | tdx_protocol | eastmoney | 可回补 | core |
+| `daily_bars` | 日线 | tushare_wide | — | 可回补 | core |
 | `delisting_events` | 退市事件 | derived | — | 可回补 | — |
 | `index_bars` | 指数日线 | tdx_protocol | eastmoney | 可回补 | core |
 | `minute_bars` ○ | 1 分钟线 | tdx_protocol | — | 可回补 | intraday |
@@ -125,28 +125,28 @@ CNEquity 从 A 股开始，解决的是一件很具体的事：把分散在不�
 | 数据集 | 说明 | 主源 | 备源 | 历史 | 日更组 |
 |---|---|---|---|---|---|
 | `alpha_panel_1d` | AlphaAgent 日频因子面板 | alphaagent | — | 只读 | external |
-| `balancesheet` | 资产负债表宽表 | pg_parquet | — | 只读 | external |
-| `cashflow` | 现金流量表宽表 | pg_parquet | — | 只读 | external |
-| `dividend` | 分红事件 | pg_parquet | — | 只读 | external |
-| `etf_bars` | ETF 日线面板 | local_assets | — | 只读 | external |
+| `balancesheet` | 资产负债表宽表 | tushare | — | 只读 | external |
+| `cashflow` | 现金流量表宽表 | tushare | — | 只读 | external |
+| `dividend` | 分红事件 | tushare | — | 只读 | external |
+| `etf_bars` | ETF 日线面板 | tushare | — | 只读 | external |
 | `etf_list` | ETF 列表 | local_assets | — | 快照 | external |
-| `express` | 业绩快报 | pg_parquet | — | 只读 | external |
-| `fina_indicator` | 财务指标宽表 | pg_parquet | — | 只读 | external |
-| `forecast` | 业绩预告/预测 | pg_parquet | — | 只读 | external |
-| `fund_bars` | 基金日线面板 | local_assets | — | 只读 | external |
+| `express` | 业绩快报 | tushare | — | 只读 | external |
+| `fina_indicator` | 财务指标宽表 | tushare | — | 只读 | external |
+| `forecast` | 业绩预告/预测 | tushare | — | 只读 | external |
+| `fund_bars` | 基金日线面板 | tushare | — | 只读 | external |
 | `fund_list` | 基金列表 | local_assets | — | 快照 | external |
-| `fund_nav` | 基金净值面板 | local_assets | — | 只读 | external |
-| `income` | 利润表宽表 | pg_parquet | — | 只读 | external |
-| `index_bars_local` | 本地指数日线 | local_assets | — | 只读 | external |
+| `fund_nav` | 基金净值面板 | akshare | — | 只读 | external |
+| `income` | 利润表宽表 | tushare | — | 只读 | external |
 | `instruments_external` | 证券主数据快照 | pg_parquet | — | 快照 | external |
-| `namechange` | 证券更名历史 | pg_parquet | — | 只读 | external |
-| `report_rc` | 报告/研报记录 | pg_parquet | — | 只读 | external |
-| `share_float_external` | 股份变动/解禁宽表 | pg_parquet | — | 只读 | external |
-| `stk_surv` | 舆情/生存研究面板 | pg_parquet | — | 只读 | external |
-| `stock_panel` | 股票研究面板 | local_assets | — | 只读 | external |
-| `stock_predictions` | 模型预测面板 | local_assets | — | 只读 | external |
-| `stock_universe` | 研究 universe | local_assets | — | 快照 | external |
+| `namechange` | 证券更名历史 | tushare | — | 只读 | external |
+| `report_rc` | 报告/研报记录 | tushare | — | 只读 | external |
+| `share_float_external` | 股份变动/解禁宽表 | tushare | — | 只读 | external |
+| `stk_surv` | 舆情/生存研究面板 | tushare | — | 只读 | external |
 | `trading_calendar_external` | 交易日历 | pg_parquet | — | 只读 | external |
+| `fund_fees` | 基金费率 | akshare | — | 快照 | external |
+| `index_bars_external` | 指数日K线（本地CSV） | local_index | — | 增量 | external |
+| `sentiment_articles` | 舆情文章（东财个股新闻+情感打分） | eastmoney | — | snapshot | curated |
+| `stock_daily_wide` | Tushare日行宽表（含复权因子/市值/ST） | tushare_wide | — | 增量 | external |
 
 ○ 表示可选数据集，空表不算异常。逐项说明见[数据集目录](docs/datasets/catalog.md)，源端限制见[数据源说明](docs/datasets/sources.md)。
 

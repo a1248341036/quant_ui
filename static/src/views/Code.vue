@@ -120,7 +120,7 @@ export default {
         strategy: '', strategies: [],
         universe: '沪深300+中证500+中证1000', alpha_set: 'alpha158', alpha_limit: 30,
         horizonsText: '1,5,10,20', quantiles: 10, min_cs_count: 30, cost_bps: 8,
-        start: '2022-01-01', end: today(), exclude: true, score_factor: '', top_n: 10, selection_mode: 'top_n', selection_pct: 0.10, min_positions: 1, max_positions: null, capital: 100000, freq: 'weekly', amount_q: 0.2, buy_cost_pct: 0.08, sell_cost_pct: 0.13, slippage_bps: 0, max_participation: 0,
+        start: '2022-01-01', end: today(), exclude: true, score_factor: '', top_n: 10, selection_mode: 'top_n', selection_pct: 0.10, min_positions: 1, max_positions: null, capital: 100000, freq: 'weekly', amount_q: 0.2, buy_cost_pct: 0.025, sell_cost_pct: 0.125, slippage_bps: 3, max_participation: 0.10,
         savedName: '', savedList: [],
       },
       codeResult: null, codeRunning: false, codeError: '', codeSaveMsg: '',

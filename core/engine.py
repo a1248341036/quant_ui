@@ -9,8 +9,9 @@ import pandas as pd
 from .limit import build_limit_flags
 from .metrics import compute_excess_metrics, compute_metrics, drawdown_series
 from .assets import AssetExecutionProfile, STOCK_PROFILE
+from . import trading_config
 from .execution import ETFExecutionAdapter, FundNavExecutionAdapter, StockExecutionAdapter
-from .selection import PortfolioBuilder
+from .selection import PortfolioBuilder, SelectionPolicy
 
 
 def _compute_atr(high: pd.DataFrame, low: pd.DataFrame, close: pd.DataFrame,
@@ -44,6 +45,7 @@ def build_factor_frames(close: pd.DataFrame, am20: pd.DataFrame,
                         turn20: pd.DataFrame,
                         financial: dict[str, pd.DataFrame] | None = None,
                         asset_type: str = "stock",
+                        volume: pd.DataFrame | None = None,
                         ) -> dict[str, pd.DataFrame]:
     """构建因子矩阵。
 
@@ -129,6 +131,8 @@ def build_factor_frames(close: pd.DataFrame, am20: pd.DataFrame,
     else:
         # 股票/ETF：全量因子
         composite = am20.rank(axis=1) + vol20.rank(axis=1)
+        # 趋势突破强度：收盘相对前20日最高价的突破幅度，>0 表示创20日新高
+        brk20 = close / close.shift(1).rolling(20).max() - 1.0
         frames = {
             "mom20": mom20,
             "mom60": mom60,
@@ -141,7 +145,13 @@ def build_factor_frames(close: pd.DataFrame, am20: pd.DataFrame,
             "ma_cross10_30": ma_cross10_30,
             "ma_cross20_60": ma_cross20_60,
             "ma_cross20_30": ma_cross20_30,
+            "brk20": brk20,
         }
+        if volume is not None:
+            # 放量确认突破：量比 = 当日成交量 / 20日均量。
+            # 缩量突破（量比 < 1.5）视为无效信号置 NaN，被有效性过滤剔除。
+            vratio = volume / volume.rolling(20, min_periods=15).mean()
+            frames["brk20_vol"] = brk20.where(vratio >= 1.5)
         if financial:
             for name, mat in financial.items():
                 if name not in frames:
@@ -252,16 +262,16 @@ def run_backtest(
     capital: float,
     top_n: int,
     freq: str = "monthly",
-    buy_cost: float = 0.0008,
-    sell_cost: float = 0.0013,
+    buy_cost: float = trading_config.BUY_COST,
+    sell_cost: float = trading_config.SELL_COST,
     amount_q: float = 0.3,
     affordable: bool = True,
     lot_size: int = 100,
     warmup_days: int | None = None,
     cash_mode: bool = True,
     limit_flags: bool = True,
-    slippage_bps: float = 0.0,
-    max_participation: float = 0.0,
+    slippage_bps: float = trading_config.SLIPPAGE_BPS,
+    max_participation: float = trading_config.MAX_PARTICIPATION,
     max_weight: float | None = None,
     industry_map: dict[str, str] | None = None,
     industry_cap: int | None = None,
@@ -285,10 +295,13 @@ def run_backtest(
     selection_pct: float = 0.10,
     min_positions: int = 1,
     max_positions: int | None = None,
+    min_score: float | None = None,
     execution_profile: AssetExecutionProfile | None = None,
     share_classes: dict[str, str] | None = None,
     spread_bps: float | None = None,
     min_commission: float | None = None,
+    impact_coef: float = 0.0,
+    impact_vol: float = 0.02,
 ) -> dict:
     """事件驱动回测：T+1、一手 100 股、费用、可承载性过滤。
 
@@ -362,6 +375,7 @@ def run_backtest(
     turn20 = pivot("turn20")
     high = pivot("high") if "high" in sub.columns else None
     low = pivot("low") if "low" in sub.columns else None
+    volume_w = pivot("volume") if "volume" in sub.columns else None
     # 新上市/新发代码可能在部分因子矩阵中无列（如 am20 全 NaN 被 pivot 丢弃），
     # 统一对齐到 close 列，缺失列补 NaN 后由 valid 掩码过滤为不可交易。
     open_ = open_.reindex(columns=close.columns)
@@ -405,7 +419,7 @@ def run_backtest(
 
     def _default_builder(c: pd.DataFrame, a: pd.DataFrame, t: pd.DataFrame):
         return build_factor_frames(c, a, t, financial=financial_frames,
-                                   asset_type=_asset_type)
+                                   asset_type=_asset_type, volume=volume_w)
 
     builder = factor_builder or _default_builder
     factors = builder(close, am20, turn20)
@@ -519,6 +533,14 @@ def run_backtest(
     nav = np.ones(T)
     bench = np.ones(T)
     portfolio_builder = PortfolioBuilder(codes_used, industry_map, industry_cap)
+    # 选股策略对象：把散装选股参数收拢，选股逻辑统一走 build_targets
+    selection_policy = SelectionPolicy(
+        count_mode=selection_mode, top_n=top_n, pct=selection_pct,
+        min_positions=min_positions, max_positions=max_positions,
+        ascending=ascending, min_score=min_score,
+        industry_cap=industry_cap,
+        regime_adx=regime_adx, regime_scale=regime_scale,
+    )
     hold = np.zeros(K)
     holdings_history = []
     trades: list[dict] = []
@@ -561,6 +583,7 @@ def run_backtest(
             max_participation=max_participation,
             spread_bps=spread_bps,
             min_commission=min_commission,
+            impact_coef=impact_coef, impact_vol=impact_vol,
         )
         if adapter_cls is FundNavExecutionAdapter:
             # 传入 A/C 类信息，供申购费率判断
@@ -613,17 +636,14 @@ def run_backtest(
                 chosen_list: list[int] = []
                 if len(cand) > 0:
                     scores = fmat[sig, cand]
-                    chosen_list = portfolio_builder.rank_select(
-                        cand, scores, ascending, top_n, selection_mode,
-                        selection_pct, min_positions, max_positions,
-                    )
+                    market_adx = (float(np.nanmedian(adx_mat[sig]))
+                                  if (selection_policy.regime_adx is not None
+                                      and adx_mat is not None) else None)
+                    chosen_list, sel_targets = portfolio_builder.build_targets(
+                        selection_policy, cand, scores, market_adx)
+                    targets.update(sel_targets)
                     if chosen_list:
-                        targets.update(portfolio_builder.equal_weights(chosen_list))
                         last_chosen = [codes_used[k] for k in chosen_list]
-                    if regime_adx is not None and adx_mat is not None:
-                        ma = float(np.nanmedian(adx_mat[sig]))
-                        if np.isfinite(ma) and ma < regime_adx:
-                            targets = {k: v * regime_scale for k, v in targets.items()}
 
                 pv = _portfolio_value(sig)
                 signal_d = dates[sig].date().isoformat()
@@ -745,6 +765,11 @@ def run_backtest(
                         else:
                             cand = np.array([], dtype=int)
                             scores = np.array([])
+                    if len(cand) > 0:
+                        gated = selection_policy.gate(cand, scores)
+                        if len(gated) > 0:
+                            scores = scores[np.isin(cand, gated)]
+                            cand = gated
                     if len(cand) > 0:
                         long_n = PortfolioBuilder.selection_count(
                             len(cand), top_n, selection_mode, selection_pct,
@@ -904,6 +929,7 @@ def latest_signals(panel: pd.DataFrame, codes: list[str], factor: str,
     turnover = pivot("turnover")
     high = pivot("high") if "high" in sub.columns else None
     low = pivot("low") if "low" in sub.columns else None
+    volume_sig = pivot("volume") if "volume" in sub.columns else None
     adx_row = None
     if adx_filter is not None and high is not None and low is not None:
         high = high.reindex(columns=close.columns)
@@ -923,7 +949,8 @@ def latest_signals(panel: pd.DataFrame, codes: list[str], factor: str,
             financial_frames = None
     factors = build_factor_frames(close, am20, turn20,
                                   financial=financial_frames,
-                                  asset_type=asset_type)
+                                  asset_type=asset_type,
+                                  volume=volume_sig)
     _inject_pred_factor(factors, close, factor, factor_weights)
     _ensure_ma_cross_factor(factors, close, factor)
     last_date = close.index[-1]

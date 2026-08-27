@@ -10,8 +10,12 @@ import numpy as np
 if TYPE_CHECKING:
     from alphaagent.factor.mining.context import StockEvalContext
 
-DEFAULT_TRAIN_START = "2019-01-01"
-DEFAULT_VAL_END = "2024-12-31"
+# 全局统一挖掘窗口（后端 API / CLI / 兜底默认共用这一份）：
+# train 2018-2022，val 2023-2025。改窗口只改这里。
+DEFAULT_TRAIN_START = "2018-01-01"
+DEFAULT_TRAIN_END = "2022-12-31"
+DEFAULT_VAL_START = "2023-01-01"
+DEFAULT_VAL_END = "2025-12-31"
 DEFAULT_LABEL_COL = "label_1d_open_to_open"
 DEFAULT_MAX_CS_CORR = 0.8
 DEFAULT_SIMILAR_TOP_K = 3

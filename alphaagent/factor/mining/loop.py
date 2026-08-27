@@ -117,7 +117,7 @@ def run_trajectory(
     max_tool_workers: int = 4,
     min_tool_call_rounds_before_allow_stop: int = 3,
     temperature: float | None = None,
-    max_tokens: int = 8192,
+    max_tokens: int = 16384,  # hy3 thinking 需 >8K
     extra_body: dict[str, Any] | None = None,
     printer: ConsolePrinter | None = None,
 ) -> list[dict[str, Any]]:

@@ -1,6 +1,6 @@
 # 数据集目录
 
-cnequity 交付 **65 个注册数据集**：42 个原生 curated/derived 数据集，另有 23 个外部只读桥接（`external`）。原生数据按选股用途分为 L0–L8 九类；外部桥接同样进入查询、catalog 和 dashboard，但物理文件和字段契约由对应 adapter 管理。日内数据集 `minute_bars` / `minute_bars_5m` 默认关闭，需在 `[minute_bars]` 显式开启；分笔 `trade_ticks` 同样默认关闭，开关在**独立的** `[trade_ticks]`。
+cnequity 交付 **65 个注册数据集**：55 个原生 curated/derived 数据集，另有 10 个外部桥接（`external`）。原生数据按选股用途分为 L0–L8 九类；外部桥接同样进入查询、catalog 和 dashboard，但物理文件和字段契约由对应 adapter 管理。日内数据集 `minute_bars` / `minute_bars_5m` 默认关闭，需在 `[minute_bars]` 显式开启；分笔 `trade_ticks` 同样默认关闭，开关在**独立的** `[trade_ticks]`。
 
 权威字段定义：[schema.md](schema.md)。逐源限制：[sources.md](sources.md)。
 
@@ -179,9 +179,9 @@ bars_15m = (
 | instruments_external | —（单文件） | adapter contract | by_date | — | pg_parquet | 只读股票主数据快照 |
 | trading_calendar_external | trade_date（按年） | adapter contract | by_date | — | pg_parquet | 只读交易日历 |
 | namechange | start_date（按年） | adapter contract | by_date | — | pg_parquet | 只读证券更名历史 |
-| stock_universe | —（单文件） | adapter contract | by_date | — | local_assets | 只读研究 universe |
 | etf_list | —（单文件） | adapter contract | by_date | — | local_assets | 只读 ETF 列表 |
 | fund_list | —（单文件） | adapter contract | by_date | — | local_assets | 只读基金列表 |
+| fund_fees | —（单文件） | code | by_date | — | akshare | 基金费率参考表；step_fund_fees 每周合并进单文件 parquet |
 
 ---
 
@@ -199,12 +199,12 @@ bars_15m = (
 | commodity_bars | trade_date | symbol, trade_date | by_date | ✓ | eastmoney+sina | 国内主连 + COMEX金 `GC0.CMX`；`cne backfill commodity_bars`；required=false |
 | adj_factors | trade_date | symbol, trade_date, adjust_type | derived | ✓ | sina | 仅 hfq；`cne derive adj_factors` |
 | delisting_events | —（单文件 merge） | symbol | derived | — | sina | 每只退市股的结尾形态；`cne delisted backfill` 产出 |
-| stock_panel | date | adapter contract | by_date | — | local_assets | 只读股票研究面板 |
-| index_bars_local | date | adapter contract | by_date | — | local_assets | 只读本地指数日线 |
 | etf_bars | date | adapter contract | by_date | — | local_assets | 只读 ETF 日线面板 |
 | fund_bars | date | adapter contract | by_date | — | local_assets | 只读基金日线面板 |
-| fund_nav | date | adapter contract | by_date | — | local_assets | 只读基金净值面板 |
+| fund_nav | date | code, date | by_date | ✓ | akshare | EM 快照 staging→compact 写回 `fund/fund_nav.parquet`（local_assets 适配器写协议） |
 | alpha_panel_1d | date | adapter contract | by_date | — | alphaagent | AlphaAgent 日频因子/特征面板 |
+| index_bars_external | date | adapter contract | by_date | — | local_index | 指数日K线（本地CSV） |
+| stock_daily_wide | trade_date | adapter contract | by_date | ✓ | tushare_wide | Tushare日行宽表（含复权因子/市值/ST） |
 
 ---
 
@@ -291,8 +291,8 @@ bars_15m = (
 | news_headlines | publish_date | news_id | snapshot | ✓ | eastmoney | 新闻标题 |
 | flash_news_wire | publish_date | wire_id, wire_source | snapshot | ✓ | eastmoney | 7×24 快讯线 |
 | economic_calendar | event_date（按年） | event_id | snapshot | ✓ | —（源已下线） | EM `RPT_ECONOMICCALENDAR` 已退役（code 9501），保留 schema 等替代源；`required=false`，空表不判 UNHEALTHY |
-| stock_predictions | date | adapter contract | by_date | — | local_assets | 只读模型预测面板 |
 | stk_surv | surv_date（按年） | adapter contract | by_date | — | pg_parquet | 只读舆情/生存研究宽表 |
+| sentiment_articles | publish_date | article_id | snapshot | ✓ | eastmoney | 舆情文章（东财个股新闻+情感打分） |
 
 `sector_bars` 日更只有当日 OHLC；历史由 `cne backfill sector_bars` 一次性写入（国内网络或代理）。
 海外一键脚本见引擎 `scripts/china_egress_backfill.sh`（含 `trading_status` ST 回填）。

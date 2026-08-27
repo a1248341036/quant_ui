@@ -293,9 +293,11 @@ class FactorEvalTools:
 
                         "description": (
 
-                            "【两阶段交付】先以 |IC|>=0.015、ICIR>0.2、coverage>0.85、max_cs_corr<0.6 写入候选池；"
-
-                            "再以 |IC|>=0.03、ICIR>0.5、多头年化超额>3%、截尾后 IC 衰减<=10%、max_cs_corr<0.5 入正式库。"
+                            "【两阶段交付】候选池：train 窗口 |IC|>=0.015、ICIR>0.25、coverage>0.85、"
+                            "cs_autocorr>=0.18、val 保留比>=0.5、max_cs_corr<0.6。"
+                            "正式库：train |IC|>=0.025 且 ICIR>0.30、val |IC|>=0.015 且保留比>=0.6、"
+                            "截尾 IC 衰减<=10%、max_cs_corr<0.5，最后 engine_gate 净值回测裁决"
+                            "（weekly 全约束：净超额年化>=3%、超额夏普>=0.5、回撤<=40%、重合率>=0.5）。"
 
                             "仅正式库成功时 stored=true；候选池成功时 candidate_stored=true。"
 

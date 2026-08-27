@@ -16,7 +16,13 @@ class MiningConfig:
     eval: StockEvalContext
     model: str = "gpt-4o-mini"
     temperature: float | None = None
-    max_tokens: int = 8192
+    max_tokens: int = 16384  # hy3 推理模型 thinking 约耗 8K，8192 会截断 tool_calls
+    model_max_retries: int = 10
+    """单次 LLM 调用的重试次数（框架默认 3）。抖动型代理/上游需要更大韧性。"""
+    model_retry_delay: float = 5.0
+    """重试间隔秒数（框架默认 1.0）；配合指数外的大间隔穿透上游抖动。"""
+    population_max: int = 24
+    """种群批量筛选（propose_population）单轮候选上限；0 = 关闭路径 B。"""
     max_turns: int = 16
     max_tool_calls_per_round: int = 8
     max_tool_workers: int = 4

@@ -23,18 +23,19 @@ import pandas as pd
 from . import sqldb as pg
 from .limit import build_limit_flags
 from .store import DATA_DIR, normalize_universe
+from . import trading_config
 
 
 PAPER_DIR = DATA_DIR / "paper"
 PAPER_FILE = PAPER_DIR / "paper_store.json"
 
 DEFAULT_RISK = {
-    "buy_cost": 0.0008,
-    "sell_cost": 0.0013,
+    "buy_cost": trading_config.BUY_COST,
+    "sell_cost": trading_config.SELL_COST,
     "spread_bps": 0.0,
     "min_commission": 0.0,
-    "lot_size": 100,
-    "amount_q": 0.2,
+    "lot_size": trading_config.LOT_SIZE,
+    "amount_q": trading_config.AMOUNT_Q,
     "max_weight": 0.5,
 }
 
@@ -778,8 +779,8 @@ def _execute_rebalance(
 ) -> dict:
     """在 exec_ts 开盘执行目标权重，返回 {positions, cash, orders, events}。"""
     risk = {**DEFAULT_RISK, **(acc.get("risk_config") or {})}
-    buy_cost = float(risk.get("buy_cost", 0.0008))
-    sell_cost = float(risk.get("sell_cost", 0.0013))
+    buy_cost = float(risk.get("buy_cost", trading_config.BUY_COST))
+    sell_cost = float(risk.get("sell_cost", trading_config.SELL_COST))
     lot = int(risk.get("lot_size", 100))
     amount_q = float(risk.get("amount_q", 0.2))
     max_weight = float(risk.get("max_weight", 0.5))
@@ -1107,11 +1108,11 @@ def _run_one_event(
             start=_event_bt_start(panel, start_date, warmup_days),
             end=exec_ts.date().isoformat(),
             capital=float(acc["capital"]),
-            buy_cost=float(risk.get("buy_cost", 0.0008)),
-            sell_cost=float(risk.get("sell_cost", 0.0013)),
-            lot_size=int(risk.get("lot_size", 100)),
+            buy_cost=float(risk.get("buy_cost", trading_config.BUY_COST)),
+            sell_cost=float(risk.get("sell_cost", trading_config.SELL_COST)),
+            lot_size=int(risk.get("lot_size", trading_config.LOT_SIZE)),
             warmup_days=warmup_days,
-            amount_q=float(risk.get("amount_q", 0.2)),
+            amount_q=float(risk.get("amount_q", trading_config.AMOUNT_Q)),
             limit_flags=not is_etf,
             slippage_bps=float(risk.get("slippage_bps", 0.0) or 0.0),
             max_participation=float(risk.get("max_participation", 0.0) or 0.0),
@@ -1249,10 +1250,10 @@ def _run_one_factor(
             capital=float(acc["capital"]),
             top_n=int(acc["top_n"]),
             freq=str(acc.get("freq", "monthly")),
-            buy_cost=float(risk.get("buy_cost", 0.0008)),
-            sell_cost=float(risk.get("sell_cost", 0.0013)),
-            lot_size=int(risk.get("lot_size", 100)),
-            amount_q=float(risk.get("amount_q", 0.2)),
+            buy_cost=float(risk.get("buy_cost", trading_config.BUY_COST)),
+            sell_cost=float(risk.get("sell_cost", trading_config.SELL_COST)),
+            lot_size=int(risk.get("lot_size", trading_config.LOT_SIZE)),
+            amount_q=float(risk.get("amount_q", trading_config.AMOUNT_Q)),
             warmup_days=warmup_days,
             cash_mode=True,
             limit_flags=bool(risk.get("limit_flags", True)) and not is_etf,

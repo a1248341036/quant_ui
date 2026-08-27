@@ -48,6 +48,8 @@ class _CashExecutionAdapter:
         max_participation: float,
         spread_bps: float = 0.0,
         min_commission: float = 0.0,
+        impact_coef: float = 0.0,
+        impact_vol: float = 0.02,
     ) -> None:
         self.codes = codes
         self.open_mat = open_mat
@@ -64,6 +66,19 @@ class _CashExecutionAdapter:
         self.max_participation = float(max_participation)
         self.spread = float(spread_bps) / 1e4
         self.min_commission = max(float(min_commission), 0.0)
+        # 平方根冲击模型：impact = impact_coef * impact_vol * sqrt(成交额/ADV)。
+        # impact_coef=0 时关闭；impact_vol 为代表性日波动率（默认2%）。
+        self.impact_coef = max(float(impact_coef), 0.0)
+        self.impact_vol = max(float(impact_vol), 1e-6)
+
+    def _impact(self, trade_value: float, adv_value: float | None) -> float:
+        """按本单金额占20日均成交额的比例返回冲击率（小数）。"""
+        if (self.impact_coef <= 0 or not np.isfinite(trade_value)
+                or trade_value <= 0 or adv_value is None
+                or not np.isfinite(adv_value) or adv_value <= 0):
+            return 0.0
+        return float(self.impact_coef * self.impact_vol
+                     * np.sqrt(trade_value / adv_value))
 
     def _fee(self, amount: float, rate: float) -> float:
         return max(amount * rate, self.min_commission) if amount > 0 else 0.0
@@ -151,6 +166,10 @@ class StockExecutionAdapter(_CashExecutionAdapter):
                 })
                 continue
             px = float(self.open_mat[exec_idx, k]) * (1.0 - self.slippage - self.spread)
+            impact = self._impact(shares * px,
+                                  float(self.am20_mat[signal_idx, k])
+                                  if np.isfinite(self.am20_mat[signal_idx, k]) else None)
+            px *= (1.0 - impact)
             amount = shares * px
             fee = self._fee(amount, self.sell_cost)
             result.cash += amount - fee
@@ -196,11 +215,16 @@ class StockExecutionAdapter(_CashExecutionAdapter):
                     "status": "rejected", "reason": "无成交量",
                 })
                 continue
-            px = float(self.open_mat[exec_idx, k]) * (1.0 + self.slippage + self.spread)
             pct = targets[k]
             if max_weight:
                 pct = min(pct, float(max_weight))
             budget = portfolio_value * pct
+            px = float(self.open_mat[exec_idx, k]) * (1.0 + self.slippage + self.spread)
+            # 冲击按目标预算额近似（整手股数未定前的名义金额）
+            impact = self._impact(budget,
+                                  float(self.am20_mat[signal_idx, k])
+                                  if np.isfinite(self.am20_mat[signal_idx, k]) else None)
+            px *= (1.0 + impact)
             gross = px * (1.0 + self.buy_cost)
             want_lots = int(budget // gross // self.lot_size)
             cash_lots = int(result.cash // gross // self.lot_size)

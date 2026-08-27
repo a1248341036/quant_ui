@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Refresh OTC fund fee data from AkShare/Eastmoney.
+"""[DEPRECATED 2026-08-25] 基金费率刷新已迁移至 CNE 流水线 step_fund_fees。
 
-The bulk endpoint supplies the current purchase fee. Management, custody,
-sales-service and redemption rules are read from each fund's fee page and
-cached in data/fund_fee.csv. Existing successful rows are kept unless
---refresh-existing is supplied.
+CNE 的 signals wave 每周自动执行：EM 快照批量申购费 + 增量补抓详情页，
+原子合并进 data/fund/fund_fee.parquet。本脚本保留仅作手动兜底，
+不再被任何计划任务或 refresh_data 调用。运行会继续写旧版 CSV，
+与新的 parquet 目标互不影响但内容会分叉——非必要不要使用。
 """
 from __future__ import annotations
 

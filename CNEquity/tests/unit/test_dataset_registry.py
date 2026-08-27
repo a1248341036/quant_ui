@@ -8,6 +8,7 @@ from cnequity.domain.datasets import (
     TIERS,
     WATERMARK_SKIP,
     curated_dataset_names,
+    compactable_external_datasets,
     datasets_by_tier,
     derived_dataset_names,
     external_dataset_names,
@@ -57,7 +58,14 @@ def test_primary_key_columns_exist_in_schema():
 
 def test_legacy_tables_match_registry():
     # Guards against editing the derived dicts instead of the specs.
-    assert set(PARTITION_COLS) == set(curated_dataset_names())
+    # PARTITION_COLS drives staging→compact, so it covers curated datasets
+    # with a partition key AND compactable-external ones (e.g. daily_bars
+    # via tushare_wide). instruments is curated but a single-file merge,
+    # so it intentionally has no partition column.
+    assert set(PARTITION_COLS) == (
+        {n for n in curated_dataset_names() if DATASETS[n].partition_col}
+        | set(compactable_external_datasets())
+    )
     assert WATERMARK_SKIP == {
         "financial_statement_items",
         "institutional_holdings",
@@ -71,6 +79,21 @@ def test_legacy_tables_match_registry():
         "shareholder_counts",
         "top_holders",
         "share_unlock_schedule",
+        # Tushare fundamentals/events tables keyed by report period or
+        # effective date (end_date / start_date / surv_date): a trade-date
+        # watermark would advance on every disclosure batch and lie about
+        # freshness.
+        "balancesheet",
+        "income",
+        "cashflow",
+        "fina_indicator",
+        "forecast",
+        "express",
+        "dividend",
+        "namechange",
+        "report_rc",
+        "stk_surv",
+        "share_float_external",
     }
     assert set(FETCH_SEMANTICS) == {
         "trading_status",
@@ -87,6 +110,9 @@ def test_legacy_tables_match_registry():
         "news_headlines",
         "flash_news_wire",
         "economic_calendar",
+        # Rolling recent-window feed: the source only serves the latest pages,
+        # so a gap-walk would replay stale pages into missed sessions.
+        "sentiment_articles",
     }
     assert fetch_semantics("fund_flow") == "snapshot"
     assert fetch_semantics("trading_status") == "snapshot"
@@ -109,6 +135,13 @@ def test_layer_partitions():
         "share_structure",
         "shareholder_counts",
         "top_holders",
+        # Tushare statement/event tables keyed by report period (end_date):
+        # disclosure lags the period end by weeks to months.
+        "balancesheet",
+        "dividend",
+        "cashflow",
+        "income",
+        "fina_indicator",
     }
     assert get_dataset("daily_bars").partition_col == "trade_date"
 

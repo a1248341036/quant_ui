@@ -63,6 +63,25 @@ def materialize_factor(expr: str, panel: pd.DataFrame) -> MaterializeResult:
     return MaterializeResult(values=values, expr=expr.strip(), aux_tags=tags)
 
 
+def align_values_to_rows(values_by_key: pd.Series, rows: pd.DataFrame) -> np.ndarray:
+    """按 (datetime, instrument) 把会话域因子值重排到目标行序（缺失 → NaN）。
+
+    用于 submit 的会话域复用：挖掘 panel 与因子库 canonical 行集不必相同，
+    相似度抽样与入库前对齐都通过本函数完成键映射。
+    """
+    src_dt = pd.to_datetime(values_by_key.index.get_level_values("datetime"))
+    src_inst = values_by_key.index.get_level_values("instrument").astype(str)
+    src = pd.Series(
+        np.asarray(values_by_key, dtype=np.float32),
+        index=pd.MultiIndex.from_arrays([src_dt, src_inst], names=["datetime", "instrument"]),
+    )
+    tgt_dt = pd.to_datetime(rows["datetime"], errors="coerce")
+    tgt_inst = rows["instrument"].astype(str)
+    target = pd.MultiIndex.from_arrays([tgt_dt, tgt_inst], names=["datetime", "instrument"])
+    aligned = src.reindex(target)
+    return aligned.to_numpy(dtype=np.float32)
+
+
 def materialize_to_canonical(
     expr: str,
     panel: pd.DataFrame,
@@ -199,9 +218,10 @@ def ingest_factor(
     factor_id: str,
     name: str,
     expr: str,
-    panel: pd.DataFrame,
+    panel: pd.DataFrame | None = None,
     policy: IngestPolicy | None = None,
     stored_values: np.ndarray | None = None,
+    metrics_override: dict[str, Any] | None = None,
     label_col: str = DEFAULT_INGEST_POLICY.label_col,
     clip_pct: tuple[float, float] | None = None,
     mask_before_start: str | None = None,
@@ -213,8 +233,23 @@ def ingest_factor(
     overwrite: bool = False,
     dry_run: bool = False,
     update_similarity: bool = True,
+    compute_similarity: bool = True,
 ) -> IngestResult:
-    """单因子：物化 → [可选 clip] → mask → eval 指标 → 查重 → 入库。"""
+    """单因子：物化 → [可选 clip] → mask → eval 指标 → 查重 → 入库。
+
+    ``compute_similarity=False`` 跳过与因子库的相似度对比（仅允许配合
+    ``dry_run=True`` 使用）：调用方可在统计门槛前置检查通过后再单独计算，
+    避免 IC 不达标的候选白算最贵的相似度循环。
+
+    两种调用形态：
+    - 常规：传 ``panel``，内部物化并计算指标；
+    - 会话域复用：传 canonical 长度的 ``stored_values`` + ``metrics_override``
+      （panel 可为 None），跳过重复物化与指标计算。
+    """
+    if not compute_similarity and not dry_run:
+        raise ValueError("compute_similarity=False 仅支持 dry_run=True")
+    if stored_values is not None and panel is None and metrics_override is None:
+        raise ValueError("stored_values 不带 panel 时必须提供 metrics_override")
     if policy is not None:
         pol = policy
     else:
@@ -235,7 +270,10 @@ def ingest_factor(
         mat_expr = expr
         aux_tags = collect_aux_intervals_from_expr(expr)
         clip_extra = {"clip_lower_pct": None, "clip_upper_pct": None}
-    metrics = compute_ingest_metrics(stored_values, panel, pol)
+    if metrics_override is not None:
+        metrics = dict(metrics_override)
+    else:
+        metrics = compute_ingest_metrics(stored_values, panel, pol)
     extra: dict[str, Any] = {
         **clip_extra,
         "aux_tags": aux_tags,
@@ -249,7 +287,7 @@ def ingest_factor(
     if existing is None:
         max_corr = 0.0
         neighbor_report: dict[str, Any] | None = None
-        if zoo.n_factors > 0:
+        if compute_similarity and zoo.n_factors > 0:
             sim = SimilarityMatrix(zoo.paths, zoo.manifest.max_factors)
             neighbor_report = sim.cross_sectional_neighbor_report(
                 zoo, stored_values, top_k=pol.similar_top_k, min_pairs=similar_min_pairs

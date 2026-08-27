@@ -50,6 +50,7 @@
           <label class="field-check"><input type="checkbox" v-model="bt.exclude"> 剔除科创/创业</label>
           <label class="field-check"><input type="checkbox" v-model="bt.affordable"> 一手过滤</label>
           <label class="field"><span>成交额分位</span><input type="number" v-model.number="bt.amount_q" step="0.05" min="0" max="1"></label>
+          <label class="field"><span>信号阈值</span><input type="number" v-model.number="bt.min_score" step="0.01" placeholder="留空不启用"></label>
         </div>
       </div>
       <div class="form-section">
@@ -263,7 +264,7 @@
 
 <script>
 import { store } from '../store/index.js'
-import { api } from '../utils/api.js'
+import { api, getTradingDefaults } from '../utils/api.js'
 import { fmt, pct, sign, stock, metricText, sortCompare } from '../utils/format.js'
 import { today } from '../utils/format.js'
 import { renderLine, renderMonthlyHeatmap } from '../utils/charts.js'
@@ -273,7 +274,7 @@ export default {
   data() {
     return {
       store,
-      bt: { universe: '科技TMT', strategy: '低换手冷门', top_n: 3, capital: 5000, freq: 'monthly', start: '2026-02-02', end: today(), exclude: true, affordable: true, amount_q: 0.2, warmup_days: 400, long_short: false, neutral: false, risk_neutral: false, use_financial: false, short_n: 3, short_rate: 8.6, industry_cap: 0, analyze: false, bench: '沪深300', useAlphaFactor: false, alphaFactorId: '', alphaLibrary: 'production', alphaAscending: false },
+      bt: { universe: '科技TMT', strategy: '低换手冷门', top_n: 3, capital: 100000, freq: 'monthly', start: '2026-02-02', end: today(), exclude: true, affordable: true, amount_q: 0.2, min_score: null, warmup_days: 400, long_short: false, neutral: false, risk_neutral: false, use_financial: false, short_n: 3, short_rate: 8.6, industry_cap: 0, analyze: false, bench: '沪深300', useAlphaFactor: false, alphaFactorId: '', alphaLibrary: 'production', alphaAscending: false },
       btSub: 'bt',
       btResult: null,
       btRunning: false,
@@ -290,6 +291,10 @@ export default {
       sweepError: '',
       sweepSort: { key: 'mean_sharpe', dir: 'desc' },
     };
+  },
+  async mounted() {
+    const d = await getTradingDefaults();
+    if (d && d.capital) this.bt.capital = d.capital;
   },
   watch: {
     'bt.strategy'(name) {
@@ -317,6 +322,7 @@ export default {
       this.bt.long_short = !!s.long_short;
       this.bt.short_n = s.short_n || 3;
       this.bt.short_rate = Math.round(((s.short_cost_rate || 0) * 100) * 10) / 10;
+      this.bt.min_score = (s.min_score != null ? s.min_score : null);
     },
     async runBacktest() {
       this.btRunning = true; this.btError = '';
@@ -327,6 +333,7 @@ export default {
           industry_neutral: this.bt.neutral,
           short_cost_rate: (this.bt.short_rate || 0) / 100,
           industry_cap: this.bt.industry_cap > 0 ? this.bt.industry_cap : null,
+          min_score: (this.bt.min_score === '' || this.bt.min_score == null) ? null : Number(this.bt.min_score),
           analyze: !!this.bt.analyze,
         };
         // AlphaAgent 因子模式：传 alpha_factor_id，策略字段留空

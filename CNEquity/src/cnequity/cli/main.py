@@ -1649,6 +1649,7 @@ def clean(
 def catalog(config_path: str):
     """List registered datasets with the same stats as the dashboard."""
     cfg = _cfg(config_path)
+    from cnequity.domain.datasets import DATASETS
     from cnequity.serve.lake import LakeView
 
     rows = LakeView(cfg).datasets()
@@ -1658,7 +1659,14 @@ def catalog(config_path: str):
         row_count = row["row_count"]
         # Dashboard rollups depend on meta/stats. Keep catalog useful on a new
         # lake by filling only missing native stats from Parquet footers.
-        if row["layer"] != "external" and (file_count is None or row_count is None):
+        # Compactable-external datasets qualify too: their compact step
+        # mirrors fresh partitions into curated/, so footers describe real
+        # data even though the layer is "external".
+        spec = DATASETS.get(row["dataset"])
+        fill_from_footers = row["layer"] != "external" or (
+            spec is not None and spec.compactable
+        )
+        if fill_from_footers and (file_count is None or row_count is None):
             base = cfg.derived_root if row["layer"] == "derived" else cfg.curated_root
             files = list((base / row["dataset"]).glob("**/*.parquet"))
             file_count = len(files)

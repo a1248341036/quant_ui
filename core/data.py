@@ -655,7 +655,7 @@ def load_index() -> pd.DataFrame:
         except Exception as exc:
             print(f"[cne] CNE 指数加载失败，回退 CSV: {exc}", file=sys.stderr)
     if INDEX_FILE.exists():
-        idx = pd.read_csv(INDEX_FILE)
+        idx = pd.read_parquet(INDEX_FILE)
     elif INDEX_PATH.exists():
         idx = pd.read_csv(INDEX_PATH)
     else:
@@ -713,10 +713,10 @@ def data_status() -> dict:
             "全市场权益类场外基金（股票/混合/指数/QDII）", "天天基金（akshare）", "一键更新")),
         ("fund_fee", _file_entry(
             "基金费率", FUND_FEE_FILE,
-            "申购、管理、托管、销售服务及赎回费率", "天天基金（akshare）", "一键更新 / refresh_fund_fees.py")),
+            "申购、管理、托管、销售服务及赎回费率", "天天基金（akshare）", "CNE 流水线 / step_fund_fees（每周）")),
         ("fund_nav", _file_entry(
             "场外基金净值", FUND_NAV_FILE,
-            "逐只基金单位净值历史", "天天基金（akshare）", "一键更新")),
+            "逐只基金单位净值历史", "天天基金快照（akshare）", "CNE 流水线 / step_fund_nav")),
         ("fund_panel", _file_entry(
             "基金衍生面板", FUND_PANEL_FILE,
             "由基金净值派生，供统一回测引擎使用", "本地派生", "一键更新 / refresh_data.py")),

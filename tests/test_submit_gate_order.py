@@ -70,7 +70,7 @@ def submit_env(monkeypatch, tmp_path):
 
     service = FactorSubmitService(
         FakeService(),
-        factorlib_path=tmp_path / "stock_1d",
+        factorlib_path=tmp_path / "production_technical",
         registry_path=tmp_path / "registry.json",
         expr_dir=tmp_path / "expressions",
         repo_root=tmp_path,

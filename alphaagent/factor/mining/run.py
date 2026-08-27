@@ -16,6 +16,7 @@ from alphaagent.factor.mining.operators import list_operator_names
 from alphaagent.factor.mining.prompts import build_system_prompt
 from alphaagent.factor.mining.submit import FactorSubmitService, default_factorlib_path
 from alphaagent.factor.mining.tools import FactorEvalTools
+from core import factor_categories
 
 
 def _repo_root() -> Path:
@@ -53,15 +54,17 @@ def run_factor_mining(
     )
 
     submit_service: FactorSubmitService | None = None
-    lib_path = (config.factorlib_path or default_factorlib_path(root)).resolve()
-    registry_path = config.registry_path or lib_path / "mining_delivered_registry.json"
-    expr_dir = config.expr_dir or lib_path / "expressions"
+    research_mode = (config.research_spec or {}).get("research_mode", "technical")
+    lib_path = (config.factorlib_path or factor_categories.production_dir(research_mode)).resolve()
+    registry_path = config.registry_path or factor_categories.production_registry_path(research_mode)
+    expr_dir = config.expr_dir or factor_categories.production_expr_dir(research_mode)
     submit_service = FactorSubmitService(
         service,
         factorlib_path=lib_path,
-        registry_path=registry_path if registry_path.is_absolute() else root / registry_path,
-        expr_dir=expr_dir if expr_dir.is_absolute() else root / expr_dir,
+        registry_path=registry_path if Path(registry_path).is_absolute() else root / Path(registry_path),
+        expr_dir=expr_dir if Path(expr_dir).is_absolute() else root / Path(expr_dir),
         repo_root=root,
+        research_mode=research_mode,
         max_cs_corr=config.max_cs_corr,
         similar_top_k=config.similar_top_k,
         overwrite=config.ingest_overwrite,

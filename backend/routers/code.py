@@ -12,6 +12,8 @@ from pathlib import Path
 from fastapi import APIRouter
 from pydantic import BaseModel
 
+from core import trading_config
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 LABS_DIR = PROJECT_ROOT / "labs"
@@ -30,19 +32,19 @@ class RunRequest(BaseModel):
     strategy: str = ""
     universe: str = "科技TMT"
     top_n: int = 3
-    capital: float = 5000.0
+    capital: float = trading_config.CAPITAL
     freq: str = "monthly"
     start: str = ""
     end: str = ""
     exclude_kechuang: bool = True
     affordable: bool = True
-    amount_q: float = 0.2
-    warmup_days: int | None = 400
+    amount_q: float = trading_config.AMOUNT_Q
+    warmup_days: int | None = trading_config.WARMUP_DAYS
     industry_cap: int | None = None
-    slippage_bps: float = 0.0       # 固定滑点（基点），事件驱动策略使用
-    max_participation: float = 0.0  # 流动性约束：单笔买入 <= 20日均额 × 比例
-    buy_cost: float = 0.0008         # 买入费率（默认 8bp）
-    sell_cost: float = 0.0013        # 卖出费率（默认 13bp，含印花税）
+    slippage_bps: float = trading_config.SLIPPAGE_BPS
+    max_participation: float = trading_config.MAX_PARTICIPATION
+    buy_cost: float = trading_config.BUY_COST
+    sell_cost: float = trading_config.SELL_COST
 
 
 class SaveRequest(BaseModel):
@@ -72,16 +74,16 @@ class QweaveRunRequest(BaseModel):
     selection_pct: float = 0.10
     min_positions: int = 1
     max_positions: int | None = None
-    capital: float = 100000.0
+    capital: float = trading_config.CAPITAL
     freq: str = "weekly"
     affordable: bool = True
-    amount_q: float = 0.2
-    warmup_days: int | None = 400
-    slippage_bps: float = 0.0
-    max_participation: float = 0.0
+    amount_q: float = trading_config.AMOUNT_Q
+    warmup_days: int | None = trading_config.WARMUP_DAYS
+    slippage_bps: float = trading_config.SLIPPAGE_BPS
+    max_participation: float = trading_config.MAX_PARTICIPATION
     max_weight: float | None = None
-    buy_cost: float = 0.0008
-    sell_cost: float = 0.0013
+    buy_cost: float = trading_config.BUY_COST
+    sell_cost: float = trading_config.SELL_COST
     industry_cap: int | None = None
 
 
@@ -262,6 +264,10 @@ def _default_event_code() -> str:
 #   ctx.position(code) / ctx.positions    当前持仓股数 / {代码: 股数}
 #   ctx.portfolio_value / ctx.cash    组合总市值 / 现金
 #   ctx.close_series(code, n)         信号日往前 n 个有效收盘价
+#   ctx.history(code, fields, n)      多字段历史 DataFrame：行=交易日(旧→新，
+#                                     末行=信号日)，fields 如 ["close","volume"]；
+#                                     停牌/缺失为 NaN；未知字段抛 ValueError
+#   ctx.available_fields              可用字段列表（面板全部数值列）
 #   ctx.is_tradable(code)             执行日能否交易（开盘有效且昨日有成交）
 #   ctx.can_buy(code) / ctx.can_sell(code)
 #                                     执行日能否买入/卖出（含涨跌停限制）

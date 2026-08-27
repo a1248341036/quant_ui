@@ -14,16 +14,22 @@ from alphaagent.factor.mining.research_spec import (
     normalize_research_spec,
 )
 from alphaagent.factor.evaluation.plugins import available_plugins
+from alphaagent.factor.types import (
+    DEFAULT_TRAIN_END,
+    DEFAULT_TRAIN_START,
+    DEFAULT_VAL_END,
+    DEFAULT_VAL_START,
+)
 
 
 router = APIRouter(prefix="/api/alphaagent", tags=["alphaagent"])
 
 
 class StartRequest(BaseModel):
-    train_start: str = "2018-01-01"
-    train_end: str = "2022-12-31"
-    val_start: str = "2023-01-01"
-    val_end: str = "2025-12-31"
+    train_start: str = DEFAULT_TRAIN_START
+    train_end: str = DEFAULT_TRAIN_END
+    val_start: str = DEFAULT_VAL_START
+    val_end: str = DEFAULT_VAL_END
     label_col: str = "label_1d_open_to_open"
     user_message: str = Field(
         default="请自主挖掘A股日频价量因子，先训练集评估，再验证集检验；只有通过验证和去重门槛的因子才提交。",
@@ -34,7 +40,8 @@ class StartRequest(BaseModel):
     max_tool_calls_per_round: int = Field(default=8, ge=1, le=32)
     max_tool_workers: int = Field(default=4, ge=1, le=16)
     max_parallel_eval: int | None = Field(default=2, ge=1, le=16)
-    max_tokens: int = Field(default=8192, ge=256, le=32768)
+    max_tokens: int = Field(default=16384, ge=256, le=32768)  # hy3 thinking 需 >8K
+    population_max: int = Field(default=24, ge=0, le=36)  # 种群批量上限；0=关闭路径B
     no_fundamentals: bool = False
     # 研究模式开关（前端切换）：优先级高于 research_spec JSON 内的 research_mode。
     research_mode: str = "technical"
@@ -58,7 +65,14 @@ def start(req: StartRequest) -> dict[str, Any]:
     if req.research_mode not in RESEARCH_MODES:
         raise HTTPException(status_code=422, detail=f"research_mode_invalid:{req.research_mode}")
     payload = req.model_dump()
-    spec = dict(payload.get("research_spec") or {})
+    # pydantic 的 default_factory 总会填充 technical 默认 spec，无法用 None 判断。
+    # 改用 model_fields_set 判断用户是否显式传了 research_spec：
+    #   - 未传 → 基于 research_mode 构造正确的默认 spec
+    #   - 显式传了 → 保留用户 spec（仍以 research_mode 覆盖模式字段）
+    if "research_spec" in req.model_fields_set:
+        spec = dict(payload.get("research_spec") or {})
+    else:
+        spec = build_default_research_spec(req.research_mode)
     spec["research_mode"] = payload["research_mode"]
     payload["research_spec"] = spec
     try:
@@ -155,12 +169,34 @@ def rename_run(run_id: str, req: RenameRequest) -> dict[str, Any]:
     return run.snapshot(tail=20)
 
 
+class ArchiveRequest(BaseModel):
+    archived: bool = True
+
+
 @router.post("/runs/{run_id}/archive")
-def archive_run(run_id: str) -> dict[str, Any]:
-    run = service.archive_run(run_id)
+def archive_run(run_id: str, req: ArchiveRequest | None = None) -> dict[str, Any]:
+    archived = True if req is None else bool(req.archived)
+    run = service.archive_run(run_id, archived=archived)
     if run is None:
         raise HTTPException(status_code=404, detail="run_not_found")
-    return {"ok": True, "run_id": run_id, "archived": True}
+    return {"ok": True, "run_id": run_id, "archived": archived}
+
+
+# 注意：/runs/archived 必须先于 /runs/{run_id} 注册，否则会被路径参数吞掉。
+@router.delete("/runs/archived")
+def delete_archived_runs() -> dict[str, Any]:
+    """一键删除全部已归档任务（仍在运行的跳过）。"""
+    return service.delete_archived_runs()
+
+
+@router.delete("/runs/{run_id}")
+def delete_run(run_id: str) -> dict[str, Any]:
+    result = service.delete_run(run_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="run_not_found")
+    if not result["deleted"]:
+        raise HTTPException(status_code=409, detail=result["reason"])
+    return result
 
 
 @router.post("/runs/{run_id}/pin")
@@ -248,15 +284,15 @@ def eval_factor(req: EvalFactorRequest) -> dict[str, Any]:
 # ══════════════════════════════════════════════════════════════════════
 
 @router.get("/factors")
-def list_factors(library: str = "production") -> dict[str, Any]:
+def list_factors(library: str = "production", category: str = "technical") -> dict[str, Any]:
     """列出因子库中的所有因子。"""
-    return service.list_factors(library=library)
+    return service.list_factors(library=library, category=category)
 
 
 @router.get("/factors/{factor_id}")
-def factor_detail(factor_id: str, library: str = "production") -> dict[str, Any]:
+def factor_detail(factor_id: str, library: str = "production", category: str = "technical") -> dict[str, Any]:
     """获取单个因子详情。"""
-    result = service.get_factor_detail(factor_id, library=library)
+    result = service.get_factor_detail(factor_id, library=library, category=category)
     if "error" in result:
         raise HTTPException(status_code=404, detail=result["error"])
     return result
@@ -267,9 +303,9 @@ class DeleteFactorRequest(BaseModel):
 
 
 @router.delete("/factors/{factor_id}")
-def delete_factor(factor_id: str, library: str = "production") -> dict[str, Any]:
+def delete_factor(factor_id: str, library: str = "production", category: str = "technical") -> dict[str, Any]:
     """删除一个因子。"""
-    result = service.delete_factor(factor_id, library=library)
+    result = service.delete_factor(factor_id, library=library, category=category)
     if "error" in result:
         if result["error"] == "library_not_initialized":
             raise HTTPException(status_code=404, detail=result["error"])
@@ -286,6 +322,7 @@ class SaveFactorRequest(BaseModel):
     factor_name: str = Field(min_length=1, max_length=200)
     comment: str = Field(default="", max_length=2000)
     library: str = "candidate"
+    category: str = "technical"
     train_start: str = "2018-01-01"
     train_end: str = "2022-12-31"
     val_start: str = "2023-01-01"
@@ -303,6 +340,7 @@ def save_factor(req: SaveFactorRequest) -> dict[str, Any]:
             factor_name=req.factor_name,
             comment=req.comment,
             library=req.library,
+            category=req.category,
             train_start=req.train_start,
             train_end=req.train_end,
             val_start=req.val_start,

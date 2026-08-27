@@ -13,6 +13,44 @@ from alphaagent.factor.zoo.types import FactorLibraryPaths
 from alphaagent.factor.zoo.zoo import FactorZoo
 
 SIMILARITY_KIND = "cross_sectional_pearson_mean"
+SIMILARITY_BASIS_SAMPLED = "sample_row_ids"
+
+
+def _sampled_pearson_vs_rows(
+    x: np.ndarray,
+    Y: np.ndarray,
+    *,
+    min_pairs: int = 10,
+) -> np.ndarray:
+    """NaN 感知的向量化 Pearson：x(S,) 与 Y(F,S) 每行的相关系数，返回 (F,)。
+
+    在 zoo.index.sample_row_ids 抽样行上计算；等价于对每个因子在相同行子集上
+    做 Pearson，避免逐因子重建千万行 MultiIndex 的全量循环。
+    """
+    x64 = np.asarray(x, dtype=np.float64)
+    Y64 = np.asarray(Y, dtype=np.float64)
+    mask = np.isfinite(x64)[None, :] & np.isfinite(Y64)
+    n = mask.sum(axis=1)
+    out = np.full(Y64.shape[0], np.nan, dtype=np.float64)
+    valid = n >= max(int(min_pairs), 2)
+    if not valid.any():
+        return out
+    xm = np.where(mask, x64[None, :], 0.0)
+    ym = np.where(mask, Y64, 0.0)
+    sx = xm.sum(axis=1)
+    sy = ym.sum(axis=1)
+    sxx = np.einsum("ij,ij->i", xm, xm)
+    syy = np.einsum("ij,ij->i", ym, ym)
+    sxy = np.einsum("ij,ij->i", xm, ym)
+    nv = n.astype(np.float64)
+    cov = sxy - sx * sy / nv
+    vx = sxx - sx * sx / nv
+    vy = syy - sy * sy / nv
+    denom = np.sqrt(vx * vy)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        corr = np.where(denom > 0, cov / denom, np.nan)
+    out[valid] = corr[valid]
+    return out
 
 
 def _pearson_ic(a: np.ndarray, b: np.ndarray, *, min_pairs: int = 2) -> float:
@@ -154,46 +192,58 @@ class SimilarityMatrix:
     def cross_sectional_neighbor_report(
         self,
         zoo: FactorZoo,
-        candidate_values: np.ndarray,
+        candidate_values: np.ndarray | None,
         *,
         exclude_factor_id: str | None = None,
         min_pairs: int = 10,
         top_k: int = 3,
+        candidate_sample: np.ndarray | None = None,
     ) -> dict[str, Any]:
-        """候选因子与库内因子的截面相关报告：max |corr| 与 top_k 最相似因子（含 expr）。"""
-        order = zoo.catalog.list_factor_ids()
-        if exclude_factor_id is not None:
-            order = [fid for fid in order if fid != exclude_factor_id]
+        """候选因子与库内因子的相似度报告（抽样行快速口径）。
 
-        corrs: list[tuple[str, float]] = []
-        for fid in order:
-            other = zoo.read_factor(fid)
-            c = cross_sectional_pearson_mean(
-                candidate_values, other, zoo.index, min_pairs=min_pairs
-            )
-            if np.isfinite(c):
-                corrs.append((fid, float(c)))
+        在 ``zoo.index.sample_row_ids``（默认 20 万行、按日分层）上计算候选与
+        每个库内因子的 Pearson 相关，一次读入全部因子抽样摘要后向量化求解。
+        与旧的"逐因子全量行 × 逐日 MultiIndex groupby"实现相比语义近似但快
+        数个量级；``basis`` 字段标注口径供审计。
 
-        corrs.sort(key=lambda x: abs(x[1]), reverse=True)
+        ``candidate_values`` 须为 canonical 行序全量值；或直接传对齐到抽样行的
+        ``candidate_sample``（会话域复用时避免构造 canonical 全量数组）。
+        """
+        empty = {"kind": SIMILARITY_KIND, "basis": SIMILARITY_BASIS_SAMPLED, "max_abs_corr": 0.0, "top_neighbors": []}
+        order = [fid for fid in zoo.catalog.list_factor_ids() if fid != exclude_factor_id]
+        if not order:
+            return empty
+
+        summaries, all_order = zoo.read_sample_summaries()
+        pos = {fid: i for i, fid in enumerate(all_order)}
+        used_order = [fid for fid in order if fid in pos]
+        if not used_order:
+            return empty
+        rows_idx = [pos[fid] for fid in used_order]
+
+        if candidate_sample is not None:
+            cand_sample = np.asarray(candidate_sample, dtype=np.float32)
+        else:
+            if candidate_values is None:
+                raise ValueError("candidate_values 与 candidate_sample 至少提供一个")
+            cand_sample = zoo.extract_sample_from_values(candidate_values)
+        corr_arr = _sampled_pearson_vs_rows(
+            cand_sample, summaries[rows_idx], min_pairs=min_pairs
+        )
+
+        corrs: list[tuple[str, float]] = [
+            (fid, float(c)) for fid, c in zip(used_order, corr_arr) if np.isfinite(c)
+        ]
+        corrs.sort(key=lambda p: abs(p[1]), reverse=True)
         max_abs = max((abs(c) for _, c in corrs), default=0.0)
         top_slice = corrs[:top_k] if top_k > 0 else []
 
-        enriched: list[dict[str, Any]] = []
-        for fid, c in top_slice:
-            meta = zoo.catalog.get(fid)
-            enriched.append(
-                {
-                    "factor_id": fid,
-                    "name": meta.name if meta is not None else fid,
-                    "cs_corr": c,
-                    "expr": meta.expr if meta is not None else None,
-                }
-            )
-
         return {
             "kind": SIMILARITY_KIND,
+            "basis": SIMILARITY_BASIS_SAMPLED,
+            "n_sample_rows": int(len(cand_sample)),
             "max_abs_corr": max_abs,
-            "top_neighbors": enriched,
+            "top_neighbors": self._enrich_neighbors(zoo, top_slice),
         }
 
     @staticmethod
@@ -233,16 +283,23 @@ class SimilarityMatrix:
         mat = self._ensure(max(col_idx + 1, int(meta.get("next_col_idx", col_idx + 1))))
 
         existing_order = [fid for fid in zoo.catalog.list_factor_ids() if str(fid) != str(factor_id)]
+        summaries, all_order = zoo.read_sample_summaries()
+        pos = {fid: i for i, fid in enumerate(all_order)}
+        used_order = [fid for fid in existing_order if fid in pos]
         corrs: list[tuple[str, float]] = []
-        for fid in existing_order:
-            other = zoo.read_factor(fid)
-            c = cross_sectional_pearson_mean(values, other, zoo.index, min_pairs=min_pairs)
-            j = col_map.get(fid)
-            if j is not None and np.isfinite(c):
-                mat[col_idx, j] = c
-                mat[j, col_idx] = c
-            if np.isfinite(c):
-                corrs.append((fid, float(c)))
+        if used_order:
+            rows_idx = [pos[fid] for fid in used_order]
+            cand_sample = zoo.extract_sample_from_values(values)
+            corr_arr = _sampled_pearson_vs_rows(
+                cand_sample, summaries[rows_idx], min_pairs=min_pairs
+            )
+            for fid, c in zip(used_order, corr_arr):
+                j = col_map.get(fid)
+                if j is not None and np.isfinite(c):
+                    mat[col_idx, j] = float(c)
+                    mat[j, col_idx] = float(c)
+                if np.isfinite(c):
+                    corrs.append((fid, float(c)))
         mat[col_idx, col_idx] = 1.0
         mat.flush()
 
@@ -255,6 +312,7 @@ class SimilarityMatrix:
             "col_idx": col_idx,
             "n_factors": n_active,
             "kind": SIMILARITY_KIND,
+            "basis": SIMILARITY_BASIS_SAMPLED,
             "max_abs_corr": self._max_abs_corr_from_neighbors(top_neighbors),
             "top_neighbors": top_neighbors,
         }

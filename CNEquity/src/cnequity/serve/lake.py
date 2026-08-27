@@ -243,53 +243,43 @@ class LakeView:
         self._refresh_lock = threading.Lock()
         self._refreshing = False
         self._inflight: dict[str, threading.Event] = {}
-        self._inflight_val: dict[str, object] = {}
 
     # --- caching -----------------------------------------------------------
 
     def _cached(self, key: str, build):
-        now = time.monotonic()
-        with self._lock:
-            hit = self._cache.get(key)
-            if hit is not None and now - hit.at < _CACHE_TTL_SECONDS:
-                return hit.value
-            # single-flight: if another thread is already building this key,
-            # wait for its result instead of redoing the work.
-            ev = self._inflight.get(key)
-            if ev is not None:
-                pass  # fall through to wait
-            else:
-                ev = threading.Event()
-                self._inflight[key] = ev
-                ev = None  # signal: we are the builder
-        if ev is not None:
-            # another thread is building; wait for it
-            ev.wait()
-            val = self._inflight_val.get(key)
-            # cleanup if the builder is done
-            return val
-        # we are the builder
-        try:
-            value = build()
+        while True:
+            now = time.monotonic()
+            with self._lock:
+                hit = self._cache.get(key)
+                if hit is not None and now - hit.at < _CACHE_TTL_SECONDS:
+                    return hit.value
+                # single-flight: only one thread builds a given key; the rest
+                # wait on its event and then re-check the cache below.
+                ev = self._inflight.get(key)
+                if ev is None:
+                    ev = threading.Event()
+                    self._inflight[key] = ev
+                    owner = True
+                else:
+                    owner = False
+            if not owner:
+                ev.wait()
+                # Loop: either the builder populated the cache and we return
+                # the fresh value, or it failed/expired and we build it
+                # ourselves. Never hand back an unpopulated result.
+                continue
+            try:
+                value = build()
+            except BaseException:
+                with self._lock:
+                    self._inflight.pop(key, None)
+                ev.set()  # wake waiters so they retry instead of hanging
+                raise
             with self._lock:
                 self._cache[key] = _Cached(value, time.monotonic())
-            # wake waiters
-            event = self._inflight.get(key)
-            if event is not None:
-                self._inflight_val[key] = value
-                event.set()
+                self._inflight.pop(key, None)
+            ev.set()
             return value
-        finally:
-            with self._lock:
-                # keep the event + val around briefly so concurrent waiters
-                # can read the result, then clean up.
-                event = self._inflight.pop(key, None)
-                # leave _inflight_val cleanup to the next miss
-                if event is not None:
-                    # give a tiny window for waiters to read; they already got .set()
-                    pass
-                # clean stale val
-                self._inflight_val.pop(key, None)
 
     def invalidate(self) -> None:
         with self._lock:

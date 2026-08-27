@@ -2,28 +2,171 @@
 
 from __future__ import annotations
 
+import dataclasses
 import re
 from pathlib import Path
 from typing import Any, Callable
 
 import numpy as np
+import pandas as pd
 
 from alphaagent.factor.types import IngestPolicy
-from alphaagent.factor.ingest import ingest_factor, load_panel_for_zoo, prepare_stored_values
+from alphaagent.factor.ingest import (
+    align_values_to_rows,
+    clip_values,
+    compute_ingest_metrics,
+    ingest_factor,
+    materialize_factor,
+)
+from alphaagent.factor.metrics import annualized_long_group_excess_return
 from alphaagent.factor.mining.service import StockEvalService
-from alphaagent.factor.zoo import DEFAULT_FACTORLIB_ROOT, FactorZoo
-from alphaagent.factor.zoo.realign import panel_paths_match, realign_factorlib_to_panel
+from alphaagent.factor.zoo import DEFAULT_FACTORLIB_ROOT, FactorZoo, SimilarityMatrix
+from alphaagent.factor.zoo.similarity import (
+    SIMILARITY_BASIS_SAMPLED,
+    SIMILARITY_KIND,
+    cross_sectional_pearson_mean,
+)
 from alphaagent.factor.mining.registry_io import (
+    load_mining_registry,
     set_candidate_review,
     set_candidate_promotion,
     upsert_mining_registry,
     write_candidate_registry,
 )
+from core import factor_categories
+
+
+def _candidate_registry_similarity(
+    cand_values: np.ndarray,
+    panel: pd.DataFrame,
+    candidate_registry_path: Path,
+    *,
+    exclude_factor_id: str | None = None,
+    min_pairs: int = 30,
+    top_k: int = 3,
+) -> dict[str, Any] | None:
+    """候选因子与候选 registry 中已有因子的截面 Pearson 相似度。
+
+    候选 registry 中的因子只有 DSL 表达式、无 dense values，需要在会话域
+    panel 上重新求值。返回与 SimilarityMatrix.cross_sectional_neighbor_report
+    同结构的 dict，或 None（registry 为空/无可比因子时）。
+    """
+    from alphaagent.dsl import eval_factor
+    from alphaagent.factor.align import align_series_to_panel
+
+    registry = load_mining_registry(candidate_registry_path)
+    if not registry:
+        return None
+
+    new_series = pd.Series(np.asarray(cand_values, dtype=np.float64), index=panel.index)
+    corrs: list[tuple[str, float, str]] = []  # (factor_id, corr, name)
+
+    for fid, entry in sorted(registry.items()):
+        if fid == exclude_factor_id or not isinstance(entry, dict):
+            continue
+        expr_text = str(entry.get("expr") or "").strip()
+        if not expr_text:
+            continue
+        try:
+            old_raw = eval_factor(expr_text, panel)
+            if not isinstance(old_raw, pd.Series):
+                continue
+            old_aligned = align_series_to_panel(old_raw, panel)
+        except Exception:
+            continue
+        corr = cross_sectional_pearson_mean(
+            np.asarray(new_series, dtype=np.float64),
+            np.asarray(old_aligned, dtype=np.float64),
+            panel.index,
+            min_pairs=min_pairs,
+        )
+        if np.isfinite(corr):
+            name = str(entry.get("name") or fid)
+            corrs.append((fid, float(corr), name))
+
+    if not corrs:
+        return None
+
+    corrs.sort(key=lambda p: abs(p[1]), reverse=True)
+    max_abs = max(abs(c) for _, c, _ in corrs)
+    top_slice = corrs[:top_k] if top_k > 0 else []
+
+    return {
+        "kind": SIMILARITY_KIND,
+        "basis": "candidate_registry_reeval",
+        "max_abs_corr": max_abs,
+        "top_neighbors": [
+            {"factor_id": fid, "name": name, "cs_corr": corr}
+            for fid, corr, name in top_slice
+        ],
+    }
 
 
 def slug_factor_id(name: str) -> str:
     s = re.sub(r"[^a-zA-Z0-9_]+", "_", str(name).strip().lower())
     return re.sub(r"_+", "_", s).strip("_") or "factor"
+
+
+def _stage_one_stats_reasons(
+    metrics: dict[str, Any],
+    criteria: dict[str, Any] | None = None,
+) -> list[str]:
+    """海选统计门槛（IC/ICIR/coverage）。须喂 train-only 指标，防止 val 衰减被混合窗口稀释。"""
+    reasons: list[str] = []
+    criteria = criteria or {"min_abs_ic": 0.015, "min_icir": 0.25, "min_coverage": 0.85}
+    ic = metrics.get("ic")
+    if ic is None or abs(float(ic)) < float(criteria["min_abs_ic"]):
+        reasons.append("ic")
+    icir = metrics.get("icir")
+    if icir is None or abs(float(icir)) <= float(criteria["min_icir"]):
+        reasons.append("icir")
+    cov = metrics.get("coverage") or metrics.get("factor_coverage")
+    if cov is None or float(cov) <= float(criteria["min_coverage"]):
+        reasons.append("coverage")
+    return reasons
+
+
+def _stage_one_turnover_reasons(
+    metrics: dict[str, Any],
+    criteria: dict[str, Any] | None = None,
+) -> list[str]:
+    """换手可行性门槛：截面自相关低于阈值 → 排名日度剧变，换手吃掉 alpha。"""
+    criteria = criteria or {}
+    min_ac = float(criteria.get("min_cs_autocorr", 0.18))
+    if min_ac <= 0:
+        return []
+    ac = metrics.get("cs_pearson_autocorr")
+    if ac is None or not np.isfinite(float(ac)) or float(ac) < min_ac:
+        return ["cs_autocorr"]
+    return []
+
+
+def _stage_one_val_retention_reasons(
+    train_metrics: dict[str, Any],
+    val_metrics: dict[str, Any],
+    criteria: dict[str, Any] | None = None,
+) -> list[str]:
+    """样本外保留比门槛：|val_ic|/|train_ic| ≥ 阈值且方向不反转。
+
+    val 窗口无数据时跳过（train-only 会话）。
+    """
+    criteria = criteria or {}
+    min_ratio = float(criteria.get("min_val_ic_retention", 0.5))
+    n_days_val = val_metrics.get("n_days") or val_metrics.get("n_instruments")
+    if n_days_val is not None and int(n_days_val) == 0:
+        return []
+    t_ic = train_metrics.get("ic")
+    v_ic = val_metrics.get("ic")
+    if t_ic is None or v_ic is None:
+        return ["val_ic_missing"]
+    t, v = float(t_ic), float(v_ic)
+    if not np.isfinite(t) or not np.isfinite(v):
+        return ["val_ic_missing"]
+    if t * v < 0:
+        return ["val_sign_flip"]
+    if abs(t) > 1e-12 and abs(v) / abs(t) < min_ratio:
+        return ["val_retention"]
+    return []
 
 
 def _check_stage_one(
@@ -33,16 +176,8 @@ def _check_stage_one(
 ) -> tuple[bool, list[str]]:
     """海选宽松池：保留逻辑候选，但不写入正式因子库。"""
     reasons: list[str] = []
-    criteria = criteria or {"min_abs_ic": 0.015, "min_icir": 0.2, "min_coverage": 0.85, "max_abs_corr": 0.6}
-    ic = metrics.get("ic")
-    if ic is None or abs(float(ic)) < float(criteria["min_abs_ic"]):
-        reasons.append("ic")
-    icir = metrics.get("icir")
-    if icir is None or abs(float(icir)) <= float(criteria["min_icir"]):
-        reasons.append("icir")
-    cov = metrics.get("coverage")
-    if cov is None or float(cov) <= float(criteria["min_coverage"]):
-        reasons.append("coverage")
+    criteria = criteria or {"min_abs_ic": 0.015, "min_icir": 0.25, "min_coverage": 0.85, "max_abs_corr": 0.6}
+    reasons.extend(_stage_one_stats_reasons(metrics, criteria))
     corr = (similarity or {}).get("max_abs_corr", 0.0)
     if corr is None or float(corr) >= float(criteria["max_abs_corr"]):
         reasons.append("max_cs_corr")
@@ -50,39 +185,55 @@ def _check_stage_one(
 
 
 def _check_stage_two(
-    metrics: dict[str, Any],
+    train_metrics: dict[str, Any],
+    val_metrics: dict[str, Any],
     similarity: dict[str, Any] | None,
     criteria: dict[str, Any] | None = None,
-    rebalance_freq: str = "daily",
 ) -> tuple[bool, list[str]]:
-    """精筛统计门槛。TopN 可交易性（超额/Sharpe/回撤/尾部稳定）由
-    engine_gate 用完整回测引擎裁决，此处只做统计族检查。
-    rebalance_freq 仅用于审计透传。"""
-    _ = rebalance_freq
+    """精筛统计门槛（双窗口口径，2026-08 重构）。
+
+    - train 窗口：|IC| 与 ICIR 各自达标；
+    - val 窗口：绝对水平 + 相对 train 的保留比（方向反转拦截）；
+    - 截尾 IC 衰减取 train 窗口值；
+    - TopN 可交易性（超额/Sharpe/回撤/尾部稳定）由 engine_gate 用完整回测
+      引擎净值裁决，此处不做代理指标模拟。
+
+    已移除的摆设门槛（研究结论 2026-08）：fmb/ls t 值在长样本上永不拦截；
+    毛值 quantile 三项与可交易性脱节。
+    """
     reasons: list[str] = []
     criteria = criteria or {
-        "min_abs_ic": 0.035, "min_icir": 0.5, "min_fmb_t_stat": 2.5,
-        "min_long_group_annual_excess_return": 0.03,
+        "min_train_abs_ic": 0.025, "min_train_icir": 0.30,
+        "min_val_abs_ic": 0.015, "min_val_ic_retention": 0.60,
+        "min_val_long_excess": 0.0,
         "max_winsorized_abs_ic_decay": 0.10, "max_abs_corr": 0.4,
     }
-    ic = metrics.get("ic")
-    if ic is None or abs(float(ic)) < float(criteria["min_abs_ic"]):
-        reasons.append("ic")
-    icir = metrics.get("icir")
-    if icir is None or abs(float(icir)) <= float(criteria["min_icir"]):
-        reasons.append("icir")
-    fmb_t = (metrics.get("mls_fmb") or {}).get("nw_t_ls")
-    min_t = criteria.get("min_fmb_t_stat", 0)
-    if min_t and (fmb_t is None or abs(float(fmb_t)) < float(min_t)):
-        reasons.append("fmb_t_stat")
-    long_excess = metrics.get("long_group_annual_excess_return")
-    if long_excess is None or abs(float(long_excess)) <= float(criteria["min_long_group_annual_excess_return"]):
-        reasons.append("long_group_annual_excess_return")
-    winsor_decay = metrics.get("winsorized_abs_ic_decay")
-    if winsor_decay is None or float(winsor_decay) > float(criteria["max_winsorized_abs_ic_decay"]):
+    ic = train_metrics.get("ic")
+    if ic is None or abs(float(ic)) < float(criteria.get("min_train_abs_ic", 0.025)):
+        reasons.append("train_ic")
+    icir = train_metrics.get("icir")
+    if icir is None or abs(float(icir)) <= float(criteria.get("min_train_icir", 0.30)):
+        reasons.append("train_icir")
+
+    v_ic = val_metrics.get("ic")
+    if v_ic is None or abs(float(v_ic)) < float(criteria.get("min_val_abs_ic", 0.015)):
+        reasons.append("val_ic")
+    reasons += _stage_one_val_retention_reasons(train_metrics, val_metrics, criteria)
+
+    # val 多头端毛值超额（方向自适应十分组，复利年化）：
+    # IC 为正 ≠ 多头组合为正——alpha 可能全在空头端/中段排名（2026-08 审计发现的盲区）。
+    thr_vle = criteria.get("min_val_long_excess")
+    if thr_vle is not None:
+        vle = val_metrics.get("val_long_excess")
+        if vle is None or not np.isfinite(float(vle)) or float(vle) <= float(thr_vle):
+            reasons.append("val_long_excess")
+
+    winsor_decay = train_metrics.get("winsorized_abs_ic_decay")
+    if winsor_decay is None or float(winsor_decay) > float(criteria.get("max_winsorized_abs_ic_decay", 0.10)):
         reasons.append("winsorized_abs_ic_decay")
+
     corr = (similarity or {}).get("max_abs_corr", 0.0)
-    if corr is None or float(corr) >= float(criteria["max_abs_corr"]):
+    if corr is None or float(corr) >= float(criteria.get("max_abs_corr", 0.4)):
         reasons.append("max_cs_corr")
     return len(reasons) == 0, reasons
 
@@ -94,10 +245,11 @@ class FactorSubmitService:
         self,
         service: StockEvalService,
         *,
-        factorlib_path: Path,
-        registry_path: Path,
-        expr_dir: Path,
+        factorlib_path: Path | None = None,
+        registry_path: Path | None = None,
+        expr_dir: Path | None = None,
         repo_root: Path,
+        research_mode: str = "technical",
         max_cs_corr: float = 0.8,
         delivery_policy: dict[str, Any] | None = None,
         similar_top_k: int = 3,
@@ -105,9 +257,22 @@ class FactorSubmitService:
         auto_realign_panel: bool = True,
     ) -> None:
         self.service = service
-        self.factorlib_path = Path(factorlib_path).expanduser().resolve()
-        self.registry_path = Path(registry_path).expanduser().resolve()
-        self.expr_dir = Path(expr_dir).expanduser().resolve()
+        self.research_mode = research_mode
+        self.factorlib_path = (
+            Path(factorlib_path).expanduser().resolve()
+            if factorlib_path is not None
+            else factor_categories.production_dir(research_mode)
+        )
+        self.registry_path = (
+            Path(registry_path).expanduser().resolve()
+            if registry_path is not None
+            else factor_categories.production_registry_path(research_mode)
+        )
+        self.expr_dir = (
+            Path(expr_dir).expanduser().resolve()
+            if expr_dir is not None
+            else factor_categories.production_expr_dir(research_mode)
+        )
         self.repo_root = Path(repo_root).resolve()
         self.max_cs_corr = max_cs_corr
         self.delivery_policy = delivery_policy or {}
@@ -117,15 +282,15 @@ class FactorSubmitService:
 
     @property
     def candidate_factorlib_path(self) -> Path:
-        return self.factorlib_path.parent / "candidate_1d"
+        return factor_categories.candidate_dir(self.research_mode)
 
     @property
     def candidate_registry_path(self) -> Path:
-        return self.candidate_factorlib_path / "mining_candidate_registry.json"
+        return factor_categories.candidate_registry_path(self.research_mode)
 
     @property
     def candidate_expr_dir(self) -> Path:
-        return self.candidate_factorlib_path / "expressions"
+        return factor_categories.candidate_expr_dir(self.research_mode)
 
     def submit(
         self,
@@ -192,81 +357,148 @@ class FactorSubmitService:
                 "detail": str(e),
             }
 
-        try:
-            panel = load_panel_for_zoo(zoo, panel_path=ctx.panel_path)
-        except ValueError as e:
-            if not self.auto_realign_panel:
-                return {
-                    "ok": False,
-                    "stored": False,
-                    "error": str(e),
-                    "error_type": "PanelMismatchError",
-                }
-            zoo_panel = Path(zoo.manifest.panel_path)
-            if not panel_paths_match(ctx.panel_path, zoo_panel):
-                return {
-                    "ok": False,
-                    "stored": False,
-                    "error": (
-                        f"{e}; panel 路径不一致: session={ctx.panel_path} zoo={zoo_panel}，"
-                        "请用 --panel 与因子库相同文件，或重新 init_factorlib"
-                    ),
-                    "error_type": "PanelMismatchError",
-                }
-            try:
-                from alphaagent.data.adapters.cnequity import is_cne_source, load_panel_from_cne
-                if is_cne_source(ctx.panel_path):
-                    full_panel = load_panel_from_cne(universe_mask=False).sort_index()
-                else:
-                    from alphaagent.data.panel import load_panel as _load_panel
-                    full_panel = _load_panel(ctx.panel_path).sort_index()
-                realign_info = realign_factorlib_to_panel(
-                    self.factorlib_path,
-                    panel=full_panel,
-                    panel_path=ctx.panel_path,
-                )
-                zoo = FactorZoo.open(self.factorlib_path)
-                panel = full_panel
-            except Exception as exc:  # noqa: BLE001
-                return {
-                    "ok": False,
-                    "stored": False,
-                    "error": f"panel_realign_failed: {exc}",
-                    "error_type": "PanelRealignError",
-                }
-        else:
-            realign_info = None
-
-        if realign_info is None and len(panel) != zoo.manifest.n_rows:
+        # ③ 会话域复用：submit 全程在挖掘会话驻内存 panel 上评估，
+        #    不再全量重载因子库域 panel（两者行集本就不同——库含全部历史；
+        #    旧行为的二次构建曾触发 float64 合并的 8.69GiB OOM）。
+        #    相似度抽样与最终入库通过键映射 (datetime, instrument) 对齐。
+        panel = session.panel
+        if panel is None or len(panel) == 0:
             return {
                 "ok": False,
                 "stored": False,
-                "error": (
-                    f"panel 行数 {len(panel)} != 库 n_rows {zoo.manifest.n_rows}；"
-                    "请用相同 panel 初始化库，或仅用于调试切片"
-                ),
-                "error_type": "PanelMismatchError",
+                "error": "session_panel_empty",
+                "error_type": "SessionError",
             }
 
-        # First evaluate against the production library only. dry_run avoids
-        # temporarily adding a weak candidate to the formal FactorZoo.
         candidate_criteria = self.delivery_policy.get("candidate", {})
         production_criteria = self.delivery_policy.get("production", {})
         stage_one_policy = IngestPolicy.from_context(
             ctx, max_cs_corr=float(candidate_criteria.get("max_abs_corr", 0.6)), similar_top_k=self.similar_top_k
         )
-        prepared_values, _, _, _ = prepare_stored_values(expr, panel, zoo, stage_one_policy)
-        assessment = ingest_factor(
-            zoo,
-            factor_id=factor_id,
-            name=name,
-            expr=expr,
-            panel=panel,
-            policy=stage_one_policy,
-            stored_values=prepared_values,
-            dry_run=True,
+
+        # ①+③ 会话域物化：长度恒等于 panel 行数，指标直接可算。
+        materialized = materialize_factor(expr, panel)
+        cand_values = materialized.values
+        if stage_one_policy.clip_pct is not None:
+            lo_pct, hi_pct = float(stage_one_policy.clip_pct[0]), float(stage_one_policy.clip_pct[1])
+            cand_values, _ = clip_values(cand_values, lower_pct=lo_pct, upper_pct=hi_pct)
+        values_by_key = pd.Series(cand_values, index=panel.index)
+
+        # ① 统计门槛前置（train-only 准入口径 + 换手可行性）：
+        #    - 准入看 train 窗口，防止 val 衰减被混合窗口稀释；
+        #    - cs_autocorr 硬门淘汰排名日度剧变的不可交付因子；
+        #    - 任一不达标直接拒绝，跳过最贵的相似度对比。
+        metrics_train = compute_ingest_metrics(
+            cand_values, panel, dataclasses.replace(stage_one_policy, val_end=ctx.train_end)
         )
-        stage_one_ok, stage_one_reasons = _check_stage_one(assessment.metrics, assessment.similarity, candidate_criteria)
+        gate_reasons = _stage_one_stats_reasons(metrics_train, candidate_criteria)
+        gate_reasons += _stage_one_turnover_reasons(metrics_train, candidate_criteria)
+
+        val_metrics: dict[str, Any] = {}
+        if not gate_reasons and ctx.val_start > ctx.train_end:
+            # 样本外保留比：|val_ic|/|train_ic| ≥ 阈值且方向不反转
+            val_metrics = compute_ingest_metrics(
+                cand_values, panel, dataclasses.replace(stage_one_policy, train_start=ctx.val_start)
+            )
+            gate_reasons += _stage_one_val_retention_reasons(metrics_train, val_metrics, candidate_criteria)
+            # val 多头端毛值超额（方向自适应）：IC 为正不代表多头组合为正，
+            # alpha 可能全在空头端/中段排名——纯多头可交易口径必须单独为正。
+            label_col = stage_one_policy.label_col
+            if label_col in panel.columns:
+                dt_level = panel.index.get_level_values("datetime")
+                val_rows = (dt_level >= pd.Timestamp(ctx.val_start)) & (dt_level <= pd.Timestamp(ctx.val_end))
+                f_val = pd.Series(cand_values, index=panel.index)[val_rows]
+                l_val = panel[label_col][val_rows]
+                if len(f_val) > 0:
+                    dir_sign = 1 if float(metrics_train.get("ic") or 0.0) >= 0 else -1
+                    val_metrics["val_long_excess"] = annualized_long_group_excess_return(
+                        f_val, l_val, direction=dir_sign
+                    )
+
+        similarity_report: dict[str, Any] | None = None
+        if not gate_reasons:
+            # ── 正式库相似度（抽样行快速口径）──
+            zoo_report: dict[str, Any] | None = None
+            if zoo.n_factors > 0:
+                cand_sample = align_values_to_rows(
+                    values_by_key, zoo.index.rows.iloc[zoo.index.sample_row_ids]
+                )
+                sim_matrix = SimilarityMatrix(zoo.paths, zoo.manifest.max_factors)
+                zoo_report = sim_matrix.cross_sectional_neighbor_report(
+                    zoo, None, top_k=stage_one_policy.similar_top_k,
+                    candidate_sample=cand_sample,
+                )
+
+            # ── 候选 registry 相似度（在会话域 panel 上对已有候选 DSL 重新求值）──
+            cand_report = _candidate_registry_similarity(
+                cand_values, panel, self.candidate_registry_path,
+                exclude_factor_id=factor_id,
+                top_k=stage_one_policy.similar_top_k,
+            )
+
+            # ── 合并两份报告取 max_abs_corr 更大者 ──
+            reports = [r for r in (zoo_report, cand_report) if r is not None]
+            if reports:
+                best = max(reports, key=lambda r: float(r.get("max_abs_corr", 0.0)))
+                # 合并 top_neighbors
+                all_neighbors: list[dict[str, Any]] = []
+                seen: set[str] = set()
+                for r in reports:
+                    for nb in (r.get("top_neighbors") or []):
+                        fid = str(nb.get("factor_id") or "")
+                        if fid and fid not in seen:
+                            seen.add(fid)
+                            all_neighbors.append(nb)
+                all_neighbors.sort(key=lambda nb: abs(float(nb.get("cs_corr", 0))), reverse=True)
+                similarity_report = {
+                    "kind": SIMILARITY_KIND,
+                    "basis": "zoo+candidate_registry",
+                    "max_abs_corr": float(best.get("max_abs_corr", 0.0)),
+                    "top_neighbors": all_neighbors[:stage_one_policy.similar_top_k],
+                }
+            else:
+                similarity_report = {
+                    "kind": SIMILARITY_KIND,
+                    "basis": SIMILARITY_BASIS_SAMPLED,
+                    "max_abs_corr": 0.0,
+                    "top_neighbors": [],
+                }
+        # 准入判定：统计/换手/保留比任一不过即拒；全过再叠加相似度 corr 检查。
+        stage_one_ok = not gate_reasons
+        stage_one_reasons = list(gate_reasons)
+        if stage_one_ok:
+            stage_one_ok, stage_one_reasons = _check_stage_one(
+                metrics_train, similarity_report, candidate_criteria
+            )
+
+        # 上报/存档指标仍用全窗口（与历史 registry 口径一致），附 train/val 分解。
+        metrics = compute_ingest_metrics(cand_values, panel, stage_one_policy)
+        reported = dict(metrics)
+        for src, prefix in ((metrics_train, "train"), (val_metrics, "val")):
+            for key in ("ic", "icir", "rank_ic"):
+                v = src.get(key)
+                if v is not None and np.isfinite(float(v)):
+                    reported[f"{prefix}_{key}"] = round(float(v), 6)
+        t_ic, v_ic = metrics_train.get("ic"), val_metrics.get("ic")
+        if t_ic is not None and v_ic is not None and abs(float(t_ic)) > 1e-12:
+            reported["val_ic_retention"] = round(abs(float(v_ic) / float(t_ic)), 4)
+        vle = val_metrics.get("val_long_excess")
+        if vle is not None and np.isfinite(float(vle)):
+            reported["val_long_excess"] = round(float(vle), 6)
+
+        # 组合层收益指标（多头年化/夏普等）：供前端因子库与详情展示。
+        if stage_one_ok:
+            from alphaagent.factor.metrics import quantile_portfolio_metrics
+            qp = quantile_portfolio_metrics(
+                pd.Series(cand_values, index=panel.index), panel[ctx.label_col],
+                n_groups=10, cost_bps=0.0,
+            )
+            reported["quantile_portfolio"] = {
+                k: (round(float(v), 6) if isinstance(v, (int, float)) and np.isfinite(float(v)) else v)
+                for k, v in qp.items()
+                if k not in {"group_means"}
+            }
+        metrics = reported
 
         payload: dict[str, Any] = {
             "ok": False,
@@ -276,8 +508,8 @@ class FactorSubmitService:
             "comment": comment.strip(),
             "interaction": interaction,
             "eval_range": {"start": ctx.train_start, "end": ctx.val_end},
-            "metrics": assessment.metrics,
-            "similarity": assessment.similarity,
+            "metrics": metrics,
+            "similarity": similarity_report,
             "candidate_stored": False,
             "rebalance_freq": chosen_freq,
             "delivery_check": {
@@ -285,12 +517,28 @@ class FactorSubmitService:
                 "stage_two": {"passed": False, "fail_reasons": []},
             },
         }
-        if realign_info and realign_info.get("realigned"):
-            payload["panel_realigned"] = realign_info
 
         if not stage_one_ok:
             payload["skipped_reason"] = f"stage_one_failed:{','.join(stage_one_reasons)}"
             payload["error_type"] = "StageOneDeliveryCheckError"
+            payload["error"] = payload["skipped_reason"]
+            return payload
+
+        # ── 正交性检查（stage_one 统一查，不再只在 approve 后触发）──
+        # 所有通过统计门槛的因子（无论后续 verdict 是 approve 还是 revise）
+        # 都需经过正交性检查，避免与正式库/候选池已有因子高度重复。
+        orthogonality: dict[str, Any] = {
+            "passed": True,
+            "skipped_reason": "hook_not_configured",
+        }
+        if orthogonality_hook is not None:
+            orthogonality = orthogonality_hook()
+        payload["offline_orthogonality"] = orthogonality
+        if not bool(orthogonality.get("passed")):
+            reason = str(orthogonality.get("error") or orthogonality.get("skipped_reason") or "correlation_threshold")
+            payload["promotion_status"] = "offline_orthogonality_blocked"
+            payload["skipped_reason"] = f"offline_orthogonality_failed:{reason}"
+            payload["error_type"] = "OfflineOrthogonalityError"
             payload["error"] = payload["skipped_reason"]
             return payload
 
@@ -302,7 +550,7 @@ class FactorSubmitService:
                 "comment": comment.strip(),
                 "interaction": interaction,
                 "candidate_stored": True,
-                "metrics": assessment.metrics,
+                "metrics": metrics,
             })
         review_verdict = str((review or {}).get("verdict") or "").lower()
         review_status = (
@@ -336,8 +584,8 @@ class FactorSubmitService:
             expr_dir=self.candidate_expr_dir,
             repo_root=self.repo_root,
             policy=stage_one_policy,
-            metrics=assessment.metrics,
-            similarity=assessment.similarity,
+            metrics=metrics,
+            similarity=similarity_report,
             source="submit_stage_one",
             evaluation_evidence=evaluation_evidence,
             interaction=interaction,
@@ -376,22 +624,9 @@ class FactorSubmitService:
             payload["error"] = None
             return payload
 
-        orthogonality: dict[str, Any] = {
-            "passed": True,
-            "skipped_reason": "hook_not_configured",
-        }
-        if orthogonality_hook is not None:
-            orthogonality = orthogonality_hook()
-        payload["offline_orthogonality"] = orthogonality
-        if not bool(orthogonality.get("passed")):
-            reason = str(orthogonality.get("error") or orthogonality.get("skipped_reason") or "correlation_threshold")
-            payload["promotion_status"] = "offline_orthogonality_blocked"
-            payload["skipped_reason"] = f"offline_orthogonality_failed:{reason}"
-            payload["error_type"] = "OfflineOrthogonalityError"
-            payload["error"] = payload["skipped_reason"]
-            return payload
-
-        stage_two_ok, stage_two_reasons = _check_stage_two(assessment.metrics, assessment.similarity, production_criteria, rebalance_freq=chosen_freq)
+        stage_two_ok, stage_two_reasons = _check_stage_two(
+            metrics_train, val_metrics, similarity_report, production_criteria
+        )
         payload["delivery_check"]["stage_two"] = {
             "passed": stage_two_ok,
             "fail_reasons": stage_two_reasons,
@@ -410,10 +645,11 @@ class FactorSubmitService:
         engine_gate_cfg = production_criteria.get("engine_gate")
         if isinstance(engine_gate_cfg, dict) and engine_gate_cfg.get("enabled"):
             from alphaagent.factor.mining.engine_gate import run_engine_gate
-            ic_sign = 1 if float(assessment.metrics.get("ic") or 0.0) >= 0 else -1
+            ic_sign = 1 if float(metrics.get("ic") or 0.0) >= 0 else -1
+            # 会话域回测：cand_values 与 session panel 行序一一对应。
             gate = run_engine_gate(
                 panel,
-                prepared_values,
+                cand_values,
                 val_start=ctx.val_start,
                 val_end=ctx.val_end,
                 direction=ic_sign,
@@ -433,14 +669,17 @@ class FactorSubmitService:
                 payload["error"] = payload["skipped_reason"]
                 return payload
 
+        # 真正入库才做一次 canonical 对齐（会话域 → 库行序），指标复用免重算。
+        canonical_values = align_values_to_rows(values_by_key, zoo.index.rows)
         result = ingest_factor(
             zoo,
             factor_id=factor_id,
             name=name,
             expr=expr,
-            panel=panel,
+            panel=None,
             policy=IngestPolicy.from_context(ctx, max_cs_corr=float(production_criteria.get("max_abs_corr", 0.5)), similar_top_k=self.similar_top_k),
-            stored_values=prepared_values,
+            stored_values=canonical_values,
+            metrics_override=metrics,
             overwrite=self.overwrite,
         )
         if not result.stored:

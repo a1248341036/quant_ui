@@ -18,6 +18,7 @@ from agentscope.tool import FunctionTool, Toolkit, ToolChunk
 
 from alphaagent.factor.mining.tools import FactorEvalTools
 from alphaagent.factor.mining.interactions import lint_expression_interaction
+from alphaagent.factor.mining.population import screen_population
 
 _EXECUTOR: ThreadPoolExecutor | None = None
 
@@ -205,14 +206,15 @@ def _orthogonality_check(tools: FactorEvalTools, multi_line_expr: str) -> dict[s
         sampled_panel = _sample_orthogonality_panel(session.panel)
 
         from alphaagent.core.paths import FACTORZOO_DIR
+        from core import factor_categories
         from alphaagent.dsl import eval_factor
         from alphaagent.factor.align import align_series_to_panel
         from alphaagent.factor.metrics import spearman_ic
         from alphaagent.factor.zoo import FactorZoo
 
-        roots = [FACTORZOO_DIR, FACTORZOO_DIR.parent / "candidate_1d"]
+        roots = [FACTORZOO_DIR, factor_categories.candidate_dir("technical")]
         zoos = [FactorZoo.open(root) for root in roots]
-        registry_path = FACTORZOO_DIR.parent / "candidate_1d" / "mining_candidate_registry.json"
+        registry_path = factor_categories.candidate_registry_path("technical")
         registry = json.loads(registry_path.read_text(encoding="utf-8")) if registry_path.is_file() else {}
         if sum(zoo.n_factors for zoo in zoos) == 0 and not registry:
             result["skipped_reason"] = "empty_factor_libraries"
@@ -378,8 +380,13 @@ def build_factor_eval_toolkit(
     max_workers: int = 4,
     reviewer: Any | None = None,
     interaction_policy: dict[str, Any] | None = None,
+    population_max: int = 0,
 ) -> Toolkit:
-    """构建与 OpenAI 版一致的 eval / submit / typed-interaction 工具集。"""
+    """构建与 OpenAI 版一致的 eval / submit / typed-interaction 工具集。
+
+    ``population_max > 0`` 时注册种群批量工具 `propose_population`（路径 B）；
+    0 表示关闭，工具从模型可见列表中整体移除。
+    """
 
     def _gate_interaction(
         expr: str,
@@ -508,6 +515,66 @@ def build_factor_eval_toolkit(
         result.setdefault("factor_name", factor_name)
         return _result_tool_chunk(result)
 
+    async def propose_population(
+        skeletons: list[dict[str, Any]],
+        max_population: int = 24,
+        screen_end: str | None = None,
+    ) -> ToolChunk:
+        """种群批量筛选：提交 1~3 个参数化骨架（DSL 模板 + 参数网格），引擎一次性
+        展开并轻量评估全部候选，返回按 |ICIR| 排序的 top 表与死因直方图。
+
+        使用规范：
+        - 每轮至多调用一次；max_population 默认 24、上限 36，网格别铺满；
+        - 模板占位符写 {param}，如 TS_MEAN(over_gap,{w})；grid 给候选值列表；
+        - 快筛口径只含 IC/ICIR/RankIC/coverage/autocorr（train 侧），不含 mls/月度——
+          幸存者须再用 evaluate_factor(train_screen) 复核后走 submit_factor；
+        - 骨架避免使用需 interaction 契约的算子（GATED_SIGNAL/CS_GROUP_RANK 等），
+          否则后续提交会被契约拦截；
+        - 用途：参数敏感性扫描与机制邻域探索。纯双因子四则组合请先给出
+          与父本正交的新息来源，否则会被 Reviewer 打回。
+        """
+        import asyncio
+
+        # 容忍模型传参漂移：skeletons 可能是 JSON 字符串或单个对象
+        if isinstance(skeletons, str):
+            try:
+                parsed = json.loads(skeletons)
+                skeletons = parsed if isinstance(parsed, list) else [parsed]
+            except json.JSONDecodeError:
+                return _result_tool_chunk({"ok": False, "error": "skeletons_must_be_valid_json_array"})
+        elif isinstance(skeletons, dict):
+            skeletons = [skeletons]
+        skeletons = [s for s in (skeletons or []) if isinstance(s, dict)]
+        if not skeletons:
+            return _result_tool_chunk({
+                "ok": False,
+                "error": "skeletons_empty",
+                "hint": '每个骨架形如 {"name": str, "template": "DSL含{param}占位符", "grid": {"param": [值...]}}',
+            })
+
+        loop = __import__("asyncio").get_running_loop()
+
+        def _run() -> dict[str, Any]:
+            session = tools.service.sessions.get(tools.session_id)
+            return screen_population(
+                session,
+                skeletons,
+                max_population=max_population,
+                screen_end=screen_end,
+            )
+
+        t0 = time.perf_counter()
+        try:
+            result = await asyncio.wait_for(
+                loop.run_in_executor(_executor(max_workers), _run), timeout=1800.0
+            )
+        except asyncio.TimeoutError:
+            result = {"ok": False, "error": f"population_timeout:>1800s (n={max_population})"}
+        except Exception as exc:  # noqa: BLE001
+            result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:400]}
+        result["elapsed_seconds"] = round(time.perf_counter() - t0, 1)
+        return _result_tool_chunk(result)
+
     async def eval_on_val_set(
         multi_line_expr: str,
         factor_name: str = "expr",
@@ -567,6 +634,8 @@ def build_factor_eval_toolkit(
         FunctionTool(eval_on_train_set, name="eval_on_train_set", is_read_only=True),
         FunctionTool(eval_on_val_set, name="eval_on_val_set", is_read_only=True),
     ]
+    if population_max and population_max > 0:
+        func_tools.append(FunctionTool(propose_population, name="propose_population", is_read_only=True))
 
     if tools.submit_service is not None:
 

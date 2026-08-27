@@ -10,6 +10,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from core import trading_config
+
 
 def load_module(path: str):
     spec = importlib.util.spec_from_file_location("lab_strategy", str(path))
@@ -92,8 +94,8 @@ def main() -> int:
                     amount_q=cfg["amount_q"],
                     slippage_bps=float(cfg.get("slippage_bps", 0.0) or 0.0),
                     max_participation=float(cfg.get("max_participation", 0.0) or 0.0),
-                    buy_cost=float(cfg.get("buy_cost", 0.0008) or 0.0008),
-                    sell_cost=float(cfg.get("sell_cost", 0.0013) or 0.0013),
+                    buy_cost=float(cfg.get("buy_cost", trading_config.BUY_COST) or trading_config.BUY_COST),
+                    sell_cost=float(cfg.get("sell_cost", trading_config.SELL_COST) or trading_config.SELL_COST),
                 )
             else:
                 if strategy not in STRATEGIES:

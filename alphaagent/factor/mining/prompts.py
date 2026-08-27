@@ -129,7 +129,7 @@ evaluate_factor(
 
 **优化目标：（1）train 上达到可用的相关水平，且（2）鲁棒性达标。** 鲁棒性覆盖：`monthly_corr_robustness`、`factor_coverage`、因子分布（`factor_skewness`/`factor_kurtosis`）、**`summary.mls_fmb`**，以及少数 val 调用上与 train 不出现灾难性背离。
 
-**【两阶段交付定义】** `submit_factor` 会先执行 pre-submit Reviewer，再在 train-start~val-end 全区间复核。第一阶段（候选登记）：`abs(IC) >= 0.015`、`ICIR > 0.2`、`Coverage > 0.85`、与正式库最大截面相关 `< 0.5`，通过后只写入轻量候选 registry（不物化全量因子值）。第二阶段（精筛正式库）：Reviewer `approve` 且 `abs(IC) >= 0.03`、`ICIR > 0.5`、方向对应多头十分组相对当日全市场等权收益的复利年化超额 `> 3%`、每个交易日 1%/99% 截尾后 `abs(IC)` 衰减 `<= 10%`、与正式库最大截面相关 `< 0.5`；全部通过才写正式库并返回 `stored=true`。ICIR 按原始符号判断，不取绝对值。
+**【两阶段交付定义】** {{DELIVERY_GATES}}
 
 **【会话完成条件】** 挖掘会话的正式交付方式是调用 **`submit_factor`**。统计门槛（第一阶段）通过即写入候选池（`candidate_stored=true`），视为成功交付候选因子。正式库（`stored=true`）需同时通过统计精筛和 FactorReviewer 审查。**只要 train+val 评估有潜力的因子，就应该调用 `submit_factor` 提交候选池**，不要因为 reviewer 在 validation 阶段给出 revise/reject 就放弃提交——reviewer 意见仅供参考改进，候选池入库只看统计数据。仅完成 train/val 评估、口头总结或停在「建议入库」**不算交付**。查重失败时根据返回意见改写后再提交。
 
@@ -307,7 +307,7 @@ tri_gap = CHIP_COM_W_GAP($adj_close, $adj_low, $adj_high, $volume, 40, $vwap, 64
 3. 第二阶段只在 Reviewer `approve` 且 `abs(IC)>=0.03`、`abs(ICIR)>0.5`、多头组年化超额 `>3%`、截尾后 IC 衰减 `<=10%` 和最大相关性 `<0.5` 时进入正式库。
 4. 自动截面去重以正式库为基准；第一阶段阈值 `<0.6`，第二阶段阈值 `<0.5`。
 5. 须传 **`comment`** 说明因子含义（经济直觉、算子、窗口、IC 方向）
-6. 候选池是 `candidate_1d/mining_candidate_registry.json` 的轻量记录；正式库为 `artifacts/alphaagent/factorzoo/stock_1d`。仅 `stored=true` 表示正式入库。
+6. 候选池是 `candidate_technical/mining_candidate_registry.json` 的轻量记录；正式库为 `artifacts/alphaagent/factorzoo/production_technical`。仅 `stored=true` 表示正式入库。
 
 ---
 
@@ -538,6 +538,54 @@ FF_PANEL_COLUMNS = (
 )
 
 
+def _delivery_gates_markdown(spec: dict[str, Any] | None) -> str:
+    """从 ResearchSpec 动态渲染两阶段交付门槛，保证提示词与真实门禁永不脱节。"""
+    from alphaagent.factor.mining.research_spec import default_research_spec
+
+    s = spec or default_research_spec()
+    cand = (s.get("delivery_policy") or {}).get("candidate") or {}
+    prod = (s.get("delivery_policy") or {}).get("production") or {}
+    gate = prod.get("engine_gate") or {}
+    review = s.get("review_policy") or {}
+
+    def _pct(v, digits=1) -> str:
+        try:
+            return f"{float(v)*100:.{digits}f}%"
+        except (TypeError, ValueError):
+            return str(v)
+
+    stage_one = (
+        f"第一阶段（候选登记，train-only 窗口）：`abs(IC) >= {cand.get('min_abs_ic', 0.015)}`、"
+        f"`ICIR > {cand.get('min_icir', 0.25)}`、`Coverage > {_pct(cand.get('min_coverage', 0.85))}`、"
+        f"`cs_autocorr >= {cand.get('min_cs_autocorr', 0.18)}`、"
+        f"`val/train IC 保留比 >= {_pct(cand.get('min_val_ic_retention', 0.5))}` 且方向不反转、"
+        f"与正式库最大截面相关 `< {cand.get('max_abs_corr', 0.5)}`；"
+        "通过后写入轻量候选 registry（不物化全量因子值）。"
+    )
+    stage_two = (
+        f"第二阶段（精筛正式库）：Reviewer `approve`（novelty ≥ "
+        f"{review.get('minimum_novelty', 'medium')}）且 `abs(IC) >= {prod.get('min_abs_ic', 0.025)}`、"
+        f"`abs(ICIR) >= {prod.get('min_icir', 0.35)}`（全窗口径）、"
+        f"FMB t ≥ {prod.get('min_fmb_t_stat', 2.0)}、多空 NW t ≥ {prod.get('min_ls_t_stat', 2.0)}、"
+        f"分位多头年化超额 ≥ {_pct(prod.get('min_quantile_excess_return', 0.03))}、"
+        f"分位夏普 ≥ {prod.get('min_quantile_sharpe', 0.3)}、"
+        f"单调性 ≥ {prod.get('min_monotonicity', 0.3)}、"
+        f"截尾 IC 衰减 ≤ {_pct(prod.get('max_winsorized_abs_ic_decay', 0.1))}、"
+        f"与正式库最大截面相关 `< {prod.get('max_abs_corr', 0.4)}`。"
+    )
+    engine = (
+        f"最终还需通过 engine_gate 完整回测（调仓频率 {gate.get('freq', 'weekly')}、"
+        f"动态 top {_pct(gate.get('selection_pct', 0.02))} 选股、超额年化 ≥ "
+        f"{_pct(gate.get('min_excess_annual', 0.02))}、夏普 ≥ {gate.get('min_sharpe', 0.3)}、"
+        f"回撤 ≤ {_pct(gate.get('max_drawdown', 0.4))}）。"
+    )
+    return (
+        "`submit_factor` 会先执行 pre-submit Reviewer，再在 train-start~val-end 全区间复核。"
+        + stage_one + stage_two + engine
+        + " 全部通过才写正式库并返回 `stored=true`。ICIR 按原始符号判断，不取绝对值。"
+    )
+
+
 def build_system_prompt(
     *,
     include_operator_catalog: bool = True,
@@ -545,6 +593,8 @@ def build_system_prompt(
     label_col: str = DEFAULT_LABEL_COL,
     include_fundamentals: bool = True,
     panel_columns: list[str] | None = None,
+    population_max: int = 0,
+    research_spec: dict[str, Any] | None = None,
 ) -> str:
     """按模块装配系统提示词；返回最终文本。
 
@@ -564,6 +614,7 @@ def build_system_prompt(
 
     core_body = (
         FACTOR_MINING_INTERFACE_PROMPT.replace("{{OPERATOR_CATALOG}}", catalog)
+        .replace("{{DELIVERY_GATES}}", _delivery_gates_markdown(research_spec))
         .replace("{{MLS_FMB_THRESHOLDS}}", mls_block)
         .replace("{{LABEL_SECTION}}", _label_section_markdown(label_col, include_fundamentals=funda_effective))
         .replace("{{FUNDAMENTAL_SECTION}}", funda_block)
@@ -586,6 +637,18 @@ def build_system_prompt(
     examples = _tool_call_examples_section(include_fundamentals=funda_effective)
     parts.append(examples.strip())
     module_report.append({"module": "tool_examples", "enabled": True, "chars": len(examples)})
+
+    if population_max and population_max > 0:
+        pop_block = (
+            f"**种群批量模式已启用（`propose_population`，单轮候选上限 {population_max}）**："
+            "需要做参数敏感性扫描或机制邻域探索时，优先用该工具一次性覆盖整个参数网格，"
+            "再对 top 候选用 `evaluate_factor(train_screen)` 复核并提交；"
+            "避免逐条手工试参。骨架模板用 `{param}` 占位符，网格总量不要铺满上限。"
+        )
+        parts.append(pop_block)
+        module_report.append({"module": "population_mode", "enabled": True, "chars": len(pop_block)})
+    else:
+        module_report.append({"module": "population_mode", "enabled": False, "chars": 0})
 
     if extra_instructions.strip():
         parts.append(extra_instructions.strip())
