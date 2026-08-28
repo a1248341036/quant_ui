@@ -46,6 +46,7 @@ def _candidate_registry_similarity(
     exclude_factor_id: str | None = None,
     min_pairs: int = 30,
     top_k: int = 3,
+    cache=None,
 ) -> dict[str, Any] | None:
     """候选因子与候选 registry 中已有因子的截面 Pearson 相似度。
 
@@ -92,7 +93,10 @@ def _candidate_registry_similarity(
         if not expr_text:
             continue
         try:
-            old_raw = eval_factor(expr_text, panel)
+            if cache is not None:
+                old_raw = cache.evaluate(expr_text, panel, lambda: eval_factor(expr_text, panel))
+            else:
+                old_raw = eval_factor(expr_text, panel)
             if not isinstance(old_raw, pd.Series):
                 continue
             old_aligned = align_series_to_panel(old_raw, panel)
@@ -356,7 +360,7 @@ class FactorSubmitService:
             ctx, max_cs_corr=self.criteria.candidate.max_abs_corr, similar_top_k=self.similar_top_k
         )
         # ①+③ 会话域物化：长度恒等于 panel 行数，指标直接可算。
-        materialized = materialize_factor(expr, panel)
+        materialized = materialize_factor(expr, panel, cache=getattr(session, "factor_cache", None))
         cand_values = materialized.values
         if stage_one_policy.clip_pct is not None:
             lo_pct, hi_pct = float(stage_one_policy.clip_pct[0]), float(stage_one_policy.clip_pct[1])
@@ -426,6 +430,7 @@ class FactorSubmitService:
                 cand_values, panel, self.candidate_registry_path,
                 exclude_factor_id=factor_id,
                 top_k=stage_one_policy.similar_top_k,
+                cache=getattr(session, "factor_cache", None),
             )
         # 准入判定：统计/换手/保留比任一不过即拒；全过再叠加相似度 corr 检查
         # （只查正式库，见上）。

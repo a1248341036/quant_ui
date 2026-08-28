@@ -11,6 +11,7 @@ from typing import Any
 import pandas as pd
 
 from alphaagent.data.panel import load_panel, slice_panel
+from alphaagent.factor.cache import FactorValueCache
 from alphaagent.factor.mining.context import StockEvalContext
 from alphaagent.factor.evaluation.candidate import CandidateRegistry
 
@@ -25,6 +26,7 @@ class StockEvalSession:
     created_at: float = field(default_factory=time.time)
     _split_cache: dict[str, pd.DataFrame] = field(default_factory=dict, repr=False)
     _split_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    factor_cache: FactorValueCache = field(default_factory=FactorValueCache, repr=False)
 
     def get_split_panel(self, split: str) -> tuple[pd.DataFrame, str, str]:
         """返回 (panel_slice, start, end)。"""

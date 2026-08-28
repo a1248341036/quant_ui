@@ -157,11 +157,187 @@ def roll_fixed(
 
 
 @njit(cache=True)
+def _roll_window_value(vals: np.ndarray, lo: int, i: int, op: int, ddof: int) -> float:
+    """窗口 ``vals[lo..i]`` 上的聚合值（op 语义与 pandas rolling 对齐）。
+
+    供固定窗内核与带 instrument 边界的全列内核共用，保证两种路径数值一致。
+    """
+    if op == 0:  # mean
+        s = 0.0
+        c = 0
+        for j in range(lo, i + 1):
+            v = vals[j]
+            if v == v:  # not nan
+                s += v
+                c += 1
+        return s / c if c > 0 else np.nan
+    elif op == 1:  # std
+        s = 0.0
+        sq = 0.0
+        c = 0
+        for j in range(lo, i + 1):
+            v = vals[j]
+            if v == v:
+                s += v
+                sq += v * v
+                c += 1
+        if c > ddof:
+            mean = s / c
+            var = (sq - 2 * mean * s + c * mean * mean) / (c - ddof)
+            return np.sqrt(max(0.0, var))
+        else:
+            return np.nan
+    elif op == 2:  # sum
+        s = 0.0
+        c = 0
+        for j in range(lo, i + 1):
+            v = vals[j]
+            if v == v:
+                s += v
+                c += 1
+        return s if c > 0 else np.nan
+    elif op == 3:  # min
+        m = np.inf
+        for j in range(lo, i + 1):
+            v = vals[j]
+            if v == v and v < m:
+                m = v
+        return m if m != np.inf else np.nan
+    elif op == 4:  # max
+        m = -np.inf
+        for j in range(lo, i + 1):
+            v = vals[j]
+            if v == v and v > m:
+                m = v
+        return m if m != -np.inf else np.nan
+    elif op == 5:  # rank_pct — 与 pandas ``rolling().rank(pct=True)``：average rank / nvalid
+        nvalid = 0
+        for j in range(lo, i + 1):
+            v = vals[j]
+            if v == v:
+                nvalid += 1
+        if nvalid == 0:
+            return np.nan
+        curr = vals[i]
+        if curr != curr:
+            return np.nan
+        less = 0
+        equal = 0
+        for j in range(lo, i + 1):
+            v = vals[j]
+            if v == v:
+                if v < curr:
+                    less += 1
+                elif v == curr:
+                    equal += 1
+        rank_low = float(less + 1)
+        rank_high = float(less + equal)
+        rank_avg = (rank_low + rank_high) / 2.0
+        return rank_avg / float(nvalid)
+    elif op == 6:  # var
+        s = 0.0
+        sq = 0.0
+        c = 0
+        for j in range(lo, i + 1):
+            v = vals[j]
+            if v == v:
+                s += v
+                sq += v * v
+                c += 1
+        if c > ddof:
+            mean = s / c
+            var = (sq - 2 * mean * s + c * mean * mean) / (c - ddof)
+            return max(0.0, var)
+        else:
+            return np.nan
+    elif op == 7:  # median
+        wlen = i - lo + 1
+        tmp = np.empty(wlen, dtype=np.float32)
+        c = 0
+        for j in range(lo, i + 1):
+            v = vals[j]
+            if v == v:
+                tmp[c] = v
+                c += 1
+        if c == 0:
+            return np.nan
+        buf = np.sort(tmp[:c])
+        if c % 2 == 1:
+            return buf[c // 2]
+        else:
+            return (buf[c // 2 - 1] + buf[c // 2]) / 2.0
+    elif op == 8:  # skew — pandas nanops.nanskew
+        wlen = i - lo + 1
+        tmp = np.empty(wlen, dtype=np.float32)
+        c = 0
+        for j in range(lo, i + 1):
+            v = vals[j]
+            if v == v:
+                tmp[c] = v
+                c += 1
+        if c < 3:
+            return np.nan
+        buf = tmp[:c]
+        sm = 0.0
+        for t in range(c):
+            sm += buf[t]
+        mean = sm / c
+        m2 = 0.0
+        m3 = 0.0
+        for t in range(c):
+            d = buf[t] - mean
+            d2 = d * d
+            m2 += d2
+            m3 += d2 * d
+        if m2 == 0.0:
+            return 0.0
+        return (c * np.sqrt(c - 1) / (c - 2)) * (m3 / (m2 ** 1.5))
+    elif op == 9:  # kurt — pandas rolling().kurt() adjusted Fisher–Pearson (excess)
+        wlen = i - lo + 1
+        tmp = np.empty(wlen, dtype=np.float32)
+        c = 0
+        for j in range(lo, i + 1):
+            v = vals[j]
+            if v == v:
+                tmp[c] = v
+                c += 1
+        if c < 4:
+            return np.nan
+        buf = tmp[:c]
+        sm = 0.0
+        for t in range(c):
+            sm += buf[t]
+        mean = sm / c
+        m2 = 0.0
+        m4 = 0.0
+        for t in range(c):
+            d = buf[t] - mean
+            d2 = d * d
+            m2 += d2
+            m4 += d2 * d2
+        if m2 == 0.0:
+            return 0.0
+        nf = float(c)
+        numer = nf * (nf - 1.0) * (nf + 1.0) * m4
+        denom = (nf - 2.0) * (nf - 3.0) * m2 * m2
+        adj = 3.0 * (nf - 1.0) * (nf - 1.0) / ((nf - 2.0) * (nf - 3.0))
+        return numer / denom - adj
+    elif op == 10:  # prod — NaN as 1
+        p = 1.0
+        for j in range(lo, i + 1):
+            v = vals[j]
+            p *= v if v == v else 1.0
+        return p
+    else:
+        return np.nan
+
+
+@njit(cache=True)
 def _roll_fixed_numba(vals: np.ndarray, window: int, op: int, ddof: int) -> np.ndarray:
     """Numba 实现的固定窗滚动（与 C++ 语义一致）。"""
     n = vals.shape[0]
     out = np.empty(n, dtype=np.float32)
-    
+
     for i in range(n):
         w = window
         if w < 1:
@@ -169,186 +345,64 @@ def _roll_fixed_numba(vals: np.ndarray, window: int, op: int, ddof: int) -> np.n
         if w > i + 1:
             w = i + 1
         lo = i + 1 - w
-        
-        if op == 0:  # mean
-            s = 0.0
-            c = 0
-            for j in range(lo, i + 1):
-                v = vals[j]
-                if v == v:  # not nan
-                    s += v
-                    c += 1
-            out[i] = s / c if c > 0 else np.nan
-        elif op == 1:  # std
-            s = 0.0
-            sq = 0.0
-            c = 0
-            for j in range(lo, i + 1):
-                v = vals[j]
-                if v == v:
-                    s += v
-                    sq += v * v
-                    c += 1
-            if c > ddof:
-                mean = s / c
-                var = (sq - 2 * mean * s + c * mean * mean) / (c - ddof)
-                out[i] = np.sqrt(max(0.0, var))
-            else:
-                out[i] = np.nan
-        elif op == 2:  # sum
-            s = 0.0
-            c = 0
-            for j in range(lo, i + 1):
-                v = vals[j]
-                if v == v:
-                    s += v
-                    c += 1
-            out[i] = s if c > 0 else np.nan
-        elif op == 3:  # min
-            m = np.inf
-            for j in range(lo, i + 1):
-                v = vals[j]
-                if v == v and v < m:
-                    m = v
-            out[i] = m if m != np.inf else np.nan
-        elif op == 4:  # max
-            m = -np.inf
-            for j in range(lo, i + 1):
-                v = vals[j]
-                if v == v and v > m:
-                    m = v
-            out[i] = m if m != -np.inf else np.nan
-        elif op == 5:  # rank_pct — 与 pandas ``rolling().rank(pct=True)``：average rank / nvalid
-            nvalid = 0
-            for j in range(lo, i + 1):
-                v = vals[j]
-                if v == v:
-                    nvalid += 1
-            if nvalid == 0:
-                out[i] = np.nan
-            else:
-                curr = vals[i]
-                if curr != curr:
-                    out[i] = np.nan
-                else:
-                    less = 0
-                    equal = 0
-                    for j in range(lo, i + 1):
-                        v = vals[j]
-                        if v == v:
-                            if v < curr:
-                                less += 1
-                            elif v == curr:
-                                equal += 1
-                    rank_low = float(less + 1)
-                    rank_high = float(less + equal)
-                    rank_avg = (rank_low + rank_high) / 2.0
-                    out[i] = rank_avg / float(nvalid)
-        elif op == 6:  # var
-            s = 0.0
-            sq = 0.0
-            c = 0
-            for j in range(lo, i + 1):
-                v = vals[j]
-                if v == v:
-                    s += v
-                    sq += v * v
-                    c += 1
-            if c > ddof:
-                mean = s / c
-                var = (sq - 2 * mean * s + c * mean * mean) / (c - ddof)
-                out[i] = max(0.0, var)
-            else:
-                out[i] = np.nan
-        elif op == 7:  # median
-            wlen = i - lo + 1
-            tmp = np.empty(wlen, dtype=np.float32)
-            c = 0
-            for j in range(lo, i + 1):
-                v = vals[j]
-                if v == v:
-                    tmp[c] = v
-                    c += 1
-            if c == 0:
-                out[i] = np.nan
-            else:
-                buf = np.sort(tmp[:c])
-                if c % 2 == 1:
-                    out[i] = buf[c // 2]
-                else:
-                    out[i] = (buf[c // 2 - 1] + buf[c // 2]) / 2.0
-        elif op == 8:  # skew — pandas nanops.nanskew
-            wlen = i - lo + 1
-            tmp = np.empty(wlen, dtype=np.float32)
-            c = 0
-            for j in range(lo, i + 1):
-                v = vals[j]
-                if v == v:
-                    tmp[c] = v
-                    c += 1
-            if c < 3:
-                out[i] = np.nan
-            else:
-                buf = tmp[:c]
-                sm = 0.0
-                for t in range(c):
-                    sm += buf[t]
-                mean = sm / c
-                m2 = 0.0
-                m3 = 0.0
-                for t in range(c):
-                    d = buf[t] - mean
-                    d2 = d * d
-                    m2 += d2
-                    m3 += d2 * d
-                if m2 == 0.0:
-                    out[i] = 0.0
-                else:
-                    out[i] = (
-                        (c * np.sqrt(c - 1) / (c - 2)) * (m3 / (m2 ** 1.5))
-                    )
-        elif op == 9:  # kurt — pandas rolling().kurt() adjusted Fisher–Pearson (excess)
-            wlen = i - lo + 1
-            tmp = np.empty(wlen, dtype=np.float32)
-            c = 0
-            for j in range(lo, i + 1):
-                v = vals[j]
-                if v == v:
-                    tmp[c] = v
-                    c += 1
-            if c < 4:
-                out[i] = np.nan
-            else:
-                buf = tmp[:c]
-                sm = 0.0
-                for t in range(c):
-                    sm += buf[t]
-                mean = sm / c
-                m2 = 0.0
-                m4 = 0.0
-                for t in range(c):
-                    d = buf[t] - mean
-                    d2 = d * d
-                    m2 += d2
-                    m4 += d2 * d2
-                if m2 == 0.0:
-                    out[i] = 0.0
-                else:
-                    nf = float(c)
-                    numer = nf * (nf - 1.0) * (nf + 1.0) * m4
-                    denom = (nf - 2.0) * (nf - 3.0) * m2 * m2
-                    adj = 3.0 * (nf - 1.0) * (nf - 1.0) / ((nf - 2.0) * (nf - 3.0))
-                    out[i] = numer / denom - adj
-        elif op == 10:  # prod — NaN as 1
-            p = 1.0
-            for j in range(lo, i + 1):
-                v = vals[j]
-                p *= v if v == v else 1.0
-            out[i] = p
-        else:
-            out[i] = np.nan
-    
+        out[i] = _roll_window_value(vals, lo, i, op, ddof)
+
     return out
+
+
+@njit(cache=True)
+def _roll_fixed_boundaries_numba(
+    vals: np.ndarray,
+    boundaries: np.ndarray,
+    window: int,
+    op: int,
+    ddof: int,
+) -> np.ndarray:
+    """全列一次性滚动：``boundaries`` 为每个品种在该列上的起始下标。
+
+    每个品种的滚动窗口只在自己区间 ``[boundaries[b], boundaries[b+1])`` 内生效，
+    不会跨品种泄漏。把 22388 次 Python 回调消除为一次 Numba 调用。
+    """
+    n = vals.shape[0]
+    nb = boundaries.shape[0]
+    out = np.empty(n, dtype=np.float32)
+
+    for b in range(nb):
+        start = boundaries[b]
+        end = boundaries[b + 1] if b + 1 < nb else n
+        for i in range(start, end):
+            w = window
+            if w < 1:
+                w = 1
+            avail = i + 1 - start
+            if w > avail:
+                w = avail
+            lo = i + 1 - w
+            out[i] = _roll_window_value(vals, lo, i, op, ddof)
+
+    return out
+
+
+def roll_fixed_boundaries(
+    vals: np.ndarray,
+    boundaries: np.ndarray,
+    window: int,
+    kind: str,
+    *,
+    ddof: int = 1,
+) -> np.ndarray:
+    """全列滚动聚合（带品种边界），与 ``roll_fixed`` 数值语义一致。
+
+    用于按 (datetime, instrument) 排序的面板：先把列稳定按品种归组得到连续区间，
+    再一次性跑边界内核，消除按品种的 Python 级回调开销。
+    """
+    op = _OP_MAP_FIXED.get(kind)
+    if op is None:
+        raise ValueError(f"Unknown kind: {kind}")
+    return _roll_fixed_boundaries_numba(
+        np.asarray(vals, dtype=np.float64), np.asarray(boundaries, dtype=np.int64),
+        int(window), op, int(ddof),
+    )
 
 
 # =============================================================================

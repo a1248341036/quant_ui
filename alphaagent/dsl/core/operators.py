@@ -18,6 +18,7 @@ from . import chip_daily as _chip_daily
 from .ops_kit import (
     Window,
     as_int_window as _as_int_window,
+    datetime_group_bounds as _datetime_group_bounds,
     dynamic_window_int_series as _dynamic_window_int_series,
     first_series as _first_series,
     gb_instrument as _gb_instrument,
@@ -62,8 +63,13 @@ def _chip_wass_rho_series(rho_w: Window, index: pd.Index) -> np.ndarray:
 
 
 def _ts_agg_fixed_accel(df: pd.DataFrame, window: int, kind: str, ddof: int = 1) -> pd.DataFrame:
-    """固定窗滚动聚合，使用 C++ 或 Numba 加速后端。
-    
+    """固定窗滚动聚合（Numba 全列边界内核）。
+
+    面板按 (datetime, instrument) 排序。先把单列值按 instrument 稳定归组
+    得到连续区间（boundaries），再一次性调用全列滚动内核，消除按品种的
+    Python 级 groupby.transform 回调开销（2 万+ 次回调 → 1 次 Numba 调用）。
+    数值语义与旧 ``roll_fixed`` 逐品种路径一致（同一窗口/NaN 规则）。
+
     Args:
         kind: "mean", "std", "sum", "min", "max", "rank_pct", "median", "var", "skew", "kurt", "prod"
     """
@@ -84,13 +90,28 @@ def _ts_agg_fixed_accel(df: pd.DataFrame, window: int, kind: str, ddof: int = 1)
     if accel_kind is None:
         raise ValueError(f"Unknown kind: {kind}")
 
-    def _roll_accelerated(s: pd.Series) -> pd.Series:
-        vals = s.to_numpy(dtype=float, copy=False)
-        out = _accel.roll_fixed(vals, window, accel_kind, ddof=ddof)
-        return pd.Series(out, index=s.index)
+    ser = _first_series(df)
+    vals = ser.to_numpy(dtype=float, copy=False)
 
-    ser = _gb_instrument(df).transform(lambda x: _roll_accelerated(_series_from_group(x)))
-    return _out_frame(ser, df)
+    # 稳定按 instrument 归组：得到每个品种在重排后列中的连续区间
+    inst = df.index.get_level_values("instrument")
+    codes, _ = pd.factorize(inst, sort=False)
+    order = np.argsort(codes, kind="stable")
+    sorted_codes = codes[order]
+    boundaries = np.flatnonzero(
+        np.concatenate(([True], sorted_codes[1:] != sorted_codes[:-1]))
+    )
+
+    reordered = vals[order]
+    out_reordered = _accel.roll_fixed_boundaries(
+        reordered, boundaries, window, accel_kind, ddof=ddof
+    )
+    # 逆置换写回原位置
+    inv = np.empty_like(order)
+    inv[order] = np.arange(len(order))
+    out = out_reordered[inv]
+
+    return _out_frame(pd.Series(out, index=df.index), df)
 
 
 def _ts_agg(
@@ -1841,8 +1862,6 @@ def TS_TROUGH(df: pd.DataFrame, confirm_window: int = 10) -> pd.DataFrame:
 # 截面算子（per datetime）
 # -----------------------------------------------------------------------------
 
-_CS_MIN_PAIRS: int = 2
-
 
 def _validate_cs_panel(df: pd.DataFrame, *, name: str) -> None:
     if not isinstance(df, pd.DataFrame):
@@ -1855,21 +1874,33 @@ def _validate_cs_panel(df: pd.DataFrame, *, name: str) -> None:
         raise ValueError(f"{name} 索引须含 datetime 层")
 
 
+def _bucket_cs_fallback(s: pd.Series, n_bins: int) -> pd.Series:
+    """逐日 qcut 分组（未排序面板的回落实现，与向量化路径语义一致）。"""
+    finite = s.notna()
+    if not finite.any():
+        return pd.Series(np.nan, index=s.index, dtype=np.float32)
+    if int(finite.sum()) < n_bins:
+        return pd.Series(np.nan, index=s.index, dtype=np.float32)
+    valid = s.loc[finite]
+    try:
+        codes = pd.qcut(valid, n_bins, labels=False, duplicates="drop")
+    except ValueError:
+        codes = pd.qcut(valid.rank(method="first"), n_bins, labels=False, duplicates="drop")
+    out = pd.Series(np.nan, index=s.index, dtype=np.float32)
+    out.loc[finite] = codes.astype(np.float32)
+    return out
+
+
 def RANK(df: pd.DataFrame) -> pd.DataFrame:
     """每个 **datetime 截面**内的百分位秩 ∈ [0, 1]（``rank(pct=True, method='average')``）。
 
     与 ``TS_RANK``（单 instrument 窗口内时序秩）不同。NaN 不参与排序；截面无有效值时为 NaN。"""
     _validate_cs_panel(df, name="RANK")
 
-    def _rank_cs(s: pd.Series) -> pd.Series:
-        finite = s.notna()
-        if not finite.any():
-            return pd.Series(np.nan, index=s.index, dtype=np.float32)
-        out = pd.Series(np.nan, index=s.index, dtype=np.float32)
-        out.loc[finite] = s.loc[finite].rank(pct=True, method="average").astype(np.float32)
-        return out
-
-    return _per_datetime_transform(df, _rank_cs)
+    ser = _first_series(df)
+    # groupby.rank 为 C 内核向量化，NaN 自动不参与
+    out = ser.groupby(level="datetime", sort=False).rank(pct=True, method="average")
+    return _out_frame(out.astype(np.float32), df)
 
 
 def CS_ZSCORE(df: pd.DataFrame, ddof: int = 1) -> pd.DataFrame:
@@ -1879,37 +1910,29 @@ def CS_ZSCORE(df: pd.DataFrame, ddof: int = 1) -> pd.DataFrame:
     _validate_cs_panel(df, name="CS_ZSCORE")
     d = int(ddof)
 
-    def _zscore_cs(s: pd.Series) -> pd.Series:
-        finite = s.notna()
-        n = int(finite.sum())
-        if n < _CS_MIN_PAIRS:
-            return pd.Series(np.nan, index=s.index, dtype=np.float32)
-        vals = s.loc[finite].to_numpy(dtype=float, copy=False)
-        mu = float(np.mean(vals))
-        std = float(np.std(vals, ddof=d))
-        if not np.isfinite(std) or std == 0.0:
-            return pd.Series(np.nan, index=s.index, dtype=np.float32)
-        out = pd.Series(np.nan, index=s.index, dtype=np.float32)
-        out.loc[finite] = ((s.loc[finite] - mu) / std).astype(np.float32)
-        return out
-
-    return _per_datetime_transform(df, _zscore_cs)
+    ser = _first_series(df)
+    arr = ser.to_numpy(dtype=float, copy=False)
+    day_level = ser.index.get_level_values("datetime")
+    grp = ser.groupby(level="datetime", sort=False)
+    mean_arr = grp.mean().reindex(day_level).to_numpy(dtype=float)
+    std_arr = grp.std(ddof=d).reindex(day_level).to_numpy(dtype=float)
+    out = (arr - mean_arr) / std_arr
+    # 有效样本 <2 或 std=0 的截面整体 NaN（与旧逐日实现一致）
+    bad = ~np.isfinite(std_arr) | (std_arr == 0.0)
+    out[bad] = np.nan
+    return pd.DataFrame(out.astype(np.float32), index=df.index, columns=df.columns[:1])
 
 
 def CS_DEMEAN(df: pd.DataFrame) -> pd.DataFrame:
     """截面去均值：``x - mean``（按 datetime 分组）。有效样本 < 1 时该截面为 NaN。"""
     _validate_cs_panel(df, name="CS_DEMEAN")
 
-    def _demean_cs(s: pd.Series) -> pd.Series:
-        finite = s.notna()
-        if not finite.any():
-            return pd.Series(np.nan, index=s.index, dtype=np.float32)
-        mu = float(s.loc[finite].mean())
-        out = pd.Series(np.nan, index=s.index, dtype=np.float32)
-        out.loc[finite] = (s.loc[finite] - mu).astype(np.float32)
-        return out
-
-    return _per_datetime_transform(df, _demean_cs)
+    ser = _first_series(df)
+    arr = ser.to_numpy(dtype=float, copy=False)
+    day_level = ser.index.get_level_values("datetime")
+    mean_arr = ser.groupby(level="datetime", sort=False).mean().reindex(day_level).to_numpy(dtype=float)
+    out = arr - mean_arr
+    return pd.DataFrame(out.astype(np.float32), index=df.index, columns=df.columns[:1])
 
 
 def CS_WINSORIZE(
@@ -1926,19 +1949,18 @@ def CS_WINSORIZE(
     if not (0.0 <= lo < hi <= 1.0):
         raise ValueError("CS_WINSORIZE 要求 0 <= lower_pct < upper_pct <= 1")
 
-    def _winsor_cs(s: pd.Series) -> pd.Series:
-        finite = s.notna()
-        if not finite.any():
-            return pd.Series(np.nan, index=s.index, dtype=np.float32)
-        valid = s.loc[finite]
-        q_lo = float(valid.quantile(lo))
-        q_hi = float(valid.quantile(hi))
-        out = pd.Series(np.nan, index=s.index, dtype=np.float32)
-        clipped = valid.clip(lower=q_lo, upper=q_hi).astype(np.float32)
-        out.loc[finite] = clipped
-        return out
-
-    return _per_datetime_transform(df, _winsor_cs)
+    ser = _first_series(df)
+    arr = ser.to_numpy(dtype=float, copy=False)
+    day_level = ser.index.get_level_values("datetime")
+    # 全向量化：一次 groupby.quantile（C 内核）求每日上下分位，再按行广播 clip，
+    # 消除逐日 Python 回调（1454 天 → 1 次 groupby + 1 次 reindex + 1 次 clip）。
+    grp = ser.groupby(level="datetime", sort=False)
+    q_lo = grp.quantile(lo)
+    q_hi = grp.quantile(hi)
+    lo_arr = q_lo.reindex(day_level).to_numpy(dtype=float)
+    hi_arr = q_hi.reindex(day_level).to_numpy(dtype=float)
+    out = np.clip(arr, lo_arr, hi_arr)
+    return pd.DataFrame(out.astype(np.float32), index=df.index, columns=df.columns[:1])
 
 
 def CS_BUCKET(df: pd.DataFrame, n_bins: int) -> pd.DataFrame:
@@ -1952,22 +1974,27 @@ def CS_BUCKET(df: pd.DataFrame, n_bins: int) -> pd.DataFrame:
     if n < 2:
         raise ValueError("CS_BUCKET 要求 n_bins >= 2")
 
-    def _bucket_cs(s: pd.Series) -> pd.Series:
-        finite = s.notna()
-        if not finite.any():
-            return pd.Series(np.nan, index=s.index, dtype=np.float32)
-        if int(finite.sum()) < n:
-            return pd.Series(np.nan, index=s.index, dtype=np.float32)
-        valid = s.loc[finite]
+    ser = _first_series(df)
+    arr = ser.to_numpy(dtype=float, copy=False)
+    out = np.full(len(arr), np.nan, dtype=np.float32)
+    bounds = _datetime_group_bounds(df)
+    if bounds is None:
+        # 面板未按 datetime 排序：回落逐日 groupby 路径
+        return _per_datetime_transform(df, lambda s: _bucket_cs_fallback(s, n))
+    for i in range(len(bounds) - 1):
+        st, en = int(bounds[i]), int(bounds[i + 1])
+        day = arr[st:en]
+        finite_mask = np.isfinite(day)
+        cnt = int(finite_mask.sum())
+        if cnt < n:
+            continue  # 该截面保持 NaN
+        valid = day[finite_mask]
         try:
             codes = pd.qcut(valid, n, labels=False, duplicates="drop")
         except ValueError:
-            codes = pd.qcut(valid.rank(method="first"), n, labels=False, duplicates="drop")
-        out = pd.Series(np.nan, index=s.index, dtype=np.float32)
-        out.loc[finite] = codes.astype(np.float32)
-        return out
-
-    return _per_datetime_transform(df, _bucket_cs)
+            codes = pd.qcut(pd.Series(valid).rank(method="first"), n, labels=False, duplicates="drop")
+        out[st:en][finite_mask] = codes.astype(np.float32)
+    return pd.DataFrame(out, index=df.index, columns=df.columns[:1])
 
 
 def CS_NEUTRALIZE(x: pd.DataFrame, group: pd.DataFrame) -> pd.DataFrame:

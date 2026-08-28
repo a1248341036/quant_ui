@@ -104,7 +104,11 @@ class EvaluationEngine:
         started = time.perf_counter()
         try:
             point = time.perf_counter()
-            raw = eval_factor(multi_line_expr, panel)
+            cache = getattr(session, "factor_cache", None)
+            if cache is not None:
+                raw = cache.evaluate(multi_line_expr, panel, lambda: eval_factor(multi_line_expr, panel))
+            else:
+                raw = eval_factor(multi_line_expr, panel)
             timing["dsl_eval_ms"] = (time.perf_counter() - point) * 1000
             if not isinstance(raw, pd.Series):
                 raise TypeError(f"factor_output_must_be_series:{type(raw)!r}")

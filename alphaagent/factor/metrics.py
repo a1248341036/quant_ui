@@ -473,6 +473,68 @@ def _cross_section_decile_mean_labels(
     return means
 
 
+# 逐日十分组 label 均值的计算入口：返回 {ts: means} 按日字典（空 dict 表示无达标日）。
+# 不设全局记忆化——因子对象地址会随 GC 复用，id 记忆化有错误命中风险。
+# 同一次 evaluate 内由 mls_fmb 显式计算一次并传给 rho/ls 两个 series 函数共享。
+def _compute_daily_decile_mean_labels(
+    factor: pd.Series,
+    label: pd.Series,
+    *,
+    time_level: str = "datetime",
+    n_deciles: int = 10,
+    min_stocks: int = 30,
+) -> dict[object, list[float]]:
+    """逐日截面十分组 label 均值（{ts: means}）；样本不足日跳过。"""
+    if not isinstance(factor.index, pd.MultiIndex):
+        raise ValueError("_iter_daily_decile_mean_labels 需要 MultiIndex 面板 (datetime, instrument)")
+    if time_level not in factor.index.names:
+        raise ValueError(f"索引缺少 level={time_level!r}")
+
+    dts = factor.index.get_level_values(time_level)
+    f_arr = factor.to_numpy(dtype=np.float64, copy=False)
+    l_arr = label.to_numpy(dtype=np.float64, copy=False)
+    n = len(f_arr)
+    all_means: dict[object, list[float]] = {}
+    if n == 0:
+        return all_means
+
+    # 连续运行区间（datetime 层非递减）；否则回落 groupby
+    dt_np = dts._values
+    sorted_ok = True
+    if len(dt_np) > 1 and not (dt_np[1:] >= dt_np[:-1]).all():
+        sorted_ok = False
+    if not sorted_ok:
+        for ts, f_sub in factor.groupby(level=time_level, sort=False):
+            y_sub = label.xs(ts, level=time_level)
+            means = _cross_section_decile_mean_labels(
+                f_sub.to_numpy(dtype=np.float64, copy=False),
+                y_sub.to_numpy(dtype=np.float64, copy=False),
+                n_deciles=n_deciles,
+                min_stocks=min_stocks,
+            )
+            if means is not None:
+                all_means[ts] = means
+        return all_means
+
+    change = np.flatnonzero(dt_np[1:] != dt_np[:-1]) + 1
+    bounds = np.concatenate(([0], change, [n])).astype(np.int64)
+    for i in range(len(bounds) - 1):
+        st, en = int(bounds[i]), int(bounds[i + 1])
+        if en - st < min_stocks or en - st < n_deciles:
+            continue
+        f_day = f_arr[st:en]
+        l_day = l_arr[st:en]
+        mask = np.isfinite(f_day) & np.isfinite(l_day)
+        if int(mask.sum()) < min_stocks or int(mask.sum()) < n_deciles:
+            continue
+        means = _cross_section_decile_mean_labels(
+            f_day, l_day, n_deciles=n_deciles, min_stocks=min_stocks
+        )
+        if means is not None:
+            all_means[dts[st]] = means
+    return all_means
+
+
 def _iter_daily_decile_mean_labels(
     factor: pd.Series,
     label: pd.Series,
@@ -480,23 +542,19 @@ def _iter_daily_decile_mean_labels(
     time_level: str = "datetime",
     n_deciles: int = 10,
     min_stocks: int = 30,
+    decile_means: dict[object, list[float]] | None = None,
 ):
-    """逐日截面十分组 label 均值；样本不足日跳过。"""
-    if not isinstance(factor.index, pd.MultiIndex):
-        raise ValueError("_iter_daily_decile_mean_labels 需要 MultiIndex 面板 (datetime, instrument)")
-    if time_level not in factor.index.names:
-        raise ValueError(f"索引缺少 level={time_level!r}")
+    """逐日截面十分组 label 均值；样本不足日跳过。
 
-    for ts, f_sub in factor.groupby(level=time_level, sort=False):
-        y_sub = label.xs(ts, level=time_level)
-        means = _cross_section_decile_mean_labels(
-            f_sub.to_numpy(dtype=np.float64, copy=False),
-            y_sub.to_numpy(dtype=np.float64, copy=False),
-            n_deciles=n_deciles,
-            min_stocks=min_stocks,
+    ``decile_means`` 为调用方预计算的 ``{ts: means}``（mls_fmb 传给 rho/ls 共享），
+    缺省时内部计算一次。
+    """
+    if decile_means is None:
+        decile_means = _compute_daily_decile_mean_labels(
+            factor, label, time_level=time_level, n_deciles=n_deciles, min_stocks=min_stocks
         )
-        if means is not None:
-            yield ts, means
+    for ts, means in decile_means.items():
+        yield ts, means
 
 
 def daily_decile_monotonicity_series(
@@ -507,6 +565,7 @@ def daily_decile_monotonicity_series(
     n_deciles: int = 10,
     min_stocks: int = 30,
     min_deciles_for_rho: int = 3,
+    decile_means: dict[object, list[float]] | None = None,
 ) -> pd.Series:
     """逐日截面单调性分量 ρ_t = Spearman({1..K}, {R_{1,t},..,R_{K,t}})。"""
     rows: list[float] = []
@@ -519,6 +578,7 @@ def daily_decile_monotonicity_series(
         time_level=time_level,
         n_deciles=n_deciles,
         min_stocks=min_stocks,
+        decile_means=decile_means,
     ):
         means_arr = np.asarray(means, dtype=np.float64)
         valid = np.isfinite(means_arr)
@@ -541,6 +601,7 @@ def daily_long_short_series(
     time_level: str = "datetime",
     n_deciles: int = 10,
     min_stocks: int = 30,
+    decile_means: dict[object, list[float]] | None = None,
 ) -> pd.Series:
     """逐日截面多空分量 LS_t = R_{Q10,t} - R_{Q1,t}（最高组减最低组）。"""
     rows: list[float] = []
@@ -552,6 +613,7 @@ def daily_long_short_series(
         time_level=time_level,
         n_deciles=n_deciles,
         min_stocks=min_stocks,
+        decile_means=decile_means,
     ):
         top = means[-1]
         bottom = means[0]
@@ -647,17 +709,26 @@ def mls_fmb_summary(
         n_deciles=n_deciles,
         min_stocks=min_stocks,
     )
+    # 十分组 label 均值只算一次，rho 与 ls 两个 series 共享（避免重复 2 次逐日 qcut）
+    decile_means = _compute_daily_decile_mean_labels(
+        factor,
+        label,
+        n_deciles=eff_deciles,
+        min_stocks=eff_min_stocks,
+    )
     rho_series = daily_decile_monotonicity_series(
         factor,
         label,
         n_deciles=eff_deciles,
         min_stocks=eff_min_stocks,
+        decile_means=decile_means,
     )
     ls_series = daily_long_short_series(
         factor,
         label,
         n_deciles=eff_deciles,
         min_stocks=eff_min_stocks,
+        decile_means=decile_means,
     )
 
     rho_nw = newey_west_mean_tstat(rho_series, lags=nw_lags)

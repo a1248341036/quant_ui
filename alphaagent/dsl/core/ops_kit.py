@@ -110,3 +110,22 @@ def per_datetime_transform(
     ser = first_series(df)
     out = ser.groupby(level="datetime", sort=False).transform(transform)
     return out_frame(out.astype(np.float32), df)
+
+
+def datetime_group_bounds(df: pd.DataFrame) -> np.ndarray:
+    """面板按 (datetime, instrument) 排序时，返回每个 datetime 组的起始下标数组。
+
+    利用 datetime 层连续相等构成运行区间：``boundaries[i]`` 是第 i 个 datetime 组
+    的起始行下标，最后一个组的下界为 ``len(df)``。供 CS_* 算子避免 groupby 回调
+    开销（每组一次 Python 调用 → 一次切片运算）。面板未按 datetime 排序时返回 None。
+    """
+    dts = df.index.get_level_values("datetime")
+    if len(dts) == 0:
+        return np.zeros(1, dtype=np.int64)
+    # 快速检查 datetime 层是否非递减（sorted 面板的契约）
+    dt_np = dts._values
+    if len(dt_np) > 1:
+        if not (dt_np[1:] >= dt_np[:-1]).all():
+            return None
+    change = np.flatnonzero(dt_np[1:] != dt_np[:-1]) + 1
+    return np.concatenate(([0], change, [len(dt_np)])).astype(np.int64)

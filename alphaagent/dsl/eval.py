@@ -55,6 +55,36 @@ def _dollar_columns(df: pd.DataFrame) -> List[str]:
     return ["$" + str(c) for c in df.columns]
 
 
+def referenced_column_names(multi_line_expr: str) -> List[str]:
+    """从 DSL 中提取 ``$col`` 引用的列名（去除 ``@freq`` 后缀，保序、去重）。
+
+    用于求值前裁剪面板：只绑定表达式实际用到的列，减少 ``_column_bindings``
+    与辅面板构建的开销（100+ 列 → 引用列）。返回空列表表示无 ``$`` 引用。
+    """
+    s = _strip_string_literals(multi_line_expr)
+    out: List[str] = []
+    seen: set[str] = set()
+    for m in _DOLLAR_REF_RE.finditer(s):
+        name = m.group(1)
+        if name not in seen:
+            seen.add(name)
+            out.append(name)
+    return out
+
+
+def prune_panel_to_referenced(
+    df: pd.DataFrame,
+    referenced: Optional[Sequence[str]] = None,
+) -> pd.DataFrame:
+    """裁剪面板到引用列（保持原索引/行序）。无引用列时返回原面板。"""
+    if referenced is None:
+        referenced = []
+    avail = [c for c in df.columns if str(c) in referenced]
+    if not avail:
+        return df
+    return df[avail]
+
+
 def _dollar_columns_aux(panel: Optional[pd.DataFrame], tag: str) -> List[str]:
     if panel is None or getattr(panel, "empty", True):
         return []
@@ -356,6 +386,14 @@ def eval_multi_line_factor(
     verbose: bool = False,
 ) -> Any:
     """对多行因子 DSL 求值（股票主频默认 1d，辅频 @1d / @1w）。"""
+    # 面板列裁剪：只保留表达式引用到的列，减少 _column_bindings 与辅面板构建开销。
+    # 索引/行序不变，输出 Series 仍与完整面板对齐。
+    if len(df.columns) > 1:
+        _refs = referenced_column_names(multi_line_expr)
+        if _refs:
+            pruned = [c for c in df.columns if str(c) in _refs]
+            if pruned:
+                df = df[pruned]
     required = collect_aux_intervals_from_expr(multi_line_expr)
     use_multi = bool(required) or (df_60m is not None)
     aux: Dict[str, pd.DataFrame] = {}

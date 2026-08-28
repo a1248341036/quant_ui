@@ -52,10 +52,17 @@ def clip_values(
 
 
 
-def materialize_factor(expr: str, panel: pd.DataFrame) -> MaterializeResult:
+def materialize_factor(expr: str, panel: pd.DataFrame, *, cache=None) -> MaterializeResult:
     """DSL 求值并对齐 panel 行序。"""
     panel = panel.sort_index()
-    out = eval_factor(expr, panel)
+
+    def _eval():
+        return eval_factor(expr, panel)
+
+    if cache is not None:
+        out = cache.evaluate(expr, panel, _eval)
+    else:
+        out = _eval()
     if not isinstance(out, pd.Series):
         raise TypeError(f"因子输出须为 Series，得到 {type(out)!r}")
     values = align_series_to_panel(out, panel)
