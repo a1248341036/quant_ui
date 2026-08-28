@@ -397,24 +397,3 @@ def ingest_factor(
     )
 
 
-def load_panel_for_zoo(
-    zoo: FactorZoo,
-    *,
-    panel_path: Path | None = None,
-    start: str | None = None,
-    end: str | None = None,
-) -> pd.DataFrame:
-    """加载与因子库对齐的 panel（可选日期切片）。"""
-    from alphaagent.data.adapters.cnequity import CNE_SOURCE, is_cne_source, load_panel_from_cne
-    if is_cne_source(panel_path):
-        panel = load_panel_from_cne(start=start, end=end, universe_mask=False)
-    else:
-        path = panel_path or Path(zoo.manifest.panel_path)
-        panel = load_panel(path)
-    panel = slice_panel(panel, start=start, end=end)
-    if len(panel) != zoo.manifest.n_rows and start is None and end is None:
-        raise ValueError(
-            f"panel 行数 {len(panel)} != 库 n_rows {zoo.manifest.n_rows}；"
-            "请用相同 panel 初始化库，或仅用于调试切片"
-        )
-    return panel.sort_index()

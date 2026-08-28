@@ -2365,34 +2365,6 @@ def roll_chip_wass_dist(
     )
 
 
-def roll_chip_wass_dist_fixed(
-    close: np.ndarray,
-    volume: np.ndarray,
-    low: np.ndarray,
-    high: np.ndarray,
-    aux: np.ndarray,
-    window: int,
-    nbins: int,
-    lag: int = 0,
-    *,
-    implementation: str = "moment",
-    method: str = "cyq",
-    parallel: Optional[bool] = None,
-) -> np.ndarray:
-    """固定整窗双窗漂移。"""
-    del parallel
-    if int(window) < 1:
-        raise ValueError("window must be >= 1")
-    if int(nbins) < 2:
-        raise ValueError("nbins must be >= 2")
-    if int(lag) < 0:
-        raise ValueError("lag must be >= 0")
-    w = int(window)
-    return roll_chip_wass_dist(
-        close, volume, low, high, aux, w, w, int(lag), int(nbins), implementation, method
-    )
-
-
 def roll_chip_peak_sharpness_fixed(
     close: np.ndarray,
     volume: np.ndarray,
@@ -2876,22 +2848,6 @@ def _crowd_in_target_equal_freq(
             if b == bucket_idx0:
                 return True
     return False
-
-
-@njit(cache=True)
-def _crowd_is_target(
-    dim_val: float,
-    dim_buf: np.ndarray,
-    c: int,
-    bucket_mode: int,
-    split_q: float,
-    side_high: int,
-    n_buckets: int,
-    bucket_idx0: int,
-) -> bool:
-    if bucket_mode == 0:
-        return _crowd_in_target_quantile(dim_val, dim_buf, c, split_q, side_high)
-    return _crowd_in_target_equal_freq(dim_val, dim_buf, c, n_buckets, bucket_idx0)
 
 
 @njit(cache=True)

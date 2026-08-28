@@ -2,7 +2,7 @@
 """SQLite 本地存储层（业务数据统一落 data/quant.db，替代 PostgreSQL）。
 
 - 单文件数据库：data/quant.db（可用 QUANT_SQLITE_PATH 覆盖）
-- API 与旧 core/duckdb.py 对齐：configured/get_conn/exec_sql/create_schema/df_to_pg/query_df
+- API：configured/get_conn/exec_sql/create_schema/df_to_pg/query_df
 - WAL 模式 + busy_timeout：多进程可并发读，写者排队等待而非锁死
 - 写库表（backtest_runs/strategy_pool/ledger/paper_*）由 db/schema_sqlite.sql 创建
 """

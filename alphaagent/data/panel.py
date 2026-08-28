@@ -3,8 +3,7 @@
 本模块**不联网**：panel 由本地 hq 缓存（`artifacts/market/daily_hq.parquet`）
 离线构建。行情拉取见 `alphaagent.data.market_fetch`。
 
-- 历史全量：build_panel（读 hq 缓存）→ parquet
-- 实盘增量：update_panel_from_hq（新增交易日的 hq → 尾部 merge + 重算）
+- 主入口：build_panel_from_hq（读 hq 缓存离线构建，plugins/cnequity 链路消费）
 - 衍生列逻辑与 AlphaAgent-Stock 保持一致
 """
 
@@ -144,13 +143,6 @@ def _finalize_panel(df: pd.DataFrame, *, dtype: str = "float32") -> pd.DataFrame
     return panel
 
 
-def _derive_panel_columns(df: pd.DataFrame, *, dtype: str = "float32") -> pd.DataFrame:
-    """从原始行情宽表衍生 adj_*、ret、vwap、label 列。"""
-    df = _derive_base_columns(df)
-    df = _add_derived_columns(df)
-    return _finalize_panel(df, dtype=dtype)
-
-
 def _panel_base_from_hq(
     hq: pd.DataFrame,
     *,
@@ -179,15 +171,6 @@ def _ensure_derived_columns(panel: pd.DataFrame, *, dtype: str = "float32") -> p
             panel[col] = np.nan
             panel[col] = panel[col].astype(dtype)
     return panel
-
-
-def backfill_panel_derived_columns(panel: pd.DataFrame, *, dtype: str = "float32") -> pd.DataFrame:
-    """全量重算 ret / 全部 label 列。"""
-    if panel.empty:
-        return panel
-    panel = _ensure_derived_columns(panel, dtype=dtype)
-    since = panel.index.get_level_values("datetime").min()
-    return _rederive_since(panel, since, dtype=dtype)
 
 
 def _rederive_since(panel: pd.DataFrame, since: pd.Timestamp, *, dtype: str = "float32") -> pd.DataFrame:
@@ -286,110 +269,6 @@ def _enrich_panel(
         panel = enrich_panel_industry(panel, **ind_kwargs)
 
     return panel
-
-
-def build_panel(
-    *,
-    start: str | None = None,
-    end: str | None = None,
-    out_path: Path | str | None = None,
-    market_path: Path | str | None = None,
-    universe_mask: bool = True,
-    with_fundamentals: bool = False,
-    quarterly_path: Path | str | None = None,
-    disclosure_path: Path | str | None = None,
-    include_disclosure_features: bool = True,
-    with_industry: bool = False,
-    industry_path: Path | str | None = None,
-    refresh_industry: bool = False,
-    verbose: bool = True,
-) -> pd.DataFrame:
-    """从本地 hq 缓存离线构建 panel（不联网）→ 可选写出 parquet。"""
-    from alphaagent.core.paths import MARKET_HQ_PATH
-    from alphaagent.data.market_fetch import load_market_hq
-
-    if market_path is None:
-        market_path = MARKET_HQ_PATH
-
-    hq = load_market_hq(market_path)
-    if hq.empty:
-        raise FileNotFoundError(
-            f"hq 缓存不存在或为空: {market_path}；请先运行 "
-            "scripts/fetch_market.py 拉取行情"
-        )
-    if verbose:
-        print(f"build_panel(offline): hq={hq.shape} from {market_path}")
-
-    panel = build_panel_from_hq(hq, start=start, end=end, universe_mask=universe_mask)
-    panel = _enrich_panel(
-        panel,
-        with_fundamentals=with_fundamentals,
-        quarterly_path=quarterly_path,
-        disclosure_path=disclosure_path,
-        include_disclosure_features=include_disclosure_features,
-        with_industry=with_industry,
-        industry_path=industry_path,
-        refresh_industry=refresh_industry,
-        verbose=verbose,
-    )
-
-    if out_path is not None:
-        save_panel(panel, out_path)
-        if verbose:
-            n_inst = panel.index.get_level_values("instrument").nunique()
-            print(f"已保存: {out_path} shape={panel.shape} 股票数={n_inst}")
-
-    return panel
-
-
-def update_panel_from_hq(
-    new_hq: pd.DataFrame,
-    backfill_since: str | pd.Timestamp,
-    *,
-    out_path: Path | str = DEFAULT_PANEL_PATH,
-    universe_mask: bool = True,
-    with_fundamentals: bool = False,
-    quarterly_path: Path | str | None = None,
-    disclosure_path: Path | str | None = None,
-    include_disclosure_features: bool = True,
-    with_industry: bool = False,
-    industry_path: Path | str | None = None,
-    refresh_industry: bool = False,
-    verbose: bool = True,
-) -> pd.DataFrame:
-    """离线增量：新增交易日的 hq → panel 尾部 merge + 从 backfill_since 重算 ret/label。
-
-    new_hq 为 `update_market_cache` 返回的增量 hq；backfill_since 为缺口首日的上一交易日。
-    """
-    out_path = Path(out_path)
-    base = _panel_base_from_hq(new_hq, universe_mask=universe_mask)
-    if base.empty:
-        raise ValueError("增量 hq 过滤后为空，无可更新数据")
-
-    if out_path.is_file():
-        old = load_panel(out_path)
-        merged = pd.concat([old, base])
-        merged = merged[~merged.index.duplicated(keep="last")].sort_index()
-    else:
-        merged = base
-
-    merged = _rederive_since(merged, pd.Timestamp(backfill_since))
-    merged = _enrich_panel(
-        merged,
-        with_fundamentals=with_fundamentals,
-        quarterly_path=quarterly_path,
-        disclosure_path=disclosure_path,
-        include_disclosure_features=include_disclosure_features,
-        with_industry=with_industry,
-        industry_path=industry_path,
-        refresh_industry=refresh_industry,
-        verbose=verbose,
-    )
-
-    save_panel(merged, out_path)
-    if verbose:
-        print(f"已增量更新 panel: {out_path} shape={merged.shape}（自 {backfill_since} 起重算）")
-    return merged
 
 
 def load_panel(path: Path | str = DEFAULT_PANEL_PATH) -> pd.DataFrame:

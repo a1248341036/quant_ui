@@ -531,15 +531,3 @@ def arg_extreme_fixed(df: pd.DataFrame, window: int, want_max: bool) -> pd.DataF
     return pd.DataFrame(result, index=df.index, columns=df.columns[:1])
 
 
-def numba_available() -> bool:
-    return _HAS_NUMBA
-
-
-def numba_parallel_config() -> dict:
-    """当前 Numba 并行策略（便于排查性能）。"""
-    return {
-        "has_numba": _HAS_NUMBA,
-        "parallel_mode": _numba_parallel_mode(),
-        "parallel_min_rows_default": 4096,
-        "parallel_min_rows_effective": _numba_parallel_min_rows(),
-    }
