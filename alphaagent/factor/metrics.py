@@ -51,6 +51,8 @@ _day_slices_override = None
 _fast_equal_freq_codes_override = None
 
 
+from alphaagent.factor import metrics_fast as _mf
+
 def _day_slices(
     index: pd.Index, time_level: str = "datetime"
 ) -> tuple[np.ndarray, np.ndarray] | None:
@@ -118,10 +120,13 @@ def cross_sectional_ic(
     slices = _day_slices(factor.index, time_level)
     if slices is not None:
         bounds, day_vals = slices
-        rows = [
-            pearson_ic(f_arr[st:en], l_arr[st:en], min_pairs=min_pairs)
-            for st, en in zip(bounds[:-1].tolist(), bounds[1:].tolist())
-        ]
+        if _mf.HAS_NUMBA:
+            rows = _mf.pearson_ic_days(f_arr, l_arr, bounds, min_pairs)
+        else:
+            rows = [
+                pearson_ic(f_arr[st:en], l_arr[st:en], min_pairs=min_pairs)
+                for st, en in zip(bounds[:-1].tolist(), bounds[1:].tolist())
+            ]
         return pd.Series(rows, index=pd.Index(day_vals, name=time_level), dtype=float)
 
     rows: list[float] = []
@@ -157,10 +162,13 @@ def cross_sectional_rank_ic(
     slices = _day_slices(factor.index, time_level)
     if slices is not None:
         bounds, day_vals = slices
-        rows = [
-            spearman_ic(f_arr[st:en], l_arr[st:en], min_pairs=min_pairs)
-            for st, en in zip(bounds[:-1].tolist(), bounds[1:].tolist())
-        ]
+        if _mf.HAS_NUMBA:
+            rows = _mf.rank_ic_days(f_arr, l_arr, bounds, min_pairs)
+        else:
+            rows = [
+                spearman_ic(f_arr[st:en], l_arr[st:en], min_pairs=min_pairs)
+                for st, en in zip(bounds[:-1].tolist(), bounds[1:].tolist())
+            ]
         return pd.Series(rows, index=pd.Index(day_vals, name=time_level), dtype=float)
 
     rows: list[float] = []
@@ -197,10 +205,13 @@ def cross_sectional_lag1_pearson_autocorr_series(
     slices = _day_slices(factor.index, time_level)
     if slices is not None:
         bounds, day_vals = slices
-        rows = [
-            pearson_ic(f_arr[st:en], g_arr[st:en], min_pairs=min_pairs)
-            for st, en in zip(bounds[:-1].tolist(), bounds[1:].tolist())
-        ]
+        if _mf.HAS_NUMBA:
+            rows = _mf.pearson_ic_days(f_arr, g_arr, bounds, min_pairs)
+        else:
+            rows = [
+                pearson_ic(f_arr[st:en], g_arr[st:en], min_pairs=min_pairs)
+                for st, en in zip(bounds[:-1].tolist(), bounds[1:].tolist())
+            ]
         return pd.Series(rows, index=pd.Index(day_vals, name=time_level), dtype=float)
 
     rows: list[float] = []
@@ -367,6 +378,10 @@ def cross_sectional_size_neutralize_values(
     if log_scale:
         size = np.where(size > 0, np.log(size), np.nan)
     slices = _day_slices(panel.index)
+    if slices is not None and _mf.HAS_NUMBA:
+        bounds, _ = slices
+        _mf.size_resid_days(out, size, bounds, min_valid)
+        return out.astype(np.float32, copy=False)
     if slices is not None:
         bounds, _ = slices
         day_indices = (
@@ -621,6 +636,24 @@ def _compute_daily_decile_mean_labels(
 
     change = np.flatnonzero(dt_np[1:] != dt_np[:-1]) + 1
     bounds = np.concatenate(([0], change, [n])).astype(np.int64)
+
+    if _mf.HAS_NUMBA:
+        # numba 逐日内核；ok=0 的日子（边界重合/样本不足）回落 Python 路径
+        means2d, ok = _mf.decile_label_means_days(f_arr, l_arr, bounds, n_deciles, min_stocks)
+        for i in range(len(bounds) - 1):
+            st, en = int(bounds[i]), int(bounds[i + 1])
+            if ok[i]:
+                all_means[dts[st]] = list(means2d[i])
+                continue
+            if en - st < min_stocks or en - st < n_deciles:
+                continue
+            means = _cross_section_decile_mean_labels(
+                f_arr[st:en], l_arr[st:en], n_deciles=n_deciles, min_stocks=min_stocks
+            )
+            if means is not None:
+                all_means[dts[st]] = means
+        return all_means
+
     for i in range(len(bounds) - 1):
         st, en = int(bounds[i]), int(bounds[i + 1])
         if en - st < min_stocks or en - st < n_deciles:

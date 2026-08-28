@@ -8,8 +8,10 @@ from typing import Any, Callable
 import numpy as np
 import pandas as pd
 
+from alphaagent.factor import metrics_fast as _mf
 from alphaagent.factor.evaluation.context import EvaluationContext
 from alphaagent.factor.metrics import (
+    _day_slices,
     coverage,
     cross_sectional_lag1_pearson_autocorr,
     cs_ic_summary,
@@ -73,14 +75,18 @@ def cross_sectional_winsorize(context: EvaluationContext, params: dict[str, Any]
     if not 0 <= lower < upper <= 100:
         raise ValueError("cross_sectional_winsorize_percentiles_invalid")
     out = context.factor.to_numpy(dtype=np.float64, copy=True)
-    for _, row in _date_groups(context):
-        idx = row.to_numpy(dtype=np.int64, copy=False)
-        values = out[idx]
-        finite = np.isfinite(values)
-        if finite.sum() >= 2:
-            lo, hi = np.nanpercentile(values[finite], [lower, upper])
-            values[finite] = np.clip(values[finite], lo, hi)
-            out[idx] = values
+    slices = _day_slices(context.panel.index)
+    if slices is not None and _mf.HAS_NUMBA:
+        _mf.winsorize_days(out, slices[0], lower, upper)
+    else:
+        for _, row in _date_groups(context):
+            idx = row.to_numpy(dtype=np.int64, copy=False)
+            values = out[idx]
+            finite = np.isfinite(values)
+            if finite.sum() >= 2:
+                lo, hi = np.nanpercentile(values[finite], [lower, upper])
+                values[finite] = np.clip(values[finite], lo, hi)
+                out[idx] = values
     context.replace_factor(out, transform_name="cross_sectional_winsorize")
 
 
@@ -88,15 +94,19 @@ def cross_sectional_winsorize(context: EvaluationContext, params: dict[str, Any]
 def cross_sectional_zscore(context: EvaluationContext, params: dict[str, Any]) -> None:
     _ = params
     out = context.factor.to_numpy(dtype=np.float64, copy=True)
-    for _, row in _date_groups(context):
-        idx = row.to_numpy(dtype=np.int64, copy=False)
-        values = out[idx]
-        finite = np.isfinite(values)
-        if finite.sum() >= 2:
-            std = float(np.std(values[finite], ddof=0))
-            if std > 0 and np.isfinite(std):
-                values[finite] = (values[finite] - float(np.mean(values[finite]))) / std
-                out[idx] = values
+    slices = _day_slices(context.panel.index)
+    if slices is not None and _mf.HAS_NUMBA:
+        _mf.zscore_days(out, slices[0])
+    else:
+        for _, row in _date_groups(context):
+            idx = row.to_numpy(dtype=np.int64, copy=False)
+            values = out[idx]
+            finite = np.isfinite(values)
+            if finite.sum() >= 2:
+                std = float(np.std(values[finite], ddof=0))
+                if std > 0 and np.isfinite(std):
+                    values[finite] = (values[finite] - float(np.mean(values[finite]))) / std
+                    out[idx] = values
     context.replace_factor(out, transform_name="cross_sectional_zscore")
 
 
