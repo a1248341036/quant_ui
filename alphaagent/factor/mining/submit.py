@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
+import json
 import re
 from pathlib import Path
 from typing import Any, Callable
@@ -183,6 +185,39 @@ def _detect_replacement(
             "note": "检测到新因子显著优于旧因子，建议人工确认后 deprecate 旧因子",
         }
     return None
+
+
+
+_INGEST_METRICS_CACHE_MAX = 96
+
+
+def _ingest_metrics_fingerprint(policy: IngestPolicy) -> str:
+    """冻结 dataclass 的标量字段指纹：窗口/口径任一不同 → 缓存键不同。"""
+    fields = {f.name: getattr(policy, f.name) for f in dataclasses.fields(policy)}
+    return hashlib.sha256(
+        json.dumps(fields, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()[:16]
+
+
+def _cached_ingest_metrics(
+    cache: dict,
+    key: tuple[str, str],
+    compute: Callable[[], dict[str, Any]],
+) -> dict[str, Any]:
+    """submit 内 train/val/全窗 ingest 指标的会话级缓存。
+
+    同一因子值数组 + 同一窗口口径在单次 run 内必复现，直接复用免去 20~30s
+    的重复指标计算；命中返回拷贝，调用方原地修改（如补 val_long_excess）
+    不污染缓存；FIFO 上限防长 run 膨胀。
+    """
+    hit = cache.get(key)
+    if hit is not None:
+        return dict(hit)
+    metrics = compute()
+    cache[key] = dict(metrics)
+    while len(cache) > _INGEST_METRICS_CACHE_MAX:
+        cache.pop(next(iter(cache)))
+    return metrics
 
 
 class FactorSubmitService:
@@ -366,21 +401,31 @@ class FactorSubmitService:
             lo_pct, hi_pct = float(stage_one_policy.clip_pct[0]), float(stage_one_policy.clip_pct[1])
             cand_values, _ = clip_values(cand_values, lower_pct=lo_pct, upper_pct=hi_pct)
         values_by_key = pd.Series(cand_values, index=panel.index)
+        values_fp = hashlib.sha1(
+            np.ascontiguousarray(cand_values, dtype=np.float32).tobytes()
+        ).hexdigest()
+        ingest_cache: dict = getattr(session, "_ingest_metrics_cache", None)
+        if ingest_cache is None:
+            ingest_cache = session._ingest_metrics_cache = {}
+
+        def _ingest_metrics_cached(policy: IngestPolicy) -> dict[str, Any]:
+            key = (values_fp, _ingest_metrics_fingerprint(policy))
+            return _cached_ingest_metrics(ingest_cache, key, lambda: compute_ingest_metrics(cand_values, panel, policy))
 
         # ① 统计门槛前置（train-only 准入口径 + 换手可行性）：
         #    - 准入看 train 窗口，防止 val 衰减被混合窗口稀释；
         #    - cs_autocorr 硬门淘汰排名日度剧变的不可交付因子；
         #    - 任一不达标直接拒绝，跳过最贵的相似度对比。
-        metrics_train = compute_ingest_metrics(
-            cand_values, panel, dataclasses.replace(stage_one_policy, val_end=ctx.train_end)
+        metrics_train = _ingest_metrics_cached(
+            dataclasses.replace(stage_one_policy, val_end=ctx.train_end)
         )
         gate_reasons = self.checker.stage_one_stats(metrics_train).fail_reasons
 
         val_metrics: dict[str, Any] = {}
         if not gate_reasons and ctx.val_start > ctx.train_end:
             # 样本外保留比：|val_ic|/|train_ic| ≥ 阈值且方向不反转
-            val_metrics = compute_ingest_metrics(
-                cand_values, panel, dataclasses.replace(stage_one_policy, train_start=ctx.val_start)
+            val_metrics = _ingest_metrics_cached(
+                dataclasses.replace(stage_one_policy, train_start=ctx.val_start)
             )
             gate_reasons += self.checker.stage_one_val_retention(
                 metrics_train, val_metrics
@@ -442,7 +487,7 @@ class FactorSubmitService:
             stage_one_reasons = corr_result.fail_reasons
 
         # 上报/存档指标仍用全窗口（与历史 registry 口径一致），附 train/val 分解。
-        metrics = compute_ingest_metrics(cand_values, panel, stage_one_policy)
+        metrics = _ingest_metrics_cached(stage_one_policy)
         reported = dict(metrics)
         for src, prefix in ((metrics_train, "train"), (val_metrics, "val")):
             for key in ("ic", "icir", "rank_ic"):
