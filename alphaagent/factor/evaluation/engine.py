@@ -90,6 +90,8 @@ class EvaluationEngine:
         profile_id: str,
         multi_line_expr: str,
         factor_name: str = "expr",
+        label_quantile_n: int = 0,
+        include_detail_tables: bool = False,
     ) -> dict[str, Any]:
         profile = self.profile(profile_id)
         panel, date_range = self._panel_for_profile(session, profile)
@@ -143,7 +145,7 @@ class EvaluationEngine:
             "monthly_long_short": _monthly_breakdown(daily_ls),
         }
 
-        return {
+        out: dict[str, Any] = {
             "ok": True,
             "candidate": {"factor_name": factor_name, "expression": multi_line_expr},
             "profile": profile.as_dict(),
@@ -159,6 +161,22 @@ class EvaluationEngine:
             "timing_ms": timing,
             "chart_data": chart_data,
         }
+
+        # 兼容旧 split 评估契约：label_quantile_buckets / by_month / by_symbol
+        if label_quantile_n and label_quantile_n >= 2:
+            from alphaagent.factor.metrics import label_quantile_buckets
+            out["label_quantile_buckets"] = label_quantile_buckets(
+                context.factor.to_numpy(dtype=np.float64, copy=False),
+                context.label.to_numpy(dtype=np.float64, copy=False),
+                n_quantiles=int(label_quantile_n),
+            )
+            out["label_quantile_n"] = int(label_quantile_n)
+        if include_detail_tables:
+            from alphaagent.factor.metrics import by_symbol_ts_ic, monthly_detail_rows
+            out["by_month"] = monthly_detail_rows(daily_ic_series, daily_rank_ic_series)
+            out["by_symbol"] = by_symbol_ts_ic(context.factor, context.label)
+
+        return out
 
     @staticmethod
     def _panel_for_profile(session: Any, profile: EvaluationProfile) -> tuple[pd.DataFrame, dict[str, str]]:

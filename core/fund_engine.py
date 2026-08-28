@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from . import trading_config
 from .assets import FUND_NAV_ADAPTER, FUND_NAV_PROFILE
 from .engine import run_backtest
 from .execution import detect_fund_share_class
@@ -36,12 +37,12 @@ def run_fund_backtest(
     capital: float,
     top_n: int,
     freq: str = "monthly",
-    buy_cost: float = 0.0015,
-    sell_cost: float = 0.0050,
-    amount_q: float = 0.2,
+    buy_cost: float = trading_config.FUND_BUY_COST,
+    sell_cost: float = trading_config.FUND_SELL_COST,
+    amount_q: float = trading_config.AMOUNT_Q,
     affordable: bool = True,
     lot_size: int = 1,
-    warmup_days: int | None = 400,
+    warmup_days: int | None = trading_config.WARMUP_DAYS,
     cash_mode: bool = True,
     limit_flags: bool = False,
     slippage_bps: float = 0.0,

@@ -12,6 +12,7 @@ from pathlib import Path
 import pandas as pd
 
 from core import trading_config
+from core.score_matrix import scores_to_engine_matrix
 from scripts.qweave_research import ALPHA_SETS, build_alphas, load_panel, to_qweave_df
 
 
@@ -255,9 +256,11 @@ def run(req: dict) -> dict:
             raise ValueError(f"回测因子不存在: {score_factor}")
         import polars as pl
         score_df = labeled.select(["date", "code", score_factor]).to_pandas()
-        score_df["date"] = pd.to_datetime(score_df["date"])
-        score_matrix = score_df.pivot_table(index="date", columns="code", values=score_factor,
-                                             aggfunc="last", observed=True)
+        # 分数 → date×code 矩阵的统一转换（core.score_matrix），
+        # 与 AlphaAgent DSL 回测注入共用同一实现。
+        score_matrix = scores_to_engine_matrix(
+            score_df, value_col=score_factor,
+        )
         from core.engine import run_backtest
         from core.assets import ETF_PROFILE, STOCK_PROFILE
         bt_res = run_backtest(

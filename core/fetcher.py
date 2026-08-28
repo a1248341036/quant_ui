@@ -94,8 +94,10 @@ def _fetch_kline(code: str, symbol: str, start: str, end: str, retries: int = 3)
     df = df.dropna(subset=["date"])
     for c in ["open", "close", "high", "low", "volume"]:
         df[c] = pd.to_numeric(df[c], errors="coerce")
-    df["turnover"] = pd.to_numeric(df["turnover"], errors="coerce") / 100.0
-    df["amount"] = pd.to_numeric(df["amount"], errors="coerce") * 10000.0
+    # 单位换算常量见 core/panel_schema：腾讯 turnover 为 %、amount 为万元。
+    from .panel_schema import AMOUNT_TEN_THOUSAND_TO_ENGINE, TURNOVER_PERCENT_TO_RATIO
+    df["turnover"] = pd.to_numeric(df["turnover"], errors="coerce") / TURNOVER_PERCENT_TO_RATIO
+    df["amount"] = pd.to_numeric(df["amount"], errors="coerce") * AMOUNT_TEN_THOUSAND_TO_ENGINE
     df["volume"] = df["volume"].astype("float32")
     df["turnover"] = df["turnover"].astype("float32")
     df = df.sort_values("date").drop_duplicates("date", keep="last")

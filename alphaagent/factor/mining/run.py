@@ -66,6 +66,9 @@ def run_factor_mining(
         repo_root=root,
         research_mode=research_mode,
         max_cs_corr=config.max_cs_corr,
+        # 与 agentscope 路径一致注入 research_spec 的 delivery_policy，
+        # 保证两阶段门槛单一来源（消除旧路径空 policy 回落硬编码 0.6 的漂移）。
+        delivery_policy=(config.research_spec or {}).get("delivery_policy"),
         similar_top_k=config.similar_top_k,
         overwrite=config.ingest_overwrite,
         auto_realign_panel=config.auto_realign_panel,

@@ -1,6 +1,54 @@
 <template>
   <section>
     <div class="card">
+      <h2>AlphaAgent 因子评估</h2>
+      <p class="muted">因子实验室每次评估自动记录；点击"打开"可恢复到评估时的完整界面（指标、图表、导出、保存）。</p>
+      <div class="row">
+        <label class="field"><span>条数</span>
+          <select v-model.number="labHist.limit">
+            <option :value="20">20</option>
+            <option :value="50">50</option>
+            <option :value="100">100</option>
+          </select>
+        </label>
+        <button class="primary" @click="openAgentTab">去因子实验室</button>
+        <button class="ghost" @click="clearLabHistory" :disabled="!store.labHistory.length">清空历史</button>
+      </div>
+      <p class="err left" v-if="labHist.error">{{labHist.error}}</p>
+      <div class="table-wrap" v-if="labHistRows().length">
+        <table>
+          <thead><tr>
+            <th>因子名称</th>
+            <th>评估时间</th>
+            <th>Train IC</th>
+            <th>Val IC</th>
+            <th>多头年化</th>
+            <th>夏普</th>
+            <th>表达式</th>
+            <th></th>
+          </tr></thead>
+          <tbody>
+            <tr v-for="h in labHistRows()" :key="h.id" class="clickable-row" @click="openLabHistory(h)">
+              <td>{{h.factorName || 'expr'}}</td>
+              <td>{{(h.createdAt||'').slice(0,16).replace('T',' ')}}</td>
+              <td>{{num(h.summary?.train_ic)}}</td>
+              <td>{{num(h.summary?.val_ic)}}</td>
+              <td>{{pct(h.summary?.annualized_return)}}</td>
+              <td>{{num(h.summary?.sharpe)}}</td>
+              <td class="ellipsis" :title="h.expr">{{h.expr}}</td>
+              <td>
+                <button class="ghost" @click.stop="openLabHistory(h)">打开</button>
+                <button class="ghost" @click.stop="exportLabHistory(h)">导出</button>
+                <button class="ghost" @click.stop="removeLabHistory(h.id)">删除</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div v-else class="empty">暂无 AlphaAgent 因子评估记录</div>
+    </div>
+
+    <div class="card">
       <h2>历史回测（PG 归档）</h2>
       <p class="muted">每次回测/对比/扫描自动落库，参数、指标、净值、交易可追溯。</p>
       <div class="row">
@@ -157,11 +205,13 @@ export default {
     return {
       store,
       history: { kind: '', limit: 50, items: [], loading: false, error: '', detail: null, sortKey: 'created_at', sortDir: 'desc' },
+      labHist: { limit: 50, error: '' },
       histSweepSort: { key: '', dir: 'asc' },
     }
   },
   mounted() {
     this.loadHistory()
+    store.loadLabHistory()
   },
   methods: {
     fmt,
@@ -171,6 +221,36 @@ export default {
     numOrNull,
     toNum,
     sortCompare,
+    labHistRows() {
+      return (store.labHistory || []).slice(0, this.labHist.limit)
+    },
+    openLabHistory(h) {
+      if (!h) return
+      // 携带载荷切到 AlphaAgent 因子实验室 → 该组件 mounted 时恢复界面
+      store.labLoadPayload = h
+      store.requestTab = 'alphaagent'
+    },
+    exportLabHistory(h) {
+      const text = JSON.stringify(h, null, 2)
+      const blob = new Blob([text], { type: 'application/json;charset=utf-8' })
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(blob)
+      a.download = `factor_eval_${h.factorName || 'expr'}_${(h.createdAt || '').slice(0, 10)}.json`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(a.href)
+    },
+    removeLabHistory(id) {
+      store.deleteLabHistory(id)
+    },
+    clearLabHistory() {
+      if (!confirm('确认清空全部 AlphaAgent 因子评估历史？')) return
+      store.clearLabHistory()
+    },
+    openAgentTab() {
+      store.requestTab = 'alphaagent'
+    },
     stock(code, name) {
       const nm = name || store.names[code] || '';
       return nm ? `${code} ${nm}` : (code || '-');

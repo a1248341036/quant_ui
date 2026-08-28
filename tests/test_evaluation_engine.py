@@ -102,3 +102,78 @@ def test_service_profile_evaluation_registers_candidate() -> None:
     )
     assert result["candidate"]["candidate_id"].startswith("cand_")
     assert result["candidate_state"] in {"validation_evaluated", "validation_rejected"}
+
+
+def test_train_eval_and_profile_use_same_engine_pipeline() -> None:
+    """收敛验证：eval_train（LLM 旧契约）与 eval_profile train_screen（因子实验室）
+    走同一 EvaluationEngine + 同一 transforms，核心指标必须一致。"""
+    from alphaagent.factor.mining.schemas import EvalTrainRequest
+
+    session = _session()
+    service = StockEvalService(max_parallel_eval=1)
+    service.sessions._sessions[session.session_id] = session
+    expr = "$adj_close"
+
+    train_result = service.eval_train(
+        EvalTrainRequest(
+            session_id=session.session_id,
+            multi_line_expr=expr,
+            factor_name="price_level",
+        )
+    )
+    assert train_result["ok"]
+
+    profile_result = service.eval_profile(
+        EvalProfileRequest(
+            session_id=session.session_id,
+            profile_id="train_screen",
+            multi_line_expr=expr,
+            factor_name="price_level",
+        )
+    )
+    assert profile_result["ok"]
+
+    # 同一引擎 → 同一 transform 管线：都只 winsorize+zscore，无 size_residualize
+    assert profile_result["transforms_applied"] == [
+        "cross_sectional_winsorize", "cross_sectional_zscore",
+    ]
+
+    train_summary = train_result["summary"]
+    prof_metrics = profile_result["metrics"]["cross_sectional_core"]
+    # eval_train 经 format_eval_response 四舍五入到 4 位；eval_profile 为原始值。
+    # 收敛要求：同一引擎计算，舍入后的 LLM 契约值与原始值一致。
+    for key in ("ic", "icir", "rank_ic", "n_days", "n_instruments",
+                "factor_coverage", "cs_pearson_autocorr"):
+        expected = round(float(prof_metrics[key]), 4)
+        actual = float(train_summary[key])
+        assert abs(expected - actual) < 1e-9, f"{key}: {expected} vs {actual}"
+
+    # 同一引擎 → 同一月度稳健性（monthly_corr_robustness 经 4 位舍入）
+    expected_monthly = round(float(profile_result["metrics"]["monthly_robustness"]["mean_monthly_ic"]), 4)
+    assert abs(expected_monthly - float(train_result["monthly_corr_robustness"]["mean_monthly_ic"])) < 1e-9
+
+
+def test_base_transforms_do_not_include_size_residualize() -> None:
+    """三轨主口径：主 profile 不市值残差化；市值中性只在诊断 profile。"""
+    profiles = default_evaluation_profiles()
+    base = [t["plugin"] for t in profiles["train_screen"].transforms]
+    assert "size_residualize" not in base
+    neutral = [t["plugin"] for t in profiles["size_neutral_validation"].transforms]
+    assert "size_residualize" in neutral
+
+
+def test_size_neutral_decay_diagnostic_present() -> None:
+    """三轨诊断：主评估输出含 size_neutral_decay（不参与门槛的辅助字段）。"""
+    session = _session()
+    engine = EvaluationEngine(default_evaluation_profiles())
+    raw = engine.evaluate(
+        session,
+        profile_id="train_screen",
+        multi_line_expr="$adj_close",
+    )
+    diag = raw["metrics"]["size_neutral_decay"]
+    assert "size_neutral_ic" in diag
+    assert "size_neutral_abs_ic_decay" in diag
+    # 主口径 metrics 里的规则判定不依赖该字段
+    assert all("size_neutral" not in str(rule.get("metric", ""))
+               for rule in raw["rule_results"])

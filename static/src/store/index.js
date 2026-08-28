@@ -37,6 +37,64 @@ export const store = reactive({
   sweep: { strategy: '双均线多头 5/20' },
   cmp: { strategies: ['低换手冷门', '反转 20 日', '低波动', '动量 20 日'] },
 
+  // 账户
+  account: {},
+
+  // 因子实验室评估历史（跨 AlphaAgent / History 共享，localStorage 持久化）
+  labHistory: [],
+  // History 打开一条因子评估 → 携载入载荷跳转到 AlphaAgent 因子实验室
+  labLoadPayload: null,
+  // 跨页面跳转请求（History → alphaagent 等），App.vue watch 后消费并清空
+  requestTab: '',
+
+  // 因子实验室评估历史 —— localStorage 持久化（上限 100 条，最新在前）
+  LAB_HISTORY_KEY: 'alphaagent_lab_history_v1',
+  LAB_HISTORY_LIMIT: 100,
+
+  loadLabHistory() {
+    try {
+      const raw = localStorage.getItem(this.LAB_HISTORY_KEY)
+      if (raw) {
+        const arr = JSON.parse(raw)
+        this.labHistory = Array.isArray(arr) ? arr : []
+        return
+      }
+    } catch (e) {}
+    this.labHistory = []
+  },
+
+  saveLabHistory() {
+    try {
+      localStorage.setItem(this.LAB_HISTORY_KEY, JSON.stringify(this.labHistory.slice(0, this.LAB_HISTORY_LIMIT)))
+    } catch (e) {
+      // localStorage 满或不可用时静默失败，历史仅保留内存
+    }
+  },
+
+  pushLabHistory(entry) {
+    this.labHistory.unshift(entry)
+    if (this.labHistory.length > this.LAB_HISTORY_LIMIT) {
+      this.labHistory.length = this.LAB_HISTORY_LIMIT
+    }
+    this.saveLabHistory()
+  },
+
+  deleteLabHistory(id) {
+    this.labHistory = this.labHistory.filter(h => h.id !== id)
+    this.saveLabHistory()
+  },
+
+  clearLabHistory() {
+    this.labHistory = []
+    this.saveLabHistory()
+  },
+
+  // 发起跨页面跳转（History → alphaagent 等）
+  goto(tab) {
+    this.requestTab = tab
+    this.labLoadPayload = null
+  },
+
   // —— 共享方法 ——
 
   async loadIndices() {

@@ -30,7 +30,11 @@ class FactorRepository:
         if path_str not in self._zoo_cache:
             from alphaagent.factor.zoo import FactorZoo
 
-            self._zoo_cache[path_str] = FactorZoo.open(library_path)
+            # 必须用 FactorZoo.open 从磁盘加载 manifest/index/catalog，
+            # 直接 FactorZoo(...) 会因缺少 3 个位置参数抛 TypeError。
+            # verify_hash=False：列表/详情热路径不需要内容级完整性校验，
+            # verify_index_hash 已是轻量 O(1) 校验；这里显式关闭以明确语义。
+            self._zoo_cache[path_str] = FactorZoo.open(library_path, verify_hash=False)
         return self._zoo_cache[path_str]
 
     def list_factors(

@@ -9,7 +9,9 @@ from typing import Any
 
 from alphaagent.factor.evaluation.profile import default_evaluation_profiles, resolve_profiles
 from alphaagent.factor.mining.interactions import INTERACTION_TYPES
+from alphaagent.core.paths import RESEARCH_SPECS_DIR
 from core import trading_config
+from core.research_modes import RESEARCH_MODES as _MODE_REGISTRY, get_research_mode
 
 
 def _default_evaluation_profile_spec() -> dict[str, Any]:
@@ -22,7 +24,102 @@ def _default_evaluation_profile_spec() -> dict[str, Any]:
     return profiles
 
 
-RESEARCH_MODES = ("technical", "fundamental")
+RESEARCH_MODES = tuple(_MODE_REGISTRY.keys())
+
+
+# ── 用户门槛覆盖持久化（每模式一个 JSON 文件）────────────────────────
+# 存储的是"相对注册表默认值的增量覆盖"（compute_spec_overrides 的 diff 结果），
+# 而非整份 spec：代码默认值演进时，用户未改过的键自动跟随，改过的键保持覆盖。
+# 消费方：
+# - effective_research_spec(mode)  → 默认 + 覆盖（normalize 后），前端编辑/展示用
+# - build_run_research_spec(spec)  → 运行口径：注册表默认 < 保存覆盖 < 显式 spec
+# - core.factor_categories 不涉及门槛；全链路（CLI/Web/晋升）统一走上述两个入口。
+def _spec_overrides_path(mode: str) -> Path:
+    if mode not in RESEARCH_MODES:
+        raise ValueError(f"research_mode_invalid:{mode}")
+    return RESEARCH_SPECS_DIR / f"{mode}.json"
+
+
+def load_saved_overrides(mode: str) -> dict[str, Any]:
+    """读取某模式的用户门槛覆盖；无文件/损坏时返回空 dict（回落默认）。"""
+    try:
+        value = json.loads(_spec_overrides_path(mode).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def save_research_spec_overrides(mode: str, overrides: dict[str, Any]) -> Path:
+    """保存某模式的用户门槛覆盖（默认值无需保存，丢键即回落默认）。"""
+    if not isinstance(overrides, dict):
+        raise ValueError("research_spec.overrides_must_be_object")
+    path = _spec_overrides_path(mode)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(overrides, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def reset_research_spec_overrides(mode: str) -> bool:
+    """删除某模式的覆盖文件，恢复注册表默认门槛。返回是否真的有文件被删。"""
+    path = _spec_overrides_path(mode)
+    if not path.exists():
+        return False
+    path.unlink(missing_ok=True)
+    return True
+
+
+def compute_spec_overrides(defaults: dict[str, Any], edited: dict[str, Any]) -> dict[str, Any]:
+    """默认 spec 与前端编辑后 spec 的增量 diff（递归 dict；list/标量整体替换）。
+
+    只保留与默认值不同的键 → 持久化的"门槛文件"最小、可读且随代码默认演进。
+    """
+    out: dict[str, Any] = {}
+    for key, value in edited.items():
+        if key not in defaults:
+            out[key] = value
+        elif isinstance(value, dict) and isinstance(defaults[key], dict):
+            sub = compute_spec_overrides(defaults[key], value)
+            if sub:
+                out[key] = sub
+        elif value != defaults[key]:
+            out[key] = value
+    # 编辑版显式删掉的键 = 恢复默认，无需写回
+    return out
+
+
+def effective_research_spec(mode: str = "technical") -> dict[str, Any]:
+    """注册表默认 + 用户保存覆盖（normalize 后的完整 spec）。
+
+    前端编辑/展示、以及"不显式传 spec"的运行路径都以此为准；
+    它不会改变 default_research_spec 的纯默认语义（测试/调用方依旧可取纯默认）。
+    """
+    merged = _deep_merge(default_research_spec(mode), load_saved_overrides(mode))
+    return normalize_research_spec(merged)
+
+
+def build_run_research_spec(explicit: dict[str, Any] | None = None) -> dict[str, Any]:
+    """运行口径研究规范：注册表默认 < 保存覆盖 < 显式 spec（如前端 JSON / CLI 文件）。
+
+    显式 spec 已含保存值时幂等（保存值再合并一次不改变结果）；
+    显式 spec 缺键时从保存覆盖/默认补齐——保证任何入口都不会绕过用户改过的门槛。
+    """
+    explicit = dict(explicit) if isinstance(explicit, dict) else {}
+    mode = str(explicit.get("research_mode") or "technical")
+    base = default_research_spec(mode)
+    merged = _deep_merge(_deep_merge(base, load_saved_overrides(mode)), explicit)
+    return normalize_research_spec(merged)
+
+
+def _default_delivery_policy() -> dict[str, Any]:
+    """两阶段交付门槛默认值，唯一真源在 delivery_criteria（含设计注释）。
+
+    运行时以 research_spec 注入为准（agentscope/run 均传 delivery_policy）；
+    delivery_criteria.DeliveryCriteria.defaults() 集中定义数值与设计依据，
+    prompt 渲染（tools.py / prompts.py）也从同一对象取数，杜绝硬编码漂移。
+    """
+    from alphaagent.factor.mining.delivery_criteria import DeliveryCriteria
+
+    return DeliveryCriteria.defaults().to_spec_dict()
 
 
 DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
@@ -73,118 +170,37 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
         "prefer_orthogonal_to_approved": True,
         "include_expression": True,
     },
-    "delivery_policy": {
-        "candidate": {
-            "min_abs_ic": 0.015,
-            # 海选 ICIR 与 train_screen 规则对齐（0.20 偏松，弱稳定因子堆积候选池）
-            "min_icir": 0.25,
-            "min_coverage": 0.85,
-            "max_abs_corr": 0.5,
-            # 换手可行性硬门槛：低于此值的因子截面排名日度剧变，不可交付
-            "min_cs_autocorr": 0.18,
-            # 样本外保留比：val_ic / train_ic 的绝对比值下限（方向反转直接拦截）
-            "min_val_ic_retention": 0.5,
-        },
-        "production": {
-            # ── 统计族：双窗口各自达标（混合窗口会稀释 val 衰减，2026-08 重构）──
-            # train 窗口统计门槛
-            "min_train_abs_ic": 0.025,
-            "min_train_icir": 0.30,
-            # val 窗口：绝对水平 + 相对 train 的保留比
-            "min_val_abs_ic": 0.015,
-            "min_val_ic_retention": 0.60,
-            # val 多头端毛值超额（方向自适应十分组，复利年化）：
-            # IC 为正不代表多头端赚钱——alpha 可能全在空头端/中段排名，
-            # 纯多头可交易组合必须单独为正（2026-08 审计发现的 IC 盲区）
-            "min_val_long_excess": 0.0,
-            # 截尾 IC 衰减（全窗口口径）与去重
-            "max_winsorized_abs_ic_decay": 0.10,
-            "max_abs_corr": 0.4,
-            # 已移除的摆设/失真门槛（研究结论 2026-08）：
-            # - min_fmb_t_stat / min_ls_t_stat：t ≈ ICIR×√N，700+ 天下永不拦截
-            # - min_quantile_excess_return / min_quantile_sharpe /
-            #   min_monotonicity / min_long_group_annual_excess_return：
-            #   毛值十分组口径系统性高估可交易性（同因子净值 weekly 净超额仅 ~4%）
-            #   → 组合可行性全部交给 engine_gate 净值裁决。
-            #
-            # 进正式库前的最后一道门：旧交易引擎完整约束回测
-            # （T+1/整手/涨跌停/停牌/费率/滑点/流动性），纯内存，不落盘。
-            # 口径要点（2026-08）：alpha 的意义在超额而非绝对收益——样本含熊市时
-            # 绝对年化/绝对夏普门会把所有因子拒之门外，故只设净值超额门 +
-            # 超额夏普门；回撤与尾部稳定照旧。
-            "engine_gate": {
-                "enabled": True,
-                # 动态百分比选股：自动适配停牌/涨跌停导致的候选池缩放。
-                # 散户口径：top 0.4% ≈ 20只，统一配置在 core/trading_config.py。
-                "selection_mode": trading_config.SELECTION_MODE,
-                "selection_pct": trading_config.GATE_SELECTION_PCT,
-                # weekly 为默认交付调仓频率：daily 全约束调仓的摩擦远大于因子超额。
-                "freq": trading_config.GATE_FREQ,
-                "allowed_freqs": ["daily", "weekly", "monthly"],
-                # 净值超额年化下限（vs 全市场等权基准，扣全费）
-                "min_excess_annual": trading_config.GATE_MIN_EXCESS_ANNUAL,
-                # 超额夏普下限（active NAV 口径）
-                "min_excess_sharpe": trading_config.GATE_MIN_EXCESS_SHARPE,
-                "max_drawdown": trading_config.GATE_MAX_DRAWDOWN,
-                "min_daily_overlap": trading_config.GATE_MIN_DAILY_OVERLAP,
-                # 散户口径：10万资金，统一配置在 core/trading_config.py
-                "capital": trading_config.GATE_CAPITAL,
-                # 仓位利用率硬门：平均投入占比低于此值 = 执行不可行
-                "min_invested_ratio": trading_config.GATE_MIN_INVESTED_RATIO,
-                # 候选流动性下限：散户口径 500万
-                "min_am20_yuan": trading_config.GATE_MIN_AM20_YUAN,
-            },
-        },
-    },
+    "delivery_policy": _default_delivery_policy(),
 }
 
 
 def default_research_spec(mode: str = "technical") -> dict[str, Any]:
+    """按研究模式生成默认 ResearchSpec（门槛/信号族/label 来自 core.research_modes 注册表）。
+
+    加新模式只需在 core/research_modes.RESEARCH_MODES 增加一项，本函数零改动。
+    """
     spec = copy.deepcopy(DEFAULT_RESEARCH_SPEC)
     if mode == "technical":
         return spec
-    if mode != "fundamental":
-        raise ValueError("research_spec.research_mode_invalid")
+    mode_spec = get_research_mode(mode)
     spec["research_mode"] = mode
-    # 基本面为慢因子：财报 PIT 阶跃数据对 1d label 几乎无预测力，评估须用 10d 持有期 label。
-    spec["recommended_label_col"] = "label_10d_close_to_close"
+    spec["recommended_label_col"] = mode_spec.recommended_label_col
     spec["search_policy"].update({
-        "allowed_signal_families": ["fundamental_quality", "fundamental_growth", "fundamental_value", "fundamental_revision"],
-        "forbidden_signal_families": ["pure_size", "pure_price_momentum"],
+        "allowed_signal_families": list(mode_spec.signal_families),
+        "forbidden_signal_families": list(mode_spec.forbidden_families),
         "min_distinct_raw_fields": 2,
         "require_time_series_structure": True,
     })
-    # ── 基本面专属门槛（2026-08）：慢因子评估口径与 technical 差异化 ──
-    # 季频 PIT 阶跃数据对 10d label 的信号强度天然弱于日频价量对 1d label，
-    # 若沿用 technical 门槛会把真实基本面 alpha 全部拒之门外。
-    # 设计原则：统计门槛适度放宽，但可交易性（engine_gate）只小幅放松，
-    # 防止"统计有效但实盘不赚钱"的假因子进正式库。
-    spec["evaluation_policy"].update({
-        "min_train_abs_ic": 0.015,   # technical 0.02 → 基本面 0.015（慢因子弱信号）
-        "min_train_icir": 0.22,      # technical 0.25 → 0.22（季频横截面少，ICIR 天然低）
-        "min_val_abs_ic": 0.008,     # technical 0.01 → 0.008
-        "min_val_ic_retention_ratio": 0.5,  # 保留比不变（防方向反转）
-    })
-    spec["delivery_policy"]["candidate"].update({
-        "min_abs_ic": 0.012,         # technical 0.015 → 0.012（海选放宽松，让 reviewer 筛）
-        "min_icir": 0.20,            # technical 0.25 → 0.20
-        "min_cs_autocorr": 0.18,     # 保留通用换手性硬门（防排名日度剧变）
-    })
-    spec["delivery_policy"]["production"].update({
-        "min_train_abs_ic": 0.020,   # technical 0.025 → 0.020
-        "min_train_icir": 0.28,      # technical 0.30 → 0.28
-        "min_val_abs_ic": 0.012,     # technical 0.015 → 0.012
-        "min_val_ic_retention": 0.60,  # 保留
-        "min_val_long_excess": 0.0,  # 保留（纯多头必须为正）
-        "max_winsorized_abs_ic_decay": 0.12,  # technical 0.10 → 0.12（慢因子 IC 衰减本来就快）
-    })
-    # engine_gate：慢因子按周调仓摩擦过大 → 默认月频；超额/夏普门槛小幅放松，
-    # 但回撤与仓位利用率保持原样（这些是执行可行性硬约束，与因子频率无关）。
-    spec["delivery_policy"]["production"]["engine_gate"].update({
-        "freq": "monthly",           # technical weekly → 基本面 monthly
-        "min_excess_annual": 0.02,   # technical 0.03 → 0.02
-        "min_excess_sharpe": 0.4,    # technical 0.5 → 0.4
-    })
+    if mode_spec.evaluation_overrides:
+        spec["evaluation_policy"].update(mode_spec.evaluation_overrides)
+    if mode_spec.candidate_overrides:
+        spec["delivery_policy"]["candidate"].update(mode_spec.candidate_overrides)
+    if mode_spec.production_overrides:
+        spec["delivery_policy"]["production"].update(mode_spec.production_overrides)
+    if mode_spec.engine_gate_overrides:
+        spec["delivery_policy"]["production"]["engine_gate"].update(
+            mode_spec.engine_gate_overrides
+        )
     return spec
 
 
@@ -365,13 +381,18 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def load_research_spec(path: Path | None) -> dict[str, Any]:
+    """从文件加载 ResearchSpec（None 时取默认+保存覆盖）。
+
+    显式文件内容作"显式 spec"与注册表默认/保存覆盖合并（build_run_research_spec），
+    保证 CLI 直跑也不会绕过用户在前端保存的门槛修改。
+    """
     if path is None:
-        return default_research_spec()
+        return build_run_research_spec()
     try:
         value = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"research_spec_load_failed: {exc}") from exc
-    return normalize_research_spec(value)
+    return build_run_research_spec(value)
 
 
 def research_policy_prompt(spec: dict[str, Any]) -> str:
@@ -381,17 +402,20 @@ def research_policy_prompt(spec: dict[str, Any]) -> str:
     review = spec["review_policy"]
     interaction = spec.get("interaction_policy", {})
     profiles = spec.get("evaluation_profiles", {})
-    fundamental = spec.get("research_mode") == "fundamental"
-    mode_line = (
-        "研究模式：基本面因子。信号以 `$funda_*` 财务字段为主（PIT 日频阶跃数据，注意披露生效日与低换手），"
-        f"本次评估 label 为 {spec.get('recommended_label_col', 'label_10d_close_to_close')}（10 日持有期）。"
-        if fundamental
-        else "研究模式：日线技术因子。信号以价量/波动/筹码等行情字段为主。"
+    mode = str(spec.get("research_mode") or "technical")
+    mode_spec = get_research_mode(mode)
+    needs_funda = mode_spec.needs_fundamentals
+    mode_desc = (
+        f"研究模式：{mode_spec.label}。信号以 `$funda_*` 财务字段为主"
+        "（PIT 日频阶跃数据，注意披露生效日与低换手），"
+        f"本次评估 label 为 {spec.get('recommended_label_col', mode_spec.recommended_label_col)}。"
+        if needs_funda
+        else f"研究模式：{mode_spec.label}。信号以价量/波动/筹码等行情字段为主。"
     )
     return "\n".join(
         [
             "# 本次运行的 ResearchSpec（高优先级研究约束）",
-            mode_line,
+            mode_desc,
             f"允许的信号族：{', '.join(search['allowed_signal_families']) or '不限制'}。",
             f"禁止作为独立候选的信号族：{', '.join(search['forbidden_signal_families']) or '不限制'}。",
             f"每个保留候选至少使用 {search['min_distinct_raw_fields']} 个彼此独立的原始字段。",

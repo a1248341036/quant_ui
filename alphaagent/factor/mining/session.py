@@ -52,6 +52,7 @@ class SessionStore:
         if is_cne_source(ctx.panel_path):
             panel = load_panel_from_cne(
                 start=cov_start, end=cov_end, universe_mask=False,
+                include_fundamentals=ctx.include_fundamentals,
             )
         else:
             panel = load_panel(ctx.panel_path)
@@ -62,6 +63,10 @@ class SessionStore:
             if funda_cols:
                 panel = panel.drop(columns=funda_cols)
                 dropped_funda = len(funda_cols)
+            else:
+                dropped_funda = 0
+        else:
+            dropped_funda = 0
         panel = slice_panel(panel, start=cov_start, end=cov_end)
         load_ms = (time.perf_counter() - t0) * 1000
         session_id = uuid.uuid4().hex
@@ -74,7 +79,7 @@ class SessionStore:
                 "coverage_start": cov_start,
                 "coverage_end": cov_end,
                 "include_fundamentals": ctx.include_fundamentals,
-                "dropped_fundamental_cols": dropped_fundamental_cols,
+                "dropped_fundamental_cols": dropped_funda,
             },
         )
         with self._lock:
@@ -87,3 +92,24 @@ class SessionStore:
         if session is None:
             raise KeyError(f"未知 session_id: {session_id!r}")
         return session
+
+    def register(self, session: StockEvalSession) -> None:
+        """将已存在的会话注册进存储（供外部缓存复用的会话接入评估服务）。"""
+        with self._lock:
+            self._sessions[session.session_id] = session
+
+    def remove(self, session_id: str) -> bool:
+        """移除会话并释放其 panel 引用（清空 split 缓存、置空 panel）。
+
+        一次性评估场景调用此方法，避免多份全量 panel 常驻内存。
+        """
+        with self._lock:
+            session = self._sessions.pop(session_id, None)
+        if session is None:
+            return False
+        try:
+            session._split_cache.clear()
+            session.panel = None  # type: ignore[assignment]
+        except Exception:
+            pass
+        return True

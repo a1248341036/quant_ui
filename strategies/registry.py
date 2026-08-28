@@ -138,3 +138,15 @@ def list_strategies_by_type(asset_type: str) -> list[str]:
         if asset_type in cfg.get("types", ["stock", "etf", "fund"])
     ]
 
+
+def validate_registry_factors() -> list[str]:
+    """校验 STRATEGIES 引用的因子名都在引擎因子注册表中。
+
+    返回非法引用列表（空 = 全部合法）。拼写错误在这里暴露，
+    而不是在回测运行时静默变成空分数。由测试/CI/人工调用。
+    """
+    from core.factor_registry import validate_factor_refs
+
+    refs = [str(cfg.get("factor", "")) for cfg in STRATEGIES.values()]
+    return validate_factor_refs([r for r in refs if r])
+

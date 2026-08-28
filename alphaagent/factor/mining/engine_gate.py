@@ -2,6 +2,9 @@
 
 数据全部在内存中变换：AlphaAgent panel (datetime, instrument) → 旧引擎长表
 (date, code, open/high/low/close, turnover, am20, turn20)。不产生任何磁盘中间表。
+
+单位换算（amount 千元→元、turnover_rate %→比例）与列契约统一由
+core.panel_schema 负责，本模块不再重复实现。
 """
 from __future__ import annotations
 
@@ -11,47 +14,7 @@ import numpy as np
 import pandas as pd
 
 from core import trading_config
-
-
-def panel_to_engine_frame(panel: pd.DataFrame) -> pd.DataFrame:
-    """把 AlphaAgent panel 转成 core.engine.run_backtest 需要的长表（纯内存）。
-
-    价格必须用**真实可交易价**（raw open/close）：执行模拟含整手/现金/预算约束，
-    复权价被 adjfactor 任意缩放（长期分红股可达数十倍），会让整手预算计算
-    随机失效 → 大面积"现金不足/预算过小"拒单、仓位利用率仅个位数
-    （2026-08 审计结论）。收益口径由引擎内部 o2o 自洽，红利忽略。
-    am20 / turn20 按 code 滚动 20 日均值现算。
-    """
-    df = panel.reset_index().rename(columns={"datetime": "date", "instrument": "code"})
-
-    def _col(name: str) -> pd.Series:
-        return df[name]
-
-    amount = df.get("amount")
-    if amount is None:
-        raise ValueError("engine_gate_requires_amount_column")
-    # CNE stock_daily_wide 的 amount 是 tushare 原始千元口径（实测平安银行
-    # 日均 ~94.5 万 ≈ 真实 ~20 亿的 1/1000）；引擎参与率预算按元计算，
-    # 必须转元，否则预算缩水 1000 倍 → 全市场大面积"现金不足"拒单。
-    amount = pd.to_numeric(amount, errors="coerce") * 1000.0
-    turnover = df.get("turnover_rate")
-    if turnover is None:
-        turnover = pd.Series(np.nan, index=df.index)
-
-    out = pd.DataFrame({
-        "date": df["date"],
-        "code": df["code"],
-        "open": _col("open").to_numpy(),
-        "high": _col("high").to_numpy() if "high" in df.columns else np.nan,
-        "low": _col("low").to_numpy() if "low" in df.columns else np.nan,
-        "close": _col("close").to_numpy(),
-        "turnover": turnover.to_numpy(),
-        "amount": amount.to_numpy(),
-    })
-    grouped = out.groupby("code", sort=False)
-    out["am20"] = grouped["amount"].transform(lambda s: s.rolling(20, min_periods=5).mean())
-    out["turn20"] = grouped["turnover"].transform(lambda s: s.rolling(20, min_periods=5).mean())
-    return out
+from core.panel_schema import alpha_panel_to_engine_frame as panel_to_engine_frame
 
 
 def run_engine_gate(

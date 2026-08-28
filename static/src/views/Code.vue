@@ -105,7 +105,7 @@
 
 <script>
 import { store } from '../store/index.js'
-import { api } from '../utils/api.js'
+import { api, getTradingDefaults } from '../utils/api.js'
 import { fmt, pct, sign, stock, metricText, today } from '../utils/format.js'
 import { renderLine, renderBar } from '../utils/charts.js'
 
@@ -117,10 +117,10 @@ export default {
       code: {
         code: '', tplName: '', tplOptions: [], presetList: [],
         tplInfo: null,
-        strategy: '', strategies: [],
+        strategies: [],
         universe: '沪深300+中证500+中证1000', alpha_set: 'alpha158', alpha_limit: 30,
         horizonsText: '1,5,10,20', quantiles: 10, min_cs_count: 30, cost_bps: 8,
-        start: '2022-01-01', end: today(), exclude: true, score_factor: '', top_n: 10, selection_mode: 'top_n', selection_pct: 0.10, min_positions: 1, max_positions: null, capital: 100000, freq: 'weekly', amount_q: 0.2, buy_cost_pct: 0.025, sell_cost_pct: 0.125, slippage_bps: 3, max_participation: 0.10,
+        start: '2022-01-01', end: today(), exclude: true, score_factor: '', top_n: 10, selection_mode: 'top_n', selection_pct: 0.10, min_positions: 1, max_positions: null, capital: 100000, freq: 'weekly', amount_q: 0.2, buy_cost_pct: 0.025, sell_cost_pct: 0.125, slippage_bps: 0, max_participation: 0.10,
         savedName: '', savedList: [],
       },
       codeResult: null, codeRunning: false, codeError: '', codeSaveMsg: '',
@@ -129,6 +129,7 @@ export default {
   },
   mounted() {
     this.loadCodeDefault();
+    this.applyTradingDefaults();
     this.loadHelpers();
   },
   methods: {
@@ -138,6 +139,19 @@ export default {
     sign,
     metricText,
     stock(code) { return stock(code, undefined, store.names); },
+    // 交易参数默认值统一从配置中心读取（后端 /api/trading-defaults，模块级缓存）
+    async applyTradingDefaults() {
+      try {
+        const d = await getTradingDefaults();
+        if (!d || d.buy_cost == null) return;
+        this.code.buy_cost_pct = Number((d.buy_cost * 100).toFixed(4));
+        this.code.sell_cost_pct = Number((d.sell_cost * 100).toFixed(4));
+        this.code.slippage_bps = d.slippage_bps;
+        this.code.max_participation = d.max_participation;
+        this.code.amount_q = d.amount_q;
+        this.code.capital = d.capital;
+      } catch (e) { /* 配置中心不可用时保持本地默认 */ }
+    },
     async loadCodeDefault() {
       try {
         const d = await api('/api/code/qweave/default');
@@ -164,7 +178,12 @@ export default {
       } catch (e) { this.codeError = '加载预制代码失败: ' + e.message; }
     },
     async refreshSaved() {
-      try { const r = await api('/api/code/saved'); this.code.savedList = r.items || []; this.buildTplOptions(); } catch (e) {}
+      try {
+        const r = await api('/api/code/saved');
+        // 只展示 qweave 保存项；旧版 legacy 保存（registry/factors 文本）已无法运行
+        this.code.savedList = (r.items || []).filter(s => s.engine === 'qweave');
+        this.buildTplOptions();
+      } catch (e) {}
     },
     async loadTemplate() {
       const v = this.code.tplName;
@@ -265,7 +284,8 @@ export default {
       try {
         const r = await api('/api/code/saved/' + encodeURIComponent(this.code.savedName));
         if (r.error) { this.codeError = r.error; return; }
-        this.code.code = r.code || ((r.registry && r.factors) ? r.registry + '\n\n\n' + r.factors : '');
+        if (!r.code) { this.codeError = '该保存项是旧版研究代码，请用 qweave 重新保存'; return; }
+        this.code.code = r.code;
         await this.parseCode(true);
         this.codeSaveMsg = '已载入：' + r.name;
         setTimeout(() => { if (this.codeSaveMsg) this.codeSaveMsg = ''; }, 3000);

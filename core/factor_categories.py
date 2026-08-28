@@ -1,23 +1,17 @@
-"""因子类别注册表：候选库 + 正式库按 research_mode 分目录。
+"""因子类别注册表：候选库 + 正式库按研究模式分目录。
 
-加新类别只需在 FACTOR_CATEGORIES 中注册一行，不改任何代码逻辑。
-research_mode 已在整条链路传递（ResearchSpec → start_run → FactorSubmitService），
-库路径自动跟随。
+**单一事实源**：类别定义在 core.research_modes.RESEARCH_MODES 中
+（mode_id/label/candidate_dir/production_dir 均在那里），本模块只做路径
+派生与兼容接口，不再维护第二份清单。
+
+加新类别 = 在 core.research_modes.RESEARCH_MODES 加一项，本模块自动跟随。
 
 目录结构:
   artifacts/alphaagent/factorzoo/
     candidate_technical/       ← 候选库（日线技术）
-      mining_candidate_registry.json
-      expressions/
+    production_technical/      ← 正式库（日线技术）
     candidate_fundamental/     ← 候选库（基本面）
-      ...
-    production_technical/      ← 正式库（日线技术，FactorZoo 密集矩阵）
-      manifest.json
-      index/
-      values/
-      ...
     production_fundamental/    ← 正式库（基本面）
-      ...
 """
 
 from __future__ import annotations
@@ -25,46 +19,30 @@ from __future__ import annotations
 from pathlib import Path
 
 from alphaagent.core.paths import ARTIFACTS_DIR
+from core.research_modes import RESEARCH_MODES
 
 FACTORZOO_ROOT = ARTIFACTS_DIR / "alphaagent" / "factorzoo"
-
-FACTOR_CATEGORIES: dict[str, dict[str, str]] = {
-    "technical": {
-        "label": "日线技术",
-        "candidate_dir": "candidate_technical",
-        "production_dir": "production_technical",
-    },
-    "fundamental": {
-        "label": "基本面",
-        "candidate_dir": "candidate_fundamental",
-        "production_dir": "production_fundamental",
-    },
-    # "sentiment": {
-    #     "label": "舆情",
-    #     "candidate_dir": "candidate_sentiment",
-    #     "production_dir": "production_sentiment",
-    # },
-}
 
 DEFAULT_CATEGORY = "technical"
 
 
 def get_category_label(mode: str) -> str:
-    return FACTOR_CATEGORIES.get(mode, {}).get("label", mode)
+    spec = RESEARCH_MODES.get(mode)
+    return spec.label if spec is not None else mode
 
 
 def candidate_dir(mode: str) -> Path:
-    entry = FACTOR_CATEGORIES.get(mode)
-    if entry is None:
+    spec = RESEARCH_MODES.get(mode)
+    if spec is None:
         raise ValueError(f"unknown_factor_category: {mode}")
-    return FACTORZOO_ROOT / entry["candidate_dir"]
+    return FACTORZOO_ROOT / spec.candidate_dir
 
 
 def production_dir(mode: str) -> Path:
-    entry = FACTOR_CATEGORIES.get(mode)
-    if entry is None:
+    spec = RESEARCH_MODES.get(mode)
+    if spec is None:
         raise ValueError(f"unknown_factor_category: {mode}")
-    return FACTORZOO_ROOT / entry["production_dir"]
+    return FACTORZOO_ROOT / spec.production_dir
 
 
 def candidate_registry_path(mode: str) -> Path:
@@ -84,9 +62,12 @@ def production_expr_dir(mode: str) -> Path:
 
 
 def all_categories() -> list[str]:
-    return list(FACTOR_CATEGORIES.keys())
+    return list(RESEARCH_MODES.keys())
 
 
 def category_choices() -> list[dict[str, str]]:
-    """前端下拉选项用。"""
-    return [{"value": k, "label": v["label"]} for k, v in FACTOR_CATEGORIES.items()]
+    """前端下拉选项用（从研究模式注册表派生）。"""
+    return [
+        {"value": mode, "label": spec.label}
+        for mode, spec in RESEARCH_MODES.items()
+    ]

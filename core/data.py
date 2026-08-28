@@ -125,8 +125,10 @@ def _finalize_stock_df(df: pd.DataFrame, last_adj: pd.DataFrame | None = None,
     df = df.copy()
     df["date"] = pd.to_datetime(df["date"])
     df["code"] = df["ts_code"].str[:6]
-    # PG 统一存 %（0.4289），面板历史口径是比例（0.0043），转回比例保持一致
-    df["turnover"] = df["turnover"] / 100.0
+    # PG 统一存 %（0.4289），面板历史口径是比例（0.0043），转回比例保持一致。
+    # 单位换算常量见 core/panel_schema（引擎面板契约的唯一事实来源）。
+    from .panel_schema import TURNOVER_PERCENT_TO_RATIO
+    df["turnover"] = df["turnover"] / TURNOVER_PERCENT_TO_RATIO
     adj = (adj or "qfq").strip().lower()
     if adj == "qfq":
         if last_adj is None:
@@ -348,8 +350,8 @@ def _load_panel_precomputed(start: str | None = None, end: str | None = None,
     return panel
 
 
-def load_panel(start: str | None = None, end: str | None = None,
-               codes: list[str] | None = None) -> pd.DataFrame:
+def _load_panel_impl(start: str | None = None, end: str | None = None,
+                     codes: list[str] | None = None) -> pd.DataFrame:
     unbounded = start is None and end is None and codes is None
     # CNE 优先：QUANT_USE_CNE=1 时先走 CNE reader（读同一份文件，口径已验证一致），
     # 失败回退旧路径。全量（无任何过滤）仍用预计算 panel 避免整表构造。
@@ -372,6 +374,24 @@ def load_panel(start: str | None = None, end: str | None = None,
         except Exception as exc:
             print(f"Tushare parquet 面板加载失败: {exc}", file=sys.stderr)
     return _load_panel_precomputed(start=start, end=end, codes=codes)
+
+
+def load_panel(start: str | None = None, end: str | None = None,
+               codes: list[str] | None = None) -> pd.DataFrame:
+    """加载回测引擎股票面板，并对面板契约做软校验。
+
+    软校验：结构不满足 ENGINE_PANEL_SPEC 时打印警告但不中断，
+    避免存量数据/个别分支破坏现有调用；新写数据路径（panel_schema
+    转换器）仍是硬校验。
+    """
+    panel = _load_panel_impl(start=start, end=end, codes=codes)
+    try:
+        from .panel_schema import validate_engine_panel
+        validate_engine_panel(panel)
+    except ValueError as exc:
+        print(f"[data] 引擎面板契约校验未通过（继续使用）: {exc}",
+              file=sys.stderr)
+    return panel
 
 
 def load_signal_panel(codes: list[str], end: str | None = None) -> pd.DataFrame:

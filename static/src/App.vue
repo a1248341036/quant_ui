@@ -99,6 +99,14 @@ export default {
   mounted() {
     this.init()
   },
+  watch: {
+    // 跨页面跳转请求：History 打开评估/回测记录 → 切到对应 tab
+    'store.requestTab': function (tab) {
+      if (!tab) return
+      this.tab = tab
+      store.requestTab = ''
+    },
+  },
   methods: {
     today,
     async init() {

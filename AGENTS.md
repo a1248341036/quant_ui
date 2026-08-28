@@ -157,12 +157,20 @@ logs/factor_mining/ui/        # 每次运行的 JSONL 轨迹 + console.log + run
 | POST | `/api/alphaagent/runs/{id}/continue` | 已结束的 run 继续（fork 新进程） |
 | POST | `/api/alphaagent/runs/{id}/branch` | 分支新 run |
 | GET | `/api/alphaagent/research-memory` | 查看研究记忆 |
-| GET | `/api/alphaagent/research-spec/default` | 默认研究策略 |
+| GET | `/api/alphaagent/research-spec/default` | 当前模式生效研究策略（默认+保存覆盖） |
+| GET | `/api/alphaagent/research-specs/{mode}` | 模式门槛文件三视图：defaults/overrides/effective |
+| PUT | `/api/alphaagent/research-specs/{mode}` | 保存模式门槛（diff 出增量覆盖，全链路生效） |
+| DELETE | `/api/alphaagent/research-specs/{mode}` | 删除门槛文件，恢复注册表默认 |
 | GET | `/api/alphaagent/evaluation-capabilities` | 可用评估插件和 profiles |
 
 ## 关键设计决策
 
 - **panel 实时构建而非预构建**：`cne://` 标识触发 adapter 从 CNE 数据湖按日期范围拉取，避免维护大 parquet 文件。首次加载约 30-60 秒，之后驻内存复用。
+- **因子注册表单一来源（`core/factor_registry.py`）**：全部引擎因子（量价/基金/财务/动态）的元数据收口在 `FACTORS` 表；`core/composites.FACTOR_OPTIONS` 由它派生（组合编辑器清单），`strategies.registry.validate_registry_factors()` 校验策略引用。加因子 = 注册表加一行 + `build_factor_frames` 实现计算。
+- **策略定义统一模型（`core/strategy_types.py`）**：`StrategyDefinition` 收敛注册表/配置池/归档三源，`resolve_strategy_def()` 统一解析（保留旧 `resolve_strategy()` dict 兼容），`fingerprint()` 用于策略去重/冲突检测。DSL 因子经 `from_dsl_factor()` 动态构造（不回填策略池）。
+- **分数矩阵统一转换（`core/score_matrix.py`）**：AlphaAgent DSL 与 qweave 研究产出喂回测引擎的 date×code 矩阵统一走 `scores_to_engine_matrix()`，不再各自实现 pivot/unstack+去后缀。
+- **面板口径统一（`core/panel_schema.py`）**：alpha panel（MultiIndex/千元/%）与引擎面板（长表/元/比例）的列/单位/索引契约 + `alpha_panel_to_engine_frame()` 公共转换，消灭单位魔数双写。
+- **每模式门槛文件（`research_spec.py` 持久化）**：`artifacts/alphaagent/research_specs/<mode>.json` 存 `default_research_spec` 的**增量覆盖**（diff，不含派生的 evaluation_profiles）。`effective_research_spec(mode)` = 注册表默认 + 保存覆盖；运行口径 `build_run_research_spec(spec)` = 默认 < 保存覆盖 < 显式 spec，CLI/Web/晋升全链路统一走它。前端编辑保存经 `PUT /api/alphaagent/research-specs/{mode}`，改一处门槛全链路生效。
 - **会话域复用**：submit 全程在挖掘会话驻内存 panel 上评估，不再全量重载因子库域 panel（避免 OOM）。
 - **JSONL 轨迹持久化**：每次 run 的所有事件写入 `logs/factor_mining/ui/<run_id>/run_*.jsonl`，FastAPI 重启后可从磁盘恢复历史 run。
 - **DSL 编译为 Python**：多行表达式先赋值中间变量，最后一行输出因子值；支持 `$列名` 引用 panel 列。

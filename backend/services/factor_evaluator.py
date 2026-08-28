@@ -66,7 +66,11 @@ class FactorEvaluator:
 
         # 获取服务并注册会话
         service = self._get_service(req)
-        
+
+        # 关键：LRU 缓存里的 session 必须同步注册进 service 自己的
+        # SessionStore，否则 eval_profile 用 session_id 查 store 会报未知 session_id。
+        service.sessions.register(session)
+
         # 保存当前 session_id
         self._current_session_id = session.session_id
 

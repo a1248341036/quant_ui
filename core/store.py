@@ -56,7 +56,13 @@ FUND_UNIVERSE_LEGACY = "场外科技基金"
 
 
 def normalize_universe(name: str) -> str:
-    """归一化旧名，兼容存量账户/回测参数。"""
+    """归一化旧名，兼容存量账户/回测参数。
+
+    同时去除首尾和中间的多余空格，使 "科技 TMT" 能匹配 "科技TMT"。
+    """
+    name = name.strip()
+    # 去除中文与拉丁字符之间的空格，兼容用户输入 "科技 TMT" 等带空格变体
+    name = name.replace(" ", "").replace("\u3000", "")
     if name == TECH_UNIVERSE_LEGACY:
         return TECH_UNIVERSE
     if name == FUND_UNIVERSE_LEGACY:

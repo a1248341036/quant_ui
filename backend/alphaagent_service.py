@@ -24,7 +24,7 @@ from alphaagent.factor.types import (
     DEFAULT_VAL_END,
     DEFAULT_VAL_START,
 )
-from alphaagent.factor.mining.research_spec import default_research_spec, normalize_research_spec
+from alphaagent.factor.mining.research_spec import build_run_research_spec, default_research_spec, normalize_research_spec
 
 from alphaagent.factor.mining.research_memory import ResearchMemoryStore
 from backend.logging_decorators import log_function_call
@@ -53,7 +53,9 @@ LOG_ROOT = ROOT / "logs" / "factor_mining" / "ui"
 _session_manager: SessionManager | None = None
 _factor_evaluator: FactorEvaluator | None = None
 _factor_repository: FactorRepository | None = None
-_service_lock = threading.Lock()
+# 必须用 RLock：_get_factor_evaluator() 在持锁状态下会调用
+# _get_session_manager()，普通 Lock 同线程二次获取会死锁（接口卡死、CPU 0）。
+_service_lock = threading.RLock()
 
 
 def _now() -> str:
@@ -373,13 +375,17 @@ def start_run(
     # 表单模式开关是权威来源；spec 内缺失时回填，保证模式/label/基本面加载三者一致。
     mode = str(params.get("research_mode") or raw_spec.get("research_mode") or "technical")
     raw_spec["research_mode"] = mode
-    spec = normalize_research_spec(raw_spec)
+    # 运行口径：注册表默认 < 用户保存覆盖（前端门槛文件）< 本次显式 spec。
+    # 前端传回的有效 spec 本身已含保存值，幂等；显式 spec 缺键也从保存覆盖补齐。
+    spec = build_run_research_spec(raw_spec)
     params["research_spec"] = spec
-    # 研究模式决定评估 label：基本面模式的季频数据必须配慢因子 label，
+    # 研究模式决定评估 label：慢因子模式（needs_fundamentals=True）必须配慢 label，
     # 调用方传了不匹配的 label 时强制覆盖并记录警告。
-    recommended = spec.get("recommended_label_col") or "label_1d_open_to_open"
+    from core.research_modes import get_research_mode
+    mode_spec = get_research_mode(mode)
+    recommended = mode_spec.recommended_label_col
     caller_label = str(params.get("label_col") or "").strip()
-    if mode == "fundamental" and caller_label != recommended:
+    if mode_spec.needs_fundamentals and caller_label != recommended:
         logger.warning(
             "label_col 覆盖: 基本面模式要求 %s，调用方传了 %s → 已强制覆盖",
             recommended, caller_label,
@@ -421,8 +427,9 @@ def start_run(
         command.extend(["--max-parallel-eval", str(params["max_parallel_eval"])])
     if params.get("population_max") is not None:
         command.extend(["--population-max", str(int(params["population_max"]))])
-    # 研究模式决定是否载入基本面列：技术模式省内存，基本面模式必须载入 funda_* 字段。
-    wants_fundamentals = spec.get("research_mode") == "fundamental"
+    # 研究模式决定是否载入基本面列：needs_fundamentals=True 的模式必须载入
+    # funda_* 字段（如基本面模式）；其余省内存。
+    wants_fundamentals = bool(get_research_mode(mode).needs_fundamentals)
     if not wants_fundamentals or params.get("no_fundamentals"):
         command.append("--no-fundamentals")
     if resume_context_file is not None:
@@ -734,17 +741,17 @@ def evaluate_single_factor(
     include_fundamentals: bool = False,
 ) -> dict[str, Any]:
     """独立评估一个因子表达式。
-    
-    使用 LRU 缓存的会话，相同参数请求无需重新加载 panel。
+
+    单次请求使用一次性会话：panel 用后即释放（不缓存），避免多份全量
+    panel 常驻内存。批量挖掘走子进程内复用会话，不受影响。
     """
     from alphaagent.factor.mining.schemas import (
-        SessionCreateRequest,
         EvalProfileRequest,
+        SessionCreateRequest,
     )
+    from alphaagent.factor.mining.service import StockEvalService
 
-    evaluator = _get_factor_evaluator()
-    
-    # 创建或获取会话（LRU 缓存）
+    service = StockEvalService()
     create_req = SessionCreateRequest(
         panel_path=DEFAULT_PANEL,
         train_start=train_start,
@@ -754,17 +761,19 @@ def evaluate_single_factor(
         label_col=label_col,
         include_fundamentals=include_fundamentals,
     )
-    create_resp = evaluator.create_session(create_req)
-    session_id = create_resp["session_id"]
-    
-    # 评估因子
-    eval_req = EvalProfileRequest(
-        session_id=session_id,
-        profile_id=profile_id,
-        multi_line_expr=multi_line_expr,
-        factor_name=factor_name,
-    )
-    return evaluator.eval_profile(eval_req)
+    create_resp = service.create_session(create_req)
+    session_id = create_resp.session_id
+
+    try:
+        eval_req = EvalProfileRequest(
+            session_id=session_id,
+            profile_id=profile_id,
+            multi_line_expr=multi_line_expr,
+            factor_name=factor_name,
+        )
+        return service.eval_profile(eval_req)
+    finally:
+        service.release_session(session_id)
 
 
 @log_function_call(logger=backtest_logger)
@@ -779,15 +788,17 @@ def evaluate_multi_profile(
     label_col: str = "label_1d_open_to_open",
     include_fundamentals: bool = False,
 ) -> dict[str, Any]:
-    """一次评估多个 profile（train_screen + validation + size_neutral_validation）。"""
-    from alphaagent.factor.mining.schemas import (
-        SessionCreateRequest,
-        EvalProfileRequest,
-    )
+    """一次评估多个 profile（train_screen + validation + size_neutral_validation）。
 
-    evaluator = _get_factor_evaluator()
-    
-    # 创建或获取会话（LRU 缓存）
+    单次请求使用一次性会话：panel 用后即释放（不缓存）。
+    """
+    from alphaagent.factor.mining.schemas import (
+        EvalProfileRequest,
+        SessionCreateRequest,
+    )
+    from alphaagent.factor.mining.service import StockEvalService
+
+    service = StockEvalService()
     create_req = SessionCreateRequest(
         panel_path=DEFAULT_PANEL,
         train_start=train_start,
@@ -797,18 +808,21 @@ def evaluate_multi_profile(
         label_col=label_col,
         include_fundamentals=include_fundamentals,
     )
-    create_resp = evaluator.create_session(create_req)
-    session_id = create_resp["session_id"]
+    create_resp = service.create_session(create_req)
+    session_id = create_resp.session_id
 
     results: dict[str, Any] = {}
-    for profile_id in ("train_screen", "validation", "size_neutral_validation"):
-        eval_req = EvalProfileRequest(
-            session_id=session_id,
-            profile_id=profile_id,
-            multi_line_expr=multi_line_expr,
-            factor_name=factor_name,
-        )
-        results[profile_id] = evaluator.eval_profile(eval_req)
+    try:
+        for profile_id in ("train_screen", "validation", "size_neutral_validation"):
+            eval_req = EvalProfileRequest(
+                session_id=session_id,
+                profile_id=profile_id,
+                multi_line_expr=multi_line_expr,
+                factor_name=factor_name,
+            )
+            results[profile_id] = service.eval_profile(eval_req)
+    finally:
+        service.release_session(session_id)
 
     return results
 
@@ -1150,10 +1164,12 @@ def save_factor(
     factor_id = slug_factor_id(factor_name)
     name = str(factor_name).strip() or factor_id
 
-    # 获取 session 以复用已加载的 panel（使用 LRU 缓存）
+    # 单次请求使用一次性会话：panel 用后即释放（不缓存），避免多份全量
+    # panel 常驻内存占用 10GB+。
     from alphaagent.factor.mining.schemas import SessionCreateRequest
-    
-    evaluator = _get_factor_evaluator()
+    from alphaagent.factor.mining.service import StockEvalService
+
+    service = StockEvalService()
     create_req = SessionCreateRequest(
         panel_path=DEFAULT_PANEL,
         train_start=train_start,
@@ -1163,13 +1179,10 @@ def save_factor(
         label_col=label_col,
         include_fundamentals=include_fundamentals,
     )
-    create_resp = evaluator.create_session(create_req)
-    session_id = create_resp["session_id"]
-    
-    # 从 session_manager 获取 session
-    session = evaluator.session_manager._cache.get(create_resp["session_id"])
-    if session is None:
-        raise RuntimeError("session_not_found")
+    create_resp = service.create_session(create_req)
+    session_id = create_resp.session_id
+
+    session = service.sessions.get(session_id)
     ctx = session.ctx
 
     # Candidate records are registry-only; production remains a dense FactorZoo.
@@ -1185,6 +1198,7 @@ def save_factor(
     try:
         zoo = FactorZoo.open(zoo_root)
     except FileNotFoundError:
+        service.release_session(session_id)
         return {"ok": False, "factor_id": factor_id, "error": f"factorlib_not_initialized:{zoo_root}"}
 
     # 复用 session 中已加载的 panel（避免重复加载 cne:// 数据源）
@@ -1205,6 +1219,25 @@ def save_factor(
         dry_run=library == "candidate",
         overwrite=True,
     )
+
+    # 合并分位组合（纯多头）夏普/年化指标到入库 metrics：compute_ingest_metrics
+    # 只产出 IC/ICIR/coverage 等统计量，不包含 quantile_portfolio；
+    # 若不补，因子库"多头年化/夏普"列与导出 CSV 将缺失。
+    try:
+        from alphaagent.factor.mining.schemas import EvalProfileRequest
+        profile_req = EvalProfileRequest(
+            session_id=session_id,
+            profile_id="validation",
+            multi_line_expr=multi_line_expr.strip(),
+            factor_name=factor_id,
+        )
+        profile_result = service.eval_profile(profile_req)
+        qp = profile_result.get("metrics", {}).get("quantile_portfolio")
+        if isinstance(qp, dict):
+            assessment.metrics["quantile_portfolio"] = qp
+    except Exception:
+        # 组合评估失败不应阻断入库（统计口径指标仍有效）
+        pass
 
     if library == "candidate":
         # 模拟挖掘流程的评审钩子：基于统计门槛的规则评审
@@ -1246,6 +1279,7 @@ def save_factor(
                 promotion_status=review_status,
             )
 
+        service.release_session(session_id)
         return {
             "ok": True,
             "factor_id": factor_id,
@@ -1264,6 +1298,7 @@ def save_factor(
         }
 
     if not assessment.stored and assessment.skipped_reason not in (None, "already_exists"):
+        service.release_session(session_id)
         return {
             "ok": False,
             "factor_id": factor_id,
@@ -1285,6 +1320,7 @@ def save_factor(
         source="lab_save",
     )
 
+    service.release_session(session_id)
     return {
         "ok": True,
         "factor_id": factor_id,
@@ -1309,30 +1345,53 @@ def _eval_factor_matrix(
     factor_name: str,
     calc_start: str,
     end: str,
+    panel: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    """Evaluate a DSL expression and return a date × code score matrix."""
+    """Evaluate a DSL expression and return a date × code score matrix.
+
+    如果传入 panel（已加载的回测面板），直接复用，避免重复加载 CNE 数据源。
+    """
+    import time as _time
     import numpy as np
-    from alphaagent.data.adapters.cnequity import load_panel_from_cne
     from alphaagent.dsl import eval_factor
     from alphaagent.factor.align import align_series_to_panel
+    from backend.logging_config import get_logger
+    _log = get_logger("alphaagent_service")
 
-    panel = load_panel_from_cne(start=calc_start, end=end, universe_mask=False)
-    panel = panel.sort_index()
+    _t0 = _time.perf_counter()
+    if panel is None:
+        _log.info("[_eval_factor_matrix] panel=None, loading from CNE...")
+        from alphaagent.data.adapters.cnequity import load_panel_from_cne
+        panel = load_panel_from_cne(start=calc_start, end=end, universe_mask=False)
+        panel = panel.sort_index()
+        _log.info("[_eval_factor_matrix] CNE panel loaded: shape=%s in %.2fs",
+                  panel.shape, _time.perf_counter() - _t0)
+    else:
+        _log.info("[_eval_factor_matrix] using provided panel: shape=%s, index type=%s",
+                  panel.shape, type(panel.index).__name__)
     if panel.empty:
-        raise ValueError(f"CNE 面板在区间内无数据: {calc_start} ~ {end}")
+        raise ValueError(f"面板在区间内无数据: {calc_start} ~ {end}")
 
+    _t1 = _time.perf_counter()
+    _log.info("[_eval_factor_matrix] calling eval_factor, expr=%r", multi_line_expr[:100])
     raw = eval_factor(multi_line_expr, panel)
+    _log.info("[_eval_factor_matrix] eval_factor done in %.2fs, result type=%s, len=%d",
+              _time.perf_counter() - _t1, type(raw).__name__, len(raw) if hasattr(raw, '__len__') else -1)
     if not isinstance(raw, pd.Series):
         raise TypeError(f"factor_output_must_be_series:{type(raw)!r}")
 
+    _t1 = _time.perf_counter()
     values = align_series_to_panel(raw, panel)
     factor = pd.Series(values, index=panel.index, name=factor_name, dtype=np.float32)
     factor_df = factor.unstack(level="instrument")
     factor_df.index.name = "date"
     factor_df.columns.name = "code"
+    _log.info("[_eval_factor_matrix] align+unstack done in %.2fs, factor_df shape=%s",
+              _time.perf_counter() - _t1, factor_df.shape)
 
     # AlphaAgent 使用 000001.SZ，本地回测面板使用六位代码。
     factor_df.columns = [str(code).split(".")[0] for code in factor_df.columns]
+    _log.info("[_eval_factor_matrix] TOTAL done in %.2fs", _time.perf_counter() - _t0)
     return factor_df
 
 
@@ -1351,19 +1410,29 @@ def backtest_factor(
     warmup_days: int = 400,
 ) -> dict[str, Any]:
     """用因子表达式驱动主回测引擎 core.engine.run_backtest。"""
+    import time as _time
     from backend import services as sv
     from core.assets import STOCK_PROFILE
     from core.engine import run_backtest
+    from backend.logging_config import get_logger
+    _log = get_logger("alphaagent_service")
+
+    _t0 = _time.perf_counter()
+    _log.info("[backtest_factor] START expr=%r universe=%s start=%s end=%s top_n=%d",
+              multi_line_expr[:80], universe, start, end, top_n)
 
     start_ts = pd.Timestamp(start)
     calc_ts = (start_ts - pd.Timedelta(days=max(0, int(warmup_days)))
                if warmup_days > 0 else start_ts)
     calc_start = calc_ts.date().isoformat()
 
+    _t1 = _time.perf_counter()
     codes = sv.build_codes(universe=universe, exclude_kechuang=exclude_kechuang)
     if not codes:
         raise ValueError(f"股票池为空: {universe}")
+    _log.info("[backtest_factor] build_codes done: %d codes in %.2fs", len(codes), _time.perf_counter() - _t1)
 
+    _t1 = _time.perf_counter()
     data = sv.load_data(
         start=calc_start,
         end=end,
@@ -1374,18 +1443,27 @@ def backtest_factor(
     bt_panel = data.get("panel")
     if bt_panel is None or bt_panel.empty:
         raise ValueError("本地回测面板在区间内无数据")
+    _log.info("[backtest_factor] load_data done: panel shape=%s in %.2fs", bt_panel.shape, _time.perf_counter() - _t1)
 
+    _t1 = _time.perf_counter()
     factor_df = _eval_factor_matrix(
         multi_line_expr=multi_line_expr,
         factor_name="_lab_factor",
         calc_start=calc_start,
         end=end,
+        panel=None,  # 让 _eval_factor_matrix 自己加载 CNE 面板（有 MultiIndex）
     )
+    _log.info("[backtest_factor] _eval_factor_matrix done: factor_df shape=%s in %.2fs", factor_df.shape, _time.perf_counter() - _t1)
+
+    _t1 = _time.perf_counter()
     bt_dates = pd.DatetimeIndex(sorted(bt_panel["date"].unique()))
     bt_codes = [str(code) for code in bt_panel["code"].unique()]
     factor_df = factor_df.reindex(index=bt_dates, columns=bt_codes)
+    _log.info("[backtest_factor] reindex done in %.2fs", _time.perf_counter() - _t1)
 
     # 因子矩阵包含预热段；run_backtest 只从 start 开始输出净值。
+    _t1 = _time.perf_counter()
+    _log.info("[backtest_factor] calling run_backtest...")
     res = run_backtest(
         panel=bt_panel,
         codes=codes,
@@ -1409,7 +1487,10 @@ def backtest_factor(
         max_participation=trading_config.MAX_PARTICIPATION,
         execution_profile=STOCK_PROFILE,
     )
+    _log.info("[backtest_factor] run_backtest done in %.2fs, metrics keys=%s",
+              _time.perf_counter() - _t1, list(res.get("metrics", {}).keys())[:5])
 
+    _t1 = _time.perf_counter()
     nm = sv.get_name_map()
     holdings = res["holdings"].copy()
     holdings["name"] = [nm.get(str(c), "") for c in holdings["code"]]
@@ -1420,6 +1501,9 @@ def backtest_factor(
     nav_points = sv.series_to_points(res["nav"])
     bench_points = sv.series_to_points(res["bench"])
     dd_points = sv.series_to_points(res["drawdown"])
+
+    _log.info("[backtest_factor] post-processing done in %.2fs", _time.perf_counter() - _t1)
+    _log.info("[backtest_factor] TOTAL done in %.2fs", _time.perf_counter() - _t0)
 
     return {
         "ok": True,

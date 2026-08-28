@@ -33,6 +33,8 @@ from alphaagent.factor.mining.registry_io import (
     upsert_mining_registry,
     write_candidate_registry,
 )
+from alphaagent.factor.mining.delivery_criteria import DeliveryCriteria
+from alphaagent.factor.mining.delivery_checker import DeliveryChecker
 from core import factor_categories
 
 
@@ -123,137 +125,6 @@ def _candidate_registry_similarity(
 def slug_factor_id(name: str) -> str:
     s = re.sub(r"[^a-zA-Z0-9_]+", "_", str(name).strip().lower())
     return re.sub(r"_+", "_", s).strip("_") or "factor"
-
-
-def _stage_one_stats_reasons(
-    metrics: dict[str, Any],
-    criteria: dict[str, Any] | None = None,
-) -> list[str]:
-    """海选统计门槛（IC/ICIR/coverage）。须喂 train-only 指标，防止 val 衰减被混合窗口稀释。"""
-    reasons: list[str] = []
-    criteria = criteria or {"min_abs_ic": 0.015, "min_icir": 0.25, "min_coverage": 0.85}
-    ic = metrics.get("ic")
-    if ic is None or abs(float(ic)) < float(criteria["min_abs_ic"]):
-        reasons.append("ic")
-    icir = metrics.get("icir")
-    if icir is None or abs(float(icir)) <= float(criteria["min_icir"]):
-        reasons.append("icir")
-    cov = metrics.get("coverage") or metrics.get("factor_coverage")
-    if cov is None or float(cov) <= float(criteria["min_coverage"]):
-        reasons.append("coverage")
-    return reasons
-
-
-def _stage_one_turnover_reasons(
-    metrics: dict[str, Any],
-    criteria: dict[str, Any] | None = None,
-) -> list[str]:
-    """换手可行性门槛：截面自相关低于阈值 → 排名日度剧变，换手吃掉 alpha。"""
-    criteria = criteria or {}
-    min_ac = float(criteria.get("min_cs_autocorr", 0.18))
-    if min_ac <= 0:
-        return []
-    ac = metrics.get("cs_pearson_autocorr")
-    if ac is None or not np.isfinite(float(ac)) or float(ac) < min_ac:
-        return ["cs_autocorr"]
-    return []
-
-
-def _stage_one_val_retention_reasons(
-    train_metrics: dict[str, Any],
-    val_metrics: dict[str, Any],
-    criteria: dict[str, Any] | None = None,
-) -> list[str]:
-    """样本外保留比门槛：|val_ic|/|train_ic| ≥ 阈值且方向不反转。
-
-    val 窗口无数据时跳过（train-only 会话）。
-    """
-    criteria = criteria or {}
-    min_ratio = float(criteria.get("min_val_ic_retention", 0.5))
-    n_days_val = val_metrics.get("n_days") or val_metrics.get("n_instruments")
-    if n_days_val is not None and int(n_days_val) == 0:
-        return []
-    t_ic = train_metrics.get("ic")
-    v_ic = val_metrics.get("ic")
-    if t_ic is None or v_ic is None:
-        return ["val_ic_missing"]
-    t, v = float(t_ic), float(v_ic)
-    if not np.isfinite(t) or not np.isfinite(v):
-        return ["val_ic_missing"]
-    if t * v < 0:
-        return ["val_sign_flip"]
-    if abs(t) > 1e-12 and abs(v) / abs(t) < min_ratio:
-        return ["val_retention"]
-    return []
-
-
-def _check_stage_one(
-    metrics: dict[str, Any],
-    similarity: dict[str, Any] | None,
-    criteria: dict[str, Any] | None = None,
-) -> tuple[bool, list[str]]:
-    """海选宽松池：保留逻辑候选，但不写入正式因子库。"""
-    reasons: list[str] = []
-    criteria = criteria or {"min_abs_ic": 0.015, "min_icir": 0.25, "min_coverage": 0.85, "max_abs_corr": 0.6}
-    reasons.extend(_stage_one_stats_reasons(metrics, criteria))
-    corr = (similarity or {}).get("max_abs_corr", 0.0)
-    if corr is None or float(corr) >= float(criteria["max_abs_corr"]):
-        reasons.append("max_cs_corr")
-    return len(reasons) == 0, reasons
-
-
-def _check_stage_two(
-    train_metrics: dict[str, Any],
-    val_metrics: dict[str, Any],
-    similarity: dict[str, Any] | None,
-    criteria: dict[str, Any] | None = None,
-) -> tuple[bool, list[str]]:
-    """精筛统计门槛（双窗口口径，2026-08 重构）。
-
-    - train 窗口：|IC| 与 ICIR 各自达标；
-    - val 窗口：绝对水平 + 相对 train 的保留比（方向反转拦截）；
-    - 截尾 IC 衰减取 train 窗口值；
-    - TopN 可交易性（超额/Sharpe/回撤/尾部稳定）由 engine_gate 用完整回测
-      引擎净值裁决，此处不做代理指标模拟。
-
-    已移除的摆设门槛（研究结论 2026-08）：fmb/ls t 值在长样本上永不拦截；
-    毛值 quantile 三项与可交易性脱节。
-    """
-    reasons: list[str] = []
-    criteria = criteria or {
-        "min_train_abs_ic": 0.025, "min_train_icir": 0.30,
-        "min_val_abs_ic": 0.015, "min_val_ic_retention": 0.60,
-        "min_val_long_excess": 0.0,
-        "max_winsorized_abs_ic_decay": 0.10, "max_abs_corr": 0.4,
-    }
-    ic = train_metrics.get("ic")
-    if ic is None or abs(float(ic)) < float(criteria.get("min_train_abs_ic", 0.025)):
-        reasons.append("train_ic")
-    icir = train_metrics.get("icir")
-    if icir is None or abs(float(icir)) <= float(criteria.get("min_train_icir", 0.30)):
-        reasons.append("train_icir")
-
-    v_ic = val_metrics.get("ic")
-    if v_ic is None or abs(float(v_ic)) < float(criteria.get("min_val_abs_ic", 0.015)):
-        reasons.append("val_ic")
-    reasons += _stage_one_val_retention_reasons(train_metrics, val_metrics, criteria)
-
-    # val 多头端毛值超额（方向自适应十分组，复利年化）：
-    # IC 为正 ≠ 多头组合为正——alpha 可能全在空头端/中段排名（2026-08 审计发现的盲区）。
-    thr_vle = criteria.get("min_val_long_excess")
-    if thr_vle is not None:
-        vle = val_metrics.get("val_long_excess")
-        if vle is None or not np.isfinite(float(vle)) or float(vle) <= float(thr_vle):
-            reasons.append("val_long_excess")
-
-    winsor_decay = train_metrics.get("winsorized_abs_ic_decay")
-    if winsor_decay is None or float(winsor_decay) > float(criteria.get("max_winsorized_abs_ic_decay", 0.10)):
-        reasons.append("winsorized_abs_ic_decay")
-
-    corr = (similarity or {}).get("max_abs_corr", 0.0)
-    if corr is None or float(corr) >= float(criteria.get("max_abs_corr", 0.4)):
-        reasons.append("max_cs_corr")
-    return len(reasons) == 0, reasons
 
 
 def _detect_replacement(
@@ -348,9 +219,47 @@ class FactorSubmitService:
         self.repo_root = Path(repo_root).resolve()
         self.max_cs_corr = max_cs_corr
         self.delivery_policy = delivery_policy or {}
+        # 两阶段门槛单一来源：由 research_spec 注入的 delivery_policy 构造，
+        # 缺失键回落 canonical 默认（与 DEFAULT_RESEARCH_SPEC 一致）。
+        # 下游判定与 prompt 渲染统一读 self.criteria，不再散落硬编码默认值。
+        self.criteria = DeliveryCriteria.from_spec(self.delivery_policy)
+        self.checker = DeliveryChecker(self.criteria)
         self.similar_top_k = similar_top_k
         self.overwrite = overwrite
         self.auto_realign_panel = auto_realign_panel
+
+    def _ensure_factorzoo(self, session) -> "FactorZoo":
+        """打开生产因子库；首次使用未初始化时用会话域 panel 自动初始化。
+
+        原 submit() 中两处相同的 FileNotFoundError→init_library 块收敛于此，
+        避免 LLM 对未初始化 production 目录反复碰壁。
+        """
+        try:
+            return FactorZoo.open(self.factorlib_path)
+        except FileNotFoundError:
+            # 因子库未初始化（首次使用新 research_mode 的 production 目录）。
+            # 用会话域 panel 自动初始化，避免 LLM 反复碰壁。
+            from alphaagent.factor.zoo.index import init_library
+
+            panel = session.panel
+            if panel is None or len(panel) == 0:
+                raise ValueError("session_panel_empty")
+            from alphaagent.data.adapters.cnequity import is_cne_source
+
+            panel_path_str = ""
+            ctx = session.ctx
+            if ctx.panel_path and is_cne_source(ctx.panel_path):
+                panel_path_str = "D:\\Quant\\quant_ui\\cne:"
+            elif ctx.panel_path:
+                panel_path_str = str(Path(ctx.panel_path).resolve())
+            init_library(
+                self.factorlib_path,
+                panel=panel,
+                panel_path=Path(panel_path_str) if panel_path_str else None,
+                n_sample_rows=200_000,
+                max_factors=2048,
+            )
+            return FactorZoo.open(self.factorlib_path)
 
     @property
     def candidate_factorlib_path(self) -> Path:
@@ -419,63 +328,16 @@ class FactorSubmitService:
 
         ctx = session.ctx
         try:
-            zoo = FactorZoo.open(self.factorlib_path)
-        except FileNotFoundError:
-            # 因子库未初始化（首次使用新 research_mode 的 production 目录）。
-            # 用会话域 panel 自动初始化，避免 LLM 反复碰壁。
-            from alphaagent.factor.zoo.index import init_library
-
-            panel = session.panel
-            if panel is None or len(panel) == 0:
+            zoo = self._ensure_factorzoo(session)
+        except ValueError as e:
+            if str(e) == "session_panel_empty":
                 return {
                     "ok": False,
                     "stored": False,
                     "error": "session_panel_empty",
                     "error_type": "SessionError",
                 }
-            from alphaagent.data.adapters.cnequity import is_cne_source
-
-            panel_path_str = ""
-            if ctx.panel_path and is_cne_source(ctx.panel_path):
-                panel_path_str = "D:\\Quant\\quant_ui\\cne:"
-            elif ctx.panel_path:
-                panel_path_str = str(Path(ctx.panel_path).resolve())
-            init_library(
-                self.factorlib_path,
-                panel=panel,
-                panel_path=Path(panel_path_str) if panel_path_str else None,
-                n_sample_rows=200_000,
-                max_factors=2048,
-            )
-            zoo = FactorZoo.open(self.factorlib_path)
-        except FileNotFoundError:
-            # 因子库未初始化（首次使用新 research_mode 的 production 目录）。
-            # 用会话域 panel 自动初始化，避免 LLM 反复碰壁。
-            from alphaagent.factor.zoo.index import init_library
-
-            panel = session.panel
-            if panel is None or len(panel) == 0:
-                return {
-                    "ok": False,
-                    "stored": False,
-                    "error": "session_panel_empty",
-                    "error_type": "SessionError",
-                }
-            from alphaagent.data.adapters.cnequity import is_cne_source
-
-            panel_path_str = ""
-            if ctx.panel_path and is_cne_source(ctx.panel_path):
-                panel_path_str = "D:\\Quant\\quant_ui\\cne:"
-            elif ctx.panel_path:
-                panel_path_str = str(Path(ctx.panel_path).resolve())
-            init_library(
-                self.factorlib_path,
-                panel=panel,
-                panel_path=Path(panel_path_str) if panel_path_str else None,
-                n_sample_rows=200_000,
-                max_factors=2048,
-            )
-            zoo = FactorZoo.open(self.factorlib_path)
+            raise
 
         # ③ 会话域复用：submit 全程在挖掘会话驻内存 panel 上评估，
         #    不再全量重载因子库域 panel（两者行集本就不同——库含全部历史；
@@ -490,12 +352,9 @@ class FactorSubmitService:
                 "error_type": "SessionError",
             }
 
-        candidate_criteria = self.delivery_policy.get("candidate", {})
-        production_criteria = self.delivery_policy.get("production", {})
         stage_one_policy = IngestPolicy.from_context(
-            ctx, max_cs_corr=float(candidate_criteria.get("max_abs_corr", 0.6)), similar_top_k=self.similar_top_k
+            ctx, max_cs_corr=self.criteria.candidate.max_abs_corr, similar_top_k=self.similar_top_k
         )
-
         # ①+③ 会话域物化：长度恒等于 panel 行数，指标直接可算。
         materialized = materialize_factor(expr, panel)
         cand_values = materialized.values
@@ -511,8 +370,7 @@ class FactorSubmitService:
         metrics_train = compute_ingest_metrics(
             cand_values, panel, dataclasses.replace(stage_one_policy, val_end=ctx.train_end)
         )
-        gate_reasons = _stage_one_stats_reasons(metrics_train, candidate_criteria)
-        gate_reasons += _stage_one_turnover_reasons(metrics_train, candidate_criteria)
+        gate_reasons = self.checker.stage_one_stats(metrics_train).fail_reasons
 
         val_metrics: dict[str, Any] = {}
         if not gate_reasons and ctx.val_start > ctx.train_end:
@@ -520,7 +378,9 @@ class FactorSubmitService:
             val_metrics = compute_ingest_metrics(
                 cand_values, panel, dataclasses.replace(stage_one_policy, train_start=ctx.val_start)
             )
-            gate_reasons += _stage_one_val_retention_reasons(metrics_train, val_metrics, candidate_criteria)
+            gate_reasons += self.checker.stage_one_val_retention(
+                metrics_train, val_metrics
+            ).fail_reasons
             # val 多头端毛值超额（方向自适应）：IC 为正不代表多头组合为正，
             # alpha 可能全在空头端/中段排名——纯多头可交易口径必须单独为正。
             label_col = stage_one_policy.label_col
@@ -536,8 +396,12 @@ class FactorSubmitService:
                     )
 
         similarity_report: dict[str, Any] | None = None
+        candidate_similarity: dict[str, Any] | None = None
         if not gate_reasons:
             # ── 正式库相似度（抽样行快速口径）──
+            # 正式库准入只查正式库：候选池内部冗余不卡正式库晋升
+            # （候选池冗余由 dedup_candidate_factors.py 主动去重管理，
+            #   而非让候选池因子互相挡死正式库准入——历史死锁根源）。
             zoo_report: dict[str, Any] | None = None
             if zoo.n_factors > 0:
                 cand_sample = align_values_to_rows(
@@ -548,48 +412,29 @@ class FactorSubmitService:
                     zoo, None, top_k=stage_one_policy.similar_top_k,
                     candidate_sample=cand_sample,
                 )
+            production_similarity = zoo_report if zoo_report is not None else {
+                "kind": SIMILARITY_KIND,
+                "basis": SIMILARITY_BASIS_SAMPLED,
+                "max_abs_corr": 0.0,
+                "top_neighbors": [],
+            }
+            similarity_report = production_similarity
 
             # ── 候选 registry 相似度（在会话域 panel 上对已有候选 DSL 重新求值）──
-            cand_report = _candidate_registry_similarity(
+            # 仅作诊断/报告，不参与正式库准入拦截。
+            candidate_similarity = _candidate_registry_similarity(
                 cand_values, panel, self.candidate_registry_path,
                 exclude_factor_id=factor_id,
                 top_k=stage_one_policy.similar_top_k,
             )
-
-            # ── 合并两份报告取 max_abs_corr 更大者 ──
-            reports = [r for r in (zoo_report, cand_report) if r is not None]
-            if reports:
-                best = max(reports, key=lambda r: float(r.get("max_abs_corr", 0.0)))
-                # 合并 top_neighbors
-                all_neighbors: list[dict[str, Any]] = []
-                seen: set[str] = set()
-                for r in reports:
-                    for nb in (r.get("top_neighbors") or []):
-                        fid = str(nb.get("factor_id") or "")
-                        if fid and fid not in seen:
-                            seen.add(fid)
-                            all_neighbors.append(nb)
-                all_neighbors.sort(key=lambda nb: abs(float(nb.get("cs_corr", 0))), reverse=True)
-                similarity_report = {
-                    "kind": SIMILARITY_KIND,
-                    "basis": "zoo+candidate_registry",
-                    "max_abs_corr": float(best.get("max_abs_corr", 0.0)),
-                    "top_neighbors": all_neighbors[:stage_one_policy.similar_top_k],
-                }
-            else:
-                similarity_report = {
-                    "kind": SIMILARITY_KIND,
-                    "basis": SIMILARITY_BASIS_SAMPLED,
-                    "max_abs_corr": 0.0,
-                    "top_neighbors": [],
-                }
-        # 准入判定：统计/换手/保留比任一不过即拒；全过再叠加相似度 corr 检查。
+        # 准入判定：统计/换手/保留比任一不过即拒；全过再叠加相似度 corr 检查
+        # （只查正式库，见上）。
         stage_one_ok = not gate_reasons
         stage_one_reasons = list(gate_reasons)
         if stage_one_ok:
-            stage_one_ok, stage_one_reasons = _check_stage_one(
-                metrics_train, similarity_report, candidate_criteria
-            )
+            corr_result = self.checker.stage_one_correlation(production_similarity)
+            stage_one_ok = corr_result.passed
+            stage_one_reasons = corr_result.fail_reasons
 
         # 上报/存档指标仍用全窗口（与历史 registry 口径一致），附 train/val 分解。
         metrics = compute_ingest_metrics(cand_values, panel, stage_one_policy)
@@ -630,6 +475,7 @@ class FactorSubmitService:
             "eval_range": {"start": ctx.train_start, "end": ctx.val_end},
             "metrics": metrics,
             "similarity": similarity_report,
+            "candidate_similarity": candidate_similarity,
             "candidate_stored": False,
             "rebalance_freq": chosen_freq,
             "delivery_check": {
@@ -729,24 +575,19 @@ class FactorSubmitService:
             candidate_dsl_path=candidate_dsl,
         )
 
-        if review_verdict != "approve":
-            payload["delivery_check"]["stage_two"] = {
-                "passed": False,
-                "fail_reasons": ["factor_review"],
-            }
-            payload["review"] = review
-            payload["promotion_status"] = "review_blocked"
-            payload["skipped_reason"] = (
-                f"factor_review:{review_verdict}:stored_as_candidate_awaiting_revision"
-            )
-            # 候选已入库，不算交付失败；返回提示 Reviewer 意见供后续修订。
-            payload["error_type"] = None
-            payload["error"] = None
-            return payload
+        # review 意见已记录：reject 在上方硬拦（抄袭/经典暴露不进任何库）。
+        # revise / pending_review 不阻断晋升——stage_two 统计门槛 + engine_gate
+        # 才是正式库准入的最终裁决，与系统提示词"Reviewer 意见仅供参考改进方向，
+        # 不阻断提交"保持一致（历史行为把 revise 当硬拦，导致达标候选堆积候选池）。
+        payload["review"] = review
 
-        stage_two_ok, stage_two_reasons = _check_stage_two(
-            metrics_train, val_metrics, similarity_report, production_criteria
+        # stage_two 相似度只看正式库（similarity_report 已是正式库口径）：
+        # 候选池内部冗余不卡正式库准入，正式库准入只关心与正式库已有因子是否重复。
+        stage_two_result = self.checker.stage_two(
+            metrics_train, val_metrics, similarity_report
         )
+        stage_two_ok = stage_two_result.passed
+        stage_two_reasons = stage_two_result.fail_reasons
         payload["delivery_check"]["stage_two"] = {
             "passed": stage_two_ok,
             "fail_reasons": stage_two_reasons,
@@ -771,7 +612,9 @@ class FactorSubmitService:
             if _replacement is not None:
                 payload["replacement_candidate"] = _replacement
 
-        engine_gate_cfg = production_criteria.get("engine_gate")
+        # engine_gate 配置从原始 delivery_policy 读取（缺失时跳过回测门禁，
+        # 与重构前语义一致）；criteria 的 engine_gate 仅用于默认值兜底与 prompt 渲染。
+        engine_gate_cfg = (self.delivery_policy.get("production") or {}).get("engine_gate")
         if isinstance(engine_gate_cfg, dict) and engine_gate_cfg.get("enabled"):
             from alphaagent.factor.mining.engine_gate import run_engine_gate
             ic_sign = 1 if float(metrics.get("ic") or 0.0) >= 0 else -1
@@ -806,7 +649,7 @@ class FactorSubmitService:
             name=name,
             expr=expr,
             panel=None,
-            policy=IngestPolicy.from_context(ctx, max_cs_corr=float(production_criteria.get("max_abs_corr", 0.5)), similar_top_k=self.similar_top_k),
+            policy=IngestPolicy.from_context(ctx, max_cs_corr=self.criteria.production.max_abs_corr, similar_top_k=self.similar_top_k),
             stored_values=canonical_values,
             metrics_override=metrics,
             overwrite=self.overwrite,
@@ -822,7 +665,7 @@ class FactorSubmitService:
             payload["error"] = result.skipped_reason or "production_ingest_failed"
             return payload
 
-        policy = IngestPolicy.from_context(ctx, max_cs_corr=float(production_criteria.get("max_abs_corr", 0.5)), similar_top_k=self.similar_top_k)
+        policy = IngestPolicy.from_context(ctx, max_cs_corr=self.criteria.production.max_abs_corr, similar_top_k=self.similar_top_k)
         reg_path, dsl_path = upsert_mining_registry(
             self.registry_path,
             factor_id=factor_id,

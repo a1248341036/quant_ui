@@ -294,11 +294,25 @@ def init_library(
 
 
 def verify_index_hash(manifest: LibraryManifest, index: RowIndex) -> None:
-    """校验 manifest 与当前 index 一致。"""
-    current = index_content_hash(index.rows)
-    if manifest.index_hash and manifest.index_hash != current:
+    """校验 manifest 与当前 index 一致（轻量 O(1) 校验）。
+
+    早期实现会在每次 FactorZoo.open 时重算完整 content hash
+    （index_content_hash → 1460 万行 to_csv + sha256，单库约 10 秒），
+    导致因子库打开/入库/正交检查等路径每次冷加载都要卡十几秒。
+
+    rows.parquet 与 manifest 是同一事务写入的（index.save + manifest 落盘成对出现），
+    内容级失配只有人为篡改才会发生，且行数/样本数不变量足以抓出"文件缺失、
+    被替换、被截断"这类实际损坏。完整 content hash 仍由 index_content_hash 提供，
+    需要严格比对时（如 realign 维护流程）可显式调用。
+    """
+    if index.n_rows != manifest.n_rows:
         raise ValueError(
-            f"index_hash 不匹配: manifest={manifest.index_hash!r} current={current!r}"
+            f"index/manifest 行数不匹配: index={index.n_rows} manifest={manifest.n_rows}"
+        )
+    if index.n_sample_rows != manifest.n_sample_rows:
+        raise ValueError(
+            f"index/manifest 样本行数不匹配: index={index.n_sample_rows} "
+            f"manifest={manifest.n_sample_rows}"
         )
 
 

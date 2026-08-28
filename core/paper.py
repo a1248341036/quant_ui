@@ -1114,7 +1114,7 @@ def _run_one_event(
             warmup_days=warmup_days,
             amount_q=float(risk.get("amount_q", trading_config.AMOUNT_Q)),
             limit_flags=not is_etf,
-            slippage_bps=float(risk.get("slippage_bps", 0.0) or 0.0),
+            slippage_bps=float(risk.get("slippage_bps", trading_config.SLIPPAGE_BPS) or trading_config.SLIPPAGE_BPS),
             max_participation=float(risk.get("max_participation", 0.0) or 0.0),
             short_rate=0.0,
             execution_profile=ETF_PROFILE if is_etf else STOCK_PROFILE,
@@ -1257,7 +1257,7 @@ def _run_one_factor(
             warmup_days=warmup_days,
             cash_mode=True,
             limit_flags=bool(risk.get("limit_flags", True)) and not is_etf,
-            slippage_bps=float(risk.get("slippage_bps", 0.0) or 0.0),
+            slippage_bps=float(risk.get("slippage_bps", trading_config.SLIPPAGE_BPS) or trading_config.SLIPPAGE_BPS),
             max_participation=float(risk.get("max_participation", 0.0) or 0.0),
             spread_bps=(float(risk["spread_bps"]) if risk.get("spread_bps") is not None
                         else None),

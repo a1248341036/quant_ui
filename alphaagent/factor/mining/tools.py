@@ -292,17 +292,11 @@ class FactorEvalTools:
                         "name": "submit_factor",
 
                         "description": (
-
-                            "【两阶段交付】候选池：train 窗口 |IC|>=0.015、ICIR>0.25、coverage>0.85、"
-                            "cs_autocorr>=0.18、val 保留比>=0.5、max_cs_corr<0.6。"
-                            "正式库：train |IC|>=0.025 且 ICIR>0.30、val |IC|>=0.015 且保留比>=0.6、"
-                            "截尾 IC 衰减<=10%、max_cs_corr<0.5，最后 engine_gate 净值回测裁决"
-                            "（weekly 全约束：净超额年化>=3%、超额夏普>=0.5、回撤<=40%、重合率>=0.5）。"
-
-                            "仅正式库成功时 stored=true；候选池成功时 candidate_stored=true。"
-
-                            "查重失败时返回 top_neighbors 含相似因子 expr。"
-
+                            "【两阶段交付】门槛数值见下方 `submit_factor` 返回的 "
+                            "`delivery_check` 与 criteria（单一来源，动态渲染）："
+                            + self.submit_service.criteria.to_prompt_text()
+                            + " 仅正式库成功时 stored=true；候选池成功时 candidate_stored=true。"
+                            " 查重失败时返回 top_neighbors 含相似因子 expr。"
                         ),
 
                         "parameters": _SUBMIT_PARAMETERS,
@@ -592,6 +586,37 @@ class FactorEvalTools:
         return cs, monthly, mls, ls_port
 
     @staticmethod
+    def _rule_thresholds(result: dict[str, Any]) -> tuple[float | None, float | None, float | None]:
+        """从评估 profile 规则提取 IC / ICIR / Coverage 门槛（与真实门禁同源）。
+
+        规则可能在 rule_results（已求值）或 profile.rules（未求值）中；
+        找不到时返回 None，调用方回落默认值。避免提示词硬编码与门禁脱节。
+        """
+        rules = result.get("rule_results")
+        if not rules:
+            profile = result.get("profile") if isinstance(result.get("profile"), dict) else {}
+            rules = profile.get("rules") or []
+        ic_thr = icir_thr = cov_thr = None
+        for rule in rules:
+            if not isinstance(rule, dict):
+                continue
+            metric = str(rule.get("metric") or "")
+            expected = rule.get("expected")
+            if expected is None:
+                continue
+            try:
+                value = float(expected)
+            except (TypeError, ValueError):
+                continue
+            if metric.endswith("cross_sectional_core.ic"):
+                ic_thr = value
+            elif metric.endswith("cross_sectional_core.icir"):
+                icir_thr = value
+            elif metric.endswith("cross_sectional_core.factor_coverage"):
+                cov_thr = value
+        return ic_thr, icir_thr, cov_thr
+
+    @staticmethod
     def _diagnose(result: dict[str, Any]) -> str:
         """从评估结果生成结构化诊断建议。"""
         if not result.get("ok"):
@@ -609,7 +634,12 @@ class FactorEvalTools:
         rule_results = result.get("rule_results", [])
         passed = result.get("passed")
         if passed is None:
-            passed = bool(ic is not None and abs(ic) >= 0.02 and icir is not None and icir > 0.25 and coverage is not None and coverage > 0.85)
+            ic_thr, icir_thr, cov_thr = FactorEvalTools._rule_thresholds(result)
+            passed = bool(
+                ic is not None and abs(ic) >= (ic_thr or 0.02)
+                and icir is not None and icir > (icir_thr or 0.25)
+                and coverage is not None and coverage > (cov_thr or 0.85)
+            )
 
         tips: list[str] = []
 
@@ -626,11 +656,12 @@ class FactorEvalTools:
                     op = r.get("op", "")
                     tips.append(f"❌ {metric}={actual:.4f} 未达 {op} {expected}")
             else:
-                if ic is not None and abs(ic) < 0.02:
-                    tips.append(f"IC={ic:+.4f} 偏低（需 |IC|≥0.02），信号太弱或方向有误。")
-                if icir is not None and icir < 0.25:
-                    tips.append(f"ICIR={icir:+.3f} 偏低（需≥0.25），IC 日间波动太大，考虑平滑(TS_MEAN/EMA)或换窗口。")
-                if coverage is not None and coverage < 0.85:
+                ic_thr, icir_thr, cov_thr = FactorEvalTools._rule_thresholds(result)
+                if ic is not None and abs(ic) < (ic_thr or 0.02):
+                    tips.append(f"IC={ic:+.4f} 偏低（需 |IC|≥{ic_thr or 0.02}），信号太弱或方向有误。")
+                if icir is not None and icir < (icir_thr or 0.25):
+                    tips.append(f"ICIR={icir:+.3f} 偏低（需≥{icir_thr or 0.25}），IC 日间波动太大，考虑平滑(TS_MEAN/EMA)或换窗口。")
+                if coverage is not None and coverage < (cov_thr or 0.85):
                     tips.append(f"Coverage={coverage:.3f} 偏低，因子缺失太多，检查数据条件或放宽过滤。")
 
         # 月度稳健性诊断
@@ -702,7 +733,12 @@ class FactorEvalTools:
         split = result.get("split", "")
         passed = result.get("passed")
         if passed is None:
-            passed = bool(ic is not None and abs(ic) >= 0.02 and icir is not None and icir > 0.25 and coverage is not None and coverage > 0.85)
+            ic_thr, icir_thr, cov_thr = FactorEvalTools._rule_thresholds(result)
+            passed = bool(
+                ic is not None and abs(ic) >= (ic_thr or 0.02)
+                and icir is not None and icir > (icir_thr or 0.25)
+                and coverage is not None and coverage > (cov_thr or 0.85)
+            )
 
         # 记录到批次历史
         FactorEvalTools._record_batch(factor_name, expr, ic, icir, bool(passed))

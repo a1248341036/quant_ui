@@ -37,6 +37,11 @@
         </div>
         <div v-if="lab.busy" class="lab-loading">正在加载 panel 并评估（首次约 30-60 秒）…</div>
         <div v-if="lab.results" class="lab-results">
+          <div v-if="anyPassed || lab.resultsJSON" class="lab-results-actions">
+            <button v-if="anyPassed" class="lab-action-btn save" @click="openSaveDialog">保存到因子库</button>
+            <button class="lab-action-btn export" @click="exportLabResult" :disabled="!lab.resultsJSON">导出评估结果</button>
+            <button class="lab-action-btn bt" @click="openBacktestDialog">回测</button>
+          </div>
           <div v-for="(result, profileId) in lab.results" :key="profileId" class="lab-result-card" :class="{ok: result.ok, bad: !result.ok}">
             <div class="lab-result-head">
               <strong>{{ profileId }}</strong>
@@ -53,6 +58,25 @@
                   <span class="lab-metric-value">{{ formatMetricValue(m) }}</span>
                 </div>
               </template>
+            </div>
+            <!-- 分位组合（纯多头）指标：与因子库"多头年化/超额年化/夏普"列对齐 -->
+            <div v-if="result.ok && quantilePortfolioMetrics(result)" class="lab-metrics lab-quantile-metrics">
+              <div class="lab-metric">
+                <span class="lab-metric-label">多头年化</span>
+                <span class="lab-metric-value" :class="{neg: (quantilePortfolioMetrics(result).top_group_annualized_return ?? 0) < 0}">{{ formatMetricValue(quantilePortfolioMetrics(result).top_group_annualized_return) }}</span>
+              </div>
+              <div class="lab-metric">
+                <span class="lab-metric-label">超额年化</span>
+                <span class="lab-metric-value" :class="{neg: (quantilePortfolioMetrics(result).top_group_annualized_excess_return ?? 0) < 0}">{{ formatMetricValue(quantilePortfolioMetrics(result).top_group_annualized_excess_return) }}</span>
+              </div>
+              <div class="lab-metric">
+                <span class="lab-metric-label">夏普</span>
+                <span class="lab-metric-value" :class="{neg: (quantilePortfolioMetrics(result).top_group_sharpe ?? 0) < 0}">{{ formatMetricValue(quantilePortfolioMetrics(result).top_group_sharpe) }}</span>
+              </div>
+              <div class="lab-metric">
+                <span class="lab-metric-label">最大回撤</span>
+                <span class="lab-metric-value" :class="{neg: (quantilePortfolioMetrics(result).top_group_max_drawdown ?? 0) < 0}">{{ formatMetricValue(quantilePortfolioMetrics(result).top_group_max_drawdown) }}</span>
+              </div>
             </div>
             <!-- 图表区 -->
             <div v-if="result.ok && result.chart_data" class="lab-charts">
@@ -90,8 +114,9 @@
           <button :class="{active: lib.library==='candidate'}" @click="switchLibrary('candidate')">候选因子库</button>
         </div>
         <div class="lib-cat-tabs">
-          <button :class="{active: lib.category==='technical'}" @click="switchCategory('technical')">日线技术</button>
-          <button :class="{active: lib.category==='fundamental'}" @click="switchCategory('fundamental')">基本面</button>
+          <button v-for="m in researchModes" :key="m.value"
+                  :class="{active: lib.category===m.value}"
+                  @click="switchCategory(m.value)">{{ m.label }}</button>
         </div>
         <span class="lib-count" v-if="lib.data">{{ lib.data.n_factors || 0 }} 个因子</span>
         <button class="lib-export-json" @click="exportAllJSON" :disabled="!lib.data?.factors?.length"
@@ -546,8 +571,14 @@
               <div class="research-spec-head">
                 <strong>ResearchSpec · {{ researchModes.find(m => m.value === agent.form.research_mode)?.label || agent.form.research_mode }}</strong>
                 <div>
+                  <span v-if="researchSpecCustom" class="research-spec-custom" title="该模式门槛文件已自定义保存，运行/晋升全链路生效">已自定义</span>
+                  <span v-if="researchSpecDirty" class="research-spec-dirty" title="当前 JSON 与已保存门槛不一致">未保存</span>
                   <span v-if="agent.specError" class="research-spec-error">{{ agent.specError }}</span>
-                  <button title="恢复默认研究规范" @click="resetResearchSpec">恢复默认</button>
+                  <span v-if="agent.specSavedAt" class="research-spec-saved" title="已写入该模式门槛文件">已保存 {{ formatTime(agent.specSavedAt) }}</span>
+                  <button title="保存当前 JSON 为该模式的门槛文件（全链路生效）" :disabled="agentBusy || agent.researchSpecSaving" @click="saveResearchSpec">
+                    {{ agent.researchSpecSaving ? '保存中…' : '保存门槛' }}
+                  </button>
+                  <button title="删除该模式门槛文件并恢复注册表默认" :disabled="agentBusy" @click="resetResearchSpec">恢复默认</button>
                   <button class="research-spec-close" title="关闭研究规范" aria-label="关闭研究规范" @click="agent.showResearchSpec = false">×</button>
                 </div>
               </div>
@@ -611,8 +642,7 @@
             <div class="factor-modal-section">
               <label>类别</label>
               <select v-model="lab.saveCategory" class="lab-input lab-cat-select">
-                <option value="technical">日线技术</option>
-                <option value="fundamental">基本面</option>
+                <option v-for="m in researchModeOptions" :key="m.value" :value="m.value">{{ m.label }}</option>
               </select>
             </div>
             <div class="factor-modal-section">
@@ -777,11 +807,13 @@
 import { api } from '../utils/api.js'
 import { chart, renderLine, renderMonthlyHeatmap } from '../utils/charts.js'
 import { fmt, pct } from '../utils/format.js'
+import { store } from '../store/index.js'
 
 export default {
   name: 'AlphaAgent',
   data() {
     return {
+      store,
       agent: {
         runs: [],
         current: null,
@@ -806,6 +838,8 @@ export default {
         researchSpecText: '',
         defaultResearchSpecText: '',
         specError: '',
+        specSavedAt: null,
+        researchSpecSaving: false,
         form: {
           train_start: '2018-01-01',
           train_end: '2022-12-31',
@@ -823,11 +857,10 @@ export default {
       },
       subtab: 'research',
       agentMode: 'research',
-      researchModes: [
-        { value: 'technical', label: '日线技术', hint: '价量/波动/筹码等日线技术因子，label_1d 开盘到开盘' },
-        { value: 'fundamental', label: '基本面', hint: 'funda_* 财务基本面因子（PIT），label_10d 收盘到收盘' },
-      ],
+      researchModes: [],
+      researchModeOptions: [],
       specDefaultsByMode: {},
+      specOverridesByMode: {},
       researchMemory: [],
       showResearchSummary: false,
       lab: {
@@ -841,6 +874,7 @@ export default {
         busy: false,
         error: '',
         results: null,
+        resultsJSON: '',
         // 保存因子
         saveDialog: false,
         saveName: '',
@@ -1029,6 +1063,17 @@ export default {
       if (!this.lab.results) return false
       return Object.values(this.lab.results).some(r => r.ok && r.passed)
     },
+    researchSpecCustom() {
+      const mode = this.agent.form.research_mode
+      const overrides = this.specOverridesByMode[mode] || {}
+      return Object.keys(overrides).length > 0
+    },
+    researchSpecDirty() {
+      const mode = this.agent.form.research_mode
+      const effective = this.specDefaultsByMode[mode]
+      if (!effective) return false
+      return this.agent.researchSpecText !== JSON.stringify(effective, null, 2)
+    },
     timeline() {
       const out = []
       for (const [index, event] of this.agent.events.entries()) {
@@ -1133,13 +1178,39 @@ export default {
         this.loadResearchMemory()
       }
     },
+    async loadResearchModes() {
+      try {
+        const r = await api('/api/alphaagent/research-modes?t=' + Date.now())
+        this.researchModes = (r.modes || []).map(m => ({
+          value: m.value,
+          label: m.label,
+          hint: m.hint || '',
+          recommended_label_col: m.recommended_label_col,
+          default_user_message: m.default_user_message,
+          needs_fundamentals: m.needs_fundamentals,
+        }))
+        this.researchModeOptions = this.researchModes.map(m => ({ value: m.value, label: m.label }))
+        // data 初始 research_mode 可能不在列表里 → 回退第一个
+        if (!this.researchModes.some(m => m.value === this.agent.form.research_mode) && this.researchModes.length) {
+          this.agent.form.research_mode = this.researchModes[0].value
+        }
+        if (!this.researchModes.some(m => m.value === this.lib.category) && this.researchModes.length) {
+          this.lib.category = this.researchModes[0].value
+        }
+      } catch (e) {
+        // 后端不可用时静默，页面仍可操作（按钮为空）
+        this.researchModes = []
+      }
+    },
     async loadDefaultResearchSpec(mode) {
       const m = mode || this.agent.form.research_mode || 'technical'
       try {
-        const cached = this.specDefaultsByMode[m]
-        const spec = cached || await api('/api/alphaagent/research-spec/default?mode=' + encodeURIComponent(m) + '&t=' + Date.now())
-        this.specDefaultsByMode[m] = spec
-        const text = JSON.stringify(spec, null, 2)
+        const payload = await api('/api/alphaagent/research-specs/' + encodeURIComponent(m) + '?t=' + Date.now())
+        const effective = payload?.effective
+        const overrides = payload?.overrides || {}
+        this.specDefaultsByMode[m] = effective
+        this.specOverridesByMode[m] = overrides
+        const text = JSON.stringify(effective, null, 2)
         this.agent.defaultResearchSpecText = text
         if (!this.agent.researchSpecText || this.agent.form.research_mode === m) {
           this.agent.researchSpecText = text
@@ -1156,16 +1227,17 @@ export default {
       const previousText = this.agent.researchSpecText
       const previousDefault = this.agent.defaultResearchSpecText
       this.agent.form.research_mode = mode
-      let spec = null
+      let payload = null
       try {
-        const cached = this.specDefaultsByMode[mode]
-        spec = cached || await api('/api/alphaagent/research-spec/default?mode=' + encodeURIComponent(mode) + '&t=' + Date.now())
+        payload = await api('/api/alphaagent/research-specs/' + encodeURIComponent(mode) + '?t=' + Date.now())
       } catch (e) {
         this.agent.form.research_mode = previousMode
         this.agent.error = '切换研究模式失败: ' + e.message
         return
       }
+      const spec = payload.effective
       this.specDefaultsByMode[mode] = spec
+      this.specOverridesByMode[mode] = payload.overrides || {}
       // 未手动编辑过规范时跟随模式整体切换；已编辑则保留自定义（后端会与该模式默认值深合并）。
       const untouched = !previousText || previousText === previousDefault
       const text = JSON.stringify(spec, null, 2)
@@ -1176,9 +1248,49 @@ export default {
       }
       if (spec?.recommended_label_col) this.agent.form.label_col = spec.recommended_label_col
     },
-    resetResearchSpec() {
-      this.agent.researchSpecText = this.agent.defaultResearchSpecText
-      this.agent.specError = ''
+    async saveResearchSpec() {
+      const mode = this.agent.form.research_mode
+      let spec
+      try {
+        spec = this.parseResearchSpec()
+      } catch (e) {
+        return
+      }
+      this.agent.researchSpecSaving = true
+      try {
+        const payload = await api('/api/alphaagent/research-specs/' + encodeURIComponent(mode), {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ spec }),
+        })
+        // 服务端返回 normalize 后的生效 spec，编辑器与后续运行都以它为准
+        this.specDefaultsByMode[mode] = payload.effective
+        this.specOverridesByMode[mode] = payload.overrides || {}
+        const text = JSON.stringify(payload.effective, null, 2)
+        this.agent.defaultResearchSpecText = text
+        this.agent.researchSpecText = text
+        this.agent.specError = ''
+        this.agent.specSavedAt = new Date()
+      } catch (e) {
+        this.agent.specError = '保存门槛失败: ' + e.message
+      } finally {
+        this.agent.researchSpecSaving = false
+      }
+    },
+    async resetResearchSpec() {
+      const mode = this.agent.form.research_mode
+      try {
+        const payload = await api('/api/alphaagent/research-specs/' + encodeURIComponent(mode), { method: 'DELETE' })
+        this.specDefaultsByMode[mode] = payload.effective
+        this.specOverridesByMode[mode] = {}
+        const text = JSON.stringify(payload.effective, null, 2)
+        this.agent.defaultResearchSpecText = text
+        this.agent.researchSpecText = text
+        this.agent.specError = ''
+        this.agent.specSavedAt = null
+      } catch (e) {
+        this.agent.specError = '恢复默认失败: ' + e.message
+      }
     },
     parseResearchSpec() {
       try {
@@ -1376,7 +1488,7 @@ export default {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             ...this.agent.form,
-            no_fundamentals: this.agent.form.research_mode !== 'fundamental',
+            no_fundamentals: !(this.researchModes.find(m => m.value === this.agent.form.research_mode)?.needs_fundamentals),
             research_spec: researchSpec,
             allow_submit: Boolean(researchSpec.delivery_policy?.allow_submit),
           }),
@@ -1396,9 +1508,12 @@ export default {
       }
     },
     async startDefaultResearch() {
-      this.agent.form.user_message = this.agent.form.research_mode === 'fundamental'
-        ? '请基于已载入的基本面字段（盈利质量、杠杆、现金流、财报科目等，PIT 日频）结合价量信息挖掘A股日频因子，先训练集评估，再验证集检验；只有通过验证和去重门槛的因子才提交。'
-        : '请自主挖掘A股日频价量因子，先训练集评估，再验证集检验；只有通过验证和去重门槛的因子才提交。'
+      const mode = this.researchModes.find(m => m.value === this.agent.form.research_mode)
+      if (mode && mode.default_user_message) {
+        this.agent.form.user_message = mode.default_user_message
+      } else {
+        this.agent.form.user_message = '请自主挖掘A股因子，先训练集评估，再验证集检验；只有通过验证和去重门槛的因子才提交。'
+      }
       await this.startAgent()
     },
     async sendMessage() {
@@ -1665,6 +1780,22 @@ export default {
         winsorized_abs_ic_decay: '截尾IC衰减',
       }[key] || key)
     },
+    // 提取分位组合（纯多头）指标，供展示与导出复用；无数据返回 null
+    quantilePortfolioMetrics(result) {
+      const qp = result?.metrics?.quantile_portfolio
+      if (!qp || typeof qp !== 'object' || qp.available === false) return null
+      const num = v => (v == null || Number.isNaN(Number(v))) ? null : Number(v)
+      return {
+        top_group_annualized_return: num(qp.top_group_annualized_return),
+        top_group_annualized_excess_return: num(qp.top_group_annualized_excess_return),
+        top_group_sharpe: num(qp.top_group_sharpe),
+        top_group_excess_sharpe: num(qp.top_group_excess_sharpe),
+        top_group_max_drawdown: num(qp.top_group_max_drawdown),
+        n_groups: qp.n_groups,
+        direction: qp.direction,
+        long_side: qp.long_side,
+      }
+    },
     formatMetricValue(value) {
       const n = Number(value)
       return isNaN(n) ? String(value) : Math.abs(n) < 1 ? n.toFixed(4) : n.toFixed(2)
@@ -1749,6 +1880,8 @@ export default {
       this.lab.busy = true
       this.lab.error = ''
       this.lab.results = null
+      const ctrl = new AbortController()
+      const timer = setTimeout(() => ctrl.abort(), 600000)
       try {
         const data = await api('/api/alphaagent/eval-factor', {
           method: 'POST',
@@ -1763,14 +1896,98 @@ export default {
             include_fundamentals: this.lab.includeFundamentals,
             all_profiles: true,
           }),
+          signal: ctrl.signal,
         })
+        clearTimeout(timer)
         this.lab.results = data.results
+        // 开启"导出评估结果"按钮：始终可导出最近一次评估（含 error 的 profile 也会附带）
+        this.lab.resultsJSON = JSON.stringify({
+          exported_at: new Date().toISOString(),
+          factor_name: this.lab.factorName || 'expr',
+          multi_line_expr: this.lab.expr,
+          train_start: this.lab.trainStart,
+          train_end: this.lab.trainEnd,
+          val_start: this.lab.valStart,
+          val_end: this.lab.valEnd,
+          include_fundamentals: this.lab.includeFundamentals,
+          results: data.results,
+        }, null, 2)
+        // 写入评估历史（顶层"历史"tab 可见，可一键恢复到本界面）
+        this.pushLabHistory(data.results)
         this.$nextTick(() => this.renderLabCharts())
       } catch (e) {
-        this.lab.error = e.message
+        clearTimeout(timer)
+        this.lab.error = (e && e.name === 'AbortError')
+          ? '评估超时（600 秒）。可缩短区间或减少股票池后重试。'
+          : e.message
       } finally {
         this.lab.busy = false
       }
+    },
+    // 评估成功后写入全局历史（顶层"历史"tab 展示；localStorage 持久化）
+    pushLabHistory(results) {
+      try {
+        const summary = this.labSummary(results)
+        const entry = {
+          id: 'lab_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
+          kind: 'factor_eval',
+          factorName: this.lab.factorName || 'expr',
+          expr: this.lab.expr,
+          trainStart: this.lab.trainStart,
+          trainEnd: this.lab.trainEnd,
+          valStart: this.lab.valStart,
+          valEnd: this.lab.valEnd,
+          includeFundamentals: this.lab.includeFundamentals,
+          createdAt: new Date().toISOString(),
+          summary,
+          results,
+        }
+        store.pushLabHistory(entry)
+      } catch (e) {
+        // 历史写入失败不影响评估结果展示
+      }
+    },
+    // 汇总历史列表要展示的指标（train/val IC、夏普等）
+    labSummary(results) {
+      const train = results?.train_screen?.metrics?.cross_sectional_core || {}
+      const val = results?.validation?.metrics?.cross_sectional_core || {}
+      const qp = this.quantilePortfolioMetrics(results?.validation) || this.quantilePortfolioMetrics(results?.train_screen) || {}
+      return {
+        train_ic: train.ic,
+        train_icir: train.icir,
+        val_ic: val.ic,
+        val_icir: val.icir,
+        sharpe: qp.top_group_sharpe,
+        annualized_return: qp.top_group_annualized_return,
+        annualized_excess_return: qp.top_group_annualized_excess_return,
+        passed: Object.values(results || {}).some(r => r.ok && r.passed),
+      }
+    },
+    // 从历史记录恢复因子实验室界面（与刚评估完完全一致）
+    restoreLabFromHistory(h) {
+      if (!h) return
+      this.subtab = 'lab'
+      this.lab.factorName = h.factorName || 'expr'
+      this.lab.expr = h.expr || ''
+      this.lab.trainStart = h.trainStart || this.lab.trainStart
+      this.lab.trainEnd = h.trainEnd || this.lab.trainEnd
+      this.lab.valStart = h.valStart || this.lab.valStart
+      this.lab.valEnd = h.valEnd || this.lab.valEnd
+      this.lab.includeFundamentals = !!h.includeFundamentals
+      this.lab.results = h.results || null
+      this.lab.error = ''
+      this.lab.resultsJSON = h.results ? JSON.stringify({
+        exported_at: h.createdAt,
+        factor_name: h.factorName || 'expr',
+        multi_line_expr: h.expr || '',
+        train_start: h.trainStart,
+        train_end: h.trainEnd,
+        val_start: h.valStart,
+        val_end: h.valEnd,
+        include_fundamentals: h.includeFundamentals,
+        results: h.results,
+      }, null, 2) : ''
+      this.$nextTick(() => this.renderLabCharts())
     },
     toggleLibSort(key) {
       if (this.lib.sortKey === key) {
@@ -1924,6 +2141,10 @@ export default {
         return
       }
 
+      // 与因子库/候选库对齐的夏普、年化字段（取自 quantile_portfolio 纯多头口径）
+      const qp = this.quantilePortfolioMetrics(primaryResult) || {}
+      const valQp = this.quantilePortfolioMetrics(this.lab.results.validation) || {}
+
       const factorId = this.lab.factorName || 'expr'
       const now = new Date().toISOString()
       
@@ -1938,10 +2159,19 @@ export default {
           name: this.lab.factorName || 'expr',
           expr: this.lab.expr,
           label_col: this.lab.labelCol || 'label_1d_open_to_open',
-          train_ic: primaryResult.metrics?.ic,
-          train_icir: primaryResult.metrics?.icir,
-          val_ic: this.lab.results.validation?.metrics?.ic,
-          val_icir: this.lab.results.validation?.metrics?.icir,
+          train_ic: this.lab.results.train_screen?.metrics?.cross_sectional_core?.ic,
+          train_icir: this.lab.results.train_screen?.metrics?.cross_sectional_core?.icir,
+          val_ic: this.lab.results.validation?.metrics?.cross_sectional_core?.ic,
+          val_icir: this.lab.results.validation?.metrics?.cross_sectional_core?.icir,
+          // ↓ 与因子库导出列对齐：多头年化/超额年化/夏普/回撤
+          annualized_return: qp.top_group_annualized_return,
+          annualized_excess_return: qp.top_group_annualized_excess_return,
+          sharpe: qp.top_group_sharpe,
+          max_drawdown: qp.top_group_max_drawdown,
+          val_annualized_return: valQp.top_group_annualized_return,
+          val_annualized_excess_return: valQp.top_group_annualized_excess_return,
+          val_sharpe: valQp.top_group_sharpe,
+          quantile_portfolio: primaryResult.metrics?.quantile_portfolio,
           metrics: primaryResult.metrics,
           status: 'pending_review',
           created_at: now,
@@ -1960,6 +2190,11 @@ export default {
             include_fundamentals: this.lab.includeFundamentals,
             evaluation_results: this.lab.results,
             metrics: primaryResult.metrics,
+            quantile_portfolio: primaryResult.metrics?.quantile_portfolio,
+            annualized_return: qp.top_group_annualized_return,
+            annualized_excess_return: qp.top_group_annualized_excess_return,
+            sharpe: qp.top_group_sharpe,
+            max_drawdown: qp.top_group_max_drawdown,
             profile: primaryResult.profile,
             passed: primaryResult.passed,
             rule_results: primaryResult.rule_results,
@@ -2235,7 +2470,15 @@ export default {
     document.addEventListener('click', this._closeSessionMenu)
     this.loadAgentRuns()
     this.loadResearchMemory()
+    this.loadResearchModes()
     this.loadDefaultResearchSpec()
+    store.loadLabHistory()
+    // 从"历史"tab 打开一条因子评估 → 载入到因子实验室（界面与评估时一致）
+    if (store.labLoadPayload) {
+      const p = store.labLoadPayload
+      store.labLoadPayload = null
+      this.restoreLabFromHistory(p)
+    }
   },
   beforeUnmount() {
     document.removeEventListener('click', this._closeSessionMenu)
@@ -2463,10 +2706,14 @@ export default {
 .research-spec-head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:7px 9px; border-bottom:1px solid var(--line); color:var(--muted); font-size:11px; }
 .research-spec-head strong { color:var(--text); font:11px var(--font-mono); }
 .research-spec-head div { display:flex; align-items:center; gap:8px; }
-.research-spec-head button { padding:0; border:0; background:transparent; color:var(--accent); font-size:10px; }
+.research-spec-head button { padding:3px 8px; border:0; background:transparent; color:var(--accent); font-size:10px; cursor:pointer; }
+.research-spec-head button:disabled { opacity:.45; cursor:default; }
 .research-spec-head .research-spec-close { width:18px; height:18px; border-radius:4px; color:var(--muted); font-size:16px; line-height:16px; }
 .research-spec-head .research-spec-close:hover { background:rgb(255 255 255 / .09); color:var(--text); }
 .research-spec-error { color:#ef8b92; font-size:10px; }
+.research-spec-custom { color:#8fd0a6; font-size:10px; }
+.research-spec-dirty { color:#e8c46e; font-size:10px; }
+.research-spec-saved { color:var(--muted); font-size:10px; }
 .research-spec-editor textarea { display:block; width:100%; min-height:250px; resize:vertical; border:0; outline:0; background:transparent; color:#c7d8ee; padding:10px; font:11px/1.55 var(--font-mono); }
 .send-btn { display:grid; place-items:center; width:31px; height:31px; padding:0; border:0; border-radius:9px; background:var(--accent); color:#fff; font-size:18px; }
 .send-btn:disabled { background:var(--line-strong); }
@@ -2544,6 +2791,10 @@ export default {
 
 /* ── 实验室图表与操作 ── */
 .lab-actions { display:flex; gap:6px; margin-top:8px; }
+.lab-results-actions { display:flex; gap:6px; }
+.lab-results-actions .lab-action-btn { flex:0 1 auto; padding:7px 14px; border:1px solid var(--line); border-radius:7px; background:transparent; color:var(--text); font-size:11px; cursor:pointer; transition:all .12s; }
+.lab-results-actions .lab-action-btn.export { color:#7ea8ff; border-color:rgb(126 168 255 / .35); }
+.lab-results-actions .lab-action-btn.export:hover { background:rgb(79 140 255 / .12); }
 .lab-action-btn { flex:1; padding:7px 10px; border:1px solid var(--line); border-radius:7px; background:transparent; color:var(--text); font-size:11px; cursor:pointer; transition:all .12s; }
 .lab-action-btn.save { color:#72d69a; border-color:rgb(67 209 122 / .32); }
 .lab-action-btn.save:hover { background:rgb(67 209 122 / .1); }

@@ -145,21 +145,48 @@ def _eval_alpha_factor(factor_id: str, library: str,
     factor_series = pd.Series(values, index=cne_panel.index, name="alpha_factor",
                               dtype="float32")
 
-    # 4. 转为 date×code 矩阵
-    # cne_panel index = MultiIndex(datetime, instrument)
-    factor_df = factor_series.unstack(level="instrument")
-    factor_df.index.name = "date"
-    factor_df.columns.name = "code"
-
-    # 5. 代码格式转换：CNE 用 000001.SZ 格式，回测面板用 000001 格式
-    # 去掉后缀 .SZ / .SH / .BJ 即可
-    factor_df.columns = [str(c).split(".")[0] for c in factor_df.columns]
-
-    # 6. 对齐到回测面板的交易日历和股票代码
+    # 4. 转为 date×code 矩阵并对齐回测面板（统一转换，见 core.score_matrix）
     bt_dates = pd.DatetimeIndex(sorted(bt_panel["date"].unique()))
     bt_codes = [str(c) for c in bt_panel["code"].unique()]
-    factor_df = factor_df.reindex(index=bt_dates, columns=bt_codes)
-    return factor_df
+    from core.score_matrix import scores_to_engine_matrix
+    return scores_to_engine_matrix(
+        factor_series,
+        bt_dates=bt_dates,
+        bt_codes=bt_codes,
+    )
+
+
+def _merge_strategy_params(req, strat: dict | None) -> dict:
+    """请求参数优先，缺省回落策略定义参数（统一合并规则）。
+
+    替换此前散落的 ``req.x if req.x is not None else strat.get("x")`` 手写分支。
+    strat 为 None（组合/DSL 模式）时全部取请求值。
+    """
+    strat = strat or {}
+    out: dict = {}
+    out["long_short"] = (req.long_short if req.long_short is not None
+                         else strat.get("long_short", False))
+    out["short_n"] = (req.short_n if req.short_n is not None
+                      else strat.get("short_n"))
+    out["short_cost_rate"] = (req.short_cost_rate
+                              if req.short_cost_rate is not None
+                              else strat.get("short_cost_rate", 0.0))
+    out["industry_neutral"] = (req.industry_neutral
+                               if req.industry_neutral is not None
+                               else strat.get("industry_neutral", False))
+    out["adx_filter"] = req.adx_filter
+    if out["adx_filter"] is None and strat.get("adx_filter") is not None:
+        try:
+            out["adx_filter"] = float(strat["adx_filter"])
+        except (TypeError, ValueError):
+            pass
+    out["min_score"] = req.min_score
+    if out["min_score"] is None and strat.get("min_score") is not None:
+        try:
+            out["min_score"] = float(strat["min_score"])
+        except (TypeError, ValueError):
+            pass
+    return out
 
 
 class BacktestRequest(BaseModel):
@@ -343,28 +370,13 @@ def backtest(req: BacktestRequest):
         req.composite_weights, req.universe)
     if composite_error:
         return {"error": composite_error}
-    long_short = (req.long_short if req.long_short is not None
-                  else (strat or {}).get("long_short", False))
-    short_n = (req.short_n if req.short_n is not None
-               else (strat or {}).get("short_n"))
-    short_cost_rate = (req.short_cost_rate if req.short_cost_rate is not None
-                       else (strat or {}).get("short_cost_rate", 0.0))
-    industry_neutral = (req.industry_neutral if req.industry_neutral is not None
-                        else (strat or {}).get("industry_neutral", False))
-    adx_filter = req.adx_filter
-    if (adx_filter is None and strat is not None
-            and strat.get("adx_filter") is not None):
-        try:
-            adx_filter = float(strat["adx_filter"])
-        except (TypeError, ValueError):
-            pass
-    min_score = req.min_score
-    if (min_score is None and strat is not None
-            and strat.get("min_score") is not None):
-        try:
-            min_score = float(strat["min_score"])
-        except (TypeError, ValueError):
-            pass
+    merged = _merge_strategy_params(req, strat)
+    long_short = merged["long_short"]
+    short_n = merged["short_n"]
+    short_cost_rate = merged["short_cost_rate"]
+    industry_neutral = merged["industry_neutral"]
+    adx_filter = merged["adx_filter"]
+    min_score = merged["min_score"]
     is_fund = _is_fund(req.universe)
     if _is_etf(req.universe) and (
         req.industry_cap or req.industry_neutral or req.risk_neutral
@@ -404,8 +416,8 @@ def backtest(req: BacktestRequest):
             max_participation=req.max_participation,
             max_weight=req.max_weight,
             lot_size=1,
-            buy_cost=0.0015 if fund_cost else req.buy_cost,
-            sell_cost=0.0050 if fund_cost else req.sell_cost,
+            buy_cost=trading_config.FUND_BUY_COST if fund_cost else req.buy_cost,
+            sell_cost=trading_config.FUND_SELL_COST if fund_cost else req.sell_cost,
             analyze=req.analyze,
             factor_weights=req.composite_weights,
             factor_directions=req.composite_directions,
@@ -444,8 +456,8 @@ def backtest(req: BacktestRequest):
             impact_coef=req.impact_coef,
             impact_vol=req.impact_vol,
             lot_size=req.lot_size,
-            buy_cost=0.0003 if etf_cost else req.buy_cost,
-            sell_cost=0.0003 if etf_cost else req.sell_cost,
+            buy_cost=trading_config.ETF_BUY_COST if etf_cost else req.buy_cost,
+            sell_cost=trading_config.ETF_SELL_COST if etf_cost else req.sell_cost,
             industry_map=services.get_industry_map()
             if (req.industry_cap or industry_neutral or req.risk_neutral) else None,
             industry_cap=req.industry_cap,
@@ -608,7 +620,7 @@ def backtest_compare(req: CompareRequest):
     data_version = (str(data["fund_nav"]["date"].max().date())
                     if is_fund and len(data["fund_nav"])
                     else str(panel["date"].max().date()))
-    etf_cost = _is_etf(req.universe) and req.buy_cost == 0.0008 and req.sell_cost == 0.0013
+    etf_cost = _is_etf(req.universe) and req.buy_cost == trading_config.BUY_COST and req.sell_cost == trading_config.SELL_COST
     nm = services.get_name_map()
     if is_fund:
         nm = {**nm, **services.get_fund_name_map()}
@@ -628,7 +640,7 @@ def backtest_compare(req: CompareRequest):
                 limit_flags=False, slippage_bps=req.slippage_bps,
                 max_participation=req.max_participation,
                 max_weight=req.max_weight, lot_size=1,
-                buy_cost=0.0015, sell_cost=0.0050,
+                buy_cost=trading_config.FUND_BUY_COST, sell_cost=trading_config.FUND_SELL_COST,
                 fund_names=services.get_fund_name_map(),
             )
         else:
@@ -646,8 +658,8 @@ def backtest_compare(req: CompareRequest):
                 spread_bps=req.spread_bps,
                 min_commission=req.min_commission,
                 lot_size=req.lot_size,
-                buy_cost=0.0003 if etf_cost else req.buy_cost,
-                sell_cost=0.0003 if etf_cost else req.sell_cost,
+                buy_cost=trading_config.ETF_BUY_COST if etf_cost else req.buy_cost,
+                sell_cost=trading_config.ETF_SELL_COST if etf_cost else req.sell_cost,
                 industry_map=ind_map if strat.get("industry_cap") else None,
                 industry_cap=strat.get("industry_cap"),
                 long_short=strat.get("long_short", False),
@@ -839,15 +851,22 @@ def alpha_signals(factor_id: str, library: str = "candidate", top_n: int = 10):
     from alphaagent.data.adapters.cnequity import load_panel_from_cne
     from alphaagent.dsl import eval_factor
     from alphaagent.factor.align import align_series_to_panel
+    from core.strategy_types import from_dsl_factor
     import datetime as _dt
 
     detail = get_factor_detail(factor_id, library=library)
     if "error" in detail:
         return {"error": detail["error"]}
-    expr = detail.get("expr", "")
+    # DSL 因子统一走策略定义模型（kind="dsl"），不回填策略注册表
+    strategy_def = from_dsl_factor(
+        factor_id,
+        name=str(detail.get("name") or factor_id),
+        dsl_expr=str(detail.get("expr") or ""),
+    )
+    expr = strategy_def.dsl_expr or ""
     if not expr:
         return {"error": f"因子 {factor_id} 无 DSL 表达式"}
-    name = detail.get("name", factor_id)
+    name = strategy_def.display_name
 
     end = _dt.date.today().isoformat()
     start = (_dt.date.today() - _dt.timedelta(days=400)).isoformat()
@@ -1081,7 +1100,7 @@ def backtest_quantstats(req: BacktestRequest):
             limit_flags=False, slippage_bps=req.slippage_bps,
             max_participation=req.max_participation,
             max_weight=req.max_weight, lot_size=1,
-            buy_cost=0.0015, sell_cost=0.0050,
+            buy_cost=trading_config.FUND_BUY_COST, sell_cost=trading_config.FUND_SELL_COST,
             analyze=req.analyze,
             factor_weights=req.composite_weights,
             factor_directions=req.composite_directions,
@@ -1101,8 +1120,8 @@ def backtest_quantstats(req: BacktestRequest):
             max_participation=req.max_participation,
             max_weight=req.max_weight,
             lot_size=req.lot_size,
-            buy_cost=0.0003 if etf_cost else req.buy_cost,
-            sell_cost=0.0003 if etf_cost else req.sell_cost,
+            buy_cost=trading_config.ETF_BUY_COST if etf_cost else req.buy_cost,
+            sell_cost=trading_config.ETF_SELL_COST if etf_cost else req.sell_cost,
             industry_map=services.get_industry_map()
             if (strat.get("industry_cap") or req.industry_neutral or req.risk_neutral)
             else None,

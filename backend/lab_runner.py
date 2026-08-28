@@ -92,7 +92,7 @@ def main() -> int:
                     capital=cfg["capital"],
                     warmup_days=cfg["warmup_days"],
                     amount_q=cfg["amount_q"],
-                    slippage_bps=float(cfg.get("slippage_bps", 0.0) or 0.0),
+                    slippage_bps=float(cfg.get("slippage_bps", trading_config.SLIPPAGE_BPS) or trading_config.SLIPPAGE_BPS),
                     max_participation=float(cfg.get("max_participation", 0.0) or 0.0),
                     buy_cost=float(cfg.get("buy_cost", trading_config.BUY_COST) or trading_config.BUY_COST),
                     sell_cost=float(cfg.get("sell_cost", trading_config.SELL_COST) or trading_config.SELL_COST),

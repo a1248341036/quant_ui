@@ -18,6 +18,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from .panel_schema import AMOUNT_CNE_TO_ENGINE, TURNOVER_PERCENT_TO_RATIO
+
 try:
     import tushare as ts
 except ImportError:  # pragma: no cover
@@ -129,7 +131,7 @@ def _fetch_date_batch(pro, trade_date: str, sleep: float) -> pd.DataFrame:
         "high": _norm_num(daily["high"]),
         "low": _norm_num(daily["low"]),
         "volume": _norm_num(daily["vol"]),
-        "amount": _norm_num(daily["amount"]) * 1000.0,
+        "amount": _norm_num(daily["amount"]) * AMOUNT_CNE_TO_ENGINE,
         "turnover": np.nan,
         "factor": 1.0,
     })
@@ -140,7 +142,7 @@ def _fetch_date_batch(pro, trade_date: str, sleep: float) -> pd.DataFrame:
             basic["turnover_rate"] = _norm_num(basic["turnover_rate"])
             out = out.merge(basic, on="ts_code", how="left")
             # 面板统一存换手率比例（0.43% -> 0.0043），与旧腾讯数据口径一致
-            out["turnover"] = out.pop("turnover_rate") / 100.0
+            out["turnover"] = out.pop("turnover_rate") / TURNOVER_PERCENT_TO_RATIO
     except Exception:
         pass
     try:
@@ -204,7 +206,7 @@ def fetch_daily(code: str, start: str, end: str, retries: int = 2) -> pd.DataFra
             "high": _norm_num(daily["high"]),
             "low": _norm_num(daily["low"]),
             "volume": _norm_num(daily["vol"]),
-            "amount": _norm_num(daily["amount"]) * 1000.0,
+            "amount": _norm_num(daily["amount"]) * AMOUNT_CNE_TO_ENGINE,
             "turnover": np.nan,
         })
         fac = None
@@ -236,7 +238,7 @@ def fetch_daily(code: str, start: str, end: str, retries: int = 2) -> pd.DataFra
             if db is not None and len(db):
                 tr = db.set_index("trade_date")["turnover_rate"]
                 tr.index = pd.to_datetime(tr.index, format="%Y%m%d")
-                out["turnover"] = out["date"].map(tr) / 100.0
+                out["turnover"] = out["date"].map(tr) / TURNOVER_PERCENT_TO_RATIO
         except Exception:
             pass
         out = out.dropna(subset=["date", "close"])

@@ -255,6 +255,48 @@ def cross_sectional_winsorize_values(
     return out
 
 
+def cross_sectional_size_neutralize_values(
+    values: np.ndarray,
+    panel: pd.DataFrame,
+    *,
+    market_cap_field: str = "float_cap",
+    log_scale: bool = True,
+    min_valid: int = 3,
+) -> np.ndarray:
+    """对每个交易日按市值字段回归取残差（市值中性化），保留原 panel 行序。
+
+    与 size_residualize transform 同口径（逐日对 log(float_cap) 做截面线性回归
+    取残差），供 size_neutral_decay 诊断 metric 复用，避免 plugin/ingest 双写。
+    """
+    if len(values) != len(panel):
+        raise ValueError(f"values 长度 {len(values)} != panel 行数 {len(panel)}")
+    if not isinstance(panel.index, pd.MultiIndex) or "datetime" not in panel.index.names:
+        raise ValueError("cross_sectional_size_neutralize_values 需要含 datetime 的 MultiIndex panel")
+    if market_cap_field not in panel.columns:
+        raise ValueError(f"panel 缺少市值字段: {market_cap_field}")
+
+    out = np.asarray(values, dtype=np.float64).copy()
+    size = panel[market_cap_field].to_numpy(dtype=np.float64, copy=False)
+    if log_scale:
+        size = np.where(size > 0, np.log(size), np.nan)
+    dates = panel.index.get_level_values("datetime")
+    for _, positions in pd.Series(np.arange(len(out)), index=dates).groupby(level=0, sort=False):
+        idx = positions.to_numpy(dtype=np.int64, copy=False)
+        y, x = out[idx], size[idx]
+        valid = np.isfinite(y) & np.isfinite(x)
+        if int(valid.sum()) < min_valid:
+            continue
+        x_valid, y_valid = x[valid], y[valid]
+        variance = float(np.var(x_valid))
+        if not np.isfinite(variance) or variance <= 1e-15:
+            continue
+        beta = float(np.cov(x_valid, y_valid, ddof=0)[0, 1] / variance)
+        alpha = float(np.mean(y_valid) - beta * np.mean(x_valid))
+        y[valid] = y_valid - (alpha + beta * x_valid)
+        out[idx] = y
+    return out.astype(np.float32, copy=False)
+
+
 def annualized_long_group_excess_return(
     factor: pd.Series,
     label: pd.Series,
@@ -297,6 +339,48 @@ def annualized_long_group_excess_return(
 
 def _round_label_mean(value: float) -> float:
     return float(round(value, 6))
+
+
+def monthly_detail_rows(
+    daily_ic: pd.Series,
+    daily_rank_ic: pd.Series,
+) -> list[dict[str, Any]]:
+    """逐日 IC/RankIC → 按月聚合明细（mean_ic / mean_rank_ic / n_days）。"""
+    by_month_rows: list[dict[str, Any]] = []
+    if daily_ic.empty:
+        return by_month_rows
+    s = daily_ic.copy()
+    s.index = pd.to_datetime(s.index, errors="coerce")
+    r = daily_rank_ic.copy()
+    r.index = pd.to_datetime(r.index, errors="coerce")
+    for month, grp in s.groupby(s.index.to_period("M"), sort=True):
+        r_grp = r.loc[grp.index]
+        by_month_rows.append({
+            "month": str(month),
+            "mean_ic": float(grp.mean(skipna=True)),
+            "mean_rank_ic": float(r_grp.mean(skipna=True)),
+            "n_days": int(grp.notna().sum()),
+        })
+    return by_month_rows
+
+
+def by_symbol_ts_ic(
+    factor: pd.Series,
+    label: pd.Series,
+    *,
+    min_pairs: int = 5,
+) -> list[dict[str, Any]]:
+    """逐标的时序 IC 明细（instrument → ts_ic）。"""
+    rows: list[dict[str, Any]] = []
+    for inst, f_sub in factor.groupby(level="instrument", sort=False):
+        y_sub = label.xs(inst, level="instrument")
+        ts_ic = pearson_ic(
+            f_sub.to_numpy(dtype=np.float64, copy=False),
+            y_sub.to_numpy(dtype=np.float64, copy=False),
+            min_pairs=min_pairs,
+        )
+        rows.append({"instrument": str(inst), "ts_ic": ts_ic})
+    return rows
 
 
 def label_quantile_buckets(

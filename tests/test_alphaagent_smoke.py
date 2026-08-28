@@ -15,7 +15,8 @@ from alphaagent.factor.mining.research_spec import (
     default_research_spec,
     normalize_research_spec,
 )
-from alphaagent.factor.mining.submit import _check_stage_one, _check_stage_two
+from alphaagent.factor.mining.delivery_checker import DeliveryChecker
+from alphaagent.factor.mining.delivery_criteria import DeliveryCriteria
 
 
 # ── DSL parser + eval ──────────────────────────────────────────────
@@ -149,51 +150,58 @@ class TestSubmitGating:
         "mls_fmb": {"nw_t_ls": 3.2},
     }
 
-    def test_stage_one_pass(self) -> None:
-        ok, reasons = _check_stage_one(
-            {"ic": 0.04, "icir": 0.4, "coverage": 0.90},
-            {"max_abs_corr": 0.3},
-        )
-        assert ok and not reasons
+    @pytest.fixture()
+    def checker(self) -> DeliveryChecker:
+        return DeliveryChecker(DeliveryCriteria.defaults())
 
-    def test_stage_one_fail_low_ic(self) -> None:
-        ok, reasons = _check_stage_one(
-            {"ic": 0.005, "icir": 0.4, "coverage": 0.90},
-            {"max_abs_corr": 0.3},
-        )
-        assert not ok and "ic" in reasons
+    @staticmethod
+    def _m(**kw):
+        return {
+            "ic": 0.04, "icir": 0.4, "coverage": 0.90,
+            "cs_pearson_autocorr": 0.6,
+            **kw,
+        }
 
-    def test_stage_one_fail_high_corr(self) -> None:
-        ok, reasons = _check_stage_one(
-            {"ic": 0.04, "icir": 0.4, "coverage": 0.90},
-            {"max_abs_corr": 0.75},
-        )
-        assert not ok and "max_cs_corr" in reasons
+    def test_stage_one_pass(self, checker: DeliveryChecker) -> None:
+        stats = checker.stage_one_stats(self._m())
+        corr = checker.stage_one_correlation({"max_abs_corr": 0.3})
+        assert stats.passed and not stats.fail_reasons
+        assert corr.passed and not corr.fail_reasons
 
-    def test_stage_two_pass(self) -> None:
-        ok, reasons = _check_stage_two(
+    def test_stage_one_fail_low_ic(self, checker: DeliveryChecker) -> None:
+        stats = checker.stage_one_stats(self._m(ic=0.005))
+        assert not stats.passed and "ic" in stats.fail_reasons
+
+    def test_stage_one_fail_high_corr(self, checker: DeliveryChecker) -> None:
+        stats = checker.stage_one_stats(self._m())
+        corr = checker.stage_one_correlation({"max_abs_corr": 0.75})
+        assert stats.passed
+        assert not corr.passed and "max_cs_corr" in corr.fail_reasons
+
+    def test_stage_two_pass(self, checker: DeliveryChecker) -> None:
+        result = checker.stage_two(
             self.GOOD_METRICS,
             {"ic": 0.05, "val_long_excess": 0.02},
             {"max_abs_corr": 0.25},
         )
-        assert ok and not reasons
+        assert result.passed and not result.fail_reasons
 
-    def test_stage_two_fail_val_ic(self) -> None:
-        ok, reasons = _check_stage_two(
+    def test_stage_two_fail_val_ic(self, checker: DeliveryChecker) -> None:
+        result = checker.stage_two(
             self.GOOD_METRICS,
             {"ic": 0.005},
             {"max_abs_corr": 0.25},
         )
-        assert not ok and "val_ic" in reasons
+        assert not result.passed and "val_ic" in result.fail_reasons
 
-    def test_stage_two_fail_decay(self) -> None:
+    def test_stage_two_fail_decay(self, checker: DeliveryChecker) -> None:
         metrics = {**self.GOOD_METRICS, "winsorized_abs_ic_decay": 0.15}
-        ok, reasons = _check_stage_two(
+        result = checker.stage_two(
             metrics,
             {"ic": 0.05, "val_long_excess": 0.02},
             {"max_abs_corr": 0.25},
         )
-        assert not ok and "winsorized_abs_ic_decay" in reasons
+        assert not result.passed and "winsorized_abs_ic_decay" in result.fail_reasons
 
 
 # ── Research memory ────────────────────────────────────────────────

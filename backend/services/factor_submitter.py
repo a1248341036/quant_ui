@@ -98,17 +98,17 @@ class FactorSubmitter:
 
         # 获取因子库
         prod_root = factor_categories.production_dir("technical")
-        zoo = FactorZoo(prod_root)
+        zoo = FactorZoo.open(prod_root)
 
         # 计算与已有因子的相似度
         similar = []
-        for factor_id in zoo.list_factors():
+        for factor_id in zoo.catalog.list_factor_ids():
             try:
-                registry = zoo.get_factor_registry(factor_id)
-                if not registry or "expr" not in registry:
+                registry = zoo.catalog.get(factor_id)
+                if not registry or not registry.expr:
                     continue
 
-                old_expr = registry["expr"]
+                old_expr = registry.expr
                 old_series = eval_factor(old_expr, panel)
                 old_aligned = align_series_to_panel(old_series, panel)
 

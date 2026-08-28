@@ -11,6 +11,12 @@ from alphaagent.factor.mining.research_memory import ResearchMemoryStore
 from alphaagent.factor.mining.research_spec import (
     RESEARCH_MODES,
     default_research_spec as build_default_research_spec,
+    effective_research_spec,
+    build_run_research_spec,
+    load_saved_overrides,
+    save_research_spec_overrides,
+    reset_research_spec_overrides,
+    compute_spec_overrides,
     normalize_research_spec,
 )
 from alphaagent.factor.evaluation.plugins import available_plugins
@@ -104,12 +110,107 @@ def delete_research_memory(entry_id: str) -> dict[str, Any]:
     return {"ok": True}
 
 
+@router.get("/research-modes")
+def research_modes() -> dict[str, Any]:
+    """研究模式注册表（UI 元数据）：前端按钮/下拉/提示/默认消息的唯一来源。
+
+    返回 core.research_modes.ui_options()（label/hint/recommended_label_col/
+    default_user_message/needs_fundamentals），前端据此动态渲染，避免
+    "加一个模式改 N 处前端硬编码"。
+    """
+    from core.research_modes import ui_options
+    return {"modes": ui_options()}
+
+
 @router.get("/research-spec/default")
 def default_research_spec(mode: str = "technical") -> dict[str, Any]:
+    """当前模式生效的研究规范（注册表默认 + 用户保存覆盖）。
+
+    模式切换时前端以此为准——用户改过的门槛会在这里体现。
+    """
     try:
-        return normalize_research_spec(build_default_research_spec(mode))
+        return effective_research_spec(mode)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+class ResearchSpecUpdate(BaseModel):
+    # 前端编辑后的完整有效 spec；后端与注册表默认 diff 后只持久化增量覆盖。
+    spec: dict[str, Any]
+
+
+def _research_spec_payload(mode: str) -> dict[str, Any]:
+    """GET/PUT/DELETE 统一载荷：defaults / overrides / effective 三视图。"""
+    try:
+        defaults = normalize_research_spec(build_default_research_spec(mode))
+        overrides = load_saved_overrides(mode)
+        effective = normalize_research_spec(_merge(overrides, defaults))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    from alphaagent.core.paths import RESEARCH_SPECS_DIR
+    return {
+        "mode": mode,
+        "defaults": defaults,
+        "overrides": overrides,
+        "effective": effective,
+        "path": str(RESEARCH_SPECS_DIR / f"{mode}.json"),
+    }
+
+
+def _merge(overrides: dict[str, Any], base: dict[str, Any]) -> dict[str, Any]:
+    """浅层递归合并：overrides 覆盖 base（与 research_spec._deep_merge 同语义）。"""
+    merged = dict(base)
+    for key, value in overrides.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge(value, merged[key])
+        else:
+            merged[key] = value
+    return merged
+
+
+@router.get("/research-specs/{mode}")
+def get_research_spec(mode: str) -> dict[str, Any]:
+    """读取某模式的研究规范门槛文件（默认值 / 保存覆盖 / 生效值）。"""
+    if mode not in RESEARCH_MODES:
+        raise HTTPException(status_code=404, detail=f"research_mode_invalid:{mode}")
+    return _research_spec_payload(mode)
+
+
+@router.put("/research-specs/{mode}")
+def update_research_spec(mode: str, req: ResearchSpecUpdate) -> dict[str, Any]:
+    """保存某模式的门槛文件：diff 出增量覆盖并持久化。
+
+    前端看到/编辑的是 effective（完整 JSON）；这里存的是相对默认值的增量，
+    代码默认演进时未改键自动跟随。
+    """
+    if mode not in RESEARCH_MODES:
+        raise HTTPException(status_code=404, detail=f"research_mode_invalid:{mode}")
+    edited = req.spec
+    if not isinstance(edited, dict):
+        raise HTTPException(status_code=422, detail="research_spec_must_be_object")
+    edited = dict(edited)
+    edited.setdefault("research_mode", mode)
+    # 校验：enter effective 全流程 normalize，非法值直接 422（不落盘）
+    try:
+        normalized = build_run_research_spec(edited)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    defaults = normalize_research_spec(build_default_research_spec(mode))
+    overrides = compute_spec_overrides(defaults, normalized)
+    # evaluation_profiles 是 normalize 从 evaluation_policy 派生的规则视图，
+    # 运行时会重新生成；持久化它只会造成冗余与 schema 漂移，落盘前剔除。
+    overrides.pop("evaluation_profiles", None)
+    save_research_spec_overrides(mode, overrides)
+    return _research_spec_payload(mode)
+
+
+@router.delete("/research-specs/{mode}")
+def delete_research_spec(mode: str) -> dict[str, Any]:
+    """删除模式门槛文件，恢复注册表默认。"""
+    if mode not in RESEARCH_MODES:
+        raise HTTPException(status_code=404, detail=f"research_mode_invalid:{mode}")
+    reset_research_spec_overrides(mode)
+    return _research_spec_payload(mode)
 
 
 @router.get("/evaluation-capabilities")

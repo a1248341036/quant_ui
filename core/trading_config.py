@@ -17,7 +17,7 @@ from __future__ import annotations
 CAPITAL: float = 100_000.0          # 初始资金（10万）
 BUY_COST: float = 0.00025          # 买入佣金（万2.5）
 SELL_COST: float = 0.00125         # 卖出费率（万12.5，含印花税万10+佣金万2.5）
-SLIPPAGE_BPS: float = 3.0          # 固定滑点（基点）
+SLIPPAGE_BPS: float = 0.0          # 固定滑点（基点）：散户小资金低频日频，滑点不计（与米筐镜像口径一致）
 MAX_PARTICIPATION: float = 0.10    # 单笔买入 <= 20日均成交额 × 此比例
 LOT_SIZE: int = 100                # 整手股数
 AMOUNT_Q: float = 0.2             # am20 成交额分位过滤
@@ -50,7 +50,7 @@ FUND_SELL_COST: float = 0.0050     # 场外基金赎回费率
 GATE_CAPITAL: float = 100_000.0     # 门禁回测资金
 GATE_SELECTION_PCT: float = 0.004  # 门禁选股百分比
 GATE_TOP_N: int = 20                # 门禁固定选股数
-GATE_SLIPPAGE_BPS: float = 3.0     # 门禁滑点
+GATE_SLIPPAGE_BPS: float = 0.0     # 门禁滑点（与全局滑点一致，散户口径不计）
 GATE_MAX_PARTICIPATION: float = 0.10  # 门禁参与率
 GATE_MIN_AM20_YUAN: float = 5_000_000.0  # 门禁流动性下限
 GATE_MIN_EXCESS_ANNUAL: float = 0.03     # 净值超额年化下限（+3%）

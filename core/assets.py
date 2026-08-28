@@ -37,12 +37,15 @@ STOCK_PROFILE = AssetExecutionProfile(
     min_commission=5.0,
 )
 ETF_PROFILE = AssetExecutionProfile(
-    "etf", "场内ETF", 100, 0.0003, 0.0003, False, True,
+    "etf", "场内ETF", trading_config.LOT_SIZE,
+    trading_config.ETF_BUY_COST, trading_config.ETF_SELL_COST, False, True,
     "日线使用前复权OHLCV；分红已反映在前复权价格，暂不重复现金分红。",
-    spread_bps=2.0, min_commission=5.0,
+    spread_bps=trading_config.ETF_SPREAD_BPS,
+    min_commission=trading_config.ETF_MIN_COMMISSION,
 )
 FUND_NAV_PROFILE = AssetExecutionProfile(
-    "fund_nav", "场外基金", 1, 0.0015, 0.0050, False, False,
+    "fund_nav", "场外基金", 1,
+    trading_config.FUND_BUY_COST, trading_config.FUND_SELL_COST, False, False,
     "当前是NAV确认近似模型；申购截止时间、确认日和现金到账需后续扩展。",
 )
 

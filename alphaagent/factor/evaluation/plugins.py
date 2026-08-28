@@ -171,6 +171,58 @@ def cross_sectional_core(context: EvaluationContext, params: dict[str, Any]) -> 
     }
 
 
+@metric("size_neutral_decay")
+def size_neutral_decay(context: EvaluationContext, params: dict[str, Any]) -> dict[str, Any]:
+    """市值中性化 IC 衰减诊断（辅助信号，不参与规则门槛）。
+
+    计算方式与提交入门的 winsorized_abs_ic_decay 同构：
+      1. 对当前因子逐日按 log(float_cap) 截面回归取残差（市值中性化）
+      2. 重算逐日 IC 均值，取绝对值
+      3. decay = max(0, (|raw_ic| - |neutral_ic|) / |raw_ic|)
+
+    decay 越大说明因子 alpha 越依赖小市值暴露，实盘风格反转时越危险；
+    这个字段只用于人工/LLM 判断，不改变主口径 IC（主口径保持
+    winsorize + zscore，不含市值残差化）。
+    """
+    field = str(params.get("field", "float_cap"))
+    if field not in context.panel.columns:
+        return {
+            "size_neutral_ic": float("nan"),
+            "size_neutral_abs_ic_decay": float("nan"),
+            "note": f"panel 缺少市值字段 {field}",
+        }
+    from alphaagent.factor.metrics import (
+        cross_sectional_ic,
+        cross_sectional_size_neutralize_values,
+    )
+
+    raw_ic_series = context.daily_ic()
+    raw_ic = float(raw_ic_series.mean()) if raw_ic_series.notna().any() else float("nan")
+
+    neutral_values = cross_sectional_size_neutralize_values(
+        context.factor.to_numpy(dtype=np.float64, copy=False),
+        context.panel,
+        market_cap_field=field,
+    )
+    neutral_factor = pd.Series(neutral_values, index=context.panel.index,
+                               name=context.factor_name, dtype=np.float32)
+    neutral_ic_series = cross_sectional_ic(neutral_factor, context.label, min_pairs=5)
+    neutral_ic = float(neutral_ic_series.mean()) if neutral_ic_series.notna().any() else float("nan")
+
+    raw_abs = abs(raw_ic)
+    neutral_abs = abs(neutral_ic)
+    if np.isfinite(raw_abs) and raw_abs > 0 and np.isfinite(neutral_abs):
+        decay = float(max(0.0, (raw_abs - neutral_abs) / raw_abs))
+    else:
+        decay = float("nan")
+
+    return {
+        "size_neutral_ic": neutral_ic,
+        "size_neutral_abs_ic_decay": decay,
+        "note": "逐日截面 IC 对 log(float_cap) 回归取残差后重算；decay 越大市值暴露越重。",
+    }
+
+
 @metric("monthly_robustness")
 def monthly_robustness(context: EvaluationContext, params: dict[str, Any]) -> dict[str, Any]:
     _ = params

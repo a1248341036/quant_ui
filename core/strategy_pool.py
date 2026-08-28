@@ -11,6 +11,7 @@ import json
 import pandas as pd
 
 from . import sqldb as pg
+from .strategy_types import StrategyDefinition, from_legacy_dict
 from strategies.registry import STRATEGIES, list_strategies
 
 
@@ -424,19 +425,30 @@ def reorder_pool(names: list[str]) -> None:
 
 
 def resolve_strategy(name: str) -> dict:
-    """策略定义解析：注册表 → 配置池 → 全量池（归档）；找不到抛 KeyError。"""
+    """策略定义解析：注册表 → 配置池 → 全量池（归档）；找不到抛 KeyError。
+
+    兼容旧调用方（返回 dict）。新代码请用 resolve_strategy_def 拿到
+    结构化 StrategyDefinition（含 kind/source/fingerprint）。
+    """
+    return resolve_strategy_def(name).to_dict()
+
+
+def resolve_strategy_def(name: str) -> StrategyDefinition:
+    """统一策略解析：返回 StrategyDefinition（三源 + source 溯源）。
+
+    解析顺序（与旧 resolve_strategy 一致）：
+      1. 注册表 strategies.registry.STRATEGIES
+      2. 配置池 strategy_pool 表
+      3. 回测归档 backtest_runs（full_pool）
+
+    同名多源时按上述优先级取源（不静默合并），source 字段标识实际来源，
+    便于审计/去重。
+    """
     if name in STRATEGIES:
-        return STRATEGIES[name]
+        return from_legacy_dict(name, STRATEGIES[name], source="registry")
     d = pool_def(name)
     if d is not None:
-        return {
-            "factor": d["factor"],
-            "ascending": d["ascending"],
-            "group": d.get("group") or "配置池",
-            "desc": d.get("desc") or "",
-            **({k: v for k, v in d.get("params", {}).items()
-                if v is not None}),
-        }
+        return from_legacy_dict(name, d, source="pool", default_group="配置池")
     fp = full_pool()
     if not fp.empty:
         hit = fp[fp["name"] == name]
@@ -448,7 +460,7 @@ def resolve_strategy(name: str) -> dict:
                     p = json.loads(p)
                 except json.JSONDecodeError:
                     p = {}
-            return {
+            merged = {
                 "factor": r["factor"],
                 "ascending": bool(r["ascending"])
                 if r.get("ascending") is not None else False,
@@ -456,6 +468,8 @@ def resolve_strategy(name: str) -> dict:
                 "desc": r.get("desc") or "",
                 **({k: v for k, v in p.items() if v is not None}),
             }
+            return from_legacy_dict(name, merged, source="archive",
+                                    default_group="回测历史")
     raise KeyError(name)
 
 

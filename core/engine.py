@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
@@ -252,6 +253,74 @@ def _selection_count(candidate_count: int, top_n: int,
     return min(candidate_count, count)
 
 
+@dataclass(frozen=True)
+class BacktestConfig:
+    """一次回测运行的完整配置（与 run_backtest 的形参一一对应）。
+
+    拆分后的引擎以 BacktestConfig 作为唯一输入载体；run_backtest 作为
+    兼容门面保持原有 50 个形参签名不变，内部构造本配置后交给
+    run_backtest_config 执行四阶段管线。
+    """
+
+    panel: pd.DataFrame
+    codes: list[str]
+    factor: str
+    ascending: bool
+    start: str
+    end: str
+    capital: float
+    top_n: int
+    freq: str = "monthly"
+    buy_cost: float = trading_config.BUY_COST
+    sell_cost: float = trading_config.SELL_COST
+    amount_q: float = 0.3
+    affordable: bool = True
+    lot_size: int = 100
+    warmup_days: int | None = None
+    cash_mode: bool = True
+    limit_flags: bool = True
+    slippage_bps: float = trading_config.SLIPPAGE_BPS
+    max_participation: float = trading_config.MAX_PARTICIPATION
+    max_weight: float | None = None
+    industry_map: dict[str, str] | None = None
+    industry_cap: int | None = None
+    factor_builder: Callable | None = None
+    external_scores: pd.DataFrame | None = None
+    factor_weights: dict[str, float] | None = None
+    factor_directions: dict[str, bool] | None = None
+    analyze: bool = False
+    long_short: bool = False
+    short_n: int | None = None
+    short_cost_rate: float = 0.0
+    industry_neutral: bool = False
+    use_financial: bool = False
+    risk_neutral: bool = False
+    adx_filter: float | None = None
+    chandelier_mult: float = 0.0
+    chandelier_period: int = 22
+    regime_adx: float | None = None
+    regime_scale: float = 0.5
+    selection_mode: str = "top_n"
+    selection_pct: float = 0.10
+    min_positions: int = 1
+    max_positions: int | None = None
+    min_score: float | None = None
+    execution_profile: AssetExecutionProfile | None = None
+    share_classes: dict[str, str] | None = None
+    spread_bps: float | None = None
+    min_commission: float | None = None
+    impact_coef: float = 0.0
+    impact_vol: float = 0.02
+
+
+def run_backtest_config(cfg: BacktestConfig) -> dict:
+    """按 BacktestConfig 执行完整回测管线（阶段 1-4）。"""
+    prep = _prepare_backtest(cfg)
+    fctx = _build_factor_matrix(cfg, prep)
+    sim = _simulate(cfg, prep, fctx)
+    return _finalize_result(cfg, prep, fctx, sim)
+
+
 def run_backtest(
     panel: pd.DataFrame,
     codes: list[str],
@@ -344,6 +413,86 @@ def run_backtest(
     max_participation: 流动性约束，单笔买入金额 <= 20日均成交额 × 该比例。
     max_weight: 单票权重上限（占组合市值比例），None 表示不限制。
     """
+
+    cfg = BacktestConfig(
+        panel=panel, codes=codes, factor=factor, ascending=ascending,
+        start=start, end=end, capital=capital, top_n=top_n,
+        freq=freq, buy_cost=buy_cost, sell_cost=sell_cost,
+        amount_q=amount_q, affordable=affordable, lot_size=lot_size,
+        warmup_days=warmup_days, cash_mode=cash_mode, limit_flags=limit_flags,
+        slippage_bps=slippage_bps, max_participation=max_participation,
+        max_weight=max_weight, industry_map=industry_map,
+        industry_cap=industry_cap, factor_builder=factor_builder,
+        external_scores=external_scores, factor_weights=factor_weights,
+        factor_directions=factor_directions, analyze=analyze,
+        long_short=long_short, short_n=short_n,
+        short_cost_rate=short_cost_rate, industry_neutral=industry_neutral,
+        use_financial=use_financial, risk_neutral=risk_neutral,
+        adx_filter=adx_filter, chandelier_mult=chandelier_mult,
+        chandelier_period=chandelier_period, regime_adx=regime_adx,
+        regime_scale=regime_scale, selection_mode=selection_mode,
+        selection_pct=selection_pct, min_positions=min_positions,
+        max_positions=max_positions, min_score=min_score,
+        execution_profile=execution_profile, share_classes=share_classes,
+        spread_bps=spread_bps, min_commission=min_commission,
+        impact_coef=impact_coef, impact_vol=impact_vol,
+    )
+    return run_backtest_config(cfg)
+
+def _prepare_backtest(cfg: BacktestConfig) -> dict:
+    """阶段 1 准备:面板切片/pivot、ADX/止损矩阵、估值矩阵、o2o 与调仓计划。
+
+    产出后续阶段所需全部矩阵/计划/构建器;因子矩阵构建在阶段 2。
+    """
+    panel = cfg.panel
+    codes = cfg.codes
+    factor = cfg.factor
+    ascending = cfg.ascending
+    start = cfg.start
+    end = cfg.end
+    capital = cfg.capital
+    top_n = cfg.top_n
+    freq = cfg.freq
+    buy_cost = cfg.buy_cost
+    sell_cost = cfg.sell_cost
+    amount_q = cfg.amount_q
+    affordable = cfg.affordable
+    lot_size = cfg.lot_size
+    warmup_days = cfg.warmup_days
+    cash_mode = cfg.cash_mode
+    limit_flags = cfg.limit_flags
+    slippage_bps = cfg.slippage_bps
+    max_participation = cfg.max_participation
+    max_weight = cfg.max_weight
+    industry_map = cfg.industry_map
+    industry_cap = cfg.industry_cap
+    factor_builder = cfg.factor_builder
+    external_scores = cfg.external_scores
+    factor_weights = cfg.factor_weights
+    factor_directions = cfg.factor_directions
+    analyze = cfg.analyze
+    long_short = cfg.long_short
+    short_n = cfg.short_n
+    short_cost_rate = cfg.short_cost_rate
+    industry_neutral = cfg.industry_neutral
+    use_financial = cfg.use_financial
+    risk_neutral = cfg.risk_neutral
+    adx_filter = cfg.adx_filter
+    chandelier_mult = cfg.chandelier_mult
+    chandelier_period = cfg.chandelier_period
+    regime_adx = cfg.regime_adx
+    regime_scale = cfg.regime_scale
+    selection_mode = cfg.selection_mode
+    selection_pct = cfg.selection_pct
+    min_positions = cfg.min_positions
+    max_positions = cfg.max_positions
+    min_score = cfg.min_score
+    execution_profile = cfg.execution_profile
+    share_classes = cfg.share_classes
+    spread_bps = cfg.spread_bps
+    min_commission = cfg.min_commission
+    impact_coef = cfg.impact_coef
+    impact_vol = cfg.impact_vol
     profile = execution_profile or STOCK_PROFILE
     spread_bps = profile.spread_bps if spread_bps is None else spread_bps
     min_commission = profile.min_commission if min_commission is None else min_commission
@@ -403,84 +552,6 @@ def run_backtest(
             stop_mat = (high.rolling(chandelier_period).max()
                         - chandelier_mult * _compute_atr(high, low, close, chandelier_period)).values
 
-    from .financial import FINANCIAL_FACTORS, financial_factor_frames
-    need_financial = use_financial or factor in FINANCIAL_FACTORS
-    if factor_weights:
-        need_financial = need_financial or any(
-            n in FINANCIAL_FACTORS for n in factor_weights)
-    financial_frames = None
-    if need_financial:
-        try:
-            financial_frames = financial_factor_frames(codes_used, cal, close)
-        except Exception:
-            financial_frames = None
-
-    _asset_type = profile.asset_type
-
-    def _default_builder(c: pd.DataFrame, a: pd.DataFrame, t: pd.DataFrame):
-        return build_factor_frames(c, a, t, financial=financial_frames,
-                                   asset_type=_asset_type, volume=volume_w)
-
-    builder = factor_builder or _default_builder
-    factors = builder(close, am20, turn20)
-    _inject_pred_factor(factors, close, factor, factor_weights, external_scores)
-    _ensure_ma_cross_factor(factors, close, factor)
-    if factor_weights:
-        # 多因子自由组合：权重合成后的得分矩阵
-        combo = build_composite_factor(
-            close, am20, turn20, factor_weights, factor_directions,
-            factor_builder=builder,
-            extra_factors={"pred": factors["pred"]} if "pred" in factors else None,
-        )
-        fmat = combo.values
-        quality = None
-        if analyze:
-            from .performance import factor_quality, slice_quality
-            quality = factor_quality(combo, close, horizon=20, groups=5, min_n=10)
-    else:
-        fmat = factors[factor].values
-        quality = None
-        if analyze:
-            from .performance import factor_quality, slice_quality
-            quality = factor_quality(factors[factor], close, horizon=20, groups=5, min_n=10)
-
-    if factor_weights:
-        factor = "composite"
-
-    _X_risk: np.ndarray | None = None
-    _risk_names: list[str] = []
-    if risk_neutral and industry_map:
-        from .risk_model import (build_exposures, neutralize)
-        _X_risk, _risk_names = build_exposures(
-            close.values, am20.values, turn20.values,
-            mom20=factors.get("mom20").values if "mom20" in factors else None,
-            vol20=factors.get("vol20").values if "vol20" in factors else None,
-            pb=factors.get("pb").values if "pb" in factors else None,
-            roe=factors.get("roe").values if "roe" in factors else None,
-            growth=factors.get("rev_yoy").values if "rev_yoy" in factors else None,
-            industry_map=industry_map, codes=codes_used,
-        )
-        fmat = neutralize(np.array(fmat, dtype=float, copy=True), _X_risk)
-        fmat_frame = pd.DataFrame(fmat, index=close.index, columns=codes_used)
-        if analyze:
-            from .performance import factor_quality
-            quality = factor_quality(fmat_frame, close, horizon=20, groups=5, min_n=10)
-    elif industry_neutral and industry_map:
-        ind_arr = np.array([industry_map.get(str(c), "?") for c in codes_used])
-        raw_fmat = np.array(fmat, dtype=float, copy=True)
-        for ind in np.unique(ind_arr):
-            mask = ind_arr == ind
-            if mask.sum() == 0:
-                continue
-            sub = raw_fmat[:, mask]
-            valid_cnt = np.sum(~np.isnan(sub), axis=1, keepdims=True)
-            valid_sum = np.nansum(np.where(np.isnan(sub), 0.0, sub), axis=1, keepdims=True)
-            row_means = np.divide(valid_sum, valid_cnt,
-                                  out=np.full_like(valid_sum, np.nan),
-                                  where=valid_cnt > 0)
-            raw_fmat[:, mask] = sub - row_means
-        fmat = raw_fmat
-
     close_mat = close.values
     # 停牌日 close 为 NaN，持仓按最后一笔有效收盘价（每股 ffill）继续估值，
     # 避免停牌期间市值被当成 0、复牌日净值跳变。
@@ -530,8 +601,6 @@ def run_backtest(
     exec_set = ({i for i in exec_dates if i != start_idx}
                 if (warmup_days and not use_cash) else set(exec_dates))
 
-    nav = np.ones(T)
-    bench = np.ones(T)
     portfolio_builder = PortfolioBuilder(codes_used, industry_map, industry_cap)
     # 选股策略对象：把散装选股参数收拢，选股逻辑统一走 build_targets
     selection_policy = SelectionPolicy(
@@ -541,6 +610,212 @@ def run_backtest(
         industry_cap=industry_cap,
         regime_adx=regime_adx, regime_scale=regime_scale,
     )
+
+    return {
+        "profile": profile, "spread_bps": spread_bps,
+        "min_commission": min_commission, "buy_cost": buy_cost,
+        "sell_cost": sell_cost, "start_ts": start_ts, "end_ts": end_ts,
+        "cal": cal, "close": close, "open_": open_, "turnover": turnover,
+        "am20": am20, "turn20": turn20, "high": high, "low": low,
+        "volume_w": volume_w, "codes_used": codes_used,
+        "adx_mat": adx_mat, "stop_mat": stop_mat,
+        "close_mat": close_mat, "close_fill_mat": close_fill_mat,
+        "open_mat": open_mat, "turn_mat": turn_mat, "am20_mat": am20_mat,
+        "valid_close": valid_close, "valid_open": valid_open,
+        "dates": dates, "T": T, "K": K, "o2o": o2o, "start_idx": start_idx,
+        "exec_dates": exec_dates, "use_cash": use_cash,
+        "limit_up": limit_up, "limit_down": limit_down, "exec_set": exec_set,
+        "portfolio_builder": portfolio_builder,
+        "selection_policy": selection_policy,
+        "capital": capital, "top_n": top_n, "freq": freq,
+        "amount_q": amount_q, "affordable": affordable, "lot_size": lot_size,
+        "warmup_days": warmup_days, "cash_mode": cash_mode,
+        "limit_flags": limit_flags, "slippage_bps": slippage_bps,
+        "max_participation": max_participation, "max_weight": max_weight,
+        "industry_map": industry_map, "industry_cap": industry_cap,
+        "factor_builder": factor_builder, "external_scores": external_scores,
+        "factor_weights": factor_weights,
+        "factor_directions": factor_directions, "analyze": analyze,
+        "long_short": long_short, "short_n": short_n,
+        "short_cost_rate": short_cost_rate,
+        "industry_neutral": industry_neutral, "use_financial": use_financial,
+        "risk_neutral": risk_neutral, "adx_filter": adx_filter,
+        "chandelier_mult": chandelier_mult,
+        "chandelier_period": chandelier_period,
+        "regime_adx": regime_adx, "regime_scale": regime_scale,
+        "selection_mode": selection_mode, "selection_pct": selection_pct,
+        "min_positions": min_positions, "max_positions": max_positions,
+        "min_score": min_score, "execution_profile": execution_profile,
+        "share_classes": share_classes,
+        "impact_coef": impact_coef, "impact_vol": impact_vol,
+    }
+
+
+def _build_factor_matrix(cfg: BacktestConfig, prep: dict) -> dict:
+    """阶段 2 因子矩阵:财务帧、因子构建、pred 注入、composite 与中性化。"""
+    close = prep["close"]
+    am20 = prep["am20"]
+    turn20 = prep["turn20"]
+    volume_w = prep["volume_w"]
+    cal = prep["cal"]
+    codes_used = prep["codes_used"]
+    profile = prep["profile"]
+    factor = cfg.factor
+    factor_weights = cfg.factor_weights
+    factor_directions = cfg.factor_directions
+    external_scores = cfg.external_scores
+    analyze = cfg.analyze
+    industry_map = cfg.industry_map
+    risk_neutral = cfg.risk_neutral
+    industry_neutral = cfg.industry_neutral
+    factor_builder = cfg.factor_builder
+    use_financial = cfg.use_financial
+
+    from .financial import FINANCIAL_FACTORS, financial_factor_frames
+    need_financial = use_financial or factor in FINANCIAL_FACTORS
+    if factor_weights:
+        need_financial = need_financial or any(
+            n in FINANCIAL_FACTORS for n in factor_weights)
+    financial_frames = None
+    if need_financial:
+        try:
+            financial_frames = financial_factor_frames(codes_used, cal, close)
+        except Exception:
+            financial_frames = None
+
+    _asset_type = profile.asset_type
+
+    def _default_builder(c: pd.DataFrame, a: pd.DataFrame, t: pd.DataFrame):
+        return build_factor_frames(c, a, t, financial=financial_frames,
+                                   asset_type=_asset_type, volume=volume_w)
+
+    builder = factor_builder or _default_builder
+    factors = builder(close, am20, turn20)
+    _inject_pred_factor(factors, close, factor, factor_weights, external_scores)
+    _ensure_ma_cross_factor(factors, close, factor)
+    if factor_weights:
+        # 多因子自由组合：权重合成后的得分矩阵
+        combo = build_composite_factor(
+            close, am20, turn20, factor_weights, factor_directions,
+            factor_builder=builder,
+            extra_factors={"pred": factors["pred"]} if "pred" in factors else None,
+        )
+        fmat = combo.values
+        quality = None
+        if analyze:
+            from .performance import factor_quality
+            quality = factor_quality(combo, close, horizon=20, groups=5, min_n=10)
+    else:
+        fmat = factors[factor].values
+        quality = None
+        if analyze:
+            from .performance import factor_quality
+            quality = factor_quality(factors[factor], close, horizon=20, groups=5, min_n=10)
+
+    if factor_weights:
+        factor = "composite"
+
+    _X_risk: np.ndarray | None = None
+    _risk_names: list[str] = []
+    if risk_neutral and industry_map:
+        from .risk_model import (build_exposures, neutralize)
+        _X_risk, _risk_names = build_exposures(
+            close.values, am20.values, turn20.values,
+            mom20=factors.get("mom20").values if "mom20" in factors else None,
+            vol20=factors.get("vol20").values if "vol20" in factors else None,
+            pb=factors.get("pb").values if "pb" in factors else None,
+            roe=factors.get("roe").values if "roe" in factors else None,
+            growth=factors.get("rev_yoy").values if "rev_yoy" in factors else None,
+            industry_map=industry_map, codes=codes_used,
+        )
+        fmat = neutralize(np.array(fmat, dtype=float, copy=True), _X_risk)
+        fmat_frame = pd.DataFrame(fmat, index=close.index, columns=codes_used)
+        if analyze:
+            from .performance import factor_quality
+            quality = factor_quality(fmat_frame, close, horizon=20, groups=5, min_n=10)
+    elif industry_neutral and industry_map:
+        ind_arr = np.array([industry_map.get(str(c), "?") for c in codes_used])
+        raw_fmat = np.array(fmat, dtype=float, copy=True)
+        for ind in np.unique(ind_arr):
+            mask = ind_arr == ind
+            if mask.sum() == 0:
+                continue
+            sub = raw_fmat[:, mask]
+            valid_cnt = np.sum(~np.isnan(sub), axis=1, keepdims=True)
+            valid_sum = np.nansum(np.where(np.isnan(sub), 0.0, sub), axis=1, keepdims=True)
+            row_means = np.divide(valid_sum, valid_cnt,
+                                  out=np.full_like(valid_sum, np.nan),
+                                  where=valid_cnt > 0)
+            raw_fmat[:, mask] = sub - row_means
+        fmat = raw_fmat
+
+    return {
+        "fmat": fmat,
+        "quality": quality,
+        "_X_risk": _X_risk,
+        "_risk_names": _risk_names,
+    }
+
+
+def _simulate(cfg: BacktestConfig, prep: dict, fctx: dict) -> dict:
+    """阶段 3 主循环:现金/整手模型与旧权重连续模型(含多空)。"""
+    codes_used = prep["codes_used"]
+    profile = prep["profile"]
+    close = prep["close"]
+    open_ = prep["open_"]
+    turnover = prep["turnover"]
+    am20 = prep["am20"]
+    high = prep["high"]
+    low = prep["low"]
+    dates = prep["dates"]
+    close_mat = prep["close_mat"]
+    close_fill_mat = prep["close_fill_mat"]
+    open_mat = prep["open_mat"]
+    turn_mat = prep["turn_mat"]
+    am20_mat = prep["am20_mat"]
+    valid_close = prep["valid_close"]
+    valid_open = prep["valid_open"]
+    o2o = prep["o2o"]
+    T = prep["T"]
+    K = prep["K"]
+    start_idx = prep["start_idx"]
+    exec_set = prep["exec_set"]
+    limit_up = prep["limit_up"]
+    limit_down = prep["limit_down"]
+    use_cash = prep["use_cash"]
+    stop_mat = prep["stop_mat"]
+    adx_mat = prep["adx_mat"]
+    selection_policy = prep["selection_policy"]
+    portfolio_builder = prep["portfolio_builder"]
+    capital = prep["capital"]
+    top_n = prep["top_n"]
+    warmup_days = prep["warmup_days"]
+    amount_q = prep["amount_q"]
+    affordable = prep["affordable"]
+    lot_size = prep["lot_size"]
+    buy_cost = prep["buy_cost"]
+    sell_cost = prep["sell_cost"]
+    slippage_bps = prep["slippage_bps"]
+    max_participation = prep["max_participation"]
+    spread_bps = prep["spread_bps"]
+    min_commission = prep["min_commission"]
+    impact_coef = prep["impact_coef"]
+    impact_vol = prep["impact_vol"]
+    max_weight = prep["max_weight"]
+    share_classes = prep["share_classes"]
+    long_short = prep["long_short"]
+    short_n = prep["short_n"]
+    short_cost_rate = prep["short_cost_rate"]
+    selection_mode = prep["selection_mode"]
+    selection_pct = prep["selection_pct"]
+    min_positions = prep["min_positions"]
+    max_positions = prep["max_positions"]
+    ascending = cfg.ascending
+    adx_filter = prep["adx_filter"]
+    fmat = fctx["fmat"]
+
+    nav = np.ones(T)
+    bench = np.ones(T)
     hold = np.zeros(K)
     holdings_history = []
     trades: list[dict] = []
@@ -819,6 +1094,40 @@ def run_backtest(
                                       for k, v in enumerate(hold)
                                       if abs(v) > 1e-9})
 
+    return {
+        "nav": nav, "bench": bench, "trades": trades,
+        "trades_detail": trades_detail, "holdings_history": holdings_history,
+        "cash_history": cash_history, "positions_history": positions_history,
+        "rejections": rejections, "last_chosen": last_chosen, "hold": hold,
+    }
+
+
+def _finalize_result(cfg: BacktestConfig, prep: dict, fctx: dict, sim: dict) -> dict:
+    """阶段 4 收尾:预热段切片、指标、持仓表、风险归因与结果字典。"""
+    profile = prep["profile"]
+    close = prep["close"]
+    codes_used = prep["codes_used"]
+    dates = prep["dates"]
+    K = prep["K"]
+    o2o = prep["o2o"]
+    start_ts = prep["start_ts"]
+    start_idx = prep["start_idx"]
+    exec_set = prep["exec_set"]
+    capital = prep["capital"]
+    nav = sim["nav"]
+    bench = sim["bench"]
+    trades = sim["trades"]
+    trades_detail = sim["trades_detail"]
+    holdings_history = sim["holdings_history"]
+    cash_history = sim["cash_history"]
+    positions_history = sim["positions_history"]
+    rejections = sim["rejections"]
+    last_chosen = sim["last_chosen"]
+    hold = sim["hold"]
+    _X_risk = fctx.get("_X_risk")
+    _risk_names = fctx.get("_risk_names") or []
+    quality = fctx.get("quality")
+
     exec_in_out = sorted(e for e in exec_set if e > 0)
     last_signal_date = dates[exec_in_out[-1] - 1] if exec_in_out else None
     if start_idx > 0:
@@ -844,6 +1153,7 @@ def run_backtest(
         positions_history = [{}] + positions_history
 
     if quality is not None:
+        from .performance import slice_quality
         quality = slice_quality(quality, dates_out)
 
     # 每日市值权重历史（供 Brinson/风险归因等下游使用）
@@ -904,7 +1214,6 @@ def run_backtest(
         "asset_type": profile.asset_type,
         "execution_profile": profile,
     }
-
 
 def latest_signals(panel: pd.DataFrame, codes: list[str], factor: str,
                    ascending: bool, top_n: int = 10,

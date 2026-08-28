@@ -9,9 +9,9 @@ def test_normalize_universe():
     """测试 universe 名称标准化。"""
     from core.store import normalize_universe
     
-    # 测试默认值
-    assert normalize_universe("科技 TMT") == "科技 TMT"
-    assert normalize_universe("中证 800") == "中证 800"
+    # 测试空格兼容：带空格的输入归一化为无空格的标准名
+    assert normalize_universe("科技 TMT") == "科技TMT"
+    assert normalize_universe("中证 800") == "中证800"
     assert normalize_universe("ETF") == "ETF"
     assert normalize_universe("场外基金") == "场外基金"
 

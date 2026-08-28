@@ -539,51 +539,14 @@ FF_PANEL_COLUMNS = (
 
 
 def _delivery_gates_markdown(spec: dict[str, Any] | None) -> str:
-    """从 ResearchSpec 动态渲染两阶段交付门槛，保证提示词与真实门禁永不脱节。"""
-    from alphaagent.factor.mining.research_spec import default_research_spec
+    """从 ResearchSpec 动态渲染两阶段交付门槛，保证提示词与真实门禁永不脱节。
 
-    s = spec or default_research_spec()
-    cand = (s.get("delivery_policy") or {}).get("candidate") or {}
-    prod = (s.get("delivery_policy") or {}).get("production") or {}
-    gate = prod.get("engine_gate") or {}
-    review = s.get("review_policy") or {}
+    数值唯一真源在 delivery_criteria（由 research_spec 注入）；此处只做委托，
+    不再重复维护门槛文本（历史硬编码 min_fmb_t_stat 等已移除门槛在此一并淘汰）。
+    """
+    from alphaagent.factor.mining.delivery_criteria import DeliveryCriteria
 
-    def _pct(v, digits=1) -> str:
-        try:
-            return f"{float(v)*100:.{digits}f}%"
-        except (TypeError, ValueError):
-            return str(v)
-
-    stage_one = (
-        f"第一阶段（候选登记，train-only 窗口）：`abs(IC) >= {cand.get('min_abs_ic', 0.015)}`、"
-        f"`ICIR > {cand.get('min_icir', 0.25)}`、`Coverage > {_pct(cand.get('min_coverage', 0.85))}`、"
-        f"`cs_autocorr >= {cand.get('min_cs_autocorr', 0.18)}`、"
-        f"`val/train IC 保留比 >= {_pct(cand.get('min_val_ic_retention', 0.5))}` 且方向不反转、"
-        f"与正式库最大截面相关 `< {cand.get('max_abs_corr', 0.5)}`；"
-        "通过后写入轻量候选 registry（不物化全量因子值）。"
-    )
-    stage_two = (
-        f"第二阶段（精筛正式库）：Reviewer `approve`（novelty ≥ "
-        f"{review.get('minimum_novelty', 'medium')}）且 `abs(IC) >= {prod.get('min_abs_ic', 0.025)}`、"
-        f"`abs(ICIR) >= {prod.get('min_icir', 0.35)}`（全窗口径）、"
-        f"FMB t ≥ {prod.get('min_fmb_t_stat', 2.0)}、多空 NW t ≥ {prod.get('min_ls_t_stat', 2.0)}、"
-        f"分位多头年化超额 ≥ {_pct(prod.get('min_quantile_excess_return', 0.03))}、"
-        f"分位夏普 ≥ {prod.get('min_quantile_sharpe', 0.3)}、"
-        f"单调性 ≥ {prod.get('min_monotonicity', 0.3)}、"
-        f"截尾 IC 衰减 ≤ {_pct(prod.get('max_winsorized_abs_ic_decay', 0.1))}、"
-        f"与正式库最大截面相关 `< {prod.get('max_abs_corr', 0.4)}`。"
-    )
-    engine = (
-        f"最终还需通过 engine_gate 完整回测（调仓频率 {gate.get('freq', 'weekly')}、"
-        f"动态 top {_pct(gate.get('selection_pct', 0.02))} 选股、超额年化 ≥ "
-        f"{_pct(gate.get('min_excess_annual', 0.02))}、夏普 ≥ {gate.get('min_sharpe', 0.3)}、"
-        f"回撤 ≤ {_pct(gate.get('max_drawdown', 0.4))}）。"
-    )
-    return (
-        "`submit_factor` 会先执行 pre-submit Reviewer，再在 train-start~val-end 全区间复核。"
-        + stage_one + stage_two + engine
-        + " 全部通过才写正式库并返回 `stored=true`。ICIR 按原始符号判断，不取绝对值。"
-    )
+    return DeliveryCriteria.from_spec(spec).to_prompt_text()
 
 
 def build_system_prompt(
