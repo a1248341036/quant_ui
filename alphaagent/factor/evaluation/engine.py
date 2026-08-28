@@ -92,6 +92,7 @@ class EvaluationEngine:
         factor_name: str = "expr",
         label_quantile_n: int = 0,
         include_detail_tables: bool = False,
+        include_charts: bool = True,
     ) -> dict[str, Any]:
         profile = self.profile(profile_id)
         panel, date_range = self._panel_for_profile(session, profile)
@@ -134,21 +135,27 @@ class EvaluationEngine:
         rule_results = evaluate_rules(metrics, profile.rules)
         dataset_id = hashlib.sha256(f"{session.ctx.panel_path}|{label_col}|{date_range['start']}|{date_range['end']}".encode("utf-8")).hexdigest()[:20]
 
-        # ── 生成详细可视化数据 ──
-        daily_ic_series = context.daily_ic()
-        daily_rank_ic_series = context.daily_rank_ic()
-        daily_ls = daily_long_short_series(
-            context.factor, context.label, n_deciles=10, min_stocks=30,
-        )
+        # ── 详细可视化数据（挖掘批量评估传 include_charts=False 跳过：
+        #    逐日 IC / 十分位多空 / 月度分解在 800 万行面板上每次评估耗数秒，
+        #    挖掘循环只消费 metrics；图表仅因子实验室需要）──
+        chart_data: dict[str, Any] | None = None
+        daily_ic_series = None
+        daily_rank_ic_series = None
+        if include_charts:
+            daily_ic_series = context.daily_ic()
+            daily_rank_ic_series = context.daily_rank_ic()
+            daily_ls = daily_long_short_series(
+                context.factor, context.label, n_deciles=10, min_stocks=30,
+            )
 
-        chart_data: dict[str, Any] = {
-            "daily_ic": _series_to_points(daily_ic_series),
-            "daily_rank_ic": _series_to_points(daily_rank_ic_series),
-            "daily_long_short": _series_to_points(daily_ls),
-            "cumulative_long_short": _cumulative_returns(daily_ls),
-            "monthly_ic": _monthly_breakdown(daily_ic_series),
-            "monthly_long_short": _monthly_breakdown(daily_ls),
-        }
+            chart_data = {
+                "daily_ic": _series_to_points(daily_ic_series),
+                "daily_rank_ic": _series_to_points(daily_rank_ic_series),
+                "daily_long_short": _series_to_points(daily_ls),
+                "cumulative_long_short": _cumulative_returns(daily_ls),
+                "monthly_ic": _monthly_breakdown(daily_ic_series),
+                "monthly_long_short": _monthly_breakdown(daily_ls),
+            }
 
         out: dict[str, Any] = {
             "ok": True,
@@ -179,6 +186,9 @@ class EvaluationEngine:
             out["label_quantile_n"] = int(label_quantile_n)
         if include_detail_tables:
             from alphaagent.factor.metrics import by_symbol_ts_ic, monthly_detail_rows
+            if daily_ic_series is None or daily_rank_ic_series is None:
+                daily_ic_series = context.daily_ic()
+                daily_rank_ic_series = context.daily_rank_ic()
             out["by_month"] = monthly_detail_rows(daily_ic_series, daily_rank_ic_series)
             out["by_symbol"] = by_symbol_ts_ic(context.factor, context.label)
 

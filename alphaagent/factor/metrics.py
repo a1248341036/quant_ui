@@ -46,6 +46,60 @@ def spearman_ic(factor: np.ndarray, label: np.ndarray, *, min_pairs: int = 10) -
     return pearson_ic(xr, yr, min_pairs=min_pairs)
 
 
+# 测试注入点：非 None 时替换/禁用快路径（设为返回 None 的函数即强制回落旧路径）
+_day_slices_override = None
+_fast_equal_freq_codes_override = None
+
+
+def _day_slices(
+    index: pd.Index, time_level: str = "datetime"
+) -> tuple[np.ndarray, np.ndarray] | None:
+    if _day_slices_override is not None:
+        return _day_slices_override(index, time_level)
+    """datetime 层逐日连续区间 ``(bounds, day_values)``；面板未按 datetime 排序时返回 None。
+
+    ``bounds`` 形如 ``[起0, 起1, ..., 末]``（长度 = 天数 + 1）。panel 按
+    (datetime, instrument) 排序时逐日切片是零拷贝连续视图，供各 metric 把
+    ``groupby + xs``（每天 O(n log n) 全表查找 × 数千天）替换为 O(1) 切片。
+    """
+    if not isinstance(index, pd.MultiIndex) or time_level not in index.names:
+        return None
+    dts = index.get_level_values(time_level)
+    n = len(dts)
+    if n == 0:
+        return None
+    dt_np = dts._values
+    if len(dt_np) > 1 and not (dt_np[1:] >= dt_np[:-1]).all():
+        return None
+    change = np.flatnonzero(dt_np[1:] != dt_np[:-1]) + 1
+    bounds = np.concatenate(([0], change, [n])).astype(np.int64)
+    return bounds, dt_np[bounds[:-1]]
+
+
+def _fast_equal_freq_codes(xf: np.ndarray, n_groups: int) -> np.ndarray | None:
+    if _fast_equal_freq_codes_override is not None:
+        return _fast_equal_freq_codes_override(xf, n_groups)
+    """等频分箱 codes（与 ``pd.qcut(x, K, labels=False, duplicates='drop')`` 的
+    右闭分箱一致）；分位边界无重复时走 O(n log n) 快路径，有重复（离散值扎堆，
+    需要丢弃边界）时返回 None 由调用方回落 ``pd.qcut``。"""
+    if xf.size < n_groups:
+        return None
+    q = np.linspace(0.0, 1.0, n_groups + 1)
+    edges = np.quantile(xf, q)
+    uniq = np.unique(edges)
+    if uniq.size != n_groups + 1:
+        return None
+    interior = uniq[1:-1]
+    # 右闭分箱 (b_i, b_{i+1}]（首 bin 含最小值）：bin = 严格小于 v 的内部边界数。
+    # 若有样本恰好落在边界上（浮点重合），pandas 的分位边界可能与 np.quantile
+    # 差最后一位 ulp 导致归属不可靠，此时返回 None 交回 pd.qcut 处理。
+    lower = np.searchsorted(interior, xf, side="left")
+    upper = np.searchsorted(interior, xf, side="right")
+    if not np.array_equal(lower, upper):
+        return None
+    return lower
+
+
 def cross_sectional_ic(
     factor: pd.Series,
     label: pd.Series,
@@ -58,6 +112,17 @@ def cross_sectional_ic(
         raise ValueError("cross_sectional_ic 需要 MultiIndex 面板 (datetime, instrument)")
     if time_level not in factor.index.names:
         raise ValueError(f"索引缺少 level={time_level!r}")
+
+    f_arr = factor.to_numpy(dtype=np.float64, copy=False)
+    l_arr = label.to_numpy(dtype=np.float64, copy=False)
+    slices = _day_slices(factor.index, time_level)
+    if slices is not None:
+        bounds, day_vals = slices
+        rows = [
+            pearson_ic(f_arr[st:en], l_arr[st:en], min_pairs=min_pairs)
+            for st, en in zip(bounds[:-1].tolist(), bounds[1:].tolist())
+        ]
+        return pd.Series(rows, index=pd.Index(day_vals, name=time_level), dtype=float)
 
     rows: list[float] = []
     idx: list[object] = []
@@ -86,6 +151,17 @@ def cross_sectional_rank_ic(
         raise ValueError("cross_sectional_rank_ic 需要 MultiIndex 面板 (datetime, instrument)")
     if time_level not in factor.index.names:
         raise ValueError(f"索引缺少 level={time_level!r}")
+
+    f_arr = factor.to_numpy(dtype=np.float64, copy=False)
+    l_arr = label.to_numpy(dtype=np.float64, copy=False)
+    slices = _day_slices(factor.index, time_level)
+    if slices is not None:
+        bounds, day_vals = slices
+        rows = [
+            spearman_ic(f_arr[st:en], l_arr[st:en], min_pairs=min_pairs)
+            for st, en in zip(bounds[:-1].tolist(), bounds[1:].tolist())
+        ]
+        return pd.Series(rows, index=pd.Index(day_vals, name=time_level), dtype=float)
 
     rows: list[float] = []
     idx: list[object] = []
@@ -116,6 +192,17 @@ def cross_sectional_lag1_pearson_autocorr_series(
         raise ValueError(f"索引缺少 level={time_level!r} 或 {instrument_level!r}")
 
     lag1 = factor.groupby(level=instrument_level, sort=False).shift(1)
+    f_arr = factor.to_numpy(dtype=np.float64, copy=False)
+    g_arr = lag1.to_numpy(dtype=np.float64, copy=False)
+    slices = _day_slices(factor.index, time_level)
+    if slices is not None:
+        bounds, day_vals = slices
+        rows = [
+            pearson_ic(f_arr[st:en], g_arr[st:en], min_pairs=min_pairs)
+            for st, en in zip(bounds[:-1].tolist(), bounds[1:].tolist())
+        ]
+        return pd.Series(rows, index=pd.Index(day_vals, name=time_level), dtype=float)
+
     rows: list[float] = []
     idx: list[object] = []
     for ts, cur in factor.groupby(level=time_level, sort=False):
@@ -279,9 +366,19 @@ def cross_sectional_size_neutralize_values(
     size = panel[market_cap_field].to_numpy(dtype=np.float64, copy=False)
     if log_scale:
         size = np.where(size > 0, np.log(size), np.nan)
-    dates = panel.index.get_level_values("datetime")
-    for _, positions in pd.Series(np.arange(len(out)), index=dates).groupby(level=0, sort=False):
-        idx = positions.to_numpy(dtype=np.int64, copy=False)
+    slices = _day_slices(panel.index)
+    if slices is not None:
+        bounds, _ = slices
+        day_indices = (
+            np.arange(st, en) for st, en in zip(bounds[:-1].tolist(), bounds[1:].tolist())
+        )
+    else:
+        dates = panel.index.get_level_values("datetime")
+        day_indices = (
+            positions.to_numpy(dtype=np.int64, copy=False)
+            for _, positions in pd.Series(np.arange(len(out)), index=dates).groupby(level=0, sort=False)
+        )
+    for idx in day_indices:
         y, x = out[idx], size[idx]
         valid = np.isfinite(y) & np.isfinite(x)
         if int(valid.sum()) < min_valid:
@@ -452,17 +549,23 @@ def _cross_section_decile_mean_labels(
     if xf.size < min_stocks or xf.size < n_deciles:
         return None
 
-    fac_s = pd.Series(xf)
-    try:
-        qbins = pd.qcut(fac_s, n_deciles, duplicates="drop")
-    except ValueError:
-        qbins = pd.qcut(fac_s.rank(method="first"), n_deciles, duplicates="drop")
-
-    n_q = int(qbins.cat.categories.size)
-    if n_q < 2:
-        return None
-
-    codes = qbins.cat.codes.to_numpy()
+    codes = _fast_equal_freq_codes(xf, n_deciles)
+    if codes is None:
+        # 分位边界有重复（离散值扎堆），走 pd.qcut 的 duplicates='drop' 语义
+        fac_s = pd.Series(xf)
+        try:
+            qbins = pd.qcut(fac_s, n_deciles, duplicates="drop")
+        except ValueError:
+            qbins = pd.qcut(fac_s.rank(method="first"), n_deciles, duplicates="drop")
+        n_q = int(qbins.cat.categories.size)
+        if n_q < 2:
+            return None
+        codes = qbins.cat.codes.to_numpy()
+        n_q = codes.max() + 1 if codes.size and codes.max() >= 0 else 0
+        if n_q < 2:
+            return None
+    else:
+        n_q = n_deciles
     means: list[float] = []
     for i in range(n_q):
         bucket = codes == i
@@ -1012,20 +1115,40 @@ def daily_quantile_group_returns(
     返回 DataFrame: index=datetime, columns=group(1..N), values=该组当日等权 label 均值。
     group 1 = 因子值最低组, group N = 因子值最高组。
     """
+    f_arr_all = factor.to_numpy(dtype=np.float64, copy=False)
+    l_arr_all = label.to_numpy(dtype=np.float64, copy=False)
     rows: list[dict[str, Any]] = []
-    for ts, f_sub in factor.groupby(level=time_level, sort=False):
-        y_sub = label.xs(ts, level=time_level)
-        means = _cross_section_decile_mean_labels(
-            f_sub.to_numpy(dtype=np.float64, copy=False),
-            y_sub.to_numpy(dtype=np.float64, copy=False),
-            n_deciles=n_groups,
-            min_stocks=min_stocks,
-        )
-        if means is not None:
-            row: dict[str, Any] = {time_level: ts}
-            for i, m in enumerate(means):
-                row[i + 1] = m
-            rows.append(row)
+    slices = _day_slices(factor.index, time_level)
+    if slices is not None:
+        bounds, day_vals = slices
+        day_iter = list(zip(day_vals.tolist(), bounds[:-1].tolist(), bounds[1:].tolist()))
+    else:
+        day_iter = None
+    if day_iter is not None:
+        for ts, st, en in day_iter:
+            means = _cross_section_decile_mean_labels(
+                f_arr_all[st:en], l_arr_all[st:en],
+                n_deciles=n_groups, min_stocks=min_stocks,
+            )
+            if means is not None:
+                row = {time_level: ts}
+                for i, m in enumerate(means):
+                    row[i + 1] = m
+                rows.append(row)
+    else:
+        for ts, f_sub in factor.groupby(level=time_level, sort=False):
+            y_sub = label.xs(ts, level=time_level)
+            means = _cross_section_decile_mean_labels(
+                f_sub.to_numpy(dtype=np.float64, copy=False),
+                y_sub.to_numpy(dtype=np.float64, copy=False),
+                n_deciles=n_groups,
+                min_stocks=min_stocks,
+            )
+            if means is not None:
+                row = {time_level: ts}
+                for i, m in enumerate(means):
+                    row[i + 1] = m
+                rows.append(row)
     if not rows:
         return pd.DataFrame()
     df = pd.DataFrame(rows).set_index(time_level)
@@ -1086,20 +1209,49 @@ def quantile_portfolio_metrics(
     turnover_sum = 0.0
     n_days = 0
 
-    for ts, f_sub in factor.groupby(level=time_level, sort=False):
-        y_sub = label.xs(ts, level=time_level)
-        xf = f_sub.to_numpy(dtype=np.float64, copy=False)
-        yl = y_sub.to_numpy(dtype=np.float64, copy=False)
-        inst = np.asarray(f_sub.index.get_level_values("instrument"))
+    f_arr_all = factor.to_numpy(dtype=np.float64, copy=False)
+    l_arr_all = label.to_numpy(dtype=np.float64, copy=False)
+    inst_all = np.asarray(factor.index.get_level_values("instrument"))
+    slices = _day_slices(factor.index, time_level)
+
+    def _quantile_portfolio_day(xf, yl, inst):
         mask = np.isfinite(xf) & np.isfinite(yl)
         if int(mask.sum()) < max(min_stocks, n_groups):
-            continue
+            return None
         fac, ret, names = xf[mask], yl[mask], inst[mask]
-        try:
-            bins = pd.qcut(fac, n_groups, labels=False, duplicates="drop")
-        except ValueError:
-            bins = pd.qcut(pd.Series(fac).rank(method="first"), n_groups, labels=False, duplicates="drop")
+        bins = _fast_equal_freq_codes(fac, n_groups)
+        if bins is None:
+            try:
+                bins = pd.qcut(fac, n_groups, labels=False, duplicates="drop")
+            except ValueError:
+                bins = pd.qcut(pd.Series(fac).rank(method="first"), n_groups, labels=False, duplicates="drop")
         b = np.asarray(bins, dtype=float)
+        return fac, ret, names, b
+
+    if slices is not None:
+        bounds, day_vals = slices
+        day_iter = list(zip(day_vals.tolist(), bounds[:-1].tolist(), bounds[1:].tolist()))
+    else:
+        day_iter = None
+    if day_iter is not None:
+        grouped_days = (
+            (ts, f_arr_all[st:en], l_arr_all[st:en], inst_all[st:en])
+            for ts, st, en in day_iter
+        )
+    else:
+        grouped_days = (
+            (ts,
+             f_sub.to_numpy(dtype=np.float64, copy=False),
+             label.xs(ts, level=time_level).to_numpy(dtype=np.float64, copy=False),
+             np.asarray(f_sub.index.get_level_values("instrument")))
+            for ts, f_sub in factor.groupby(level=time_level, sort=False)
+        )
+
+    for ts, xf, yl, inst in grouped_days:
+        prepared = _quantile_portfolio_day(xf, yl, inst)
+        if prepared is None:
+            continue
+        fac, ret, names, b = prepared
         if not np.isfinite(b).any():
             continue
         k = int(np.nanmax(b)) + 1

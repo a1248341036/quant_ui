@@ -177,3 +177,33 @@ def test_size_neutral_decay_diagnostic_present() -> None:
     # 主口径 metrics 里的规则判定不依赖该字段
     assert all("size_neutral" not in str(rule.get("metric", ""))
                for rule in raw["rule_results"])
+
+
+def test_evaluate_include_charts_false_skips_visualization_only() -> None:
+    """include_charts=False（挖掘批量评估路径）跳过图表数据，metrics 保持一致。"""
+    session = _session()
+    engine = EvaluationEngine(default_evaluation_profiles())
+    expr = "$adj_close"
+
+    with_charts = engine.evaluate(
+        session, profile_id="train_screen", multi_line_expr=expr,
+        include_charts=True,
+    )
+    without_charts = engine.evaluate(
+        session, profile_id="train_screen", multi_line_expr=expr,
+        include_charts=False,
+    )
+
+    assert with_charts["ok"] and without_charts["ok"]
+    assert without_charts["chart_data"] is None
+    assert isinstance(with_charts["chart_data"], dict) and with_charts["chart_data"]
+    def _metrics_eq(a, b):
+        if isinstance(a, dict) and isinstance(b, dict):
+            return a.keys() == b.keys() and all(_metrics_eq(a[k], b[k]) for k in a)
+        if isinstance(a, float) and isinstance(b, float):
+            return a == b or (np.isnan(a) and np.isnan(b))
+        return a == b
+
+    assert _metrics_eq(without_charts["metrics"], with_charts["metrics"])
+    assert without_charts["passed"] == with_charts["passed"]
+    assert without_charts["timing_ms"]["total_ms"] <= with_charts["timing_ms"]["total_ms"] + 50.0

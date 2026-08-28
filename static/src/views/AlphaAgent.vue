@@ -1082,6 +1082,9 @@ export default {
     }
   },
   computed: {
+    thresholdDraft() {
+      return this.agent.thresholdDraft
+    },
     menuRun() {
       return this.agent.runs.find(run => run.run_id === this.agent.menuRunId) || null
     },

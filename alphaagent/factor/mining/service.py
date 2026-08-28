@@ -120,6 +120,8 @@ class StockEvalService:
         # 收敛：train/val 评估与因子实验室共用同一 EvaluationEngine + profile
         # （train_screen / validation），保持同一预处理与指标管线。
         profile_id = "train_screen" if split == "train" else "validation"
+        # 挖掘批量评估跳过图表生成（逐日 IC/多空/月度分解纯为前端可视化服务，
+        # 在 800 万行面板上每次评估额外耗数秒；图表仅因子实验室 eval_profile 需要）
         raw = self.evaluation_engine.evaluate(
             session,
             profile_id=profile_id,
@@ -127,6 +129,7 @@ class StockEvalService:
             factor_name=factor_name,
             label_quantile_n=label_quantile_n,
             include_detail_tables=include_detail_tables,
+            include_charts=False,
         )
         if not raw.get("ok"):
             return raw

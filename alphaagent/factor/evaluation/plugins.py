@@ -229,6 +229,17 @@ def monthly_robustness(context: EvaluationContext, params: dict[str, Any]) -> di
     return monthly_ic_robustness(context.daily_ic())
 
 
+def _shared_decile_means(context: EvaluationContext, n_deciles: int, min_stocks: int) -> dict[object, list[float]]:
+    """同参数的逐日十分组 label 均值在同一评估内共享（mls_fmb 与 long_short_portfolio 各算一次太贵）。"""
+    key = f"decile_means:{n_deciles}:{min_stocks}"
+    if key not in context.cache:
+        from alphaagent.factor.metrics import _compute_daily_decile_mean_labels
+        context.cache[key] = _compute_daily_decile_mean_labels(
+            context.factor, context.label, n_deciles=n_deciles, min_stocks=min_stocks,
+        )
+    return context.cache[key]
+
+
 @metric("mls_fmb")
 def mls_fmb(context: EvaluationContext, params: dict[str, Any]) -> dict[str, Any]:
     return mls_fmb_summary(
@@ -265,7 +276,10 @@ def long_short_portfolio(context: EvaluationContext, params: dict[str, Any]) -> 
     groups = int(params.get("groups", 10))
     cost_bps = float(params.get("cost_bps", 0))
     min_stocks = int(params.get("min_stocks", 30))
-    gross = daily_long_short_series(context.factor, context.label, n_deciles=groups, min_stocks=min_stocks)
+    gross = daily_long_short_series(
+        context.factor, context.label, n_deciles=groups, min_stocks=min_stocks,
+        decile_means=_shared_decile_means(context, groups, min_stocks),
+    )
     gross_valid = gross[np.isfinite(gross.to_numpy(dtype=float, copy=False))]
     # This is explicitly a full daily-rebalance cost assumption, not a turnover model.
     net = gross_valid - (2.0 * cost_bps / 10_000.0)
