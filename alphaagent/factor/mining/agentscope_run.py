@@ -259,6 +259,30 @@ async def run_factor_mining_agentscope(
     except Exception as exc:
         _emit("jit_warmup_failed", {"turn": 0, "error": str(exc)})
 
+    # ── 管道自检：Agent 开工前验证生产库/索引契约/evaluate/submit 全链路，
+    #    快速失败而非让 LLM 中途反复重试同一基础设施错误（历史 run 一半时间
+    #    浪费在 factorlib_not_initialized / MultiIndex.rows 的重复重试上）。──
+    if submit_service is not None:
+        from alphaagent.factor.mining.preflight import PreflightError, preflight_summary, run_preflight
+        _emit("preflight_start", {"turn": 0})
+        try:
+            preflight = run_preflight(
+                service=service,
+                session_id=session_resp.session_id,
+                submit_service=submit_service,
+            )
+            _emit("preflight_done", {"turn": 0, "checks": preflight.checks, "duration_s": preflight.duration_s})
+            if printer is not None:
+                printer.info(preflight_summary(preflight))
+        except PreflightError as exc:
+            _emit("preflight_failed", {"turn": 0, "error": str(exc)})
+            if printer is not None:
+                printer.error(f"启动自检失败，终止挖掘：\n{exc}")
+            raise
+        except Exception as exc:  # noqa: BLE001
+            _emit("preflight_failed", {"turn": 0, "error": f"{type(exc).__name__}: {exc}"})
+            raise
+
     started_at = _now()
     _emit("session_start", {
         "schema_version": 2,

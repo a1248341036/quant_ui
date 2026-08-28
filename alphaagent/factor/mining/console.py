@@ -155,6 +155,14 @@ class ConsolePrinter:
         self._tag("1;32", "挖掘启动", f"model={model}  算子={n_operators}")
         self._blank()
 
+    def info(self, text: str) -> None:
+        """通用信息输出（自检/预热等启动阶段）。"""
+        self._print(text)
+
+    def error(self, text: str) -> None:
+        """错误输出（自检失败等启动阶段）。"""
+        self._tag("1;31", "错误", text)
+
     def turn(self, turn: int) -> None:
         self._blank()
         self._tag("1;36", f"轮次 {turn}")
