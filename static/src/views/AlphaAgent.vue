@@ -614,6 +614,7 @@
           </div>
           <div class="threshold-modal-body">
             <p class="threshold-hint">保存后写入该模式门槛文件（增量覆盖），挖掘 / 晋升 / CLI 全链路生效。恢复默认会删除自定义覆盖。</p>
+            <p v-if="agent.specLoading" class="threshold-loading">正在加载门槛数据…</p>
 
             <section class="threshold-group">
               <h4>① 训练集评估门槛（train_screen）</h4>
@@ -992,6 +993,7 @@ export default {
         specError: '',
         specSavedAt: null,
         researchSpecSaving: false,
+        specLoading: false,
         form: {
           train_start: '2018-01-01',
           train_end: '2022-12-31',
@@ -1370,6 +1372,7 @@ export default {
         }
       } catch (e) {
         this.agent.error = '读取默认 ResearchSpec 失败: ' + e.message
+        throw e
       }
     },
     async switchResearchMode(mode) {
@@ -1418,11 +1421,28 @@ export default {
           }
         } catch (e) { /* 忽略无效 JSON，保留默认 */ }
       }
+      // 防御：即使 spec 加载失败也保证嵌套结构存在，避免模板在 undefined 上抛错导致弹窗空白
+      draft.evaluation_policy = draft.evaluation_policy || {}
+      draft.delivery_policy = draft.delivery_policy || {}
+      draft.delivery_policy.candidate = draft.delivery_policy.candidate || {}
+      draft.delivery_policy.production = draft.delivery_policy.production || {}
+      draft.delivery_policy.production.engine_gate = draft.delivery_policy.production.engine_gate || {}
       this.agent.thresholdDraft = draft
     },
-    openThresholdModal() {
+    async openThresholdModal() {
+      // 若该模式 spec 未加载（如 mount 时后端未就绪），先补拉再开弹窗；
+      // 失败时弹窗内显示错误而非空白表单。
       if (!this.specDefaultsByMode[this.agent.form.research_mode]) {
-        this.loadDefaultResearchSpec(this.agent.form.research_mode).then(() => this.syncThresholdDraft())
+        this.agent.specLoading = true
+        try {
+          await this.loadDefaultResearchSpec(this.agent.form.research_mode)
+          this.syncThresholdDraft()
+        } catch (e) {
+          this.agent.specError = '读取门槛数据失败: ' + (e?.message || e)
+          this.syncThresholdDraft()
+        } finally {
+          this.agent.specLoading = false
+        }
       } else {
         this.syncThresholdDraft()
       }
@@ -2737,7 +2757,7 @@ export default {
     this.loadAgentRuns()
     this.loadResearchMemory()
     this.loadResearchModes()
-    this.loadDefaultResearchSpec()
+    this.loadDefaultResearchSpec().catch(() => {})
     store.loadLabHistory()
     // 从"历史"tab 打开一条因子评估 → 载入到因子实验室（界面与评估时一致）
     if (store.labLoadPayload) {
@@ -2973,6 +2993,7 @@ export default {
 .threshold-modal-close:hover { background:rgb(255 255 255 / .09); color:var(--text); }
 .threshold-modal-body { padding:12px 14px; overflow-y:auto; }
 .threshold-hint { color:var(--muted); font-size:11px; margin:0 0 10px; }
+.threshold-loading { color:var(--accent); font-size:11px; margin:0 0 10px; }
 .threshold-group { margin-bottom:12px; border:1px solid var(--line); border-radius:8px; padding:10px 12px; background:rgb(255 255 255 / .02); }
 .threshold-group h4 { margin:0 0 8px; color:var(--text); font-size:11px; font-weight:600; }
 .threshold-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:8px 14px; }
