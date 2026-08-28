@@ -15,13 +15,16 @@
   保证同一历史面板跨会话稳定命中，数据变更时自动失效。
 - **值**：只存对齐面板行序的 float32 数组（不含 MultiIndex），命中时用当前
   ``panel.index`` 重建 Series —— 面板指纹一致 ⇒ 行序一致，重建无损。
-- **内存**：进程内 OrderedDict LRU（``_FV_MEM_MAX_ENTRIES``），避免热条目重复读盘。
+- **内存 LRU（跨会话共享）**：进程级单一 ``_SHARED_MEM`` OrderedDict + 共享锁，
+  所有 ``FactorValueCache`` 实例（每个 StockEvalSession 一个）读写同一份热缓存。
+  内容寻址 + 只存值数组 ⇒ 跨会话安全（无对象引用/地址复用问题），
+  多开评估会话时内存不随会话数线性膨胀（上限为进程级总内存上限）。
 - **磁盘**：``artifacts/factor_value_cache/`` 下 ``.npy`` 值 + ``.json`` 元数据。
   - 空间控制：总字节上限 ``_FV_MAX_BYTES``（默认 2GB）+ 文件数上限
     ``_FV_MAX_FILES``（默认 1500），可经环境变量覆盖。
   - 淘汰机制：写入后若超上限，按 ``last_access`` 淘汰最久未用条目（LRU），
-    锁死长期磁盘占用；孤儿/损坏文件在扫描时清理。
-- **线程安全**：单进程内用锁保护内存与 manifest；磁盘写入原子化（tmp+os.replace），
+    锁死长期磁盘占用；孤儿/损坏文件在启动对账时清理。
+- **线程安全**：共享锁保护内存与各实例 manifest；磁盘写入原子化（tmp+os.replace），
   多进程并发时对同 key 内容一致、后写覆盖，淘汰为尽力而为。
 """
 
@@ -53,7 +56,9 @@ _FV_SCHEMA_VERSION = 1
 _FV_MAX_BYTES = int(os.environ.get("ALPHA_FACTOR_CACHE_MAX_BYTES", str(2 * 1024**3)))
 # 磁盘文件数上限
 _FV_MAX_FILES = int(os.environ.get("ALPHA_FACTOR_CACHE_MAX_FILES", "1500"))
-# 进程内 LRU 条目上限（每条约 n_rows×4B；3.8M 行 ≈ 15MB）
+# 进程内 LRU 条目上限（每条约 n_rows×4B；3.8M 行 ≈ 15MB）。
+# 内存 LRU 为**跨会话/跨实例共享**（模块级），上限即进程级总内存上限，
+# 多开评估会话不会随会话数线性膨胀（磁盘缓存本就共享）。
 _FV_MEM_MAX_ENTRIES = 16
 # 面板指纹内容抽样：最多抽样 ~2048 行参与哈希
 _FV_FP_SAMPLE_ROWS = 2048
@@ -61,6 +66,13 @@ _FV_FP_SAMPLE_ROWS = 2048
 _MANIFEST_NAME = "manifest.json"
 _NPY_SUFFIX = ".npy"
 _META_SUFFIX = ".json"
+
+# 共享内存 LRU：所有 FactorValueCache 实例读写同一份热缓存（跨会话复用）。
+# key = _cache_key（expr + panel 内容指纹 + schema），内容寻址 ⇒ 跨会话安全；
+# 值只存 float32 值数组，不持有 panel/Series 引用 ⇒ 无对象生命周期/地址复用风险。
+_SHARED_MEM: OrderedDict[str, tuple[np.ndarray, float]] = OrderedDict()
+_SHARED_MEM_LOCK = threading.RLock()
+_SHARED_MEM_MAX_ENTRIES = int(os.environ.get("ALPHA_FACTOR_CACHE_MEM_MAX_ENTRIES", str(_FV_MEM_MAX_ENTRIES)))
 
 
 def _env_bytes(name: str, default: int) -> int:
@@ -130,10 +142,13 @@ class FactorValueCache:
         self.cache_dir = Path(cache_dir) if cache_dir is not None else _FV_DIR
         self.max_bytes = max_bytes if max_bytes is not None else _FV_MAX_BYTES
         self.max_files = max_files if max_files is not None else _FV_MAX_FILES
-        self.mem_max_entries = mem_max_entries if mem_max_entries is not None else _FV_MEM_MAX_ENTRIES
+        # 内存 LRU 为进程级共享：所有实例读写同一份热缓存（跨会话复用），
+        # 用同一把锁保护；条目上限取全局值（共享 LRU 是单一全局资源，
+        # 忽略实例参数，避免多实例对同一资源各设各的上限互相打架）。
+        self.mem_max_entries = _SHARED_MEM_MAX_ENTRIES
         self.enabled = enabled
-        self._lock = threading.RLock()
-        self._mem: OrderedDict[str, tuple[np.ndarray, float]] = OrderedDict()
+        self._lock = _SHARED_MEM_LOCK
+        self._mem: OrderedDict[str, tuple[np.ndarray, float]] = _SHARED_MEM
         self._manifest: dict[str, dict[str, Any]] = {}
         self._fp_memo: dict[int, str] = {}
         self._last_manifest_flush = 0.0
