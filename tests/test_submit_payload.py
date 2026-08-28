@@ -74,7 +74,7 @@ def submit_service(tmp_path: Path, monkeypatch) -> FactorSubmitService:
         cross_sectional_neighbor_report=lambda *aa, **kk: None))
     monkeypatch.setattr(
         submit_module, "materialize_factor",
-        lambda expr, panel: SimpleNamespace(values=np.ones(len(panel))),
+        lambda expr, panel, cache=None: SimpleNamespace(values=np.ones(len(panel))),
     )
     monkeypatch.setattr(
         submit_module, "compute_ingest_metrics",

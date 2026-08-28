@@ -90,7 +90,7 @@ def test_positive_entries_prioritized_and_segmented(tmp_path: Path) -> None:
         expr="TS_MEAN($ret, 10)", ic=0.005, icir=0.1, split="train",
     ))
 
-    ctx = store.context_for("动量因子 momentum", limit=10, include_expression=False)
+    ctx = store.context_for("动量因子 momentum", limit=10, include_expression=False, enable_factor_retrieval=True)
 
     # 肯定段在否定段之前
     pos_idx = ctx.find("已验证")
@@ -116,7 +116,7 @@ def test_positive_entry_surfaces_above_equally_relevant_negative(tmp_path: Path)
         expr="DIVIDE($volume, TS_MEAN($volume, 10))", ic=0.001, icir=0.05, split="train",
     ))
 
-    ctx = store.context_for("成交量比率 volume", limit=5, include_expression=False)
+    ctx = store.context_for("成交量比率 volume", limit=5, include_expression=False, enable_factor_retrieval=True)
 
     # validated 条目位置应在 weak 之前
     validated_pos = ctx.find("[validated]")
@@ -134,8 +134,8 @@ def test_rejected_entries_still_appear(tmp_path: Path) -> None:
         expr="TS_MEAN($ret, 5)", ic=0.001, icir=0.01, split="train",
     ))
 
-    ctx = store.context_for("动量", limit=5, include_rejected=True, include_expression=False)
+    ctx = store.context_for("动量", limit=5, include_rejected=True, include_expression=False, enable_factor_retrieval=True)
     assert "[weak]" in ctx, "否定条目应出现在输出中"
 
-    ctx_filtered = store.context_for("动量", limit=5, include_rejected=False, include_expression=False)
+    ctx_filtered = store.context_for("动量", limit=5, include_rejected=False, include_expression=False, enable_factor_retrieval=True)
     assert "[weak]" not in ctx_filtered, "include_rejected=False 时否定条目不应出现"

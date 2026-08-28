@@ -3,7 +3,7 @@ __pycache__/
 .venv/
 venv/
 .env
-data/
+/data/
 *.zip
 results/
 labs/
@@ -21,6 +21,7 @@ mlruns/
 
 # Temporary / agent working files
 .temp/
+.zcode/
 
 # Node.js
 static/node_modules/
