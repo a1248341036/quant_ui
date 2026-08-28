@@ -2318,6 +2318,17 @@ def rolling_beta(df1_group: pd.DataFrame, df2_vec: np.ndarray, p: int) -> pd.Ser
     y = df1_group.iloc[:, 0]
     x = df2_vec[:p]
     n = len(y)
+    # Numba 滚动 OLS（固定 x 向量），消除逐窗 lstsq
+    try:
+        out = _accel.roll_ols(
+            y.to_numpy(dtype=float, copy=False),
+            np.asarray(x, dtype=float),
+            p,
+            residual=False,
+        )
+        return pd.Series(out, index=df1_group.index, dtype=np.float32)
+    except Exception:
+        pass
     out = np.full(n, np.nan)
     for i in range(p - 1, n):
         yy = y.iloc[i - p + 1 : i + 1].to_numpy()
@@ -2379,6 +2390,17 @@ def calculate_residuals(y: np.ndarray, x: np.ndarray) -> float:
 def rolling_residuals(df1_group: pd.DataFrame, x: np.ndarray, p: int) -> pd.Series:
     y = df1_group.iloc[:, 0]
     n = len(y)
+    # Numba 滚动 OLS 末点残差（固定 x 向量）
+    try:
+        out = _accel.roll_ols(
+            y.to_numpy(dtype=float, copy=False),
+            np.asarray(x, dtype=float),
+            p,
+            residual=True,
+        )
+        return pd.Series(out, index=df1_group.index, dtype=np.float32)
+    except Exception:
+        pass
     out = np.full(n, np.nan)
     for i in range(p - 1, n):
         yy = y.iloc[i - p + 1 : i + 1].to_numpy()

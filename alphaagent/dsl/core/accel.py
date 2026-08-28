@@ -3047,3 +3047,83 @@ def roll_crowd_fixed(
         1 if use_attr else 0,
         1 if use_weight else 0,
     )
+
+
+# =============================================================================
+# 滚动 OLS（固定 x 向量）：SLOPE / RESI / REGBETA / REGRESI 的加速内核
+# =============================================================================
+
+
+@njit(cache=True)
+def _roll_ols_numba(
+    y: np.ndarray,
+    x: np.ndarray,
+    window: int,
+    want_residual: int,
+) -> np.ndarray:
+    """固定设计向量 x 的滚动 OLS 斜率或末点残差。
+
+    与 ``np.linalg.lstsq`` 逐窗最小二乘数值一致（线性回归解析解）：
+      β = (p·Σxy - Σx·Σy) / (p·Σx² - (Σx)²)，α = (Σy - β·Σx)/p
+      residual = y_last - (α + β·x_last)
+    窗口内有效样本 < 2 或分母为 0 时输出 NaN（与 calculate_beta/calculate_residuals 一致）。
+    ``x`` 长度须 ≥ window；实际取前 window 个。
+    每窗口 O(p) 向量化重算（p=5~20 时 O(n·p)，numba 秒级，远快于逐窗 lstsq）。
+    """
+    n = y.shape[0]
+    out = np.full(n, np.nan, dtype=np.float32)
+    p = int(window)
+    if p < 1 or x.shape[0] < p or n < p:
+        return out
+
+    for i in range(p - 1, n):
+        lo = i + 1 - p
+        # 只对 y 有效位置累计 x/y 统计（与原 lstsq 过滤有效样本后回归一致）
+        sx = 0.0
+        sxx = 0.0
+        sy = 0.0
+        sxy = 0.0
+        valid = 0
+        last_y = np.nan
+        last_x = np.nan
+        for j in range(p):
+            yj = y[lo + j]
+            if yj == yj:
+                xj = x[j]
+                sx += xj
+                sxx += xj * xj
+                sy += yj
+                sxy += xj * yj
+                valid += 1
+                last_y = yj
+                last_x = xj
+        if valid < 2:
+            continue
+        denom = valid * sxx - sx * sx
+        if denom == 0.0 or not (denom == denom):
+            continue
+        beta = (valid * sxy - sx * sy) / denom
+        if want_residual == 1:
+            alpha = (sy - beta * sx) / valid
+            # 末点残差：窗口内最后一个有效 y 相对其 x 的预测误差
+            # （与 calculate_residuals 一致：yv[-1] - pred(xv[-1])）
+            out[i] = last_y - (alpha + beta * last_x)
+        else:
+            out[i] = beta
+    return out
+
+
+def roll_ols(
+    y: np.ndarray,
+    x: np.ndarray,
+    window: int,
+    *,
+    residual: bool = False,
+) -> np.ndarray:
+    """固定 x 滚动 OLS 斜率（residual=False）或末点残差（residual=True）。"""
+    return _roll_ols_numba(
+        np.asarray(y, dtype=np.float64),
+        np.asarray(x, dtype=np.float64),
+        int(window),
+        1 if residual else 0,
+    )
