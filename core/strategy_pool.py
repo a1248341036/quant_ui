@@ -48,11 +48,18 @@ ALTER TABLE strategy_pool ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
 
 
 def _ensure_schema() -> None:
-    if pg.configured():
-        try:
-            pg.exec_sql(_ensure_schema_sql)
-        except Exception:
-            pass
+    if not pg.configured():
+        return
+    try:
+        pg.exec_sql(_ensure_schema_sql)
+    except Exception:
+        pass
+    # sqlite 方言兜底：_ensure_schema_sql 是 PG 方言（BIGSERIAL/JSONB/
+    # ADD COLUMN IF NOT EXISTS），在 sqlite 上静默失败会让全新环境缺表
+    try:
+        pg.create_schema()
+    except Exception:
+        pass
 
 
 def _trashed_names() -> set[str]:
