@@ -110,6 +110,7 @@ class EvaluationEngine:
             else:
                 raw = eval_factor(multi_line_expr, panel)
             timing["dsl_eval_ms"] = (time.perf_counter() - point) * 1000
+            operator_timing = getattr(raw, "attrs", {}).get("operator_timing") if isinstance(raw, pd.Series) else None
             if not isinstance(raw, pd.Series):
                 raise TypeError(f"factor_output_must_be_series:{type(raw)!r}")
             point = time.perf_counter()
@@ -163,6 +164,7 @@ class EvaluationEngine:
             "passed": all(row["passed"] for row in rule_results) if rule_results else True,
             "transforms_applied": context.transforms_applied,
             "timing_ms": timing,
+            "operator_timing": operator_timing,
             "chart_data": chart_data,
         }
 

@@ -441,6 +441,13 @@ def eval_multi_line_factor(
     if extra_namespace:
         base_ns.update(dict(extra_namespace))
 
+    # 算子级计时监控（零侵入）：对命名空间里的大写算子包计时代理，
+    # 无论内置/扩展/自定义命名空间都覆盖；监控开启时 collect 由 eval_factor 触发。
+    from alphaagent.dsl.core import monitor
+
+    if monitor.is_active():
+        base_ns = monitor.wrap_operator_namespace(base_ns)
+
     if not use_multi:
         return _eval_single_frequency(
             lines=lines,
@@ -673,12 +680,31 @@ def eval_factor(
     panel: pd.DataFrame,
     **kwargs: Any,
 ) -> pd.Series:
-    """对表达式求值，返回与 panel 对齐的单列 Series（股票默认日频）。"""
+    """对表达式求值，返回与 panel 对齐的单列 Series（股票默认日频）。
+
+    自动采集算子级耗时：结果 Series 的 ``attrs["operator_timing"]`` 携带本次
+    各算子聚合耗时，并写入 ``artifacts/dsl_operator_profiling.jsonl``。
+    可通过 ``operator_monitor=False`` 关闭监控。
+    """
+    from alphaagent.dsl.core import monitor
+
     kwargs.setdefault("base_interval", DEFAULT_BASE_INTERVAL)
-    out = eval_multi_line_factor(expr, panel, **kwargs)
+    do_monitor = kwargs.pop("operator_monitor", True)
+    ctx = monitor.begin() if do_monitor else None
+    try:
+        out = eval_multi_line_factor(expr, panel, **kwargs)
+    finally:
+        report = monitor.end(ctx) if ctx is not None else None
+    if report:
+        monitor.append_record(report, extra={"expr_len": len(expr)})
     if isinstance(out, pd.DataFrame):
-        return out.iloc[:, 0]
+        out = out.iloc[:, 0]
     if isinstance(out, pd.Series):
+        if report is not None:
+            try:
+                out.attrs["operator_timing"] = report
+            except Exception:  # noqa: BLE001
+                pass
         return out
     raise TypeError(f"因子输出须为 DataFrame/Series，得到 {type(out)!r}")
 

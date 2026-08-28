@@ -624,3 +624,28 @@ async def tail_logs(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  DSL 算子耗时监控
+# ══════════════════════════════════════════════════════════════════════
+
+@router.get("/dsl-monitor")
+def dsl_operator_monitor(
+    top_k: int = 20,
+    since_hours: float | None = None,
+) -> dict[str, Any]:
+    """读取累计算子耗时监控（跨评估聚合 top 慢算子）。
+
+    ``since_hours``：只统计最近 N 小时（None = 全部历史）。
+    数据来源：``artifacts/dsl_operator_profiling.jsonl``（每次 DSL 评估自动追加）。
+    """
+    from alphaagent.dsl.core import monitor
+
+    since_ts = None
+    if since_hours is not None and since_hours > 0:
+        import time as _t
+
+        since_ts = _t.time() - since_hours * 3600.0
+    agg = monitor.read_accumulated(top_k=top_k, since_ts=since_ts)
+    return {"ok": True, "source": "artifacts/dsl_operator_profiling.jsonl", **agg}
