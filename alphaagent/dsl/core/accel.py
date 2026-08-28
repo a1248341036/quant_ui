@@ -108,6 +108,11 @@ def _cxx_parallel(parallel: Optional[bool]) -> bool:
     return True if parallel is None else bool(parallel)
 
 
+def _use_boundaries(bounds) -> bool:
+    """是否启用「按品种边界并行」路径：调用方传入非空 bounds 且 Numba 可用。"""
+    return bounds is not None and _HAS_NUMBA and bounds.ndim == 1 and bounds.size >= 2
+
+
 def _cxx_roll_fixed_max_op() -> int:
     """一次性探测当前编译的 C++ 内核 ``roll_fixed`` 支持到哪个 op，
     避免旧扩展与新 Python 层（op=9 kurt）版本错位。"""
@@ -410,6 +415,16 @@ def roll_fixed_boundaries(
 # =============================================================================
 
 
+@njit(cache=True)
+def _shift_fixed_numba(vals: np.ndarray, p: int) -> np.ndarray:
+    """与 ``pandas.Series.shift(p)`` 对齐的 1-D 滞后；前 p 根为 NaN。"""
+    n = vals.shape[0]
+    out = np.full(n, np.nan, dtype=np.float32)
+    for i in range(p, n):
+        out[i] = vals[i - p]
+    return out
+
+
 def shift_fixed(
     vals: np.ndarray,
     periods: int,
@@ -424,6 +439,8 @@ def shift_fixed(
         return np.asarray(
             _fam_accel.shift_fixed(vals, p, _cxx_parallel(parallel)), dtype=np.float32
         )
+    if _HAS_NUMBA:
+        return _shift_fixed_numba(vals, p)
     n = vals.shape[0]
     out = np.empty(n, dtype=np.float32)
     for i in range(n):
@@ -972,11 +989,14 @@ def roll_cov_fixed(
     *,
     ddof: int = 1,
     parallel: Optional[bool] = None,
+    bounds: Optional[np.ndarray] = None,
 ) -> np.ndarray:
-    """固定窗滚动协方差，自动选择 C++ 或 Numba 后端。"""
+    """固定窗滚动协方差，自动选择 C++ 或 Numba 后端。``bounds`` 传入时按品种并行。"""
     use_cxx = _use_cxx_backend()
     if use_cxx:
         return np.asarray(_fam_accel.roll_cov_fixed(xvals, yvals, window, ddof, _cxx_parallel(parallel)), dtype=np.float32)
+    if _use_boundaries(bounds):
+        return _roll_cov_bounds_numba(xvals, yvals, window, ddof, bounds)
     return _roll_cov_numba(xvals, yvals, window, ddof)
 
 
@@ -986,11 +1006,14 @@ def roll_corr_fixed(
     window: int,
     *,
     parallel: Optional[bool] = None,
+    bounds: Optional[np.ndarray] = None,
 ) -> np.ndarray:
-    """固定窗滚动 Pearson 相关系数，自动选择 C++ 或 Numba 后端。"""
+    """固定窗滚动 Pearson 相关系数，自动选择 C++ 或 Numba 后端。``bounds`` 传入时按品种并行。"""
     use_cxx = _use_cxx_backend()
     if use_cxx:
         return np.asarray(_fam_accel.roll_corr_fixed(xvals, yvals, window, _cxx_parallel(parallel)), dtype=np.float32)
+    if _use_boundaries(bounds):
+        return _roll_corr_bounds_numba(xvals, yvals, window, bounds)
     return _roll_corr_numba(xvals, yvals, window)
 
 
@@ -1552,11 +1575,31 @@ def roll_rankcorr_fixed(
     window: int,
     *,
     parallel: Optional[bool] = None,
+    bounds: Optional[np.ndarray] = None,
 ) -> np.ndarray:
-    """固定窗滚动 Spearman（秩）相关系数，自动选择 C++ 或 Numba 后端。"""
+    """固定窗滚动 Spearman（秩）相关系数，自动选择 C++ 或 Numba 后端。``bounds`` 传入时按品种并行。"""
     if _use_cxx_backend() and _cxx_has("roll_rankcorr_fixed"):
         return np.asarray(_fam_accel.roll_rankcorr_fixed(xvals, yvals, window, _cxx_parallel(parallel)), dtype=np.float32)
+    if _use_boundaries(bounds):
+        return _roll_rankcorr_bounds_numba(xvals, yvals, window, bounds)
     return _roll_rankcorr_numba(xvals, yvals, window)
+
+
+def roll_trend_rank_fixed(
+    vals: np.ndarray,
+    window: int,
+    *,
+    bounds: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """Mann-Kendall 风格秩趋势（Spearman(vals, 时间位置)），TS_TREND_RANK 内核。
+
+    ``bounds`` 传入时按品种并行；每品种切片内的时间位置计数器从 0 重新计数
+    （窗内秩相关对仿射平移不变，与逐品种 ``arange(len)`` 语义等价）。
+    """
+    if _use_boundaries(bounds):
+        return _trend_rank_bounds_numba(vals, int(window), bounds)
+    counter = np.arange(vals.shape[0], dtype=np.float32)
+    return _roll_rankcorr_numba(vals, counter, int(window))
 
 
 # =============================================================================
@@ -1677,6 +1720,7 @@ def roll_mutual_info_lag_fixed(
     n_bins: int = 8,
     min_pairs: Optional[int] = None,
     parallel: Optional[bool] = None,
+    bounds: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """固定窗滚动互信息 close(t) vs volume(t-lag)；秩分箱 + 列联表 MI。
 
@@ -1702,6 +1746,8 @@ def roll_mutual_info_lag_fixed(
             ),
             dtype=np.float32,
         )
+    if _use_boundaries(bounds):
+        return _mutual_info_bounds_numba(c, v, w, lag_i, B, mp, bounds)
     # Numba / 纯 Python：未对 parallel 做 OpenMP；与 historical 行为一致
     return _roll_mutual_info_lag_numba(c, v, w, lag_i, B, mp)
 
@@ -1889,6 +1935,7 @@ def wick_efficiency_fixed(
     lag: int,
     *,
     eps: float = 1e-12,
+    bounds: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """WICK_EFFICIENCY：四维 OHLC + 滞后 k。"""
     n = open_.shape[0]
@@ -1899,6 +1946,8 @@ def wick_efficiency_fixed(
     eps_f = float(eps)
     if _use_cxx_backend() and _cxx_has("wick_efficiency_fixed"):
         return np.asarray(_fam_accel.wick_efficiency_fixed(open_, high, low, close, int(lag), eps_f), dtype=np.float32)
+    if _use_boundaries(bounds):
+        return _wick_efficiency_bounds_numba(open_, high, low, close, int(lag), eps_f, bounds)
     return _wick_efficiency_numba(open_, high, low, close, int(lag), eps_f)
 
 
@@ -2235,6 +2284,7 @@ def roll_chip_metric_fixed(
     method: str = "cyq",
     *,
     parallel: Optional[bool] = None,
+    bounds: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """日频筹码密度指标（uniform / cyq / triangular）。"""
     del parallel
@@ -2242,6 +2292,19 @@ def roll_chip_metric_fixed(
         raise ValueError("window must be >= 1")
     if int(nbins) < 2:
         raise ValueError("nbins must be >= 2")
+    if _use_boundaries(bounds):
+        op_id = _chip_daily.CHIP_OP.get(op)
+        if op_id is None:
+            raise ValueError(f"Unknown chip op: {op}")
+        mid = _chip_daily.chip_method_id(method)
+        return _chip_metric_bounds_numba(
+            close.astype(np.float32, copy=False),
+            volume.astype(np.float32, copy=False),
+            low.astype(np.float32, copy=False),
+            high.astype(np.float32, copy=False),
+            aux.astype(np.float32, copy=False),
+            int(window), int(nbins), op_id, mid, bounds,
+        )
     return _chip_daily.roll_chip_metric_daily(
         close, volume, low, high, aux, int(window), int(nbins), op, method
     )
@@ -2272,6 +2335,7 @@ def roll_chip_wass_dist(
     method: str = "cyq",
     *,
     parallel: Optional[bool] = None,
+    bounds: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """日频筹码双窗漂移。"""
     del parallel
@@ -2285,6 +2349,17 @@ def roll_chip_wass_dist(
     wa_v = _broadcast_chip_win_vec(wa, n, floor=1)
     wb_v = _broadcast_chip_win_vec(wb, n, floor=1)
     rho_v = _broadcast_chip_win_vec(rho, n, floor=0)
+    if _use_boundaries(bounds):
+        impl_id = _chip_daily.chip_wass_implementation_id(implementation)
+        mid = _chip_daily.chip_method_id(method)
+        return _chip_wass_bounds_numba(
+            close.astype(np.float32, copy=False),
+            volume.astype(np.float32, copy=False),
+            low.astype(np.float32, copy=False),
+            high.astype(np.float32, copy=False),
+            aux.astype(np.float32, copy=False),
+            wa_v, wb_v, rho_v, nb, impl_id, mid, bounds,
+        )
     return _chip_daily.roll_chip_wass_dist_daily(
         close, volume, low, high, aux, wa_v, wb_v, rho_v, nb, implementation, method
     )
@@ -2330,6 +2405,7 @@ def roll_chip_peak_sharpness_fixed(
     method: str = "cyq",
     *,
     parallel: Optional[bool] = None,
+    bounds: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """日频主峰尖锐度。"""
     del parallel
@@ -2337,6 +2413,17 @@ def roll_chip_peak_sharpness_fixed(
         raise ValueError("window must be >= 1")
     if int(nbins) < 2:
         raise ValueError("nbins must be >= 2")
+    if _use_boundaries(bounds):
+        impl_id = _chip_daily.chip_peak_sharpness_impl_id(implementation)
+        mid = _chip_daily.chip_method_id(method)
+        return _chip_sharpness_bounds_numba(
+            close.astype(np.float32, copy=False),
+            volume.astype(np.float32, copy=False),
+            low.astype(np.float32, copy=False),
+            high.astype(np.float32, copy=False),
+            aux.astype(np.float32, copy=False),
+            int(window), int(nbins), impl_id, mid, bounds,
+        )
     return _chip_daily.roll_chip_peak_sharpness_daily(
         close, volume, low, high, aux, int(window), int(nbins), implementation, method
     )
@@ -2355,6 +2442,7 @@ def roll_chip_bimodal_fixed(
     *,
     lambda_scale: float = 1.0,
     parallel: Optional[bool] = None,
+    bounds: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """日频双峰结构得分。"""
     del parallel
@@ -2362,6 +2450,18 @@ def roll_chip_bimodal_fixed(
         raise ValueError("window must be >= 1")
     if int(nbins) < 2:
         raise ValueError("nbins must be >= 2")
+    if _use_boundaries(bounds):
+        impl_id = _chip_daily.chip_bimodal_impl_id(implementation)
+        mid = _chip_daily.chip_method_id(method)
+        return _chip_bimodal_bounds_numba(
+            close.astype(np.float32, copy=False),
+            volume.astype(np.float32, copy=False),
+            low.astype(np.float32, copy=False),
+            high.astype(np.float32, copy=False),
+            aux.astype(np.float32, copy=False),
+            int(window), int(nbins), impl_id, mid,
+            float(lambda_scale), bounds,
+        )
     return _chip_daily.roll_chip_bimodal_daily(
         close,
         volume,
@@ -2660,6 +2760,7 @@ def volume_clock_vpin_fixed(
     min_buckets: int = 5,
     eps: float = 1e-12,
     parallel: Optional[bool] = None,
+    bounds: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """Volume-Synchronized PIN ∈ [0,1]；``window`` 为成交量桶个数（非 bar 数）。"""
     del parallel
@@ -2673,6 +2774,12 @@ def volume_clock_vpin_fixed(
     mb = int(min_buckets)
     if mb < 1:
         raise ValueError("min_buckets must be >= 1")
+    if _use_boundaries(bounds):
+        return _vpin_bounds_numba(
+            price.astype(np.float32, copy=False),
+            volume.astype(np.float32, copy=False),
+            int(window), float(bucket_size), cls, float(eps), mb, bounds,
+        )
     return _volume_clock_vpin_numba(
         price.astype(np.float32, copy=False),
         volume.astype(np.float32, copy=False),
@@ -3005,9 +3112,9 @@ def roll_crowd_fixed(
     use_attr: bool = True,
     use_weight: bool = True,
     parallel: Optional[bool] = None,
+    bounds: Optional[np.ndarray] = None,
 ) -> np.ndarray:
-    """滚动广义拥挤度统计（Numba；无前视）。"""
-    del parallel
+    """滚动广义拥挤度统计（Numba；无前视）。``bounds`` 传入时按品种并行。"""
     w = int(window)
     if w < 1:
         raise ValueError("window must be >= 1")
@@ -3032,6 +3139,11 @@ def roll_crowd_fixed(
     wg = weight.astype(np.float32, copy=False) if use_weight else np.ones_like(d)
     if not (d.shape[0] == a.shape[0] == wg.shape[0]):
         raise ValueError("dim, attr, weight must have the same length")
+    if _use_boundaries(bounds):
+        return _roll_crowd_bounds_numba(
+            d, a, wg, w, op_id, bm, sq, sh, nb, bidx0, mv,
+            1 if use_attr else 0, 1 if use_weight else 0, bounds,
+        )
     return _roll_crowd_numba(
         d,
         a,
@@ -3127,3 +3239,452 @@ def roll_ols(
         int(window),
         1 if residual else 0,
     )
+
+
+# =============================================================================
+# 按品种边界并行层（boundaries + prange）
+#
+# 调用方先用 ``ops_kit.instrument_group_order`` 把面板数组按 instrument 稳定重排
+# （``arr[order]``），使每个品种成为连续切片 ``[bounds[g], bounds[g+1])``；本层在各
+# 切片上复用既有串行 numba 内核并按品种并行（prange）。品种间相互独立，数值语义
+# 与逐品种串行调用完全一致。``ALPHA_DSL_BOUNDARIES_PARALLEL=0`` 可禁用并行。
+# =============================================================================
+
+
+def _boundaries_parallel_enabled() -> bool:
+    raw = os.environ.get("ALPHA_DSL_BOUNDARIES_PARALLEL", "1").strip().lower()
+    return raw not in ("0", "false", "off", "no")
+
+
+@njit(cache=True)
+def _price_gap_state_into(
+    high: np.ndarray, low: np.ndarray, min_pct: float, out: np.ndarray
+) -> None:
+    """单品种 K 线跳空状态机（与 operators._instrument_price_gap_state 数值一致）。
+
+    ``out`` 列：0=size, 1=fill, 2=floor, 3=ceiling, 4=event, 5=bars。
+    """
+    n = high.shape[0]
+    min_pct_f = min_pct if min_pct > 0.0 else 0.0
+    active = False
+    gap_dir = 0
+    gap_floor = np.nan
+    gap_ceiling = np.nan
+    gap_height = 0.0
+    signed_size = 0.0
+    min_low = np.nan
+    max_high = np.nan
+    bars_count = np.nan
+
+    for i in range(n):
+        out[i, 0] = 0.0
+        out[i, 1] = np.nan
+        out[i, 2] = np.nan
+        out[i, 3] = np.nan
+        out[i, 4] = 0.0
+        out[i, 5] = np.nan
+
+        formed_gap = False
+        if i > 0:
+            prev_hi = high[i - 1]
+            prev_lo = low[i - 1]
+            hi_i = high[i]
+            lo_i = low[i]
+
+            is_up = False
+            is_down = False
+            if (
+                np.isfinite(prev_hi)
+                and np.isfinite(prev_lo)
+                and np.isfinite(hi_i)
+                and np.isfinite(lo_i)
+                and prev_hi != 0.0
+                and prev_lo != 0.0
+            ):
+                if lo_i > prev_hi:
+                    is_up = (lo_i - prev_hi) / abs(prev_hi) >= min_pct_f
+                if hi_i < prev_lo:
+                    is_down = (prev_lo - hi_i) / abs(prev_lo) >= min_pct_f
+
+            if is_up and not is_down:
+                active = True
+                gap_dir = 1
+                gap_floor = prev_hi
+                gap_ceiling = lo_i
+                gap_height = lo_i - prev_hi
+                signed_size = gap_height / abs(prev_hi)
+                min_low = lo_i
+                max_high = np.nan
+                bars_count = 0.0
+                out[i, 4] = 1.0
+                formed_gap = True
+            elif is_down and not is_up:
+                active = True
+                gap_dir = -1
+                gap_floor = hi_i
+                gap_ceiling = prev_lo
+                gap_height = prev_lo - hi_i
+                signed_size = -gap_height / abs(prev_lo)
+                max_high = hi_i
+                min_low = np.nan
+                bars_count = 0.0
+                out[i, 4] = -1.0
+                formed_gap = True
+            elif active:
+                bars_count += 1.0
+                if gap_dir > 0:
+                    if np.isfinite(lo_i):
+                        if not np.isfinite(min_low) or lo_i < min_low:
+                            min_low = lo_i
+                    if gap_height > 1e-12:
+                        if min_low <= gap_floor:
+                            out[i, 1] = 1.0
+                        else:
+                            v = (gap_ceiling - min_low) / gap_height
+                            if v > 1.0:
+                                v = 1.0
+                            elif v < 0.0:
+                                v = 0.0
+                            out[i, 1] = v
+                    else:
+                        out[i, 1] = 1.0
+                elif gap_dir < 0:
+                    if np.isfinite(hi_i):
+                        if not np.isfinite(max_high) or hi_i > max_high:
+                            max_high = hi_i
+                    if gap_height > 1e-12:
+                        if max_high >= gap_ceiling:
+                            out[i, 1] = 1.0
+                        else:
+                            v = (max_high - gap_floor) / gap_height
+                            if v > 1.0:
+                                v = 1.0
+                            elif v < 0.0:
+                                v = 0.0
+                            out[i, 1] = v
+                    else:
+                        out[i, 1] = 1.0
+
+        if active:
+            out[i, 0] = signed_size
+            out[i, 2] = gap_floor
+            out[i, 3] = gap_ceiling
+            out[i, 5] = bars_count
+            if not np.isfinite(out[i, 1]):
+                out[i, 1] = 0.0 if gap_height > 1e-12 else 1.0
+        elif not formed_gap:
+            signed_size = 0.0
+            bars_count = np.nan
+
+
+@njit(cache=True, parallel=True)
+def _price_gap_state_bounds_numba(
+    high: np.ndarray, low: np.ndarray, min_pct: float, bounds: np.ndarray
+) -> np.ndarray:
+    n = high.shape[0]
+    out = np.empty((n, 6), dtype=np.float32)
+    for g in prange(bounds.shape[0] - 1):
+        st = bounds[g]
+        en = bounds[g + 1]
+        if en <= st:
+            continue
+        _price_gap_state_into(high[st:en], low[st:en], min_pct, out[st:en, :])
+    return out
+
+
+def price_gap_state(
+    high: np.ndarray,
+    low: np.ndarray,
+    min_pct: float,
+    bounds: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """K 线跳空状态机：返回 ``(n, 6)`` float32，列 = size/fill/floor/ceiling/event/bars。
+
+    ``high`` / ``low`` 为已按品种重排的单列数组；``bounds`` 为品种区间边界
+    （``ops_kit.instrument_group_order``），传入时按品种并行，否则单品种串行。
+    """
+    h = np.asarray(high, dtype=np.float64)
+    lo = np.asarray(low, dtype=np.float64)
+    pct = float(min_pct)
+    if h.shape[0] != lo.shape[0]:
+        raise ValueError("high and low must have the same length")
+    if _use_boundaries(bounds) and _boundaries_parallel_enabled():
+        return _price_gap_state_bounds_numba(h, lo, pct, bounds)
+    out = np.empty((h.shape[0], 6), dtype=np.float32)
+    _price_gap_state_into(h, lo, pct, out)
+    return out
+
+
+@njit(cache=True, parallel=True)
+def _chip_metric_bounds_numba(
+    close: np.ndarray,
+    volume: np.ndarray,
+    low: np.ndarray,
+    high: np.ndarray,
+    aux: np.ndarray,
+    window: int,
+    nbins: int,
+    op: int,
+    method_id: int,
+    bounds: np.ndarray,
+) -> np.ndarray:
+    n = close.shape[0]
+    out = np.empty(n, dtype=np.float32)
+    for g in prange(bounds.shape[0] - 1):
+        st = bounds[g]
+        en = bounds[g + 1]
+        if en <= st:
+            continue
+        out[st:en] = _chip_daily.roll_chip_metric_daily_numba(
+            close[st:en], volume[st:en], low[st:en], high[st:en], aux[st:en],
+            window, nbins, op, method_id,
+        )
+    return out
+
+
+@njit(cache=True, parallel=True)
+def _chip_sharpness_bounds_numba(
+    close: np.ndarray,
+    volume: np.ndarray,
+    low: np.ndarray,
+    high: np.ndarray,
+    aux: np.ndarray,
+    window: int,
+    nbins: int,
+    impl: int,
+    method_id: int,
+    bounds: np.ndarray,
+) -> np.ndarray:
+    n = close.shape[0]
+    out = np.empty(n, dtype=np.float32)
+    for g in prange(bounds.shape[0] - 1):
+        st = bounds[g]
+        en = bounds[g + 1]
+        if en <= st:
+            continue
+        out[st:en] = _chip_daily.roll_chip_peak_sharpness_daily_numba(
+            close[st:en], volume[st:en], low[st:en], high[st:en], aux[st:en],
+            window, nbins, impl, method_id,
+        )
+    return out
+
+
+@njit(cache=True, parallel=True)
+def _chip_bimodal_bounds_numba(
+    close: np.ndarray,
+    volume: np.ndarray,
+    low: np.ndarray,
+    high: np.ndarray,
+    aux: np.ndarray,
+    window: int,
+    nbins: int,
+    impl: int,
+    method_id: int,
+    lambda_scale: float,
+    bounds: np.ndarray,
+) -> np.ndarray:
+    n = close.shape[0]
+    out = np.empty(n, dtype=np.float32)
+    for g in prange(bounds.shape[0] - 1):
+        st = bounds[g]
+        en = bounds[g + 1]
+        if en <= st:
+            continue
+        out[st:en] = _chip_daily.roll_chip_bimodal_daily_numba(
+            close[st:en], volume[st:en], low[st:en], high[st:en], aux[st:en],
+            window, nbins, impl, method_id, lambda_scale,
+        )
+    return out
+
+
+@njit(cache=True, parallel=True)
+def _chip_wass_bounds_numba(
+    close: np.ndarray,
+    volume: np.ndarray,
+    low: np.ndarray,
+    high: np.ndarray,
+    aux: np.ndarray,
+    wa: np.ndarray,
+    wb: np.ndarray,
+    rho: np.ndarray,
+    nbins: int,
+    impl: int,
+    method_id: int,
+    bounds: np.ndarray,
+) -> np.ndarray:
+    n = close.shape[0]
+    out = np.empty(n, dtype=np.float32)
+    for g in prange(bounds.shape[0] - 1):
+        st = bounds[g]
+        en = bounds[g + 1]
+        if en <= st:
+            continue
+        out[st:en] = _chip_daily.roll_chip_wass_dist_daily_numba(
+            close[st:en], volume[st:en], low[st:en], high[st:en], aux[st:en],
+            wa[st:en], wb[st:en], rho[st:en], nbins, impl, method_id,
+        )
+    return out
+
+
+@njit(cache=True, parallel=True)
+def _wick_efficiency_bounds_numba(
+    open_: np.ndarray,
+    high: np.ndarray,
+    low: np.ndarray,
+    close: np.ndarray,
+    lag: int,
+    eps: float,
+    bounds: np.ndarray,
+) -> np.ndarray:
+    n = open_.shape[0]
+    out = np.empty(n, dtype=np.float32)
+    for g in prange(bounds.shape[0] - 1):
+        st = bounds[g]
+        en = bounds[g + 1]
+        if en <= st:
+            continue
+        out[st:en] = _wick_efficiency_numba(
+            open_[st:en], high[st:en], low[st:en], close[st:en], lag, eps
+        )
+    return out
+
+
+@njit(cache=True, parallel=True)
+def _mutual_info_bounds_numba(
+    close: np.ndarray,
+    volume: np.ndarray,
+    window: int,
+    lag: int,
+    n_bins: int,
+    min_pairs: int,
+    bounds: np.ndarray,
+) -> np.ndarray:
+    n = close.shape[0]
+    out = np.empty(n, dtype=np.float32)
+    for g in prange(bounds.shape[0] - 1):
+        st = bounds[g]
+        en = bounds[g + 1]
+        if en <= st:
+            continue
+        out[st:en] = _roll_mutual_info_lag_numba(
+            close[st:en], volume[st:en], window, lag, n_bins, min_pairs
+        )
+    return out
+
+
+@njit(cache=True, parallel=True)
+def _vpin_bounds_numba(
+    price: np.ndarray,
+    volume: np.ndarray,
+    window: int,
+    bucket_size: float,
+    cls_id: int,
+    eps: float,
+    min_buckets: int,
+    bounds: np.ndarray,
+) -> np.ndarray:
+    n = price.shape[0]
+    out = np.empty(n, dtype=np.float32)
+    for g in prange(bounds.shape[0] - 1):
+        st = bounds[g]
+        en = bounds[g + 1]
+        if en <= st:
+            continue
+        out[st:en] = _volume_clock_vpin_numba(
+            price[st:en], volume[st:en], window, bucket_size, cls_id, eps, min_buckets
+        )
+    return out
+
+
+@njit(cache=True, parallel=True)
+def _roll_crowd_bounds_numba(
+    dim: np.ndarray,
+    attr: np.ndarray,
+    weight: np.ndarray,
+    window: int,
+    op: int,
+    bucket_mode: int,
+    split_q: float,
+    side_high: int,
+    n_buckets: int,
+    bucket_idx0: int,
+    min_valid: int,
+    use_attr: int,
+    use_weight: int,
+    bounds: np.ndarray,
+) -> np.ndarray:
+    n = dim.shape[0]
+    out = np.empty(n, dtype=np.float32)
+    for g in prange(bounds.shape[0] - 1):
+        st = bounds[g]
+        en = bounds[g + 1]
+        if en <= st:
+            continue
+        out[st:en] = _roll_crowd_numba(
+            dim[st:en], attr[st:en], weight[st:en], window, op, bucket_mode,
+            split_q, side_high, n_buckets, bucket_idx0, min_valid,
+            use_attr, use_weight,
+        )
+    return out
+
+
+@njit(cache=True, parallel=True)
+def _roll_corr_bounds_numba(
+    xvals: np.ndarray, yvals: np.ndarray, window: int, bounds: np.ndarray
+) -> np.ndarray:
+    n = xvals.shape[0]
+    out = np.empty(n, dtype=np.float32)
+    for g in prange(bounds.shape[0] - 1):
+        st = bounds[g]
+        en = bounds[g + 1]
+        if en <= st:
+            continue
+        out[st:en] = _roll_corr_numba(xvals[st:en], yvals[st:en], window)
+    return out
+
+
+@njit(cache=True, parallel=True)
+def _roll_cov_bounds_numba(
+    xvals: np.ndarray, yvals: np.ndarray, window: int, ddof: int, bounds: np.ndarray
+) -> np.ndarray:
+    n = xvals.shape[0]
+    out = np.empty(n, dtype=np.float32)
+    for g in prange(bounds.shape[0] - 1):
+        st = bounds[g]
+        en = bounds[g + 1]
+        if en <= st:
+            continue
+        out[st:en] = _roll_cov_numba(xvals[st:en], yvals[st:en], window, ddof)
+    return out
+
+
+@njit(cache=True, parallel=True)
+def _roll_rankcorr_bounds_numba(
+    xvals: np.ndarray, yvals: np.ndarray, window: int, bounds: np.ndarray
+) -> np.ndarray:
+    n = xvals.shape[0]
+    out = np.empty(n, dtype=np.float32)
+    for g in prange(bounds.shape[0] - 1):
+        st = bounds[g]
+        en = bounds[g + 1]
+        if en <= st:
+            continue
+        out[st:en] = _roll_rankcorr_numba(xvals[st:en], yvals[st:en], window)
+    return out
+
+
+@njit(cache=True, parallel=True)
+def _trend_rank_bounds_numba(
+    vals: np.ndarray, window: int, bounds: np.ndarray
+) -> np.ndarray:
+    n = vals.shape[0]
+    out = np.empty(n, dtype=np.float32)
+    for g in prange(bounds.shape[0] - 1):
+        st = bounds[g]
+        en = bounds[g + 1]
+        if en <= st:
+            continue
+        counter = np.arange(en - st, dtype=np.float32)
+        out[st:en] = _roll_rankcorr_numba(vals[st:en], counter, window)
+    return out
+

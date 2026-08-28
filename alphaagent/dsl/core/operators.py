@@ -22,6 +22,9 @@ from .ops_kit import (
     dynamic_window_int_series as _dynamic_window_int_series,
     first_series as _first_series,
     gb_instrument as _gb_instrument,
+    instrument_group_layout as _instrument_group_layout,
+    instrument_group_order as _instrument_group_order,
+    inverse_permutation as _inverse_permutation,
     is_dynamic_window as _is_dynamic_window,
     lag_int_series as _lag_int_series,
     out_frame as _out_frame,
@@ -93,22 +96,14 @@ def _ts_agg_fixed_accel(df: pd.DataFrame, window: int, kind: str, ddof: int = 1)
     ser = _first_series(df)
     vals = ser.to_numpy(dtype=float, copy=False)
 
-    # 稳定按 instrument 归组：得到每个品种在重排后列中的连续区间
-    inst = df.index.get_level_values("instrument")
-    codes, _ = pd.factorize(inst, sort=False)
-    order = np.argsort(codes, kind="stable")
-    sorted_codes = codes[order]
-    boundaries = np.flatnonzero(
-        np.concatenate(([True], sorted_codes[1:] != sorted_codes[:-1]))
-    )
+    # 稳定按 instrument 归组（layout 按 index 对象缓存，同面板重复调用 O(1)）
+    order, bounds, inv = _instrument_group_layout(df.index)
 
     reordered = vals[order]
     out_reordered = _accel.roll_fixed_boundaries(
-        reordered, boundaries, window, accel_kind, ddof=ddof
+        reordered, bounds[:-1], window, accel_kind, ddof=ddof
     )
     # 逆置换写回原位置
-    inv = np.empty_like(order)
-    inv[order] = np.arange(len(order))
     out = out_reordered[inv]
 
     return _out_frame(pd.Series(out, index=df.index), df)
@@ -132,6 +127,10 @@ def _shift_fixed(df: pd.DataFrame, periods: int) -> pd.DataFrame:
     p = int(periods)
     if p < 0:
         raise ValueError("DELAY 的周期数不能为负")
+
+    fast = _ts_unary_fast(df, lambda v: _accel.shift_fixed(v, p))
+    if fast is not None:
+        return fast
 
     def _shift_accelerated(s: pd.Series) -> pd.Series:
         vals = s.to_numpy(dtype=float, copy=False)
@@ -213,12 +212,15 @@ def DELTA(df: pd.DataFrame, p: int = 1) -> pd.DataFrame:
     """同品种差分 diff(p)；df 单列面板，p 为正整数步长。
     优先使用 C++ 加速，否则回退到 pandas。"""
     p = int(p)
-    
+    fast = _ts_unary_fast(df, lambda v: _accel.delta(v, p))
+    if fast is not None:
+        return fast
+
     def _delta_accelerated(s: pd.Series) -> pd.Series:
         vals = s.to_numpy(dtype=float, copy=False)
         out = _accel.delta(vals, p)
         return pd.Series(out, index=s.index)
-    
+
     return _gb_instrument(df).transform(lambda x: _delta_accelerated(_series_from_group(x)))
 
 
@@ -233,12 +235,15 @@ def TS_PCTCHANGE(df: pd.DataFrame, p: int = 1) -> pd.DataFrame:
     """相对 p 根前的涨跌幅；±inf 置 NaN。
     优先使用 C++ 加速，否则回退到 pandas。"""
     p = int(p)
-    
+    fast = _ts_unary_fast(df, lambda v: _accel.pctchange(v, p))
+    if fast is not None:
+        return fast
+
     def _pctchange_accelerated(s: pd.Series) -> pd.Series:
         vals = s.to_numpy(dtype=float, copy=False)
         out = _accel.pctchange(vals, p)
         return pd.Series(out, index=s.index)
-    
+
     return _gb_instrument(df).transform(lambda x: _pctchange_accelerated(_series_from_group(x)))
 
 
@@ -255,6 +260,20 @@ def TS_CUMPROD(
     第二参 ``base`` 为初始尺度（如 ``100`` 表示基点 100 起算）。
     """
     scale = float(base)
+
+    def _cumprod_skip_nan_arr(vals: np.ndarray) -> np.ndarray:
+        vv = vals.astype(np.float32, copy=False)
+        acc = scale
+        out = np.empty(len(vv), dtype=np.float32)
+        for i, v in enumerate(vv):
+            if np.isfinite(v):
+                acc *= v
+            out[i] = acc
+        return out
+
+    fast = _ts_unary_fast(df, _cumprod_skip_nan_arr)
+    if fast is not None:
+        return fast
 
     def _cumprod_skip_nan(s: pd.Series) -> pd.Series:
         vals = s.to_numpy(dtype=np.float32, copy=False)
@@ -275,13 +294,16 @@ def EMA(df: pd.DataFrame, p: Window) -> pd.DataFrame:
     """EWM，span=p（须可转 int，勿传动态 DataFrame）。
     优先使用 C++ 加速，否则回退到 pandas。"""
     span = _as_int_window(p)
-    
+    fast = _ts_unary_fast(df, lambda v: _accel.ema(v, span))
+    if fast is not None:
+        return fast
+
     # Use C++ or Numba accelerated backend
     def _ema_accelerated(s: pd.Series) -> pd.Series:
         vals = s.to_numpy(dtype=float, copy=False)
         out = _accel.ema(vals, span)
         return pd.Series(out, index=s.index)
-    
+
     return _gb_instrument(df).transform(lambda x: _ema_accelerated(_series_from_group(x)))
 
 
@@ -289,13 +311,16 @@ def WMA(df: pd.DataFrame, p: int = 20) -> pd.DataFrame:
     """线性加权均线，近端权重大，窗口 p 根。
     优先使用 C++ 加速，否则回退到 pandas。"""
     p = max(1, int(p))
-    
+    fast = _ts_unary_fast(df, lambda v: _accel.wma(v, p))
+    if fast is not None:
+        return fast
+
     # Use C++ or Numba accelerated backend
     def _wma_accelerated(s: pd.Series) -> pd.Series:
         vals = s.to_numpy(dtype=float, copy=False)
         out = _accel.wma(vals, p)
         return pd.Series(out, index=s.index)
-    
+
     ser = _gb_instrument(df).transform(lambda x: _wma_accelerated(_series_from_group(x)))
     return _out_frame(ser, df)
 
@@ -304,6 +329,9 @@ def SMA(df: pd.DataFrame, m: Optional[float] = None, n: Optional[float] = None) 
     """SMA(df,m) 滚动均线；SMA(df,m,n) 为 alpha=n/m 的 ewm。"""
     if isinstance(m, (int, float)) and m is not None and n is None:
         w = int(m)
+        fast = _ts_unary_fast(df, lambda v: _accel.roll_fixed(v, w, "mean"))
+        if fast is not None:
+            return fast
 
         def _sma_mean(s: pd.Series) -> pd.Series:
             vals = s.to_numpy(dtype=float, copy=False)
@@ -561,6 +589,10 @@ def TS_QUANTILE(df: pd.DataFrame, window: int, q: float) -> pd.DataFrame:
     w = max(1, int(window))
     qf = float(q)
 
+    fast = _ts_unary_fast(df, lambda v: _accel.roll_quantile_fixed(v, w, qf))
+    if fast is not None:
+        return fast
+
     def _quantile_accelerated(s: pd.Series) -> pd.Series:
         vals = s.to_numpy(dtype=float, copy=False)
         out = _accel.roll_quantile_fixed(vals, w, qf)
@@ -576,12 +608,19 @@ def TS_ZSCORE(df: pd.DataFrame, window: Window, ddof: int = 1) -> pd.DataFrame:
     """滚动 z-score：``(x - TS_MEAN) / TS_STD``；std=0 时输出 NaN，ddof 默认 1。"""
     w = _as_int_window(window)
 
-    def _zscore_accelerated(s: pd.Series) -> pd.Series:
-        vals = s.to_numpy(dtype=float, copy=False)
+    def _zscore_arr(vals: np.ndarray) -> np.ndarray:
         m = _accel.roll_fixed(vals, w, "mean")
         sd = _accel.roll_fixed(vals, w, "std", ddof=ddof)
         denom = np.where(sd == 0.0, np.nan, sd)
-        out = (vals - m) / denom
+        return (vals - m) / denom
+
+    fast = _ts_unary_fast(df, _zscore_arr)
+    if fast is not None:
+        return fast
+
+    def _zscore_accelerated(s: pd.Series) -> pd.Series:
+        vals = s.to_numpy(dtype=float, copy=False)
+        out = _zscore_arr(vals)
         return pd.Series(out, index=s.index)
 
     ser = _gb_instrument(df).transform(
@@ -864,9 +903,17 @@ def _price_gap_output(
         if other.shape != template.shape or not other.index.equals(template.index):
             raise ValueError(f"缺口算子要求 OHLC 四列同形同索引，{name} 不一致")
 
-    valid = {"size", "fill", "floor", "ceiling", "event", "bars"}
+    valid = {"size": "size", "fill": "fill", "floor": "floor", "ceiling": "ceiling", "event": "event", "bars": "bars"}
     if field not in valid:
         raise ValueError(f"未知缺口字段: {field!r}")
+
+    # 快路径：稳定归组 + Numba 状态机按品种并行（消除纯 Python 逐 bar 循环与 pandas 分组开销）
+    fast = _boundaries_fast(template, high_df, low_df)
+    if fast is not None:
+        order, bounds, inv, (_, h_arr, l_arr) = fast
+        state = _accel.price_gap_state(h_arr, l_arr, min_pct, bounds)
+        field_idx = {"size": 0, "fill": 1, "floor": 2, "ceiling": 3, "event": 4, "bars": 5}[field]
+        return _scatter_boundaries(state[:, field_idx], inv, template)
 
     result = np.full(len(template), np.nan, dtype=np.float32)
     for _, sub_c in _gb_instrument(close_df):
@@ -1018,9 +1065,22 @@ def _ts_bivariate_fixed(
     df2: pd.DataFrame,
     window: int,
     kernel,
+    *,
+    bounds_call=None,
 ) -> pd.DataFrame:
-    """双序列固定窗滚动（corr / cov），按品种分组后调用加速内核。"""
+    """双序列固定窗滚动（corr / cov），按品种分组后调用加速内核。
+
+    ``bounds_call(x, y, w, bounds)`` 传入时优先走稳定归组 + boundaries 并行快路径，
+    Numba 不可用时回落逐品种 groupby 路径。"""
     w = max(1, int(window))
+
+    if bounds_call is not None:
+        fast = _boundaries_fast(df1, df2)
+        if fast is not None:
+            order, bounds, inv, (x_arr, y_arr) = fast
+            out_ord = bounds_call(x_arr, y_arr, w, bounds)
+            return _scatter_boundaries(out_ord, inv, df1)
+
     result = np.full(len(df1), np.nan, dtype=np.float32)
 
     for _, sub1 in _gb_instrument(df1):
@@ -1037,7 +1097,10 @@ def _ts_bivariate_fixed(
 def TS_CORR(df1: pd.DataFrame, df2: pd.DataFrame, window: int) -> pd.DataFrame:
     """滚动 Pearson 相关系数；按品种分组，对 df1、df2 对应列在窗口内计算相关性。
     NaN 对会被跳过；有效对数 < 2 或任一序列方差为零时输出 NaN。"""
-    return _ts_bivariate_fixed(df1, df2, window, _accel.roll_corr_fixed)
+    return _ts_bivariate_fixed(
+        df1, df2, window, _accel.roll_corr_fixed,
+        bounds_call=lambda x, y, w, b: _accel.roll_corr_fixed(x, y, w, bounds=b),
+    )
 
 
 def TS_COV(df1: pd.DataFrame, df2: pd.DataFrame, window: int, ddof: int = 1) -> pd.DataFrame:
@@ -1046,6 +1109,7 @@ def TS_COV(df1: pd.DataFrame, df2: pd.DataFrame, window: int, ddof: int = 1) -> 
     return _ts_bivariate_fixed(
         df1, df2, window,
         lambda x, y, w: _accel.roll_cov_fixed(x, y, w, ddof=ddof),
+        bounds_call=lambda x, y, w, b: _accel.roll_cov_fixed(x, y, w, ddof=ddof, bounds=b),
     )
 
 
@@ -1053,7 +1117,10 @@ def TS_RANKCORR(df1: pd.DataFrame, df2: pd.DataFrame, window: int) -> pd.DataFra
     """滚动 Spearman（秩）相关系数：每个窗口内先对 df1、df2 各自取平均秩（等同
     ``rank(method='average')``），再对两组秩计算 Pearson 相关；对异常值鲁棒，
     捕捉单调关系。NaN 对跳过；有效对数 < 2 或任一维秩方差为零输出 NaN。"""
-    return _ts_bivariate_fixed(df1, df2, window, _accel.roll_rankcorr_fixed)
+    return _ts_bivariate_fixed(
+        df1, df2, window, _accel.roll_rankcorr_fixed,
+        bounds_call=lambda x, y, w, b: _accel.roll_rankcorr_fixed(x, y, w, bounds=b),
+    )
 
 
 def MUTUAL_INFO_LAG(
@@ -1079,6 +1146,15 @@ def MUTUAL_INFO_LAG(
         raise ValueError("n_bins must be >= 2")
     mp = int(min_pairs) if min_pairs is not None else max(B + 2, 8)
 
+    # 快路径：稳定归组 + boundaries 并行内核
+    fast = _boundaries_fast(df_close, df_volume)
+    if fast is not None:
+        order, bounds, inv, (c_a, v_a) = fast
+        out_ord = _accel.roll_mutual_info_lag_fixed(
+            c_a, v_a, w, lag_i, n_bins=B, min_pairs=mp, bounds=bounds
+        )
+        return _scatter_boundaries(out_ord, inv, df_close)
+
     result = np.full(len(df_close), np.nan, dtype=np.float32)
     for _, sub_c in _gb_instrument(df_close):
         idx = sub_c.index
@@ -1102,6 +1178,13 @@ def TS_TREND_RANK(df: pd.DataFrame, window: int) -> pd.DataFrame:
     ``TS_EFFICIENCY_RATIO`` 互补（ER 测路径效率、本算子测单调性）。NaN 跳过；
     有效点数 < 2 输出 NaN。"""
     w = max(2, int(window))
+
+    fast = _boundaries_fast(df)
+    if fast is not None:
+        order, bounds, inv, (vals,) = fast
+        out_ord = _accel.roll_trend_rank_fixed(vals, w, bounds=bounds)
+        return _scatter_boundaries(out_ord, inv, df)
+
     result = np.full(len(df), np.nan, dtype=np.float32)
     for _, sub in _gb_instrument(df):
         idx = sub.index
@@ -1130,6 +1213,10 @@ def TS_EFFICIENCY_RATIO(df: pd.DataFrame, window: Window) -> pd.DataFrame:
         return pd.DataFrame(result, index=df.index, columns=df.columns[:1])
 
     w = max(2, _as_int_window(window))
+
+    fast = _ts_unary_fast(df, lambda v: _accel.roll_efficiency_ratio_fixed(v, w))
+    if fast is not None:
+        return fast
 
     def _er_accelerated(s: pd.Series) -> pd.Series:
         vals = s.to_numpy(dtype=float, copy=False)
@@ -1181,6 +1268,15 @@ def VOLUME_CLOCK_VPIN(
     if sw < 1:
         raise ValueError("sigma_window must be >= 1")
     eps_f = float(eps)
+
+    # 快路径：稳定归组 + boundaries 并行内核
+    fast = _boundaries_fast(price, volume)
+    if fast is not None:
+        order, bounds, inv, (p_a, v_a) = fast
+        out_ord = _accel.volume_clock_vpin_fixed(
+            p_a, v_a, w, bsize, classification, min_buckets=mb, eps=eps_f, bounds=bounds
+        )
+        return _scatter_boundaries(out_ord, inv, price)
 
     result = np.full(len(price), np.nan, dtype=np.float32)
     for _, sub_p in _gb_instrument(price):
@@ -1236,6 +1332,15 @@ def WICK_EFFICIENCY(
         raise ValueError("WICK_EFFICIENCY: open/high/low/close panels must share the same index")
 
     result = np.full(len(open_df), np.nan, dtype=np.float32)
+
+    # 快路径：稳定归组 + boundaries 并行内核
+    fast = _boundaries_fast(open_df, high_df, low_df, close_df)
+    if fast is not None:
+        order, bounds, inv, (o_a, h_a, l_a, c_a) = fast
+        out_ord = _accel.wick_efficiency_fixed(
+            o_a, h_a, l_a, c_a, k, eps=eps_f, bounds=bounds
+        )
+        return _scatter_boundaries(out_ord, inv, open_df)
 
     for _, sub_o in _gb_instrument(open_df):
         idx = sub_o.index
@@ -1296,18 +1401,9 @@ def KLINE_GEOMETRY(
         w = _as_int_window(window)
         if w < 2:
             raise ValueError("KLINE_GEOMETRY: window must be >= 2")
-        # 稳定归组 + 切片：面板按 (datetime, instrument) 排序，重排到品种连续区间，
-        # 逐品种纯 numpy 切片调 numba 内核，消除 pandas groupby/reindex/get_indexer 开销。
-        inst = open_df.index.get_level_values("instrument")
-        codes, _ = pd.factorize(inst, sort=False)
-        order = np.argsort(codes, kind="stable")
-        sorted_codes = codes[order]
-        bounds = np.concatenate(
-            (
-                np.flatnonzero(np.concatenate(([True], sorted_codes[1:] != sorted_codes[:-1]))),
-                [len(open_df)],
-            )
-        ).astype(np.int64)
+        # 稳定归组 + 切片（layout 缓存）：重排到品种连续区间，逐品种纯 numpy 切片
+        # 调 numba 内核，消除 pandas groupby/reindex/get_indexer 开销。
+        order, bounds, inv = _instrument_group_layout(open_df.index)
         oo = np.asarray(open_df.iloc[:, 0].to_numpy(dtype=float, copy=False))[order]
         hh = np.asarray(high_df.iloc[:, 0].to_numpy(dtype=float, copy=False))[order]
         ll = np.asarray(low_df.iloc[:, 0].to_numpy(dtype=float, copy=False))[order]
@@ -1317,10 +1413,10 @@ def KLINE_GEOMETRY(
             st, en = int(bounds[i]), int(bounds[i + 1])
             if en - st < 2:
                 continue
-            res[order[st:en]] = _accel.roll_kline_geometry_fixed(
+            res[st:en] = _accel.roll_kline_geometry_fixed(
                 oo[st:en], hh[st:en], ll[st:en], cc[st:en], w, eps=eps_f
             )
-        result = res
+        result = res[inv]
 
     return pd.DataFrame(result, index=open_df.index, columns=open_df.columns[:1])
 
@@ -1337,6 +1433,10 @@ def TS_PERMUTATION_ENTROPY(
     if m < 2 or m > 7:
         raise ValueError("order must be in [2, 7]")
 
+    fast = _ts_unary_fast(df, lambda v: _accel.roll_permutation_entropy_fixed(v, w, m))
+    if fast is not None:
+        return fast
+
     def _pe_accelerated(s: pd.Series) -> pd.Series:
         vals = s.to_numpy(dtype=float, copy=False)
         out = _accel.roll_permutation_entropy_fixed(vals, w, m)
@@ -1346,6 +1446,56 @@ def TS_PERMUTATION_ENTROPY(
         lambda x: _pe_accelerated(_series_from_group(x))
     )
     return _out_frame(ser, df)
+
+
+def _boundaries_fast(main_df: pd.DataFrame, *others: pd.DataFrame):
+    """按品种稳定归组快路径准备：返回 ``(order, bounds, inv, 重排后 float 数组元组)`` 或 ``None``。
+
+    重排后每个品种是连续切片（见 ``ops_kit.instrument_group_layout``，order/bounds/inv
+    按面板 index 对象缓存，同面板重复调用 O(1)），供 ``accel`` 的 boundaries 并行内核
+    使用；Numba 不可用或面板为空时返回 ``None``（调用方回落逐品种 groupby 路径）。
+    """
+    if not _accel.accel_available().get("numba"):
+        return None
+    if main_df.empty:
+        return None
+    order, bounds, inv = _instrument_group_layout(main_df.index)
+    arrays = tuple(
+        df.iloc[:, 0].to_numpy(dtype=float, copy=False)[order]
+        for df in (main_df, *others)
+    )
+    return order, bounds, inv, arrays
+
+
+def _scatter_boundaries(
+    values: np.ndarray, inv: np.ndarray, template: pd.DataFrame
+) -> pd.DataFrame:
+    """并行内核输出的重排行序结果经逆置换写回原面板行序。"""
+    return pd.DataFrame(
+        np.asarray(values)[inv], index=template.index, columns=template.columns[:1]
+    )
+
+
+def _ts_unary_fast(df: pd.DataFrame, kernel, *other_dfs: pd.DataFrame) -> pd.DataFrame | None:
+    """gb.transform 族快路径：稳定归组切片逐段调用一维内核，消除逐品种回调开销。
+
+    ``kernel(first_slice, *other_slices)`` 收到与旧 transform 路径同序的连续切片
+    （品种内行序一致），返回等长 numpy 数组。Numba 不可用 / 空面板时返回 None，
+    调用方回落旧 ``_gb_instrument(...).transform`` 路径。
+    """
+    fast = _boundaries_fast(df, *other_dfs)
+    if fast is None:
+        return None
+    order, bounds, inv, arrays = fast
+    out = np.empty(arrays[0].shape[0], dtype=np.float64)
+    first = arrays[0]
+    rest = arrays[1:]
+    for g in range(bounds.size - 1):
+        st, en = int(bounds[g]), int(bounds[g + 1])
+        if en <= st:
+            continue
+        out[st:en] = kernel(first[st:en], *(a[st:en] for a in rest))
+    return _scatter_boundaries(out, inv, df)
 
 
 def _chip_metric_daily(
@@ -1365,6 +1515,13 @@ def _chip_metric_daily(
     if nb < 2:
         raise ValueError("nbins must be >= 2")
     _chip_daily.chip_method_id(method)
+
+    # 快路径：稳定归组 + boundaries 并行内核
+    fast = _boundaries_fast(close_df, volume_df, low_df, high_df, float_cap_df)
+    if fast is not None:
+        order, bounds, inv, arrs = fast
+        out_ord = _accel.roll_chip_metric_fixed(*arrs, w, nb, op, method, bounds=bounds)
+        return _scatter_boundaries(out_ord, inv, close_df)
 
     result = np.full(len(close_df), np.nan, dtype=np.float32)
     for _, sub_c in _gb_instrument(close_df):
@@ -1398,13 +1555,26 @@ def _chip_roll_daily(
     nbins: int,
     method: str,
     kernel,
+    *,
+    bounds_call=None,
 ) -> pd.DataFrame:
-    """按品种调用日频筹码 kernel(close, low, high, vol, aux, window, nbins)。"""
+    """按品种调用日频筹码 kernel(close, low, high, vol, aux, window, nbins)。
+
+    ``bounds_call(arrs, w, nb, bounds)`` 传入时优先走稳定归组 + boundaries 并行快路径
+    （``arrs`` 为重排后的 ``(close, volume, low, high, aux)`` float 数组元组），
+    Numba 不可用时回落逐品种 groupby 路径。"""
     w = max(1, int(window))
     nb = int(nbins)
     if nb < 2:
         raise ValueError("nbins must be >= 2")
     _chip_daily.chip_method_id(method)
+
+    if bounds_call is not None:
+        fast = _boundaries_fast(close_df, volume_df, low_df, high_df, float_cap_df)
+        if fast is not None:
+            order, bounds, inv, arrs = fast
+            out_ord = bounds_call(arrs, w, nb, bounds)
+            return _scatter_boundaries(out_ord, inv, close_df)
 
     result = np.full(len(close_df), np.nan, dtype=np.float32)
     for _, sub_c in _gb_instrument(close_df):
@@ -1510,6 +1680,13 @@ def CHIP_PEAK_SHARPNESS(
     """主峰尖锐度（日频，默认 cyq）：``curvature`` / ``fwhm`` / ``combined``。
     **DSL 位置参数**：``close, low, high, volume, window, float_cap, [nbins], [implementation], [method]``。"""
     _accel.chip_peak_sharpness_impl_id(implementation)
+
+    def _bounds_call(arrs, w, nb, bounds):
+        c, v, l, h, a = arrs
+        return _accel.roll_chip_peak_sharpness_fixed(
+            c, v, l, h, a, w, nb, implementation, method, bounds=bounds
+        )
+
     return _chip_roll_daily(
         close,
         low,
@@ -1522,6 +1699,7 @@ def CHIP_PEAK_SHARPNESS(
         lambda c, l, h, v, a, w, nb: _accel.roll_chip_peak_sharpness_fixed(
             c, v, l, h, a, w, nb, implementation, method
         ),
+        bounds_call=_bounds_call,
     )
 
 
@@ -1540,6 +1718,13 @@ def CHIP_BIMODAL_SCORE(
     """双峰结构得分（日频，默认 cyq）：``simple`` 或 ``dip``。
     **DSL 位置参数**：``close, low, high, volume, window, float_cap, [nbins], [implementation], [lambda_scale], [method]``。"""
     _accel.chip_bimodal_impl_id(implementation)
+
+    def _bounds_call(arrs, w, nb, bounds):
+        c, v, l, h, a = arrs
+        return _accel.roll_chip_bimodal_fixed(
+            c, v, l, h, a, w, nb, implementation, method, lambda_scale=lambda_scale, bounds=bounds
+        )
+
     return _chip_roll_daily(
         close,
         low,
@@ -1552,6 +1737,7 @@ def CHIP_BIMODAL_SCORE(
         lambda c, l, h, v, a, w, nb: _accel.roll_chip_bimodal_fixed(
             c, v, l, h, a, w, nb, implementation, method, lambda_scale=lambda_scale
         ),
+        bounds_call=_bounds_call,
     )
 
 
@@ -1574,6 +1760,20 @@ def CHIP_WASS_DIST(
         raise ValueError("nbins must be >= 2")
     _accel.chip_wass_implementation_id(implementation)
     _chip_daily.chip_method_id(method)
+
+    # 快路径：稳定归组 + boundaries 并行内核（window/lag 支持动态单列面板）
+    fast = _boundaries_fast(close, volume, low, high, float_cap)
+    if fast is not None:
+        order, bounds, inv, arrs = fast
+        w_full = _chip_wass_win_series(window, close.index)
+        rho_full = _chip_wass_rho_series(lag, close.index)
+        c_a, v_a, l_a, h_a, a_a = arrs
+        out_ord = _accel.roll_chip_wass_dist(
+            c_a, v_a, l_a, h_a, a_a,
+            w_full[order], w_full[order], rho_full[order],
+            nb, implementation, method, bounds=bounds,
+        )
+        return _scatter_boundaries(out_ord, inv, close)
 
     result = np.full(len(close), np.nan, dtype=np.float32)
     for _, sub_c in _gb_instrument(close):
@@ -1622,6 +1822,10 @@ def _ts_arg_local_extreme_last(df: pd.DataFrame, half_window: int, want_max: boo
     """
     hw = max(1, int(half_window))
 
+    fast = _ts_unary_fast(df, lambda v: _accel.arg_local_extreme(v, hw, want_max=want_max))
+    if fast is not None:
+        return fast
+
     def _arg_local_extreme_accelerated(s: pd.Series) -> pd.Series:
         vals = s.to_numpy(dtype=float, copy=False)
         out = _accel.arg_local_extreme(vals, hw, want_max=want_max)
@@ -1639,6 +1843,10 @@ def _ts_local_extreme_value_last(
     """最近一次已确认中心局部峰/谷的价格值。"""
     hw = max(1, int(half_window))
 
+    fast = _ts_unary_fast(df, lambda v: _accel.local_extreme_value(v, hw, want_max=want_max))
+    if fast is not None:
+        return fast
+
     def _local_extreme_value_accelerated(s: pd.Series) -> pd.Series:
         vals = s.to_numpy(dtype=float, copy=False)
         out = _accel.local_extreme_value(vals, hw, want_max=want_max)
@@ -1655,6 +1863,11 @@ def _ts_maxamp_arg_local(
 ) -> pd.DataFrame:
     """在已确认峰/谷中，选左右「峰到谷/谷到峰」价宽之和最大者，输出距今 bar 数。"""
     hw = max(1, int(half_window))
+
+    fast = _ts_unary_fast(df, lambda v: _accel.maxamp_arg_local_extreme(v, hw, want_max=want_max))
+    if fast is not None:
+        return fast
+
     col = df.columns[0]
 
     def _f(s: pd.Series) -> pd.Series:
@@ -1671,6 +1884,11 @@ def _ts_maxamp_value_local(
 ) -> pd.DataFrame:
     """在已确认峰/谷中，选左右价宽和最大者，输出该极值价格。"""
     hw = max(1, int(half_window))
+
+    fast = _ts_unary_fast(df, lambda v: _accel.maxamp_local_extreme_value(v, hw, want_max=want_max))
+    if fast is not None:
+        return fast
+
     col = df.columns[0]
 
     def _f(s: pd.Series) -> pd.Series:
@@ -1708,6 +1926,10 @@ def TS_ARGMEDIAN(df: pd.DataFrame, window: Window) -> pd.DataFrame:
     若有多个值与中位数距离相同，取距当前 bar 最近（索引最大）的。"""
     W = _as_int_window(window)
 
+    fast = _ts_unary_fast(df, lambda v: _accel.arg_median_fixed(v, W))
+    if fast is not None:
+        return fast
+
     def _f(s: pd.Series) -> pd.Series:
         vals = s.to_numpy(dtype=float, copy=False)
         out = _accel.arg_median_fixed(vals, W)
@@ -1725,10 +1947,16 @@ def TS_ARGNTH(df: pd.DataFrame, window: Window, n: int, ascending: bool = False,
     - unique=True: 跳过重复值，找严格第 n 个不同的值"""
     W = _as_int_window(window)
     n = max(1, int(n))
+    asc = bool(ascending)
+    uniq = bool(unique)
+
+    fast = _ts_unary_fast(df, lambda v: _accel.arg_nth_fixed(v, W, n, ascending=asc, unique=uniq))
+    if fast is not None:
+        return fast
 
     def _f(s: pd.Series) -> pd.Series:
         vals = s.to_numpy(dtype=float, copy=False)
-        out = _accel.arg_nth_fixed(vals, W, n, ascending=bool(ascending), unique=bool(unique))
+        out = _accel.arg_nth_fixed(vals, W, n, ascending=asc, unique=uniq)
         return pd.Series(out, index=s.index)
 
     ser = _gb_instrument(df).transform(lambda x: _f(_series_from_group(x)))
@@ -2505,6 +2733,29 @@ def _crowd_roll_panel(
 ) -> pd.DataFrame:
     w = max(1, int(window))
     result = np.full(len(dimension), np.nan, dtype=np.float32)
+
+    # 快路径：稳定归组 + boundaries 并行内核
+    fast = _boundaries_fast(dimension, attribute, weight)
+    if fast is not None:
+        order, bounds, inv, (d_a, a_a, w_a) = fast
+        out_ord = _accel.roll_crowd_fixed(
+            d_a,
+            a_a,
+            w_a,
+            w,
+            op,
+            bucket_mode=bucket_mode,
+            side=side,
+            split=float(split),
+            n_buckets=int(n_buckets),
+            bucket_idx=int(bucket_idx),
+            min_valid=int(min_valid),
+            use_attr=use_attr,
+            use_weight=use_weight,
+            bounds=bounds,
+        )
+        return _scatter_boundaries(out_ord, inv, dimension)
+
     for _, sub_d in _gb_instrument(dimension):
         idx = sub_d.index
         sub_a = attribute.reindex(idx)

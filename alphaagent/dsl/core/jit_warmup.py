@@ -118,6 +118,35 @@ def warmup_numba_jit() -> dict[str, float]:
         logger.warning("JIT warmup: roll_rankcorr failed: %s", e)
         results["roll_rankcorr"] = -1.0
 
+    # --- 7. boundaries 并行层（PRICE_GAP 状态机 / CHIP / CROWD / WICK / VPIN / MI） ---
+    try:
+        t0 = time.perf_counter()
+        n = 120
+        rng = np.random.default_rng(42)
+        base = 100.0 + rng.standard_normal(n).cumsum()
+        close = base.astype(np.float64)
+        open_ = (base * (1.0 + rng.standard_normal(n) * 0.005)).astype(np.float64)
+        low = (base * 0.99).astype(np.float64)
+        high = (base * 1.01).astype(np.float64)
+        volume = (1e6 + rng.random(n) * 1e6).astype(np.float64)
+        aux = (1e8 + rng.random(n) * 1e8).astype(np.float64)
+        bounds = np.array([0, n], dtype=np.int64)
+        _accel.price_gap_state(high, low, 0.0, bounds)
+        _accel.wick_efficiency_fixed(open_, high, low, close, 3, bounds=bounds)
+        _accel.roll_chip_metric_fixed(close, volume, low, high, aux, 40, 30, "entropy", "cyq", bounds=bounds)
+        _accel.roll_chip_peak_sharpness_fixed(close, volume, low, high, aux, 40, 30, "curvature", "cyq", bounds=bounds)
+        _accel.roll_chip_bimodal_fixed(close, volume, low, high, aux, 40, 30, "simple", "cyq", bounds=bounds)
+        _accel.roll_chip_wass_dist(close, volume, low, high, aux, 40, 40, 10, 30, "moment", "cyq", bounds=bounds)
+        _accel.roll_crowd_fixed(close, volume, volume, 20, "share", bounds=bounds)
+        _accel.roll_mutual_info_lag_fixed(close, volume, 30, 1, bounds=bounds)
+        _accel.volume_clock_vpin_fixed(close, volume, 10, 5e5, "tick", bounds=bounds)
+        dt = time.perf_counter() - t0
+        results["boundaries_parallel"] = dt
+        logger.info("JIT warmup: boundaries_parallel compiled in %.1fs", dt)
+    except Exception as e:
+        logger.warning("JIT warmup: boundaries_parallel failed: %s", e)
+        results["boundaries_parallel"] = -1.0
+
     return results
 
 

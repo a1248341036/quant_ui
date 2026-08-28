@@ -217,6 +217,10 @@ logs/factor_mining/ui/        # 每次 Web run 的 JSONL 轨迹 + run_meta.json�
 - **Codex provider**：从 `~/.codex/config.toml` 读取模型配置和 token，无需额外 .env 配置。
 - **评估用分位数回测**：A股不能做空，因子评估用 quantile_portfolio（纯多头口径）替代 topn_portfolio。
 - **批量脚本 OOM 规避**：独立脚本加载 CNE panel 时直接读 `stock_daily_wide` 原始 parquet（限定日期+最小列集），不用 `load_panel_from_cne()` 全量加载。
+- **慢算子按品种并行层（`accel.py` boundaries + prange）**：`PRICE_GAP_*` / `CHIP_*` / `CROWD_*` / `WICK_EFFICIENCY` / `VOLUME_CLOCK_VPIN` / `MUTUAL_INFO_LAG` 等 per-instrument 滚动算子，先由 `ops_kit.instrument_group_order` 把面板数组按品种稳定重排成连续区间（消除 groupby/reindex/get_indexer 开销），再由 `@njit(parallel=True)` 边界内核按品种多核并行；PRICE_GAP 状态机已整体 Numba 化（原纯 Python 逐 bar 循环）。数值与旧串行路径逐位一致（含 NaN/乱序面板）；`ALPHA_DSL_BOUNDARIES_PARALLEL=0` 禁用并行，Numba 缺失时自动回落旧逐品种路径。新算子照此模板实现（范例：`WICK_EFFICIENCY`）。
+- **挖掘并行评估**：`StockEvalService._eval_semaphore` 限制并发 train/val 评估数（StartRequest `max_parallel_eval`，默认 4，环境变量 `MAX_PARALLEL_EVAL` 覆盖），tool_calls 由 `ThreadPoolExecutor(max_tool_workers=4)` 并行分发。挖掘路径 `service._run_one` 以 `include_charts=False` 调引擎（逐日 IC/十分位多空/月度分解等图表数据仅因子实验室 `eval_profile` 生成）；引擎计时见结果 `timing_ms`（dsl_eval/transforms/metrics 三段）。
+- **评估 metrics 快路径（`factor/metrics.py`）**：逐日 IC / Rank IC / lag1 自相关 / 十分位分组 / 分位组合 / 市值中性化全部改为「datetime 连续区间切片（`_day_slices`，面板按 datetime 排序时 O(1) 取每日切片，消除逐日 `groupby+xs` 全表查找）」；`pd.qcut` 换成数值等价的快速等频分箱 `_fast_equal_freq_codes`（分位边界浮点重合时自动回落 qcut，保证语义一致）；`mls_fmb` 与 `long_short_portfolio` 经 `context.cache` 共享同一份每日十分位结果。回落路径保留（未排序面板/测试注入 `_day_slices_override`）。门禁：`tests/test_metrics_fastpaths.py`（快慢路径输出一致 + 分箱等价对照）。
+- **慢算子三重门禁**：① 静态拦截 `scripts/check_dsl_slow_patterns.py`（AST 扫描 operators.py，新增逐品种 pandas 循环/纯 Python 逐 bar 循环即失败，存量白名单只减不增；由 `tests/test_dsl_slow_patterns.py` 挂进 pytest）；② 性能门禁 `tests/test_dsl_operator_perf.py`（720k 行标准面板上 9 个优化算子的耗时预算断言 + 快路径接线检查，防并行层静默退化）；③ 一致性门禁 `tests/test_dsl_operator_consistency.py`（35 用例，快路径 vs 回落路径逐位一致，覆盖 NaN/跳空/零量/乱序面板/动态窗）。运行时慢算子发现走 `dsl-monitor` API（top_k 耗时榜）。
 
 ## 常用命令
 
@@ -245,3 +249,4 @@ cd static && npm run dev
 见 `requirements-alphaagent.txt`：agentscope, openai, numba, jieba。
 
 > AI生成
+
