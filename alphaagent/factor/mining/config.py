@@ -24,8 +24,8 @@ class MiningConfig:
     population_max: int = 24
     """种群批量筛选（propose_population）单轮候选上限；0 = 关闭路径 B。"""
     max_turns: int = 16
-    max_tool_calls_per_round: int = 8
-    max_tool_workers: int = 4
+    max_tool_calls_per_round: int = 12
+    max_tool_workers: int = 8
     max_parallel_eval: int | None = None
     """同时进行的 train/val 评估上限；None 时读环境变量 MAX_PARALLEL_EVAL。"""
     min_tool_call_rounds_before_allow_stop: int = 3

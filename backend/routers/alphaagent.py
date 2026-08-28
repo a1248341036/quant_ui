@@ -43,9 +43,9 @@ class StartRequest(BaseModel):
         max_length=10000,
     )
     max_turns: int = Field(default=10, ge=1, le=50)
-    max_tool_calls_per_round: int = Field(default=8, ge=1, le=32)
-    max_tool_workers: int = Field(default=4, ge=1, le=16)
-    max_parallel_eval: int | None = Field(default=4, ge=1, le=16)
+    max_tool_calls_per_round: int = Field(default=12, ge=1, le=32)
+    max_tool_workers: int = Field(default=8, ge=1, le=16)
+    max_parallel_eval: int | None = Field(default=6, ge=1, le=16)
     max_tokens: int = Field(default=16384, ge=256, le=32768)  # hy3 thinking 需 >8K
     population_max: int = Field(default=24, ge=0, le=36)  # 种群批量上限；0=关闭路径B
     no_fundamentals: bool = False

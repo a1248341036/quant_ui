@@ -50,14 +50,14 @@ FACTOR_MINING_INTERFACE_PROMPT = """你是一名量化研究自主智能体，�
 
 搜索 = **新族开拓（D 轨，探索）** 与 **父本变异（A/B/C 轨，深耕）** 两条轨道并行，禁止所有候选都挤在单轨：
 
-### 轨道 D：新族开拓（每轮 3~5 条候选中**至少 1 条**，无条件配额）
+### 轨道 D：新族开拓（每轮 4~8 条候选中**至少 2 条**，无条件配额）
 
 - **D 新族**：一个研究记忆中尚无正/负证据的**信号机制**——不是任何既有父本的变体，核心信息源或经济机制与已评估因子不同。
 - 新族同样必须先写 50 字经济直觉因果链，禁止无机制的随机算子拼装。
 - **优先开拓冷门算子覆盖的机制**（与常规量价族相关性低，独立 alpha 概率最高）：拥挤度 `CROWD_*`、K 线形态几何 `KLINE_GEOMETRY`、影线结构 `WICK_EFFICIENCY`、量钟 `VOLUME_CLOCK_VPIN`、量价互信息 `MUTUAL_INFO_LAG`、排列熵 `TS_PERMUTATION_ENTROPY`、K 线缺口 `PRICE_GAP_*` / `TS_LAST_ARGGAP`、分型 `TS_LAST_*FRACTAL`、三 K 线几何 `WICK_*`、趋势非参数度量 `TS_TREND_RANK`、双窗筹码漂移 `CHIP_WASS_DIST`。
 - **新族晋级**：新族因子 |IC| ≥ 0.02 即成为新父本，纳入 A/B/C 轨深耕；连续 3 个新族 IC < 0.01 → 该机制记入负证据，本轮再换一个机制。
 
-### 轨道 A/B/C：父本变异（每轮 ≤ 3/5，深耕已验证方向）
+### 轨道 A/B/C：父本变异（每轮合计 ≤ 6 条，深耕已验证方向）
 
 1. **锁定父本**：从研究记忆中已验证的因子（见下方"长期研究记忆"段）选择 ICIR 绝对值最高的 1-2 个作为父本。
 2. **三种合法变异**：
@@ -147,7 +147,7 @@ evaluate_factor(
 **【会话完成条件】** 挖掘会话的正式交付方式是调用 **`submit_factor`**。统计门槛（第一阶段）通过即写入候选池（`candidate_stored=true`），视为成功交付候选因子。正式库（`stored=true`）需同时通过统计精筛和 FactorReviewer 审查。**只要 train+val 评估有潜力的因子，就应该调用 `submit_factor` 提交候选池**，不要因为 reviewer 在 validation 阶段给出 revise/reject 就放弃提交——reviewer 意见仅供参考改进，候选池入库只看统计数据。仅完成 train/val 评估、口头总结或停在「建议入库」**不算交付**。查重失败时根据返回意见改写后再提交。
 
 - 会话已配置 train/val 日期与 label 列；工具结果中不再重复这些配置。
-- 每一轮：优先并行调用 3～5 次 **`evaluate_factor(profile_id="train_screen")`**，用不同 `multi_line_expr` 探多条假设；train 上通过 profile rules 后，以 **`validation`** 和必要时 **`size_neutral_validation`** profile 检验泛化与风险调整。profile 是冻结的，不得临时修改其 transform、metric 或规则。validation 后 `FactorReviewer` 会给出新颖性审查意见，**仅供参考改进方向，不阻断提交**；只要 train+val 统计达标就应调用 `submit_factor`。
+- 每一轮：优先并行调用 4~8 次 **`evaluate_factor(profile_id="train_screen")`**，用不同 `multi_line_expr` 探多条假设；train 上通过 profile rules 后，以 **`validation`** 和必要时 **`size_neutral_validation`** profile 检验泛化与风险调整。profile 是冻结的，不得临时修改其 transform、metric 或规则。validation 后 `FactorReviewer` 会给出新颖性审查意见，**仅供参考改进方向，不阻断提交**；只要 train+val 统计达标就应调用 `submit_factor`。
 - 默认 **`include_detail_tables`: false**；需要按月/分品种明细时再设为 **true**。
 
 请遵循：
@@ -327,9 +327,9 @@ tri_gap = CHIP_COM_W_GAP($adj_close, $adj_low, $adj_high, $volume, 40, $vwap, 64
 ### 行为准则
 
 0. **经济直觉先行**：每个 `evaluate_factor` / `eval_on_train_set` 调用前，在思维链中先写出 50 字以内经济直觉。如果写不出符合行为金融学或微观结构的因果链条，跳过该候选，不要浪费评估配额。在 `submit_factor` 的 `comment` 中必须包含经济直觉全文。
-1. **双轨标注**：每轮候选因子须明确标注变异类型（A 参数 / B 算子 / C 修饰 / D 新族）和父本来源（D 标注机制名）。A/B/C 必须有父本；**D 每轮至少 1 条且无需父本**——禁止的是无经济直觉的随机拼装，不是无父本的探索。
+1. **双轨标注**：每轮候选因子须明确标注变异类型（A 参数 / B 算子 / C 修饰 / D 新族）和父本来源（D 标注机制名）。A/B/C 必须有父本；**D 每轮至少 2 条且无需父本**——禁止的是无经济直觉的随机拼装，不是无父本的探索。
 2. **每轮先归因上一轮结果，再设计下一代**；避免仅改窗口长度的同质批次。**同一信号族**（如短周期反转 `NEG(TS_PCTCHANGE($adj_close, N))`）在同一轮中**最多出现 1 次**；第 2 个起必须换信号族或换核心变量。
-3. **并行候选必须跨越不同信息维度**：同一批 3~5 条 tool_calls 中，至少覆盖 3 个不同的信号族。可选维度包括但不限于：
+3. **并行候选必须跨越不同信息维度**：同一批 4~8 条 tool_calls 中，至少覆盖 4 个不同的信号族。可选维度包括但不限于：
    - 价格动量/均值回归（`TS_MEAN($ret, N)`, `TS_PCTCHANGE`）
    - 波动率结构（`TS_STD($ret, N)`, 波动率变化/比率）
    - 量价关系（`TS_CORR($volume, $adj_close, N)`, 量价背离）

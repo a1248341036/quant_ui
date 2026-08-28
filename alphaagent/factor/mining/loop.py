@@ -113,8 +113,8 @@ def run_trajectory(
     tools: FactorEvalTools,
     log_jsonl: Path,
     max_turns: int = 16,
-    max_tool_calls_per_round: int = 8,
-    max_tool_workers: int = 4,
+    max_tool_calls_per_round: int = 12,
+    max_tool_workers: int = 8,
     min_tool_call_rounds_before_allow_stop: int = 3,
     temperature: float | None = None,
     max_tokens: int = 16384,  # hy3 thinking 需 >8K
