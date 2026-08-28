@@ -1934,6 +1934,18 @@ def roll_kline_geometry(
         w0 = int(wa)
         if w0 < 2:
             raise ValueError("window must be >= 2")
+        # Numba Jacobi 快速路径（与 numpy SVD 数值一致，消除逐 bar SVD 开销）
+        try:
+            return _kline_geometry_ratio_numba(
+                np.asarray(o, dtype=np.float64),
+                np.asarray(h, dtype=np.float64),
+                np.asarray(l, dtype=np.float64),
+                np.asarray(c, dtype=np.float64),
+                w0,
+                eps_f,
+            )
+        except Exception:
+            pass  # 回退 numpy SVD 路径
         for i in range(n):
             wi = w0 if w0 <= i + 1 else i + 1
             if wi < 2:
@@ -1980,6 +1992,102 @@ def roll_kline_geometry(
             continue
         out[i] = float(s[1]) / float(s[0])
 
+    return out
+
+
+@njit(cache=True)
+def _kline_geometry_ratio_numba(
+    o: np.ndarray,
+    h: np.ndarray,
+    l: np.ndarray,
+    c: np.ndarray,
+    window: int,
+    eps: float,
+) -> np.ndarray:
+    """窗口内 4×4 Gram 矩阵的最大两特征值比 ``σ₂/σ₁``（Jacobi，O(4³)）。
+
+    与 numpy ``svd`` 的 ``s[1]/s[0]`` 数值一致（奇异值平方 = ``XᵀX`` 特征值），
+    消除逐 bar SVD 调用开销。窗内任一路 OHLC 非有限 → NaN；``σ₁≤eps`` → NaN。
+    """
+    n = o.shape[0]
+    out = np.full(n, np.nan, dtype=np.float32)
+    w0 = int(window)
+    if w0 < 2:
+        return out
+
+    for i in range(n):
+        wi = w0 if w0 <= i + 1 else i + 1
+        if wi < 2:
+            continue
+        lo = i + 1 - wi
+
+        # Gram = X^T X (4×4)，半正定
+        gram = np.zeros((4, 4), dtype=np.float64)
+        bad = False
+        for j in range(lo, i + 1):
+            x0 = o[j]; x1 = h[j]; x2 = l[j]; x3 = c[j]
+            if not (x0 == x0 and x1 == x1 and x2 == x2 and x3 == x3):
+                bad = True
+                break
+            gram[0, 0] += x0 * x0; gram[0, 1] += x0 * x1; gram[0, 2] += x0 * x2; gram[0, 3] += x0 * x3
+            gram[1, 1] += x1 * x1; gram[1, 2] += x1 * x2; gram[1, 3] += x1 * x3
+            gram[2, 2] += x2 * x2; gram[2, 3] += x2 * x3
+            gram[3, 3] += x3 * x3
+        if bad:
+            continue
+        for r in range(4):
+            for cc in range(r + 1, 4):
+                gram[cc, r] = gram[r, cc]
+
+        # Jacobi 特征值（对称 4×4）
+        a = np.zeros((4, 4), dtype=np.float64)
+        for r in range(4):
+            for cc in range(4):
+                a[r, cc] = gram[r, cc]
+        for _ in range(60):
+            off = 0.0
+            pm = 0; qm = 1; mx = -1.0
+            for p in range(3):
+                for q in range(p + 1, 4):
+                    v = abs(a[p, q])
+                    off += a[p, q] * a[p, q]
+                    if v > mx:
+                        mx = v; pm = p; qm = q
+            if off < 1e-30:
+                break
+            if a[pm, pm] == a[qm, qm]:
+                theta = 0.7853981633974483
+            else:
+                theta = 0.5 * np.arctan2(2.0 * a[pm, qm], a[qm, qm] - a[pm, pm])
+            cth = np.cos(theta); sth = np.sin(theta)
+            for k in range(4):
+                if k != pm and k != qm:
+                    akp = a[k, pm]; akq = a[k, qm]
+                    a[k, pm] = cth * akp - sth * akq
+                    a[k, qm] = sth * akp + cth * akq
+            for k in range(4):
+                if k != pm and k != qm:
+                    akp = a[pm, k]; akq = a[qm, k]
+                    a[pm, k] = cth * akp - sth * akq
+                    a[qm, k] = sth * akp + cth * akq
+            app = a[pm, pm]; aqq = a[qm, qm]; apq = a[pm, qm]
+            a[pm, pm] = cth * cth * app - 2.0 * sth * cth * apq + sth * sth * aqq
+            a[qm, qm] = sth * sth * app + 2.0 * sth * cth * apq + cth * cth * aqq
+            a[pm, qm] = 0.0
+            a[qm, pm] = 0.0
+
+        # 对角元排序取最大两
+        ev = np.empty(4, dtype=np.float64)
+        for r in range(4):
+            ev[r] = a[r, r]
+        for r in range(4):
+            for rr in range(r + 1, 4):
+                if ev[r] < ev[rr]:
+                    ev[r], ev[rr] = ev[rr], ev[r]
+        l1 = ev[0]; l2 = ev[1]
+        if l1 <= eps or l2 < 0.0:
+            continue
+        out[i] = np.sqrt(max(l2, 0.0) / l1)
     return out
 
 
@@ -2288,23 +2396,26 @@ def _vpin_classify_volume(
     price_prev: float,
     vol: float,
     cls_id: int,
-    last_sign: int,
+    last_sign: float,
 ) -> tuple:
-    """返回 (buy_vol, sell_vol, new_last_sign)。"""
+    """返回 (buy_vol, sell_vol, new_last_sign)；三元组全为 float64，保证 numba nopython。
+
+    ``last_sign`` 用 float 承载（-1/0/1），避免异构 tuple 触发 numba 对象模式降级。
+    """
     if not (price == price) or not (vol == vol) or vol <= 0.0:
         return 0.0, 0.0, last_sign
     if not (price_prev == price_prev):
         return 0.0, 0.0, last_sign
 
     if price > price_prev:
-        return vol, 0.0, 1
+        return vol, 0.0, 1.0
     if price < price_prev:
-        return 0.0, vol, -1
+        return 0.0, vol, -1.0
 
     if cls_id == 0:
-        if last_sign > 0:
+        if last_sign > 0.0:
             return vol, 0.0, last_sign
-        if last_sign < 0:
+        if last_sign < 0.0:
             return 0.0, vol, last_sign
         half = 0.5 * vol
         return half, half, last_sign
@@ -2322,6 +2433,7 @@ def _vpin_push_imbalance(
     bucket_sell: float,
     eps: float,
 ) -> int:
+    """把已完成桶的 imbalance 推入滚动窗口（旧逐桶路径，保留供批量路径调用）。"""
     total = bucket_buy + bucket_sell
     if total <= eps:
         return n_in_buf
@@ -2371,10 +2483,21 @@ def _vpin_add_to_bucket(
     window: int,
     eps: float,
 ) -> tuple:
-    """将剩余买卖量灌入当前桶；满桶则结算。"""
+    """将剩余买卖量灌入当前桶；满桶则结算（批量，避免大 volume/小桶死循环）。
+
+    返回 (rem_buy, rem_sell, bucket_buy, bucket_sell, bucket_fill, n_in_buf)，
+    六元组全为 float64（n_in_buf 用 float 承载），保证 numba nopython 编译。
+
+    语义与原逐桶实现完全一致：当前半桶用新量按比例填满后结算；随后剩余量
+    按同一 buy/sell 比例整桶批量结算（每个整桶 imbalance 相同）；余量作新半桶。
+    """
+    if bsize <= eps:
+        return rem_buy, rem_sell, bucket_buy, bucket_sell, bucket_fill, float(n_in_buf)
+
     while rem_buy + rem_sell > eps:
         space = bsize - bucket_fill
         if space <= eps:
+            # 当前桶已满（仅浮点残差），直接结算
             n_in_buf = _vpin_push_imbalance(imb_buf, n_in_buf, window, bucket_buy, bucket_sell, eps)
             bucket_buy = 0.0
             bucket_sell = 0.0
@@ -2383,6 +2506,7 @@ def _vpin_add_to_bucket(
 
         chunk = rem_buy + rem_sell
         if chunk <= space + eps:
+            # 剩余量不足以填满当前桶：全灌入，不结算
             bucket_buy += rem_buy
             bucket_sell += rem_sell
             bucket_fill += chunk
@@ -2394,19 +2518,81 @@ def _vpin_add_to_bucket(
                 bucket_sell = 0.0
                 bucket_fill = 0.0
         else:
+            # 剩余量可填满 ≥1 个整桶：批量结算
+            # 1) 用当前剩余量按比例填满当前半桶并结算
             ratio = space / chunk
             take_buy = rem_buy * ratio
             take_sell = rem_sell * ratio
             bucket_buy += take_buy
             bucket_sell += take_sell
-            bucket_fill += space
             rem_buy -= take_buy
             rem_sell -= take_sell
             n_in_buf = _vpin_push_imbalance(imb_buf, n_in_buf, window, bucket_buy, bucket_sell, eps)
             bucket_buy = 0.0
             bucket_sell = 0.0
             bucket_fill = 0.0
-    return rem_buy, rem_sell, bucket_buy, bucket_sell, bucket_fill, n_in_buf
+            # 2) 剩余量还能整桶结算 n_extra 个（同一 buy/sell 比例 → 相同 imb）
+            remain = rem_buy + rem_sell
+            if remain > eps:
+                n_extra = int(remain / bsize)
+                if n_extra >= 1:
+                    per_buy = bsize * (rem_buy / remain)
+                    per_sell = bsize * (rem_sell / remain)
+                    n_in_buf = _vpin_push_batch(
+                        imb_buf, n_in_buf, window, n_extra, per_buy, per_sell, eps
+                    )
+                    bucket_buy = rem_buy - per_buy * n_extra
+                    bucket_sell = rem_sell - per_sell * n_extra
+                    bucket_fill = remain - bsize * n_extra
+                    rem_buy = 0.0
+                    rem_sell = 0.0
+    return rem_buy, rem_sell, bucket_buy, bucket_sell, bucket_fill, float(n_in_buf)
+
+
+@njit(cache=True)
+def _vpin_push_batch(
+    imb_buf: np.ndarray,
+    n_in_buf: int,
+    window: int,
+    n_extra: int,
+    bucket_buy: float,
+    bucket_sell: float,
+    eps: float,
+) -> int:
+    """批量推入 ``n_extra`` 个相同 imbalance 到滚动窗口（FIFO）。
+
+    与逐桶 ``_vpin_push_imbalance`` 数值语义完全一致：
+    - 窗口未满（n_in_buf + n_extra <= window）：追加到尾部；
+    - 窗口满：最旧被挤出，尾部补 n_extra 个新值。
+    返回新的 ``n_in_buf``。
+    """
+    total = bucket_buy + bucket_sell
+    if total <= eps or n_extra < 1:
+        return n_in_buf
+    imb = abs(bucket_buy - bucket_sell) / (total + eps)
+    if imb > 1.0:
+        imb = 1.0
+    elif imb < 0.0:
+        imb = 0.0
+
+    if n_in_buf + n_extra <= window:
+        # 追加（窗口未满，无挤出）
+        for k in range(n_extra):
+            imb_buf[n_in_buf + k] = imb
+        return n_in_buf + n_extra
+
+    # 溢出：n_extra 个新值推入，最旧的 n_extra 个被挤出。
+    # 保留原窗口最新的 n_keep = window - n_extra 个（这些是原有效值中最新的，
+    # 位于 [n_in_buf - n_keep : n_in_buf]）；n_extra >= window 时全部挤出。
+    n_keep = max(0, window - n_extra)
+    if n_keep > 0:
+        src_start = n_in_buf - n_keep
+        for k in range(n_keep):
+            imb_buf[k] = imb_buf[src_start + k]
+    n_new = min(n_extra, window)
+    for k in range(n_keep, window):
+        imb_buf[k] = imb
+    return window
 
 
 @njit(cache=True)
@@ -2436,7 +2622,7 @@ def _volume_clock_vpin_numba(
     bucket_buy = 0.0
     bucket_sell = 0.0
     bucket_fill = 0.0
-    last_sign = 0
+    last_sign = 0.0
 
     for i in range(n):
         p = price[i]
@@ -2445,7 +2631,7 @@ def _volume_clock_vpin_numba(
 
         rem_buy = buy_v
         rem_sell = sell_v
-        rem_buy, rem_sell, bucket_buy, bucket_sell, bucket_fill, n_in_buf = _vpin_add_to_bucket(
+        rem_buy, rem_sell, bucket_buy, bucket_sell, bucket_fill, n_in_buf_f = _vpin_add_to_bucket(
             rem_buy,
             rem_sell,
             bucket_buy,
@@ -2457,6 +2643,7 @@ def _volume_clock_vpin_numba(
             w,
             eps,
         )
+        n_in_buf = int(n_in_buf_f)
 
         out[i] = _vpin_buf_mean(imb_buf, n_in_buf, w, min_buckets)
 

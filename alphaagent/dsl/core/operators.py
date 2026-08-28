@@ -1296,19 +1296,31 @@ def KLINE_GEOMETRY(
         w = _as_int_window(window)
         if w < 2:
             raise ValueError("KLINE_GEOMETRY: window must be >= 2")
-        for _, sub_o in _gb_instrument(open_df):
-            idx = sub_o.index
-            sub_h = high_df.reindex(idx)
-            sub_l = low_df.reindex(idx)
-            sub_c = close_df.reindex(idx)
-            o_arr = sub_o.iloc[:, 0].to_numpy(dtype=float, copy=False)
-            h_arr = sub_h.iloc[:, 0].to_numpy(dtype=float, copy=False)
-            l_arr = sub_l.iloc[:, 0].to_numpy(dtype=float, copy=False)
-            c_arr = sub_c.iloc[:, 0].to_numpy(dtype=float, copy=False)
-            pos = open_df.index.get_indexer(idx)
-            result[pos] = _accel.roll_kline_geometry_fixed(
-                o_arr, h_arr, l_arr, c_arr, w, eps=eps_f
+        # 稳定归组 + 切片：面板按 (datetime, instrument) 排序，重排到品种连续区间，
+        # 逐品种纯 numpy 切片调 numba 内核，消除 pandas groupby/reindex/get_indexer 开销。
+        inst = open_df.index.get_level_values("instrument")
+        codes, _ = pd.factorize(inst, sort=False)
+        order = np.argsort(codes, kind="stable")
+        sorted_codes = codes[order]
+        bounds = np.concatenate(
+            (
+                np.flatnonzero(np.concatenate(([True], sorted_codes[1:] != sorted_codes[:-1]))),
+                [len(open_df)],
             )
+        ).astype(np.int64)
+        oo = np.asarray(open_df.iloc[:, 0].to_numpy(dtype=float, copy=False))[order]
+        hh = np.asarray(high_df.iloc[:, 0].to_numpy(dtype=float, copy=False))[order]
+        ll = np.asarray(low_df.iloc[:, 0].to_numpy(dtype=float, copy=False))[order]
+        cc = np.asarray(close_df.iloc[:, 0].to_numpy(dtype=float, copy=False))[order]
+        res = np.full(len(open_df), np.nan, dtype=np.float32)
+        for i in range(len(bounds) - 1):
+            st, en = int(bounds[i]), int(bounds[i + 1])
+            if en - st < 2:
+                continue
+            res[order[st:en]] = _accel.roll_kline_geometry_fixed(
+                oo[st:en], hh[st:en], ll[st:en], cc[st:en], w, eps=eps_f
+            )
+        result = res
 
     return pd.DataFrame(result, index=open_df.index, columns=open_df.columns[:1])
 
