@@ -545,7 +545,10 @@
               <div class="composer-bottom">
                 <div v-if="agentMode==='research'" class="composer-options">
                   <div class="mode-switch" role="tablist" aria-label="研究模式">
-                    <button v-for="m in researchModes" :key="m.value" class="mode-btn" :class="{ active: agent.form.research_mode === m.value }" :disabled="agentBusy" :title="m.hint" @click="switchResearchMode(m.value)">{{ m.label }}</button>
+                    <select class="mode-select" :value="agent.form.research_mode" :disabled="agentBusy" @change="switchResearchMode($event.target.value)">
+                      <option v-for="m in researchModes" :key="m.value" :value="m.value" :title="m.hint">{{ m.label }}</option>
+                    </select>
+                    <button class="threshold-btn" :class="{ active: agent.showThresholdModal }" :disabled="agentBusy" title="编辑当前模式的挖掘/入库/回测门槛（保存后全链路生效）" @click="openThresholdModal">{{ researchSpecCustom ? '门槛·已改' : '门槛' }}</button>
                   </div>
                   <span class="composer-label-hint" :title="'本次评估使用的 label 列，随研究模式自动切换'">{{ agent.form.label_col }}</span>
                   <label class="composer-date">训练 <input v-model="agent.form.train_start" type="date" :disabled="agentBusy" class="composer-date-input"> → <input v-model="agent.form.train_end" type="date" :disabled="agentBusy" class="composer-date-input"></label>
@@ -593,6 +596,153 @@
         </div>
       </main>
     </div>
+
+    <!-- ═══ 门槛配置弹窗（表单化） ═══ -->
+    <Teleport to="body">
+      <div v-if="agent.showThresholdModal" class="threshold-modal-overlay" @click="agent.showThresholdModal = false">
+        <div class="threshold-modal" @click.stop>
+          <div class="threshold-modal-head">
+            <div>
+              <strong>门槛配置</strong>
+              <span class="threshold-modal-mode">{{ researchModes.find(m => m.value === agent.form.research_mode)?.label || agent.form.research_mode }} 模式</span>
+              <span v-if="researchSpecCustom" class="research-spec-custom">已自定义</span>
+              <span v-if="researchSpecDirty" class="research-spec-dirty">未保存</span>
+              <span v-if="agent.specError" class="research-spec-error">{{ agent.specError }}</span>
+              <span v-if="agent.specSavedAt" class="research-spec-saved">已保存 {{ formatTime(agent.specSavedAt) }}</span>
+            </div>
+            <button class="threshold-modal-close" @click="agent.showThresholdModal = false">×</button>
+          </div>
+          <div class="threshold-modal-body">
+            <p class="threshold-hint">保存后写入该模式门槛文件（增量覆盖），挖掘 / 晋升 / CLI 全链路生效。恢复默认会删除自定义覆盖。</p>
+
+            <section class="threshold-group">
+              <h4>① 训练集评估门槛（train_screen）</h4>
+              <div class="threshold-grid">
+                <label>Train |IC| ≥
+                  <input type="number" step="0.001" class="threshold-input" v-model.number="thresholdDraft.evaluation_policy.min_train_abs_ic">
+                </label>
+                <label>Train |ICIR| ≥
+                  <input type="number" step="0.01" class="threshold-input" v-model.number="thresholdDraft.evaluation_policy.min_train_icir">
+                </label>
+                <label>Coverage ≥
+                  <input type="number" step="0.01" class="threshold-input" v-model.number="thresholdDraft.evaluation_policy.min_train_coverage">
+                </label>
+              </div>
+            </section>
+
+            <section class="threshold-group">
+              <h4>② 验证集门槛（validation）</h4>
+              <div class="threshold-grid">
+                <label>Val |IC| ≥
+                  <input type="number" step="0.001" class="threshold-input" v-model.number="thresholdDraft.evaluation_policy.min_val_abs_ic">
+                </label>
+                <label>Val/Train 保留比 ≥
+                  <input type="number" step="0.01" class="threshold-input" v-model.number="thresholdDraft.evaluation_policy.min_val_ic_retention_ratio">
+                </label>
+                <label>截面自相关 ≥（换手约束）
+                  <input type="number" step="0.01" class="threshold-input" v-model.number="thresholdDraft.evaluation_policy.min_cs_autocorr">
+                </label>
+              </div>
+            </section>
+
+            <section class="threshold-group">
+              <h4>③ 候选池门槛（stage_one 海选）</h4>
+              <div class="threshold-grid">
+                <label>|IC| ≥
+                  <input type="number" step="0.001" class="threshold-input" v-model.number="thresholdDraft.delivery_policy.candidate.min_abs_ic">
+                </label>
+                <label>|ICIR| >
+                  <input type="number" step="0.01" class="threshold-input" v-model.number="thresholdDraft.delivery_policy.candidate.min_icir">
+                </label>
+                <label>Coverage >
+                  <input type="number" step="0.01" class="threshold-input" v-model.number="thresholdDraft.delivery_policy.candidate.min_coverage">
+                </label>
+                <label>最大截面相关 &lt;
+                  <input type="number" step="0.01" class="threshold-input" v-model.number="thresholdDraft.delivery_policy.candidate.max_abs_corr">
+                </label>
+                <label>截面自相关 ≥
+                  <input type="number" step="0.01" class="threshold-input" v-model.number="thresholdDraft.delivery_policy.candidate.min_cs_autocorr">
+                </label>
+                <label>Val 保留比 ≥
+                  <input type="number" step="0.01" class="threshold-input" v-model.number="thresholdDraft.delivery_policy.candidate.min_val_ic_retention">
+                </label>
+              </div>
+            </section>
+
+            <section class="threshold-group">
+              <h4>④ 正式库门槛（stage_two 精筛）</h4>
+              <div class="threshold-grid">
+                <label>Train |IC| ≥
+                  <input type="number" step="0.001" class="threshold-input" v-model.number="thresholdDraft.delivery_policy.production.min_train_abs_ic">
+                </label>
+                <label>Train |ICIR| ≥
+                  <input type="number" step="0.01" class="threshold-input" v-model.number="thresholdDraft.delivery_policy.production.min_train_icir">
+                </label>
+                <label>Val |IC| ≥
+                  <input type="number" step="0.001" class="threshold-input" v-model.number="thresholdDraft.delivery_policy.production.min_val_abs_ic">
+                </label>
+                <label>Val 保留比 ≥
+                  <input type="number" step="0.01" class="threshold-input" v-model.number="thresholdDraft.delivery_policy.production.min_val_ic_retention">
+                </label>
+                <label>Val 多头端年化超额 ≥
+                  <input type="number" step="0.01" class="threshold-input" v-model.number="thresholdDraft.delivery_policy.production.min_val_long_excess">
+                </label>
+                <label>截尾 IC 衰减 ≤
+                  <input type="number" step="0.01" class="threshold-input" v-model.number="thresholdDraft.delivery_policy.production.max_winsorized_abs_ic_decay">
+                </label>
+                <label>最大截面相关 &lt;
+                  <input type="number" step="0.01" class="threshold-input" v-model.number="thresholdDraft.delivery_policy.production.max_abs_corr">
+                </label>
+              </div>
+            </section>
+
+            <section class="threshold-group">
+              <h4>⑤ engine_gate 完整回测门禁</h4>
+              <div class="threshold-grid">
+                <label>调仓频率
+                  <select class="threshold-input" v-model="thresholdDraft.delivery_policy.production.engine_gate.freq">
+                    <option value="weekly">weekly（周）</option>
+                    <option value="monthly">monthly（月）</option>
+                    <option value="daily">daily（日）</option>
+                  </select>
+                </label>
+                <label>净超额年化 ≥
+                  <input type="number" step="0.01" class="threshold-input" v-model.number="thresholdDraft.delivery_policy.production.engine_gate.min_excess_annual">
+                </label>
+                <label>超额夏普 ≥
+                  <input type="number" step="0.05" class="threshold-input" v-model.number="thresholdDraft.delivery_policy.production.engine_gate.min_excess_sharpe">
+                </label>
+                <label>最大回撤 ≤
+                  <input type="number" step="0.01" class="threshold-input" v-model.number="thresholdDraft.delivery_policy.production.engine_gate.max_drawdown">
+                </label>
+                <label>持仓日重叠 ≥
+                  <input type="number" step="0.01" class="threshold-input" v-model.number="thresholdDraft.delivery_policy.production.engine_gate.min_daily_overlap">
+                </label>
+                <label>仓位利用率 ≥
+                  <input type="number" step="0.01" class="threshold-input" v-model.number="thresholdDraft.delivery_policy.production.engine_gate.min_invested_ratio">
+                </label>
+                <label>日均成交额下限（元）
+                  <input type="number" step="10000" class="threshold-input" v-model.number="thresholdDraft.delivery_policy.production.engine_gate.min_am20_yuan">
+                </label>
+              </div>
+            </section>
+
+            <details class="threshold-advanced">
+              <summary>高级（完整 JSON，含搜索/审查/交互/记忆策略）</summary>
+              <textarea v-model="agent.researchSpecText" spellcheck="false" class="threshold-json" aria-label="ResearchSpec 完整 JSON"></textarea>
+            </details>
+          </div>
+          <div class="threshold-modal-foot">
+            <button class="threshold-btn-reset" :disabled="agent.researchSpecSaving" @click="resetResearchSpec">恢复默认</button>
+            <span class="threshold-spacer"></span>
+            <button class="threshold-btn-cancel" @click="agent.showThresholdModal = false">取消</button>
+            <button class="threshold-btn-save" :disabled="agent.researchSpecSaving" @click="saveThresholds">
+              {{ agent.researchSpecSaving ? '保存中…' : '保存门槛' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
 
     <!-- 因子详情弹窗 -->
     <Teleport to="body">
@@ -834,6 +984,8 @@ export default {
         memoryCollapsed: false,
         memoryDetail: null,
         showResearchSpec: false,
+        showThresholdModal: false,
+        thresholdDraft: null,
         composerCollapsed: false,
         researchSpecText: '',
         defaultResearchSpecText: '',
@@ -1247,6 +1399,119 @@ export default {
         this.agent.specError = ''
       }
       if (spec?.recommended_label_col) this.agent.form.label_col = spec.recommended_label_col
+      // 门槛弹窗打开时同步切换 draft
+      if (this.agent.showThresholdModal) this.syncThresholdDraft()
+    },
+    cloneThresholdDraft(spec) {
+      return JSON.parse(JSON.stringify(spec || {}))
+    },
+    syncThresholdDraft() {
+      const spec = this.specDefaultsByMode[this.agent.form.research_mode]
+      const draft = this.cloneThresholdDraft(spec)
+      // 未保存的 JSON 编辑（高级区）优先于默认 effective
+      if (this.agent.researchSpecText) {
+        try {
+          const edited = JSON.parse(this.agent.researchSpecText)
+          if (edited && typeof edited === 'object') {
+            draft.evaluation_policy = Object.assign((spec?.evaluation_policy || {}), edited.evaluation_policy || {})
+            draft.delivery_policy = Object.assign((spec?.delivery_policy || {}), edited.delivery_policy || {})
+          }
+        } catch (e) { /* 忽略无效 JSON，保留默认 */ }
+      }
+      this.agent.thresholdDraft = draft
+    },
+    openThresholdModal() {
+      if (!this.specDefaultsByMode[this.agent.form.research_mode]) {
+        this.loadDefaultResearchSpec(this.agent.form.research_mode).then(() => this.syncThresholdDraft())
+      } else {
+        this.syncThresholdDraft()
+      }
+      this.agent.showThresholdModal = true
+    },
+    validateThresholdDraft() {
+      const d = this.agent.thresholdDraft
+      if (!d || !d.evaluation_policy || !d.delivery_policy?.candidate || !d.delivery_policy?.production?.engine_gate) {
+        throw new Error('门槛数据不完整')
+      }
+      const nums = [
+        ['Train |IC|', d.evaluation_policy.min_train_abs_ic, 0, 1],
+        ['Train |ICIR|', d.evaluation_policy.min_train_icir, -5, 20],
+        ['Coverage', d.evaluation_policy.min_train_coverage, 0, 1],
+        ['Val |IC|', d.evaluation_policy.min_val_abs_ic, 0, 1],
+        ['Val 保留比', d.evaluation_policy.min_val_ic_retention_ratio, 0, 2],
+        ['换手自相关', d.evaluation_policy.min_cs_autocorr, 0, 1],
+        ['候选 |IC|', d.delivery_policy.candidate.min_abs_ic, 0, 1],
+        ['候选 ICIR', d.delivery_policy.candidate.min_icir, -5, 20],
+        ['候选 Coverage', d.delivery_policy.candidate.min_coverage, 0, 1],
+        ['候选最大相关', d.delivery_policy.candidate.max_abs_corr, 0, 1],
+        ['候选自相关', d.delivery_policy.candidate.min_cs_autocorr, 0, 1],
+        ['候选 Val 保留比', d.delivery_policy.candidate.min_val_ic_retention, 0, 1],
+        ['正式 Train |IC|', d.delivery_policy.production.min_train_abs_ic, 0, 1],
+        ['正式 Train ICIR', d.delivery_policy.production.min_train_icir, -5, 20],
+        ['正式 Val |IC|', d.delivery_policy.production.min_val_abs_ic, 0, 1],
+        ['正式 Val 保留比', d.delivery_policy.production.min_val_ic_retention, 0, 2],
+        ['正式多头超额', d.delivery_policy.production.min_val_long_excess, -1, 1],
+        ['正式截尾衰减', d.delivery_policy.production.max_winsorized_abs_ic_decay, 0, 1],
+        ['正式最大相关', d.delivery_policy.production.max_abs_corr, 0, 1],
+        ['超额年化', d.delivery_policy.production.engine_gate.min_excess_annual, -1, 5],
+        ['超额夏普', d.delivery_policy.production.engine_gate.min_excess_sharpe, 0, 10],
+        ['最大回撤', d.delivery_policy.production.engine_gate.max_drawdown, 0, 10],
+        ['持仓重叠', d.delivery_policy.production.engine_gate.min_daily_overlap, 0, 10],
+        ['仓位利用率', d.delivery_policy.production.engine_gate.min_invested_ratio, 0, 1],
+        ['日均成交额', d.delivery_policy.production.engine_gate.min_am20_yuan, 0, 1e12],
+      ]
+      for (const [label, value, lo, hi] of nums) {
+        if (value == null || Number.isNaN(Number(value))) throw new Error(label + ' 必须是数字')
+        const v = Number(value)
+        if (v < lo || v > hi) throw new Error(label + ' 超出范围 [' + lo + ', ' + hi + ']')
+      }
+      const freq = String(d.delivery_policy.production.engine_gate.freq || '').toLowerCase()
+      if (!['weekly', 'monthly', 'daily'].includes(freq)) throw new Error('调仓频率必须是 weekly/monthly/daily')
+      return d
+    },
+    async saveThresholds() {
+      let draft
+      try {
+        draft = this.validateThresholdDraft()
+      } catch (e) {
+        this.agent.specError = String(e.message || e)
+        return
+      }
+      const mode = this.agent.form.research_mode
+      // 高级 JSON 区已编辑过的键，以 JSON 为准（覆盖表单），未编辑的以表单为准
+      let advanced = null
+      if (this.agent.researchSpecText) {
+        try {
+          advanced = JSON.parse(this.agent.researchSpecText)
+        } catch (e) { /* 高级 JSON 无效则忽略，只用表单 */ }
+      }
+      if (advanced && typeof advanced === 'object') {
+        draft = this.cloneThresholdDraft(draft)
+        for (const key of Object.keys(advanced)) {
+          if (key !== 'research_mode') draft[key] = advanced[key]
+        }
+      }
+      draft.research_mode = mode
+      this.agent.researchSpecSaving = true
+      try {
+        const payload = await api('/api/alphaagent/research-specs/' + encodeURIComponent(mode), {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ spec: draft }),
+        })
+        this.specDefaultsByMode[mode] = payload.effective
+        this.specOverridesByMode[mode] = payload.overrides || {}
+        const text = JSON.stringify(payload.effective, null, 2)
+        this.agent.defaultResearchSpecText = text
+        this.agent.researchSpecText = text
+        this.agent.specError = ''
+        this.agent.specSavedAt = new Date()
+        this.syncThresholdDraft()
+      } catch (e) {
+        this.agent.specError = '保存门槛失败: ' + e.message
+      } finally {
+        this.agent.researchSpecSaving = false
+      }
     },
     async saveResearchSpec() {
       const mode = this.agent.form.research_mode
@@ -1291,6 +1556,7 @@ export default {
       } catch (e) {
         this.agent.specError = '恢复默认失败: ' + e.message
       }
+      if (this.agent.showThresholdModal) this.syncThresholdDraft()
     },
     parseResearchSpec() {
       try {
@@ -2687,11 +2953,43 @@ export default {
 .composer textarea { display:block; width:100%; resize:none; border:0; outline:0; background:transparent; color:var(--text); padding:13px 14px 7px; line-height:1.55; font-size:13px; }
 .composer-bottom { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; padding:6px 8px 8px 14px; }
 .composer-options { display:flex; align-items:center; gap:12px; flex-wrap:wrap; row-gap:5px; min-width:0; flex:1 1 auto; color:var(--muted); font-size:10px; }
-.mode-switch { display:inline-flex; flex:none; gap:2px; padding:2px; border:1px solid var(--line); border-radius:7px; background:rgb(255 255 255 / .02); }
+.mode-switch { display:inline-flex; flex:none; align-items:center; gap:4px; padding:2px; border:1px solid var(--line); border-radius:7px; background:rgb(255 255 255 / .02); }
 .mode-btn { padding:3px 9px; border:0; border-radius:5px; background:transparent; color:var(--muted); font-size:10px; cursor:pointer; white-space:nowrap; }
 .mode-btn:hover:not(:disabled) { color:var(--text); }
 .mode-btn.active { color:var(--text); background:rgb(79 140 255 / .18); }
 .mode-btn:disabled { opacity:.5; cursor:not-allowed; }
+.mode-select { padding:3px 6px; border:0; border-radius:5px; background:rgb(255 255 255 / .06); color:var(--text); font-size:10px; cursor:pointer; outline:none; }
+.mode-select:disabled { opacity:.5; cursor:not-allowed; }
+.threshold-btn { padding:3px 9px; border:1px solid var(--line); border-radius:5px; background:transparent; color:var(--accent); font-size:10px; cursor:pointer; white-space:nowrap; }
+.threshold-btn:hover, .threshold-btn.active { background:rgb(79 140 255 / .14); color:var(--text); }
+.threshold-btn:disabled { opacity:.5; cursor:not-allowed; }
+.threshold-modal-overlay { position:fixed; inset:0; z-index:80; background:rgb(0 0 0 / .55); display:flex; align-items:center; justify-content:center; padding:24px; }
+.threshold-modal { width:min(680px,94vw); max-height:88vh; display:flex; flex-direction:column; border-radius:10px; border:1px solid var(--line); background:var(--bg); box-shadow:0 12px 40px rgb(0 0 0 / .5); overflow:hidden; }
+.threshold-modal-head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:10px 14px; border-bottom:1px solid var(--line); }
+.threshold-modal-head strong { color:var(--text); font-size:14px; }
+.threshold-modal-mode { color:var(--muted); font-size:11px; margin-left:8px; }
+.threshold-modal-head div:first-child { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.threshold-modal-close { width:24px; height:24px; border:0; border-radius:5px; background:transparent; color:var(--muted); font-size:18px; line-height:18px; cursor:pointer; }
+.threshold-modal-close:hover { background:rgb(255 255 255 / .09); color:var(--text); }
+.threshold-modal-body { padding:12px 14px; overflow-y:auto; }
+.threshold-hint { color:var(--muted); font-size:11px; margin:0 0 10px; }
+.threshold-group { margin-bottom:12px; border:1px solid var(--line); border-radius:8px; padding:10px 12px; background:rgb(255 255 255 / .02); }
+.threshold-group h4 { margin:0 0 8px; color:var(--text); font-size:11px; font-weight:600; }
+.threshold-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:8px 14px; }
+.threshold-grid label { display:flex; flex-direction:column; gap:4px; color:var(--muted); font-size:10px; }
+.threshold-input { padding:4px 6px; border:1px solid var(--line); border-radius:5px; background:rgb(255 255 255 / .04); color:var(--text); font-size:11px; outline:none; }
+.threshold-input:focus { border-color:var(--accent); }
+.threshold-advanced { margin-top:4px; border:1px solid var(--line); border-radius:8px; padding:8px 12px; }
+.threshold-advanced summary { color:var(--muted); font-size:11px; cursor:pointer; }
+.threshold-json { display:block; width:100%; min-height:180px; resize:vertical; margin-top:8px; border:0; outline:0; background:transparent; color:#c7d8ee; padding:6px 0; font:11px/1.55 var(--font-mono); }
+.threshold-modal-foot { display:flex; align-items:center; gap:8px; padding:10px 14px; border-top:1px solid var(--line); }
+.threshold-spacer { flex:1; }
+.threshold-btn-reset, .threshold-btn-cancel, .threshold-btn-save { padding:6px 14px; border-radius:6px; font-size:12px; cursor:pointer; }
+.threshold-btn-reset { border:1px solid var(--line); background:transparent; color:var(--muted); }
+.threshold-btn-reset:hover { color:#ef8b92; border-color:#ef8b92; }
+.threshold-btn-cancel { border:1px solid var(--line); background:transparent; color:var(--muted); }
+.threshold-btn-save { border:0; background:rgb(79 140 255); color:#fff; }
+.threshold-btn-save:disabled { opacity:.5; cursor:not-allowed; }
 .composer-label-hint { font:10px var(--font-mono); opacity:.75; white-space:nowrap; min-width:0; max-width:180px; overflow:hidden; text-overflow:ellipsis; }
 .composer-date { display:inline-flex; flex-direction:row; align-items:center; gap:3px; white-space:nowrap; }
 .composer-actions { display:flex; align-items:center; gap:8px; flex:none; margin-left:auto; }

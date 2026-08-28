@@ -57,3 +57,6 @@ baseline_failures.txt
 *.jpg
 *.jpeg
 *.png
+
+# Personal crush memory data (create-crush skill output, not project source)
+crushes/

@@ -56,16 +56,21 @@ backend/
 
 scripts/
 ├── run_alphaagent.py        # CLI 入口：加载 Codex provider 配置并启动挖掘
-└── alphaagent_factor_mining.py  # 上游 AgentScope 挖掘脚本（被 run_alphaagent 调用）
+├── alphaagent_factor_mining.py  # 上游 AgentScope 挖掘脚本（被 run_alphaagent 调用）
+├── promote_candidates.py    # 候选池重放晋升：已有候选重新走两阶段链路
+└── dedup_candidate_factors.py  # 候选池一次性去重
 
 static/src/views/AlphaAgent.vue  # 前端页面：研究 / 因子实验室 / 因子库三个子标签
 
 artifacts/alphaagent/
-├── factorzoo/stock_1d/       # 生产因子库
-├── factorzoo/candidate_1d/   # 候选因子池
-└── research_memory.json      # 跨会话持久化研究记忆
+├── factorzoo/production_technical/   # 正式因子库（技术模式，FactorZoo 密集矩阵）
+├── factorzoo/candidate_technical/    # 候选因子池（技术模式）
+├── factorzoo/production_fundamental/ # 正式因子库（基本面模式）
+├── factorzoo/candidate_fundamental/  # 候选因子池（基本面模式）
+├── research_specs/<mode>.json        # 每模式门槛文件的增量覆盖（diff）
+└── research_memory.db                # 跨会话持久化研究记忆（BM25）
 
-logs/factor_mining/ui/        # 每次运行的 JSONL 轨迹 + console.log + run_meta.json
+logs/factor_mining/ui/        # 每次 Web run 的 JSONL 轨迹 + run_meta.json（按 run_id 分目录）
 ```
 
 ## 核心流程
@@ -81,8 +86,8 @@ logs/factor_mining/ui/        # 每次运行的 JSONL 轨迹 + console.log + run
         → alphaagent.factor.mining.loop.run()
 ```
 
-- `panel_path` 默认 `"cne://"`，触发 `alphaagent/data/adapters/cnequity.py` 从 CNE 数据湖实时构建 panel。
-- `factorlib_path` 默认 `artifacts/alphaagent/factorzoo/stock_1d`。
+- `panel_path` 默认 `"cne://"`，触发 `alphaagent/data/adapters/cnequity.py` 从 CNE 数据湖实时构建 panel。CNE adapter 有磁盘面板缓存（`artifacts/panel/cache/panel_*.parquet`），请求区间被缓存覆盖时秒级命中，不重复重建。
+- `factorlib_path` 默认 `factor_categories.production_dir(research_mode)`（如 `artifacts/alphaagent/factorzoo/production_technical`），由 research_mode 路由。
 - 环境变量 `ALPHA_LLM_PROVIDER=codex` 时从 `~/.codex/config.toml` 读取 bearer token 和 model。
 
 ### 2. 挖掘循环（loop.py）
@@ -109,19 +114,33 @@ logs/factor_mining/ui/        # 每次运行的 JSONL 轨迹 + console.log + run
 
 ### 5. 入库两阶段（submit.py）
 
-| 阶段 | 门槛 | 写入位置 |
+> 门槛数值唯一真源在 `delivery_criteria.DeliveryCriteria`（由 research_spec 注入），
+> 下表为默认值（technical 模式）。真实判定读 `submit.py` 的 `self.criteria`，
+> 与 prompt 渲染（`DeliveryCriteria.to_prompt_text()`）同源，杜绝口径漂移。
+
+| 阶段 | 门槛（默认） | 写入位置 |
 |---|---|---|
-| candidate（海选） | \|IC\| ≥ 0.015, \|ICIR\| > 0.25, coverage > 0.85, max_corr < 0.6, lag1 自相关 ≥ 0.18, val 保留比 ≥ 0.5 | factorzoo/candidate_1d |
-| production | \|train IC\| ≥ 0.025, \|train ICIR\| ≥ 0.30, \|val IC\| ≥ 0.015, val 保留比 ≥ 0.60, winsorized 衰减 ≤ 0.10, max_corr < 0.4 | factorzoo/stock_1d |
+| candidate（海选） | \|IC\| ≥ 0.015, \|ICIR\| > 0.25, coverage > 0.85, max_corr < 0.5, lag1 自相关 ≥ 0.18, val 保留比 ≥ 0.5 | candidate_technical/ |
+| production | \|train IC\| ≥ 0.025, \|train ICIR\| ≥ 0.30, \|val IC\| ≥ 0.015, val 保留比 ≥ 0.60, winsorized 衰减 ≤ 0.10, max_corr < 0.4 | production_technical/ |
 
 提交流程顺序：
 1. **stage_one 统计门槛**（IC/ICIR/coverage/换手/val 保留比）→ 不通过拒绝
-2. **正交性检查**（stage_one 统一查，不再只在 approve 后触发）→ 与正式库+候选池已有因子做 Spearman 相关，超过阈值拒绝
-3. **review_hook**（LLM Reviewer 审核）→ reject 拒绝、revise 入候选池待修订、approve 继续冲正式库
+2. **正交性检查**（stage_one 统一查，不再只在 approve 后触发）→ 与正式库已有因子做截面相关，超过阈值拒绝
+3. **review_hook**（LLM Reviewer 审核）→ **仅 reject 硬拦**（抄袭/经典暴露不进任何库）；revise/pending_review 不阻断晋升，仅记录意见
 4. 入候选池（registry_only）
 5. **stage_two 精筛**（双窗口口径）→ 不通过停在候选池
 6. **engine_gate 回测门禁**（完整回测引擎净值裁决）→ 不通过停在候选池
 7. 入正式库（canonical 对齐 + ingest）
+
+**晋升链路关键语义（2026-08 修复）**：
+- **stage_one / stage_two 的相似度只查正式库**，候选池内部冗余不卡正式库准入。
+  候选池冗余由 `scripts/dedup_candidate_factors.py` 主动去重管理，而非让候选池因子
+  互相挡死晋升（历史死锁：`gap_vwap_ens_wo3` 被候选池内相关 0.598 的 `vwap_close_dev_mom` 卡死）。
+- **Reviewer 的 revise 是建议不是门槛**：与系统提示词"Reviewer 意见仅供参考改进方向，
+  不阻断提交"一致；正式库准入的最终裁决是 stage_two 统计门槛 + engine_gate 净值回测。
+- **engine_gate 是实盘可交易性裁决**：weekly 调仓、净超额年化 ≥3%、超额夏普 ≥0.5、
+  回撤 ≤40%、持仓重叠 ≥50%、仓位利用率 ≥80%。统计 IC 高的因子若换手高（如日换手 69%、
+  周重叠 5.6%），实盘净超额会转负 —— engine_gate 正确拦截"统计有效但实盘亏钱"的假因子。
 
 ### 6. 候选因子库管理
 
@@ -143,7 +162,7 @@ logs/factor_mining/ui/        # 每次运行的 JSONL 轨迹 + console.log + run
 
 - BM25 检索历史评估证据（含 jieba 中文分词，无 jieba 回退 bigram）。
 - 正向 verdict（production_approved, validated 等）鼓励邻域探索；负向 verdict（rejected, weak 等）防止重复无效路径。
-- 存储在 `artifacts/alphaagent/research_memory.json`。
+- 存储在 `artifacts/alphaagent/research_memory.db`（SQLite，跨会话持久化）。
 
 ## REST API
 
@@ -156,12 +175,30 @@ logs/factor_mining/ui/        # 每次运行的 JSONL 轨迹 + console.log + run
 | POST | `/api/alphaagent/runs/{id}/messages` | 向运行中的进程注入消息 |
 | POST | `/api/alphaagent/runs/{id}/continue` | 已结束的 run 继续（fork 新进程） |
 | POST | `/api/alphaagent/runs/{id}/branch` | 分支新 run |
+| POST | `/api/alphaagent/runs/{id}/rename` | 重命名 run |
+| POST | `/api/alphaagent/runs/{id}/archive` | 归档/取消归档 run |
+| POST | `/api/alphaagent/runs/{id}/pin` | 置顶 run |
+| DELETE | `/api/alphaagent/runs/{id}` | 删除 run |
+| DELETE | `/api/alphaagent/runs/archived` | 清理全部已归档 run |
+| GET | `/api/alphaagent/runs/{id}/events` | SSE 事件流（实时轨迹） |
 | GET | `/api/alphaagent/research-memory` | 查看研究记忆 |
+| DELETE | `/api/alphaagent/research-memory/{entry_id}` | 删除单条研究记忆 |
+| GET | `/api/alphaagent/research-modes` | 研究模式选项（label/推荐 label/默认消息） |
 | GET | `/api/alphaagent/research-spec/default` | 当前模式生效研究策略（默认+保存覆盖） |
 | GET | `/api/alphaagent/research-specs/{mode}` | 模式门槛文件三视图：defaults/overrides/effective |
 | PUT | `/api/alphaagent/research-specs/{mode}` | 保存模式门槛（diff 出增量覆盖，全链路生效） |
 | DELETE | `/api/alphaagent/research-specs/{mode}` | 删除门槛文件，恢复注册表默认 |
 | GET | `/api/alphaagent/evaluation-capabilities` | 可用评估插件和 profiles |
+| POST | `/api/alphaagent/eval-factor` | 单因子评估（因子实验室） |
+| GET | `/api/alphaagent/factors` | 列因子（library=production/candidate） |
+| GET | `/api/alphaagent/factors/{id}` | 因子详情 |
+| POST | `/api/alphaagent/factors` | 保存因子 |
+| DELETE | `/api/alphaagent/factors/{id}` | 删除因子 |
+| POST | `/api/alphaagent/backtest-factor` | 因子回测 |
+| GET | `/api/alphaagent/session-cache/stats` | 会话缓存统计 |
+| POST | `/api/alphaagent/session-cache/evict` | 清空会话缓存 |
+| GET | `/api/alphaagent/logs` | 运行日志 |
+| GET | `/api/alphaagent/logs/tail` | 日志尾部/流式 |
 
 ## 关键设计决策
 
@@ -182,15 +219,24 @@ logs/factor_mining/ui/        # 每次运行的 JSONL 轨迹 + console.log + run
 ## 常用命令
 
 ```powershell
-# CLI 直接启动挖掘（默认 cne:// panel + stock_1d factorlib）
+# 启动后端（推荐：一键启动 Quant UI 后端 17891 + CNE dashboard 8787）
+# 桌面快捷方式「Quant UI 启动.lnk」即运行本脚本
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start_backend_with_sync.ps1
+
+# 仅后端（若只需 API 不想起 CNE dashboard）
+.venv\Scripts\python.exe -m uvicorn backend.main:app --host 127.0.0.1 --port 17891
+
+# CLI 直接启动挖掘（默认 cne:// panel + production_technical factorlib）
 .venv\Scripts\python.exe scripts\run_alphaagent.py
 
-# 启动后端
-.venv\Scripts\python.exe -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
+# 候选池重放晋升（把候选池已有因子重新走一遍修复后的两阶段链路）
+.venv\Scripts\python.exe scripts\promote_candidates.py
 
 # 前端 dev
 cd static && npm run dev
 ```
+
+> **端口约定**：Quant UI 后端固定 **17891**；CNE dashboard **8787**。历史上 AGENTS.md 曾写 8000，已废弃 —— 一律以 `scripts/start_backend_with_sync.ps1` 为准。
 
 ## 依赖
 
