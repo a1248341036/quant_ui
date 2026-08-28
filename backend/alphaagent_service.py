@@ -114,10 +114,34 @@ class AgentRun:
         return files[-1] if files else None
 
     def refresh(self) -> None:
+        jsonl = self._jsonl()
+
+        def _terminal_from_events() -> str | None:
+            # 日志已写入终态事件（session_end/session_error/run_summary）则跟随终态。
+            # 终态优先于任何 running 判定：session_end 发出后进程未退出（挂住）
+            # 或后端重启后 mtime 仍新鲜，都不应永远显示 running。
+            if jsonl is None or not jsonl.exists():
+                return None
+            status = _status_from_events(_tail_events(jsonl))
+            return None if status == "interrupted" else status
+
         # 有进程句柄：以进程退出码为准。
         if self.process is not None:
             code = self.process.poll()
             if code is None:
+                # 进程活着，但若终态事件已写入且日志 120 秒无新增，
+                # 视为子进程在 session_end 后挂住，跟随终态结束。
+                try:
+                    stale = jsonl is not None and jsonl.exists() and (
+                        time.time() - jsonl.stat().st_mtime > 120
+                    )
+                except OSError:
+                    stale = False
+                if stale:
+                    terminal = _terminal_from_events()
+                    if terminal is not None:
+                        self.status = terminal
+                        return
                 self.status = "running"
             elif code == 0:
                 self.status = "completed"
@@ -134,21 +158,18 @@ class AgentRun:
                     self.error = f"AlphaAgent exited with code {code}" + (f": {detail[-1200:]}" if detail else "")
             return
         # 无进程句柄（后端重启后从磁盘恢复，或 CLI 启动）：
-        # 事件日志已写入终态（session_end/session_error/run_summary）则跟随终态，
-        # 否则若轨迹仍在推进视为 running，避免误标 interrupted。
-        jsonl = self._jsonl()
+        # 终态事件优先，其次若轨迹仍在推进（15 分钟内有新事件）视为 running。
+        terminal = _terminal_from_events()
+        if terminal is not None:
+            self.status = terminal
+            return
         if jsonl is None or not jsonl.exists():
             return
         try:
             if time.time() - jsonl.stat().st_mtime < 900:
                 self.status = "running"
-                return
         except OSError:
             pass
-        status = _status_from_events(list(read_events(jsonl)))
-        if status == "interrupted":
-            return
-        self.status = status
 
     def snapshot(self, tail: int = 80) -> dict[str, Any]:
         self.refresh()
@@ -233,6 +254,30 @@ def _status_from_events(events: list[dict[str, Any]]) -> str:
     if "session_end" in names or "run_summary" in names:
         return "completed"
     return "interrupted"
+
+
+def _tail_events(jsonl: Path, max_bytes: int = 262144) -> list[dict[str, Any]]:
+    """读取 JSONL 尾部事件（refresh 高频调用，避免全量读文件）。"""
+    try:
+        size = jsonl.stat().st_size
+        with jsonl.open("rb") as handle:
+            if size > max_bytes:
+                handle.seek(-max_bytes, os.SEEK_END)
+            data = handle.read().decode("utf-8", errors="replace")
+    except OSError:
+        return []
+    lines = data.splitlines()
+    if size > max_bytes and lines:
+        lines = lines[1:]  # 首行可能是半截 JSON
+    out: list[dict[str, Any]] = []
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(row, dict):
+            out.append(row)
+    return out
 
 
 def _load_run_from_disk(run_dir: Path) -> AgentRun | None:
@@ -394,7 +439,7 @@ def start_run(
     elif not caller_label:
         params["label_col"] = recommended
     params["max_tool_calls_per_round"] = min(
-        int(params["max_tool_calls_per_round"]),
+        int(params.get("max_tool_calls_per_round") or 8),
         int(spec["search_policy"]["max_candidates_per_round"]),
     )
     run_id = uuid.uuid4().hex[:12]
@@ -415,8 +460,8 @@ def start_run(
         "--label-col", str(params["label_col"]),
         "--max-turns", str(params["max_turns"]),
         "--max-tool-calls-per-round", str(params["max_tool_calls_per_round"]),
-        "--max-tool-workers", str(params["max_tool_workers"]),
-        "--max-tokens", str(params["max_tokens"]),
+        "--max-tool-workers", str(params.get("max_tool_workers") or 8),
+        "--max-tokens", str(params.get("max_tokens") or 16384),
         "--log-dir", str(log_dir),
         "--control-file", str(log_dir / "continuations.jsonl"),
         "--research-memory-file", str(RESEARCH_MEMORY_FILE),
@@ -600,7 +645,9 @@ def _run_resume_context(run: AgentRun) -> str:
             )
         elif kind == "tool_results":
             for row in event.get("results") or []:
-                result = row.get("result") if isinstance(row, dict) else {}
+                result = row.get("result") if isinstance(row, dict) else None
+                if not isinstance(result, dict):
+                    result = {}  # 键存在但为 null（如 SSE 压缩/裁剪后的历史事件）
                 summary = result.get("summary", {}) if isinstance(result, dict) else {}
                 lines.append(
                     "## 评估结果\n"
@@ -625,10 +672,41 @@ def _resume_context(run: AgentRun) -> str:
     return "\n\n".join(_run_resume_context(item) for item in reversed(lineage))[-24000:]
 
 
+_CONTINUE_DEFAULT_PARAMS: dict[str, Any] = {
+    "train_start": "2018-01-01",
+    "train_end": "2022-12-31",
+    "val_start": "2023-01-01",
+    "val_end": "2025-12-31",
+    "label_col": "",  # 空 → start_run 按研究模式回填推荐 label
+    "max_turns": 6,
+    "max_tool_calls_per_round": 12,
+    "max_tool_workers": 8,
+    "max_parallel_eval": 6,
+    "max_tokens": 16384,
+    "population_max": 24,
+    "no_fundamentals": False,
+}
+
+
 def _start_from_history(parent: AgentRun, content: str) -> AgentRun:
     context_path = parent.log_dir / "resume_context.md"
     context_path.write_text(_resume_context(parent), encoding="utf-8")
-    params = {**parent.params, "user_message": content}
+    # parent.params 只持久化了 user_message 等增量；continue 必须回填完整运行
+    # 参数（当前默认值）+ 父 run 落盘的 research_spec（研究模式/门槛随谱系延续）。
+    spec_file = parent.log_dir / "research_spec.json"
+    if spec_file.exists():
+        try:
+            saved_spec = json.loads(spec_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            saved_spec = {}
+    else:
+        saved_spec = {}
+    params = {
+        **_CONTINUE_DEFAULT_PARAMS,
+        "research_spec": saved_spec,
+        **parent.params,
+        "user_message": content,
+    }
     return start_run(params, parent_run_id=parent.run_id, resume_context_file=context_path)
 
 
