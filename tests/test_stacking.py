@@ -202,3 +202,22 @@ def test_default_max_corr_is_tight(panel: pd.DataFrame, factor_values) -> None:
     assert set(ds.feature_names) == {"mom", "rev", "noise"}, (
         f"独立信号不应被默认阈值误伤，实际保留: {ds.feature_names}"
     )
+
+
+def test_registry_eval_end_extraction() -> None:
+    from alphaagent.factor.stacking.dataset import _registry_eval_end
+
+    item = {"metrics": {"eval_end": "2025-12-31"}, "ingest_config": {"ingest_end": "2025-12-31"}}
+    assert _registry_eval_end(item) == "2025-12-31"
+    # eval_end 缺失时回退 ingest_end
+    assert _registry_eval_end({"ingest_config": {"ingest_end": "2025-12-31"}}) == "2025-12-31"
+    assert _registry_eval_end({}) is None
+
+
+def test_to_utc_naive_rejects_nat() -> None:
+    from alphaagent.factor.stacking.dataset import _to_utc_naive
+
+    assert _to_utc_naive("2026-08-28T10:00:00+00:00") == pd.Timestamp("2026-08-28")
+    assert _to_utc_naive(None) is None
+    assert _to_utc_naive("not-a-date") is None
+    assert _to_utc_naive(float("nan")) is None

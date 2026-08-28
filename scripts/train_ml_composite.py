@@ -79,14 +79,24 @@ def main() -> None:
         print("因子数不足（<2），无法组合。请先挖掘入库更多因子。")
         sys.exit(1)
 
-    # ② 时间隔离边界：因子库最晚入库时间（或显式指定）
+    # ② 时间隔离边界：挖掘循环实际评估的右端（registry 的 eval_end），
+    #    回退到入库时间。注意 eval_end << ingested_at 是常态：因子 2026-08
+    #    入库，但其评估/反馈窗口只到 val_end（如 2025-12-31），其后数据未被
+    #    挖掘循环消费，仍是干净的组合训练数据。
     if args.mining_end == "auto":
-        created = [_to_utc_naive(e.created_at) for e in entries]
-        created = [c for c in created if c is not None]
-        if not created:
-            print("因子库无入库时间，无法 auto 推断 mining-end，请显式传 --mining-end")
-            sys.exit(1)
-        mining_end = max(created)
+        eval_ends = [_to_utc_naive(e.eval_end) for e in entries]
+        eval_ends = [c for c in eval_ends if c is not None]
+        if eval_ends:
+            mining_end = max(eval_ends)
+            print("mining_end 依据：registry eval_end（挖掘循环真实评估边界）")
+        else:
+            created = [_to_utc_naive(e.created_at) for e in entries]
+            created = [c for c in created if c is not None]
+            if not created:
+                print("因子库无入库时间/评估边界，无法 auto 推断 mining-end，请显式传 --mining-end")
+                sys.exit(1)
+            mining_end = max(created)
+            print("警告：registry 无 eval_end，退回入库时间推断（偏保守）")
     else:
         mining_end = pd.Timestamp(args.mining_end)
     if mining_end.tzinfo is not None:
@@ -147,12 +157,13 @@ def main() -> None:
 
     kinds = ["ridge", "lgbm"] if args.model == "both" else [args.model]
     explicit_mining_end = args.mining_end != "auto"
-    latest_created = max(
-        (c for c in (_to_utc_naive(e.created_at) for e in entries) if c is not None),
+    # 隔离有效性的真实判据：mining_end 是否 ≥ 挖掘循环实际评估右端（eval_end）
+    latest_eval_end = max(
+        (c for c in (_to_utc_naive(e.eval_end) for e in entries) if c is not None),
         default=None,
     )
     time_isolation = (
-        "ok" if (not explicit_mining_end or (latest_created is not None and mining_end >= latest_created))
+        "ok" if (not explicit_mining_end or (latest_eval_end is not None and mining_end >= latest_eval_end))
         else "violated_explicit_override（组合训练期与挖掘期重叠，OOS 结论不可作为入库依据）"
     )
     model_outputs: dict[str, np.ndarray] = {}

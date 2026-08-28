@@ -25,7 +25,23 @@ class FactorEntry:
     name: str
     expr: str
     library: str  # 如 production_technical / candidate_fundamental
-    created_at: str | None = None  # 入库时间（mining_end auto 推断用）
+    created_at: str | None = None  # 入库时间
+    eval_end: str | None = None  # 挖掘循环实际评估右端（时间隔离的真实边界）
+
+
+def _registry_eval_end(item: dict) -> str | None:
+    """从 registry 条目取挖掘循环实际评估右端（metrics.eval_end /
+    ingest_config.ingest_end），即时间隔离的真实边界——入库时间晚于它，
+    但评估反馈只消费到 eval_end。"""
+    for path in (("metrics", "eval_end"), ("ingest_config", "ingest_end")):
+        node: dict = item
+        for key in path:
+            node = node.get(key) if isinstance(node, dict) else None
+            if node is None:
+                break
+        if node:
+            return str(node)
+    return None
 
 
 def _to_utc_naive(ts) -> pd.Timestamp | None:
@@ -33,6 +49,8 @@ def _to_utc_naive(ts) -> pd.Timestamp | None:
     try:
         ts = pd.Timestamp(ts)
     except (TypeError, ValueError):
+        return None
+    if pd.isna(ts):
         return None
     if ts.tzinfo is not None:
         ts = ts.tz_localize(None)
@@ -119,6 +137,7 @@ def collect_factor_entries(
                         _add(FactorEntry(
                             factor_id=name, name=name, expr=expr.strip(), library=lib_name,
                             created_at=str(item.get("ingested_at")) if item.get("ingested_at") else None,
+                            eval_end=_registry_eval_end(item),
                         ))
     return entries
 
