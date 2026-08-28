@@ -56,7 +56,7 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--step-months", type=int, default=6, help="OOS 折长")
     ap.add_argument("--purge-days", type=int, default=5, help="train/OOS 之间 purge gap 交易日数")
     ap.add_argument("--warmup-days", type=int, default=250, help="panel 起点提前量（因子窗口预热）")
-    ap.add_argument("--max-corr", type=float, default=0.9, help="跨库因子冗余剔除阈值")
+    ap.add_argument("--max-corr", type=float, default=0.6, help="跨库因子冗余剔除阈值（默认 0.6，与候选池去重口径一致；相关 0.8 的 20 个因子 ≈ 2-3 个独立信号，放进来只会稀释权重、放大过拟合面）")
     ap.add_argument("--size-neutral/--no-size-neutral", dest="size_neutral", default=True)
     ap.add_argument("--no-gate", action="store_true", help="跳过 engine_gate 回测裁决")
     ap.add_argument("--no-write-pred", action="store_true", help="不写 pred 通道文件")

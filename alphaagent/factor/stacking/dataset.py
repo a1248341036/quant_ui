@@ -246,7 +246,7 @@ def build_dataset_from_values(
     label_days: int,
     mining_end: pd.Timestamp,
     size_neutral: bool = True,
-    max_corr: float = 0.9,
+    max_corr: float = 0.6,
     ics_for_quality: dict[str, float] | None = None,
 ) -> StackingDataset:
     """从已物化的因子值数组组装数据集（含冗余过滤；供脚本与测试共用）。
@@ -326,7 +326,7 @@ def build_stacking_dataset(
     label_days: int,
     mining_end: pd.Timestamp,
     size_neutral: bool = True,
-    max_corr: float = 0.9,
+    max_corr: float = 0.6,
     cache=None,
     decay_months: int = 12,
     min_finite_ratio: float = 0.05,

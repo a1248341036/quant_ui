@@ -179,3 +179,26 @@ def test_daily_ic_recovers_signal(panel: pd.DataFrame, factor_values) -> None:
     ic = daily_spearman_ic(mom, label, dts)
     assert len(ic) > 100
     assert ic.mean() > 0  # 动量在合成数据上是正信号
+
+
+def test_default_max_corr_is_tight(panel: pd.DataFrame, factor_values) -> None:
+    """默认 max_corr=0.6 必须有效去冗余：完全冗余副本被剔、独立信号保留。
+
+    防回归：阈值曾默认 0.9（形同虚设，允许相关 0.89 的因子成对进模型）。
+    fixture 中 mom_copy 与 mom 相关 ~1.0；mom 与 rev 变换后相关 ~-0.37。
+    """
+    mom, rev, noise, mom_copy = factor_values
+    entries = _entries("mom", "rev", "noise", "mom_copy")
+    quality = {"mom": 0.05, "rev": 0.02, "noise": 0.0, "mom_copy": 0.049}
+    ds = build_dataset_from_values(
+        panel,
+        list(zip(entries, [mom, rev, noise, mom_copy])),
+        label_days=5,
+        mining_end=panel.index.get_level_values("datetime").unique()[200],
+        size_neutral=False,
+        ics_for_quality=quality,  # 不传 max_corr → 走默认 0.6
+    )
+    assert "mom_copy" not in ds.feature_names, "默认阈值下完全冗余副本必须被剔除"
+    assert set(ds.feature_names) == {"mom", "rev", "noise"}, (
+        f"独立信号不应被默认阈值误伤，实际保留: {ds.feature_names}"
+    )
