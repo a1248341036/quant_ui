@@ -13,6 +13,9 @@
 # ── quant_ui 股票 panel 增量重建（复权锚点不变则只追加新日期，代价小）
 20 16 * * 1-5 cd /app && python scripts/rebuild_stock_panel_from_pg.py >> /var/log/supervisor/cron-panel-rebuild.log 2>&1
 
+# ── ML 组合训练（walk-forward stacking；自门禁：跨入新月才真正训练，平时秒退）
+40 16 * * 1-5 cd /app && python scripts/cne/stacking_job.py >> /var/log/supervisor/cron-stacking.log 2>&1
+
 # ── 日级模拟盘交易
 0 20 * * 1-5 cd /app && python scripts/paper_trade.py --run >> /var/log/supervisor/cron-paper.log 2>&1
 

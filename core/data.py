@@ -752,7 +752,7 @@ def data_status() -> dict:
             "path": source_status().get("path"),
             "desc": "Tushare 主源，AkShare 兜底；失败时保留 CNE 原有 fallback",
             "source": "CNE daily_bars",
-            "update": "run_cne_daily.ps1",
+            "update": "scripts/cne/run_cne_daily.ps1",
             **source_status(),
         }}
     except Exception as exc:  # noqa: BLE001
