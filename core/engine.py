@@ -13,6 +13,7 @@ from .assets import AssetExecutionProfile, STOCK_PROFILE
 from . import trading_config
 from .execution import ETFExecutionAdapter, FundNavExecutionAdapter, StockExecutionAdapter
 from .selection import PortfolioBuilder, SelectionPolicy
+from .screener import screen_factors, ScreenerConfig
 
 
 def _compute_atr(high: pd.DataFrame, low: pd.DataFrame, close: pd.DataFrame,
@@ -311,6 +312,12 @@ class BacktestConfig:
     min_commission: float | None = None
     impact_coef: float = 0.0
     impact_vol: float = 0.02
+    # Screener（regime 感知因子选择）
+    use_screener: bool = False
+    screener_lookback: int = 10
+    screener_min_ic: float = 0.02
+    screener_max_corr: float = 0.7
+    screener_factors: list[str] | None = None
 
 
 def run_backtest_config(cfg: BacktestConfig) -> dict:
@@ -371,6 +378,11 @@ def run_backtest(
     min_commission: float | None = None,
     impact_coef: float = 0.0,
     impact_vol: float = 0.02,
+    use_screener: bool = False,
+    screener_lookback: int = 10,
+    screener_min_ic: float = 0.02,
+    screener_max_corr: float = 0.7,
+    screener_factors: list[str] | None = None,
 ) -> dict:
     """事件驱动回测：T+1、一手 100 股、费用、可承载性过滤。
 
@@ -436,6 +448,11 @@ def run_backtest(
         execution_profile=execution_profile, share_classes=share_classes,
         spread_bps=spread_bps, min_commission=min_commission,
         impact_coef=impact_coef, impact_vol=impact_vol,
+        use_screener=use_screener,
+        screener_lookback=screener_lookback,
+        screener_min_ic=screener_min_ic,
+        screener_max_corr=screener_max_corr,
+        screener_factors=screener_factors,
     )
     return run_backtest_config(cfg)
 
@@ -659,6 +676,14 @@ def _prepare_backtest(cfg: BacktestConfig) -> dict:
         "min_score": min_score, "execution_profile": execution_profile,
         "share_classes": share_classes,
         "impact_coef": impact_coef, "impact_vol": impact_vol,
+        "use_screener": cfg.use_screener,
+        "screener_lookback": cfg.screener_lookback,
+        "screener_min_ic": cfg.screener_min_ic,
+        "screener_max_corr": cfg.screener_max_corr,
+        "screener_factors": cfg.screener_factors,
+        "signal_indices": sorted(set(i for i in
+            (e - 1 for e in exec_dates if e > 0)
+            if 0 <= i < T)),
     }
 
 
@@ -723,6 +748,86 @@ def _build_factor_matrix(cfg: BacktestConfig, prep: dict) -> dict:
             from .performance import factor_quality
             quality = factor_quality(factors[factor], close, horizon=20, groups=5, min_n=10)
 
+    use_screener = prep.get("use_screener", False)
+
+    # Screener 模式：保留全部因子帧供信号日动态评分
+    if use_screener:
+        screener_cfg = ScreenerConfig(
+            lookback=prep.get("screener_lookback", 10),
+            min_ic=prep.get("screener_min_ic", 0.02),
+            max_corr=prep.get("screener_max_corr", 0.7),
+        )
+        # 筛选要参与 Screener 的因子（用户可指定子集，否则取 factor_weights 的键）
+        screener_factor_names = prep.get("screener_factors") or list(factors.keys())
+        screener_frames = {n: factors[n] for n in screener_factor_names
+                           if n in factors and n != "composite"}
+        signal_indices = prep.get("signal_indices", [])
+        close_df = prep["close"]
+        high_df = prep.get("high")
+        low_df = prep.get("low")
+        # 用等权均值近似指数
+        index_close_s = close_df.mean(axis=1)
+        index_high_s = high_df.mean(axis=1) if high_df is not None else None
+        index_low_s = low_df.mean(axis=1) if low_df is not None else None
+
+        # 逐信号日算 Screener → 动态权重 → 合成得分
+        combo_arr = np.full_like(close_df.values, np.nan)
+        screener_log: list[dict] = []
+        for sig_i in signal_indices:
+            result = screen_factors(
+                screener_frames, close_df, sig_i, screener_cfg,
+                index_close=index_close_s,
+                index_high=index_high_s,
+                index_low=index_low_s,
+                all_dates=close_df.index,
+            )
+            if not result.weights:
+                # 没有因子通过，该信号日得分全 NaN（选不出股 → 空仓）
+                screener_log.append({
+                    "date": str(result.signal_date.date()),
+                    "regime": result.regime_label,
+                    "selected": [],
+                    "rejected": dict(list(result.rejected.items())[:5]),
+                    "weights": {},
+                })
+                continue
+            # 用动态权重合成该信号日的截面得分
+            row = np.zeros(len(codes_used))
+            for fname, w in result.weights.items():
+                fmat_row = factors[fname].iloc[sig_i].values
+                ascending = result.directions.get(fname, False)
+                rank = pd.Series(fmat_row).rank(pct=True).values
+                if ascending:
+                    rank = 1.0 - rank
+                row += w * rank
+            combo_arr[sig_i] = row
+            screener_log.append({
+                "date": str(result.signal_date.date()),
+                "regime": result.regime_label,
+                "selected": result.selected,
+                "factor_ic": {k: round(v, 4) for k, v in result.factor_ic.items()},
+                "weights": {k: round(v, 4) for k, v in result.weights.items()},
+                "directions": {k: "买低" if v else "买高"
+                               for k, v in result.directions.items()},
+                "rejected": dict(list(result.rejected.items())[:5]),
+            })
+
+        # 填充非信号日的值（用前一个信号日的得分延持到次日执行）
+        fmat_frame = pd.DataFrame(combo_arr, index=close_df.index,
+                                  columns=codes_used)
+        fmat = fmat_frame.values
+        quality = None
+        if analyze:
+            from .performance import factor_quality
+            quality = factor_quality(fmat_frame, close, horizon=20, groups=5, min_n=10)
+        return {
+            "fmat": fmat,
+            "quality": quality,
+            "_X_risk": None,
+            "_risk_names": [],
+            "screener_log": screener_log,
+        }
+
     if factor_weights:
         factor = "composite"
 
@@ -765,6 +870,7 @@ def _build_factor_matrix(cfg: BacktestConfig, prep: dict) -> dict:
         "quality": quality,
         "_X_risk": _X_risk,
         "_risk_names": _risk_names,
+        "screener_log": [],
     }
 
 
@@ -1138,6 +1244,7 @@ def _finalize_result(cfg: BacktestConfig, prep: dict, fctx: dict, sim: dict) -> 
     _X_risk = fctx.get("_X_risk")
     _risk_names = fctx.get("_risk_names") or []
     quality = fctx.get("quality")
+    screener_log = fctx.get("screener_log", [])
 
     exec_in_out = sorted(e for e in exec_set if e > 0)
     last_signal_date = dates[exec_in_out[-1] - 1] if exec_in_out else None
@@ -1224,6 +1331,7 @@ def _finalize_result(cfg: BacktestConfig, prep: dict, fctx: dict, sim: dict) -> 
         "risk_attribution": risk_attribution,
         "asset_type": profile.asset_type,
         "execution_profile": profile,
+        "screener_log": screener_log,
     }
 
 def latest_signals(panel: pd.DataFrame, codes: list[str], factor: str,

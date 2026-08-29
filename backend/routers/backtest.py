@@ -233,6 +233,11 @@ class BacktestRequest(BaseModel):
     alpha_factor_id: str | None = None
     alpha_library: str = "production"
     alpha_ascending: bool = False
+    # Screener（regime 感知因子选择）
+    use_screener: bool = False
+    screener_lookback: int = 10
+    screener_min_ic: float = 0.02
+    screener_max_corr: float = 0.7
 
 
 class CompareRequest(BaseModel):
@@ -478,6 +483,11 @@ def backtest(req: BacktestRequest):
         regime_scale=req.regime_scale,
         execution_profile=ETF_PROFILE if _is_etf(req.universe) else STOCK_PROFILE,
         external_scores=external_scores,
+        use_screener=req.use_screener,
+        screener_lookback=req.screener_lookback,
+        screener_min_ic=req.screener_min_ic,
+        screener_max_corr=req.screener_max_corr,
+        screener_factors=list(req.composite_weights.keys()) if req.composite_weights else None,
     )
     brinson = None
     if (not is_fund and not _is_etf(req.universe)
@@ -593,10 +603,8 @@ def backtest(req: BacktestRequest):
         "trades": res["trades"].to_dict(orient="records"),
         "last_signal_date": last_signal,
         "factor_quality": quality,
+        "screener_log": res.get("screener_log", []),
     }
-
-
-@router.post("/backtest/compare")
 def backtest_compare(req: CompareRequest):
     if not req.strategies:
         return {"error": "请至少选择一个策略"}

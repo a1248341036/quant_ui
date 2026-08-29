@@ -34,6 +34,18 @@
         </table></div>
       </div>
       <div class="form-section">
+        <div class="form-section-title">Screener（regime 感知因子选择）</div>
+        <div class="form-check-row" style="margin-bottom:8px">
+          <label class="field-check"><input type="checkbox" v-model="comp.useScreener"> 启用 Screener（自动按市场 regime 动态选因子+分配权重）</label>
+          <span class="muted" v-if="comp.useScreener">开启后忽略上方手动权重/方向，每个调仓信号日自动计算</span>
+        </div>
+        <div class="form-grid" v-if="comp.useScreener">
+          <label class="field"><span>IC 回看天数</span><input type="number" v-model.number="comp.screenerLookback" min="3" max="60" step="1"></label>
+          <label class="field"><span>最小 |IC| 阈值</span><input type="number" v-model.number="comp.screenerMinIc" min="0" max="0.2" step="0.005"></label>
+          <label class="field"><span>去重相关性阈值</span><input type="number" v-model.number="comp.screenerMaxCorr" min="0.3" max="0.99" step="0.05"></label>
+        </div>
+      </div>
+      <div class="form-section">
         <div class="form-section-title">组合管理</div>
         <div class="form-grid">
           <label class="field"><span>组合名称</span><input v-model="compName" placeholder="如：动量+低波"></label>
@@ -69,6 +81,22 @@
       <div class="card"><h3>资金曲线（策略 vs 基准）</h3><div id="compEquity" class="chart"></div></div>
       <div class="card"><h3>月度收益热力图</h3><div id="compMonthly" class="chart heatmap"></div><p class="muted">按组合净值计算；首月和末月按实际区间统计，年度列为月度收益复合值。</p></div>
       <div class="card"><h3>回撤</h3><div id="compDraw" class="chart small"></div></div>
+      <div class="card" v-if="compResult.screener_log && compResult.screener_log.length">
+        <h3>Screener 逐信号日志</h3>
+        <p class="muted">每个调仓信号日的 regime 诊断、因子 IC、选中因子与动态权重。</p>
+        <div class="table-wrap"><table>
+          <tr><th>信号日</th><th>市场制度</th><th>选中因子</th><th>IC 明细</th><th>动态权重</th><th>方向</th><th>淘汰</th></tr>
+          <tr v-for="(s, i) in compResult.screener_log" :key="i">
+            <td>{{ s.date }}</td>
+            <td>{{ s.regime }}</td>
+            <td>{{ (s.selected || []).join(', ') || '-' }}</td>
+            <td class="muted" style="font-size:0.85em">{{ s.factor_ic ? Object.entries(s.factor_ic).map(([k,v]) => k+'='+v).join(', ') : '-' }}</td>
+            <td>{{ s.weights ? Object.entries(s.weights).map(([k,v]) => k+':'+(v*100).toFixed(1)+'%').join(', ') : '-' }}</td>
+            <td class="muted" style="font-size:0.85em">{{ s.directions ? Object.entries(s.directions).map(([k,v]) => k+'('+v+')').join(', ') : '-' }}</td>
+            <td class="muted" style="font-size:0.8em">{{ s.rejected ? Object.keys(s.rejected).join(', ') : '-' }}</td>
+          </tr>
+        </table></div>
+      </div>
       <div class="grid" style="grid-template-columns:1fr 1fr">
         <div class="card"><h3>持仓明细</h3>
           <div style="overflow-x:auto"><table><tr><th>代码</th><th>名称</th><th>权重%</th><th>价格</th><th>市值</th></tr>
@@ -101,7 +129,7 @@
 <script>
 import { store } from '../store/index.js'
 import { fmt, pct, sign, stock, today, metricText } from '../utils/format.js'
-import { api } from '../utils/api.js'
+import { api, getWindowDefaults } from '../utils/api.js'
 import { renderLine, renderMonthlyHeatmap } from '../utils/charts.js'
 
 export default {
@@ -126,6 +154,10 @@ export default {
         start: '2026-02-02',
         end: today(),
         bench: '沪深300',
+        useScreener: false,
+        screenerLookback: 10,
+        screenerMinIc: 0.02,
+        screenerMaxCorr: 0.7,
         factors: {
           turn20: { enabled: true, dir: '买低', weight: 1 },
           am20: { enabled: true, dir: '买高', weight: 1 },
@@ -149,6 +181,10 @@ export default {
   mounted() {
     this.loadFactors()
     this.loadComposites()
+    // 统一回测默认起点：来自配置中心（window_config），不再硬编码
+    getWindowDefaults().then(w => {
+      if (w && w.bt_start) this.comp.start = w.bt_start
+    }).catch(() => {})
   },
   methods: {
     fmt,
@@ -248,6 +284,10 @@ export default {
             composite_weights: weights,
             composite_directions: directions,
             composite_name: this.compName || '未命名组合',
+            use_screener: this.comp.useScreener,
+            screener_lookback: this.comp.screenerLookback,
+            screener_min_ic: this.comp.screenerMinIc,
+            screener_max_corr: this.comp.screenerMaxCorr,
           }),
         })
         if (r.error) { this.compError = r.error; return }
