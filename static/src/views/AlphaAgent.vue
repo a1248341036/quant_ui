@@ -471,19 +471,59 @@
               </span>
             </div>
             <div v-if="!researchMemory.length" class="normal-mode-empty">暂无研究记忆</div>
-            <table v-else-if="summaryFiltered.length" class="summary-table">
+            <div v-else-if="summaryFiltered.length" class="summary-table-wrap">
+              <table class="summary-table">
               <thead>
                 <tr>
-                  <th>因子名称</th>
-                  <th>状态</th>
-                  <th>阶段</th>
-                  <th>IC</th>
-                  <th>ICIR</th>
-                  <th>覆盖率</th>
-                  <th>多头年化超额</th>
+                  <th @click="setSummarySort('factor_name')" :class="{ sortable: true, 'sort-active': summarySortKey === 'factor_name' }">
+                    因子名称 <span class="sort-ind" v-if="summarySortKey === 'factor_name'">{{ summarySortOrder === 1 ? '▲' : '▼' }}</span>
+                  </th>
+                  <th @click="setSummarySort('verdict')" :class="{ sortable: true, 'sort-active': summarySortKey === 'verdict' }">
+                    状态 <span class="sort-ind" v-if="summarySortKey === 'verdict'">{{ summarySortOrder === 1 ? '▲' : '▼' }}</span>
+                  </th>
+                  <th @click="setSummarySort('stage')" :class="{ sortable: true, 'sort-active': summarySortKey === 'stage' }">
+                    阶段 <span class="sort-ind" v-if="summarySortKey === 'stage'">{{ summarySortOrder === 1 ? '▲' : '▼' }}</span>
+                  </th>
+                  <th @click="setSummarySort('ic')" :class="{ sortable: true, 'sort-active': summarySortKey === 'ic' }">
+                    IC <span class="sort-ind" v-if="summarySortKey === 'ic'">{{ summarySortOrder === 1 ? '▲' : '▼' }}</span>
+                  </th>
+                  <th @click="setSummarySort('icir')" :class="{ sortable: true, 'sort-active': summarySortKey === 'icir' }">
+                    ICIR <span class="sort-ind" v-if="summarySortKey === 'icir'">{{ summarySortOrder === 1 ? '▲' : '▼' }}</span>
+                  </th>
+                  <th @click="setSummarySort('coverage')" :class="{ sortable: true, 'sort-active': summarySortKey === 'coverage' }">
+                    覆盖率 <span class="sort-ind" v-if="summarySortKey === 'coverage'">{{ summarySortOrder === 1 ? '▲' : '▼' }}</span>
+                  </th>
+                  <th @click="setSummarySort('annualized_excess_return')" :class="{ sortable: true, 'sort-active': summarySortKey === 'annualized_excess_return' }">
+                    年化超额 <span class="sort-ind" v-if="summarySortKey === 'annualized_excess_return'">{{ summarySortOrder === 1 ? '▲' : '▼' }}</span>
+                  </th>
+                  <th @click="setSummarySort('sharpe')" :class="{ sortable: true, 'sort-active': summarySortKey === 'sharpe' }">
+                    夏普 <span class="sort-ind" v-if="summarySortKey === 'sharpe'">{{ summarySortOrder === 1 ? '▲' : '▼' }}</span>
+                  </th>
+                  <th @click="setSummarySort('excess_sharpe')" :class="{ sortable: true, 'sort-active': summarySortKey === 'excess_sharpe' }">
+                    超额夏普 <span class="sort-ind" v-if="summarySortKey === 'excess_sharpe'">{{ summarySortOrder === 1 ? '▲' : '▼' }}</span>
+                  </th>
+                  <th @click="setSummarySort('annualized_return')" :class="{ sortable: true, 'sort-active': summarySortKey === 'annualized_return' }">
+                    年化收益 <span class="sort-ind" v-if="summarySortKey === 'annualized_return'">{{ summarySortOrder === 1 ? '▲' : '▼' }}</span>
+                  </th>
+                  <th @click="setSummarySort('max_drawdown')" :class="{ sortable: true, 'sort-active': summarySortKey === 'max_drawdown' }">
+                    最大回撤 <span class="sort-ind" v-if="summarySortKey === 'max_drawdown'">{{ summarySortOrder === 1 ? '▲' : '▼' }}</span>
+                  </th>
+                  <th @click="setSummarySort('annual_turnover')" :class="{ sortable: true, 'sort-active': summarySortKey === 'annual_turnover' }">
+                    年换手 <span class="sort-ind" v-if="summarySortKey === 'annual_turnover'">{{ summarySortOrder === 1 ? '▲' : '▼' }}</span>
+                  </th>
+                  <th @click="setSummarySort('daily_overlap')" :class="{ sortable: true, 'sort-active': summarySortKey === 'daily_overlap' }">
+                    日重叠 <span class="sort-ind" v-if="summarySortKey === 'daily_overlap'">{{ summarySortOrder === 1 ? '▲' : '▼' }}</span>
+                  </th>
+                  <th @click="setSummarySort('monotonicity')" :class="{ sortable: true, 'sort-active': summarySortKey === 'monotonicity' }">
+                    单调性 <span class="sort-ind" v-if="summarySortKey === 'monotonicity'">{{ summarySortOrder === 1 ? '▲' : '▼' }}</span>
+                  </th>
                   <th>拒绝原因</th>
-                  <th>评估次数</th>
-                  <th>更新时间</th>
+                  <th @click="setSummarySort('attempts')" :class="{ sortable: true, 'sort-active': summarySortKey === 'attempts' }">
+                    评估次数 <span class="sort-ind" v-if="summarySortKey === 'attempts'">{{ summarySortOrder === 1 ? '▲' : '▼' }}</span>
+                  </th>
+                  <th @click="setSummarySort('updated_at')" :class="{ sortable: true, 'sort-active': summarySortKey === 'updated_at' }">
+                    更新时间 <span class="sort-ind" v-if="summarySortKey === 'updated_at'">{{ summarySortOrder === 1 ? '▲' : '▼' }}</span>
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -494,13 +534,21 @@
                   <td :class="icClass(entry.metrics?.ic)">{{ formatMetricValue(entry.metrics?.ic ?? '—') }}</td>
                   <td>{{ formatMetricValue(entry.metrics?.icir ?? '—') }}</td>
                   <td>{{ formatMetricValue(entry.metrics?.coverage ?? entry.metrics?.factor_coverage ?? '—') }}</td>
-                  <td :class="{ neg: (entry.metrics?.long_group_annual_excess_return ?? 0) < 0 }">{{ formatMetricValue(entry.metrics?.long_group_annual_excess_return ?? '—') }}</td>
+                  <td :class="{ neg: (entry.metrics?.annualized_excess_return ?? entry.metrics?.long_group_annual_excess_return ?? 0) < 0 }">{{ formatMetricValue(entry.metrics?.annualized_excess_return ?? entry.metrics?.long_group_annual_excess_return ?? '—') }}</td>
+                  <td :class="{ neg: (entry.metrics?.sharpe ?? 0) < 0 }">{{ formatMetricValue(entry.metrics?.sharpe ?? '—') }}</td>
+                  <td :class="{ neg: (entry.metrics?.excess_sharpe ?? 0) < 0 }">{{ formatMetricValue(entry.metrics?.excess_sharpe ?? '—') }}</td>
+                  <td :class="{ neg: (entry.metrics?.annualized_return ?? 0) < 0 }">{{ formatMetricValue(entry.metrics?.annualized_return ?? '—') }}</td>
+                  <td :class="{ neg: (entry.metrics?.max_drawdown ?? 0) > 0 }">{{ formatMetricValue(entry.metrics?.max_drawdown ?? '—') }}</td>
+                  <td>{{ formatMetricValue(entry.metrics?.annual_turnover ?? '—') }}</td>
+                  <td>{{ formatMetricValue(entry.metrics?.daily_overlap ?? '—') }}</td>
+                  <td>{{ formatMetricValue(entry.metrics?.monotonicity ?? '—') }}</td>
                   <td class="summary-reason" :title="entry.conclusion">{{ entry.conclusion || entry.error || '—' }}</td>
                   <td class="summary-attempts">{{ entry.attempts || 1 }}</td>
                   <td class="summary-time">{{ formatTime(entry.updated_at) }}</td>
                 </tr>
               </tbody>
             </table>
+            </div>
             <div v-if="!summaryFiltered.length && researchMemory.length" class="normal-mode-empty">没有匹配的因子</div>
           </div>
 
@@ -1078,7 +1126,7 @@
 </template>
 
 <script>
-import { api } from '../utils/api.js'
+import { api, getWindowDefaults } from '../utils/api.js'
 import { chart, renderLine, renderMonthlyHeatmap } from '../utils/charts.js'
 import { fmt, pct } from '../utils/format.js'
 import { store } from '../store/index.js'
@@ -1149,6 +1197,8 @@ export default {
       specOverridesByMode: {},
       researchMemory: [],
       showResearchSummary: false,
+      summarySortKey: 'verdict',
+      summarySortOrder: 1,
       lab: {
         expr: '',
         factorName: 'expr',
@@ -1275,11 +1325,29 @@ export default {
         production_approved: 0, validated: 1, candidate_approved: 2,
         promising: 3, revise_required: 4, rejected: 5, weak: 6,
       }
+      const key = this.summarySortKey
+      const dir = this.summarySortOrder
+      const getVal = (entry) => {
+        if (key === 'verdict') return order[entry.verdict] ?? 99
+        if (key === 'updated_at') return Date.parse(entry.updated_at || '') || 0
+        if (key === 'attempts') return entry.attempts || 1
+        if (key === 'coverage') return entry.metrics?.coverage ?? entry.metrics?.factor_coverage ?? null
+        if (key === 'annualized_excess_return') return entry.metrics?.annualized_excess_return ?? entry.metrics?.long_group_annual_excess_return ?? null
+        if (key === 'factor_name' || key === 'stage') return String(entry[key] || '')
+        return entry.metrics?.[key] ?? null
+      }
       return [...this.researchMemory].sort((a, b) => {
-        const ra = order[a.verdict] ?? 99
-        const rb = order[b.verdict] ?? 99
-        if (ra !== rb) return ra - rb
-        return (Date.parse(b.updated_at || '') || 0) - (Date.parse(a.updated_at || '') || 0)
+        const va = getVal(a, key)
+        const vb = getVal(b, key)
+        // 空值（null/undefined/NaN）始终排最后
+        if (va == null || Number.isNaN(va)) return 1
+        if (vb == null || Number.isNaN(vb)) return -1
+        if (typeof va === 'string' && typeof vb === 'string') {
+          const r = va.localeCompare(vb)
+          return r * dir
+        }
+        const r = va - vb
+        return r * dir
       })
     },
     currentActivity() {
@@ -1465,6 +1533,39 @@ export default {
       this.showResearchSummary = !this.showResearchSummary
       if (this.showResearchSummary && !this.researchMemory.length) {
         this.loadResearchMemory()
+      }
+    },
+    setSummarySort(key) {
+      if (this.summarySortKey === key) {
+        // 同列再点：升序 ↔ 降序
+        this.summarySortOrder = this.summarySortOrder === 1 ? -1 : 1
+      } else {
+        this.summarySortKey = key
+        this.summarySortOrder = 1
+      }
+    },
+    async loadWindowsConfig() {
+      // 统一时间窗口默认值来自后端配置中心（window_config.py 唯一真源），
+      // 前端不再散落硬编码日期。仅当用户尚未手动改过对应字段时才覆盖，
+      // 避免刷新页面把用户已填的值重置。
+      try {
+        const w = await getWindowDefaults()
+        const set = (obj, key, val) => { if (val) obj[key] = val }
+        if (w && w.test_start) {
+          set(this.agent.form, 'train_start', w.train_start)
+          set(this.agent.form, 'train_end', w.train_end)
+          set(this.agent.form, 'val_start', w.val_start)
+          set(this.agent.form, 'val_end', w.val_end)
+          set(this.lab, 'trainStart', w.train_start)
+          set(this.lab, 'trainEnd', w.train_end)
+          set(this.lab, 'valStart', w.val_start)
+          set(this.lab, 'valEnd', w.val_end)
+          // 因子实验室「回测」默认窗口：train 起点 ~ 数据源最新日
+          set(this.lab, 'btStart', w.bt_start || w.val_start)
+          set(this.lab, 'btEnd', w.bt_end || w.val_end)
+        }
+      } catch (e) {
+        // 后端不可用时静默，保留前端兜底日期
       }
     },
     async loadResearchModes() {
@@ -2209,6 +2310,14 @@ export default {
         coverage: '覆盖率',
         long_group_annual_excess_return: '多头年化超额',
         winsorized_abs_ic_decay: '截尾IC衰减',
+        annualized_return: '年化收益',
+        annualized_excess_return: '年化超额',
+        sharpe: '夏普',
+        excess_sharpe: '超额夏普',
+        max_drawdown: '最大回撤',
+        annual_turnover: '年换手',
+        daily_overlap: '日重叠',
+        monotonicity: '单调性',
       }[key] || key)
     },
     // 提取分位组合（纯多头）指标，供展示与导出复用；无数据返回 null
@@ -2959,6 +3068,7 @@ export default {
     this.loadAgentRuns()
     this.loadResearchMemory()
     this.loadResearchModes()
+    this.loadWindowsConfig()
     this.loadDefaultResearchSpec().catch(() => {})
     store.loadLabHistory()
     // 从"历史"tab 打开一条因子评估 → 载入到因子实验室（界面与评估时一致）
@@ -3069,6 +3179,13 @@ export default {
 .summary-panel { max-width:1100px; margin:0 auto; }
 .summary-panel-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
 .summary-panel-head h3 { font-size:16px; }
+.summary-table-wrap { max-height:520px; overflow:auto; border:1px solid var(--line); border-radius:9px; }
+.summary-table { width:100%; border-collapse:collapse; font-size:11px; min-width:1450px; }
+.summary-table thead th { position:sticky; top:0; z-index:1; padding:8px 8px; text-align:left; border-bottom:1px solid var(--line-strong); background:var(--bg); color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.04em; white-space:nowrap; }
+.summary-table thead th.sortable { cursor:pointer; user-select:none; }
+.summary-table thead th.sortable:hover { color:var(--text); }
+.summary-table thead th.sort-active { color:var(--text); }
+.sort-ind { font-size:9px; color:var(--accent, #5b9dff); }
 .summary-close-btn { width:28px; height:28px; padding:0; border:1px solid var(--line); border-radius:7px; background:transparent; color:var(--muted); font-size:16px; cursor:pointer; }
 .summary-close-btn:hover { color:var(--text); background:rgb(79 140 255 / .1); }
 .summary-stats { display:flex; flex-wrap:wrap; gap:10px; margin-bottom:14px; padding:10px 14px; border:1px solid var(--line); border-radius:9px; background:var(--bg-soft); }
@@ -3443,6 +3560,7 @@ textarea.lab-input { resize:vertical; font:12px/1.5 var(--font-mono); }
 .ml-num { width:80px; }
 .ml-check { flex-direction:row !important; align-items:center; gap:6px !important; }
 .ml-error { color:#e05252; font-size:12px; }
+.ml-form .send-btn { flex-shrink:0; white-space:nowrap; }
 .ml-stop { border:1px solid var(--line); background:transparent; color:inherit; border-radius:6px; padding:2px 8px; cursor:pointer; }
 .ml-log { background:#11141a; color:#cde3c8; padding:10px; border-radius:8px; font-size:11px; max-height:220px; overflow:auto; white-space:pre-wrap; }
 .ml-summary { display:flex; flex-wrap:wrap; gap:16px; font-size:13px; }
