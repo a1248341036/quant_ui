@@ -38,6 +38,10 @@ class CandidateCriteria:
     max_abs_corr: float = 0.5
     min_cs_autocorr: float = 0.18
     min_val_ic_retention: float = 0.5
+    # 组合可交易性预检（2026-08-29）：日单边换手 >50% 的候选在 stage_one 直接拒，
+    # 不再等 stage_two/engine_gate 才拦截（历史数据：30 个候选 26 个日换手>50%，
+    # 全部止步 stage_two/engine_gate，浪费大量评估算力）。
+    max_avg_daily_side_turnover: float = 0.5
 
 
 @dataclass(frozen=True)

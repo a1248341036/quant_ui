@@ -68,3 +68,20 @@ def test_cached_ingest_metrics_fifo_eviction(monkeypatch):
         _cached_ingest_metrics(cache, (f"k{i}", "p"), lambda i=i: {"v": i})
     assert len(cache) == 3
     assert ("k0", "p") not in cache and ("k4", "p") in cache  # FIFO：最旧的 k0 被淘汰
+
+
+def test_stage_one_turnover_gate():
+    """stage_one 换手硬门：日单边换手 >0.5 的候选必须被拒（回溯重筛的规则来源）。"""
+    from alphaagent.factor.mining.delivery_checker import DeliveryChecker
+
+    from alphaagent.factor.mining.delivery_criteria import DeliveryCriteria
+    checker = DeliveryChecker(DeliveryCriteria.defaults())
+    base = {"ic": 0.03, "icir": 0.4, "factor_coverage": 0.95, "cs_pearson_autocorr": 0.8}
+    ok = checker.stage_one_stats({**base, "quantile_portfolio": {"avg_daily_side_turnover": 0.35}})
+    bad = checker.stage_one_stats({**base, "quantile_portfolio": {"avg_daily_side_turnover": 1.2}})
+    no_data = checker.stage_one_stats(dict(base))  # 无换手数据不误伤
+
+    assert ok.passed
+    assert not bad.passed
+    assert any("avg_daily_side_turnover" in r for r in bad.fail_reasons)
+    assert no_data.passed or not any("avg_daily_side_turnover" in r for r in no_data.fail_reasons)

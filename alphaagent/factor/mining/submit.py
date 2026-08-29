@@ -419,6 +419,15 @@ class FactorSubmitService:
         metrics_train = _ingest_metrics_cached(
             dataclasses.replace(stage_one_policy, val_end=ctx.train_end)
         )
+        # 组合换手预检：quantile_portfolio 提前到门槛前算一次（全窗口径——
+        # 换手是因子结构性属性，与窗口无关），供 stage_one 换手硬门与最终报告复用，
+        # 避免高换手因子走完全流程才在 engine_gate 被拒。
+        from alphaagent.factor.metrics import quantile_portfolio_metrics
+        qp_metrics = quantile_portfolio_metrics(
+            pd.Series(cand_values, index=panel.index), panel[ctx.label_col],
+            n_groups=10, cost_bps=0.0,
+        )
+        metrics_train["quantile_portfolio"] = qp_metrics
         gate_reasons = self.checker.stage_one_stats(metrics_train).fail_reasons
 
         val_metrics: dict[str, Any] = {}
@@ -501,16 +510,11 @@ class FactorSubmitService:
         if vle is not None and np.isfinite(float(vle)):
             reported["val_long_excess"] = round(float(vle), 6)
 
-        # 组合层收益指标（多头年化/夏普等）：供前端因子库与详情展示。
+        # 组合层收益指标（多头年化/夏普等）：复用门槛前的 qp_metrics，不重算。
         if stage_one_ok:
-            from alphaagent.factor.metrics import quantile_portfolio_metrics
-            qp = quantile_portfolio_metrics(
-                pd.Series(cand_values, index=panel.index), panel[ctx.label_col],
-                n_groups=10, cost_bps=0.0,
-            )
             reported["quantile_portfolio"] = {
                 k: (round(float(v), 6) if isinstance(v, (int, float)) and np.isfinite(float(v)) else v)
-                for k, v in qp.items()
+                for k, v in qp_metrics.items()
                 if k not in {"group_means"}
             }
         metrics = reported

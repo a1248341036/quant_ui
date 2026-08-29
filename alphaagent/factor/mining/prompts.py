@@ -207,6 +207,10 @@ evaluate_factor(
 
 ---
 
+{{EVENT_DISCLOSURE_SECTION}}
+
+---
+
 ### 多周期：`$field@<周期>`
 
 仅支持 **`@1d`** 与 **`@1w`**（W-FRI 周线，严格无前视 backward 广播）。
@@ -326,10 +330,11 @@ tri_gap = CHIP_COM_W_GAP($adj_close, $adj_low, $adj_high, $volume, 40, $vwap, 64
 
 ### 行为准则
 
-0. **经济直觉先行**：每个 `evaluate_factor` / `eval_on_train_set` 调用前，在思维链中先写出 50 字以内经济直觉。如果写不出符合行为金融学或微观结构的因果链条，跳过该候选，不要浪费评估配额。在 `submit_factor` 的 `comment` 中必须包含经济直觉全文。
-1. **双轨标注**：每轮候选因子须明确标注变异类型（A 参数 / B 算子 / C 修饰 / D 新族）和父本来源（D 标注机制名）。A/B/C 必须有父本；**D 每轮至少 2 条且无需父本**——禁止的是无经济直觉的随机拼装，不是无父本的探索。
-2. **每轮先归因上一轮结果，再设计下一代**；避免仅改窗口长度的同质批次。**同一信号族**（如短周期反转 `NEG(TS_PCTCHANGE($adj_close, N))`）在同一轮中**最多出现 1 次**；第 2 个起必须换信号族或换核心变量。
-3. **并行候选必须跨越不同信息维度**：同一批 4~8 条 tool_calls 中，至少覆盖 4 个不同的信号族。可选维度包括但不限于：
+1. **经济直觉先行**：每个 `evaluate_factor` / `eval_on_train_set` 调用前，在思维链中先写出 50 字以内经济直觉。如果写不出符合行为金融学或微观结构的因果链条，跳过该候选，不要浪费评估配额。在 `submit_factor` 的 `comment` 中必须包含经济直觉全文。
+2. **换手红线（硬约束）**：`evaluate_factor` 结果里的 `quantile_portfolio.avg_daily_side_turnover`（日单边换手）**> 0.4 的候选不要调用 `submit_factor`**——历史数据 26/30 个候选因此止步 stage_two/engine_gate，纯浪费算力。设计期就选低换手结构：CS_ 截面排序类、长窗口平滑（TS_MEDIAN/TS_MEAN ≥20）、慢信息源（基本面 PIT、筹码周频结构）；避免逐日 rank-reversal 式信号（自相关 <0.6 的 TS_ 时序因子大概率高换手）。
+3. **双轨标注**：每轮候选因子须明确标注变异类型（A 参数 / B 算子 / C 修饰 / D 新族）和父本来源（D 标注机制名）。A/B/C 必须有父本；**D 每轮至少 2 条且无需父本**——禁止的是无经济直觉的随机拼装，不是无父本的探索。
+4. **每轮先归因上一轮结果，再设计下一代**；避免仅改窗口长度的同质批次。**同一信号族**（如短周期反转 `NEG(TS_PCTCHANGE($adj_close, N))`）在同一轮中**最多出现 1 次**；第 2 个起必须换信号族或换核心变量。
+5. **并行候选必须跨越不同信息维度**：同一批 4~8 条 tool_calls 中，至少覆盖 4 个不同的信号族。可选维度包括但不限于：
    - 价格动量/均值回归（`TS_MEAN($ret, N)`, `TS_PCTCHANGE`）
    - 波动率结构（`TS_STD($ret, N)`, 波动率变化/比率）
    - 量价关系（`TS_CORR($volume, $adj_close, N)`, 量价背离）
@@ -339,12 +344,12 @@ tri_gap = CHIP_COM_W_GAP($adj_close, $adj_low, $adj_high, $volume, 40, $vwap, 64
    - 筹码分布（`CHIP_PEAK_LOC`, `CHIP_ENTROPY`, `CHIP_COM_W_GAP`）
    - 周线结构（`$adj_close@1w` 均线偏离）
    - 截面结构（`RANK`, `CS_ZSCORE`, `CS_NEUTRALIZE` 不同分组键）
-4. **连续 2 个因子 IC < 0.01 时，强制切换到完全未尝试过的信号族**，不要在同一信号族上微调。
-5. 发起 tool_calls 前完成思考；**不要**停在解释或征询用户下一步。
-6. **train+val 统计达标的因子，必须调用 `submit_factor`** 提交候选池；`comment` 须清晰描述因子逻辑和经济直觉，勿空泛。Reviewer 在 validation 阶段的意见仅供参考，不要因此放弃提交。
-7. **结束前检查**：若已有 train+val 达标的候选但尚未 `submit_factor`，不得结束；先提交再收尾。
-8. **避免过度调参**：除非本轮已产出多个**两两截面相关较低**（机制差异明显）的保留级候选，通常 **提交一个因子后即可结束**，无需对同一机制反复微调窗口或参数。
-9. **工具返回的是精简结构化文本**（非完整 JSON），包含 IC/ICIR/诊断建议/批次汇总/同质化警告。请仔细阅读诊断建议和同质化警告，据此调整下一轮方向。
+6. **连续 2 个因子 IC < 0.01 时，强制切换到完全未尝试过的信号族**，不要在同一信号族上微调。
+7. 发起 tool_calls 前完成思考；**不要**停在解释或征询用户下一步。
+8. **train+val 统计达标的因子，必须调用 `submit_factor`** 提交候选池；`comment` 须清晰描述因子逻辑和经济直觉，勿空泛。Reviewer 在 validation 阶段的意见仅供参考，不要因此放弃提交。
+9. **结束前检查**：若已有 train+val 达标的候选但尚未 `submit_factor`，不得结束；先提交再收尾。
+10. **避免过度调参**：除非本轮已产出多个**两两截面相关较低**（机制差异明显）的保留级候选，通常 **提交一个因子后即可结束**，无需对同一机制反复微调窗口或参数。
+11. **工具返回的是精简结构化文本**（非完整 JSON），包含 IC/ICIR/诊断建议/批次汇总/同质化警告。请仔细阅读诊断建议和同质化警告，据此调整下一轮方向。
 """
 
 
@@ -550,6 +555,79 @@ FF_PANEL_COLUMNS = (
     "ff_main_net", "ff_super_net", "ff_large_net", "ff_medium_net", "ff_small_net",
 )
 
+# ── 事件/披露字段族：仅在 panel 实际载入对应列时注入（与插件数据覆盖联动）──
+
+# 业绩预告（forecast 插件，pred_*）
+_PRED_SECTION_MD = """### 业绩预告（PIT 日频阶跃序列，`pred_*`）
+
+业绩预告以公告日为 PIT 锚点展开为日频：公告日当天起引用最近一次预告，
+两期之间恒定（阶跃+持有）。首次预告前为 NaN。
+
+| 字段 | 说明 |
+|------|------|
+| `$pred_direction` | 预告方向：+1 预增/略增/扭亏/续盈，-1 预减/略减/首亏/续亏/增亏，0 不确定 |
+| `$pred_change_mid` | 预告净利同比变动区间中值（%） |
+| `$pred_net_profit_mid` | 预告归母净利润区间中值（绝对额，万元级，用时先规模标准化） |
+| `$pred_surprise` | 预告隐含同比 = 净利中值/上年同期归母净利 − 1 |
+| `$pred_days_since` | 距最近一次预告的自然日天数（衰减可用 `EXP($pred_days_since/30)` 类构造） |
+
+> 使用建议：`$pred_surprise` 是最直接的"预告超预期"代理，可做 `TS_FILL_NAN` 前向
+> 逻辑已内建；阶跃序列勿当连续变量做短窗口动量。
+"""
+
+# 股东人数（shareholder_counts 插件，holder_*）
+_HOLDER_SECTION_MD = """### 股东人数（PIT 日频阶跃序列，`holder_*`）
+
+股东户数 = 筹码集中度经典代理：户数下降 = 筹码向大资金集中。以公告日为
+PIT 锚点（统计截止日 `count_date` 可能滞后公告数周，勿用）。首次公告前为 NaN。
+
+| 字段 | 说明 |
+|------|------|
+| `$holder_count` | 股东户数（户） |
+| `$holder_count_chg_pct` | 较上期变化 %（负值 = 筹码集中） |
+| `$holder_avg_float_shares` | 户均流通股数 |
+| `$holder_avg_value` | 户均持股市值（元） |
+| `$holder_days_since` | 距最近一次公告的自然日天数 |
+
+> 使用建议：筹码集中因子 `RANK($holder_count_chg_pct)` 取反即"集中度改善"排序；
+> 与价量互动（集中 + 涨幅背离 = 出货陷阱）是经典方向。
+"""
+
+# 龙虎榜 + 大宗交易（event_faces 插件，dt_* / bt_*）
+_EVENT_FACES_SECTION_MD = """### 龙虎榜 / 大宗交易（日频稠密化，`dt_*` / `bt_*`）
+
+稀疏事件已稠密化为全股票日频：滚动 90 个**交易日**窗口的次数/金额，
+**无事件填 0**（覆盖率 100%，语义为"窗口内无事件"）；`*_days_since` 为距
+最近一次事件的自然日天数（从未发生为 NaN）。
+
+| 字段 | 说明 |
+|------|------|
+| `$dt_cnt_90d` | 近 90 交易日龙虎榜上榜次数（0=无） |
+| `$dt_net_buy_90d` | 近 90 交易日龙虎榜净买入合计（元，可负） |
+| `$dt_days_since` | 距最近一次上榜天数 |
+| `$bt_cnt_90d` | 近 90 交易日大宗交易笔数（0=无） |
+| `$bt_amt_90d` | 近 90 交易日大宗成交金额合计（万元） |
+| `$bt_premium_last` | 最近一笔大宗折溢价率（-0.05 = 折价 5%；折价成交 = 大资金让利出货信号） |
+| `$bt_days_since` | 距最近一次大宗交易天数 |
+
+> 使用建议：`$dt_*`/`$bt_*` 金额列绝对值右偏，先 `RANK` 或
+> `CS_WINSORIZE` 再用；"上榜热度 + 随后回落"与"大宗折价 + 筹码集中"
+> 是经典博弈方向。`*_days_since` 为 NaN 时表示样本期内从未发生，宜配
+> 计数列使用（计数已含 0 语义）。
+"""
+
+EVENT_FACE_PANEL_COLUMNS = (
+    "dt_cnt_90d", "dt_net_buy_90d", "dt_days_since",
+    "bt_cnt_90d", "bt_amt_90d", "bt_premium_last", "bt_days_since",
+)
+FORECAST_PANEL_COLUMNS = (
+    "pred_direction", "pred_change_mid", "pred_net_profit_mid", "pred_surprise", "pred_days_since",
+)
+HOLDER_PANEL_COLUMNS = (
+    "holder_count", "holder_count_chg_pct", "holder_avg_float_shares",
+    "holder_avg_value", "holder_days_since",
+)
+
 
 def _delivery_gates_markdown(spec: dict[str, Any] | None) -> str:
     """从 ResearchSpec 动态渲染两阶段交付门槛，保证提示词与真实门禁永不脱节。
@@ -588,17 +666,34 @@ def build_system_prompt(
     ff_advice = _FF_ADVICE_MD if ff_available else ""
     funda_block = _FUNDAMENTAL_SECTION_MD if funda_effective else _FUNDAMENTAL_DISABLED_MD
 
+    # 事件/披露字段族：按 panel 实际列逐块拼接（插件缺数据时对应块不注入）
+    event_blocks: list[str] = []
+    if cols is None or any(c.startswith("pred_") for c in cols):
+        event_blocks.append(_PRED_SECTION_MD)
+    if cols is None or any(c.startswith("holder_") for c in cols):
+        event_blocks.append(_HOLDER_SECTION_MD)
+    if cols is None or any(c in cols for c in EVENT_FACE_PANEL_COLUMNS):
+        event_blocks.append(_EVENT_FACES_SECTION_MD)
+    event_disclosure_block = (
+        "\n\n---\n\n".join(event_blocks) if event_blocks else ""
+    )
+
     core_body = (
         FACTOR_MINING_INTERFACE_PROMPT.replace("{{OPERATOR_CATALOG}}", catalog)
         .replace("{{DELIVERY_GATES}}", _delivery_gates_markdown(research_spec))
         .replace("{{MLS_FMB_THRESHOLDS}}", mls_block)
         .replace("{{LABEL_SECTION}}", _label_section_markdown(label_col, include_fundamentals=funda_effective))
         .replace("{{FUNDAMENTAL_SECTION}}", funda_block)
+        .replace("{{EVENT_DISCLOSURE_SECTION}}\n\n---\n\n", event_disclosure_block + "\n\n---\n\n" if event_disclosure_block else "")
+        .replace("{{EVENT_DISCLOSURE_SECTION}}", event_disclosure_block)
         .replace("{{FF_FIELD_ROWS}}\n", ff_rows)
         .replace("{{FF_FIELD_ROWS}}", ff_rows)
         .replace("{{FF_ADVICE}}\n\n", ff_advice + "\n\n" if ff_advice else "")
         .replace("{{FF_ADVICE}}", ff_advice)
     )
+    # 无任何事件/披露块时清掉残留的分隔线
+    if not event_disclosure_block:
+        core_body = core_body.replace("---\n\n---\n\n", "---\n\n")
     if not funda_effective:
         core_body = core_body.replace("、**基本面（`funda_*`）**、", "、")
 
@@ -608,6 +703,7 @@ def build_system_prompt(
         {"module": "operator_catalog", "enabled": include_operator_catalog, "chars": len(catalog) if include_operator_catalog else 0},
         {"module": "fields_fund_flow", "enabled": ff_available, "chars": len(ff_rows) + len(ff_advice)},
         {"module": "fundamentals", "enabled": funda_effective, "chars": len(funda_block) if funda_effective else 0},
+        {"module": "event_disclosure", "enabled": bool(event_blocks), "chars": len(event_disclosure_block)},
     ]
 
     examples = _tool_call_examples_section(include_fundamentals=funda_effective)

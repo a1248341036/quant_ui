@@ -258,10 +258,18 @@ class DeliveryChecker:
         self._stage_two_stats = StageTwoStats(criteria)
 
     def stage_one_stats(self, metrics_train: dict[str, Any]) -> StageResult:
-        """海选统计 + 换手可行性（train-only 口径）。"""
+        """海选统计 + 换手可行性（train-only 口径）+ 组合换手预检。"""
         reasons: list[str] = []
         for stage in self.stage_one:
             reasons.extend(stage.run({"metrics": metrics_train}).fail_reasons)
+        qp = metrics_train.get("quantile_portfolio") or {}
+        turnover = qp.get("avg_daily_side_turnover") if isinstance(qp, dict) else None
+        max_t = self.criteria.candidate.max_avg_daily_side_turnover
+        if turnover is not None and np.isfinite(float(turnover)) and float(turnover) > max_t:
+            reasons.append(
+                f"avg_daily_side_turnover={float(turnover):.2f} > {max_t:.2f} "
+                f"(组合日单边换手过高，实盘不可交付)"
+            )
         return StageResult(passed=len(reasons) == 0, fail_reasons=reasons)
 
     def stage_one_val_retention(
