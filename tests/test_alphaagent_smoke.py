@@ -95,13 +95,13 @@ class TestResearchSpec:
     def test_fundamental_mode_defaults(self) -> None:
         spec = normalize_research_spec(default_research_spec("fundamental"))
         assert spec["research_mode"] == "fundamental"
-        assert spec["recommended_label_col"] == "label_10d_close_to_close"
+        assert spec["recommended_label_col"] == "label_20d_close_to_close"
         assert any(f.startswith("fundamental_") for f in spec["search_policy"]["allowed_signal_families"])
 
     def test_fundamental_mode_via_override(self) -> None:
         spec = normalize_research_spec({"research_mode": "fundamental"})
         assert spec["research_mode"] == "fundamental"
-        assert spec["recommended_label_col"] == "label_10d_close_to_close"
+        assert spec["recommended_label_col"] == "label_20d_close_to_close"
 
     def test_fundamental_thresholds_looser_than_technical(self) -> None:
         """基本面模式门槛应比 technical 放宽（慢因子弱信号），但可交易性门禁保留。"""

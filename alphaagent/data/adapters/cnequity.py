@@ -63,7 +63,7 @@ _CNE_STATE_FILE = (
     / "CNEquity" / "data" / "quant_dataset" / "_cnequity" / "meta" / "state" / "daily_bars.json"
 )
 # 缓存格式/构建逻辑版本：代码变更影响 panel 内容时 +1 强制全部重建
-_CACHE_SCHEMA_VERSION = 2
+_CACHE_SCHEMA_VERSION = 3  # v3: +forecast/shareholder_counts/event_faces 列族
 # 缓存文件数上限（每个 ~0.9GB，6 个 ≈ 5.4GB；按需调大）
 _CACHE_MAX_FILES = 6
 _CACHE_INDEX_COLS = ["datetime", "instrument"]
@@ -88,7 +88,9 @@ def _cache_path(start: str | None, end: str | None, include_fundamentals: bool) 
     key = hashlib.sha256(
         f"{mk}|{include_fundamentals}|v{_CACHE_SCHEMA_VERSION}".encode("utf-8")
     ).hexdigest()[:16]
-    return _CACHE_ROOT / f"panel_{key}.parquet"
+    # 文件名带 schema 版本前缀：_find_cached_panel 只认当前版本的缓存，
+    # 版本升版后旧缓存自然失效（文件数由 _CACHE_MAX_FILES 淘汰）
+    return _CACHE_ROOT / f"panel_v{_CACHE_SCHEMA_VERSION}_{key}.parquet"
 
 
 def _find_cached_panel(start: str | None, end: str | None, include_fundamentals: bool) -> pd.DataFrame | None:
@@ -98,7 +100,7 @@ def _find_cached_panel(start: str | None, end: str | None, include_fundamentals:
             return None
         req_start = pd.Timestamp(start) if start else None
         req_end = pd.Timestamp(end) if end else None
-        for path in sorted(_CACHE_ROOT.glob("panel_*.parquet")):
+        for path in sorted(_CACHE_ROOT.glob(f"panel_v{_CACHE_SCHEMA_VERSION}_*.parquet")):
             try:
                 df = pd.read_parquet(path)
             except Exception as exc:  # noqa: BLE001
@@ -212,6 +214,13 @@ def load_panel_from_cne(
     _CACHE_MAX_FILES 上限约束，不会无限累积。
     """
     cache_path = _cache_path(start, end, include_fundamentals)
+
+    # 归一化日期参数为 YYYY-MM-DD 字符串：调用方（如 stacking 脚本）可能传
+    # pd.Timestamp，核心行情插件能容忍，但 fundamental（date.fromisoformat）
+    # 与 fund_flow（CNE reader 的日期比较）会静默失败 → 辅助插件整列丢失
+    start = pd.Timestamp(start).strftime("%Y-%m-%d") if start is not None else None
+    end = pd.Timestamp(end).strftime("%Y-%m-%d") if end is not None else None
+
     if not universe_mask:
         cached = _find_cached_panel(start, end, include_fundamentals)
         if cached is not None and not cached.empty:
