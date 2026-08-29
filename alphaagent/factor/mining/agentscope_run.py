@@ -417,6 +417,7 @@ async def run_factor_mining_agentscope(
             include_expression=bool(policy.get("include_expression", True)),
             max_expression_chars=int(policy.get("max_expression_chars", 320)),
             enable_factor_retrieval=bool(policy.get("enable_factor_retrieval", False)),
+            enable_edit_patterns=bool(policy.get("enable_edit_patterns", False)),
         )
 
     def _queued_prompt(messages: list[str]) -> str:
@@ -477,6 +478,7 @@ async def run_factor_mining_agentscope(
                         "elapsed_seconds": row.get("elapsed_seconds"),
                         "ok": bool(res.get("ok")),
                         "factor_name": args_obj.get("factor_name"),
+                        "expression": args_obj.get("multi_line_expr") or "",
                         "expression_sha256": canonical_hash(args_obj.get("multi_line_expr")) if args_obj.get("multi_line_expr") else None,
                         "split": res.get("split"),
                         "metrics": {key: summary_metrics.get(key) for key in ("ic", "icir", "rank_ic", "factor_coverage", "coverage") if summary_metrics.get(key) is not None},
@@ -636,7 +638,7 @@ async def run_factor_mining_agentscope(
                 batch_for_distill = [
                     {
                         "factor_name": r.get("factor_name", ""),
-                        "expression": str(r.get("arguments_raw", "")),
+                        "expression": r.get("expression", ""),
                         "metrics": r.get("metrics", {}),
                     }
                     for r in turn_rows

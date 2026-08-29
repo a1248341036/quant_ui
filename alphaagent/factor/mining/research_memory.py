@@ -21,6 +21,309 @@ _POSITIVE_VERDICTS = {"production_approved", "validated", "candidate_approved", 
 # 否定 verdict：已证明无效的路径，不应机械重复
 _NEGATIVE_VERDICTS = {"rejected", "revise_required", "weak"}
 
+# ── 表达式结构解析（Phase 1: 轻量级 regex 解析器，非完整 AST）────────────
+
+# 已知算子集合（从 DSL core 中提取的高频算子，用于结构指纹和编辑类型识别）
+_KNOWN_OPERATORS = frozenset({
+    # 时序算子
+    "ts_mean", "ts_sum", "ts_std", "ts_var", "ts_median", "ts_max", "ts_min",
+    "ts_rank", "ts_quantile", "ts_delta", "ts_delay", "ts_advance",
+    "ts_corr", "ts_cov", "ts_regression", "ts_decay_linear", "ts_skewness",
+    "ts_kurtosis", "ts_arg_max", "ts_arg_min", "ts_pct_change",
+    # 截面算子
+    "cs_rank", "cs_zscore", "cs_winsorize", "cs_demean", "cs_quantile",
+    "cs_residualize", "cs_neutralize",
+    # 算术
+    "add", "subtract", "multiply", "divide", "abs", "log", "sign",
+    "max", "min", "power", "sqrt", "reciprocal", "negate",
+    # 其他
+    "rank", "zscore", "winsorize", "normalize", "demean", "quantile",
+    "residualize", "neutralize", "if_else", "cond",
+})
+
+# 已知原始变量（含 $ 前缀的形式和无前缀形式）
+_KNOWN_VARIABLES = frozenset({
+    "close", "open", "high", "low", "volume", "amount", "vwap", "adj_open",
+    "adj_close", "adj_high", "adj_low", "ret", "returns", "turnover",
+    "market_cap", "market_value", "float_share", "total_share",
+    "amt", "adv20", "adv60", "adv120",
+    # 财务字段
+    "funda_roe", "funda_roa", "funda_eps", "funda_bps", "funda_revenue",
+    "funda_net_profit", "funda_gross_margin", "funda_net_margin",
+    # 资金流/事件
+    "ff_net_flow", "ff_main_flow", "ff_large_order",
+    "pred_net_profit", "pred_eps",
+    "holder_count", "holder_change",
+    "dt_big_order", "bt_block_trade",
+})
+
+# 匹配函数调用: func_name(args)
+_FUNC_CALL_RE = re.compile(r"([a-zA-Z_][a-zA-Z0-9_]*)\s*")
+# 匹配 $variable 或 bare variable
+_VAR_RE = re.compile(r"\$?([a-zA-Z_][a-zA-Z0-9_]*)")
+# 匹配数字常量
+_NUM_RE = re.compile(r"\b(\d+(?:\.\d+)?)\b")
+
+
+def _parse_expression_structure(expression: str) -> dict[str, Any]:
+    """轻量级 regex 解析器，提取表达式的算子/变量/窗口结构。
+
+    返回::
+        {
+            "operators": ["rank", "subtract", "ts_mean", "ts_mean"],
+            "variables": ["close"],
+            "window_params": {"ts_mean": [5, 20]},
+            "constants": [5, 20],
+            "fingerprint": "hash(...)",
+        }
+    """
+    if not expression:
+        return {"operators": [], "variables": [], "window_params": {}, "constants": [], "fingerprint": ""}
+
+    text = str(expression).strip()
+
+    # 提取算子（函数名）
+    operators: list[str] = []
+    for match in _FUNC_CALL_RE.finditer(text):
+        name = match.group(1).lower()
+        if name in _KNOWN_OPERATORS:
+            operators.append(name)
+
+    # 提取变量（$close → close）
+    variables: list[str] = []
+    seen_vars: set[str] = set()
+    for match in _VAR_RE.finditer(text):
+        name = match.group(1).lower()
+        # 排除算子名和纯数字
+        if name in _KNOWN_OPERATORS:
+            continue
+        if name in {"true", "false", "null", "none", "nan", "inf"}:
+            continue
+        if name in _KNOWN_VARIABLES or name.startswith("funda_") or name.startswith("ff_") \
+                or name.startswith("pred_") or name.startswith("holder_") \
+                or name.startswith("dt_") or name.startswith("bt_"):
+            if name not in seen_vars:
+                variables.append(name)
+                seen_vars.add(name)
+
+    # 提取数字常量
+    constants: list[int | float] = []
+    for match in _NUM_RE.finditer(text):
+        val = match.group(1)
+        constants.append(int(val) if "." not in val else float(val))
+
+    # 窗口参数：将算子与其后续常量关联
+    window_params: dict[str, list[int | float]] = {}
+    # 简单策略：按算子出现顺序，将紧跟其后的常量关联为窗口参数
+    # 用 token 流扫描
+    tokens = re.findall(r"([a-zA-Z_][a-zA-Z0-9_]*)|(\d+(?:\.\d+)?)", text)
+    op_queue: list[str] = []
+    for name_tok, num_tok in tokens:
+        if name_tok:
+            lower = name_tok.lower()
+            if lower in _KNOWN_OPERATORS:
+                op_queue.append(lower)
+        elif num_tok and op_queue:
+            val = int(num_tok) if "." not in num_tok else float(num_tok)
+            # 最后出现的算子取这个常量
+            last_op = op_queue[-1]
+            window_params.setdefault(last_op, []).append(val)
+
+    # 结构指纹：变量→VAR，常量→N，算子保留，拼接后哈希
+    fingerprint = _structure_fingerprint(text)
+
+    return {
+        "operators": operators,
+        "variables": variables,
+        "window_params": window_params,
+        "constants": constants,
+        "fingerprint": fingerprint,
+    }
+
+
+def _structure_fingerprint(expression: str) -> str:
+    """计算表达式结构指纹：变量替换为 VAR，数字替换为 N，算子保留。
+
+    示例::
+        rank(subtract(ts_mean($close, 5), ts_mean($close, 20)))
+        → hash("rank(subtract(ts_mean(VAR,N),ts_mean(VAR,N)))")
+    """
+    if not expression:
+        return ""
+    text = str(expression).strip()
+    # 替换 $variable → VAR
+    text = re.sub(r"\$[a-zA-Z_][a-zA-Z0-9_]*", "VAR", text)
+    # 替换 bare variables → VAR (只替换已知变量，避免误替换算子)
+    for var in sorted(_KNOWN_VARIABLES, key=len, reverse=True):
+        text = re.sub(rf"\b{re.escape(var)}\b", "VAR", text)
+    # 替换 funda_*/ff_*/pred_*/holder_*/dt_*/bt_* 前缀变量
+    text = re.sub(r"\b(?:funda_|ff_|pred_|holder_|dt_|bt_)[a-zA-Z0-9_]+", "VAR", text)
+    # 替换数字 → N
+    text = re.sub(r"\d+(?:\.\d+)?", "N", text)
+    # 规范化空格和换行
+    text = re.sub(r"\s+", "", text)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def _identify_edit_type(
+    parent_struct: dict[str, Any],
+    child_struct: dict[str, Any],
+) -> dict[str, Any] | None:
+    """对比两个因子结构，识别编辑类型和详情。
+
+    返回 ``None`` 表示无法识别有意义的编辑（结构完全不同或完全相同）。
+
+    返回示例::
+        {"edit_type": "window_extend", "detail": {"operator": "ts_mean", "from": 5, "to": 20}}
+    """
+    if not parent_struct or not child_struct:
+        return None
+    if parent_struct.get("fingerprint") == child_struct.get("fingerprint"):
+        return None  # 结构完全相同，无编辑
+
+    p_ops = parent_struct.get("operators", [])
+    c_ops = child_struct.get("operators", [])
+    p_vars = set(parent_struct.get("variables", []))
+    c_vars = set(child_struct.get("variables", []))
+    p_wins = parent_struct.get("window_params", {})
+    c_wins = child_struct.get("window_params", {})
+
+    # 算子集合差异
+    p_ops_set = set(p_ops)
+    c_ops_set = set(c_ops)
+    ops_added = c_ops_set - p_ops_set
+    ops_removed = p_ops_set - c_ops_set
+
+    # 变量差异
+    vars_added = c_vars - p_vars
+    vars_removed = p_vars - c_vars
+
+    # 窗口参数差异
+    win_changes: list[dict[str, Any]] = []
+    common_op_wins = set(p_wins.keys()) & set(c_wins.keys())
+    for op in sorted(common_op_wins):
+        p_vals = p_wins.get(op, [])
+        c_vals = c_wins.get(op, [])
+        if p_vals != c_vals:
+            # 找出变化的具体窗口
+            for i, (pv, cv) in enumerate(zip(p_vals, c_vals)):
+                if pv != cv:
+                    if isinstance(pv, (int, float)) and isinstance(cv, (int, float)):
+                        if cv > pv:
+                            win_changes.append({
+                                "operator": op, "position": i,
+                                "from": pv, "to": cv, "direction": "extend",
+                            })
+                        else:
+                            win_changes.append({
+                                "operator": op, "position": i,
+                                "from": pv, "to": cv, "direction": "shrink",
+                            })
+
+    # 判定编辑类型（优先级从高到低）
+
+    # 1. interaction_add: 从单信号变为双信号（变量数量增加）
+    if len(p_vars) < len(c_vars) and len(ops_added) > 0:
+        return {
+            "edit_type": "interaction_add",
+            "detail": {
+                "new_variables": sorted(vars_added),
+                "new_operators": sorted(ops_added),
+            },
+        }
+
+    # 2. composition_add: 增加了算子层级（算子数量增加但变量不变）
+    if len(c_ops) > len(p_ops) and vars_added == set() and vars_removed == set():
+        return {
+            "edit_type": "composition_add",
+            "detail": {"new_operators": sorted(ops_added)},
+        }
+
+    # 3. variable_replace: 变量替换，算子和窗口不变
+    if vars_added and vars_removed and ops_added == set() and ops_removed == set() and not win_changes:
+        return {
+            "edit_type": "variable_replace",
+            "detail": {
+                "from": sorted(vars_removed),
+                "to": sorted(vars_added),
+            },
+        }
+
+    # 4. window_extend / window_shrink: 窗口参数变化
+    if win_changes and not vars_added and not vars_removed and ops_added == set() and ops_removed == set():
+        all_extend = all(c["direction"] == "extend" for c in win_changes)
+        all_shrink = all(c["direction"] == "shrink" for c in win_changes)
+        if all_extend:
+            return {
+                "edit_type": "window_extend",
+                "detail": {"changes": win_changes},
+            }
+        if all_shrink:
+            return {
+                "edit_type": "window_shrink",
+                "detail": {"changes": win_changes},
+            }
+        # 混合窗口变化
+        return {
+            "edit_type": "window_change",
+            "detail": {"changes": win_changes},
+        }
+
+    # 5. operator_swap: 算子替换，变量和窗口不变
+    if ops_added and ops_removed and not vars_added and not vars_removed and not win_changes:
+        return {
+            "edit_type": "operator_swap",
+            "detail": {
+                "from": sorted(ops_removed),
+                "to": sorted(ops_added),
+            },
+        }
+
+    # 6. normalize_change: 归一化方式改变（末尾算子变化）
+    if ops_added and ops_removed:
+        # 如果差异只在外层归一化算子
+        norm_ops = {"rank", "zscore", "winsorize", "normalize", "demean", "quantile",
+                    "cs_rank", "cs_zscore", "cs_winsorize", "cs_demean", "cs_quantile"}
+        if ops_added.issubset(norm_ops) and ops_removed.issubset(norm_ops):
+            return {
+                "edit_type": "normalize_change",
+                "detail": {
+                    "from": sorted(ops_removed),
+                    "to": sorted(ops_added),
+                },
+            }
+
+    # 7. decorrelation_add: 新增去相关处理
+    decorr_ops = {"residualize", "neutralize", "cs_residualize", "cs_neutralize"}
+    if ops_added & decorr_ops:
+        return {
+            "edit_type": "decorrelation_add",
+            "detail": {"new_operators": sorted(ops_added & decorr_ops)},
+        }
+
+    # 8. 复合编辑：多种变化同时发生
+    changes: list[str] = []
+    if win_changes:
+        changes.append("window_change")
+    if vars_added or vars_removed:
+        changes.append("variable_change")
+    if ops_added or ops_removed:
+        changes.append("operator_change")
+    if changes:
+        return {
+            "edit_type": "compound_edit",
+            "detail": {
+                "changes": changes,
+                "vars_added": sorted(vars_added),
+                "vars_removed": sorted(vars_removed),
+                "ops_added": sorted(ops_added),
+                "ops_removed": sorted(ops_removed),
+                "win_changes": win_changes,
+            },
+        }
+
+    return None
+
 
 def _neg_str(s: Any) -> str:
     """Return a string that sorts *before* all normal strings, so that when
@@ -190,6 +493,45 @@ class ResearchMemoryStore:
         ON memory_patterns(category);
     CREATE INDEX IF NOT EXISTS idx_memory_patterns_confidence
         ON memory_patterns(confidence);
+
+    -- ── Phase 1: 编辑模式表（AlphaMemo SSPM 对标）─────────────────────
+    -- 记录父因子→编辑操作→子因子→结果 的完整链条
+    CREATE TABLE IF NOT EXISTS edit_patterns (
+        id TEXT PRIMARY KEY,
+        parent_expression TEXT,
+        child_expression TEXT NOT NULL,
+        parent_fingerprint TEXT,
+        child_fingerprint TEXT NOT NULL,
+        edit_type TEXT NOT NULL,          -- window_extend/shrink, operator_swap, variable_replace, interaction_add, ...
+        edit_detail_json TEXT,            -- JSON: 具体编辑详情（哪些算子/变量/窗口变了）
+        parent_ic REAL,
+        child_ic REAL,
+        delta_ic REAL,                    -- IC 变化 (child - parent)
+        parent_icir REAL,
+        child_icir REAL,
+        delta_icir REAL,
+        verdict TEXT,                     -- success / failure / neutral
+        confidence REAL NOT NULL DEFAULT 0.5,
+        total_uses INTEGER NOT NULL DEFAULT 0,
+        success_count INTEGER NOT NULL DEFAULT 0,
+        vetoed INTEGER NOT NULL DEFAULT 0,  -- 不对称否决标记
+        family TEXT,
+        parent_entry_id TEXT,             -- 关联 memory_entries.id
+        child_entry_id TEXT,              -- 关联 memory_entries.id
+        created_at TEXT,
+        updated_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_edit_patterns_type
+        ON edit_patterns(edit_type);
+    CREATE INDEX IF NOT EXISTS idx_edit_patterns_verdict
+        ON edit_patterns(verdict);
+    CREATE INDEX IF NOT EXISTS idx_edit_patterns_family
+        ON edit_patterns(family);
+    CREATE INDEX IF NOT EXISTS idx_edit_patterns_vetoed
+        ON edit_patterns(vetoed);
+    CREATE INDEX IF NOT EXISTS idx_edit_patterns_confidence
+        ON edit_patterns(confidence);
     """
 
     # 因子族分类规则：用于蒸馏算子和饱和度跟踪
@@ -235,11 +577,35 @@ class ResearchMemoryStore:
         if self._schema_ready:
             return
         conn.executescript(self._SCHEMA)
-        columns = {
+        # memory_entries 列迁移
+        entry_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(memory_entries)").fetchall()
         }
-        if "interaction_json" not in columns:
+        if "interaction_json" not in entry_columns:
             conn.execute("ALTER TABLE memory_entries ADD COLUMN interaction_json TEXT")
+        # Phase 1: 新增结构指纹/算子列表/窗口参数/父因子列
+        if "structure_fingerprint" not in entry_columns:
+            conn.execute("ALTER TABLE memory_entries ADD COLUMN structure_fingerprint TEXT")
+        if "operator_list_json" not in entry_columns:
+            conn.execute("ALTER TABLE memory_entries ADD COLUMN operator_list_json TEXT")
+        if "window_params_json" not in entry_columns:
+            conn.execute("ALTER TABLE memory_entries ADD COLUMN window_params_json TEXT")
+        if "parent_id" not in entry_columns:
+            conn.execute("ALTER TABLE memory_entries ADD COLUMN parent_id TEXT")
+
+        # memory_patterns 列迁移（Phase 1/2）
+        pattern_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(memory_patterns)").fetchall()
+        }
+        if "structure_fingerprint" not in pattern_columns:
+            conn.execute("ALTER TABLE memory_patterns ADD COLUMN structure_fingerprint TEXT")
+        if "edit_types_json" not in pattern_columns:
+            conn.execute("ALTER TABLE memory_patterns ADD COLUMN edit_types_json TEXT")
+        if "operator_combo_json" not in pattern_columns:
+            conn.execute("ALTER TABLE memory_patterns ADD COLUMN operator_combo_json TEXT")
+        if "parent_context_json" not in pattern_columns:
+            conn.execute("ALTER TABLE memory_patterns ADD COLUMN parent_context_json TEXT")
+
         self._migrate_legacy_json(conn)
         conn.commit()
         self._schema_ready = True
@@ -295,8 +661,9 @@ class ResearchMemoryStore:
                 id, factor_name, expression, conclusion, verdict, stage,
                 profile_id, profile_hash, candidate_id, metrics_json, interaction_json, error,
                 failure_code, last_run_id, attempts, tokens_json,
-                created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                created_at, updated_at,
+                structure_fingerprint, operator_list_json, window_params_json, parent_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 factor_name=excluded.factor_name,
                 expression=excluded.expression,
@@ -314,7 +681,11 @@ class ResearchMemoryStore:
                 attempts=excluded.attempts,
                 tokens_json=excluded.tokens_json,
                 created_at=excluded.created_at,
-                updated_at=excluded.updated_at
+                updated_at=excluded.updated_at,
+                structure_fingerprint=excluded.structure_fingerprint,
+                operator_list_json=excluded.operator_list_json,
+                window_params_json=excluded.window_params_json,
+                parent_id=excluded.parent_id
             """,
             (
                 entry["id"], entry.get("factor_name"), entry.get("expression"),
@@ -326,6 +697,10 @@ class ResearchMemoryStore:
                 entry.get("last_run_id"), int(entry.get("attempts", 1)),
                 json.dumps(entry.get("tokens", []), ensure_ascii=False),
                 entry.get("created_at"), entry.get("updated_at"),
+                entry.get("structure_fingerprint"),
+                entry.get("operator_list_json"),
+                entry.get("window_params_json"),
+                entry.get("parent_id"),
             ),
         )
         conn.execute("DELETE FROM memory_observations WHERE entry_id = ?", (entry["id"],))
@@ -428,16 +803,27 @@ class ResearchMemoryStore:
         metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else summary
         if name == "evaluate_factor":
             metrics = summary
+        # 提取嵌套回测指标到扁平 metrics，供 _compact_metrics 捕获
+        metrics = self._flatten_backtest_metrics(metrics, profile_metrics)
         error = str(result.get("error") or result.get("skipped_reason") or "")
         verdict, conclusion = self._classify(name, result, metrics, error)
         canonical_expression = "\n".join(line.strip() for line in expression.splitlines() if line.strip())
         signature = hashlib.sha256(canonical_expression.encode("utf-8")).hexdigest()[:20]
         failure_code = self._failure_code(name, result, error, verdict)
+
+        # Phase 1: 解析表达式结构
+        struct = _parse_expression_structure(expression)
+
         with self._open() as conn:
             previous_row = conn.execute(
                 "SELECT attempts, created_at FROM memory_entries WHERE id = ?",
                 (signature,),
             ).fetchone()
+            # Phase 2: 隐式父子链接——找最相似的历史因子作为隐式父因子
+            parent_id = None
+            if struct.get("fingerprint"):
+                parent_id = self._find_implicit_parent(conn, struct, exclude_id=signature)
+
         previous_attempts = int(previous_row["attempts"]) if previous_row else 0
         observation = {
             "run_id": run_id,
@@ -466,6 +852,11 @@ class ResearchMemoryStore:
             "attempts": previous_attempts + 1,
             "updated_at": _now(),
             "observations": [observation],
+            # Phase 1: 结构信息
+            "structure_fingerprint": struct.get("fingerprint"),
+            "operator_list_json": json.dumps(struct.get("operators", []), ensure_ascii=False),
+            "window_params_json": json.dumps(struct.get("window_params", {}), ensure_ascii=False),
+            "parent_id": parent_id,
         }
 
         if previous_row:
@@ -496,7 +887,65 @@ class ResearchMemoryStore:
 
         with self._open() as conn:
             self._write_entry(conn, entry)
+
+        # Phase 2/4: 如果有隐式父因子，记录编辑模式
+        if parent_id and struct.get("fingerprint"):
+            try:
+                self._record_edit_pattern_from_parent(
+                    parent_id=parent_id,
+                    child_id=signature,
+                    child_expression=expression,
+                    child_struct=struct,
+                    child_metrics=entry["metrics"],
+                )
+            except Exception:
+                pass  # 编辑模式记录失败不影响主流程
+
         return entry
+
+    @staticmethod
+    def _flatten_backtest_metrics(metrics: dict[str, Any], profile_metrics: dict[str, Any]) -> dict[str, Any]:
+        """把 quantile_portfolio / topn_portfolio / engine_backtest 的嵌套回测指标
+        提取到扁平 metrics，供 _compact_metrics 统一捕获。
+
+        evaluate_factor（eval_profile 路径）的完整结果在 profile_metrics 里；
+        submit_factor 的结果在 metrics["quantile_portfolio"] 里。
+        evaluate_factor 走 summary 路径时 profile_metrics 才有嵌套结构。
+        """
+        flat = dict(metrics)  # 不修改原 dict
+
+        # quantile_portfolio：submit_factor metrics 和 evaluate_factor profile_metrics 都有
+        qp = profile_metrics.get("quantile_portfolio") if isinstance(profile_metrics, dict) else None
+        if isinstance(qp, dict):
+            flat.setdefault("annualized_return", qp.get("top_group_annualized_return"))
+            flat.setdefault("annualized_excess_return", qp.get("top_group_annualized_excess_return"))
+            flat.setdefault("sharpe", qp.get("top_group_sharpe"))
+            flat.setdefault("excess_sharpe", qp.get("top_group_excess_sharpe"))
+            flat.setdefault("max_drawdown", qp.get("top_group_max_drawdown"))
+            flat.setdefault("annual_turnover", qp.get("avg_daily_side_turnover"))
+            flat.setdefault("monotonicity", qp.get("monotonicity"))
+
+        # topn_portfolio：evaluate_factor（eval_profile）路径的 profile_metrics
+        tp = profile_metrics.get("topn_portfolio") if isinstance(profile_metrics, dict) else None
+        if isinstance(tp, dict):
+            flat.setdefault("annualized_return", tp.get("annualized_return"))
+            flat.setdefault("annualized_excess_return", tp.get("annualized_excess_return"))
+            flat.setdefault("sharpe", tp.get("sharpe"))
+            flat.setdefault("max_drawdown", tp.get("max_drawdown"))
+            flat.setdefault("daily_overlap", tp.get("daily_overlap"))
+            flat.setdefault("excess_sharpe", tp.get("excess_sharpe"))
+
+        # engine_backtest：submit_factor 路径（submit 结果里也可能嵌在 metrics 中）
+        eb = profile_metrics.get("engine_backtest") if isinstance(profile_metrics, dict) else None
+        if isinstance(eb, dict):
+            m = eb.get("metrics") if isinstance(eb.get("metrics"), dict) else eb
+            flat.setdefault("annualized_return", m.get("annual_return"))
+            flat.setdefault("annualized_excess_return", m.get("excess_annual"))
+            flat.setdefault("sharpe", m.get("sharpe"))
+            flat.setdefault("max_drawdown", m.get("max_drawdown"))
+            flat.setdefault("daily_overlap", m.get("daily_overlap"))
+
+        return flat
 
     @staticmethod
     def _compact_metrics(metrics: dict[str, Any]) -> dict[str, float]:
@@ -505,6 +954,7 @@ class ResearchMemoryStore:
             "long_group_annual_excess_return", "winsorized_abs_ic_decay",
             "annualized_return", "annualized_excess_return", "sharpe",
             "max_drawdown", "annual_turnover", "daily_overlap",
+            "excess_sharpe", "monotonicity",
         )
         return {key: value for key in keys if (value := _safe_float(metrics.get(key))) is not None}
 
@@ -540,7 +990,10 @@ class ResearchMemoryStore:
         if review_verdict == "revise":
             return "revise_required", f"{canonical}：Reviewer 要求结构性改造后再评估。"
         if error:
-            return "rejected", f"{name} 被否定：{error}"
+            # error 可能携带巨型内部状态（如 pandas 报错的完整日期列表），
+            # 必须截断后再写入 conclusion，避免记忆库膨胀。
+            snippet = error if len(error) <= 500 else error[:497] + "..."
+            return "rejected", f"{name} 被否定：{snippet}"
         if name == "submit_factor":
             if result.get("stored"):
                 return "production_approved", "已通过精筛并正式入库，应保留其经济机制并避免重复。"
@@ -551,15 +1004,306 @@ class ResearchMemoryStore:
         icir = _safe_float(metrics.get("icir"))
         coverage = _safe_float(metrics.get("factor_coverage", metrics.get("coverage")))
         is_val = name == "eval_on_val_set" or result.get("split") == "val"
+
+        # Phase 2: 生成包含结构信息的 conclusion
+        ic_str = f"IC={ic:+.4f}" if ic is not None else "IC=N/A"
+        icir_str = f"ICIR={icir:+.3f}" if icir is not None else "ICIR=N/A"
+        cov_str = f"Coverage={coverage:.2f}" if coverage is not None else ""
+
         if is_val and (result.get("sign_check", {}).get("matches_expected_sign") is not False) and abs(ic or 0) >= 0.015:
-            return "validated", "训练外方向一致且具有可用相关性，可扩展为相邻但不重复的机制。"
+            return "validated", f"训练外验证通过：{ic_str} {icir_str} {cov_str}。方向一致且有可用相关性，可在相邻但不重复的机制上扩展。"
         if abs(ic or 0) >= 0.015 and (icir or 0) > 0.2 and (coverage or 0) > 0.85:
-            return "promising", "训练阶段指标有潜力，优先进行训练外验证或独立性改造。"
-        return "weak", "当前指标不足；除非改变变量、经济机制或处理方式，否则不要机械重试。"
+            return "promising", f"训练阶段有潜力：{ic_str} {icir_str} {cov_str}。优先进行训练外验证或独立性改造。"
+        # weak: 包含具体指标，便于后续编辑模式分析
+        return "weak", f"指标不足：{ic_str} {icir_str} {cov_str}。除非改变变量、经济机制或处理方式，否则不要机械重试。"
 
     # Verdict 分类
     _POSITIVE_VERDICTS = frozenset({"production_approved", "validated", "candidate_approved", "promising"})
     _NEGATIVE_VERDICTS = frozenset({"rejected", "revise_required", "weak"})
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Phase 2: 隐式父子链接 + 编辑模式记录
+    # ──────────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _find_implicit_parent(
+        conn: sqlite3.Connection,
+        child_struct: dict[str, Any],
+        *,
+        exclude_id: str | None = None,
+        limit: int = 100,
+    ) -> str | None:
+        """用结构指纹相似度找到最接近的历史因子作为隐式父因子。
+
+        相似度 = 算子列表 Jaccard + 变量列表 Jaccard + 窗口参数编辑距离。
+        相似度 > 0.5 时建立隐式链接；完全相同的指纹不视为父因子（同一因子的重评估）。
+        """
+        child_fp = child_struct.get("fingerprint")
+        if not child_fp:
+            return None
+
+        child_ops = set(child_struct.get("operators", []))
+        child_vars = set(child_struct.get("variables", []))
+
+        # 查询候选父因子（最近 limit 条，排除自身和相同指纹）
+        params: list[Any] = []
+        where_parts = ["structure_fingerprint IS NOT NULL", "structure_fingerprint != ?"]
+        params.append(child_fp)
+        if exclude_id:
+            where_parts.append("id != ?")
+            params.append(exclude_id)
+        where = " AND ".join(where_parts)
+
+        rows = conn.execute(
+            f"""
+            SELECT id, structure_fingerprint, operator_list_json, window_params_json
+            FROM memory_entries
+            WHERE {where}
+            ORDER BY updated_at DESC
+            LIMIT ?
+            """,
+            (*params, int(limit)),
+        ).fetchall()
+
+        if not rows:
+            return None
+
+        best_id: str | None = None
+        best_score: float = 0.0
+
+        for r in rows:
+            parent_ops = set(json.loads(r["operator_list_json"] or "[]"))
+            parent_vars: set[str] = set()  # 从表达式中提取
+            # 简单从 operator_list_json 之外提取变量（需要读 expression，这里用 tokens_json 近似）
+            # 用 expression 重新解析更准确，但性能考虑用已有的 operator set
+            parent_wins = json.loads(r["window_params_json"] or "{}")
+
+            # 算子 Jaccard
+            ops_union = child_ops | parent_ops
+            ops_inter = child_ops & parent_ops
+            ops_sim = len(ops_inter) / len(ops_union) if ops_union else 0.0
+
+            # 变量 Jaccard（从 parent fingerprint 提取不准确，用 expression 重新解析）
+            # 简化：用窗口参数编辑距离
+            child_wins = child_struct.get("window_params", {})
+            common_ops = set(child_wins.keys()) & set(parent_wins.keys())
+            if common_ops:
+                win_diffs = []
+                for op in common_ops:
+                    cv = child_wins.get(op, [])
+                    pv = parent_wins.get(op, [])
+                    if cv and pv:
+                        # 对同位置的窗口值做归一化差异
+                        for i in range(min(len(cv), len(pv))):
+                            if pv[i] != cv[i]:
+                                try:
+                                    max_val = max(float(pv[i]), float(cv[i]))
+                                    if max_val > 0:
+                                        win_diffs.append(abs(float(cv[i]) - float(pv[i])) / max_val)
+                                except (TypeError, ValueError):
+                                    pass
+                win_sim = 1.0 - (sum(win_diffs) / len(win_diffs)) if win_diffs else 1.0
+            else:
+                win_sim = 0.5  # 无共同窗口算子，给中等分
+
+            # 综合相似度
+            score = 0.5 * ops_sim + 0.5 * win_sim
+            if score > best_score:
+                best_score = score
+                best_id = r["id"]
+
+        return best_id if best_score > 0.5 else None
+
+    def _record_edit_pattern_from_parent(
+        self,
+        *,
+        parent_id: str,
+        child_id: str,
+        child_expression: str,
+        child_struct: dict[str, Any],
+        child_metrics: dict[str, float],
+    ) -> str | None:
+        """当有隐式或显式父因子时，记录编辑模式。返回 edit_pattern id。"""
+        # 读取父因子信息
+        with self._open() as conn:
+            parent_row = conn.execute(
+                "SELECT expression, structure_fingerprint, operator_list_json, window_params_json, metrics_json FROM memory_entries WHERE id = ?",
+                (parent_id,),
+            ).fetchone()
+            if not parent_row:
+                return None
+
+            parent_expression = parent_row["expression"]
+            parent_struct = {
+                "fingerprint": parent_row["structure_fingerprint"],
+                "operators": json.loads(parent_row["operator_list_json"] or "[]"),
+                "variables": [],  # 简化：从 expression 重新解析
+                "window_params": json.loads(parent_row["window_params_json"] or "{}"),
+                "constants": [],
+            }
+            # 补全父因子结构
+            parent_struct = _parse_expression_structure(parent_expression)
+            parent_metrics = json.loads(parent_row["metrics_json"] or "{}")
+
+        # 识别编辑类型
+        edit = _identify_edit_type(parent_struct, child_struct)
+        if edit is None:
+            return None
+
+        edit_type = edit["edit_type"]
+        edit_detail = edit["detail"]
+
+        # 计算 delta_ic, delta_icir
+        parent_ic = _safe_float(parent_metrics.get("ic"))
+        child_ic = _safe_float(child_metrics.get("ic"))
+        parent_icir = _safe_float(parent_metrics.get("icir"))
+        child_icir = _safe_float(child_metrics.get("icir"))
+
+        delta_ic = None
+        if parent_ic is not None and child_ic is not None:
+            delta_ic = child_ic - parent_ic
+
+        delta_icir = None
+        if parent_icir is not None and child_icir is not None:
+            delta_icir = child_icir - parent_icir
+
+        # 判定 verdict
+        IC_SUCCESS_THRESHOLD = 0.003
+        if delta_ic is not None:
+            if delta_ic > IC_SUCCESS_THRESHOLD:
+                verdict = "success"
+            elif delta_ic < -IC_SUCCESS_THRESHOLD:
+                verdict = "failure"
+            else:
+                verdict = "neutral"
+        else:
+            verdict = "neutral"
+
+        # 信号族
+        family = self._classify_family(
+            str(child_struct.get("variables", [""])),
+            child_expression,
+        )
+
+        # 写入 edit_patterns 表
+        pattern_id = hashlib.sha256(
+            f"{edit_type}|{parent_struct.get('fingerprint', '')}|{child_struct.get('fingerprint', '')}".encode("utf-8")
+        ).hexdigest()[:20]
+
+        now = _now()
+        edit_detail_json = json.dumps(edit_detail, ensure_ascii=False, separators=(",", ":"))
+
+        with self._open() as conn:
+            existing = conn.execute(
+                "SELECT total_uses, success_count, confidence, vetoed FROM edit_patterns WHERE id = ?",
+                (pattern_id,),
+            ).fetchone()
+
+            if existing:
+                # 更新统计（不对称否决）
+                total = int(existing["total_uses"]) + 1
+                succ = int(existing["success_count"]) + (1 if verdict == "success" else 0)
+                # 不对称置信度：失败增长更快
+                if verdict == "success":
+                    confidence = min(0.95, succ / (total ** 0.8)) if total else 0.5
+                else:
+                    failures = total - succ
+                    confidence = min(0.98, failures / (total ** 0.5)) if total else 0.5
+                # 不对称否决：失败置信度 > 0.85 时标记 vetoed
+                vetoed = 1 if (verdict != "success" and confidence > 0.85) else int(existing["vetoed"])
+                conn.execute(
+                    """
+                    UPDATE edit_patterns
+                    SET total_uses = ?, success_count = ?, confidence = ?, vetoed = ?,
+                        child_ic = ?, delta_ic = ?, child_icir = ?, delta_icir = ?,
+                        verdict = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (total, succ, round(confidence, 4), vetoed,
+                     child_ic, delta_ic, child_icir, delta_icir,
+                     verdict, now, pattern_id),
+                )
+            else:
+                # 新建
+                confidence = 0.5
+                vetoed = 0
+                total = 1
+                succ = 1 if verdict == "success" else 0
+                conn.execute(
+                    """
+                    INSERT INTO edit_patterns
+                        (id, parent_expression, child_expression, parent_fingerprint, child_fingerprint,
+                         edit_type, edit_detail_json,
+                         parent_ic, child_ic, delta_ic, parent_icir, child_icir, delta_icir,
+                         verdict, confidence, total_uses, success_count, vetoed, family,
+                         parent_entry_id, child_entry_id, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (pattern_id, parent_expression, child_expression,
+                     parent_struct.get("fingerprint"), child_struct.get("fingerprint"),
+                     edit_type, edit_detail_json,
+                     parent_ic, child_ic, delta_ic, parent_icir, child_icir, delta_icir,
+                     verdict, round(confidence, 4), total, succ, vetoed, family,
+                     parent_id, child_id, now, now),
+                )
+
+        return pattern_id
+
+    def query_edit_patterns(
+        self,
+        *,
+        edit_type: str | None = None,
+        verdict: str | None = None,
+        family: str | None = None,
+        min_confidence: float = 0.3,
+        exclude_vetoed: bool = False,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """检索编辑模式，按置信度降序。"""
+        clauses = ["confidence >= ?"]
+        params: list[Any] = [min_confidence]
+        if edit_type:
+            clauses.append("edit_type = ?")
+            params.append(edit_type)
+        if verdict:
+            clauses.append("verdict = ?")
+            params.append(verdict)
+        if family:
+            clauses.append("family = ?")
+            params.append(family)
+        if exclude_vetoed:
+            clauses.append("vetoed = 0")
+        where = " AND ".join(clauses)
+        with self._open() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM edit_patterns WHERE {where} "
+                f"ORDER BY confidence DESC, total_uses DESC LIMIT ?",
+                (*params, int(limit)),
+            ).fetchall()
+        return [
+            {
+                "id": r["id"],
+                "edit_type": r["edit_type"],
+                "edit_detail": json.loads(r["edit_detail_json"] or "{}"),
+                "parent_fingerprint": r["parent_fingerprint"],
+                "child_fingerprint": r["child_fingerprint"],
+                "parent_ic": r["parent_ic"],
+                "child_ic": r["child_ic"],
+                "delta_ic": r["delta_ic"],
+                "parent_icir": r["parent_icir"],
+                "child_icir": r["child_icir"],
+                "delta_icir": r["delta_icir"],
+                "verdict": r["verdict"],
+                "confidence": r["confidence"],
+                "total_uses": r["total_uses"],
+                "success_count": r["success_count"],
+                "vetoed": r["vetoed"],
+                "family": r["family"],
+                "created_at": r["created_at"],
+                "updated_at": r["updated_at"],
+            }
+            for r in rows
+        ]
 
     def delete_entry(self, entry_id: str) -> bool:
         with self._open() as conn:
@@ -606,10 +1350,14 @@ class ResearchMemoryStore:
         include_expression: bool = True,
         max_expression_chars: int | None = None,
         enable_factor_retrieval: bool = False,
+        enable_edit_patterns: bool = False,
     ) -> str:
         """Build a compact, retrieval-based research memory context block.
 
-        三层记忆架构（渐进式模块化）：
+        四层记忆架构（渐进式模块化）：
+        0. **编辑模式层**（``enable_edit_patterns=True`` 时启用）
+           — AlphaMemo SSPM 对标：从历史编辑模式中提取"哪种编辑操作在什么上下文
+           里好/不好"，按置信门控注入（硬推荐/硬否决/软推荐/软否决/残差不注入）。
         1. **单因子检索层**（``enable_factor_retrieval=True`` 时启用）
            — BM25 + recency 混合检索，分 positive/negative 两池展示。
            默认关闭，因逐因子记录中 46% 是同一句话，信息密度低；
@@ -620,6 +1368,21 @@ class ResearchMemoryStore:
            — 因子族拥挤度，> 0.6 时注入警告。
         """
         lines: list[str] = []
+        header_added = False
+
+        def _ensure_header() -> None:
+            nonlocal header_added
+            if not header_added:
+                lines.append("# 长期研究记忆（来自真实评估与提交结果）")
+                lines.append("以下结论必须作为实验先验。")
+                header_added = True
+
+        # ── ⓪ 编辑模式层（AlphaMemo SSPM，置信门控残差记忆）──
+        if enable_edit_patterns:
+            edit_block = self._edit_pattern_block()
+            if edit_block:
+                _ensure_header()
+                lines.append(edit_block)
 
         # ── ① 单因子检索层（可开关，默认关闭）──
         if enable_factor_retrieval:
@@ -632,16 +1395,13 @@ class ResearchMemoryStore:
                 max_expression_chars=max_expression_chars,
             )
             if factor_lines:
-                lines.append("# 长期研究记忆（来自真实评估与提交结果）")
-                lines.append("以下结论必须作为实验先验。")
+                _ensure_header()
                 lines.append(factor_lines)
 
         # ── ② 模式层（跨因子经验提炼，全量按置信度注入，不走 BM25）──
         patterns = self.query_patterns(min_confidence=0.3, limit=10)
         if patterns:
-            if not lines:
-                lines.append("# 长期研究记忆（来自真实评估与提交结果）")
-                lines.append("以下结论必须作为实验先验。")
+            _ensure_header()
             lines.append("")
             lines.append("## 研究模式记忆（跨因子经验提炼）")
             lines.append("以下模式来自历史多轮挖掘的统计提炼，优先级高于单因子记忆。")
@@ -685,9 +1445,7 @@ class ResearchMemoryStore:
             if d.get("saturation_score", 0) > 0.6
         }
         if crowded:
-            if not lines:
-                lines.append("# 长期研究记忆（来自真实评估与提交结果）")
-                lines.append("以下结论必须作为实验先验。")
+            _ensure_header()
             lines.append("")
             lines.append("### 饱和度警告")
             lines.append("以下因子族已拥挤（多个相似因子入库），继续微调边际收益低：")
@@ -700,6 +1458,124 @@ class ResearchMemoryStore:
             lines.append("建议切换到饱和度 < 0.3 的未探索族。")
 
         return "\n".join(lines)
+
+    # ── 编辑模式注入（AlphaMemo SSPM 对标）──
+
+    def _edit_pattern_block(self) -> str:
+        """构建编辑模式注入块，按置信门控分四级注入。
+
+        置信门控残差记忆：
+        - > 0.85  : 硬推荐 / 硬否决（vetoed）
+        - 0.5~0.85: 软推荐 / 软否决
+        - 0.3~0.5 : 弱提示
+        - < 0.3   : 不注入（残差记忆，保留在库中继续积累统计）
+        """
+        # 检索成功模式（非 vetoed）
+        successes = self.query_edit_patterns(
+            verdict="success",
+            min_confidence=0.3,
+            exclude_vetoed=True,
+            limit=10,
+        )
+        # 检索失败模式（含 vetoed）
+        failures = self.query_edit_patterns(
+            verdict="failure",
+            min_confidence=0.3,
+            exclude_vetoed=False,
+            limit=10,
+        )
+
+        if not successes and not failures:
+            return ""
+
+        block_lines: list[str] = []
+        block_lines.append("")
+        block_lines.append("## 编辑模式记忆（基于历史编辑操作统计）")
+        block_lines.append("以下模式记录了"在特定信号上下文中，哪种编辑操作有效或失败"。")
+
+        # ── 成功模式（硬推荐 + 软推荐 + 弱提示）──
+        if successes:
+            hard_rec = [p for p in successes if p["confidence"] > 0.85]
+            soft_rec = [p for p in successes if 0.5 < p["confidence"] <= 0.85]
+            weak_rec = [p for p in successes if 0.3 < p["confidence"] <= 0.5]
+
+            if hard_rec:
+                block_lines.append("")
+                block_lines.append("### 优先尝试（高置信度有效编辑，>85%）")
+                for p in hard_rec:
+                    block_lines.append(self._format_edit_pattern(p, prefix="优先尝试"))
+
+            if soft_rec:
+                block_lines.append("")
+                block_lines.append("### 可以尝试（中等置信度有效编辑，50%~85%）")
+                for p in soft_rec:
+                    block_lines.append(self._format_edit_pattern(p, prefix="可以尝试"))
+
+            if weak_rec:
+                block_lines.append("")
+                block_lines.append("### 可参考（低置信度有效编辑，30%~50%）")
+                for p in weak_rec:
+                    block_lines.append(self._format_edit_pattern(p, prefix="可参考"))
+
+        # ── 失败模式（硬否决 + 软否决 + 弱提示）──
+        if failures:
+            hard_veto = [p for p in failures if p["confidence"] > 0.85 or p.get("vetoed")]
+            soft_veto = [p for p in failures if 0.5 < p["confidence"] <= 0.85 and not p.get("vetoed")]
+            weak_veto = [p for p in failures if 0.3 < p["confidence"] <= 0.5 and not p.get("vetoed")]
+
+            if hard_veto:
+                block_lines.append("")
+                block_lines.append("### 不要尝试（高置信度无效编辑，>85%，强否决）")
+                for p in hard_veto:
+                    block_lines.append(self._format_edit_pattern(p, prefix="不要尝试"))
+
+            if soft_veto:
+                block_lines.append("")
+                block_lines.append("### 谨慎尝试（中等置信度无效编辑，50%~85%）")
+                for p in soft_veto:
+                    block_lines.append(self._format_edit_pattern(p, prefix="谨慎尝试"))
+
+            if weak_veto:
+                block_lines.append("")
+                block_lines.append("### 注意（低置信度无效编辑，30%~50%）")
+                for p in weak_veto:
+                    block_lines.append(self._format_edit_pattern(p, prefix="注意"))
+
+        return "\n".join(block_lines)
+
+    @staticmethod
+    def _format_edit_pattern(p: dict[str, Any], *, prefix: str) -> str:
+        """格式化单条编辑模式为注入文本。"""
+        detail = p.get("edit_detail") or {}
+        detail_str = ""
+        if isinstance(detail, dict):
+            parts = []
+            for k, v in detail.items():
+                if v is not None:
+                    parts.append(f"{k}={v}")
+            detail_str = ", ".join(parts) if parts else ""
+        elif isinstance(detail, str) and detail:
+            detail_str = detail
+
+        delta_ic = p.get("delta_ic")
+        delta_str = f"ΔIC={delta_ic:+.4f}" if delta_ic is not None else ""
+
+        total = p.get("total_uses") or 0
+        succ = p.get("success_count") or 0
+        conf = p.get("confidence") or 0
+        family = p.get("family") or "unknown"
+
+        line = (
+            f"- [{p['edit_type']}] {prefix}："
+            f"在 {family} 信号上"
+        )
+        if detail_str:
+            line += f"（{detail_str}）"
+        line += f"。{delta_str}"
+        if total > 0:
+            line += f"，{succ}/{total} 次有效"
+        line += f"，置信度 {conf:.0%}"
+        return line
 
     def _factor_retrieval_block(
         self,
@@ -1008,11 +1884,13 @@ class ResearchMemoryStore:
         category: str,
         content: str,
         evidence: dict[str, Any] | None = None,
+        total_attempts: int = 1,
+        success_count: int = 0,
     ) -> str:
         """写入或更新一条模式记忆。
 
         ``layer`` ∈ {"recommend", "forbid", "insight"}。
-        同 ``layer|category|content`` 签名去重；已存在则 total_attempts += 1。
+        同 ``layer|category|content`` 签名去重；已存在则 total_attempts/success_count 累加。
         """
         if layer not in ("recommend", "forbid", "insight"):
             raise ValueError(f"invalid layer: {layer}")
@@ -1027,24 +1905,32 @@ class ResearchMemoryStore:
                 (pattern_id,),
             ).fetchone()
             if existing:
+                new_total = int(existing["total_attempts"]) + total_attempts
+                new_succ = int(existing["success_count"]) + success_count
+                rate = new_succ / new_total if new_total else 0.0
+                conf = max(0.1, min(0.95, 1.0 - 1.0 / (new_total ** 0.5)))
                 conn.execute(
                     """
                     UPDATE memory_patterns
-                    SET evidence_json = ?, total_attempts = total_attempts + 1, updated_at = ?
+                    SET evidence_json = ?, total_attempts = ?, success_count = ?,
+                        success_rate = ?, confidence = ?, updated_at = ?
                     WHERE id = ?
                     """,
-                    (evidence_json, now, pattern_id),
+                    (evidence_json, new_total, new_succ, round(rate, 4), round(conf, 4), now, pattern_id),
                 )
             else:
+                rate = success_count / total_attempts if total_attempts else 0.0
+                conf = max(0.1, min(0.95, 1.0 - 1.0 / (total_attempts ** 0.5))) if total_attempts else 0.5
                 conn.execute(
                     """
                     INSERT INTO memory_patterns
                         (id, layer, category, content, evidence_json,
-                         total_attempts, success_count, saturation_score,
+                         total_attempts, success_count, success_rate, saturation_score,
                          confidence, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, 1, 0, 0, 0.5, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
                     """,
-                    (pattern_id, layer, category, content, evidence_json, now, now),
+                    (pattern_id, layer, category, content, evidence_json,
+                     total_attempts, success_count, round(rate, 4), round(conf, 4), now, now),
                 )
         return pattern_id
 
@@ -1145,16 +2031,29 @@ class ResearchMemoryStore:
     ) -> list[str]:
         """从一批评估结果中蒸馏模式记忆，返回写入的 pattern_ids。
 
-        规则蒸馏（不调用 LLM，零成本）：
-        1. 同族因子 >= 3 个且全部 IC < 0.01 → forbid 模式
-        2. 同族因子有 >= 1 个 IC > 0.02 → recommend 模式
-        3. 全部因子 IC < 0.005 → insight 模式
+        Phase 2 改进：使用表达式结构信息生成结构化模式，
+        而非仅看 IC 绝对值套模板。
+        1. 解析每个因子的结构（算子/变量/窗口参数/指纹）
+        2. 按信号族 + 结构相似度分组
+        3. 生成包含结构信息的 recommend/forbid 模式
+        4. 全局洞察保留但补充结构统计
         """
         pattern_ids: list[str] = []
         if not batch_results:
             return pattern_ids
 
-        families = self._group_by_family(batch_results)
+        # 解析每个因子的结构
+        enriched: list[dict[str, Any]] = []
+        for r in batch_results:
+            expr = str(r.get("expression", ""))
+            struct = _parse_expression_structure(expr)
+            enriched.append({
+                **r,
+                "_struct": struct,
+                "_family": self._classify_family(str(r.get("factor_name", "")), expr),
+            })
+
+        families = self._group_by_family(enriched)
 
         for family_name, members in families.items():
             ics = [
@@ -1168,10 +2067,32 @@ class ResearchMemoryStore:
             all_weak = all(ic < 0.01 for ic in ics)
             any_promising = any(ic >= 0.02 for ic in ics)
 
+            # 收集结构统计
+            op_counts: dict[str, int] = {}
+            var_counts: dict[str, int] = {}
+            window_set: set[str] = set()
+            for m in members:
+                struct = m.get("_struct", {})
+                for op in struct.get("operators", []):
+                    op_counts[op] = op_counts.get(op, 0) + 1
+                for var in struct.get("variables", []):
+                    var_counts[var] = var_counts.get(var, 0) + 1
+                for op, wins in struct.get("window_params", {}).items():
+                    for w in wins:
+                        window_set.add(f"{op}:{w}")
+
             if all_weak and n >= 3:
+                # 结构化 forbid 模式：包含具体算子和窗口信息
+                top_ops = sorted(op_counts.items(), key=lambda x: -x[1])[:3]
+                top_vars = sorted(var_counts.items(), key=lambda x: -x[1])[:3]
+                ops_str = ", ".join(f"{op}({cnt})" for op, cnt in top_ops) if top_ops else "无"
+                vars_str = ", ".join(f"{var}({cnt})" for var, cnt in top_vars) if top_vars else "无"
                 content = (
-                    f"{family_name} 信号族在 {n} 次尝试中 IC 均低于 0.01，"
-                    f"最高 {max(ics):.4f}。该族在当前数据和 label 下可能已饱和，"
+                    f"{family_name} 信号族在 {n} 次尝试中 IC 均低于 0.01"
+                    f"（最高 {max(ics):.4f}）。"
+                    f"常用算子：{ops_str}；常用变量：{vars_str}；"
+                    f"窗口：{', '.join(sorted(window_set)[:5]) if window_set else '无'}。"
+                    f"该族在当前数据和 label 下可能已饱和，"
                     f"除非引入新变量或交互机制，否则不建议机械重复。"
                 )
                 pid = self.record_pattern(
@@ -1182,6 +2103,9 @@ class ResearchMemoryStore:
                         "factor_names": [m.get("factor_name") for m in members],
                         "ic_range": [round(min(ics), 6), round(max(ics), 6)],
                         "n_attempts": n,
+                        "top_operators": top_ops,
+                        "top_variables": top_vars,
+                        "windows": sorted(window_set)[:10],
                         "run_id": run_id,
                         "turn": turn,
                     },
@@ -1194,10 +2118,22 @@ class ResearchMemoryStore:
                     key=lambda m: abs(float(m.get("metrics", {}).get("ic", 0) or 0)),
                 )
                 best_ic = float(best.get("metrics", {}).get("ic", 0) or 0)
+                best_struct = best.get("_struct", {})
+                best_ops = best_struct.get("operators", [])
+                best_vars = best_struct.get("variables", [])
+                best_wins = best_struct.get("window_params", {})
+
+                # 结构化 recommend 模式：包含最佳因子的结构信息
+                ops_str = ", ".join(best_ops[:5]) if best_ops else "无"
+                vars_str = ", ".join(best_vars[:3]) if best_vars else "无"
+                wins_str = "; ".join(
+                    f"{op}: {vals}" for op, vals in best_wins.items()
+                ) if best_wins else "无"
+
                 content = (
-                    f"{family_name} 信号族中有因子 IC 达 {best_ic:+.4f}，"
-                    f"其经济机制值得在邻近空间继续探索。"
-                    f"建议变异方向：换窗口、换修饰算子、引入正交交互。"
+                    f"{family_name} 信号族中有因子 IC 达 {best_ic:+.4f}。"
+                    f"有效结构：算子[{ops_str}]，变量[{vars_str}]，窗口[{wins_str}]。"
+                    f"建议在邻近空间变异：扩展/缩减窗口、替换算子、引入正交变量。"
                 )
                 pid = self.record_pattern(
                     layer="recommend",
@@ -1206,6 +2142,9 @@ class ResearchMemoryStore:
                     evidence={
                         "best_factor": best.get("factor_name"),
                         "best_ic": round(best_ic, 6),
+                        "best_operators": best_ops,
+                        "best_variables": best_vars,
+                        "best_windows": best_wins,
                         "n_attempts": n,
                         "run_id": run_id,
                         "turn": turn,
@@ -1213,14 +2152,25 @@ class ResearchMemoryStore:
                 )
                 pattern_ids.append(pid)
 
-        # 全局洞察
+        # 全局洞察（补充结构统计）
         all_ics = [
             abs(float(r.get("metrics", {}).get("ic", 0) or 0))
             for r in batch_results
         ]
         if len(all_ics) >= 5 and max(all_ics) < 0.005:
+            # 统计本批次的结构多样性
+            all_fingerprints = {r.get("_struct", {}).get("fingerprint", "") for r in enriched}
+            all_ops: set[str] = set()
+            all_vars: set[str] = set()
+            for r in enriched:
+                struct = r.get("_struct", {})
+                all_ops.update(struct.get("operators", []))
+                all_vars.update(struct.get("variables", []))
+
             content = (
-                f"连续 {len(all_ics)} 个因子 IC 均低于 0.005，"
+                f"连续 {len(all_ics)} 个因子 IC 均低于 0.005"
+                f"（{len(all_fingerprints)} 种不同结构，"
+                f"涉及 {len(all_ops)} 种算子、{len(all_vars)} 种变量）。"
                 f"当前数据/label 组合下 alpha 可能极度稀薄。"
                 f"建议：切换 label 列、扩展数据源、或尝试交互信号。"
             )
@@ -1231,6 +2181,9 @@ class ResearchMemoryStore:
                 evidence={
                     "n_consecutive": len(all_ics),
                     "max_ic": round(max(all_ics), 6),
+                    "n_distinct_structures": len(all_fingerprints),
+                    "n_operators": len(all_ops),
+                    "n_variables": len(all_vars),
                     "run_id": run_id,
                     "turn": turn,
                 },

@@ -169,6 +169,8 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
         "include_rejected_paths": True,
         "prefer_orthogonal_to_approved": True,
         "include_expression": True,
+        "enable_factor_retrieval": False,   # BM25 单因子检索层，conclusion 改进后可开
+        "enable_edit_patterns": False,       # 编辑模式注入层，需积累数据后开
     },
     "delivery_policy": _default_delivery_policy(),
 }
@@ -320,6 +322,8 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
     memory["include_rejected_paths"] = _require_bool(memory.get("include_rejected_paths"), "memory_policy.include_rejected_paths")
     memory["prefer_orthogonal_to_approved"] = _require_bool(memory.get("prefer_orthogonal_to_approved"), "memory_policy.prefer_orthogonal_to_approved")
     memory["include_expression"] = _require_bool(memory.get("include_expression"), "memory_policy.include_expression")
+    memory["enable_factor_retrieval"] = _require_bool(memory.get("enable_factor_retrieval"), "memory_policy.enable_factor_retrieval")
+    memory["enable_edit_patterns"] = _require_bool(memory.get("enable_edit_patterns"), "memory_policy.enable_edit_patterns")
 
     delivery = _require_dict(spec.get("delivery_policy"), "delivery_policy")
     # 盲测终审门槛（2026-08-29 新增）

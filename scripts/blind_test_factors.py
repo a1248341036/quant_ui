@@ -12,12 +12,15 @@
 ----
 - 控制台逐因子对比表（入库时 train |IC| vs 盲测 |IC|，保留率）
 - artifacts/alphaagent/blind_test/<run_ts>/report.json
+- --clean 模式自动清理失效因子（retention < 阈值）并同步研究记忆
 
 用法
 ----
-  python scripts/blind_test_factors.py                       # 全部库
+  python scripts/blind_test_factors.py                       # 全部库，仅出报告
   python scripts/blind_test_factors.py --libs production_technical
   python scripts/blind_test_factors.py --test-start 2025-01-01
+  python scripts/blind_test_factors.py --clean               # 清理失效因子 + 记忆库
+  python scripts/blind_test_factors.py --clean --retention-threshold 0.5 --dry-run
 """
 
 from __future__ import annotations
@@ -128,6 +131,12 @@ def main() -> int:
         "production_technical", "production_fundamental",
         "candidate_technical", "candidate_fundamental",
     ])
+    parser.add_argument("--clean", action="store_true",
+                        help="清理失效因子（retention < 阈值）并同步研究记忆")
+    parser.add_argument("--retention-threshold", type=float, default=0.5,
+                        help="保留比阈值，低于此值判定失效（默认 0.5）")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="--clean 模式下只输出将删除的因子，不执行")
     args = parser.parse_args()
 
     if not args.test_end:
@@ -212,10 +221,105 @@ def main() -> int:
         json.dumps(report, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8"
     )
     ok = [r for r in rows if "error" not in r]
-    decayed = [r for r in ok if (r.get("ic_retention_vs_ref") or 0) < 0.5]
-    print(f"\n完成: {len(ok)}/{len(rows)} 评估成功；|IC| 保留比 < 0.5 的因子 {len(decayed)} 个")
+    decayed = [r for r in ok if (r.get("ic_retention_vs_ref") or 0) < args.retention_threshold]
+    print(f"\n完成: {len(ok)}/{len(rows)} 评估成功；|IC| 保留比 < {args.retention_threshold} 的因子 {len(decayed)} 个")
     print(f"报告: {out_dir / 'report.json'}")
+
+    # ── --clean 模式：清理失效因子 + 同步研究记忆 ──
+    if args.clean and decayed:
+        total_deleted = _clean_decayed_factors(decayed, args.dry_run)
+        if total_deleted:
+            action = "将删除（dry-run）" if args.dry_run else "已删除"
+            print(f"\n{action} {total_deleted} 个失效因子，研究记忆已同步清理")
+        elif not args.dry_run:
+            print("\n无失效因子需清理")
+    elif args.clean and not decayed:
+        print("\n--clean: 无失效因子，无需清理")
+
     return 0
+
+
+def _clean_decayed_factors(decayed: list[dict], dry_run: bool) -> int:
+    """清理盲测失效因子：从 registry/zoo 删除 + 同步研究记忆。
+
+    删除路径与 alphaagent_service.delete_factor / rescreen_candidates 一致，
+    确保记忆库（research_memory.db）中的残留条目被同步清除。
+    """
+    from alphaagent.factor.mining.research_memory import ResearchMemoryStore
+
+    mem_path = ROOT / "artifacts" / "alphaagent" / "research_memory.db"
+    mem_store = ResearchMemoryStore(mem_path) if mem_path.exists() else None
+
+    # 按 library 分组（同库批量处理 registry）
+    by_lib: dict[str, list[dict]] = {}
+    for f in decayed:
+        lib = f.get("library", "")
+        by_lib.setdefault(lib, []).append(f)
+
+    total = 0
+    for lib, factors in by_lib.items():
+        lib_dir = ROOT / "artifacts" / "alphaagent" / "factorzoo" / lib
+        is_production = lib.startswith("production")
+        kind = "production" if is_production else "candidate"
+        factor_ids = [f["factor_id"] for f in factors]
+        factor_names = [str(f.get("name") or f["factor_id"]) for f in factors]
+
+        print(f"\n[{lib}] {'将删除' if dry_run else '删除'} {len(factor_ids)} 个失效因子:")
+
+        if dry_run:
+            for fid in factor_ids:
+                print(f"  - {fid}")
+            total += len(factor_ids)
+            continue
+
+        if is_production:
+            # production 库：先从 zoo 删除，再从 delivered_registry 删除
+            try:
+                zoo = FactorZoo.open(lib_dir, verify_hash=False)
+                for fid in factor_ids:
+                    try:
+                        zoo.delete_factor(fid)
+                        print(f"  - {fid} (zoo)")
+                    except KeyError:
+                        print(f"  - {fid} (zoo: not found, skip)")
+            except FileNotFoundError:
+                print(f"  [warn] {lib} zoo 未初始化，跳过 zoo 删除")
+
+            reg_path = lib_dir / "mining_delivered_registry.json"
+            if reg_path.is_file():
+                registry = json.loads(reg_path.read_text(encoding="utf-8"))
+                for fid in factor_ids:
+                    registry.pop(fid, None)
+                reg_path.write_text(
+                    json.dumps(registry, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+                )
+        else:
+            # candidate 库：从 candidate_registry 删除 + 删 DSL
+            reg_path = lib_dir / REGISTRY_NAME
+            registry = json.loads(reg_path.read_text(encoding="utf-8")) if reg_path.is_file() else {}
+            for fid in factor_ids:
+                entry = registry.pop(fid, None)
+                rel = str((entry or {}).get("expression_file") or "")
+                dsl_path = ROOT / rel if rel else lib_dir / "expressions" / f"{fid}.dsl"
+                if dsl_path.exists():
+                    dsl_path.unlink()
+                print(f"  - {fid} (registry)")
+            if reg_path.is_file():
+                reg_path.write_text(
+                    json.dumps(registry, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+                )
+
+        # 同步清理研究记忆
+        if mem_store is not None:
+            purged = mem_store.purge_factor(
+                factor_names=factor_names,
+                expressions=[],
+            )
+            print(f"  研究记忆清理: {purged} 条")
+
+        total += len(factor_ids)
+
+    return total
 
 
 if __name__ == "__main__":
