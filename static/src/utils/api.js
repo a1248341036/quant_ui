@@ -21,3 +21,17 @@ export async function getTradingDefaults() {
   }
   return _tradingDefaults;
 }
+
+// 统一时间窗口默认值（从后端 /api/alphaagent/windows 获取，缓存到模块级）。
+// 所有页面统一从这里取 train/val/test/bt 默认日期，不再散落硬编码。
+let _windowDefaults = null;
+
+export async function getWindowDefaults() {
+  if (_windowDefaults) return _windowDefaults;
+  try {
+    _windowDefaults = await api('/api/alphaagent/windows?t=' + Date.now());
+  } catch {
+    _windowDefaults = {};
+  }
+  return _windowDefaults;
+}

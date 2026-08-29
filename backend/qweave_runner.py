@@ -13,6 +13,7 @@ import pandas as pd
 
 from core import trading_config
 from core.score_matrix import scores_to_engine_matrix
+from alphaagent.factor.window_config import BT_DEFAULT_START
 from scripts.qweave_research import ALPHA_SETS, build_alphas, load_panel, to_qweave_df
 
 
@@ -204,7 +205,7 @@ def run(req: dict) -> dict:
     if not alphas:
         raise ValueError("没有可运行的因子")
 
-    start = req.get("start") or "2022-01-01"
+    start = req.get("start") or BT_DEFAULT_START
     end = req.get("end") or _pg_parquet_end()
     if not end:
         raise ValueError("无法确定数据最新日期")

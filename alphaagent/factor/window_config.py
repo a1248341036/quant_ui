@@ -49,6 +49,11 @@ DEFAULT_TEST_START = "2025-01-01"
 # 不用固定日期作默认值——固定值会随数据演进失效并误导（暗示数据覆盖到）。
 DEFAULT_TEST_END: str | None = None
 
+# ── 回测/对比页默认起点（前端表单初始化）──────────────────────────────
+# 回测与因子对比默认从 train 起点开始，终点动态取数据源最新交易日；
+# 让前端 Backtest/Composite/Code 等页面不再散落硬编码日期。
+BT_DEFAULT_START: str = DEFAULT_TRAIN_START
+
 # 数据源优先级：panel 实际数据源优先，canonical 日线兜底。
 _DATASET_PRIORITY = ("stock_daily_wide", "daily_bars")
 
@@ -178,7 +183,7 @@ def coverage_window() -> tuple[str, str]:
 
 
 def window_defaults() -> dict[str, str]:
-    """完整窗口字段 dict（train/val/test），供 CLI/API 默认值构造。"""
+    """完整窗口字段 dict（train/val/test + 回测默认），供 CLI/API 默认值构造。"""
     test_start, test_end = test_window()
     return {
         "train_start": DEFAULT_TRAIN_START,
@@ -187,4 +192,6 @@ def window_defaults() -> dict[str, str]:
         "val_end": DEFAULT_VAL_END,
         "test_start": test_start,
         "test_end": test_end,
+        "bt_start": BT_DEFAULT_START,
+        "bt_end": test_end,
     }

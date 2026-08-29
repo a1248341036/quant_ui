@@ -43,8 +43,8 @@
           <label class="field wide"><span>策略（可多选）</span><strategy-select v-model="cmp.strategies" :strategies="store.strategies" multiple :max="6" placeholder="点选策略"></strategy-select></label>
           <label class="field"><span>TopN</span><select v-model.number="cmp.top_n"><option v-for="n in [3, 5, 8, 10]" :value="n">{{ n }}</option></select></label>
           <label class="field"><span>初始资金</span><input type="number" v-model.number="cmp.capital" step="1000"></label>
-          <label class="field"><span>回看起点</span><input type="date" v-model="cmp.start_date" min="2020-01-01" :max="cmp.end_date || store.panelInfo.last_date || ''"></label>
-          <label class="field"><span>回看终点</span><input type="date" v-model="cmp.end_date" min="2020-01-01" :max="today() || ''"></label>
+          <label class="field"><span>回看起点</span><input type="date" v-model="cmp.start_date" :min="store.panelInfo.first_date || ''" :max="cmp.end_date || store.panelInfo.last_date || ''"></label>
+          <label class="field"><span>回看终点</span><input type="date" v-model="cmp.end_date" :min="store.panelInfo.first_date || ''" :max="store.panelInfo.last_date || today()"></label>
           <label class="field"><span>基准</span>
             <select v-model="cmp.bench">
               <option>等权股票池</option>

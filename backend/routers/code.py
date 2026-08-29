@@ -9,6 +9,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from core import trading_config
+from alphaagent.factor.window_config import BT_DEFAULT_START
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -28,7 +29,7 @@ class SaveRequest(BaseModel):
 class QweaveRunRequest(BaseModel):
     code: str = ""
     universe: str = "沪深300+中证500+中证1000"
-    start: str = "2022-01-01"
+    start: str = BT_DEFAULT_START
     end: str = ""
     alpha_set: str = "alpha158"
     alpha_limit: int | None = 30

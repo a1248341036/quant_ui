@@ -264,7 +264,7 @@
 
 <script>
 import { store } from '../store/index.js'
-import { api, getTradingDefaults } from '../utils/api.js'
+import { api, getTradingDefaults, getWindowDefaults } from '../utils/api.js'
 import { fmt, pct, sign, stock, metricText, sortCompare } from '../utils/format.js'
 import { today } from '../utils/format.js'
 import { renderLine, renderMonthlyHeatmap } from '../utils/charts.js'
@@ -295,6 +295,8 @@ export default {
   async mounted() {
     const d = await getTradingDefaults();
     if (d && d.capital) this.bt.capital = d.capital;
+    const w = await getWindowDefaults();
+    if (w && w.bt_start) this.bt.start = w.bt_start;
   },
   watch: {
     'bt.strategy'(name) {

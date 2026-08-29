@@ -673,10 +673,10 @@ def _resume_context(run: AgentRun) -> str:
 
 
 _CONTINUE_DEFAULT_PARAMS: dict[str, Any] = {
-    "train_start": "2020-01-01",
-    "train_end": "2022-12-31",
-    "val_start": "2023-01-01",
-    "val_end": "2024-12-31",
+    "train_start": DEFAULT_TRAIN_START,
+    "train_end": DEFAULT_TRAIN_END,
+    "val_start": DEFAULT_VAL_START,
+    "val_end": DEFAULT_VAL_END,
     "label_col": "",  # 空 → start_run 按研究模式回填推荐 label
     "max_turns": 6,
     "max_tool_calls_per_round": 12,
@@ -1544,8 +1544,8 @@ def backtest_factor(
     *,
     multi_line_expr: str,
     factor_name: str = "expr",
-    start: str = "2023-01-01",
-    end: str = "2024-12-31",
+    start: str = DEFAULT_VAL_START,
+    end: str = DEFAULT_VAL_END,
     top_n: int = 5,
     freq: str = "monthly",
     capital: float = 100000.0,

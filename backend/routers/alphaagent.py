@@ -122,6 +122,17 @@ def research_modes() -> dict[str, Any]:
     return {"modes": ui_options()}
 
 
+@router.get("/windows")
+def windows() -> dict[str, Any]:
+    """统一时间窗口默认值（train/val/test），唯一来源 window_config.py。
+
+    前端 mounted 时拉取，用于初始化训练/验证/测试日期输入框的默认值，
+    避免前端散落硬编码日期、与后端配置漂移。TEST_END 动态解析数据源最新日。
+    """
+    from alphaagent.factor.window_config import window_defaults
+    return window_defaults()
+
+
 @router.get("/research-spec/default")
 def default_research_spec(mode: str = "technical") -> dict[str, Any]:
     """当前模式生效的研究规范（注册表默认 + 用户保存覆盖）。

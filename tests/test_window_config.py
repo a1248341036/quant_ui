@@ -187,9 +187,11 @@ class TestWindowFunctions:
             d = wc.window_defaults()
         assert set(d.keys()) == {
             "train_start", "train_end", "val_start", "val_end",
-            "test_start", "test_end",
+            "test_start", "test_end", "bt_start", "bt_end",
         }
         assert d["test_end"] == "2026-08-28"
+        assert d["bt_start"] == wc.BT_DEFAULT_START
+        assert d["bt_end"] == "2026-08-28"
 
     def test_window_defaults_consistent_with_individual(self) -> None:
         """window_defaults 与单独窗口函数结果一致。"""

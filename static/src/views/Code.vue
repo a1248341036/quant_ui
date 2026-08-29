@@ -105,7 +105,7 @@
 
 <script>
 import { store } from '../store/index.js'
-import { api, getTradingDefaults } from '../utils/api.js'
+import { api, getTradingDefaults, getWindowDefaults } from '../utils/api.js'
 import { fmt, pct, sign, stock, metricText, today } from '../utils/format.js'
 import { renderLine, renderBar } from '../utils/charts.js'
 
@@ -151,6 +151,9 @@ export default {
         this.code.amount_q = d.amount_q;
         this.code.capital = d.capital;
       } catch (e) { /* 配置中心不可用时保持本地默认 */ }
+      // 回测默认起点跟随统一窗口配置（配置中心唯一真源）
+      const w = await getWindowDefaults();
+      if (w && w.bt_start) this.code.start = w.bt_start;
     },
     async loadCodeDefault() {
       try {
