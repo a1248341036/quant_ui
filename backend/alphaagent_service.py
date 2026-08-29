@@ -1036,12 +1036,57 @@ def list_factors(*, library: str = "production", category: str = "technical") ->
     # 正式库使用 FactorRepository
     repo = _get_factor_repository()
     factors = repo.list_factors(root, category)
-    
-    # 读取 registry（如有）
+
+    # 读取 delivered registry（submit 晋级时落盘的完整指标），合并进每个因子视图。
+    # 此前只把 registry 原样附带、不合并，前端 f.train_ic/f.val_ic 全空 —— 正式库
+    # 因子"指标不显示"的根因。
     registry_path = root / "mining_delivered_registry.json"
     registry: dict[str, Any] = {}
     if registry_path.is_file():
         registry = json.loads(registry_path.read_text(encoding="utf-8"))
+
+    def _merge_production_entry(item: dict[str, Any]) -> dict[str, Any]:
+        entry = (
+            registry.get(str(item.get("factor_id")))
+            or registry.get(str(item.get("name")))
+            or {}
+        )
+        if not isinstance(entry, dict) or not entry:
+            return item
+        metrics = entry.get("ingest_metrics") if isinstance(entry.get("ingest_metrics"), dict) else {}
+        if not metrics:
+            metrics = entry.get("metrics") if isinstance(entry.get("metrics"), dict) else {}
+        expr_text = entry.get("expr")
+        if not expr_text:
+            # delivered registry 只存 expression_file 路径，读 DSL 文件补齐
+            rel = str(entry.get("expression_file") or "")
+            expr_file = ROOT / rel if rel else None
+            if expr_file and expr_file.is_file():
+                try:
+                    expr_text = expr_file.read_text(encoding="utf-8")
+                except OSError:
+                    expr_text = None
+        merged = {
+            **item,
+            "expr": expr_text,
+            "comment": (str(entry.get("comment") or "")[:200] or None),
+            "ingest_config": entry.get("ingest_config"),
+            "ingested_at": entry.get("ingested_at"),
+            "metrics": metrics,
+            "train_ic": metrics.get("train_ic"),
+            "train_icir": metrics.get("train_icir"),
+            "train_rank_ic": metrics.get("train_rank_ic"),
+            "val_ic": metrics.get("val_ic"),
+            "val_icir": metrics.get("val_icir"),
+            "val_ic_retention": metrics.get("val_ic_retention"),
+            "status": entry.get("ingest_status") or item.get("status"),
+        }
+        qp = metrics.get("quantile_portfolio")
+        if isinstance(qp, dict):
+            merged["avg_daily_side_turnover"] = qp.get("avg_daily_side_turnover")
+        return merged
+
+    factors = [_merge_production_entry(item) for item in factors]
 
     return {
         "library": library,
@@ -1074,12 +1119,34 @@ def get_factor_detail(factor_id: str, *, library: str = "production", category: 
         view["registry_entry"] = entry
         return view
 
-    # 正式库使用 FactorRepository
+    # 正式库使用 FactorRepository + delivered registry 富化（与 list_factors 同口径）
     repo = _get_factor_repository()
     try:
-        return repo.get_factor_detail(factor_id, root)
+        detail = repo.get_factor_detail(factor_id, root)
     except Exception as e:
         return {"error": f"factor_not_found: {str(e)}"}
+    registry_path = root / "mining_delivered_registry.json"
+    if registry_path.is_file():
+        try:
+            registry = json.loads(registry_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            registry = {}
+        entry = registry.get(factor_id) or registry.get(str(detail.get("name") or "")) or {}
+        if isinstance(entry, dict) and entry:
+            metrics = entry.get("ingest_metrics") if isinstance(entry.get("ingest_metrics"), dict) else {}
+            if not metrics:
+                metrics = entry.get("metrics") if isinstance(entry.get("metrics"), dict) else {}
+            detail.update({
+                "expr": entry.get("expr") or detail.get("expr"),
+                "comment": entry.get("comment") or detail.get("comment"),
+                "metrics": {**(detail.get("metrics") or {}), **metrics},
+                "train_ic": metrics.get("train_ic"),
+                "train_icir": metrics.get("train_icir"),
+                "val_ic": metrics.get("val_ic"),
+                "val_icir": metrics.get("val_icir"),
+                "val_ic_retention": metrics.get("val_ic_retention"),
+            })
+    return detail
 
 
 def delete_factor(factor_id: str, *, library: str = "production", category: str = "technical") -> dict[str, Any]:
