@@ -188,7 +188,18 @@ def main() -> None:
         return
 
     # ── 加载 panel 并求值所有因子 ──
-    panel = _load_panel()
+    all_exprs = [str(registry[fid].get("expr") or "") for fid in factor_ids]
+    needs_aux = any("$funda_" in e or "$holder_" in e for e in all_exprs)
+    if needs_aux:
+        # 基本面/股东字段走完整 adapter（含 PIT 对齐），避免精简加载缺列全灭
+        from alphaagent.data.adapters.cnequity import load_panel_from_cne
+
+        print("表达式引用 funda_*/holder_* 字段 → 加载完整 panel（含 PIT 基本面）…", flush=True)
+        panel = load_panel_from_cne(start="2023-01-01", end="2025-12-31", include_fundamentals=True)
+        panel = panel.sort_index()
+        print(f"panel 加载完成: {panel.shape[0]:,} 行 × {panel.shape[1]} 列", flush=True)
+    else:
+        panel = _load_panel()
 
     values: dict[str, np.ndarray] = {}
     for fid in factor_ids:
