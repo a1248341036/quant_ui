@@ -60,8 +60,8 @@ RESEARCH_MODES: dict[str, ResearchModeSpec] = {
     "fundamental": ResearchModeSpec(
         mode_id="fundamental",
         label="基本面",
-        hint="funda_* 财务基本面因子（PIT），label_10d 收盘到收盘",
-        recommended_label_col="label_10d_close_to_close",
+        hint="funda_* 财务基本面因子（PIT），label_20d 收盘到收盘",
+        recommended_label_col="label_20d_close_to_close",
         signal_families=(
             "fundamental_quality", "fundamental_growth",
             "fundamental_value", "fundamental_revision",
@@ -85,12 +85,15 @@ RESEARCH_MODES: dict[str, ResearchModeSpec] = {
         candidate_overrides={
             "min_abs_ic": 0.012,         # technical 0.015 → 0.012
             "min_icir": 0.20,            # technical 0.25 → 0.20
+            # 2026-08-29 审计：11 个候选 8 个 val 保留比 <65%（train→val 衰减
+            # 严重），10d 持有期对季频 PIT 信号过短也是成因之一（切 label_20d）
+            "min_val_ic_retention": 0.65,
         },
         production_overrides={
             "min_train_abs_ic": 0.020,   # technical 0.025 → 0.020
             "min_train_icir": 0.28,      # technical 0.30 → 0.28
             "min_val_abs_ic": 0.012,     # technical 0.015 → 0.012
-            "min_val_ic_retention": 0.60,
+            "min_val_ic_retention": 0.70,
             "min_val_long_excess": 0.0,
             "max_winsorized_abs_ic_decay": 0.12,  # technical 0.10 → 0.12
         },
