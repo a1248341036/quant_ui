@@ -60,6 +60,7 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--size-neutral/--no-size-neutral", dest="size_neutral", default=True)
     ap.add_argument("--no-gate", action="store_true", help="跳过 engine_gate 回测裁决")
     ap.add_argument("--no-write-pred", action="store_true", help="不写 pred 通道文件")
+    ap.add_argument("--out-dir", default=None, help="输出目录（默认 artifacts/alphaagent/stacking/<时间戳>）；后端托管时传确定性路径")
     ap.add_argument("--pred-out", default=None, help="pred 分数输出路径（默认 data/stock/pred_demo.parquet）")
     return ap.parse_args()
 
@@ -67,7 +68,7 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
     args = _parse_args()
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_dir = ROOT / "artifacts" / "alphaagent" / "stacking" / run_id
+    out_dir = Path(args.out_dir) if args.out_dir else ROOT / "artifacts" / "alphaagent" / "stacking" / run_id
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # ① 因子枚举

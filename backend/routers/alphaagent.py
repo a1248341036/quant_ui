@@ -412,6 +412,61 @@ def get_session_cache_stats() -> dict[str, Any]:
     return service.get_session_cache_stats()
 
 
+# ══════════════════════════════════════════════════════════════════════
+#  ML 组合（stacking）训练
+# ══════════════════════════════════════════════════════════════════════
+
+
+class StackingTrainRequest(BaseModel):
+    modes: list[str] = Field(default=["technical", "fundamental"])
+    model: str = Field(default="both")            # ridge | lgbm | both
+    label_days: int = Field(default=5, ge=1, le=60)
+    train_months: int = Field(default=18, ge=3, le=60)
+    step_months: int = Field(default=6, ge=1, le=24)
+    purge_days: int = Field(default=5, ge=0, le=60)
+    warmup_days: int = Field(default=250, ge=0, le=750)
+    max_corr: float = Field(default=0.6, ge=0.1, le=1.0)
+    mining_end: str | None = None                 # auto 缺省；YYYY-MM-DD 显式
+    no_candidate: bool = False                    # 只用正式库
+    no_gate: bool = False                         # 跳过 engine_gate
+    size_neutral: bool = True
+
+
+@router.post("/stacking/train")
+def stacking_train(req: StackingTrainRequest) -> dict[str, Any]:
+    """启动一次 ML 组合训练（子进程；同一时间仅一个）。"""
+    from backend import stacking_service
+
+    result = stacking_service.start_training(req.model_dump())
+    if "error" in result:
+        raise HTTPException(status_code=409, detail=result["error"])
+    return result
+
+
+@router.get("/stacking/trainings")
+def stacking_trainings(limit: int = 30) -> list[dict[str, Any]]:
+    from backend import stacking_service
+
+    return stacking_service.list_trainings(limit=limit)
+
+
+@router.get("/stacking/trainings/{train_id}")
+def stacking_training_detail(train_id: str, tail_lines: int = 40) -> dict[str, Any]:
+    from backend import stacking_service
+
+    return stacking_service.get_training(train_id, tail_lines=tail_lines)
+
+
+@router.post("/stacking/trainings/{train_id}/stop")
+def stacking_stop(train_id: str) -> dict[str, Any]:
+    from backend import stacking_service
+
+    result = stacking_service.stop_training(train_id)
+    if not result.get("ok"):
+        raise HTTPException(status_code=404, detail=result.get("error"))
+    return result
+
+
 @router.post("/session-cache/evict")
 def evict_all_sessions() -> dict[str, Any]:
     """清空所有会话缓存，释放内存。
