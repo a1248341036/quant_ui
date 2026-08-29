@@ -456,6 +456,33 @@ def run_backtest(
     )
     return run_backtest_config(cfg)
 
+
+def _load_st_mask_for(
+    cal: pd.DatetimeIndex,
+    codes_used: list[str],
+    calc_start: pd.Timestamp,
+    end_ts: pd.Timestamp,
+) -> pd.DataFrame | None:
+    """读取回测窗口内逐日 ST 标记（6 位 code 宽表），失败时返回 None。
+
+    返回与 build_limit_flags 契约一致的 st_mask（index=交易日, columns=code,
+    True=ST）。CNE 读取不可用时（未启用/无数据/失败）静默降级为 None，
+    由 limit 层按板块比例近似——保持旧行为。
+    """
+    try:
+        from .cne_reader import load_st_mask, CneUnavailable
+        mask = load_st_mask(
+            codes_used,
+            start=calc_start.date().isoformat(),
+            end=end_ts.date().isoformat(),
+        )
+        if mask is None or mask.empty:
+            return None
+        return mask.reindex(index=cal, columns=codes_used)
+    except (CneUnavailable, Exception):  # noqa: BLE001 - 降级不打断回测
+        return None
+
+
 def _prepare_backtest(cfg: BacktestConfig) -> dict:
     """阶段 1 准备:面板切片/pivot、ADX/止损矩阵、估值矩阵、o2o 与调仓计划。
 
@@ -623,7 +650,8 @@ def _prepare_backtest(cfg: BacktestConfig) -> dict:
         exec_dates = sorted(set(exec_dates) | {start_idx})
     limit_up = limit_down = None
     if use_cash and limit_flags:
-        limit_up, limit_down, _, _ = build_limit_flags(close, open_)
+        st_mask = _load_st_mask_for(cal, codes_used, calc_start, end_ts)
+        limit_up, limit_down, _, _ = build_limit_flags(close, open_, st_mask=st_mask)
     # 预热模式：窗口起点不继承预热段持仓，也不在窗口起点当天调仓，
     # 与"全量算因子、窗口起点从零开始"的旧脚本语义一致。
     exec_set = ({i for i in exec_dates if i != start_idx}

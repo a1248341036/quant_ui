@@ -13,7 +13,8 @@ from __future__ import annotations
 盘中才封板的股票开盘仍可正常成交，不会被提前剔除。
 
 板块限制：沪深主板 10%，创业板/科创板 20%，北交所 30%。
-ST 股 5% 因数据缺 ST 标记暂不区分。
+ST 股 5%：当调用方传入逐日 ST 标记（st_mask）时按 5% 判定，
+缺标记（无 ST 数据源 / 历史早于 ST 覆盖）退化为按板块比例近似。
 """
 
 import numpy as np
@@ -33,21 +34,47 @@ def limit_ratio(code: str) -> float:
     return 0.10
 
 
+_ST_RATIO = 0.05
+
+
 def build_limit_flags(
     close: pd.DataFrame,
     open_: pd.DataFrame,
+    st_mask: pd.DataFrame | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """返回 (limit_up, limit_down, one_word_up, one_word_down) 布尔矩阵。
 
     矩阵形状与 close 一致（行=交易日，列=股票），True 表示当日处于该状态。
     涨跌幅基于前复权开盘价/前日收盘价，NaN（停牌/无历史）不会被识别为
     涨跌停。
+
+    st_mask: 可选，与 close 同形状的布尔 DataFrame（index=交易日,
+    columns=代码，True=当日为 ST/*ST）。为 True 的位置涨跌停幅度按 5%
+    计算；未传/全 NaN/缺失列时该股按板块比例（limit_ratio）近似。
     """
     codes = close.columns.tolist()
     prev_close = close.shift(1)
     open_ret = open_ / prev_close - 1.0
 
-    ratios = pd.Series([limit_ratio(c) for c in codes], index=codes)
+    base_ratios = pd.Series([limit_ratio(c) for c in codes], index=codes)
+
+    if st_mask is not None and len(st_mask):
+        # 对齐到 close 的索引/列：缺失日期/代码按非 ST 处理。
+        # 先取交集索引/列，再按 close 全量对齐，避免 object dtype 的 fillna warning。
+        st_idx = st_mask.index.intersection(close.index)
+        st_cols = st_mask.columns.intersection(close.columns)
+        st = pd.DataFrame(False, index=close.index, columns=close.columns)
+        if len(st_idx) and len(st_cols):
+            sub = st_mask.loc[st_idx, st_cols].astype(bool)
+            st.loc[st_idx, st_cols] = sub
+        st = st.to_numpy(dtype=bool)
+        # ST 5% 只对真实有涨跌停的板块生效；ETF/基金（limit_ratio=1.0）不受影响
+        st = st & (base_ratios.values.reshape(1, -1) < 1.0)
+        ratios = pd.DataFrame(np.where(st, _ST_RATIO, base_ratios.values.reshape(1, -1)),
+                              index=close.index, columns=close.columns)
+    else:
+        ratios = base_ratios
+
     limit_up = open_ret >= ratios - 0.005
     limit_down = open_ret <= -(ratios - 0.005)
 

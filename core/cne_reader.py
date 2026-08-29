@@ -255,3 +255,92 @@ def load_index(start: str | None = None, end: str | None = None) -> pd.DataFrame
     pdf["name"] = pdf["name"].astype(str)
     cols = [c for c in ("date", "code", "name", "open", "close") if c in pdf.columns]
     return pdf[cols].sort_values(["code", "date"]).reset_index(drop=True)
+
+
+def load_st_mask(
+    codes: list[str] | None = None,
+    *,
+    start: str | None = None,
+    end: str | None = None,
+) -> pd.DataFrame:
+    """读取逐日 ST 标记（6 位 code 宽表口径）。
+
+    返回 pandas DataFrame：index=交易日（datetime），columns=6 位 code，
+    值 True 表示该日该股处于 ST/*ST 状态。与 ``core.limit.build_limit_flags``
+    的 ``st_mask`` 参数契约一致。
+
+    数据源为 CNEquity ``trading_status`` 数据集（EastMoney 当日快照 +
+    Baostock 历史回填）。本函数直接读数据湖 parquet（不依赖
+    ``QUANT_USE_CNE`` 开关与 cne_load），因此 ST 修复对所有面板路径生效。
+    读取失败抛 CneUnavailable，由调用方降级为板块近似。
+    """
+    try:
+        import pyarrow.parquet as pq
+        import pyarrow.dataset as ds
+    except ImportError as exc:  # pragma: no cover
+        raise CneUnavailable("读取 ST 标记需要 pyarrow") from exc
+
+    root = CNE_ROOT / "data" / "quant_dataset" / "_cnequity" / "curated" / "trading_status"
+    if not root.is_dir():
+        raise CneUnavailable(f"trading_status 数据目录不存在: {root}")
+
+    # 月度 hive 分区 trade_date=YYYY-MM：目录级过滤更快，但目录名是 string，
+    # 与 parquet 内的 date32 列类型冲突，不能直接按列过滤。改为分区目录过滤
+    # + 列内日期二次过滤。
+    try:
+        import pyarrow.compute as pc
+        months: list[str] = []
+        if start or end:
+            s = pd.Timestamp(start).date() if start else None
+            e = pd.Timestamp(end).date() if end else None
+            for part in sorted(root.iterdir()):
+                if not part.is_dir() or "=" not in part.name:
+                    continue
+                try:
+                    ym = pd.Period(part.name.split("=", 1)[1], freq="M")
+                except ValueError:
+                    continue
+                month_end = ym.end_time.date()
+                month_start = ym.start_time.date()
+                if (s is None or month_end >= s) and (e is None or month_start <= e):
+                    months.append(part.name)
+        if months:
+            files = [str(root / m / "part-merged.parquet") for m in months]
+        else:
+            files = [str(p) for p in root.rglob("*.parquet")]
+        dataset = ds.dataset(files, format="parquet")
+        exprs = []
+        if start:
+            exprs.append(pc.field("trade_date") >= pd.Timestamp(start).date())
+        if end:
+            exprs.append(pc.field("trade_date") <= pd.Timestamp(end).date())
+        if codes:
+            syms = [f"{str(c).zfill(6)}.{s}" for c in codes
+                    for s in ("SH", "SZ", "BJ")]
+            exprs.append(pc.field("symbol").isin(syms))
+        filt = None
+        for e in exprs:
+            filt = e if filt is None else (filt & e)
+        table = dataset.to_table(filter=filt) if filt is not None else dataset.to_table()
+        if table.num_rows == 0:
+            raise CneUnavailable("CNE trading_status 无数据（区间/股票池过滤后为空）")
+        pdf = table.select(["symbol", "trade_date", "status"]).to_pandas()
+    except CneUnavailable:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise CneUnavailable(f"读取 CNE trading_status 失败: {exc}") from exc
+
+    if "symbol" not in pdf.columns or "status" not in pdf.columns:
+        raise CneUnavailable("CNE trading_status 缺少 symbol/status 列")
+    pdf["code"] = pdf["symbol"].astype(str).str[:6]
+    pdf["date"] = pd.to_datetime(pdf["trade_date"])
+    st = pdf[pdf["status"].isin(("st", "*st"))]
+    if st.empty:
+        return pd.DataFrame(index=pd.DatetimeIndex([]), columns=[])
+    mask = st.pivot_table(index="date", columns="code", values="status",
+                          aggfunc="first", observed=True)
+    mask = mask.notna()
+    if codes:
+        mask = mask.reindex(columns=[str(c).zfill(6) for c in codes])
+    mask = mask.sort_index()
+    return mask

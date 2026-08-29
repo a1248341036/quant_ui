@@ -406,6 +406,27 @@ class Context:
         self.orders.clear()
 
 
+def _load_st_mask_for(
+    cal: pd.DatetimeIndex,
+    codes_used: list[str],
+    calc_start: pd.Timestamp,
+    end_ts: pd.Timestamp,
+) -> pd.DataFrame | None:
+    """读取事件回测窗口内逐日 ST 标记，失败时返回 None（降级板块近似）。"""
+    try:
+        from .cne_reader import load_st_mask, CneUnavailable
+        mask = load_st_mask(
+            codes_used,
+            start=calc_start.date().isoformat(),
+            end=end_ts.date().isoformat(),
+        )
+        if mask is None or mask.empty:
+            return None
+        return mask.reindex(index=cal, columns=codes_used)
+    except (CneUnavailable, Exception):  # noqa: BLE001 - 降级不打断回测
+        return None
+
+
 def run_event_backtest(
     panel: pd.DataFrame,
     codes: list[str],
@@ -502,7 +523,8 @@ def run_event_backtest(
 
     limit_up = limit_down = None
     if limit_flags:
-        limit_up, limit_down, _, _ = build_limit_flags(df_close, df_open)
+        st_mask = _load_st_mask_for(cal, codes_used, calc_start, end_ts)
+        limit_up, limit_down, _, _ = build_limit_flags(df_close, df_open, st_mask=st_mask)
 
     ctx = Context(
         codes=codes_used, close_mat=close_mat, open_mat=open_mat,

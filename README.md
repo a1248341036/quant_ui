@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: 'ae17f4c3-70f7-4cf8-9dda-dc06d9b26a06'
-  PropagateID: 'ae17f4c3-70f7-4cf8-9dda-dc06d9b26a06'
-  ReservedCode1: 'bba64321-af64-4be2-a329-14d6d505ce6d'
-  ReservedCode2: 'bba64321-af64-4be2-a329-14d6d505ce6d'
+  ProduceID: 'ed928da2-2cc1-4475-8761-f1b04cc4dd43'
+  PropagateID: 'ed928da2-2cc1-4475-8761-f1b04cc4dd43'
+  ReservedCode1: 'f3e94079-bb47-4031-9373-e6008d356f6c'
+  ReservedCode2: 'f3e94079-bb47-4031-9373-e6008d356f6c'
 ---
 
 # quant_ui — A 股个人量化研究平台
@@ -503,7 +503,7 @@ mean_variance / max_diversification` 是事件策略内 API，在代码实验室
 | --- | --- | --- | --- | --- |
 | 数据 | 腾讯+Tushare 增量缓存 + CNE 数据湖（日线/财务 PIT funda_*），日线+滚动因子 | 商业全量数据（分钟/财务/事件） | 自备数据 | 缺分钟线 |
 | 研究环境 | 网页代码实验室 + qweave 因子研究脚本 + AlphaAgent 因子 DSL/因子库 | Notebook + 因子库 | Notebook/脚本 | 缺 Notebook，qweave 已内置 Alpha158/101/191 |
-| 回测 | 因子轮动 + 事件驱动，T+1/涨跌停/费用/滑点/多空 + 财务因子 | 成熟撮合 + 多周期 | 成熟 | 撮合近似（ST 涨跌幅未区分、无分钟级撮合） |
+| 回测 | 因子轮动 + 事件驱动，T+1/涨跌停(ST 5% 区分)/费用/滑点/多空 + 财务因子 | 成熟撮合 + 多周期 | 成熟 | 撮合近似（无分钟级撮合） |
 | 组合构建 | 等权/风险平价/均值方差/最大分散化 + Barra 风格风险模型 | 优化器 + 风险模型 | 部分 | 风格因子为轻量代理定义，缺完整 Barra 行业/风格库 |
 | 稳健性 | walk-forward + 参数网格 + 滚动训练-测试 | 参数优化/样本外验证 | 部分 | 训练期无特征工程/MI 选参，仅简单网格 |
 | 绩效归因 | UI：IC/分组/Brinson/风险归因/QuantStats | 归因报表 | 部分 | 无选股-行业-风格三维联动报表 |
@@ -527,7 +527,8 @@ mean_variance / max_diversification` 是事件策略内 API，在代码实验室
   前复权在出现新分红/送转时仍会整体重标定（这是前复权定义使然）；若要求历史价
   绝对不随最新行情漂移，个股详情可选择「不复权」或「后复权」口径
   （`/api/stock/{code}?adj=raw|hfq`）。
-- ST 涨跌停因缺标记暂按 10% 近似处理
+- ST 涨跌停已按 5% 区分（CNE trading_status 逐日 ST 标记，2016 年前历史窗口
+  因 Baostock 源覆盖限制降级为板块近似）
 - 舆情数据依赖 `~/quant/sentiment-mvp` 独立流水线每日更新
 
 > AI生成
