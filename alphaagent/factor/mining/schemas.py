@@ -6,11 +6,20 @@ from dataclasses import dataclass
 
 from alphaagent.factor.types import (
     DEFAULT_LABEL_COL,
+    DEFAULT_TEST_END,
+    DEFAULT_TEST_START,
     DEFAULT_TRAIN_END,
     DEFAULT_TRAIN_START,
     DEFAULT_VAL_END,
     DEFAULT_VAL_START,
 )
+
+
+def _test_end_default() -> str:
+    """测试段右端默认：未显式传值时动态解析数据源最新交易日。"""
+    from alphaagent.factor.window_config import resolve_test_end
+
+    return resolve_test_end()
 
 
 @dataclass
@@ -20,8 +29,15 @@ class SessionCreateRequest:
     train_end: str = DEFAULT_TRAIN_END
     val_start: str = DEFAULT_VAL_START
     val_end: str = DEFAULT_VAL_END
+    test_start: str = DEFAULT_TEST_START
+    test_end: str | None = DEFAULT_TEST_END
+    """测试段右端；None = 动态解析数据源最新交易日。"""
     label_col: str = DEFAULT_LABEL_COL
     include_fundamentals: bool = True
+
+    def resolved_test_end(self) -> str:
+        """解析后的测试段右端（None → 动态值）。"""
+        return self.test_end or _test_end_default()
 
 
 @dataclass

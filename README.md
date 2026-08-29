@@ -14,6 +14,8 @@ AIGC:
 一个自托管的 A 股量化研究/回测 Web 平台：Vue3 单页应用 + FastAPI 后端 +
 本地增量行情缓存（Parquet + SQLite），内置因子轮动与事件驱动两套
 回测引擎，支持账户记账、今日信号、参数稳健性、历史归档与舆情情绪分析。
+内置 **AlphaAgent**：LLM 驱动的 A 股日频多因子自主挖掘智能体（DSL 表达式 →
+评估 → 验证 → 去重 → 入库闭环，详见「AlphaAgent 因子自主挖掘」一节）。
 
 - 地址：Vue 工作台 `http://<host>:17891`
 - 默认免登录（鉴权代码保留，可恢复，见「登录鉴权」）
@@ -43,6 +45,8 @@ AIGC:
 | Brinson 归因 | ✅ | 回测结果内置行业归因 + 代码实验室一键归因 |
 | 事件引擎费用/滑点/流动性参数 | ✅ | 代码页运行参数可配 |
 | 舆情 IC/分组结果 | ✅ | 舆情 tab 展示 scripts/sentiment_backtest.py 输出 |
+| AlphaAgent 因子自主挖掘 | ✅ | LLM 多轮对话生成因子 DSL → 训练/验证评估 → 相似度去重 → 两阶段入库（候选池→正式库 + 回测门禁） |
+| 因子库/候选池浏览与门槛配置 | ✅ | AlphaAgent 页三个子标签：研究 / 因子实验室 / 因子库；每模式门槛文件在线编辑，全链路生效 |
 
 ## 2. 架构
 
@@ -70,10 +74,19 @@ AIGC:
 │  fetcher.py / tushare_client.py  行情抓取（腾讯/Tushare）    │
 │  data.py / store.py / db.py / sqldb.py  数据访问层          │
 ├────────────────────────────────────────────────────────────┤
+│  alphaagent/  LLM 自主因子挖掘（详见「AlphaAgent」一节）      │
+│  mining/loop.py     多轮 tool_calls 挖掘主循环               │
+│  mining/submit.py   两阶段入库（候选池 → 正式库）             │
+│  dsl/               因子表达式 DSL + Numba/C++ JIT 加速       │
+│  factor/evaluation/ 冻结 profile 评估引擎（transform/metric/rule）│
+│  factor/zoo/        因子库存储 + 相似度索引                   │
+├────────────────────────────────────────────────────────────┤
 │  数据                                                       │
 │  data/panel.parquet       日线+因子面板（1800 只）           │
+│  artifacts/panel/cache/   CNE 数据湖面板缓存（秒级命中）      │
 │  data/duck.db             DuckDB 查询缓存/视图              │
 │  data/quant.db            SQLite 业务库（回测/账本/模拟盘）  │
+│  artifacts/alphaagent/    因子库/候选池/研究记忆/门槛文件      │
 │  strategies/registry.py   策略注册表                        │
 └────────────────────────────────────────────────────────────┘
 ```
@@ -85,6 +98,8 @@ AIGC:
 ```bash
 cd ~/quant/quant_ui
 cp .env.example .env   # 按需填 TUSHARE_TOKEN
+pip install -r requirements.txt            # 平台基础依赖
+pip install -r requirements-alphaagent.txt # AlphaAgent 挖掘（agentscope/openai/numba/jieba）
 
 # 后端 API + Vue 前端（:17891）
 systemctl start quant-api
@@ -296,7 +311,50 @@ docker compose down                       # 停服（不删卷；加 -v 会清�
 - `scripts/ricequant_picks_export.py`：本地引擎基准导出脚本
 - `compare_run.py`：三层对比工具（净值/逐笔/持仓）
 
-## 7. 后端 API（FastAPI :17891，文档 `/docs`）
+## 7. AlphaAgent 因子自主挖掘（`alphaagent/`）
+
+LLM 驱动的多轮对话循环，自动完成「生成因子 DSL → 训练集评估 → 验证集检验 →
+相似度去重 → 入库交付」闭环。完整架构见 `AGENTS.md`，此处只列要点。
+
+### 7.1 工作方式
+
+```
+用户下达研究方向（Web / CLI）
+  → LLM 每轮发起 tool_calls：evaluate_factor（DSL → IC/ICIR/覆盖度/月度稳健性）
+  → 通过海选门槛后 submit_factor 入库
+     stage_one 统计门槛 + 正式库相似度（|ρ|≥0.5 拒绝）
+     → 候选池 → stage_two 精筛（双窗口口径）→ engine_gate 回测门禁（实盘可交易性裁决）
+     → 正式库
+  → FactorReviewer LLM 审查（reject 硬拦）+ 长期研究记忆（BM25 正/负证据）
+```
+
+- **三层约束**：经济直觉强制（先写因果链）→ 父本变异策略（参数/算子/修饰）→ 正交预判（与已有因子截面 ρ>0.7 拦截）。
+- **数据**：`panel_path=cne://` 时从 CNE 数据湖实时构建面板（磁盘缓存秒级命中）；基本面模式自动载入 `funda_*` PIT 财务字段。
+- **DSL**：多行表达式编译为 Python，`$列名` 引用面板列；慢算子走 Numba 并行内核，有三重门禁（静态扫描/性能预算/数值一致性）。
+- **评估**：冻结 `EvaluationProfile`（transform → metric → rule 管线），分位数纯多头口径回测。
+- **入库门槛**：唯一真源在 `delivery_criteria`，按研究模式（technical/fundamental）存为
+  `artifacts/alphaagent/research_specs/<mode>.json` 增量覆盖，Web 门槛弹窗编辑后挖掘/晋升/CLI 全链路生效。
+- **因子值缓存**：表达式+面板指纹的内存 LRU + 磁盘持久化（`artifacts/factor_value_cache/`），跨会话复用。
+- **算子耗时监控**：DSL 求值零侵入计时，累计写 `artifacts/dsl_operator_profiling.jsonl`。
+
+### 7.2 启动方式
+
+```powershell
+# Web：AlphaAgent 页 → 新建研究任务（研究模式选 日线技术 / 基本面）
+# CLI：直接启动挖掘（默认 cne:// panel + production_technical 因子库）
+.venv\Scripts\python.exe scripts\run_alphaagent.py
+
+# 候选池重放晋升（候选池已有因子重走修复后的两阶段链路）
+.venv\Scripts\python.exe scripts\promote_candidates.py
+
+# 候选池两两相关去重（先 --dry-run 看报告）
+.venv\Scripts\python.exe scripts\dedup_candidate_factors.py --dry-run
+```
+
+依赖见 `requirements-alphaagent.txt`（agentscope、openai、numba、jieba）；
+LLM 凭据支持 Codex provider（`ALPHA_LLM_PROVIDER=codex`，读 `~/.codex/config.toml`）。
+
+## 8. 后端 API（FastAPI :17891，文档 `/docs`）
 
 ```
 GET  /api/health
@@ -339,9 +397,31 @@ GET  /api/sentiment/status       舆情数据状态
 GET  /api/sentiment/stats        舆情统计（新闻数/标签分布/每日条数）
 GET  /api/sentiment/news         情绪最强/最弱新闻
 GET  /api/sentiment/ic           舆情分桶回测 IC/分组
+
+# ── AlphaAgent（/api/alphaagent/*）──
+POST /api/alphaagent/runs          启动新挖掘（research_mode: technical/fundamental）
+GET  /api/alphaagent/runs          列出所有 runs
+GET  /api/alphaagent/runs/{id}     run 详情（事件轨迹尾部）
+POST /api/alphaagent/runs/{id}/stop        终止
+POST /api/alphaagent/runs/{id}/messages    向运行中的进程注入消息
+POST /api/alphaagent/runs/{id}/continue    已结束的 run 继续（fork 新进程）
+POST /api/alphaagent/runs/{id}/branch      分支新 run
+POST /api/alphaagent/runs/{id}/rename|archive|pin  重命名/归档/置顶
+DELETE /api/alphaagent/runs/{id}   删除 run（DELETE /runs/archived 清理归档）
+GET  /api/alphaagent/runs/{id}/events   SSE 事件流（实时轨迹）
+GET  /api/alphaagent/research-memory      查看研究记忆（DELETE /{entry_id} 删单条）
+GET  /api/alphaagent/research-modes       研究模式选项
+GET  /api/alphaagent/research-specs/{mode}  模式门槛三视图 defaults/overrides/effective
+PUT  /api/alphaagent/research-specs/{mode}  保存门槛（diff 增量覆盖，全链路生效）
+GET  /api/alphaagent/factors|factors/{id}   因子列表/详情（library=production/candidate）
+POST /api/alphaagent/eval-factor    单因子评估（因子实验室）
+POST /api/alphaagent/backtest-factor  因子回测
+GET  /api/alphaagent/dsl-monitor    DSL 算子耗时榜（top_k / since_hours）
+GET  /api/alphaagent/logs|logs/tail  运行日志
+GET  /api/trading-defaults          统一交易参数（前端启动时自动获取）
 ```
 
-## 8. 脚本工具
+## 9. 脚本工具
 
 | 脚本 | 作用 | 输出 |
 | --- | --- | --- |
@@ -363,7 +443,7 @@ GET  /api/sentiment/ic           舆情分桶回测 IC/分组
 | `scripts/wf_lowvol_check.py` | 低换手/低波动 walk-forward 样本外验证 | 控制台报告 |
 | `scripts/recheck_engine_gate.py` | 重新检查 engine_gate 门禁结果 | 控制台报告 |
 
-### 8.1 qweave 研究层（替代 Qlib）
+### 9.1 qweave 研究层（替代 Qlib）
 
 研究层使用 [qweave](https://github.com/qweave/qweave)（Polars/Rust 原生），
 直接读 `data/pg_parquet/stock_daily.parquet`（与回测面板同口径），
@@ -386,7 +466,7 @@ python scripts/qweave_research.py --start 2022-01-01 --train-model
 （`scripts/export_qlib.py`、`scripts/dump_bin.py`、`scripts/qlib_alpha158_demo.py`）
 已删除，不再需要 pyqlib/qlib_data。
 
-### 8.2 自动化测试（pytest）
+### 9.2 自动化测试（pytest）
 
 `core/engine.py`（因子轮动）与 `core/event_engine.py`（事件驱动）已带 pytest
 冒烟测试，使用合成小面板，不依赖真实行情：
@@ -398,40 +478,31 @@ python -m pytest tests -v
 CI 配置见 `.github/workflows/ci.yml`，在 push/PR 时自动安装
 `requirements-dev.txt` 并执行上述冒烟测试。
 
-## 9. 登录鉴权
+## 10. 登录鉴权
 
 当前迭代已临时关闭，前后端免登录。鉴权代码保留在 `backend/auth.py`
 （pbkdf2 + HttpOnly Cookie），需要时在 `backend/main.py` 重新挂载
 中间件即可恢复。
 
-## 10. 接入状态
+## 11. 开发状态
 
-### 已接入（本次完成）
+历史迭代清单已并入 §1 功能总览，此处只保留当前要点：
 
-| # | 功能 | 入口 |
-| --- | --- | --- |
-| 1 | 因子质量分析（IC/分组/多空价差） | 回测页勾选「因子质量分析」→ 结果区 IC 卡片 + 逐日 IC 图 + 5 分组表 |
-| 2 | QuantStats 绩效报告 | 回测结果区「QuantStats 绩效报告」按钮 → 弹层 HTML 报告 |
-| 3 | Brinson 归因 | 代码实验室跑完事件策略 → 「Brinson 归因」按钮 → 行业配置/选择/交互表 |
-| 4 | 事件引擎费用/滑点/流动性 | 代码页「执行成本」区：滑点 bps / 流动性参与率 / 买/卖费率 |
-| 5 | 行业分散参数 `industry_cap` | 回测页「组合构建」→ 每行业上限 |
-| 6 | 多空信号方向 | 信号页「多空对冲」勾选 → 方向列（多/空） |
-| 7 | 对比回撤图 | 看板多策略对比区新增「多策略回撤」图 |
-| 8 | 归档详情完整化 | 历史页详情补回撤图 / 持仓 / 调仓 tab |
-| 9 | 舆情情绪看板（Vue 简版） | 新「舆情」tab：情绪分布 / 每日条数 / 最强最弱新闻 |
-| 10 | 舆情 IC/分组结果 | 舆情 tab 展示 `results/sentiment_ic_group.csv` |
+- 数据→因子→回测→报告闭环已跑通，绩效/归因（IC/分组/Brinson/QuantStats）已进 UI；
+- Barra 风格风险模型、财务因子、walk-forward 滚动训练-测试、日级模拟盘（T+1
+  撮合/费用/风控/自动日结）均已上线；
+- AlphaAgent 自主因子挖掘已上线（§7），候选池/正式库/研究记忆/门槛文件齐备。
 
-### 仍为代码级（无需 UI）
+仍为代码级（无需 UI）：组合优化权重方法 `ctx.optimize_risk_parity /
+mean_variance / max_diversification` 是事件策略内 API，在代码实验室的
+`on_bar` 中直接调用。
 
-- 组合优化权重方法 `ctx.optimize_risk_parity / mean_variance / max_diversification`
-  是事件策略内 API，直接在代码实验室的 `on_bar` 中调用即可，无独立参数 UI。
-
-## 11. 对标市面个人量化平台
+## 12. 对标市面个人量化平台
 
 | 能力域 | 本平台 | 聚宽/米筐/掘金 | Qlib/backtrader | 差距与方向 |
 | --- | --- | --- | --- | --- |
-| 数据 | 腾讯+Tushare 增量缓存，日线+滚动因子 | 商业全量数据（分钟/财务/事件） | 自备数据 | 缺分钟线、财务/公告宽表仅 Tushare parquet 预留 |
-| 研究环境 | 网页代码实验室 + qweave 因子研究脚本 | Notebook + 因子库 | Notebook/脚本 | 缺 Notebook，qweave 已内置 Alpha158/101/191 |
+| 数据 | 腾讯+Tushare 增量缓存 + CNE 数据湖（日线/财务 PIT funda_*），日线+滚动因子 | 商业全量数据（分钟/财务/事件） | 自备数据 | 缺分钟线 |
+| 研究环境 | 网页代码实验室 + qweave 因子研究脚本 + AlphaAgent 因子 DSL/因子库 | Notebook + 因子库 | Notebook/脚本 | 缺 Notebook，qweave 已内置 Alpha158/101/191 |
 | 回测 | 因子轮动 + 事件驱动，T+1/涨跌停/费用/滑点/多空 + 财务因子 | 成熟撮合 + 多周期 | 成熟 | 撮合近似（ST 涨跌幅未区分、无分钟级撮合） |
 | 组合构建 | 等权/风险平价/均值方差/最大分散化 + Barra 风格风险模型 | 优化器 + 风险模型 | 部分 | 风格因子为轻量代理定义，缺完整 Barra 行业/风格库 |
 | 稳健性 | walk-forward + 参数网格 + 滚动训练-测试 | 参数优化/样本外验证 | 部分 | 训练期无特征工程/MI 选参，仅简单网格 |
@@ -441,12 +512,13 @@ CI 配置见 `.github/workflows/ci.yml`，在 push/PR 时自动安装
 | 部署 | systemd + 本地进程 / Docker 单容器全栈 | SaaS | 本地库 | 多机编排/云平台托管 |
 
 结论：当前平台适合**个人单机研究**（数据→因子→回测→报告闭环已跑通，
-绩效/归因已进 UI）。P0 的 Barra 风格风险模型、财务因子与 P1 的归因 UI、
-滚动训练-测试框架已完成，日级模拟盘已上线（T+1 撮合/费用/风控/自动日结）。
-对标商业平台的主要短板剩：① 财务数据当前为样例覆盖，需 `--fina` 全市场补数据；
-② 模拟盘为日级，无实时行情撮合与实时风控；③ 无 Notebook/因子表达式库。
+绩效/归因已进 UI）。Barra 风格风险模型、财务因子（CNE 数据湖 PIT）、
+归因 UI、滚动训练-测试框架、日级模拟盘与 AlphaAgent 自主因子挖掘
+（含因子 DSL 与因子库）均已完成。对标商业平台的主要短板剩：
+① 模拟盘为日级，无实时行情撮合与实时风控；② 缺 Notebook 交互研究环境；
+③ 无分钟线与分钟级撮合。
 
-## 12. 已知限制（Demo）
+## 13. 已知限制（Demo）
 
 - 未做多进程/后台任务，大批量参数扫描同步执行，event 模式约 1-2 分钟
 - 行业分类接口在部分服务器不可达时回退本地缓存，科技股票池为缓存快照

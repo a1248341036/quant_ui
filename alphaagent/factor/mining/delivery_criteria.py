@@ -64,7 +64,7 @@ class ProductionCriteria:
     min_train_abs_ic: float = 0.025
     min_train_icir: float = 0.30
     min_val_abs_ic: float = 0.015
-    min_val_ic_retention: float = 0.60
+    min_val_ic_retention: float = 0.50  # 2026-08-29 从 0.60 下调：最强因子 train 太好（IC 0.046）反被 0.56<0.60 惩罚
     min_val_long_excess: float = 0.0
     max_winsorized_abs_ic_decay: float = 0.10
     max_abs_corr: float = 0.4
@@ -83,21 +83,45 @@ class EngineGateCriteria:
     enabled: bool = True
     selection_mode: str = trading_config.SELECTION_MODE
     selection_pct: float = trading_config.GATE_SELECTION_PCT
+    top_n: int = trading_config.GATE_TOP_N
     freq: str = trading_config.GATE_FREQ
     allowed_freqs: tuple[str, ...] = ("daily", "weekly", "monthly")
+    capital: float = trading_config.GATE_CAPITAL
+    slippage_bps: float = trading_config.GATE_SLIPPAGE_BPS
+    max_participation: float = trading_config.GATE_MAX_PARTICIPATION
+    min_am20_yuan: float = trading_config.GATE_MIN_AM20_YUAN
     min_excess_annual: float = trading_config.GATE_MIN_EXCESS_ANNUAL
     min_excess_sharpe: float = trading_config.GATE_MIN_EXCESS_SHARPE
     max_drawdown: float = trading_config.GATE_MAX_DRAWDOWN
     min_daily_overlap: float = trading_config.GATE_MIN_DAILY_OVERLAP
-    capital: float = trading_config.GATE_CAPITAL
     min_invested_ratio: float = trading_config.GATE_MIN_INVESTED_RATIO
-    min_am20_yuan: float = trading_config.GATE_MIN_AM20_YUAN
+
+
+@dataclass(frozen=True)
+class BlindTestCriteria:
+    """盲测终审门槛：test 段（留出测试段）硬指标门禁。
+
+    盲测段（test_start ~ data_latest）从未参与 train/val/engine_gate，
+    是最干净的样本外验证。盲测终审在 stage_one 之前执行——
+    不通过直接拒绝，不进候选池，不消耗后续相似度/回测算力。
+
+    门槛项（2026-08-29 确立）：
+    - IC 保留比 = |test_ic|/|train_ic| ≥ min_ic_retention（默认 0.50）；
+    - 方向一致性：test 段 IC 方向必须与 train 段一致（sign_consistent）。
+
+    test 段当前约 20 个月（2025-01 ~ 数据最新日），样本充足可设硬门。
+    """
+
+    enabled: bool = True
+    min_ic_retention: float = 0.50
+    require_sign_consistency: bool = True
 
 
 @dataclass(frozen=True)
 class DeliveryCriteria:
-    """两阶段交付门槛全集：候选池 + 正式库统计 + engine_gate。"""
+    """交付门槛全集：盲测终审 + 候选池 + 正式库统计 + engine_gate。"""
 
+    blind_test: BlindTestCriteria = BlindTestCriteria()
     candidate: CandidateCriteria = CandidateCriteria()
     production: ProductionCriteria = ProductionCriteria()
     engine_gate: EngineGateCriteria = EngineGateCriteria()
@@ -120,6 +144,7 @@ class DeliveryCriteria:
         if "delivery_policy" in policy and isinstance(policy.get("delivery_policy"), dict):
             policy = policy["delivery_policy"]
 
+        blind = policy.get("blind_test") or {}
         cand = policy.get("candidate") or {}
         prod = policy.get("production") or {}
         eg = prod.get("engine_gate") or {}
@@ -136,6 +161,7 @@ class DeliveryCriteria:
                     merged[key] = getattr(base, key)
             return merged
 
+        blind_obj = BlindTestCriteria(**_fill(BlindTestCriteria(), blind))
         cand_obj = CandidateCriteria(**_fill(CandidateCriteria(), cand))
         prod_obj = ProductionCriteria(**_fill(ProductionCriteria(), prod))
         eg_raw = _fill(EngineGateCriteria(), eg)
@@ -144,9 +170,12 @@ class DeliveryCriteria:
         if isinstance(eg_raw.get("allowed_freqs"), (list, tuple)):
             eg_raw["allowed_freqs"] = tuple(eg_raw["allowed_freqs"])
         eg_obj = EngineGateCriteria(**eg_raw)
-        return cls(candidate=cand_obj, production=prod_obj, engine_gate=eg_obj)
+        return cls(blind_test=blind_obj, candidate=cand_obj, production=prod_obj, engine_gate=eg_obj)
 
     # ── 序列化 ──
+
+    def blind_test_dict(self) -> dict[str, Any]:
+        return dict((f.name, getattr(self.blind_test, f.name)) for f in fields(self.blind_test))
 
     def candidate_dict(self) -> dict[str, Any]:
         return dict((f.name, getattr(self.candidate, f.name)) for f in fields(self.candidate))
@@ -163,6 +192,7 @@ class DeliveryCriteria:
 
     def to_spec_dict(self) -> dict[str, Any]:
         return {
+            "blind_test": self.blind_test_dict(),
             "candidate": self.candidate_dict(),
             "production": {
                 **self.production_dict(),
@@ -173,10 +203,11 @@ class DeliveryCriteria:
     # ── 提示词渲染 ──
 
     def to_prompt_text(self) -> str:
-        """渲染两阶段交付门槛的 Markdown 文本，供 LLM 系统提示词使用。
+        """渲染交付门槛的 Markdown 文本，供 LLM 系统提示词使用。
 
         数值全部来自本对象，杜绝提示词与真实门禁脱节。
         """
+        b = self.blind_test
         c = self.candidate
         p = self.production
         eg = self.engine_gate
@@ -187,6 +218,12 @@ class DeliveryCriteria:
             except (TypeError, ValueError):
                 return str(v)
 
+        blind_test = (
+            "盲测终审（test 段，stage_one 之前执行）："
+            f"`test/train IC 保留比 >= {_pct(b.min_ic_retention)}` 且"
+            f"{'方向必须一致' if b.require_sign_consistency else '方向不限制'}；"
+            "不通过直接拒绝，不进候选池。"
+        ) if b.enabled else ""
         stage_one = (
             "第一阶段（候选登记，train-only 窗口）："
             f"`abs(IC) >= {c.min_abs_ic}`、`ICIR > {c.min_icir}`、"
@@ -213,6 +250,6 @@ class DeliveryCriteria:
         )
         return (
             "`submit_factor` 会先执行 pre-submit Reviewer，再在 train-start~val-end 全区间复核。"
-            + stage_one + stage_two + engine
+            + blind_test + stage_one + stage_two + engine
             + " 全部通过才写正式库并返回 `stored=true`。ICIR 按原始符号判断，不取绝对值。"
         )

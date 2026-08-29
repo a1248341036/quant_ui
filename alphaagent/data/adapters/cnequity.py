@@ -10,7 +10,7 @@
 ----
     from alphaagent.data.adapters.cnequity import load_panel_from_cne
 
-    panel = load_panel_from_cne(start="2018-01-01", end="2025-12-31")
+    panel = load_panel_from_cne(start="2020-01-01", end="2024-12-31")
 
 在 StockEvalContext 中使用特殊 panel_path ``cne://`` 触发此 adapter，
 SessionStore.create() 会检测该标识并走 adapter 而非读 parquet。

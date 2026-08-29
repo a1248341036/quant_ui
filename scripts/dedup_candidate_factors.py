@@ -34,12 +34,12 @@ def _load_panel() -> pd.DataFrame:
     cne_root = ROOT / "CNEquity"
     cfg_path = cne_root / "configs" / "cnequity.quant_dataset.toml"
 
-    print("正在加载 CNE stock_daily_wide（2023-01-01 ~ 2025-12-31）…", flush=True)
+    print("正在加载 CNE stock_daily_wide（2023-01-01 ~ 2024-12-31）…", flush=True)
     old = Path.cwd()
     try:
         os.chdir(cne_root)
         cfg = load_config(cfg_path)
-        df = cne_load("stock_daily_wide", start="2023-01-01", end="2025-12-31", config=cfg)
+        df = cne_load("stock_daily_wide", start="2023-01-01", end="2024-12-31", config=cfg)
     finally:
         os.chdir(old)
 
@@ -195,7 +195,7 @@ def main() -> None:
         from alphaagent.data.adapters.cnequity import load_panel_from_cne
 
         print("表达式引用 funda_*/holder_* 字段 → 加载完整 panel（含 PIT 基本面）…", flush=True)
-        panel = load_panel_from_cne(start="2023-01-01", end="2025-12-31", include_fundamentals=True)
+        panel = load_panel_from_cne(start="2023-01-01", end="2024-12-31", include_fundamentals=True)
         panel = panel.sort_index()
         print(f"panel 加载完成: {panel.shape[0]:,} 行 × {panel.shape[1]} 列", flush=True)
     else:

@@ -17,7 +17,7 @@ from alphaagent.factor.types import IngestPolicy
 
 def test_policy_fingerprint_discriminates_windows():
     base = IngestPolicy(
-        train_start="2018-01-01", val_end="2025-12-31",
+        train_start="2020-01-01", val_end="2024-12-31",
         label_col="label_10d_close_to_close",
     )
     # submit 的两个窗口口径即用这两个 replace 构造

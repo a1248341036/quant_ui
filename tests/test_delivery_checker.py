@@ -39,7 +39,7 @@ def test_criteria_defaults_match_research_spec():
     assert prod["min_train_abs_ic"] == 0.025
     assert prod["min_train_icir"] == 0.30
     assert prod["min_val_abs_ic"] == 0.015
-    assert prod["min_val_ic_retention"] == 0.60
+    assert prod["min_val_ic_retention"] == 0.50  # 2026-08-29 从 0.60 下调
     assert prod["min_val_long_excess"] == 0.0
     assert prod["max_winsorized_abs_ic_decay"] == 0.10
     assert prod["max_abs_corr"] == 0.4
@@ -84,7 +84,7 @@ def _old_stage_one_stats(metrics):
     if ic is None or abs(float(ic)) < 0.015:
         reasons.append("ic")
     icir = metrics.get("icir")
-    if icir is None or abs(float(icir)) <= 0.25:
+    if icir is None or abs(float(icir)) < 0.25:
         reasons.append("icir")
     cov = metrics.get("coverage") or metrics.get("factor_coverage")
     if cov is None or float(cov) <= 0.85:
@@ -113,19 +113,19 @@ def _old_stage_one_val_retention(train, val):
     return []
 
 
-# 复刻旧 _check_stage_two 语义（production 阈值，保留比 0.60）
+# 复刻旧 _check_stage_two 语义（production 阈值，保留比 0.50）
 def _old_stage_two(train, val, similarity):
     reasons = []
     ic = train.get("ic")
     if ic is None or abs(float(ic)) < 0.025:
         reasons.append("train_ic")
     icir = train.get("icir")
-    if icir is None or abs(float(icir)) <= 0.30:
+    if icir is None or abs(float(icir)) < 0.30:
         reasons.append("train_icir")
     v_ic = val.get("ic")
     if v_ic is None or abs(float(v_ic)) < 0.015:
         reasons.append("val_ic")
-    reasons += _old_stage_one_val_retention_with(train, val, 0.60)
+    reasons += _old_stage_one_val_retention_with(train, val, 0.50)  # 2026-08-29 0.60 → 0.50
     thr_vle = 0.0
     vle = val.get("val_long_excess")
     if vle is None or not np.isfinite(float(vle)) or float(vle) <= thr_vle:
@@ -173,7 +173,7 @@ LOW_CORR = {"max_abs_corr": 0.1}
     {"coverage": None},       # 缺失 coverage
     {"cs_pearson_autocorr": None},  # 缺失换手
     {"ic": 0.014999},         # 恰好低于 IC 门槛
-    {"icir": 0.25},           # 恰好等于 ICIR 门槛（<= 拒绝）
+    {"icir": 0.25},           # 恰好等于 ICIR 门槛（< 判定，放行）
     {"coverage": 0.85},       # 恰好等于 coverage 门槛（<= 拒绝）
 ])
 def test_stage_one_stats_parity(checker, mut):

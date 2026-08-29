@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: '35898fec-738a-418d-af06-0dd2255fdb1e'
-  PropagateID: '35898fec-738a-418d-af06-0dd2255fdb1e'
-  ReservedCode1: 'ab2f9ade-6971-4d25-84d1-aa3f9546f4f1'
-  ReservedCode2: 'ab2f9ade-6971-4d25-84d1-aa3f9546f4f1'
+  ProduceID: '2026ff4d-368d-4fab-8ce6-c0e389d20eb1'
+  PropagateID: '2026ff4d-368d-4fab-8ce6-c0e389d20eb1'
+  ReservedCode1: 'ebcb91a8-f70a-43ce-afa6-4fc139373b47'
+  ReservedCode2: 'ebcb91a8-f70a-43ce-afa6-4fc139373b47'
 ---
 
 # AlphaAgent — 项目架构与开发指南
@@ -204,6 +204,7 @@ logs/factor_mining/ui/        # 每次 Web run 的 JSONL 轨迹 + run_meta.json�
 
 ## 关键设计决策
 
+- **盲测段锁定（`scripts/blind_test_factors.py`）**：2025-01-01 起为锁定盲测段——挖掘会话面板 coverage = `train_start~val_end`（2020~2024），LLM 迭代、stage_one/two、engine_gate 全部看不到 2025 数据；`blind_test_factors.py` 对已定稿因子做一次性离线重测（复用 `compute_ingest_metrics` 同口径），结果只写 `artifacts/alphaagent/blind_test/<run_ts>/report.json`、不回流任何门槛。**频繁重测会把盲测段重新烧掉（多重检验），克制使用频率**。train/val 双段在筛选中被反复使用、非真正 held-out——盲测段是唯一的诚实样本外。窗口重映射记录：2026-08-29 由 train 2018~2022 / val 2023~2025 / test 2026 起 调整为 train 2020~2022 / val 2023~2024 / test 2025 起（train 收近 3 年防因子衰减，test 段约 20 个月更足）。
 - **panel 实时构建而非预构建**：`cne://` 标识触发 adapter 从 CNE 数据湖按日期范围拉取，避免维护大 parquet 文件。首次加载约 30-60 秒，之后驻内存复用。
 - **因子注册表单一来源（`core/factor_registry.py`）**：全部引擎因子（量价/基金/财务/动态）的元数据收口在 `FACTORS` 表；`core/composites.FACTOR_OPTIONS` 由它派生（组合编辑器清单），`strategies.registry.validate_registry_factors()` 校验策略引用。加因子 = 注册表加一行 + `build_factor_frames` 实现计算。
 - **策略定义统一模型（`core/strategy_types.py`）**：`StrategyDefinition` 收敛注册表/配置池/归档三源，`resolve_strategy_def()` 统一解析（保留旧 `resolve_strategy()` dict 兼容），`fingerprint()` 用于策略去重/冲突检测。DSL 因子经 `from_dsl_factor()` 动态构造（不回填策略池）。
@@ -223,6 +224,17 @@ logs/factor_mining/ui/        # 每次 Web run 的 JSONL 轨迹 + run_meta.json�
 - **评估 metrics 快路径（`factor/metrics.py`）**：逐日 IC / Rank IC / lag1 自相关 / 十分位分组 / 分位组合 / 市值中性化全部改为「datetime 连续区间切片（`_day_slices`，面板按 datetime 排序时 O(1) 取每日切片，消除逐日 `groupby+xs` 全表查找）」；`pd.qcut` 换成数值等价的快速等频分箱 `_fast_equal_freq_codes`（分位边界浮点重合时自动回落 qcut，保证语义一致）；`mls_fmb` 与 `long_short_portfolio` 经 `context.cache` 共享同一份每日十分位结果。回落路径保留（未排序面板/测试注入 `_day_slices_override`）。门禁：`tests/test_metrics_fastpaths.py`（快慢路径输出一致 + 分箱等价对照）。
 - **慢算子三重门禁**：① 静态拦截 `scripts/check_dsl_slow_patterns.py`（AST 扫描 operators.py，新增逐品种 pandas 循环/纯 Python 逐 bar 循环即失败，存量白名单只减不增；由 `tests/test_dsl_slow_patterns.py` 挂进 pytest）；② 性能门禁 `tests/test_dsl_operator_perf.py`（720k 行标准面板上 9 个优化算子的耗时预算断言 + 快路径接线检查，防并行层静默退化）；③ 一致性门禁 `tests/test_dsl_operator_consistency.py`（35 用例，快路径 vs 回落路径逐位一致，覆盖 NaN/跳空/零量/乱序面板/动态窗）。运行时慢算子发现走 `dsl-monitor` API（top_k 耗时榜）。
 
+## 开发效率
+
+### 代码搜索必须带筛选
+
+本仓库包含大量**大型数据产物**：`artifacts/`（JSON/parquet/npy 因子库、面板缓存、报告）、`logs/`（JSONL 轨迹）、`.venv/`、`static/node_modules/` 等。**全量 grep 会扫描这些目录，动辄数百毫秒甚至更久**。
+
+规则：
+- Grep 必须带 `include` 参数（如 `*.py` / `*.vue` / `*.ts` / `*.js`），只搜源码文件。
+- 能限定 `path` 时就限定到源码目录：`alphaagent/`、`backend/`、`core/`、`scripts/`、`static/src/`、`tests/`。
+- 查 DSL 算子/因子评估逻辑 → `alphaagent/dsl/`、`alphaagent/factor/`；查回测引擎 → `core/`；查前端 → `static/src/`；查 API → `backend/`。
+
 ## 常用命令
 
 ```powershell
@@ -239,6 +251,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start_backend_with_s
 # 候选池重放晋升（把候选池已有因子重新走一遍修复后的两阶段链路）
 .venv\Scripts\python.exe scripts\promote_candidates.py
 
+# 盲测段因子重测（默认 2026-01-01 起；锁定段——挖掘循环与入库门槛从未见过 2026 数据）
+.venv\Scripts\python.exe scripts\blind_test_factors.py
+
 # 前端 dev
 cd static && npm run dev
 ```
@@ -250,4 +265,3 @@ cd static && npm run dev
 见 `requirements-alphaagent.txt`：agentscope, openai, numba, jieba。
 
 > AI生成
-

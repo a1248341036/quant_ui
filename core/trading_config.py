@@ -27,7 +27,7 @@ LIMIT_FLAGS: bool = True            # 涨跌停过滤
 
 # ── 选股参数 ──
 SELECTION_MODE: str = "top_pct"    # 动态百分比选股
-SELECTION_PCT: float = 0.004       # top 0.4% ≈ 20只
+SELECTION_PCT: float = 0.004       # top 0.4% ≈ 20只（回测对比页口径）
 TOP_N: int = 20                    # 固定模式下选 20 只
 FREQ: str = "weekly"               # 默认调仓频率
 
@@ -47,9 +47,11 @@ FUND_BUY_COST: float = 0.0015      # 场外基金申购费率
 FUND_SELL_COST: float = 0.0050     # 场外基金赎回费率
 
 # ── AlphaAgent 因子门禁专用 ──
+# 散户 10 万实盘口径：top 0.1% ≈ 5 只（10万/5=2万/只，1 手可覆盖 200 元以下股票；
+# 此前 0.4%≈20 只导致 10 万资金系统性买不起中高价股，拒单 190+ 笔、持仓仅 6.4 只）。
 GATE_CAPITAL: float = 100_000.0     # 门禁回测资金
-GATE_SELECTION_PCT: float = 0.004  # 门禁选股百分比
-GATE_TOP_N: int = 20                # 门禁固定选股数
+GATE_SELECTION_PCT: float = 0.001  # 门禁选股百分比（≈5只）
+GATE_TOP_N: int = 5                 # 门禁固定选股数
 GATE_SLIPPAGE_BPS: float = 0.0     # 门禁滑点（与全局滑点一致，散户口径不计）
 GATE_MAX_PARTICIPATION: float = 0.10  # 门禁参与率
 GATE_MIN_AM20_YUAN: float = 5_000_000.0  # 门禁流动性下限

@@ -30,8 +30,11 @@ def run_engine_gate(
     """验证集窗口的旧引擎 TopN 回测门禁（完整 T+1/涨跌停/停牌/整手约束）。
 
     policy 来自 ResearchSpec delivery_policy.production.engine_gate：
-    {enabled, top_n, freq, min_annual_return, min_excess_annual, min_sharpe,
-     max_drawdown, min_daily_overlap}
+    {enabled, selection_mode, selection_pct, top_n, freq, capital,
+     slippage_bps, max_participation, min_am20_yuan, min_excess_annual,
+     min_excess_sharpe, max_drawdown, min_daily_overlap, min_invested_ratio}
+    数值由 delivery_criteria.EngineGateCriteria 统一提供（唯一真源），
+    本函数对缺失键仅回落 trading_config，不回落到散落的局部硬编码。
     engine_frame 可传入缓存的 panel_to_engine_frame 输出，多频率复评时避免重复变换。
     """
     policy = policy or {}
@@ -217,6 +220,7 @@ def run_engine_gate(
             "calmar": m.get("卡玛"),
             "win_rate": m.get("胜率"),
             "total_return": m.get("总收益"),
+            "max_drawdown": drawdown,
             "daily_overlap": overlap,
         },
         "selection_mode": selection_mode,

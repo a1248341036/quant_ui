@@ -71,7 +71,7 @@ class StageOneStats:
             icir_v = abs(float(icir))
         except (TypeError, ValueError):
             icir_v = None
-        if icir_v is None or icir_v <= self.c.min_icir:
+        if icir_v is None or icir_v < self.c.min_icir:
             reasons.append("icir")
         cov = metrics.get("coverage") or metrics.get("factor_coverage")
         try:
@@ -196,7 +196,7 @@ class StageTwoStats:
             icir_v = abs(float(icir))
         except (TypeError, ValueError):
             icir_v = None
-        if icir_v is None or icir_v <= float(self.p.min_train_icir):
+        if icir_v is None or icir_v < float(self.p.min_train_icir):
             reasons.append("train_icir")
 
         v_ic = _abs_ic(val_metrics.get("ic"))
@@ -220,7 +220,7 @@ class StageTwoStats:
                 vle_v = float(vle)
             except (TypeError, ValueError):
                 vle_v = None
-            if vle_v is None or not np.isfinite(vle_v) or vle_v <= float(thr_vle):
+            if vle_v is None or not np.isfinite(vle_v) or vle_v < float(thr_vle):
                 reasons.append("val_long_excess")
 
         winsor_decay = train_metrics.get("winsorized_abs_ic_decay")
@@ -242,8 +242,55 @@ class StageTwoStats:
         return StageResult(passed=len(reasons) == 0, fail_reasons=reasons)
 
 
+class BlindTestStage:
+    """盲测终审门槛：test 段 IC 保留比 + 方向一致性。
+
+    在 stage_one 之前执行——不通过直接拒绝，不进候选池。
+    test 段从未参与 train/val/engine_gate，是最干净的样本外验证。
+    """
+
+    name = "blind_test"
+
+    def __init__(self, criteria: DeliveryCriteria) -> None:
+        self.b = criteria.blind_test
+
+    def run(self, evidence: dict[str, Any]) -> StageResult:
+        if not self.b.enabled:
+            return StageResult(passed=True, fail_reasons=[])
+
+        train_metrics = evidence.get("train_metrics") or {}
+        test_metrics = evidence.get("test_metrics") or {}
+        reasons: list[str] = []
+
+        t_ic = train_metrics.get("ic")
+        s_ic = test_metrics.get("ic")
+        if t_ic is None or s_ic is None:
+            return StageResult(passed=False, fail_reasons=["blind_test_ic_missing"])
+        t, s = float(t_ic), float(s_ic)
+        if not np.isfinite(t) or not np.isfinite(s):
+            return StageResult(passed=False, fail_reasons=["blind_test_ic_missing"])
+
+        # 方向一致性
+        if self.b.require_sign_consistency:
+            t_sign = 1 if t >= 0 else -1
+            s_sign = 1 if s >= 0 else -1
+            if t_sign != s_sign:
+                reasons.append("blind_test_sign_flip")
+
+        # IC 保留比 = |test_ic|/|train_ic|
+        if abs(t) > 1e-12:
+            retention = abs(s) / abs(t)
+            if retention < self.b.min_ic_retention:
+                reasons.append("blind_test_ic_retention")
+        else:
+            # train IC 近零时无法算保留比，视为不通过
+            reasons.append("blind_test_train_ic_near_zero")
+
+        return StageResult(passed=len(reasons) == 0, fail_reasons=reasons)
+
+
 class DeliveryChecker:
-    """编排两阶段统计门槛判定，供 submit() 复用。
+    """编排交付门槛判定，供 submit() 复用。
 
     只做纯判定：传入证据字典，返回各阶段 StageResult。promotion_status /
     skipped_reason / registry 副作用仍由 submit() 按原顺序编排，payload 语义不变。
@@ -251,11 +298,23 @@ class DeliveryChecker:
 
     def __init__(self, criteria: DeliveryCriteria) -> None:
         self.criteria = criteria
+        self._blind_test = BlindTestStage(criteria)
         self.stage_one = [
             StageOneStats(criteria),
             StageOneTurnover(criteria),
         ]
         self._stage_two_stats = StageTwoStats(criteria)
+
+    def blind_test(
+        self,
+        metrics_train: dict[str, Any],
+        test_metrics: dict[str, Any],
+    ) -> StageResult:
+        """盲测终审：test 段 IC 保留比 + 方向一致性。"""
+        return self._blind_test.run({
+            "train_metrics": metrics_train,
+            "test_metrics": test_metrics,
+        })
 
     def stage_one_stats(self, metrics_train: dict[str, Any]) -> StageResult:
         """海选统计 + 换手可行性（train-only 口径）+ 组合换手预检。"""

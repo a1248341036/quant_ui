@@ -10,12 +10,21 @@ import numpy as np
 if TYPE_CHECKING:
     from alphaagent.factor.mining.context import StockEvalContext
 
-# 全局统一挖掘窗口（后端 API / CLI / 兜底默认共用这一份）：
-# train 2018-2022，val 2023-2025。改窗口只改这里。
-DEFAULT_TRAIN_START = "2018-01-01"
-DEFAULT_TRAIN_END = "2022-12-31"
-DEFAULT_VAL_START = "2023-01-01"
-DEFAULT_VAL_END = "2025-12-31"
+# 全局统一挖掘窗口（后端 API / CLI / 兜底默认共用这一份）——单一来源：
+# alphaagent/factor/window_config.py（本文件仅为向后兼容的 re-export）。
+from alphaagent.factor.window_config import (
+    DEFAULT_TEST_END,
+    DEFAULT_TEST_START,
+    DEFAULT_TRAIN_END,
+    DEFAULT_TRAIN_START,
+    DEFAULT_VAL_END,
+    DEFAULT_VAL_START,
+    resolve_test_end,
+    test_window,
+)
+
+# 说明：DEFAULT_TEST_END 为 None（= 动态解析数据源最新交易日），
+# 消费方应在未显式传值时调用 resolve_test_end() 获取实际值。
 DEFAULT_LABEL_COL = "label_1d_open_to_open"
 DEFAULT_MAX_CS_CORR = 0.8
 DEFAULT_SIMILAR_TOP_K = 3

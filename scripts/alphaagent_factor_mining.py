@@ -41,11 +41,18 @@ from alphaagent.factor.mining.research_spec import load_research_spec, research_
 from alphaagent.factor.mining.seed_factors import build_user_message_with_seed_factors  # noqa: E402
 from alphaagent.factor.types import (
     DEFAULT_LABEL_COL,
+    DEFAULT_TEST_START,
     DEFAULT_TRAIN_END,
     DEFAULT_TRAIN_START,
     DEFAULT_VAL_END,
     DEFAULT_VAL_START,
 )  # noqa: E402
+
+
+_help_test_end = (
+    "测试段右端（留出测试段终审，只报告不拦截）；"
+    "缺省时动态解析数据源最新交易日"
+)
 
 
 def _load_env() -> None:
@@ -60,6 +67,8 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--train-end", default=DEFAULT_TRAIN_END)
     p.add_argument("--val-start", default=DEFAULT_VAL_START)
     p.add_argument("--val-end", default=DEFAULT_VAL_END)
+    p.add_argument("--test-start", default=DEFAULT_TEST_START)
+    p.add_argument("--test-end", default=None, help=_help_test_end)
     p.add_argument("--label-col", default=None, help="评估 label 列；缺省时取 ResearchSpec.recommended_label_col")
     p.add_argument(
         "--no-fundamentals",
@@ -176,7 +185,7 @@ def main() -> int:
     except ValueError as exc:
         print(f"错误：{exc}", file=sys.stderr)
         return 2
-    label_col = args.label_col or str(research_spec.get("recommended_label_col") or "") or DEFAULT_LABEL_COL
+
     memory_path = _resolve(str(args.research_memory_file)) if args.research_memory_file else None
     if args.resume_context_file and args.resume_context_file.exists():
         history = args.resume_context_file.read_text(encoding="utf-8").strip()
@@ -199,6 +208,15 @@ def main() -> int:
             return 2
     base_url = os.environ.get("OPENAI_API_BASE")
 
+    label_col = args.label_col or str(research_spec.get("recommended_label_col") or "") or DEFAULT_LABEL_COL
+    # 测试段右端：未显式传值时动态解析数据源最新交易日（默认值 None）
+    if args.test_end:
+        test_end: str | None = args.test_end
+    else:
+        from alphaagent.factor.window_config import resolve_test_end
+
+        test_end = resolve_test_end()
+
     config = MiningConfig(
         eval=StockEvalContext(
             panel_path=_resolve(args.panel),
@@ -206,6 +224,8 @@ def main() -> int:
             train_end=args.train_end,
             val_start=args.val_start,
             val_end=args.val_end,
+            test_start=args.test_start,
+            test_end=test_end,
             label_col=label_col,
             include_fundamentals=not args.no_fundamentals,
         ),

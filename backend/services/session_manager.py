@@ -124,6 +124,8 @@ class SessionManager:
             "train_end": req.train_end,
             "val_start": req.val_start,
             "val_end": req.val_end,
+            "test_start": req.test_start,
+            "test_end": req.resolved_test_end(),
             "label_col": req.label_col,
             "include_fundamentals": req.include_fundamentals,
         }
@@ -163,6 +165,8 @@ class SessionManager:
             train_end=req.train_end,
             val_start=req.val_start,
             val_end=req.val_end,
+            test_start=req.test_start,
+            test_end=req.resolved_test_end(),
             label_col=req.label_col,
             include_fundamentals=req.include_fundamentals,
         )

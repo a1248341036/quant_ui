@@ -322,8 +322,8 @@ tri_gap = CHIP_COM_W_GAP($adj_close, $adj_low, $adj_high, $volume, 40, $vwap, 64
 
 1. **最后一轮**：对确认保留的因子调用 `submit_factor`（可与收尾说明同轮，但不可省略该 tool_call）
 2. 在 **train-start ~ val-end** 全区间求值；第一阶段通过后只保存轻量候选记录，未通过精筛仍保留该记录。
-3. 第二阶段只在 Reviewer `approve` 且 `abs(IC)>=0.03`、`abs(ICIR)>0.5`、多头组年化超额 `>3%`、截尾后 IC 衰减 `<=10%` 和最大相关性 `<0.5` 时进入正式库。
-4. 自动截面去重以正式库为基准；第一阶段阈值 `<0.6`，第二阶段阈值 `<0.5`。
+3. 第二阶段只在 Reviewer `approve` 且 train `abs(IC)>=0.025`、train `abs(ICIR)>=0.30`、val `abs(IC)>=0.015`、val/train 保留比 `>=50%`、多头组年化超额 `>0%`、截尾后 IC 衰减 `<=10%` 和最大相关性 `<0.4` 时进入正式库。
+4. 自动截面去重以正式库为基准；第一阶段阈值 `<0.5`，第二阶段阈值 `<0.4`。
 5. 须传 **`comment`** 说明因子含义（经济直觉、算子、窗口、IC 方向）
 6. 候选池是 `candidate_technical/mining_candidate_registry.json` 的轻量记录；正式库为 `artifacts/alphaagent/factorzoo/production_technical`。仅 `stored=true` 表示正式入库。
 

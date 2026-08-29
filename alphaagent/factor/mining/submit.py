@@ -428,6 +428,65 @@ class FactorSubmitService:
             n_groups=10, cost_bps=0.0,
         )
         metrics_train["quantile_portfolio"] = qp_metrics
+
+        # ── 盲测终审（stage_one 之前，不通过不进候选池）──────────────────
+        # test 段从未参与 train/val/engine_gate，是最干净的样本外验证。
+        # IC 保留比 ≥ 0.50 + 方向一致性 → 不通过直接拒绝，不消耗后续算力。
+        test_start = ctx.test_start
+        test_end = ctx.resolved_test_end()
+        test_report: dict[str, Any] | None = None
+        try:
+            test_policy = dataclasses.replace(
+                stage_one_policy,
+                train_start=test_start,
+                val_end=test_end,
+            )
+            test_metrics = _ingest_metrics_cached(test_policy)
+            test_report = {
+                "range": {"start": test_start, "end": test_end},
+                "ic": test_metrics.get("ic"),
+                "icir": test_metrics.get("icir"),
+                "rank_ic": test_metrics.get("rank_ic"),
+                "coverage": test_metrics.get("factor_coverage"),
+            }
+            t_ic = metrics_train.get("ic")
+            s_ic = test_metrics.get("ic")
+            if t_ic is not None and s_ic is not None:
+                t_sign = 1 if float(t_ic) >= 0 else -1
+                s_sign = 1 if float(s_ic) >= 0 else -1
+                test_report["sign_consistent"] = (t_sign == s_sign)
+                if abs(float(t_ic)) > 1e-12:
+                    test_report["ic_retention"] = round(abs(float(s_ic) / float(t_ic)), 4)
+        except Exception:
+            test_report = {"error": "test_evaluation_failed"}
+            test_metrics = {}
+
+        # 盲测终审门禁（enabled=False 时跳过）
+        blind_result = self.checker.blind_test(metrics_train, test_metrics)
+        if not blind_result.passed:
+            payload = {
+                "ok": False,
+                "stored": False,
+                "factor_id": factor_id,
+                "factor_name": name,
+                "comment": comment.strip(),
+                "interaction": interaction,
+                "eval_range": {"start": ctx.train_start, "end": ctx.val_end},
+                "metrics": dict(metrics_train),
+                "test_holdout": test_report,
+                "candidate_stored": False,
+                "rebalance_freq": chosen_freq,
+                "delivery_check": {
+                    "blind_test": {"passed": False, "fail_reasons": blind_result.fail_reasons},
+                    "stage_one": {"passed": False, "fail_reasons": []},
+                    "stage_two": {"passed": False, "fail_reasons": []},
+                },
+                "skipped_reason": f"blind_test_failed:{','.join(blind_result.fail_reasons)}",
+                "error_type": "BlindTestError",
+                "error": f"blind_test_failed:{','.join(blind_result.fail_reasons)}",
+            }
+            return payload
+
         gate_reasons = self.checker.stage_one_stats(metrics_train).fail_reasons
 
         val_metrics: dict[str, Any] = {}
@@ -517,6 +576,18 @@ class FactorSubmitService:
                 for k, v in qp_metrics.items()
                 if k not in {"group_means"}
             }
+        # test 段指标写入 reported（供 registry 检索）
+        if test_report:
+            for key in ("ic", "icir", "rank_ic"):
+                v = test_report.get(key)
+                if v is not None and np.isfinite(float(v)):
+                    reported[f"test_{key}"] = round(float(v), 6)
+            ret = test_report.get("ic_retention")
+            if ret is not None:
+                reported["test_ic_retention"] = ret
+            sc = test_report.get("sign_consistent")
+            if sc is not None:
+                reported["test_sign_consistent"] = sc
         metrics = reported
 
         payload: dict[str, Any] = {
@@ -532,7 +603,9 @@ class FactorSubmitService:
             "candidate_similarity": candidate_similarity,
             "candidate_stored": False,
             "rebalance_freq": chosen_freq,
+            "test_holdout": test_report,
             "delivery_check": {
+                "blind_test": {"passed": True, "fail_reasons": []},
                 "stage_one": {"passed": stage_one_ok, "fail_reasons": stage_one_reasons},
                 "stage_two": {"passed": False, "fail_reasons": []},
             },
@@ -694,6 +767,34 @@ class FactorSubmitService:
                 payload["error_type"] = "EngineGateError"
                 payload["error"] = payload["skipped_reason"]
                 return payload
+
+        # ── test 段 engine_gate 回测（补充到 test_report，供报告展示）─────
+        # 盲测终审门禁已在 stage_one 之前执行（IC 保留比 + 方向一致性）。
+        # 此处补算 test 段 engine_gate 回测，仅作为诊断写入 payload/registry，
+        # 不再卡准入（硬门已由盲测终审守住）。
+        if test_report and "error" not in test_report:
+            try:
+                if isinstance(engine_gate_cfg, dict) and engine_gate_cfg.get("enabled"):
+                    from alphaagent.factor.mining.engine_gate import run_engine_gate
+                    ic_sign = 1 if float(metrics.get("ic") or 0.0) >= 0 else -1
+                    test_gate = run_engine_gate(
+                        panel,
+                        cand_values,
+                        val_start=test_start,
+                        val_end=test_end,
+                        direction=ic_sign,
+                        policy={**engine_gate_cfg, "freq": chosen_freq},
+                    )
+                    test_report["engine_gate"] = {
+                        "passed": test_gate.get("passed"),
+                        "fail_reasons": test_gate.get("fail_reasons"),
+                        "metrics": test_gate.get("metrics"),
+                    }
+            except Exception:
+                pass
+
+        if test_report:
+            payload["test_holdout"] = test_report
 
         # 真正入库才做一次 canonical 对齐（会话域 → 库行序），指标复用免重算。
         canonical_values = align_values_to_rows(values_by_key, zoo.index.rows)

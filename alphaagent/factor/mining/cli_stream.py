@@ -55,6 +55,19 @@ class CliRunLogger:
             self._cli_file.close()
 
 
+def _safe_print(*args: Any, stream: TextIO | None = None, **kwargs: Any) -> None:
+    """终端打印失败不中断挖掘：stdout 管道/控制台异常（如 Windows 下管道
+    偶发 OSError 22）时丢弃这条诊断输出。
+
+    权威日志是 JSONL 轨迹（logger/observer 落盘），终端打印只是人读镜像，
+    静默丢弃不会丢数据；随 print 一起崩溃反而会杀死整个挖掘 run。
+    """
+    try:
+        print(*args, file=stream or sys.stdout, **kwargs)
+    except (OSError, ValueError, AttributeError):
+        pass
+
+
 def _tag(
     label: str,
     *,
@@ -69,7 +82,7 @@ def _tag(
     if logger:
         logger.write_line(line)
     out = stream or sys.stdout
-    print(_ansi(color, line), file=out, flush=True)
+    _safe_print(_ansi(color, line), stream=out)
 
 
 def _prefix_body_delta(delta: str, *, need_leading_indent: bool) -> tuple[str, bool]:
@@ -102,7 +115,7 @@ def _print_body_delta(
     if logger and chunk:
         logger.write_plain(_strip_ansi(chunk) if use_color else chunk)
     out = stream or sys.stdout
-    print(chunk, end="", file=out, flush=True)
+    _safe_print(chunk, end="", stream=out)
     return need_leading_indent
 
 
@@ -316,7 +329,7 @@ async def stream_to_cli(
                     if observer is not None:
                         observer.on_thinking_start()
                     if show_thinking and not quiet:
-                        print(file=out, flush=True)
+                        _safe_print(stream=out)
                         if logger:
                             logger.write_line()
                         _tag("思考", color="1;35", logger=logger, stream=out)
@@ -335,7 +348,7 @@ async def stream_to_cli(
                     if observer is not None:
                         observer.on_thinking_end()
                     if show_thinking and not quiet:
-                        print(file=out, flush=True)
+                        _safe_print(stream=out)
                         if logger:
                             logger.write_line()
                     body_needs_indent = False
@@ -345,12 +358,12 @@ async def stream_to_cli(
                     if not quiet:
                         if logger and event.delta:
                             logger.write_plain(event.delta)
-                        print(event.delta, end="", file=out, flush=True)
+                        _safe_print(event.delta, end="", stream=out)
                 case EventType.TEXT_BLOCK_END:
                     if observer is not None:
                         observer.on_text_end()
                     if not quiet:
-                        print(file=out, flush=True)
+                        _safe_print(stream=out)
                         if logger:
                             logger.write_line()
                 case EventType.TOOL_CALL_START:
@@ -358,7 +371,7 @@ async def stream_to_cli(
                     if observer is not None:
                         observer.on_tool_call_start(event.tool_call_id, event.tool_call_name)
                     elif not quiet:
-                        print(file=out, flush=True)
+                        _safe_print(stream=out)
                         if logger:
                             logger.write_line()
                         _tag("工具", detail=event.tool_call_name, color="1;36", logger=logger, stream=out)
@@ -386,7 +399,7 @@ async def stream_to_cli(
                     if observer is not None:
                         observer.on_tool_result_end(event.tool_call_id)
                     if not quiet and not use_printer:
-                        print(file=out, flush=True)
+                        _safe_print(stream=out)
                         if logger:
                             logger.write_line()
                     body_needs_indent = False
@@ -404,7 +417,7 @@ async def stream_to_cli(
                         )
                     elif not quiet:
                         for tool_call in event.tool_calls:
-                            print(file=out, flush=True)
+                            _safe_print(stream=out)
                             if logger:
                                 logger.write_line()
                             _tag(
@@ -428,7 +441,7 @@ async def stream_to_cli(
                         )
                 case EventType.EXCEED_MAX_ITERS:
                     if not quiet:
-                        print(file=out, flush=True)
+                        _safe_print(stream=out)
                         _tag("警告", detail="达到最大迭代次数", color="1;31", logger=logger, stream=out)
                 case EventType.REPLY_END:
                     if logger and logger.on_reply_end:

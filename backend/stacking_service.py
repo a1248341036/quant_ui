@@ -66,6 +66,7 @@ def start_training(params: dict[str, Any]) -> dict[str, Any]:
             command += ["--no-candidate"]
         if params.get("no_gate"):
             command += ["--no-gate"]
+        command += ["--isolation", str(params.get("isolation") or "holdout")]
         if params.get("size_neutral") is False:
             command += ["--no-size-neutral"]
 

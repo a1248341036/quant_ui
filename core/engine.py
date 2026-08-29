@@ -512,10 +512,21 @@ def _prepare_backtest(cfg: BacktestConfig) -> dict:
 
     cal = pd.DatetimeIndex(sorted(sub["date"].unique()))
 
+    # 排序/去重/建索引只做一次，8 列 pivot 共享（原先每列重复做是回测的主要耗时）。
+    # 日频面板 (date, code) 唯一时 set_index+unstack 与 pivot_table(aggfunc="last")
+    # 逐位等价；出现重复键时保留最后一条，与 aggfunc="last" 语义一致。
+    dup = sub.duplicated(["date", "code"], keep="last")
+    if dup.any():
+        sub = sub[~dup]
+    sub = sub.sort_values(["date", "code"], kind="stable").set_index(["date", "code"])
+
     def pivot(col: str) -> pd.DataFrame:
-        # pivot_table 会丢弃全 NaN 行（如 am20 前 20 个交易日），需统一回交易日历
-        return sub.pivot_table(index="date", columns="code", values=col,
-                               aggfunc="last", observed=True).reindex(cal).sort_index()
+        # unstack 会保留全 NaN 行/列（pivot_table 会丢弃），dropna+reindex 恢复其语义：
+        # 全 NaN 列（如新上市代码的 am20）丢弃后由下方统一对齐回 close 列；
+        # 全 NaN 行（如 am20 前 20 个交易日）经 reindex(cal) 回到交易日历。
+        out = sub[col].unstack()
+        out = out.dropna(axis=1, how="all")
+        return out.reindex(cal).sort_index()
 
     close = pivot("close")
     open_ = pivot("open")
@@ -1228,9 +1239,15 @@ def latest_signals(panel: pd.DataFrame, codes: list[str], factor: str,
 
     cal = pd.DatetimeIndex(sorted(sub["date"].unique()))
 
+    # 与 _prepare_backtest.pivot 相同的快速路径：排序/去重/建索引一次共享。
+    dup = sub.duplicated(["date", "code"], keep="last")
+    if dup.any():
+        sub = sub[~dup]
+    sub = sub.sort_values(["date", "code"], kind="stable").set_index(["date", "code"])
+
     def pivot(col: str) -> pd.DataFrame:
-        return sub.pivot_table(index="date", columns="code", values=col,
-                               aggfunc="last", observed=True).reindex(cal).sort_index()
+        # 全 NaN 列丢弃（pivot_table 语义），全 NaN 行由 reindex(cal) 恢复交易日历
+        return sub[col].unstack().dropna(axis=1, how="all").reindex(cal).sort_index()
 
     close = pivot("close")
     am20 = pivot("am20")

@@ -46,8 +46,10 @@ def submit_service(tmp_path: Path, monkeypatch) -> FactorSubmitService:
     class FakeService:
         sessions = SimpleNamespace(get=lambda sid: SimpleNamespace(
             ctx=SimpleNamespace(
-                train_start="2018-01-01", train_end="2022-12-31",
-                val_start="2023-01-01", val_end="2025-12-31",
+                train_start="2020-01-01", train_end="2022-12-31",
+                val_start="2023-01-01", val_end="2024-12-31",
+                test_start="2025-01-01", test_end="2026-08-28",
+                resolved_test_end=lambda: "2026-08-28",
                 panel_path="cne://", label_col="label_1d_open_to_open",
             ),
             panel=pd.DataFrame(

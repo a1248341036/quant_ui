@@ -92,20 +92,20 @@ def test_session_manager_hash_params():
     
     req1 = SessionCreateRequest(
         panel_path="cne://",
-        train_start="2018-01-01",
+        train_start="2020-01-01",
         train_end="2022-12-31",
         val_start="2023-01-01",
-        val_end="2025-12-31",
+        val_end="2024-12-31",
         label_col="label_1d_open_to_open",
         include_fundamentals=False,
     )
     
     req2 = SessionCreateRequest(
         panel_path="cne://",
-        train_start="2018-01-01",
+        train_start="2020-01-01",
         train_end="2022-12-31",
         val_start="2023-01-01",
-        val_end="2025-12-31",
+        val_end="2024-12-31",
         label_col="label_1d_open_to_open",
         include_fundamentals=False,
     )
@@ -115,7 +115,7 @@ def test_session_manager_hash_params():
         train_start="2019-01-01",  # 不同
         train_end="2022-12-31",
         val_start="2023-01-01",
-        val_end="2025-12-31",
+        val_end="2024-12-31",
         label_col="label_1d_open_to_open",
         include_fundamentals=False,
     )

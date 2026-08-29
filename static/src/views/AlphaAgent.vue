@@ -130,6 +130,12 @@
           <label>训练月数 <input type="number" v-model.number="ml.form.train_months" class="ml-input ml-num"></label>
           <label>折长(月) <input type="number" v-model.number="ml.form.step_months" class="ml-input ml-num"></label>
           <label>去重阈值 <input type="number" step="0.05" v-model.number="ml.form.max_corr" class="ml-input ml-num"></label>
+          <label>隔离模式
+            <select v-model="ml.form.isolation" class="ml-input">
+              <option value="holdout">留出测试（推荐）</option>
+              <option value="strict">严格隔离</option>
+            </select>
+          </label>
           <label class="ml-check"><input type="checkbox" v-model="ml.form.no_candidate"> 只用正式库</label>
           <label class="ml-check"><input type="checkbox" v-model="ml.form.no_gate"> 跳过 engine_gate</label>
           <button class="send-btn" :disabled="ml.starting || ml.anyRunning" @click="startMl">{{ ml.anyRunning ? '训练中…' : '开始训练' }}</button>
@@ -790,12 +796,39 @@
             <section class="threshold-group">
               <h4>⑤ engine_gate 完整回测门禁</h4>
               <div class="threshold-grid">
+                <label>启用门禁
+                  <select class="threshold-input" v-model="thresholdDraft.delivery_policy.production.engine_gate.enabled">
+                    <option :value="true">启用（推荐）</option>
+                    <option :value="false">停用</option>
+                  </select>
+                </label>
                 <label>调仓频率
                   <select class="threshold-input" v-model="thresholdDraft.delivery_policy.production.engine_gate.freq">
                     <option value="weekly">weekly（周）</option>
                     <option value="monthly">monthly（月）</option>
                     <option value="daily">daily（日）</option>
                   </select>
+                </label>
+                <label>选股模式
+                  <select class="threshold-input" v-model="thresholdDraft.delivery_policy.production.engine_gate.selection_mode">
+                    <option value="top_pct">动态百分比 top_pct</option>
+                    <option value="top_n">固定数量 top_n</option>
+                  </select>
+                </label>
+                <label v-if="thresholdDraft.delivery_policy.production.engine_gate.selection_mode === 'top_pct'">选股数（%）
+                  <input type="number" step="0.001" min="0.0001" class="threshold-input" v-model.number="thresholdDraft.delivery_policy.production.engine_gate.selection_pct">
+                </label>
+                <label v-else>选股数（只）
+                  <input type="number" step="1" min="1" class="threshold-input" v-model.number="thresholdDraft.delivery_policy.production.engine_gate.top_n">
+                </label>
+                <label>门禁资金（元）
+                  <input type="number" step="10000" min="10000" class="threshold-input" v-model.number="thresholdDraft.delivery_policy.production.engine_gate.capital">
+                </label>
+                <label>滑点（bps）
+                  <input type="number" step="0.5" min="0" class="threshold-input" v-model.number="thresholdDraft.delivery_policy.production.engine_gate.slippage_bps">
+                </label>
+                <label>参与率 ≤
+                  <input type="number" step="0.01" min="0.001" class="threshold-input" v-model.number="thresholdDraft.delivery_policy.production.engine_gate.max_participation">
                 </label>
                 <label>净超额年化 ≥
                   <input type="number" step="0.01" class="threshold-input" v-model.number="thresholdDraft.delivery_policy.production.engine_gate.min_excess_annual">
@@ -1085,10 +1118,10 @@ export default {
         researchSpecSaving: false,
         specLoading: false,
         form: {
-          train_start: '2018-01-01',
+          train_start: '2020-01-01',
           train_end: '2022-12-31',
           val_start: '2023-01-01',
-          val_end: '2025-12-31',
+          val_end: '2024-12-31',
           population_max: 24,
           user_message: '',
           max_turns: 5,
@@ -1102,7 +1135,7 @@ export default {
       },
       subtab: 'research',
       ml: {
-        form: { modes: ['technical'], model: 'both', label_days: 5, train_months: 18, step_months: 6, max_corr: 0.6, no_candidate: false, no_gate: false },
+        form: { modes: ['technical'], model: 'both', label_days: 5, train_months: 18, step_months: 6, max_corr: 0.6, isolation: 'holdout', no_candidate: false, no_gate: false },
         list: [],
         selected: null,
         detail: null,
@@ -1119,10 +1152,10 @@ export default {
       lab: {
         expr: '',
         factorName: 'expr',
-        trainStart: '2018-01-01',
+        trainStart: '2020-01-01',
         trainEnd: '2022-12-31',
         valStart: '2023-01-01',
-        valEnd: '2025-12-31',
+        valEnd: '2024-12-31',
         includeFundamentals: false,
         busy: false,
         error: '',
@@ -1140,7 +1173,7 @@ export default {
         // 回测
         btDialog: false,
         btStart: '2023-01-01',
-        btEnd: '2025-12-31',
+        btEnd: '2024-12-31',
         btUniverse: '全部股票',
         btExcludeKeChuang: false,
         btTopN: 5,
@@ -1578,6 +1611,11 @@ export default {
         ['超额年化', d.delivery_policy.production.engine_gate.min_excess_annual, -1, 5],
         ['超额夏普', d.delivery_policy.production.engine_gate.min_excess_sharpe, 0, 10],
         ['最大回撤', d.delivery_policy.production.engine_gate.max_drawdown, 0, 10],
+        ['选股百分比', d.delivery_policy.production.engine_gate.selection_pct, 0.0001, 0.1],
+        ['选股数量', d.delivery_policy.production.engine_gate.top_n, 1, 500],
+        ['门禁资金', d.delivery_policy.production.engine_gate.capital, 10000, 1e9],
+        ['滑点', d.delivery_policy.production.engine_gate.slippage_bps, 0, 1000],
+        ['参与率', d.delivery_policy.production.engine_gate.max_participation, 0.001, 1],
         ['持仓重叠', d.delivery_policy.production.engine_gate.min_daily_overlap, 0, 10],
         ['仓位利用率', d.delivery_policy.production.engine_gate.min_invested_ratio, 0, 1],
         ['日均成交额', d.delivery_policy.production.engine_gate.min_am20_yuan, 0, 1e12],
@@ -1589,6 +1627,11 @@ export default {
       }
       const freq = String(d.delivery_policy.production.engine_gate.freq || '').toLowerCase()
       if (!['weekly', 'monthly', 'daily'].includes(freq)) throw new Error('调仓频率必须是 weekly/monthly/daily')
+      const selMode = String(d.delivery_policy.production.engine_gate.selection_mode || '').toLowerCase()
+      if (!['top_pct', 'top_n'].includes(selMode)) throw new Error('选股模式必须是 top_pct/top_n')
+      if (d.delivery_policy.production.engine_gate.enabled != null && typeof d.delivery_policy.production.engine_gate.enabled !== 'boolean') {
+        throw new Error('启用门禁必须是布尔值')
+      }
       return d
     },
     async saveThresholds() {
@@ -2773,7 +2816,7 @@ export default {
     // ── 因子实验室：回测 ──
     openBacktestDialog() {
       this.lab.btStart = this.lab.valStart || '2023-01-01'
-      this.lab.btEnd = this.lab.valEnd || '2025-12-31'
+      this.lab.btEnd = this.lab.valEnd || '2024-12-31'
       this.lab.btError = ''
       this.lab.btResult = null
       this.lab.btDialog = true

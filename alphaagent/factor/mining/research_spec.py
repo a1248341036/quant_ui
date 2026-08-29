@@ -322,6 +322,18 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
     memory["include_expression"] = _require_bool(memory.get("include_expression"), "memory_policy.include_expression")
 
     delivery = _require_dict(spec.get("delivery_policy"), "delivery_policy")
+    # 盲测终审门槛（2026-08-29 新增）
+    blind = delivery.get("blind_test")
+    if not isinstance(blind, dict):
+        blind = {}
+    if blind.get("enabled") is not None:
+        blind["enabled"] = _require_bool(blind.get("enabled"), "delivery_policy.blind_test.enabled")
+    blind["min_ic_retention"] = _bounded_number(blind.get("min_ic_retention"), "delivery_policy.blind_test.min_ic_retention", 0, 2)
+    if blind.get("require_sign_consistency") is not None:
+        blind["require_sign_consistency"] = _require_bool(
+            blind.get("require_sign_consistency"), "delivery_policy.blind_test.require_sign_consistency"
+        )
+    delivery["blind_test"] = blind
     candidate = _require_dict(delivery.get("candidate"), "delivery_policy.candidate")
     candidate["min_abs_ic"] = _bounded_number(candidate.get("min_abs_ic"), "delivery_policy.candidate.min_abs_ic", 0, 1)
     candidate["min_icir"] = _bounded_number(candidate.get("min_icir"), "delivery_policy.candidate.min_icir", -10, 20)
@@ -351,6 +363,26 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
             production[key] = _bounded_number(production.get(key), f"delivery_policy.production.{key}", lo, hi)
     eg = _require_dict(production.get("engine_gate"), "delivery_policy.production.engine_gate")
     production["engine_gate"] = eg
+    if eg.get("enabled") is not None:
+        eg["enabled"] = _require_bool(eg.get("enabled"), "engine_gate.enabled")
+    eg["selection_mode"] = str(eg.get("selection_mode", "top_pct"))
+    if eg["selection_mode"] not in {"top_pct", "top_n"}:
+        raise ValueError("research_spec.engine_gate.selection_mode_invalid")
+    eg["selection_pct"] = _bounded_number(eg.get("selection_pct"), "engine_gate.selection_pct", 0, 0.1)
+    if eg.get("top_n") is not None:
+        eg["top_n"] = int(_bounded_number(eg.get("top_n"), "engine_gate.top_n", 1, 500))
+    if eg.get("slippage_bps") is not None:
+        eg["slippage_bps"] = _bounded_number(eg.get("slippage_bps"), "engine_gate.slippage_bps", 0, 1000)
+    if eg.get("max_participation") is not None:
+        eg["max_participation"] = _bounded_number(eg.get("max_participation"), "engine_gate.max_participation", 0.001, 1)
+    eg["allowed_freqs"] = _string_list(eg.get("allowed_freqs"), "engine_gate.allowed_freqs")
+    invalid_freqs = set(eg["allowed_freqs"]) - {"daily", "weekly", "monthly"}
+    if invalid_freqs:
+        raise ValueError("research_spec.engine_gate.allowed_freqs_invalid")
+    if eg.get("freq") is not None:
+        eg["freq"] = str(eg["freq"]).lower()
+        if eg["freq"] not in eg["allowed_freqs"]:
+            raise ValueError("research_spec.engine_gate.freq_not_in_allowed")
     for key in ("min_excess_annual",):
         eg[key] = _bounded_number(eg.get(key), f"engine_gate.{key}", -1, 5)
     for key in ("min_excess_sharpe", "max_drawdown", "min_daily_overlap"):

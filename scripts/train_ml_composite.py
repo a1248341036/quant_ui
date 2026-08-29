@@ -50,7 +50,7 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--label-days", type=int, default=5, help="前向收益持有天数（对齐调仓频率）")
     ap.add_argument("--model", default="both", choices=["ridge", "lgbm", "both"])
     ap.add_argument("--mining-end", default="auto", help="时间隔离边界（YYYY-MM-DD 或 auto=因子库最晚 created_at）")
-    ap.add_argument("--end", default=None, help="数据截止日（默认今天）")
+    ap.add_argument("--end", default=None, help="数据截止日（默认取数据源最新交易日）")
     ap.add_argument("--decay-months", type=int, default=12, help="衰减对照表的 mining 窗口长度")
     ap.add_argument("--train-months", type=int, default=18)
     ap.add_argument("--step-months", type=int, default=6, help="OOS 折长")
@@ -61,6 +61,9 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--no-gate", action="store_true", help="跳过 engine_gate 回测裁决")
     ap.add_argument("--no-write-pred", action="store_true", help="不写 pred 通道文件")
     ap.add_argument("--out-dir", default=None, help="输出目录（默认 artifacts/alphaagent/stacking/<时间戳>）；后端托管时传确定性路径")
+    ap.add_argument("--isolation", default="strict", choices=["strict", "holdout"],
+                    help="strict：walk-forward 仅用挖掘期后干净段（fold 少但指标可信）；"
+                         "holdout：全历史训练、挖掘期后干净段整体作留出测试（推荐）")
     ap.add_argument("--pred-out", default=None, help="pred 分数输出路径（默认 data/stock/pred_demo.parquet）")
     return ap.parse_args()
 
@@ -102,7 +105,21 @@ def main() -> None:
         mining_end = pd.Timestamp(args.mining_end)
     if mining_end.tzinfo is not None:
         mining_end = mining_end.tz_localize(None)
-    end = pd.Timestamp(args.end) if args.end else pd.Timestamp.now().normalize()
+
+    # ── 数据可用右端兜底（统一配置中心）──────────────────────────────
+    # mining_end 与 end 均不得超过数据源实际最新交易日，否则组合训练会静默
+    # 覆盖不存在的数据（历史教训：硬编码日期超过数据截至日）。动态解析
+    # resolve_test_end() = 数据源最新交易日，作为右端硬上限。
+    from alphaagent.factor.window_config import resolve_test_end
+
+    data_latest = pd.Timestamp(resolve_test_end())
+    end = pd.Timestamp(args.end) if args.end else data_latest
+    if end > data_latest:
+        print(f"[warn] --end={end.date()} 超过数据源最新交易日 {data_latest.date()}，收敛到数据右端")
+        end = data_latest
+    if mining_end > end:
+        print(f"[warn] mining_end={mining_end.date()} 超过数据右端 {end.date()}，收敛到数据右端")
+        mining_end = end
     panel_start = mining_end - pd.DateOffset(months=args.decay_months) - pd.DateOffset(days=args.warmup_days)
     print(f"时间隔离边界 mining_end={mining_end.date()}；panel 区间 [{panel_start.date()} ~ {end.date()}]")
 
@@ -128,16 +145,50 @@ def main() -> None:
     for d in dataset.dropped:
         print(f"  - drop {d['name']} ({d['library']}): {d['reason']}")
 
-    # ⑤ walk-forward 训练（train 严格晚于 mining_end）
+    # ⑤ walk-forward 训练
+    #   strict：train 从 mining_end 起步（只用挖掘期后干净段，fold 少）；
+    #   holdout：train 覆盖全历史至 mining_end（拟合挖掘期数据不用于报告），
+    #            mining_end 之后的干净段整体作为留出测试集（指标诚实，推荐）。
     dts = pd.DatetimeIndex(panel.index.get_level_values("datetime"))
     date_series = pd.Series(dts)
-    folds = walk_forward_splits(
-        dts,
-        train_start=mining_end,
-        train_months=args.train_months,
-        step_months=args.step_months,
-        purge_days=max(args.purge_days, args.label_days),
-    )
+    holdout_mode = args.isolation == "holdout"
+    wf_train_start = panel_start if holdout_mode else mining_end
+    base_months = max(3, int((mining_end - panel_start).days / 30.44))
+    if holdout_mode:
+        # 渐进加窗：第一折的 OOS 必须完全落在 mining_end 之后的干净段
+        #（月度算术 + purge 会让边界回退，最多多给 3 个月窗口）
+        folds = []
+        first_oos = None
+        for bump in (0, 1, 2, 3):
+            folds = walk_forward_splits(
+                dts,
+                train_start=wf_train_start,
+                train_months=base_months + bump,
+                step_months=args.step_months,
+                purge_days=max(args.purge_days, args.label_days),
+            )
+            first_oos = pd.Timestamp(folds[0].oos_dates.min()) if folds else None
+            if first_oos is not None and first_oos >= mining_end:
+                break
+        if folds and first_oos is not None and first_oos >= mining_end:
+            # 只保留 OOS 完全在干净段的折（训练含挖掘期数据用于拟合，不影响
+            # 各折自身 OOS 的诚实性——purge 保证测试段不在训练集内）
+            folds = [f for f in folds if pd.Timestamp(f.oos_dates.min()) >= mining_end]
+            print(
+                f"holdout 模式：训练 [{panel_start.date()} ~ {pd.Timestamp(folds[0].train_dates.max()).date()}]，"
+                f"留出测试 [{pd.Timestamp(folds[0].oos_dates.min()).date()} ~ {pd.Timestamp(folds[-1].oos_dates.max()).date()}]，"
+                f"共 {len(folds)} 折（测试段从未进入任何一折的训练集）"
+            )
+        else:
+            folds = []
+    else:
+        folds = walk_forward_splits(
+            dts,
+            train_start=mining_end,
+            train_months=args.train_months,
+            step_months=args.step_months,
+            purge_days=max(args.purge_days, args.label_days),
+        )
     print(f"walk-forward 折数：{len(folds)}")
     if not folds:
         latest = max((_to_utc_naive(e.created_at) for e in entries if e.created_at), default=None)
@@ -164,8 +215,10 @@ def main() -> None:
         default=None,
     )
     time_isolation = (
-        "ok" if (not explicit_mining_end or (latest_eval_end is not None and mining_end >= latest_eval_end))
-        else "violated_explicit_override（组合训练期与挖掘期重叠，OOS 结论不可作为入库依据）"
+        "holdout（训练含挖掘期数据用于拟合；报告指标全部来自挖掘后干净留出段）"
+        if holdout_mode
+        else ("ok" if (not explicit_mining_end or (latest_eval_end is not None and mining_end >= latest_eval_end))
+        else "violated_explicit_override（组合训练期与挖掘期重叠，OOS 结论不可作为入库依据）")
     )
     model_outputs: dict[str, np.ndarray] = {}
     fold_reports: dict[str, list] = {}

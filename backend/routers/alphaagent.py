@@ -337,10 +337,10 @@ class EvalFactorRequest(BaseModel):
     multi_line_expr: str = Field(min_length=1, max_length=10000)
     factor_name: str = "expr"
     profile_id: str = "train_screen"
-    train_start: str = "2018-01-01"
-    train_end: str = "2022-12-31"
-    val_start: str = "2023-01-01"
-    val_end: str = "2025-12-31"
+    train_start: str = DEFAULT_TRAIN_START
+    train_end: str = DEFAULT_TRAIN_END
+    val_start: str = DEFAULT_VAL_START
+    val_end: str = DEFAULT_VAL_END
     label_col: str = "label_1d_open_to_open"
     include_fundamentals: bool = False
     all_profiles: bool = True
@@ -429,6 +429,7 @@ class StackingTrainRequest(BaseModel):
     mining_end: str | None = None                 # auto 缺省；YYYY-MM-DD 显式
     no_candidate: bool = False                    # 只用正式库
     no_gate: bool = False                         # 跳过 engine_gate
+    isolation: str = Field(default="holdout")     # strict | holdout
     size_neutral: bool = True
 
 
@@ -501,10 +502,10 @@ class SaveFactorRequest(BaseModel):
     comment: str = Field(default="", max_length=2000)
     library: str = "candidate"
     category: str = "technical"
-    train_start: str = "2018-01-01"
-    train_end: str = "2022-12-31"
-    val_start: str = "2023-01-01"
-    val_end: str = "2025-12-31"
+    train_start: str = DEFAULT_TRAIN_START
+    train_end: str = DEFAULT_TRAIN_END
+    val_start: str = DEFAULT_VAL_START
+    val_end: str = DEFAULT_VAL_END
     label_col: str = "label_1d_open_to_open"
     include_fundamentals: bool = False
 
@@ -533,8 +534,8 @@ def save_factor(req: SaveFactorRequest) -> dict[str, Any]:
 class BacktestFactorRequest(BaseModel):
     multi_line_expr: str = Field(min_length=1, max_length=10000)
     factor_name: str = "expr"
-    start: str = "2023-01-01"
-    end: str = "2025-12-31"
+    start: str = DEFAULT_VAL_START
+    end: str = DEFAULT_VAL_END
     top_n: int = Field(default=5, ge=1, le=100)
     freq: str = "monthly"
     capital: float = Field(default=100000.0, ge=1000.0)

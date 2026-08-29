@@ -451,9 +451,18 @@ def run_event_backtest(
         if req_col not in sub.columns:
             raise ValueError(f"事件回测需要列: {req_col}")
 
+    # 排序/去重/建索引一次共享（这里逐数值列都 pivot，列数多，groupby-last 开销更显著）；
+    # (date, code) 唯一时 unstack 与 pivot_table(aggfunc="last") 逐位等价，
+    # 重复键保留最后一条，与 aggfunc="last" 语义一致。
+    dup = sub.duplicated(["date", "code"], keep="last")
+    if dup.any():
+        sub = sub[~dup]
+    sub = sub.sort_values(["date", "code"], kind="stable").set_index(["date", "code"])
+
     def pivot(col: str) -> pd.DataFrame:
-        return sub.pivot_table(index="date", columns="code", values=col,
-                               aggfunc="last", observed=True).reindex(cal).sort_index()
+        # 全 NaN 列丢弃（pivot_table 语义，codes_used 依赖这一点），
+        # 全 NaN 行由 reindex(cal) 恢复交易日历
+        return sub[col].unstack().dropna(axis=1, how="all").reindex(cal).sort_index()
 
     close_df = pivot("close")
     cols_ref = close_df.columns.tolist()
