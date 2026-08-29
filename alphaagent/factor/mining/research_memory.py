@@ -2099,6 +2099,8 @@ class ResearchMemoryStore:
                     layer="forbid",
                     category=family_name,
                     content=content,
+                    total_attempts=n,
+                    success_count=n,  # forbid 模式：全部 IC<0.01 验证了禁止方向正确
                     evidence={
                         "factor_names": [m.get("factor_name") for m in members],
                         "ic_range": [round(min(ics), 6), round(max(ics), 6)],
@@ -2135,10 +2137,14 @@ class ResearchMemoryStore:
                     f"有效结构：算子[{ops_str}]，变量[{vars_str}]，窗口[{wins_str}]。"
                     f"建议在邻近空间变异：扩展/缩减窗口、替换算子、引入正交变量。"
                 )
+                # 统计本批次有效因子数（IC >= 0.02）
+                n_success = sum(1 for ic in ics if ic >= 0.02)
                 pid = self.record_pattern(
                     layer="recommend",
                     category=family_name,
                     content=content,
+                    total_attempts=n,
+                    success_count=n_success,
                     evidence={
                         "best_factor": best.get("factor_name"),
                         "best_ic": round(best_ic, 6),
