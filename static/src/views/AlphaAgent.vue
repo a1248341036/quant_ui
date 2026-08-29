@@ -2779,7 +2779,7 @@ export default {
 
 <style scoped>
 .agent-page { height: calc(100vh - 122px); min-height: 620px; }
-.agent-shell { display: grid; grid-template-columns: 260px minmax(0, 1fr); height: 100%; overflow: hidden; border: 1px solid var(--line); border-radius: 14px; background: var(--card); box-shadow: var(--shadow); }
+.agent-shell { display: grid; grid-template-columns: 260px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); height: 100%; overflow: hidden; border: 1px solid var(--line); border-radius: 14px; background: var(--card); box-shadow: var(--shadow); }
 .agent-sidebar { display: flex; flex-direction: column; border-right: 1px solid var(--line); background: rgb(8 14 27 / .32); min-width: 0; }
 .sidebar-head { display:flex; align-items:center; justify-content:space-between; padding: 20px 16px 14px; }
 .eyebrow { color: var(--muted); font-size: 10px; letter-spacing: .14em; }
