@@ -200,6 +200,7 @@ class PluginRegistry:
         cne_config: Path | str | None = None,
         universe_mask: bool = False,
         include_fundamentals: bool = True,
+        asset_type: str = "stock",
     ) -> pd.DataFrame:
         """从所有已注册插件加载数据，合并为统一 Panel。
 
@@ -209,12 +210,26 @@ class PluginRegistry:
 
         include_fundamentals=False 时跳过 fundamental 插件（PIT 展开是全链路
         最重的 join_asof 广播），避免无谓耗时。
+
+        asset_type='etf' 时只加载 etf_bars 插件（跳过股票行情与全部辅助插件）：
+        ETF 域没有基本面/市值/行业/资金流等辅助列，评估 profile 会跳过这些指标。
         """
         from alphaagent.data.panel import build_panel_from_hq
 
         plugins = self.list_plugins()
         if not plugins:
             raise RuntimeError("无已注册的数据源插件")
+
+        if asset_type == "etf":
+            etf_plugins = [p for p in plugins if p.name == "etf_bars"]
+            if not etf_plugins:
+                raise RuntimeError("asset_type='etf' 但未发现 etf_bars 数据源插件")
+            plugins = etf_plugins
+            logger.info("asset_type=etf：仅加载插件 %s", [p.name for p in plugins])
+        else:
+            # stock 模式：排除 etf_bars（同为 priority=0 核心插件，列冲突）
+            plugins = [p for p in plugins if p.name != "etf_bars"]
+            logger.info("asset_type=%s：排除 etf_bars，加载插件 %s", asset_type, [p.name for p in plugins])
 
         core_plugins = [p for p in plugins if p.is_core()]
         aux_plugins = [p for p in plugins if not p.is_core()]
@@ -343,7 +358,10 @@ class PluginRegistry:
         if base is None:
             return result
 
-        # 后续核心插件：左 join 补充列
+        # 后续核心插件：左 join 补充列（重名列加后缀防冲突）
+        overlapping = set(base.columns) & set(result.columns)
+        if overlapping:
+            result = result.rename(columns={c: f"{c}__{plugin.name}" for c in overlapping})
         return base.join(result, how="left")
 
     @staticmethod
