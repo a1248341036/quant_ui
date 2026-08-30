@@ -35,19 +35,15 @@ class BackfillMixin:
 
         只要标记存在（无论库内是否还有条目），就不再回放历史日志。
         """
-        conn = self._open()
-        try:
+        with self._open() as conn:
             existing = conn.execute("SELECT 1 FROM memory_entries LIMIT 1").fetchone()
             done = conn.execute("SELECT v FROM store_meta WHERE k = 'backfill_done'").fetchone()
-        finally:
-            conn.close()
-        if existing or done:
-            if not done:
-                with self._open() as conn:
+            if existing or done:
+                if not done:
                     conn.execute(
                         "INSERT OR REPLACE INTO store_meta(k, v) VALUES ('backfill_done', '1')"
                     )
-            return 0
+                return 0
         count = 0
         for log_path in sorted(Path(log_root).glob("*/run_*.jsonl")):
             try:
