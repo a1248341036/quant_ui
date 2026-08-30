@@ -218,7 +218,7 @@ class RetrievalMixin:
         focus_families: set[str] | None = None,
         query_ops: set[str] | None = None,
     ) -> str:
-        """构建单因子证据块（正/负池 + 40% 正交保底 + 多样性去重）。"""
+        """构建单因子证据块（正/负池独立排序 + 各自多样性去重 + 40% 正池配额）。"""
         entries = self._retrieval_candidates(research_goal, include_rejected)
         if not entries:
             return ""
@@ -230,10 +230,18 @@ class RetrievalMixin:
             for e in entries
         ]
         scored.sort(key=lambda pair: pair[0], reverse=True)
-        selected = self._select_diverse(scored, limit=limit, max_per_family=2)
 
-        positive = [(s, e) for s, e in selected if e.get("verdict") in POSITIVE_VERDICTS]
-        negative = [(s, e) for s, e in selected if e.get("verdict") in NEGATIVE_VERDICTS]
+        # 正负池分离，各自独立做多样性去重，避免指纹去重跨 verdict 误杀
+        pos_pool = [(s, e) for s, e in scored if e.get("verdict") in POSITIVE_VERDICTS]
+        neg_pool = [(s, e) for s, e in scored if e.get("verdict") in NEGATIVE_VERDICTS]
+
+        pos_quota = max(1, int(limit * 0.4)) if pos_pool else 0
+        pos_selected = self._select_diverse(pos_pool, limit=pos_quota, max_per_family=2)
+        neg_quota = limit - len(pos_selected)
+        neg_selected = self._select_diverse(neg_pool, limit=neg_quota, max_per_family=2) if neg_quota > 0 else []
+
+        positive = pos_selected
+        negative = neg_selected
 
         block_lines: list[str] = []
         if positive:
