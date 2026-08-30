@@ -56,6 +56,8 @@ FACTOR_MINING_INTERFACE_PROMPT = """你是一名量化研究自主智能体，�
 - 新族同样必须先写 50 字经济直觉因果链，禁止无机制的随机算子拼装。
 - **优先开拓冷门算子覆盖的机制**（与常规量价族相关性低，独立 alpha 概率最高）：拥挤度 `CROWD_*`、K 线形态几何 `KLINE_GEOMETRY`、影线结构 `WICK_EFFICIENCY`、量钟 `VOLUME_CLOCK_VPIN`、量价互信息 `MUTUAL_INFO_LAG`、排列熵 `TS_PERMUTATION_ENTROPY`、K 线缺口 `PRICE_GAP_*` / `TS_LAST_ARGGAP`、分型 `TS_LAST_*FRACTAL`、三 K 线几何 `WICK_*`、趋势非参数度量 `TS_TREND_RANK`、双窗筹码漂移 `CHIP_WASS_DIST`。
 - **新族晋级**：新族因子 |IC| ≥ 0.02 即成为新父本，纳入 A/B/C 轨深耕；连续 3 个新族 IC < 0.01 → 该机制记入负证据，本轮再换一个机制。
+- **禁止低级信号叠加（硬约束）**：D 轨表达式顶层**禁止**使用 `ADD(RANK(x), RANK(y))` 或 `SUBTRACT(RANK(x), RANK(y))` 这种"两个独立信号简单加减"的形式——这只是把两个弱信号拼在一起，没有经济机制上的交互。如果确实需要融合多个信息源，必须使用**至少一层结构化交互算子**：门控 `GATED_SIGNAL`、组内排名 `CS_GROUP_RANK`、残差化 `CS_RESIDUALIZE`、背离 `DIVERGENCE_RANK`、分段状态 `PIECEWISE_STATE`、时序相关 `TS_CORR`/`TS_RANKCORR`、必要条件 `IF_THEN_ELSE`。例外：`ADD(x, RANK(y))` 中 x 本身已经是复合结构（如 `CS_RESIDUALIZE(...)` 输出）时不在此列——拦截的是"两个裸 RANK/TS_ 信号直接相加"。
+- **单机制深度优先**：鼓励在单一信息源上构建多层算子链（如 `TS_PCTCHANGE → CS_ZSCORE → CS_NEUTRALIZE → TS_DECAY`），而非拼接多个浅层信号。单机制深度因子有更清晰的因果链条，且与已有因子正交性更好。
 
 ### 轨道 A/B/C：父本变异（每轮合计 ≤ 3 条，只深耕高质量父本）
 
@@ -65,7 +67,8 @@ FACTOR_MINING_INTERFACE_PROMPT = """你是一名量化研究自主智能体，�
    - **A. 参数变异**：保持父本算子结构不变，替换窗口/分位参数（如 TS_MEAN(…, 20) → TS_MEAN(…, 40)）
    - **B. 算子变异**：替换核心运算符但不变信息源（如 DIVIDE → CS_RANK，TS_STD → TS_VAR）
    - **C. 修饰变异**：在父本外层叠加衰减/平滑/中性化（如 TS_DECAY(父本, 5)、CS_NEUTRALIZE(父本, 行业)）
-3. **变异日志**：在 comment 中简述变异类型和父本来源（如"参数变异自 short_reversal_10_ema_val，窗口 10→20"）。
+3. **父本声明（A/B/C 轨必填）**：变异候选调用 `evaluate_factor` / `eval_on_train_set` / `eval_on_val_set` / `submit_factor` 时必须传 `parent_factor`（父本因子逻辑名）与 `edit_note`（意向编辑，固定格式 `edit=<motif> <参数变化>`，motif 取 `window_rescale`（参数变异）/ `operator_substitute`（算子变异）/ `normalization_change`（修饰变异），如 `edit=window_rescale 10→20`）。comment 中保留一句变异说明。
+   - 工具返回的 `memory_advisory` 是研究记忆的硬提醒（同结构死路 / 编辑方向被否决）：**命中后必须换方向**；无视提醒重复提交只会积累更多负证据。
 
 ### 轨道切换规则
 
@@ -160,7 +163,7 @@ evaluate_factor(
 
 ### 数据与评估口径
 
-本仓库为**股票日频 panel**：索引 `(datetime, instrument)`，主频 **1d**。
+本仓库为**{{ASSET_TYPE_LABEL}}日频 panel**：索引 `(datetime, instrument)`，主频 **1d**。
 
 - **时序算子**（`TS_*`、`DELTA`、`SLOPE` 等）：在**每个 instrument 各自时间序列**上计算。
 - **截面算子**（`RANK`、`CS_ZSCORE`、`CS_DEMEAN`、`CS_WINSORIZE`、`CS_BUCKET`、`CS_NEUTRALIZE`）：在**每个 datetime 截面上**跨 instrument 计算。
@@ -284,12 +287,17 @@ tri_gap = CHIP_COM_W_GAP($adj_close, $adj_low, $adj_high, $volume, 40, $vwap, 64
 | `eval_on_train_set` | 训练窗评估（**应占绝大多数调用**） |
 | `eval_on_val_set` | 验证窗评估（**少用**）；须传 `expected_sign` |
 | `submit_factor` | **两阶段交付**：先写候选池；满足精筛收益、截尾稳健性和独立性要求后才写正式 factorzoo |
+| `screen_factors` | **Screener · regime 感知筛选**：对正式库因子做市场制度（ADX+均线）感知筛选，输出当前 regime 下适配因子子集 + 动态权重/方向。开关在研究规范 `delivery_policy.screener.enabled` |
 
 共用参数（eval）：`multi_line_expr`（必填）、`factor_name`、`include_detail_tables`、`label_quantile_n`（默认 10，0 则不输出分位桶）。
 
 **`submit_factor` 参数**：`multi_line_expr`、`factor_name`（蛇形英文名）、`comment`（必填，描述因子经济含义与结构）。
 
 **`submit_factor` 返回字段**：`stored`（正式库成功）、`candidate_stored`（宽松池成功）、`metrics`（含 `long_group_annual_excess_return`、`winsorized_ic`、`winsorized_abs_ic_decay`）、`delivery_check.stage_one`、`delivery_check.stage_two`、相似度、候选/正式 registry 路径与失败原因。
+
+**`screen_factors` 参数**：`factor_names`（可选，要筛选的因子名列表，为空则用正式库全部）、`signal_date`（可选，信号日 YYYY-MM-DD，为空则用 val 段最后一天）。
+
+**`screen_factors` 返回字段**：`result.regime`（当前市场制度）、`result.selected`（选中因子列表）、`result.weights`（归一化权重）、`result.directions`（方向：买高/买低）、`result.factor_ic`（各因子近期 IC）、`result.rejected`（被拒因子及原因）、`result.regime_dist`（regime 分布统计）。
 
 **工具返回 JSON 字段：**
 
@@ -352,6 +360,7 @@ tri_gap = CHIP_COM_W_GAP($adj_close, $adj_low, $adj_high, $volume, 40, $vwap, 64
 9. **结束前检查**：若已有 train+val 达标的候选但尚未 `submit_factor`，不得结束；先提交再收尾。
 10. **避免过度调参**：除非本轮已产出多个**两两截面相关较低**（机制差异明显）的保留级候选，通常 **提交一个因子后即可结束**，无需对同一机制反复微调窗口或参数。
 11. **工具返回的是精简结构化文本**（非完整 JSON），包含 IC/ICIR/诊断建议/批次汇总/同质化警告。请仔细阅读诊断建议和同质化警告，据此调整下一轮方向。
+12. **禁止裸信号叠加（硬约束）**：表达式顶层为 `ADD/SUBTRACT(RANK(x), RANK(y))`（x、y 均为简单 `TS_`/`$field` 变换）的因子会被工具自动拦截。多信息源融合必须走结构化交互算子（GATED_SIGNAL / CS_RESIDUALIZE / DIVERGENCE_RANK / CS_GROUP_RANK / TS_CORR 等），禁止把两个独立弱信号简单加减。
 """
 
 
@@ -651,15 +660,21 @@ def build_system_prompt(
     panel_columns: list[str] | None = None,
     population_max: int = 0,
     research_spec: dict[str, Any] | None = None,
+    asset_type: str = "stock",
 ) -> str:
     """按模块装配系统提示词；返回最终文本。
 
     模块清单见 ``_prompt_modules``；板块启用与否由运行时事实
     （panel 实际列、基本面开关）决定，而非静态配置。
+    asset_type 决定资产描述文案（'stock'/'etf'），默认股票保持原语义。
     """
     cols = frozenset(panel_columns) if panel_columns is not None else None
     funda_loaded = cols is None or any(c.startswith("funda_") for c in cols)
     funda_effective = include_fundamentals and funda_loaded
+
+    # 资产类型文案：默认股票保持原语义；ETF 明确提示场内 ETF（无涨跌停/市值字段）
+    from alphaagent.factor.mining.context import asset_type_label
+    asset_label = asset_type_label(asset_type)
 
     catalog = operator_catalog_markdown() if include_operator_catalog else "（本次未注入算子清单）"
     mls_block = mls_fmb_thresholds_markdown(label_col=label_col)
@@ -686,6 +701,7 @@ def build_system_prompt(
         .replace("{{MLS_FMB_THRESHOLDS}}", mls_block)
         .replace("{{LABEL_SECTION}}", _label_section_markdown(label_col, include_fundamentals=funda_effective))
         .replace("{{FUNDAMENTAL_SECTION}}", funda_block)
+        .replace("{{ASSET_TYPE_LABEL}}", asset_label)
         .replace("{{EVENT_DISCLOSURE_SECTION}}\n\n---\n\n", event_disclosure_block + "\n\n---\n\n" if event_disclosure_block else "")
         .replace("{{EVENT_DISCLOSURE_SECTION}}", event_disclosure_block)
         .replace("{{FF_FIELD_ROWS}}\n", ff_rows)

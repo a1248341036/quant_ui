@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 
+import re
+
 from pathlib import Path
 
 from typing import Any
@@ -83,6 +85,22 @@ _EVAL_PARAMETERS: dict[str, Any] = {
 
         "interaction": _INTERACTION_PARAMETER,
 
+        "parent_factor": {
+
+            "type": "string",
+
+            "description": "变异父本的因子逻辑名（A/B/C 变异轨必传；D 新族留空）。研究记忆按此建立父子观测。",
+
+        },
+
+        "edit_note": {
+
+            "type": "string",
+
+            "description": "意向编辑说明，格式：edit=<motif> <参数变化>，如 edit=window_rescale 10→20；motif 取 window_rescale / operator_substitute / normalization_change。",
+
+        },
+
     },
 
     "required": ["multi_line_expr"],
@@ -132,6 +150,8 @@ _PROFILE_EVAL_PARAMETERS: dict[str, Any] = {
             "description": "冻结的 EvaluationProfile ID；决定 split、transform、metrics 与 rule gate。",
         },
         "interaction": _INTERACTION_PARAMETER,
+        "parent_factor": _EVAL_PARAMETERS["properties"]["parent_factor"],
+        "edit_note": _EVAL_PARAMETERS["properties"]["edit_note"],
     },
     "required": ["multi_line_expr", "profile_id"],
     "additionalProperties": False,
@@ -181,6 +201,22 @@ _SUBMIT_PARAMETERS: dict[str, Any] = {
 
         },
 
+        "parent_factor": {
+
+            "type": "string",
+
+            "description": "变异父本的因子逻辑名（A/B/C 变异轨必传；D 新族留空）。",
+
+        },
+
+        "edit_note": {
+
+            "type": "string",
+
+            "description": "意向编辑说明，格式：edit=<motif> <参数变化>。",
+
+        },
+
     },
 
     "required": ["multi_line_expr", "factor_name", "comment"],
@@ -191,7 +227,104 @@ _SUBMIT_PARAMETERS: dict[str, Any] = {
 
 
 
-TOOL_NAMES = ("evaluate_factor", "eval_on_train_set", "eval_on_val_set", "submit_factor")
+_SCREEN_FACTORS_PARAMETERS: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "factor_names": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": (
+                "要筛选的因子名列表（正式库名）。为空时自动用正式库全部因子。"
+            ),
+        },
+        "signal_date": {
+            "type": "string",
+            "description": (
+                "信号日（YYYY-MM-DD）。为空时用 val 段最后一天。Screener 在此日"
+                "检测 regime + 回看 lookback 天 Rank IC 评分。"
+            ),
+        },
+    },
+    "required": [],
+    "additionalProperties": False,
+}
+
+
+TOOL_NAMES = ("evaluate_factor", "eval_on_train_set", "eval_on_val_set", "submit_factor", "screen_factors")
+
+
+# ── 预审：拦截"两个裸信号简单加减"的低级因子 ──
+# 检测顶层 ADD/SUBTRACT(RANK(x), RANK(y)) 且 x/y 均为简单 TS_/$field 变换（无结构化交互算子）。
+# 例外：如果某个操作数本身含 CS_RESIDUALIZE / CS_NEUTRALIZE / GATED_SIGNAL / CS_GROUP_RANK /
+# DIVERGENCE_RANK / PIECEWISE_STATE / IF_THEN_ELSE / TS_CORR / TS_RANKCORR 等结构化算子，则放行。
+
+_STRUCTURED_OPS = frozenset({
+    "CS_RESIDUALIZE", "CS_NEUTRALIZE", "GATED_SIGNAL", "CS_GROUP_RANK",
+    "DIVERGENCE_RANK", "PIECEWISE_STATE", "IF_THEN_ELSE",
+    "TS_CORR", "TS_RANKCORR", "TS_COV", "MUTUAL_INFO_LAG",
+})
+
+_SIMPLE_TS_RE = re.compile(r"\bTS_[A-Z]+\s*\(")
+_RANK_RE = re.compile(r"\bRANK\s*\(")
+_CS_RANK_RE = re.compile(r"\bCS_RANK\s*\(")
+_CS_ZSCORE_RE = re.compile(r"\bCS_ZSCORE\s*\(")
+_ZSCORE_RE = re.compile(r"\bZSCORE\s*\(")
+
+
+def _is_naive_signal_addition(expr: str) -> bool:
+    """检测表达式是否为"两个裸信号简单加减"的低级因子。
+
+    判定逻辑：
+    1. 顶层（最后一行）的算子是 ADD 或 SUBTRACT
+    2. 整个表达式中至少 2 个截面标准化调用（RANK/CS_RANK/CS_ZSCORE/ZSCORE）
+    3. 整个表达式中不含结构化交互算子（GATED_SIGNAL / CS_RESIDUALIZE 等）
+    → 返回 True 表示应拦截
+
+    对带赋值的多行表达式，检查顶层是否 ADD/SUBTRACT，但信号计数覆盖所有行。
+    """
+    if not expr or not expr.strip():
+        return False
+
+    full_text = expr.strip()
+    full_upper = full_text.upper()
+
+    # 取最后一行（因子值行），跳过注释行
+    lines = full_text.split("\n")
+    last_line = lines[-1].strip()
+    while last_line.startswith("#") and lines:
+        lines = lines[:-1]
+        if not lines:
+            return False
+        last_line = lines[-1].strip()
+
+    # 去掉前导赋值 "var = ..."
+    if "=" in last_line and not last_line.upper().startswith(("ADD(", "SUBTRACT(")):
+        parts = last_line.split("=", 1)
+        if len(parts) == 2:
+            last_line = parts[1].strip()
+
+    # 检查顶层是否 ADD( 或 SUBTRACT(
+    last_upper = last_line.upper()
+    if not (last_upper.startswith("ADD(") or last_upper.startswith("SUBTRACT(")):
+        return False
+
+    # 在整个表达式中检查截面标准化调用数量
+    # RANK / CS_RANK / CS_ZSCORE / ZSCORE 都算"裸信号"标记
+    signal_count = (
+        len(_RANK_RE.findall(full_upper))
+        + len(_CS_RANK_RE.findall(full_upper))
+        + len(_CS_ZSCORE_RE.findall(full_upper))
+        + len(_ZSCORE_RE.findall(full_upper))
+    )
+    if signal_count < 2:
+        return False
+
+    # 检查是否含结构化交互算子——含则放行
+    for op in _STRUCTURED_OPS:
+        if op in full_upper:
+            return False
+
+    return True
 
 
 
@@ -204,24 +337,42 @@ class FactorEvalTools:
 
 
     def __init__(
-
         self,
-
         service: StockEvalService,
-
         session_id: str,
-
         *,
-
         submit_service: FactorSubmitService | None = None,
-
+        screener_config: dict[str, Any] | None = None,
+        memory_store: Any | None = None,
     ) -> None:
 
         self.service = service
-
         self.session_id = session_id
-
         self.submit_service = submit_service
+        self._screener_config_dict = screener_config or {}
+        # v3-lite：研究记忆硬提醒通道（None = 关闭）；hard_block_duplicates=True 时指纹死路直接拦截
+        self.memory_store = memory_store
+
+    def _memory_gate(self, expr: str, arguments: dict[str, Any]) -> Any:
+        """评估/提交前查研究记忆 advisory。返回 None | advisory dict | 拦截 result（ok=False）。"""
+        if self.memory_store is None:
+            return None
+        try:
+            advisory = self.memory_store.advisory_for(str(expr or ""), edit_note=arguments.get("edit_note"))
+        except Exception:
+            return None
+        if not advisory:
+            return None
+        if getattr(self.memory_store, "hard_block_duplicates", False):
+            for item in advisory.get("advisories", []):
+                if item.get("kind") == "duplicate_known_dead_end":
+                    return {
+                        "ok": False,
+                        "error": f"memory_blocked_duplicate: {item.get('message', '')}",
+                        "error_type": "MemoryAdvisoryBlock",
+                        "memory_advisory": advisory,
+                    }
+        return advisory
 
 
 
@@ -307,6 +458,28 @@ class FactorEvalTools:
 
             )
 
+        # Screener（regime 感知因子筛选）工具
+        screener_cfg = self._screener_config()
+        if screener_cfg is not None and screener_cfg.get("enabled"):
+            sc = screener_cfg
+            out.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "screen_factors",
+                        "description": (
+                            "【Screener · regime 感知因子筛选】对正式库因子做市场制度感知筛选："
+                            f"ADX({sc['adx_threshold']})+MA({sc['ma_period']}) 检测 regime，"
+                            f"回看 {sc['lookback']} 天 Rank IC 评分，|IC|>={sc['min_ic']} 入选，"
+                            f"因子间 |corr|>{sc['max_corr']} 去冗余，"
+                            f"{'启用因子族 regime 偏好' if sc['use_family_boost'] else '不启用族偏好'}。"
+                            " 返回当前 regime、各因子 IC/评分/权重/方向、被拒因子列表。"
+                        ),
+                        "parameters": _SCREEN_FACTORS_PARAMETERS,
+                    },
+                }
+            )
+
         return out
 
 
@@ -341,7 +514,19 @@ class FactorEvalTools:
                 return {"ok": False, "error": "multi_line_expr_required_non_empty_string", "error_type": "ToolArgumentsError"}
             if not isinstance(profile_id, str) or not profile_id.strip():
                 return {"ok": False, "error": "profile_id_required_non_empty_string", "error_type": "ToolArgumentsError"}
-            return self.service.eval_profile(
+            # 预审：拦截"两个裸 RANK 信号简单加减"的低级因子
+            if _is_naive_signal_addition(expr):
+                return {
+                    "ok": False,
+                    "error": "naive_signal_addition_blocked: 顶层 ADD/SUBTRACT(RANK(x), RANK(y)) 是低级信号叠加，"
+                             "没有经济机制上的交互。多信息源融合必须使用结构化交互算子"
+                             "（GATED_SIGNAL / CS_RESIDUALIZE / DIVERGENCE_RANK / CS_GROUP_RANK / TS_CORR 等）。",
+                    "error_type": "NaiveSignalAdditionBlock",
+                }
+            gate = self._memory_gate(expr, arguments)
+            if isinstance(gate, dict) and gate.get("ok") is False:
+                return gate
+            result = self.service.eval_profile(
                 EvalProfileRequest(
                     session_id=self.session_id,
                     profile_id=profile_id,
@@ -349,6 +534,9 @@ class FactorEvalTools:
                     factor_name=str(arguments.get("factor_name") or "expr"),
                 )
             )
+            if isinstance(gate, dict):
+                result["memory_advisory"] = gate
+            return result
 
 
 
@@ -358,7 +546,15 @@ class FactorEvalTools:
 
             return {"ok": False, "error": "multi_line_expr_required_non_empty_string", "error_type": "ToolArgumentsError"}
 
-
+        # 预审：拦截"两个裸 RANK 信号简单加减"的低级因子
+        if _is_naive_signal_addition(expr):
+            return {
+                "ok": False,
+                "error": "naive_signal_addition_blocked: 顶层 ADD/SUBTRACT(RANK(x), RANK(y)) 是低级信号叠加，"
+                         "没有经济机制上的交互。多信息源融合必须使用结构化交互算子"
+                         "（GATED_SIGNAL / CS_RESIDUALIZE / DIVERGENCE_RANK / CS_GROUP_RANK / TS_CORR 等）。",
+                "error_type": "NaiveSignalAdditionBlock",
+            }
 
         factor_name = arguments.get("factor_name") or "expr"
 
@@ -374,7 +570,13 @@ class FactorEvalTools:
 
         if name == "eval_on_train_set":
 
-            return self.service.eval_train(
+            gate = self._memory_gate(expr, arguments)
+
+            if isinstance(gate, dict) and gate.get("ok") is False:
+
+                return gate
+
+            result = self.service.eval_train(
 
                 EvalTrainRequest(
 
@@ -392,6 +594,12 @@ class FactorEvalTools:
 
             )
 
+            if isinstance(gate, dict):
+
+                result["memory_advisory"] = gate
+
+            return result
+
         if name == "eval_on_val_set":
 
             expected_sign = arguments.get("expected_sign")
@@ -400,7 +608,13 @@ class FactorEvalTools:
 
                 return {"ok": False, "error": "expected_sign_must_be_1_or_-1", "error_type": "ToolArgumentsError"}
 
-            return self.service.eval_val(
+            gate = self._memory_gate(expr, arguments)
+
+            if isinstance(gate, dict) and gate.get("ok") is False:
+
+                return gate
+
+            result = self.service.eval_val(
 
                 EvalValRequest(
 
@@ -419,6 +633,16 @@ class FactorEvalTools:
                 )
 
             )
+
+            if isinstance(gate, dict):
+
+                result["memory_advisory"] = gate
+
+            return result
+
+        if name == "screen_factors":
+
+            return self._dispatch_screen_factors(arguments)
 
         return {"ok": False, "error": f"unknown_tool: {name}", "error_type": "UnknownTool"}
 
@@ -474,7 +698,13 @@ class FactorEvalTools:
 
             }
 
-        return self.submit_service.submit(
+        gate = self._memory_gate(str(expr or ""), arguments)
+
+        if isinstance(gate, dict) and gate.get("ok") is False:
+
+            return gate
+
+        result = self.submit_service.submit(
 
             self.session_id,
 
@@ -495,6 +725,159 @@ class FactorEvalTools:
             rebalance_freq=arguments.get("rebalance_freq"),
 
         )
+
+        if isinstance(gate, dict):
+
+            result["memory_advisory"] = gate
+
+        return result
+
+
+
+    # ── Screener（regime 感知因子筛选）──
+
+    def _screener_config(self) -> dict[str, Any] | None:
+        """从 submit_service.criteria 或注入的 screener_config 取 Screener 参数。"""
+        # 优先用注入的 screener_config（来自 research_spec.delivery_policy.screener）
+        cfg = self._screener_config_dict
+        if cfg and cfg.get("enabled"):
+            return cfg
+        # 回退到 submit_service.criteria.screener
+        if self.submit_service is not None:
+            sc = self.submit_service.criteria.screener
+            if sc.enabled:
+                return {
+                    "enabled": True,
+                    "lookback": sc.lookback,
+                    "min_ic": sc.min_ic,
+                    "max_corr": sc.max_corr,
+                    "use_family_boost": sc.use_family_boost,
+                    "adx_threshold": sc.adx_threshold,
+                    "ma_period": sc.ma_period,
+                    "min_cross_section": sc.min_cross_section,
+                }
+        return None
+
+    def _dispatch_screen_factors(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        """对正式库因子做 regime 感知筛选，返回动态权重/方向。"""
+        cfg = self._screener_config()
+        if cfg is None or not cfg.get("enabled"):
+            return {"ok": False, "error": "screener_disabled", "error_type": "ScreenerDisabled"}
+
+        try:
+            session = self.service.sessions.get(self.session_id)
+        except KeyError:
+            return {"ok": False, "error": f"session_not_found: {self.session_id}", "error_type": "SessionError"}
+
+        panel = session.panel
+        if panel is None or len(panel) == 0:
+            return {"ok": False, "error": "session_panel_empty", "error_type": "SessionError"}
+
+        import pandas as pd
+        import numpy as np
+        from core.screener import screen_factors, ScreenerConfig
+
+        # 确定 signal_date
+        ctx = session.ctx
+        dt_level = panel.index.get_level_values("datetime")
+        signal_date_str = arguments.get("signal_date")
+        if signal_date_str:
+            try:
+                signal_ts = pd.Timestamp(signal_date_str)
+            except Exception:
+                return {"ok": False, "error": f"invalid_signal_date: {signal_date_str}", "error_type": "ToolArgumentsError"}
+        else:
+            # 默认用 val_end
+            signal_ts = pd.Timestamp(ctx.val_end)
+        # 找到 signal_date 在 panel 中的行号
+        dates = pd.DatetimeIndex(sorted(dt_level.unique()))
+        if signal_ts not in dates:
+            # 找最近的 <= signal_ts 的日期
+            valid = dates[dates <= signal_ts]
+            if len(valid) == 0:
+                return {"ok": False, "error": f"signal_date_before_data: {signal_ts}", "error_type": "ToolArgumentsError"}
+            signal_ts = valid[-1]
+        signal_idx = dates.get_loc(signal_ts)
+        if isinstance(signal_idx, slice):
+            signal_idx = signal_idx.start
+
+        # 构建 close matrix (T, K)
+        if "close" not in panel.columns:
+            return {"ok": False, "error": "panel_missing_close_column", "error_type": "PanelError"}
+        close_df = panel["close"].unstack(level="instrument")
+        # 对齐 dates
+        close_df = close_df.reindex(dates)
+
+        # 构建因子矩阵
+        factor_names_req = arguments.get("factor_names") or []
+        if not isinstance(factor_names_req, list):
+            factor_names_req = []
+
+        # 从 submit_service.factorlib 加载因子
+        if self.submit_service is None:
+            return {"ok": False, "error": "submit_service_not_available", "error_type": "ScreenerDisabled"}
+
+        from alphaagent.factor.zoo.index import FactorZoo
+        try:
+            zoo = FactorZoo.open(self.submit_service.factorlib_path)
+        except Exception as e:
+            return {"ok": False, "error": f"factorzoo_open_failed: {e}", "error_type": "FactorZooError"}
+
+        # 获取因子列表
+        all_factors = list(zoo.iter_factors())
+        if factor_names_req:
+            all_factors = [f for f in all_factors if f.name in factor_names_req]
+        if not all_factors:
+            return {"ok": True, "result": {"selected": [], "regime_label": "无因子", "weights": {}}}
+
+        # 构建因子值矩阵
+        factor_frames: dict[str, pd.DataFrame] = {}
+        for f in all_factors:
+            try:
+                # zoo 因子值是 (datetime, instrument) 对齐的 Series
+                vals = zoo.get_factor_values(f.factor_id)
+                if vals is not None and len(vals) > 0:
+                    fmat = vals.unstack(level="instrument").reindex(index=dates, columns=close_df.columns)
+                    factor_frames[f.name] = fmat
+            except Exception:
+                continue
+
+        if not factor_frames:
+            return {"ok": True, "result": {"selected": [], "regime_label": "无因子值", "weights": {}}}
+
+        # 用等权均值近似指数
+        index_close_s = close_df.mean(axis=1)
+
+        screener_cfg = ScreenerConfig(
+            lookback=cfg.get("lookback", 10),
+            min_ic=cfg.get("min_ic", 0.02),
+            max_corr=cfg.get("max_corr", 0.7),
+            use_family_boost=cfg.get("use_family_boost", True),
+            adx_threshold=cfg.get("adx_threshold", 25.0),
+            ma_period=cfg.get("ma_period", 60),
+            min_cross_section=cfg.get("min_cross_section", 30),
+        )
+
+        result = screen_factors(
+            factor_frames, close_df, signal_idx, screener_cfg,
+            index_close=index_close_s,
+            all_dates=dates,
+        )
+
+        return {
+            "ok": True,
+            "result": {
+                "signal_date": str(result.signal_date.date()),
+                "regime": result.regime_label,
+                "selected": result.selected,
+                "factor_ic": {k: round(v, 4) for k, v in result.factor_ic.items()},
+                "factor_scores": {k: round(v, 4) for k, v in result.factor_scores.items()},
+                "weights": {k: round(v, 4) for k, v in result.weights.items()},
+                "directions": {k: "买低" if v else "买高" for k, v in result.directions.items()},
+                "rejected": dict(list(result.rejected.items())[:10]),
+                "regime_dist": result.regime_dist,
+            },
+        }
 
 
 

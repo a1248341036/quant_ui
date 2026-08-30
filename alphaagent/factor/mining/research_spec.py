@@ -130,7 +130,9 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
     "search_policy": {
         "allowed_signal_families": ["volume_price", "volatility", "chip", "momentum_reversal"],
         "forbidden_signal_families": ["pure_size"],
-        "min_distinct_raw_fields": 2,
+        # 允许单机制深度因子：强制 ≥2 个原始字段会诱导"信号A+信号B"式低级叠加，
+        # 降为 1 后 Agent 可专注单一信息源的深度挖掘（多层算子链而非多字段拼凑）。
+        "min_distinct_raw_fields": 1,
         "require_time_series_structure": False,
         "max_candidates_per_round": 5,
     },
@@ -169,8 +171,13 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
         "include_rejected_paths": True,
         "prefer_orthogonal_to_approved": True,
         "include_expression": True,
-        "enable_factor_retrieval": False,   # BM25 单因子检索层，conclusion 改进后可开
-        "enable_edit_patterns": False,       # 编辑模式注入层，需积累数据后开
+        "enable_factor_retrieval": True,    # v2 混合检索（BM25+族亲和+多样性去重），结论已数据化
+        "enable_edit_patterns": True,       # v2 (family×motif) 残差单元 + APV 否决，含统计门控
+        # v3-lite：AlphaMemo 校准 + 硬提醒通道
+        "hard_block_duplicates": False,     # True 时指纹死路（负证据 attempts>=2）直接拦截评估
+        "max_inject_chars": 2400,           # 注入块总预算，超限按 编辑先验>经验>多样性>证据 截断
+        "apv_tau_c": 0.35,                  # APV 双门 1：置信阈值（Eq.7 置信）
+        "apv_tau_v": 0.80,                  # APV 双门 2：失败 Beta 后验阈值
     },
     "delivery_policy": _default_delivery_policy(),
 }
@@ -190,7 +197,7 @@ def default_research_spec(mode: str = "technical") -> dict[str, Any]:
     spec["search_policy"].update({
         "allowed_signal_families": list(mode_spec.signal_families),
         "forbidden_signal_families": list(mode_spec.forbidden_families),
-        "min_distinct_raw_fields": 2,
+        "min_distinct_raw_fields": 1,
         "require_time_series_structure": True,
     })
     if mode_spec.evaluation_overrides:
@@ -324,6 +331,11 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
     memory["include_expression"] = _require_bool(memory.get("include_expression"), "memory_policy.include_expression")
     memory["enable_factor_retrieval"] = _require_bool(memory.get("enable_factor_retrieval"), "memory_policy.enable_factor_retrieval")
     memory["enable_edit_patterns"] = _require_bool(memory.get("enable_edit_patterns"), "memory_policy.enable_edit_patterns")
+    # v3-lite
+    memory["hard_block_duplicates"] = _require_bool(memory.get("hard_block_duplicates"), "memory_policy.hard_block_duplicates")
+    memory["max_inject_chars"] = int(_bounded_number(memory.get("max_inject_chars"), "memory_policy.max_inject_chars", 0, 20000))
+    memory["apv_tau_c"] = float(_bounded_number(memory.get("apv_tau_c"), "memory_policy.apv_tau_c", 0, 1))
+    memory["apv_tau_v"] = float(_bounded_number(memory.get("apv_tau_v"), "memory_policy.apv_tau_v", 0, 1))
 
     delivery = _require_dict(spec.get("delivery_policy"), "delivery_policy")
     # 盲测终审门槛（2026-08-29 新增）
@@ -338,6 +350,28 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
             blind.get("require_sign_consistency"), "delivery_policy.blind_test.require_sign_consistency"
         )
     delivery["blind_test"] = blind
+
+    # Screener（regime 感知因子筛选，2026-08-29 新增）
+    screener = delivery.get("screener")
+    if not isinstance(screener, dict):
+        screener = {}
+    if screener.get("enabled") is not None:
+        screener["enabled"] = _require_bool(screener.get("enabled"), "delivery_policy.screener.enabled")
+    screener["lookback"] = int(_bounded_number(screener.get("lookback"), "delivery_policy.screener.lookback", 3, 60))
+    screener["min_ic"] = _bounded_number(screener.get("min_ic"), "delivery_policy.screener.min_ic", 0, 1)
+    screener["max_corr"] = _bounded_number(screener.get("max_corr"), "delivery_policy.screener.max_corr", 0, 1)
+    if screener.get("use_family_boost") is not None:
+        screener["use_family_boost"] = _require_bool(
+            screener.get("use_family_boost"), "delivery_policy.screener.use_family_boost"
+        )
+    screener["adx_threshold"] = _bounded_number(
+        screener.get("adx_threshold"), "delivery_policy.screener.adx_threshold", 0, 100)
+    screener["ma_period"] = int(_bounded_number(
+        screener.get("ma_period"), "delivery_policy.screener.ma_period", 10, 500))
+    screener["min_cross_section"] = int(_bounded_number(
+        screener.get("min_cross_section"), "delivery_policy.screener.min_cross_section", 1, 1000))
+    delivery["screener"] = screener
+
     candidate = _require_dict(delivery.get("candidate"), "delivery_policy.candidate")
     candidate["min_abs_ic"] = _bounded_number(candidate.get("min_abs_ic"), "delivery_policy.candidate.min_abs_ic", 0, 1)
     candidate["min_icir"] = _bounded_number(candidate.get("min_icir"), "delivery_policy.candidate.min_icir", -10, 20)
