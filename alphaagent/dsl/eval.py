@@ -29,6 +29,11 @@ import numpy as np
 import pandas as pd
 
 from alphaagent.dsl.core.errors import MultiLineFactorEvalError
+from alphaagent.dsl.core.guard import (
+    find_blocked_columns,
+    guard_enabled,
+    wrap_lookahead_guard,
+)
 from alphaagent.dsl.core.parser import (
     dollar_ref_to_pyname,
     parse_multi_line_expression,
@@ -386,6 +391,18 @@ def eval_multi_line_factor(
     verbose: bool = False,
 ) -> Any:
     """对多行因子 DSL 求值（股票主频默认 1d，辅频 @1d / @1w）。"""
+    # 防未来函数守卫：禁止 label_* 等标签列作为因子输入（ALPHA_DSL_GUARD=0 关闭）。
+    if guard_enabled():
+        blocked_cols = find_blocked_columns(multi_line_expr)
+        if blocked_cols:
+            raise MultiLineFactorEvalError(
+                "guard 阶段失败: 表达式引用了禁止作为因子输入的列（防未来函数）: "
+                + ", ".join("$" + name for name in blocked_cols),
+                phase="guard",
+                problem="blocked_columns:" + ",".join(blocked_cols),
+                exception_type="ValueError",
+                user_source=multi_line_expr,
+            )
     # 面板列裁剪：只保留表达式引用到的列，减少 _column_bindings 与辅面板构建开销。
     # 索引/行序不变，输出 Series 仍与完整面板对齐。
     if len(df.columns) > 1:
@@ -447,6 +464,10 @@ def eval_multi_line_factor(
 
     if monitor.is_active():
         base_ns = monitor.wrap_operator_namespace(base_ns)
+
+    # 防未来函数守卫：时序/滚动算子拦截负整数窗口/滞后参数（ALPHA_DSL_GUARD=0 关闭）。
+    if guard_enabled():
+        base_ns = wrap_lookahead_guard(base_ns)
 
     if not use_multi:
         return _eval_single_frequency(
