@@ -48,7 +48,7 @@
 
 | 聚宽 API | 判定 | 说明 |
 |---|---|---|
-| order / order_target / order_value / order_target_value | ✅ | 已支持（T+1 开盘撮合、100 股整数手、涨跌停/停牌拒单） |
+| order / order_target / order_value / order_target_value | ✅ | 已支持（下单时点分钟价撮合[数据缺失回落开盘]、100 股整数手、涨跌停/停牌拒单） |
 | order(..., style=MarketOrderStyle/LimitOrderStyle) | 🟢 | 接受忽略；LimitOrder 可近似（开盘价越过限价则拒） |
 | cancel_order(order) | 🟢 | 从当日 pending 队列移除 |
 | get_orders() / get_open_orders() | 🟢 | 引擎 fills / pending 已有数据，包一层 Order 对象 |
@@ -65,8 +65,8 @@
 | 聚宽 API | 判定 | 说明 / 数据来源 |
 |---|---|---|
 | get_price（daily） | ✅ | 已支持 close/open/high_limit/low_limit/close_adj；🟢 补 high/low/volume/money（stock_daily 均有，meta 已读 high/low） |
-| get_price（'1m'/'5m'/'60m'） | 🟡 | 现 1m≈日线近似；数据湖有 1/5/15/30/60min 逐股 parquet，60m 可真支持（工程中等） |
-| history(count, unit, field) | ✅ | 已支持 1d/1m（信号日为界，无未来泄漏）；'60m' 同上可真支持 |
+| get_price（'1m'/'5m'/'60m'） | ✅ | '1m' 现价 = 调度时点分钟收盘（QDATA/年/年/1min 逐股 parquet，prefetch 调度时点集合，未复权）；缺失回落当日开盘（无未来泄漏）；5m/60m 未接 |
+| history(count, unit, field) | ✅ | 已支持 1d/1m（'1m' 当日现价 = 调度时点分钟收盘，缺失回落开盘，无未来泄漏）；'60m' 可扩 |
 | attribute_history | ✅ | 已支持 |
 | get_current_data() | ✅ | 已支持（T 日涨跌停/ST/停牌，last_price≈开盘防泄漏） |
 | get_current_tick / get_ticks | 🔴 | Tick 级不做 |
@@ -115,6 +115,6 @@
 > PriceRelatedSlippage 精确映射（r/2→单边 bps）。回归：小盘三正与国九 2024 结果逐位一致。
 
 1. ~~**P0（几十行级，立刻解锁大量社区策略）**~~：已实现，见上
-2. **P1（数据已在库，每个半天级）**：get_index_stocks 接 CNE index_constituents（真实成分）、get_fundamentals 扩 indicator/pe/pb、get_extras(is_st)、get_locked_shares、get_security_info.end_date、set_benchmark 真实基准+超额输出
+2. ~~get_index_stocks 接真实成分~~（已完成：399101=002/003 段点时近似；其余宽基走 CNE index_constituents 快照）、get_fundamentals 扩 indicator、get_locked_shares、get_security_info.end_date、set_benchmark 真实基准+超额输出
 3. **P2（工程较大或受限）**：60 分钟真数据 history、get_industry_stocks、get_mtss、get_money_fund、多账户、get_fundamentals_continuously
-4. **不做**：Tick/分钟撮合、期货/两融交易、宏观/债券、龙虎榜（待 CNE 扩数据源）
+4. ~~分钟撮合~~（已完成：下单时点分钟价成交 + 盘中查询无泄漏，见 2026-09 会话记录）；不做：Tick 级、期货/两融交易、宏观/债券、龙虎榜（待 CNE 扩数据源）

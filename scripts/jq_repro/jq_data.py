@@ -62,6 +62,81 @@ def data_status() -> pd.DataFrame:
 
 
 # ============================================================
+# 分钟线(按股票分文件的 1min 年度 parquet, 未复权收盘)
+# ============================================================
+_MINUTE_CACHE: dict[tuple, dict[str, pd.DataFrame]] = {}
+
+
+def load_minute_close(years, minutes, codes,
+                      workers: int = 8) -> dict[str, pd.DataFrame]:
+    """调度时点的分钟收盘价(未复权): {HH:MM: DataFrame(index=date, columns=code6)}。
+
+    - 数据源 QDATA/<年>/<年>/1min/<ts_code>.parquet(每股每年一文件,
+      含 trade_time/close/adj_factor), 只扫 codes 域内股票
+    - 单次扫描同时抽取全部请求分钟; 会话级缓存, 撮合/盘中价查询共用
+    - 缺文件/停牌分钟 -> NaN(由调用方回落日线近似)
+    """
+    key = (tuple(sorted(set(years))), tuple(sorted(set(minutes))))
+    if key in _MINUTE_CACHE:
+        return _MINUTE_CACHE[key]
+    from concurrent.futures import ThreadPoolExecutor
+
+    want = {m: int(m.replace(":", "")) for m in minutes}   # '09:30' -> 930
+    want_int = np.array(sorted(want.values()), dtype=np.int64)
+    per_minute: dict[str, list] = {m: [] for m in minutes}
+
+    def _one(code: str) -> dict[str, list]:
+        suf = ".SH" if code.startswith("6") else ".SZ"
+        out: dict[str, list] = {}
+        for y in key[0]:
+            f = QDATA / str(y) / str(y) / "1min" / f"{code}{suf}.parquet"
+            if not f.exists():
+                continue
+            try:
+                # pyarrow 不吃 pandas 索引元数据(2026 文件把 trade_date/
+                # trade_time 写成 index columns, pd.read_parquet 会丢列)
+                import pyarrow.parquet as pq
+                tb = pq.read_table(f, columns=["trade_time", "close"])
+                df = tb.to_pandas(ignore_metadata=True)
+            except Exception:
+                continue
+            t = pd.DatetimeIndex(df["trade_time"])
+            hm = t.hour.to_numpy() * 100 + t.minute.to_numpy()
+            hit = np.isin(hm, want_int)
+            if not hit.any():
+                continue
+            sub = df.loc[:, "close"].to_numpy(dtype=np.float64)[hit]
+            dates = t.normalize()[hit]
+            hmv = hm[hit]
+            for m, mi in want.items():
+                sel = hmv == mi
+                if sel.any():
+                    out.setdefault(m, []).extend(
+                        zip(dates[sel], [code] * int(sel.sum()),
+                            sub[sel]))
+        return out
+
+    codes = [c for c in dict.fromkeys(codes)
+             if str(c)[:1] in ("0", "3", "5", "6")]
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        for part in ex.map(_one, codes):
+            for m, lst in part.items():
+                per_minute[m].extend(lst)
+
+    out: dict[str, pd.DataFrame] = {}
+    for m in minutes:
+        if per_minute[m]:
+            df = pd.DataFrame(per_minute[m],
+                              columns=["date", "code", "close"])
+            out[m] = df.pivot_table(index="date", columns="code",
+                                    values="close", aggfunc="last")
+        else:
+            out[m] = pd.DataFrame()
+    _MINUTE_CACHE[key] = out
+    return out
+
+
+# ============================================================
 # 行情面板(策略域构建器: stock_daily 插件原始帧 -> 引擎面板)
 # ============================================================
 def load_panel(start: str, end: str,

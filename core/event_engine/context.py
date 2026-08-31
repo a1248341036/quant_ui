@@ -39,6 +39,7 @@ class Order:
     target_shares: float | None = None
     delta_shares: float | None = None
     limit_price: float | None = None
+    fill_px: float | None = None    # 指定成交基准价(面板价空间); None=按开盘
 
 
 @dataclass
@@ -213,19 +214,25 @@ class Context:
     # ---------- 下单 ----------
 
     def order_target_pct(self, code: str, pct: float,
-                         limit_price: float | None = None) -> None:
+                         limit_price: float | None = None,
+                         fill_price: float | None = None) -> None:
         self.orders.append(Order(code, target_pct=float(pct),
-                                 limit_price=limit_price))
+                                 limit_price=limit_price,
+                                 fill_px=fill_price))
 
     def order_target_shares(self, code: str, shares: float,
-                            limit_price: float | None = None) -> None:
+                            limit_price: float | None = None,
+                            fill_price: float | None = None) -> None:
         self.orders.append(Order(code, target_shares=float(shares),
-                                 limit_price=limit_price))
+                                 limit_price=limit_price,
+                                 fill_px=fill_price))
 
     def order_shares(self, code: str, delta: float,
-                     limit_price: float | None = None) -> None:
+                     limit_price: float | None = None,
+                     fill_price: float | None = None) -> None:
         self.orders.append(Order(code, delta_shares=float(delta),
-                                 limit_price=limit_price))
+                                 limit_price=limit_price,
+                                 fill_px=fill_price))
 
     # ---------- 组合优化 ----------
 
@@ -292,7 +299,8 @@ class Context:
         exec_list: list[tuple[str, float, str]] = []  # (code, amount, "buy"/"sell")
 
         # ---- 第一步：计算每只股票的期望股数 ----
-        target: dict[str, tuple[float | None, float | None]] = {}
+        target: dict[str, tuple[float | None, float | None,
+                                float | None]] = {}
         for o in self.orders:
             if o.code not in self._idx:
                 continue
@@ -302,21 +310,23 @@ class Context:
                 pct = max(min(o.target_pct, 1.0), -1.0)
                 val = total_prev * pct
                 want = int(val / prev_px) if prev_px > 0 else 0
-                target[o.code] = (float(want), o.limit_price)
+                target[o.code] = (float(want), o.limit_price, o.fill_px)
             elif o.target_shares is not None:
-                target[o.code] = (float(o.target_shares), o.limit_price)
+                target[o.code] = (float(o.target_shares), o.limit_price,
+                                  o.fill_px)
             elif o.delta_shares is not None:
-                target[o.code] = (cur + o.delta_shares, o.limit_price)
+                target[o.code] = (cur + o.delta_shares, o.limit_price,
+                                  o.fill_px)
 
         # ---- 第二步：卖出（先） ----
-        for code, (want, limit_price) in target.items():
+        for code, (want, limit_price, fill_px) in target.items():
             cur = self.position(code)
             if want is None:
                 continue
             delta = cur - want
             if delta <= 0:
                 continue
-            px = self._open_price(code)
+            px = fill_px if fill_px is not None else self._open_price(code)
             if px is None:
                 continue  # 停牌，不能卖，保留持仓
             if not self.can_sell(code):
@@ -347,14 +357,14 @@ class Context:
             })
 
         # ---- 第三步：买入（后） ----
-        for code, (want, limit_price) in target.items():
+        for code, (want, limit_price, fill_px) in target.items():
             cur = self.position(code)
             if want is None:
                 continue
             delta = want - cur
             if delta <= 0:
                 continue
-            px = self._open_price(code)
+            px = fill_px if fill_px is not None else self._open_price(code)
             if px is None:
                 continue
             if not self.can_buy(code):

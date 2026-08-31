@@ -63,6 +63,7 @@ class JQRuntime:
         self._snap_cache: dict[pd.Timestamp, pd.DataFrame] = {}
         self._fin_value_mats: dict[str, np.ndarray] | None = None
         self._bal_value_mats: dict[str, np.ndarray] | None = None
+        self._minute_frames: dict[str, pd.DataFrame] = {}
         self._warned: set[str] = set()
         self._sched_sorted = False
         self._month_map: dict[pd.Timestamp, tuple[int, int]] | None = None
@@ -205,7 +206,7 @@ class JQRuntime:
                   frequency="daily", fields=None, count=None,
                   panel=False, fill_paused=True, skip_paused=False,
                   fq="pre", **kwargs):
-        """日线取数(真实价)。'1m' 按日线近似(当日请求以收盘价代理盘中价)。
+        """日线取数(真实价)。'1m' 盘中现价: 分钟收盘优先, 缺失回落当日开盘。
 
         指数代码(399101.XSHE/000300.XSHG 等)走 CNE index_bars;
         默认 end_date: 'daily'->前一交易日, '1m'->当前交易日。
@@ -228,6 +229,16 @@ class JQRuntime:
         t = self.ctx.tables
         ci = self.ctx._ci
         dates = t.dates
+        # '1m' 现价: end_date(缺省 current_dt)时点的分钟收盘(未复权)
+        minute_hi = None
+        minute_dt = None
+        if frequency == "1m":
+            if end_date is not None and pd.Timestamp(end_date).hour:
+                minute_dt = pd.Timestamp(end_date)
+            elif end_date is None:
+                minute_dt = self.context.current_dt
+            if minute_dt is not None:
+                minute_hi = self._hi_row(minute_dt)
         long_rows: list[tuple] = []
         single_dates: list = []
         single_vals: list[dict] = []
@@ -255,6 +266,14 @@ class JQRuntime:
                         # 统一字段解析(close/open/high/low/pre_close/
                         # high_limit/low_limit/close_adj/volume/money)
                         v = self._field_matrix(f)[i, k]
+                        if (f == "close" and i == minute_hi
+                                and k is not None):
+                            # 盘中现价: 分钟价优先; 缺失回落当日开盘
+                            # (不可用当日收盘 -> 未来泄漏)
+                            mv = self._minute_px_raw(
+                                c, minute_dt if minute_dt is not None
+                                else self.context.current_dt)
+                            v = mv if mv is not None else t.open_raw[i, k]
                     vals[f] = v
                     if (not fill_paused or skip_paused) and not np.isfinite(v):
                         ok = False
@@ -302,6 +321,10 @@ class JQRuntime:
             while i >= 0 and len(vals) < int(count):
                 m = cur_mat if (unit == "1m" and i == hi) else mat
                 v = m[i, k]
+                if (unit == "1m" and i == hi and field == "close"):
+                    mv = self._minute_px_raw(c, self.context.current_dt)
+                    if mv is not None:
+                        v = mv
                 if np.isfinite(v):
                     vals.append(float(v))
                 i -= 1
@@ -322,7 +345,7 @@ class JQRuntime:
     def get_snapshot(self, date=None) -> pd.DataFrame:
         """信号日截面(JQ 单位): market_cap(亿元) + 财务值(元) 等。"""
         d = pd.Timestamp(date) if date is not None else self.context.previous_date
-        key = pd.Timestamp(d)
+        key = pd.Timestamp(d).normalize()   # current_dt 可带盘中时点
         if key not in self._snap_cache:
             snap = self.ctx.snapshot(key)
             if len(snap):
@@ -519,6 +542,74 @@ class JQRuntime:
             lo = 0
         return dates[max(0, lo):hi + 1]
 
+    # ================= 分钟数据(盘中价撮合/查询) =================
+    def prefetch_minutes(self, minutes) -> None:
+        """预取调度时点的分钟收盘(未复权), 供盘中价撮合/查询。
+
+        数据缺失时保持空 dict, 所有路径自动回落日线近似(旧行为)。
+        """
+        minutes = [str(m) for m in minutes if m]
+        if not minutes:
+            return
+        try:
+            import jq_data
+            dates = self.ctx.tables.dates
+            years = sorted({int(d.year) for d in dates})
+            codes = [c for c in self.ctx.codes if str(c)[:1] in "036"]
+            frames = jq_data.load_minute_close(years, minutes, codes)
+            self._minute_frames = {m: f for m, f in frames.items()
+                                   if f is not None and len(f)}
+            n = sum(len(f.index) for f in self._minute_frames.values())
+            self.log.info(f"[runtime] 分钟线就绪: {len(self._minute_frames)}"
+                          f"个时点 x {n}股日")
+        except Exception as exc:                  # noqa: BLE001 - 回落日线
+            self._minute_frames = {}
+            self.log.warn(f"[runtime] 分钟数据不可用, 盘中按日线近似: {exc}")
+
+    def _minute_px_raw(self, code: str, dt) -> float | None:
+        """(code, dt) 的分钟收盘价(未复权); 无数据返回 None。"""
+        if not self._minute_frames:
+            return None
+        ts = pd.Timestamp(dt)
+        frame = self._minute_frames.get(ts.strftime("%H:%M"))
+        if frame is None or frame.empty:
+            return None
+        d = ts.normalize()
+        if d not in frame.index:
+            return None
+        col = frame.get(str(code))
+        if col is None:
+            return None
+        v = col.at[d] if d in col.index else np.nan
+        return float(v) if np.isfinite(v) else None
+
+    def _minute_px_panel(self, code: str, dt) -> float | None:
+        """分钟收盘价换算到引擎面板(前复权)价空间; 无数据返回 None。"""
+        v = self._minute_px_raw(code, dt)
+        if v is None:
+            return None
+        k = self.ctx._ci.get(str(code))
+        if k is None:
+            return None
+        i = self._hi_row(pd.Timestamp(dt).normalize())
+        t = self.ctx.tables
+        raw, adj = t.close_raw[i, k], t.close_qfq[i, k]
+        if not np.isfinite(raw) or raw <= 0 or not np.isfinite(adj):
+            return None
+        return float(v) * float(adj) / float(raw)
+
+    @staticmethod
+    def _slot_dt(day, tk: str | None) -> pd.Timestamp:
+        """交易日 + 调度时点字符串(如 '10:00') -> 带时点的 current_dt。"""
+        day = pd.Timestamp(day).normalize()
+        if tk:
+            try:
+                h, m = str(tk).split(":")
+                return day + pd.Timedelta(hours=int(h), minutes=int(m))
+            except (ValueError, AttributeError):
+                return day
+        return day
+
     def _ensure_schedule(self):
         if not self._hd_injected:
             # handle_data(context, data) 注入为 9:30 的 daily 任务(时间排序自动就位);
@@ -552,7 +643,7 @@ class JQRuntime:
 
     def run_day(self, bar):
         self._ensure_schedule()
-        self.context.current_dt = bar.exec_date
+        self.context.current_dt = self._slot_dt(bar.exec_date, "9:00")
         self.context.previous_date = bar.date
         self._day_orders = {}
         self._snapshot_fills()
@@ -565,7 +656,9 @@ class JQRuntime:
         if bts is not None:
             self._call_hook(bts, self.context, self.get_current_data())
         monthly_first = bar.exec_date.month != bar.date.month
-        for kind, func, arg, _tk, _seq in self.scheduled:
+        for kind, func, arg, tk, _seq in self.scheduled:
+            # 聚宽语义: 函数内 current_dt = 调度时点(盘中价查询/下单回执依赖)
+            self.context.current_dt = self._slot_dt(bar.exec_date, tk)
             if kind == "daily":
                 func(self.context)
             elif kind == "weekly":
@@ -586,6 +679,7 @@ class JQRuntime:
         self._flush_orders(bar)
         ate = self._hooks.get("after_trading_end")
         if ate is not None:
+            self.context.current_dt = self._slot_dt(bar.exec_date, "15:00")
             self._call_hook(ate, self.context)
 
     def _flush_orders(self, bar):
@@ -593,7 +687,10 @@ class JQRuntime:
         pending = self.pending_orders
         self.pending_orders = []
         for kind, code, arg, order in pending:
-            px = ctx.last_close(code)
+            # 盘中价撮合: 下单时点(order.add_time)的分钟价(面板前复权空间),
+            # 无分钟数据回落 signal 日收盘定价(引擎再按执行日开盘成交)
+            pxm = self._minute_px_panel(code, order.add_time) if order is not None else None
+            px = pxm or ctx.last_close(code)
             if not px:
                 if code not in self._warned:
                     self._warned.add(code)
@@ -602,25 +699,24 @@ class JQRuntime:
                     order.status = _OrderStatus.rejected
                 continue
             if kind == "tv":          # 目标市值 -> 目标股数
-                ctx.order_target_shares(code, arg / px)
+                ctx.order_target_shares(code, arg / px, fill_price=pxm)
             elif kind == "ot":        # 目标股数
-                ctx.order_target_shares(code, arg)
+                ctx.order_target_shares(code, arg, fill_price=pxm)
             elif kind == "ov":        # 市值增量
-                ctx.order_shares(code, arg / px)
+                ctx.order_shares(code, arg / px, fill_price=pxm)
             elif kind == "os":        # 股数增量
-                ctx.order_shares(code, arg)
+                ctx.order_shares(code, arg, fill_price=pxm)
             elif kind == "op":        # 目标占比
-                ctx.order_target_pct(code, arg)
+                ctx.order_target_pct(code, arg, fill_price=pxm)
             if order is not None:
                 # 提交即视为受理; 实际成交明细见 get_trades()(引擎逐笔)
                 order.status = _OrderStatus.held
                 order.filled = order.amount
                 order.price = px
                 order.avg_cost = px * 1.0001
-            self._record_cost(code, bar, px)
+            self._record_cost(code, bar, pxm or bar.open.get(code))
 
-    def _record_cost(self, code: str, bar, px: float):
-        # 成本价近似 = 执行日开盘(与引擎撮合价一致, 费用另计)
-        op = bar.open.get(code)
-        if op:
-            self._cost[code] = op * 1.0001
+    def _record_cost(self, code: str, bar, px):
+        # 成本价近似 = 实际成交基准价(分钟价), 缺省执行日开盘(与引擎撮合一致)
+        if px:
+            self._cost[code] = px * 1.0001

@@ -39,6 +39,12 @@ def run_jq_backtest(code: str, start: str, end: str | None = None,
             init_fn(rt.context)
         except Exception:
             pass
+        try:
+            # 聚宽语义: 盘中下单按下单时点真实价成交 -> 预取调度时点分钟线
+            minutes = ({t[3] for t in rt.scheduled if t[3]} | {"9:30"})
+            rt.prefetch_minutes(sorted(minutes))
+        except Exception:
+            pass
         rt.scheduled = []
         rt.pending_orders = []
     exec_logs = list(rt.log.buffer)
