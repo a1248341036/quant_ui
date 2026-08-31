@@ -3,6 +3,20 @@
 > 依据: 官方 API 文档全文快照 `docs/jq_api_snapshot/api_full.html`（2026-08-31 抓取）。
 > 判定档位: ✅ 已支持 | 🟢 可直迁（低成本）| 🟡 可迁需扩展（中等）| 🔴 不建议/不可行
 > 数据前提: 股票日线=CNE quant_dataset；指数=CNE curated index_bars；财务=pg_parquet（CNE 注册外部集）；ST= CNE curated trading_status。
+>
+> **兼容层实现按聚宽文档类别拆分**（`core/event_engine/jq/api/`，各模块 `install(ns, rt)` 装配）:
+>
+> | 聚宽文档类别 | 模块 |
+|---|---|
+| 策略程序架构 / 运行时间 | `api/framework.py` |
+| 策略设置函数 | `api/settings.py` |
+| 数据获取函数 (+jqlib 因子桥) | `api/data_api.py` + `factor_bridge.py`（重型矩阵实现为 JQRuntime 方法） |
+| 交易函数 | `api/trading.py` |
+| 对象 | `objects.py` |
+| 策略组合操作 | `api/portfolio.py` |
+| 其他函数 | `api/misc.py` |
+| 生命周期编排 | `runtime.py`（run_day 生命周期驱动 + 撮合对接，非 ns 装配） |
+
 
 ## 一、生命周期 / 框架
 

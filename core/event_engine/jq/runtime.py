@@ -1,14 +1,15 @@
 # -*- coding: utf-8 -*-
-"""JQRuntime: exec 用户代码 + 数据/下单 API + 每日循环适配。
+"""JQRuntime: exec 用户代码 + 生命周期循环 + 撮合对接。
 
-职责边界:
-- 本模块只做"翻译": 用户 API 调用 -> 数据层(_runtime.JQContext)查询 +
-  事件引擎下单接口; 不含任何撮合/账户逻辑
+职责边界(策略 API 的实现按聚宽文档类别拆分在 api/ 子包, 见其 __init__):
+- 本模块是编排层: exec 用户代码 -> 采集生命周期钩子 -> run_day 按
+  生命周期(before_trading_start -> 定时任务 -> flush -> after_trading_end)驱动
 - 下单: pending_orders 在用户函数跑完后统一 flush 到引擎
   (target_value -> order_target_shares 等)
+- 有状态的数据实现(get_price/history/get_fundamentals 等矩阵/截面/缓存)
+  也挂在运行时上, 由 api/data_api.py 装配进策略命名空间
 - 定时任务按时间串排序执行('9:05' < '10:00' < '14:00' < '14:50',
-  before_open 最先 / after_close 最后), 同时刻保持注册顺序;
-  reference_security 等聚宽专有参数接受但忽略
+  before_open 最先 / after_close 最后), 同时刻保持注册顺序
 - 命名空间预载 datetime/timedelta/date/time 与 OrderStatus(聚宽全局注入)
 """
 from __future__ import annotations
@@ -16,7 +17,6 @@ from __future__ import annotations
 import datetime as _datetime
 import inspect
 import sys
-import types
 from pathlib import Path
 from typing import Callable
 
@@ -31,12 +31,12 @@ for _p in (str(_ROOT / "strategies" / "event"),
 
 from _runtime import JQContext  # noqa: E402  (facade: tables/snapshot/ew_level)
 
+from core.event_engine.jq import api as _api  # noqa: E402
+from core.event_engine.jq.api.framework import sched_sort_key  # noqa: E402
 from core.event_engine.jq.objects import (_CodeData, _Context, _CurrentData,  # noqa: E402
-                                          _FixedSlippage, _G, _Log, _Order,
-                                          _OrderCost, _OrderStatus, _Position,
-                                          _PriceRelatedSlippage, _SecurityInfo,
-                                          _Trade)
-from core.event_engine.jq.query import _Col, _Query, query  # noqa: E402,F401
+                                          _G, _Log, _Order, _OrderStatus,
+                                          _SecurityInfo, _Trade)
+from core.event_engine.jq.query import _Col, _Query  # noqa: E402,F401
 
 # 指数 get_price 字段 -> CNE index_bars 列
 _IX_FIELD_MAP = {"close_adj": "close", "money": "amount"}
@@ -47,28 +47,13 @@ def _load_income():
     return jq_data.load_income()
 
 
-def _sched_sort_key(entry):
-    """(kind, func, arg, time_key, seq) -> 排序键。"""
-    t, seq = entry[3], entry[4]
-    if t == "before_open":
-        return (0, 0, seq)
-    if t == "after_close":
-        return (3, 0, seq)
-    if t in ("open", "every_bar"):
-        return (1, 9 * 60 + 30, seq)
-    try:
-        hh, mm = str(t).split(":")
-        return (1, int(hh) * 60 + int(mm), seq)
-    except Exception:
-        return (1, 9 * 60 + 30, seq)
-
-
 class JQRuntime:
     """聚宽风格运行时。"""
 
     def __init__(self, code: str, ctx: JQContext, capital: float):
         self.ctx = ctx
         self.capital = float(capital)
+        self.benchmark: str | None = None
         self.g = _G()
         self.log = _Log()
         self.scheduled: list[tuple[str, Callable, object, str, int]] = []
@@ -103,201 +88,16 @@ class JQRuntime:
 
     # ================= 命名空间 =================
     def _build_namespace(self) -> dict:
-        rt = self
-        jqdata = types.ModuleType("jqdata")
-        # 审计意见等 finance 表无本地数据: 返回空表(相关过滤逻辑恒通过)
-        jqdata.finance = types.SimpleNamespace(
-            STK_AUDIT_OPINION=types.SimpleNamespace(
-                code=_Col("code"), pub_date=_Col("pub_date"),
-                report_type=_Col("report_type")),
-            run_query=lambda *a, **k: pd.DataFrame(
-                columns=["code", "pub_date", "report_type"]))
-        jqfactor = types.ModuleType("jqfactor")
-        sys.modules.setdefault("jqdata", jqdata)
-        sys.modules.setdefault("jqfactor", jqfactor)
-
-        def _schedule(kind, func, arg, time_key):
-            rt.scheduled.append((kind, func, arg, str(time_key),
-                                 len(rt.scheduled)))
-
-        def run_daily(func, time="9:30", **kwargs):
-            _schedule("daily", func, None, time)
-
-        def run_weekly(func, weekday=1, time="10:00", **kwargs):
-            # JQ 语义: weekday=本周第 N 个交易日(1=周内首个交易日, 负数=倒数)
-            _schedule("weekly", func, int(weekday), time)
-
-        def run_monthly(func, monthday=None, time="9:30", **kwargs):
-            # monthday: None=每月首个交易日, 正N=第N个交易日, 负N=倒数第N个
-            _schedule("monthly", func, monthday, time)
-
-        def _mk_and_enqueue(kind, code, value=None, shares=None):
-            code = str(code).zfill(6)
-            o = rt._mk_order(code, value=value, shares=shares)
-            if o is not None:
-                arg = float(value if value is not None else shares)
-                rt.pending_orders.append((kind, code, arg, o))
-            return o
-
-        def order_target_value(code, value):
-            return _mk_and_enqueue("tv", code, value=float(value))
-
-        def order_value(code, value):
-            return _mk_and_enqueue("ov", code, value=float(value))
-
-        def order_shares(code, shares):
-            return _mk_and_enqueue("os", code, shares=float(shares))
-
-        def order(code, amount):
-            return order_shares(code, amount)
-
-        def order_target(code, amount):
-            return _mk_and_enqueue("ot", code, shares=float(amount))
-
-        def order_target_percent(code, pct):
-            # 回执按市值估算, 排队存 pct(引擎按占比撮合, flush 端不再换算)
-            code = str(code).zfill(6)
-            pv = (rt._engine_ctx.portfolio_value
-                  if rt._engine_ctx is not None else None) or rt.capital
-            o = rt._mk_order(code, value=float(pct) * float(pv))
-            if o is not None:
-                rt.pending_orders.append(("op", code, float(pct), o))
-            return o
-
-        def set_order_cost(cost, type="stock", **kwargs):
-            k = getattr(cost, "kwargs", None) or {}
-            try:
-                oc = (float(k.get("open_commission") or 0)
-                      + float(k.get("open_tax") or 0))
-                sc = (float(k.get("close_commission") or 0)
-                      + float(k.get("close_tax") or 0))
-                if oc > 0:
-                    rt.cost_cfg["buy_cost"] = oc
-                if sc > 0:
-                    rt.cost_cfg["sell_cost"] = sc
-                if k.get("min_commission"):
-                    rt.log.info("[runtime] min_commission(最低佣金)暂不支持, "
-                                "引擎按比例计费")
-            except (TypeError, ValueError):
-                pass
-
-        def set_slippage(s, **kwargs):
-            if isinstance(s, _PriceRelatedSlippage):
-                # JQ: 比例滑点, 买卖各偏 value/2 -> 引擎单边 bps = value/2*1e4
-                rt.cost_cfg["slippage_bps"] = float(s.value) / 2 * 1e4
-                return
-            v = getattr(s, "value", s if isinstance(s, (int, float)) else None)
-            if v:
-                # FixedSlippage 聚宽语义为绝对价差(元); 引擎仅支持万分比,
-                # 按社区惯例(v=3/10000 意图即 3bp)作比例解释
-                rt.cost_cfg["slippage_bps"] = float(v) * 1e4
-
-        def get_trade_days(start_date=None, end_date=None, count=None):
-            return rt._get_trade_days(start_date, end_date, count)
-
-        def get_all_trade_days():
-            return rt.ctx.tables.dates
-
-        def normalize_code(code):
-            s = str(code).strip().upper()
-            if "." in s:
-                return s
-            c = s.zfill(6)
-            return c + (".XSHG" if c.startswith(("5", "6", "9", "11", "13"))
-                        else ".XSHE")
-
-        def unschedule_all():
-            rt.scheduled.clear()
-
-        def get_orders():
-            # 当日全部订单 {order_id: Order}
-            return dict(rt._day_orders)
-
-        def get_open_orders():
-            # 未成交(尚未 flush)订单
-            return {oid: o for oid, o in rt._day_orders.items()
-                    if o.status == _OrderStatus.opened}
-
-        def cancel_order(order):
-            if order is None:
-                return None
-            for i, entry in enumerate(list(rt.pending_orders)):
-                if entry[3] is order:
-                    rt.pending_orders.pop(i)
-                    order.status = _OrderStatus.canceled
-                    break
-            return order
-
-        def get_trades():
-            # 当日成交(引擎撮合在 run_day 后执行, 此处为上一执行日开盘成交)
-            return list(rt._day_trades)
-
-        def get_index_stocks(index_symbol, date=None):
-            # 全量池(域内全部股票), 点时口径: 剔除信号日尚未上市的代码;
-            # 已退市代码无可靠退市标记, 保留(由 paused 过滤兜底)
-            d = (pd.Timestamp(date) if date is not None
-                 else rt.context.previous_date)
-            ldm = rt.ctx.list_date_map
-            return [c for c in rt.ctx.codes
-                    if c not in ldm or ldm[c] <= d]
-
-        def get_security_info(code):
-            code = str(code).zfill(6)
-            return _SecurityInfo(code, rt.ctx.name_map.get(code, ""),
-                                 rt.ctx.list_date_map.get(code))
-
-        def get_all_securities(types="stock", date=None):
-            codes = list(rt.ctx.codes)
-            return pd.DataFrame({
-                "display_name": [rt.ctx.name_map.get(c, "") for c in codes],
-                "start_date": [rt.ctx.list_date_map.get(c)
-                               or pd.Timestamp("1990-01-01") for c in codes],
-                "end_date": pd.Timestamp("2200-01-01"),
-                "type": "stock",
-            }, index=codes)
-
         ns = {
             "__name__": "jq_strategy",
-            "g": rt.g, "log": rt.log,
-            "context": rt.context,
-            "run_daily": run_daily, "run_weekly": run_weekly,
-            "run_monthly": run_monthly,
-            "order_target_value": order_target_value,
-            "order_value": order_value, "order_shares": order_shares,
-            "order": order, "order_target": order_target,
-            "order_target_percent": order_target_percent,
-            "get_price": rt.get_price,
-            "get_snapshot": rt.get_snapshot,
-            "history": rt.history,
-            "attribute_history": rt.attribute_history,
-            "get_current_data": rt.get_current_data,
-            "get_fundamentals": rt.get_fundamentals,
-            "query": query, "valuation": _query_valuation,
-            "income": _query_income,
-            "get_index_stocks": get_index_stocks,
-            "get_security_info": get_security_info,
-            "get_all_securities": get_all_securities,
-            "get_factor": rt.get_factor,
+            "g": self.g, "log": self.log,
+            "context": self.context,
             # 聚宽全局预载
             "datetime": _datetime, "timedelta": _datetime.timedelta,
             "date": _datetime.date, "time": _datetime.time,
             "OrderStatus": _OrderStatus,
-            "PriceRelatedSlippage": _PriceRelatedSlippage,
-            "get_trade_days": get_trade_days,
-            "get_all_trade_days": get_all_trade_days,
-            "normalize_code": normalize_code,
-            "unschedule_all": unschedule_all,
-            "get_orders": get_orders,
-            "get_open_orders": get_open_orders,
-            "cancel_order": cancel_order,
-            "get_trades": get_trades,
-            "set_option": lambda *a, **k: None,
-            "set_benchmark": lambda *a, **k: None,
-            "set_universe": lambda *a, **k: None,
-            "set_slippage": set_slippage,
-            "set_order_cost": set_order_cost,
-            "FixedSlippage": _FixedSlippage, "OrderCost": _OrderCost,
         }
+        _api.install_all(ns, self)
         return ns
 
     # ================= 下单回执 =================
@@ -320,7 +120,7 @@ class JQRuntime:
         self._day_orders[o.order_id] = o
         return o
 
-    # ================= 数据 API =================
+    # ================= 数据 API(矩阵/截面, 由 api/data_api.py 装配) =================
     def _row_index(self, end_date=None, count=None, start_date=None) -> list[int]:
         dates = self.ctx.tables.dates
         if end_date is not None:
@@ -655,7 +455,7 @@ class JQRuntime:
                 self.scheduled.append(("daily", _hd_wrapper, None, "9:30", -1))
             self._hd_injected = True
         if not self._sched_sorted:
-            self.scheduled.sort(key=_sched_sort_key)
+            self.scheduled.sort(key=sched_sort_key)
             self._sched_sorted = True
         if self._month_map is None:
             dates = self.ctx.tables.dates
@@ -749,8 +549,3 @@ class JQRuntime:
         op = bar.open.get(code)
         if op:
             self._cost[code] = op * 1.0001
-
-
-# query.py 的 valuation/income 是模块级类; 命名空间直接引用
-from core.event_engine.jq.query import income as _query_income  # noqa: E402
-from core.event_engine.jq.query import valuation as _query_valuation  # noqa: E402
