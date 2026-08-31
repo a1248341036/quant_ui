@@ -1,0 +1,255 @@
+CMD: Get-Content alphaagent\factor\mining\research_memory.py -Encoding UTF8 | Select-Object -Skip 460 -First 500
+
+Chunk ID: 943a1e
+Wall time: 0.3072 seconds
+Process exited with code 0
+Original token count: 6378
+Output:
+Warning: truncated output (original token count: 6378)
+Total output lines: 500
+
+# ── 主存储 ────────────────────────────────────────────────────────────
+class ResearchMemoryStore:
+    """跨 run 持久化研究记忆：原始证据层 + (family×motif×父本桶) 编辑单元 + 蒸馏经验层。"""
+
+    # cells v3 DDL：父本质量桶进入主键；成败按 explicit/implicit 原始计数分列（读取时按 1.0/0.5 加权）
+    _CELLS_DDL = """
+    CREATE TABLE IF NOT EXISTS memory_cells (
+        cell_key TEXT PRIMARY KEY,
+        family TEXT NOT NULL,
+        motif TEXT NOT NULL,
+        parent_bucket TEXT NOT NULL DEFAULT 'medium',
+        residuals_json TEXT NOT NULL DEFAULT '[]',
+        explicit_s REAL NOT NULL DEFAULT 0,
+        explicit_f REAL NOT NULL DEFAULT 0,
+        implicit_s REAL NOT NULL DEFAULT 0,
+        implicit_f REAL NOT NULL DEFAULT 0,
+        updated_at TEXT
+    );
+    """
+
+    # 建表段：CREATE TABLE IF NOT EXISTS / FTS / 触发器（对任意旧库幂等安全，先执行）
+    _SCHEMA_TABLES = f"""
+    CREATE TABLE IF NOT EXISTS memory_entries (
+        id TEXT PRIMARY KEY,
+        factor_name TEXT NOT NULL,
+        expression TEXT NOT NULL,
+        conclusion TEXT,
+        verdict TEXT NOT NULL,
+        stage TEXT,
+        profile_id TEXT,
+        profile_hash TEXT,
+        candidate_id TEXT,
+        metrics_json TEXT NOT NULL DEFAULT '{{}}',
+        interaction_json TEXT,
+        error TEXT,
+        failure_code TEXT,
+        fail_detail TEXT,
+        mechanism TEXT,
+        family TEXT,
+        last_run_id TEXT,
+        attempts INTEGER NOT NULL DEFAULT 1,
+        tokens_json TEXT NOT NULL DEFAULT '[]',
+        stage_metrics_json TEXT NOT NULL DEFAULT '{{}}',
+        created_at TEXT,
+        updated_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS store_meta (
+        k TEXT PRIMARY KEY,
+        v TEXT
+    );
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
+        entry_id UNINDEXED,
+        factor_name,
+        expression,
+        conclusion,
+        failure_code,
+        search_tokens,
+        tokenize='unicode61'
+    );
+
+    CREATE TRIGGER IF NOT EXISTS memory_entries_after_delete
+    AFTER DELETE ON memory_entries
+    BEGIN
+        DELETE FROM memory_fts WHERE entry_id = old.id;
+    END;
+
+    {_CELLS_DDL}
+
+    CREATE TABLE IF NOT EXISTS memory_experience (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        name TEXT NOT NULL,
+        content TEXT NOT NULL,
+        template TEXT,
+        evidence_json TEXT,
+        example_factors_json TEXT NOT NULL DEFAULT '[]',
+        correlated_json TEXT NOT NULL DEFAULT '[]',
+        typical_correlation REAL,
+        occurrence_count INTEGER NOT NULL DEFAULT 1,
+        success_tier TEXT,
+        run_id TEXT,
+        created_at TEXT,
+        updated_at TEXT
+    );
+    """
+
+    # 索引段：必须在 ALTER 补列之后执行（索引引用 family/verdict/updated_at 等迁移列）
+    _SCHEMA_INDEXES = """
+    CREATE INDEX IF NOT EXISTS idx_memory_entries_verdict ON memory_entries(verdict);
+    CREATE INDEX IF NOT EXISTS idx_memory_entries_updated_at ON memory_entries(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_memory_entries_family ON memory_entries(family);
+    CREATE INDEX IF NOT EXISTS idx_memory_cells_family ON memory_cells(family);
+    CREATE INDEX IF NOT EXISTS idx_memory_experience_kind ON memory_experience(kind);
+    """
+
+    _DATA_VERSION = "3"
+    _RESIDUAL_CAP = 50
+    _EXAMPLE_CAP = 10
+
+    def __init__(
+        self,
+        path: Path,
+        *,
+        apv_tau_c: float = APV_TAU_C_DEFAULT,
+        apv_tau_v: float = APV_TAU_V_DEFAULT,
+        eq7_kappa: float = EQ7_KAPPA_DEFAULT,
+        max_inject_chars: int = 2400,
+        hard_block_duplicates: bool = False,
+    ) -> None:
+        self.path = Path(path).expanduser().resolve()
+        if self.path.suffix.lower() == ".json":
+            self.path = self.path.with_suffix(".db")
+        self.apv_tau_c = float(apv_tau_c)
+        self.apv_tau_v = float(apv_tau_v)
+        self.eq7_kappa = float(eq7_kappa)
+        self.max_inject_chars = max(0, int(max_inject_chars))
+        self.hard_block_duplicates = bool(hard_block_duplicates)
+        self._schema_ready = False
+        self._div_cache: tuple[int, float, str] | None = None
+
+    @contextmanager
+    def _open(self):
+        conn = sqlite3.connect(str(self.path), timeout=30)
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            self._ensure_schema(conn)
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    # ------------------------------------------------------------------
+ …14920 chars truncated…       child_ic = _safe_float(compact.get("ic"))
+            if parent is not None:
+                parent_stage_ic = self._parent_stage_ic(parent["stage_metrics_json"], stage)
+                if parent_stage_ic is not None:
+                    bucket = _parent_bucket(parent_stage_ic)
+                    motif = extract_edit_motif(parent["expression"], expression)
+                    origin = parent_origin or "implicit"
+                    weight = PARENT_ORIGIN_WEIGHT.get(origin, 0.5)
+                    if error and child_ic is None:
+                        self._update_cell_conn(
+                            conn, family=family, motif=motif, bucket=bucket,
+                            child_ic=None, parent_ic=parent_stage_ic,
+                            success=False, origin=origin, weight=INVALID_WEIGHT, invalid=True,
+                        )
+                    elif child_ic is not None and not error:
+                        self._update_cell_conn(
+                            conn, family=family, motif=motif, bucket=bucket,
+                            child_ic=child_ic, parent_ic=parent_stage_ic,
+                            success=verdict in POSITIVE_VERDICTS, origin=origin, weight=weight,
+                        )
+
+        entry = {
+            "id": signature,
+            "factor_name": factor_name,
+            "expression": expression,
+            "tokens": tokens,
+            "verdict": verdict,
+            "conclusion": conclusion,
+            "stage": stage,
+            "profile_id": profile_id,
+            "profile_hash": result.get("profile_hash"),
+            "candidate_id": candidate_id,
+            "metrics": compact,
+            "failure_code": failure_code,
+            "fail_detail": fail_detail,
+            "parent_id": parent["id"] if parent else None,
+            "parent_origin": parent_origin,
+            "secondary_parent_id": secondary_parent_id,
+            "intended_motif": intended_motif,
+            "family": family,
+            "last_run_id": run_id,
+            "attempts": attempts,
+            "updated_at": now,
+        }
+        return entry
+
+    @staticmethod
+    def _parent_stage_ic(stage_metrics_json: str | None, stage: str) -> float | None:
+        try:
+            data = json.loads(stage_metrics_json or "{}")
+        except json.JSONDecodeError:
+            return None
+        entry = data.get(stage) if isinstance(data, dict) else None
+        if isinstance(entry, dict):
+            return _safe_float(entry.get("ic"))
+        return None
+
+    def _find_implicit_parent_conn(
+        self,
+        conn: sqlite3.Connection,
+        child_expression: str,
+        child_fingerprint: str,
+        *,
+        exclude_id: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any] | None:
+        """结构相似度隐式父链接：算子 0.4 + 特征 0.3 + 窗口 0.3。
+
+        v3 增强（对标 factorminer provenance.infer_parent_lineage）：
+        - 子串包含关系（互为字面子串且长度 >8）分数提升至 0.55；
+        - crossover 双父检测：第二高分 ≥0.35 且 ≥best−0.1 → 附 secondary_id。
+        返回 best dict（附 secondary_id）或 None（阈值 0.5）。
+        """
+        child_ops = expression_ops(child_expression)
+        child_feats = expression_features(child_expression)
+        child_wins = expression_windows(child_expression)
+        if not child_fingerprint or not child_ops:
+            return None
+        child_text = str(child_expression or "")
+        rows = conn.execute(
+            """
+            SELECT id, factor_name, expression, structure_fingerprint, stage_metrics_json
+            FROM memory_entries
+            WHERE id != COALESCE(?, '') AND expression IS NOT NULL
+            ORDER BY updated_at DESC LIMIT ?
+            """,
+            (exclude_id, int(limit)),
+        ).fetchall()
+        best: dict[str, Any] | None = None
+        best_score = 0.0
+        second: dict[str, Any] | None = None
+        second_score = 0.0
+        for r in rows:
+            # 注意：不做同指纹跳过——window_rescale / feature_swap 子代与父本
+            # 结构指纹相同，属真实编辑观测；同表达式重评估已由 id != exclude_id 排除。
+            parent_text = str(r["expression"] or "")
+            ops = expression_ops(parent_text)
+            feats = expression_features(parent_text)
+            wins = expression_windows(parent_text)
+            ops_union = child_ops | ops
+            ops_sim = len(child_ops & ops) / len(ops_union) if ops_union else 0.0
+            feats_union = child_feats | feats
+            feats_sim = len(child_feats & feats) / len(feats_union) if feats_union else 0.5
+            wins_union = child_wins | wins
+            wins_sim = len(child_wins & wins) / len(wins_union) if wins_union else 0.5
+            score = 0.4 * ops_sim + 0.3 * feats_sim + 0.3 * wins_sim

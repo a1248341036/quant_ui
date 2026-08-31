@@ -1,0 +1,117 @@
+CMD: Get-Content alphaagent\factor\mining\memory\constants.py -Encoding UTF8; Get-Content alphaagent\factor\mining\memory\expressions.py -Encoding UTF8 -TotalCount 80
+
+Chunk ID: e87265
+Wall time: 0.2727 seconds
+Process exited with code 0
+Original token count: 1152
+Output:
+# -*- coding: utf-8 -*-
+"""研究记忆共享常量：verdict 分类、AlphaMemo 校准阈值、观测权重。
+
+拆分自 research_memory.py（v3-lite），公共口径的唯一来源。
+"""
+
+from __future__ import annotations
+
+# ── verdict 分类 ──────────────────────────────────────────────────────
+POSITIVE_VERDICTS = frozenset({"production_approved", "validated", "candidate_approved", "promising"})
+NEGATIVE_VERDICTS = frozenset({"rejected", "revise_required", "weak"})
+VERDICT_ORDER = {
+    "production_approved": 0, "validated": 1, "candidate_approved": 2, "promising": 3,
+    "revise_required": 4, "rejected": 5, "weak": 6,
+}
+VERDICT_WEIGHT = {
+    "production_approved": 1.0, "validated": 0.9, "candidate_approved": 0.7,
+    "promising": 0.5, "revise_required": 0.3, "rejected": 0.3, "weak": 0.2,
+}
+
+# ── v3-lite：AlphaMemo 论文口径校准（Eq.7 置信 / Eq.11+16 双门 APV / 同桶衰减基线）──
+EQ7_KAPPA_DEFAULT = 8.0          # Eq.7 样本门 κ：n/(n+κ)
+APV_TAU_C_DEFAULT = 0.35         # Eq.11 门 1：置信阈值
+APV_TAU_V_DEFAULT = 0.80         # Eq.11 门 2：失败后验阈值
+BASELINE_HALF_LIFE_DAYS = 90.0   # 同桶基线时间衰减半衰期
+PARENT_ORIGIN_WEIGHT = {"explicit": 1.0, "implicit": 0.5}  # 显式父本观测权重更高
+INVALID_WEIGHT = 0.5             # 无效尝试（报错/超时）入账权重：失败观测但无 residual
+
+# 记忆库 schema 版本（store_meta.data_version）
+DATA_VERSION = "3"
+# -*- coding: utf-8 -*-
+"""表达式结构分析：token 化、结构指纹、编辑类型（motif）、信号族分类。
+
+拆分自 research_memory.py（v3-lite）。检索打分 / 指纹 / 多样性 / 父本解析共用。
+"""
+
+from __future__ import annotations
+
+import hashlib
+import re
+from typing import Any
+
+# ── tokenizer（检索用：结构化语义词）──────────────────────────────────
+_TOKEN_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9_]{2,}")
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]{2,}")
+_STOPWORDS = {
+    "add", "subtract", "multiply", "divide", "ts", "cs", "mean", "std", "rank", "expr", "factor",
+}
+
+
+def _cjk_tokens(text: str) -> set[str]:
+    """连续中文串 → bigram（无 jieba 依赖）。"""
+    if not text:
+        return set()
+    out: set[str] = set()
+    for seq in _CJK_RE.findall(text):
+        if len(seq) == 2:
+            out.add(seq)
+            continue
+        out.update(seq[i:i + 2] for i in range(len(seq) - 1))
+    return out
+
+
+def _tokens(*values: Any) -> list[str]:
+    """从结构化字段抽取可检索 token（英文词 + 下划线拆分 + 中文 bigram）。"""
+    found: set[str] = set()
+    for value in values:
+        text = str(value or "")
+        for token in _TOKEN_RE.findall(text):
+            token = token.lower()
+            found.add(token)
+            found.update(part for part in token.split("_") if len(part) >= 2)
+        found.update(_cjk_tokens(text))
+    return sorted(found - _STOPWORDS)
+
+
+# ── 表达式结构工具（轻量正则；检索打分 / 指纹 / 多样性共用）──────────
+_OPS_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+_WINDOWS_RE = re.compile(r",\s*(\d+(?:\.\d+)?)\s*\)")
+_FEATURES_RE = re.compile(r"\$[a-z_][a-z0-9_]*")
+
+
+def expression_ops(expression: str) -> set[str]:
+    return {op.lower() for op in _OPS_RE.findall(str(expression or ""))}
+
+
+def expression_features(expression: str) -> set[str]:
+    return set(_FEATURES_RE.findall(str(expression or "").lower()))
+
+
+def expression_windows(expression: str) -> set[str]:
+    return set(_WINDOWS_RE.findall(str(expression or "")))
+
+
+def _structure_fingerprint(expression: str) -> str:
+    """结构指纹：变量→VAR、数字→N、算子保留。同构表达式同指纹。"""
+    if not expression:
+        return ""
+    text = str(expression).strip()
+    text = re.sub(r"\$[a-zA-Z_][a-zA-Z0-9_]*", "VAR", text)
+    text = re.sub(r"\d+(?:\.\d+)?", "N", text)
+    text = re.sub(r"\s+", "", text)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+# ── AlphaMemo motif 提取（编辑类型分类，~40 行替代 v1 的 300 行解析器）──
+MOTIFS = (
+    "condition_gate", "rank_switch", "interaction_add", "window_rescale",
+    "operator_substitute", "feature_swap", "nesting_increase", "temporal_shift",
+    "normalization_change", "other",

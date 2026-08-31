@@ -1,0 +1,52 @@
+CMD: rg -n "^    (class |def |@)" alphaagent\factor\mining\research_memory.py
+
+Chunk ID: aa6397
+Wall time: 0.2139 seconds
+Process exited with code 0
+Original token count: 561
+Output:
+562:    def __init__(
+583:    @contextmanager
+584:    def _open(self):
+602:    def _ensure_schema(self, conn: sqlite3.Connection) -> None:
+634:    def _ensure_data_version(self, conn: sqlite3.Connection) -> None:
+659:    @staticmethod
+660:    def _metrics_json(metrics: dict[str, Any]) -> str:
+663:    @staticmethod
+664:    def _compact_metrics(metrics: dict[str, Any]) -> dict[str, float]:
+674:    @staticmethod
+675:    def _flatten_backtest_metrics(metrics: dict[str, Any], profile_metrics: dict[str, Any]) -> dict[str, Any]:
+697:    def _classify(
+727:    @staticmethod
+728:    def entry_signature(expr: str) -> str:
+732:    def record_tool_result(self, *, run_id: str, row: dict[str, Any]) -> dict[str, Any] | None:
+901:    @staticmethod
+902:    def _parent_stage_ic(stage_metrics_json: str | None, stage: str) -> float | None:
+912:    def _find_implicit_parent_conn(
+984:    def _resolve_parent_conn(
+1014:    @staticmethod
+1015:    def _weighted_counts(row: sqlite3.Row) -> tuple[float, float]:
+1023:    def _same_bucket_baseline(
+1044:    def _update_cell_conn(
+1153:    def _upsert_experience(
+1230:    def form_memory(self, *, run_id: str, turn: int, batch_results: list[dict[str, Any]]) -> dict[str, int]:
+1326:    @staticmethod
+1327:    def _fts_match_query(tokens: set[str]) -> str:
+1330:    def _retrieval_candidates(
+1374:    def _row_to_entry(self, row: sqlite3.Row) -> dict[str, Any]:
+1391:    def _hybrid_score(
+1413:    def _select_diverse(
+1439:    def _format_entry(
+1465:    def _evidence_block(
+1519:    def _experience_block(self) -> str:
+1559:    def _edit_prior_block(self, focus_families: set[str]) -> str:
+1654:    def _diversity_block(self, recent_batch: list[dict[str, Any]] | None = None) -> str:
+1716:    def context_for(
+1821:    def advisory_for(self, expression: str, *, edit_note: str | None = None) -> dict[str, Any] | None:
+1893:    def query_for_attempts(
+1920:    def recent(self, *, limit: int = 50) -> list[dict[str, Any]]:
+1933:    def statistics(self) -> dict[str, Any]:
+1953:    def delete_entry(self, entry_id: str) -> bool:
+1958:    def purge_factor(
+1978:    def backfill_from_logs(self, log_root: Path) -> int:
+2011:    def _backfill_v3_conn(self, conn: sqlite3.Connection) -> dict[str, int]:

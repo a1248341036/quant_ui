@@ -32,7 +32,7 @@
               <option v-for="s in paperEventStrategies()" :value="s">{{s}}</option>
             </select></label>
           </template>
-          <label class="field"><span>股票池</span><select v-model="paper.form.universe"><option>科技TMT</option><option>沪深300+中证500+中证1000</option><option>ETF</option><option>场外基金</option></select></label>
+          <label class="field"><span>股票池</span><select v-model="paper.form.universe"><option>科技TMT</option><option>沪深300+中证500+中证1000</option><option>全A主板</option><option>ETF</option><option>场外基金</option></select></label>
           <label class="field"><span>频率</span><select v-model="paper.form.freq"><option value="daily">每日</option><option value="weekly">每周</option><option value="monthly">每月</option></select></label>
           <label class="field"><span>资金</span><input type="number" v-model.number="paper.form.capital" step="10000"></label>
           <label class="field"><span>TopN</span><select v-model.number="paper.form.top_n"><option v-for="n in [1,2,3,5,8,10]" :value="n">{{n}}</option></select></label>

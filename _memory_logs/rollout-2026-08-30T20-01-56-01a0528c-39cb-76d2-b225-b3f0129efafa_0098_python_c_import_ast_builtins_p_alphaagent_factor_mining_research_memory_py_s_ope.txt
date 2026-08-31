@@ -1,0 +1,18 @@
+CMD: python -c "import ast,builtins; p='alphaagent/factor/mining/research_memory.py'; s=open(p,encoding='utf-8').read(); t=ast.parse(s); cls=next(n for n in t.body if isinstance(n,ast.ClassDef)); mods={'schema':[(466,560),(562,730)],'ingestion':[(732,1012)],'experience':[(1015,1321)],'retrieval':[(1327,1819)],'advisory':[(1821,1976)],'backfill':[(1978,2220)]}; lines=s.splitlines();
+for name,ranges in mods.items():
+  src='\n'.join('\n'.join(lines[a-1:b]) for a,b in ranges); src='class X:\n'+'\n'.join('    '+x for x in src.splitlines()) if False else src; tree=ast.parse(src); class_node=tree.body[0] if isinstance(tree.body[0],ast.ClassDef) else None; defined={n.name for n in class_node.body if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef,ast.Assign))}; used=set()
+  for n in ast.walk(tree):
+    if isinstance(n,ast.Name): used.add(n.id)
+  print(name, sorted(used-defined-{x for x in dir(builtins) if not x.startswith('_')}))"
+
+Chunk ID: 09daef
+Wall time: 0.2866 seconds
+Process exited with code 1
+Original token count: 50
+Output:
+Traceback (most recent call last):
+  File "<string>", line 3, in <module>
+  File "ast.py", line 52, in parse
+  File "<unknown>", line 1
+    _CELLS_DDL = """
+IndentationError: unexpected indent

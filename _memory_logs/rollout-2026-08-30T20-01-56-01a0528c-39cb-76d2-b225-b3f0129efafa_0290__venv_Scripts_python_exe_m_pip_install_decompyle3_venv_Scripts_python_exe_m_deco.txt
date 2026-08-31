@@ -1,0 +1,23 @@
+CMD: .venv\Scripts\python.exe -m pip install decompyle3; .venv\Scripts\python.exe -m decompyle3 alphaagent\factor\mining\memory\__pycache__\advisory.cpython-312.pyc > $env:TEMP\advisory_decomp.py 2>$env:TEMP\advisory_decomp.err; Get-Content $env:TEMP\advisory_decomp.err -Tail 20
+
+Chunk ID: 2a0bb1
+Wall time: 6.0851 seconds
+Process exited with code 0
+Original token count: 371
+Output:
+Looking in indexes: https://mirrors.aliyun.com/pypi/simple/
+Collecting decompyle3
+  Downloading https://mirrors.aliyun.com/pypi/packages/8f/61/ec0f299cc8e75ad9810d459850ac47cf59b0b5a1b0bcf922bef8831991a0/decompyle3-3.9.3-py3-none-any.whl (273 kB)
+Requirement already satisfied: click in d:\quant\quant_ui\.venv\lib\site-packages (from decompyle3) (8.4.2)
+Collecting spark-parser<1.9.2,>=1.8.9 (from decompyle3)
+  Downloading https://mirrors.aliyun.com/pypi/packages/f1/9f/771e5add2467b6cadbcb560290bb6d9a4b069c3ca8483181245f5ea2d83e/spark_parser-1.9.0-py312-none-any.whl (63 kB)
+Collecting xdis<6.3,>=6.1.0 (from decompyle3)
+  Downloading https://mirrors.aliyun.com/pypi/packages/cf/2b/b23e4de209a60d4b9ed177d232d5cf4924fb4e1f1525d500b5b5658cfdbc/xdis-6.1.8-py312-none-any.whl (197 kB)
+Requirement already satisfied: six>=1.10.0 in d:\quant\quant_ui\.venv\lib\site-packages (from xdis<6.3,>=6.1.0->decompyle3) (1.17.0)
+Requirement already satisfied: colorama in d:\quant\quant_ui\.venv\lib\site-packages (from click->decompyle3) (0.4.6)
+Installing collected packages: xdis, spark-parser, decompyle3
+Successfully installed decompyle3-3.9.3 spark-parser-1.9.0 xdis-6.1.8
+
+[notice] A new release of pip is available: 24.3.1 -> 26.2.1
+[notice] To update, run: D:\Quant\quant_ui\.venv\Scripts\python.exe -m pip install --upgrade pip
+D:\Quant\quant_ui\.venv\Scripts\python.exe: No module named decompyle3.__main__; 'decompyle3' is a package and cannot be directly executed

@@ -86,12 +86,25 @@ def _calc_label_nd_close_to_close(adj_close: pd.Series, hold_days: int) -> pd.Se
 
 
 def _derive_base_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """从原始行情宽表衍生 adj_*、vwap 等（不含 ret / label）。"""
+    """从原始行情宽表衍生 adj_*、vwap 等（不含 ret / label）。
+
+    资产类型兼容：
+    - ETF 等无复权因子的数据源缺 ``adjfactor``，兜底补 1.0（qfq 前复权价）。
+    - 缺 ``float_cap`` / ``tot_cap`` 时补 NaN（评估 profile 会跳过市值类指标）。
+    """
     df = df.copy()
     df = df.rename_axis(index={"code": "instrument"})
 
+    if "adjfactor" not in df.columns:
+        df["adjfactor"] = 1.0
+
     for col in ("open", "high", "low", "close"):
         df[f"adj_{col}"] = df[col] * df["adjfactor"]
+
+    if "float_cap" not in df.columns:
+        df["float_cap"] = np.nan
+    if "tot_cap" not in df.columns:
+        df["tot_cap"] = np.nan
 
     if "isTrade" in df.columns:
         df = df.rename(columns={"isTrade": "is_trade", "notST": "not_st"})

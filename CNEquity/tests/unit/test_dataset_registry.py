@@ -118,7 +118,9 @@ def test_legacy_tables_match_registry():
     assert fetch_semantics("trading_status") == "snapshot"
     assert fetch_semantics("daily_bars") == "by_date"
     assert history_mode("daily_bars") == "by_date"
-    assert history_mode("fund_flow") == "snapshot_only"
+    # fund_flow's Tushare moneyflow replay promotes it out of snapshot_only:
+    # tip snapshot daily + a dedicated historical source.
+    assert history_mode("fund_flow") == "snapshot_with_backfill"
     assert history_mode("trading_status") == "snapshot_with_backfill"
     assert history_mode("share_unlock_schedule") == "snapshot_with_backfill"
     assert history_mode("valuation_metrics") == "snapshot_with_backfill"

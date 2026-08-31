@@ -1,0 +1,8 @@
+CMD: .venv\Scripts\python.exe $env:TEMP\py312-decompiler-main\decompile.py alphaagent\factor\mining\memory\__pycache__\advisory.cpython-312.pyc -o $env:TEMP\advisory_312.py -v
+
+Chunk ID: 64e846
+Wall time: 0.2985 seconds
+Process exited with code 0
+Original token count: 17
+Output:
+Decompiled to: C:\Users\zhoubw\AppData\Local\Temp\advisory_312.py

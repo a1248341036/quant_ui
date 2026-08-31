@@ -189,6 +189,7 @@ def load_panel_from_cne(
     end: str | None = None,
     universe_mask: bool = False,
     include_fundamentals: bool = True,
+    asset_type: str = "stock",
 ) -> pd.DataFrame:
     """从 CNE 数据湖实时构建 AlphaAgent panel（插件化）。
 
@@ -201,6 +202,11 @@ def load_panel_from_cne(
     include_fundamentals : bool
         是否加载 fundamental（PIT 基本面）插件。False 时跳过，
         避免最重的 join_asof 展开耗时（默认 True 保持向后兼容）。
+    asset_type : str
+        资产类型：'stock'（默认）/ 'etf'。
+        - stock：加载全部插件（stock_daily_wide 为核心行情 + 辅助插件）。
+        - etf：只加载 etf_bars 插件（跳过股票行情与基本面辅助插件）。
+        ETF 无基本面/市值/估值列，评估 profile 会跳过市值类指标。
 
     Returns
     -------
@@ -221,14 +227,14 @@ def load_panel_from_cne(
     start = pd.Timestamp(start).strftime("%Y-%m-%d") if start is not None else None
     end = pd.Timestamp(end).strftime("%Y-%m-%d") if end is not None else None
 
-    if not universe_mask:
+    if not universe_mask and asset_type == "stock":
         cached = _find_cached_panel(start, end, include_fundamentals)
         if cached is not None and not cached.empty:
             return cached
 
     registry = get_registry()
-    logger.info("CNE adapter: building panel from %d plugins (start=%s end=%s include_fundamentals=%s)",
-                len(registry.list_plugins()), start, end, include_fundamentals)
+    logger.info("CNE adapter: building panel from %d plugins (start=%s end=%s include_fundamentals=%s asset_type=%s)",
+                len(registry.list_plugins()), start, end, include_fundamentals, asset_type)
 
     # 确保 core 插件加载后补充 is_trade / not_st 标记列
     panel = registry.build_panel(
@@ -236,13 +242,14 @@ def load_panel_from_cne(
         end=end,
         universe_mask=universe_mask,
         include_fundamentals=include_fundamentals,
+        asset_type=asset_type,
     )
 
     # 补充 core 插件特有的衍生标记列（is_trade, not_st）
     _enrich_trade_flags(panel)
 
     # 落盘缓存（universe_mask=True 的过滤结果不与通用缓存混用）
-    if not universe_mask:
+    if not universe_mask and asset_type == "stock":
         _save_cached_panel(cache_path, panel)
 
     logger.info("CNE adapter: panel shape=%s, columns=%d", panel.shape, panel.shape[1])

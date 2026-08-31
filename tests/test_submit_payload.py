@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from alphaagent.factor.mining import submit as submit_module
+from alphaagent.factor.mining.delivery import submit as submit_module
 from alphaagent.factor.mining.submit import FactorSubmitService
 
 
@@ -115,7 +115,7 @@ def submit_service(tmp_path: Path, monkeypatch) -> FactorSubmitService:
     )
     # 跳过 engine_gate 真实回测:桩返回通过
     monkeypatch.setattr(
-        "alphaagent.factor.mining.engine_gate.run_engine_gate",
+        "alphaagent.factor.mining.delivery.engine_gate.run_engine_gate",
         lambda *a, **k: {"passed": True, "fail_reasons": []},
     )
 

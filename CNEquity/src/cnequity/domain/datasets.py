@@ -562,6 +562,9 @@ _SPECS = [
         tier="L4",
         partition_col="trade_date",
         fetch_semantics="snapshot",
+        # Live clist snapshot cannot replay history, but the Tushare
+        # moneyflow fallback/primary CAN — that is what unlocks `cne backfill`.
+        backfill_source="tushare",
         description="个股资金流向",
     ),
     DatasetSpec(

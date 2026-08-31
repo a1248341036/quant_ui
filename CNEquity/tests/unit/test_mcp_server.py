@@ -246,20 +246,25 @@ def test_query_dataset_unknown_name_points_at_describe_lake(lake):
 
 
 def test_query_dataset_flags_snapshot_only_history(lake):
-    (lake.curated_root / "fund_flow" / "trade_date=2024-06-27").mkdir(parents=True)
+    # fund_flow left the snapshot_only club when Tushare moneyflow became its
+    # backfill source; analyst_consensus is still tip-only.
+    (lake.curated_root / "analyst_consensus" / "forecast_date=2024-06-27").mkdir(parents=True)
     pl.DataFrame(
         {
             "symbol": ["600519.SH"],
-            "trade_date": [date(2024, 6, 27)],
-            "main_net_inflow": [1.0],
-            "super_large_net_inflow": [1.0],
-            "large_net_inflow": [1.0],
-            "medium_net_inflow": [1.0],
-            "small_net_inflow": [1.0],
+            "forecast_date": [date(2024, 6, 27)],
+            "forecast_year": [2024],
+            "eps_forecast": [30.0],
+            "pe_forecast": [20.0],
+            "target_price": [1800.0],
+            "rating": ["买入"],
+            "analyst_count": [10],
             **_prov("eastmoney"),
         }
-    ).write_parquet(lake.curated_root / "fund_flow" / "trade_date=2024-06-27" / "part-0.parquet")
-    payload = tools.query_dataset(lake, dataset="fund_flow")
+    ).write_parquet(
+        lake.curated_root / "analyst_consensus" / "forecast_date=2024-06-27" / "part-0.parquet"
+    )
+    payload = tools.query_dataset(lake, dataset="analyst_consensus")
     assert payload["history_mode"] == "snapshot_only"
     assert "no honest deeper history" in payload["warning"] or "snapshot-only" in payload["warning"]
 

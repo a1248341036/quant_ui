@@ -417,15 +417,15 @@ _make_incremental_step("fina_indicator", api="fina_indicator", depends_on=["inst
 
 # EastMoney fundamentals — skip (source unreliable, historical data in curated)
 # financial_statement_items, earnings_disclosure_schedule, share_structure,
-# shareholder_counts, top_holders all fetch from EastMoney on every run (no
-# watermark check).  EastMoney frequently times out or returns partial data.
-# Historical data is already in the curated layer (cover to 2026-08-22).
-# These steps advance the watermark without fetching; run `cne backfill` for
-# a full refresh when needed.
+# top_holders all fetch from EastMoney on every run (no watermark check).
+# EastMoney frequently times out or returns partial data. Historical data is
+# already in the curated layer (cover to 2026-08-22). These steps advance the
+# watermark without fetching; run `cne backfill` for a full refresh when needed.
+# (shareholder_counts was in this list until it moved to the real Tushare step
+# below — stk_holdernumber ann_date batch probes verified 2026-09.)
 _make_skip_step("financial_statement_items", group="fundamentals", depends_on=["instruments"])
 _make_skip_step("earnings_disclosure_schedule", group="fundamentals", depends_on=["instruments"])
 _make_skip_step("share_structure", group="fundamentals", depends_on=["instruments"])
-_make_skip_step("shareholder_counts", group="fundamentals", depends_on=["instruments"])
 _make_skip_step("top_holders", group="fundamentals", depends_on=["instruments"])
 
 # L2/L8 corporate events — full-market ann_date batch
@@ -445,6 +445,57 @@ _make_date_range_step("namechange", api="namechange", depends_on=["instruments"]
 # Historical data is already in the curated layer from the import script.
 _make_skip_step("forecast", group="events", depends_on=["instruments"])
 _make_skip_step("express",  group="events", depends_on=["instruments"])
+
+
+# ─── Shareholder counts (Tushare stk_holdernumber) ────────────────────
+
+@register_step("shareholder_counts", group="fundamentals", depends_on=["instruments"], parallelizable=False)
+def step_shareholder_counts(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
+    """股东户数 — Tushare stk_holdernumber，ann_date 全市场逐日批量。
+
+    取代原 EastMoney skip-step（东财源不可靠被冻结，curated 历史停在
+    导入日）。按季度节奏到期时回扫整个当季（旬末/月末的临时披露是
+    该信号及时性的一半，见 SHAREHOLDER_COUNTS_SCHEMA 注释），
+    enriched 环比/户均列由 tushare_capital._enrich_holder_counts
+    从 curated 历史与宽表现算，写入 SHAREHOLDER_COUNTS_SCHEMA，
+    与东财历史无缝同表共存。
+    """
+    from datetime import timedelta
+
+    from cnequity.external.tushare_capital import fetch_holder_counts_tushare
+    from cnequity.steps.http_common import write_fetched
+
+    if not config.external_tushare_wide_token and not os.environ.get("TUSHARE_TOKEN"):
+        return {"status": "warning", "dataset": "shareholder_counts", "error": "tushare_token not configured"}
+
+    state = StateStore(config.meta_root)
+    watermark = state.get_date("shareholder_counts")
+    if not should_fetch("shareholder_counts", watermark, trade_date):
+        logger.info(
+            "shareholder_counts: cadence skip (watermark %s in same quarter as %s)",
+            watermark.isoformat() if watermark else "None",
+            trade_date.isoformat(),
+        )
+        state.set_date("shareholder_counts", trade_date)
+        return {"rows_read": 0, "rows_written": 0, "status": "success"}
+
+    if getattr(config, "_backfill", False):
+        start = getattr(config, "_backfill_start", None) or date(2016, 1, 1)
+        end = getattr(config, "_backfill_end", None) or trade_date
+    else:
+        # 季度到期：回扫当季全部自然日（公告可以落在任何一天）
+        start = date(trade_date.year, 3 * ((trade_date.month - 1) // 3) + 1, 1)
+        end = trade_date
+    logger.info("shareholder_counts: sweeping ann_date %s..%s", start.isoformat(), end.isoformat())
+
+    part = fetch_holder_counts_tushare(start, end, config=config)
+    state.set_date("shareholder_counts", trade_date)
+    if part.is_empty():
+        logger.info("shareholder_counts: no disclosures announced in %s..%s", start.isoformat(), end.isoformat())
+        return {"rows_read": 0, "rows_written": 0, "status": "success"}
+    result = write_fetched(config, run_id, "shareholder_counts", part, source="tushare")
+    logger.info("shareholder_counts: watermark → %s", trade_date.isoformat())
+    return result
 
 
 # ─── Snapshot step (report_rc) ────────────────────────────────────────

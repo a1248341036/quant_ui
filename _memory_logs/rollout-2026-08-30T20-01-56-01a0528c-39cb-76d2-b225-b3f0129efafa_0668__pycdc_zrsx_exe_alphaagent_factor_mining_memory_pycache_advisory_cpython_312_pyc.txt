@@ -1,0 +1,52 @@
+CMD: .\pycdc_zrsx.exe alphaagent\factor\mining\memory\__pycache__\advisory.cpython-312.pyc > $env:TEMP\advisory_zrsx.py; Get-Content $env:TEMP\advisory_zrsx.py -TotalCount 30
+
+Chunk ID: 17a7d0
+Wall time: 0.2479 seconds
+Process exited with code 0
+Original token count: 416
+Output:
+Wrong block type 1 for END_FOR
+Wrong block type 0 for END_FOR
+Wrong block type 0 for END_FOR
+Something TERRIBLE happened!
+Wrong block type 0 for END_FOR
+Wrong block type 0 for END_FOR
+Something TERRIBLE happened!
+Wrong block type 0 for END_FOR
+Something TERRIBLE happened!
+Something TERRIBLE happened!
+Wrong block type 1 for END_FOR
+Something TERRIBLE happened!
+Wrong block type 0 for END_FOR
+Wrong block type 4 for END_FOR
+Wrong block type 4 for END_FOR
+# Source Generated with Decompyle++
+# File: alphaagent\factor\mining\memory\__pycache__\advisory.cpython-312.pyc (Python 3.12)
+
+'''评估前 advisory、尝试查询和管理接口。'''
+from __future__ import annotations
+import json
+import sqlite3
+from typing import Any
+from calibration import _apv_gate, _eq7_confidence
+from constants import VERDICT_ORDER
+from diagnostics import _parse_args
+from expressions import _structure_fingerprint, classify_family, motif_from_note
+
+class AdvisoryMixin:
+    
+    def advisory_for(self, expression, *, edit_note = None):
+        '''评估前硬提醒通道（v3）：指纹负证据 / 意向编辑 APV 双门。默认只提示不拦截。
+
+        返回 None（无提醒）或 {"advisories": [...], "blocked": False}；
+        hard_block_duplicates=True 时由调用方（tools.dispatch）把 duplicate 类提醒升级为拦截。
+        '''
+        if not expression:
+            expression
+        expression = str('').strip()
+        if not expression:
+            return None
+        findings = []
+        fingerprint = _structure_fingerprint(expression)
+        family = classify_family('', expression)
+        

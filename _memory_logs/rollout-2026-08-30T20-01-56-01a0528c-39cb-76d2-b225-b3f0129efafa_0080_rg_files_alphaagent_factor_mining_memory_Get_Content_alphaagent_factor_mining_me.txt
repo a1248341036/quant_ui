@@ -1,0 +1,14 @@
+CMD: rg --files alphaagent\factor\mining\memory; Get-Content alphaagent\factor\mining\memory\__init__.py -Encoding UTF8
+
+Chunk ID: 2907e7
+Wall time: 0.3764 seconds
+Process exited with code 1
+Original token count: 100
+Output:
+alphaagent\factor\mining\memory\expressions.py
+alphaagent\factor\mining\memory\constants.py
+Get-Content: 
+Line |
+   2 |  … ing\memory; Get-Content alphaagent\factor\mining\memory\__init__.py - …
+     |                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+     | Cannot find path 'D:\Quant\quant_ui\alphaagent\factor\mining\memory\__init__.py' because it does not exist.

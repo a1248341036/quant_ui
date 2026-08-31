@@ -60,7 +60,7 @@ def test_cached_ingest_metrics_hits_and_isolates():
 
 
 def test_cached_ingest_metrics_fifo_eviction(monkeypatch):
-    import alphaagent.factor.mining.submit as sm
+    import alphaagent.factor.mining.delivery.submit as sm
 
     monkeypatch.setattr(sm, "_INGEST_METRICS_CACHE_MAX", 3)
     cache: dict = {}

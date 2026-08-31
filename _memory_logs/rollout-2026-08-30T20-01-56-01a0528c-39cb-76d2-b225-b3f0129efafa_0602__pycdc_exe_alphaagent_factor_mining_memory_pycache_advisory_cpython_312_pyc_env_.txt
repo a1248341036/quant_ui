@@ -1,0 +1,53 @@
+CMD: .\pycdc.exe alphaagent\factor\mining\memory\__pycache__\advisory.cpython-312.pyc > $env:TEMP\advisory_decomp.py; Get-Content $env:TEMP\advisory_decomp.py -TotalCount 40
+
+Chunk ID: 20167e
+Wall time: 0.2542 seconds
+Process exited with code 0
+Original token count: 544
+Output:
+Unsupported opcode: LOAD_FAST_CHECK (237)
+Unsupported opcode: RETURN_GENERATOR (109)
+Unsupported opcode: LOAD_FAST_CHECK (237)
+Unsupported opcode: RETURN_GENERATOR (109)
+Unsupported opcode: LOAD_FAST_CHECK (237)
+Unsupported opcode: LOAD_FAST_AND_CLEAR (241)
+# Source Generated with Decompyle++
+# File: alphaagent\factor\mining\memory\__pycache__\advisory.cpython-312.pyc (Python 3.12)
+
+'''评估前 advisory、尝试查询和管理接口。'''
+from __future__ import annotations
+import json
+import sqlite3
+from typing import Any
+from calibration import _apv_gate, _eq7_confidence
+from constants import VERDICT_ORDER
+from diagnostics import _parse_args
+from expressions import _structure_fingerprint, classify_family, motif_from_note
+
+class AdvisoryMixin:
+    
+    def advisory_for(self = None, expression = None, *, edit_note):
+        '''评估前硬提醒通道（v3）：指纹负证据 / 意向编辑 APV 双门。默认只提示不拦截。
+
+        返回 None（无提醒）或 {"advisories": [...], "blocked": False}；
+        hard_block_duplicates=True 时由调用方（tools.dispatch）把 duplicate 类提醒升级为拦截。
+        '''
+        if not expression:
+            expression
+        expression = str('').strip()
+        if not expression:
+            return None
+        findings = []
+        fingerprint = _structure_fingerprint(expression)
+        family = classify_family('', expression)
+        conn = self._open()
+        row = conn.execute("\n                SELECT factor_name, verdict, fail_detail, attempts FROM memory_entries\n                WHERE structure_fingerprint = ? AND verdict IN ('rejected', 'revise_required', 'weak')\n                ORDER BY updated_at DESC LIMIT 1\n                ", (fingerprint,)).fetchone()
+        None(None, None)
+    # WARNING: Decompyle incomplete
+
+    
+    def query_for_attempts(self = None, research_goal = None, recent_rows = None, *, max_recent_attempts, max_expression_chars):
+        '''构建检索查询（goal + 当前 run 最新工作），供证据块检索用。'''
+        if not research_goal:
+            research_goal
+        parts = [

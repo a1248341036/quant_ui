@@ -1,0 +1,241 @@
+CMD: Get-Content alphaagent\factor\mining\research_memory.py -Encoding UTF8 | Select-Object -Skip 70 -First 395
+
+Chunk ID: 8168f3
+Wall time: 0.3634 seconds
+Process exited with code 0
+Original token count: 4192
+Output:
+Warning: truncated output (original token count: 4192)
+Total output lines: 395
+
+
+def _cjk_tokens(text: str) -> set[str]:
+    """连续中文串 → bigram（无 jieba 依赖）。"""
+    if not text:
+        return set()
+    out: set[str] = set()
+    for seq in _CJK_RE.findall(text):
+        if len(seq) == 2:
+            out.add(seq)
+            continue
+        out.update(seq[i:i + 2] for i in range(len(seq) - 1))
+    return out
+
+
+def _tokens(*values: Any) -> list[str]:
+    """从结构化字段抽取可检索 token（英文词 + 下划线拆分 + 中文 bigram）。"""
+    found: set[str] = set()
+    for value in values:
+        text = str(value or "")
+        for token in _TOKEN_RE.findall(text):
+            token = token.lower()
+            found.add(token)
+            found.update(part for part in token.split("_") if len(part) >= 2)
+        found.update(_cjk_tokens(text))
+    return sorted(found - _STOPWORDS)
+
+
+# ── 表达式结构工具（轻量正则；检索打分 / 指纹 / 多样性共用）──────────
+_OPS_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+_WINDOWS_RE = re.compile(r",\s*(\d+(?:\.\d+)?)\s*\)")
+_FEATURES_RE = re.compile(r"\$[a-z_][a-z0-9_]*")
+
+
+def expression_ops(expression: str) -> set[str]:
+    return {op.lower() for op in _OPS_RE.findall(str(expression or ""))}
+
+
+def expression_features(expression: str) -> set[str]:
+    return set(_FEATURES_RE.findall(str(expression or "").lower()))
+
+
+def expression_windows(expression: str) -> set[str]:
+    return set(_WINDOWS_RE.findall(str(expression or "")))
+
+
+def _structure_fingerprint(expression: str) -> str:
+    """结构指纹：变量→VAR、数字→N、算子保留。同构表达式同指纹。"""
+    if not expression:
+        return ""
+    text = str(expression).strip()
+    text = re.sub(r"\$[a-zA-Z_][a-zA-Z0-9_]*", "VAR", text)
+    text = re.sub(r"\d+(?:\.\d+)?", "N", text)
+    text = re.sub(r"\s+", "", text)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+# ── AlphaMemo motif 提取（编辑类型分类，~40 行替代 v1 的 300 行解析器）──
+MOTIFS = (
+    "condition_gate", "rank_switch", "interaction_add", "window_rescale",
+    "operator_substitute", "feature_swap", "nesting_increase", "temporal_shift",
+    "normalization_change", "other",
+)
+
+_RANK_OPS = {"rank", "cs_rank", "ts_rank"}
+_TEMPORAL_OPS = {"delay", "delta", "ts_delay", "ts_delta", "ts_pctchange"}
+_NORM_OPS = {
+    "log", "abs", "sign", "sqrt", "cs_winsorize", "cs_zscore", "cs_rank", "rank",
+    "cs_demean", "winsorize", "zscore", "normalize", "demean", "cs_quantile", "quantile",
+}
+_COMBINE_OPS = {"multiply", "divide", "add", "subtract"}
+_CONDITION_OPS = {"if_else", "cond", "where"}
+
+
+def extract_edit_motif(parent: str | None, child: str | None) -> str:
+    """父子表达式 → 编辑类型（AlphaMemo extract_edit_motif 移植，适配本 DSL）。"""
+    if not parent or not child:
+        return "other"
+    p, c = str(parent).strip(), str(child).strip()
+    if not p or not c or p == c:
+        return "other"
+    p_ops, c_ops = expression_ops(p), expression_ops(c)
+    added, removed = c_ops - p_ops, p_ops - c_ops
+    p_wins, c_wins = expression_windows(p), expression_windows(c)
+    p_feats, c_feats = expression_features(p), expression_features(c)
+
+    if added & _CONDITION_OPS:
+        return "condition_gate"
+    if (_RANK_OPS & p_ops) and (_RANK_OPS & c_ops) and (_RANK_OPS & p_ops) != (_RANK_OPS & c_ops):
+        return "rank_switch"
+    if c_wins != p_wins and p_ops == c_ops:
+        return "window_rescale"
+    if p_feats != c_feats:
+        return "feature_swap"
+    if added & _COMBINE_OPS and len(c) > len(p) * 1.15:
+        return "interaction_add"
+    if added & _TEMPORAL_OPS:
+        return "temporal_shift"
+    if added & _NORM_OPS:
+        return "normalization_change"
+    if removed and added:
+        return "operator_substitute"
+    if c.count("(") > p.count("(") + 1:
+        return "nesting_increase"
+    return "other"
+
+
+# ── 信号族分类 ────────────────────────────────────────────────────────
+_FAMILY_RULES: dict[str, tuple[str, ...]] = {
+    "gap_overnight": ("gap", "overnight", "open_close", "on_id", "on_ret", "id_ret"),
+    "vwap": ("vwap",),
+    "chip": ("chip", "peak", "entropy"),
+    "momentum": ("momentum", "pctchange", "ma_w", "ma20", "ma_dev", "delta"),
+    "reversal": ("reversal", "neg_ts"),
+    "volume": ("volume", "amount", "turnover"),
+    "volatility": ("std", "var", "vol_"),
+    "fundamental": ("funda_", "roe", "roa", "growth", "quality", "value"),
+    "correlation": ("corr", "cov", "rankcorr"),
+    "liquidity": ("liquidity", "float", "amihud"),
+    "breadth": ("breadth", "advance", "decline"),
+}
+
+
+def classify_family(factor_name: str, expression: str) -> str:
+    text = (str(factor_name or "") + " " + str(expression or "")).l…5767 chars truncated…["fail_reasons"][:4]))
+    sim = result.get("similarity") if isinstance(result.get("similarity"), dict) else {}
+    max_corr = _safe_float(sim.get("max_abs_corr"))
+    if max_corr is not None and max_corr >= 0.4:
+        parts.append(f"correlation:max_corr={max_corr:.2f}")
+    if not parts and error:
+        m = re.search(r"engine_gate_failed:([a-z_,]+)", error.lower())
+        if m:
+            parts.append("engine_gate:" + m.group(1)[:60])
+        elif "corr" in error.lower() or "similar" in error.lower() or "duplicate" in error.lower():
+            parts.append("correlation")
+    return ";".join(parts)[:200] or None
+
+
+def _failure_code(name: str, result: dict[str, Any], error: str, verdict: str) -> str | None:
+    if not error and verdict not in {"weak", "rejected", "revise_required"}:
+        return None
+    text = error.lower()
+    if "timeout" in text:
+        return "model_timeout" if "model" in text else "eval_timeout"
+    if "corr" in text or "similar" in text or "duplicate" in text:
+        return "correlation_duplicate"
+    if "sign" in text:
+        return "sign_flip"
+    if name == "submit_factor":
+        if "engine_gate" in text:
+            return "backtest_failed"
+        return "stage_one_failed" if not result.get("candidate_stored") else "stage_two_failed"
+    if name == "eval_on_train_set":
+        return "train_threshold"
+    if name == "eval_on_val_set":
+        return "val_threshold"
+    return "tool_error" if error else "metric_threshold"
+
+
+# ── FactorMiner 式签名（成功模式 / 禁忌方向的归类先验）────────────────
+_SUCCESS_SIGNATURES: dict[str, dict[str, Any]] = {
+    "条件门高阶矩状态机": {
+        "keywords": ["if_else", "cond", "skew", "kurt", "greater", "less"],
+        "description": "用 Skew/Kurt/比较算子做 IfElse 条件门，在高阶矩状态间切换因子行为。",
+    },
+    "量价相关交互": {
+        "keywords": ["ts_corr", "ts_cov", "corr", "$volume", "$amt"],
+        "description": "量价滚动相关作为信号或条件变量，捕捉供需失衡。",
+    },
+    "稳健效率秩": {
+        "keywords": ["median", "ts_median", "rank", "cs_rank"],
+        "description": "Median 抗噪 + 截面秩标准化，提升 ICIR 稳定性。",
+    },
+    "平滑效率秩": {
+        "keywords": ["ema", "wma", "rank", "cs_rank", "ts_mean"],
+        "description": "EMA/平滑降噪后接截面秩，保证截面可比性。",
+    },
+    "趋势回归自适应": {
+        "keywords": ["slope", "rsquare", "resi", "ts_regression", "ts_linreg"],
+        "description": "滚动回归斜率/残差/R² 捕捉趋势强度与偏离。",
+    },
+    "筹码结构": {
+        "keywords": ["chip_"],
+        "description": "CHIP_* 筹码分布类结构（成本/获利盘/集中度）。",
+    },
+    "长平滑双信号正交叠加": {
+        "keywords": ["ts_mean", "subtract", "cs_neutralize", "cs_bucket"],
+        "description": "≥10 日平滑的差分信号 + 市值分组中性化，低换手可过 engine_gate。",
+    },
+}
+
+_FORBIDDEN_SIGNATURES: dict[str, dict[str, Any]] = {
+    "隔夜跳空/日内差分原始变体": {
+        "keywords": ["$adj_open", "$adj_close", "subtract", "divide"],
+        "typical_corr": 0.5,
+        "reason": "隔夜跳空/日内收益原始差分族高度相关且日换手高，难过 engine_gate",
+    },
+    "短窗动量反转": {
+        "keywords": ["ts_pctchange", "delta", "ts_delta"],
+        "typical_corr": 0.5,
+        "reason": "短窗动量/反转差分同质化（rho>0.5）",
+    },
+    "同基信号换平滑器": {
+        "keywords": ["wma", "ema", "ts_mean"],
+        "typical_corr": 0.9,
+        "reason": "同基信号换 WMA/EMA/TS_MEAN 近似同一因子（rho>0.9）",
+    },
+    "标准化量额信号": {
+        "keywords": ["cs_zscore", "$volume", "$amount", "std"],
+        "typical_corr": 0.6,
+        "reason": "标准化量额变体聚簇（rho>0.6）",
+    },
+}
+
+
+def _match_signature(expression: str, signatures: dict[str, dict[str, Any]]) -> str | None:
+    ops = expression_ops(expression)
+    feats = expression_features(expression)
+    tokens = ops | feats
+    for sig_name, info in signatures.items():
+        kws = info["keywords"]
+        hits = sum(1 for kw in kws if any(kw == t or kw in t for t in tokens))
+        if hits >= min(2, len(kws)):
+            return sig_name
+    return None
+
+
+# ── 主存储 ────────────────────────────────────────────────────────────
+class ResearchMemoryStore:
+    """跨 run 持久化研究记忆：原始证据层 + (family×motif×父本桶) 编辑单元 + 蒸馏经验层。"""
+
+    # cells v3 DDL：父本质量桶进入主键；成败按 explicit/implicit 原始计数分列（读取时按 1.0/0.5 加权）

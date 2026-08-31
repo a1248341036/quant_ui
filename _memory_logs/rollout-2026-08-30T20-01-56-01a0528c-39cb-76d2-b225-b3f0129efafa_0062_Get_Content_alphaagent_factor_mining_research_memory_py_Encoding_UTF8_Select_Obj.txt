@@ -1,0 +1,239 @@
+CMD: Get-Content alphaagent\factor\mining\research_memory.py -Encoding UTF8 | Select-Object -Skip 960 -First 500
+
+Chunk ID: a92f69
+Wall time: 0.3066 seconds
+Process exited with code 0
+Original token count: 5735
+Output:
+Warning: truncated output (original token count: 5735)
+Total output lines: 500
+
+            # 子串包含加成：去掉空白后互为子串 → 真实的包裹/拆解编辑关系
+            if len(child_text) > 8 and len(parent_text) > 8:
+                c_compact = "".join(child_text.split())
+                p_compact = "".join(parent_text.split())
+                if c_compact != p_compact and (c_compact in p_compact or p_compact in c_compact):
+                    score = max(score, 0.55)
+            if score > best_score:
+                second, second_score = best, best_score
+                best_score = score
+                best = dict(r)
+            elif score > second_score:
+                second, second_score = dict(r), score
+        if best is None or best_score <= 0.5:
+            return None
+        if (
+            second is not None
+            and second["id"] != best["id"]
+            and second_score >= 0.35
+            and second_score >= best_score - 0.1
+        ):
+            best["secondary_id"] = second["id"]
+        return best
+
+    def _resolve_parent_conn(
+        self,
+        conn: sqlite3.Connection,
+        child_expression: str,
+        child_fingerprint: str,
+        *,
+        declared: str | None = None,
+        exclude_id: str | None = None,
+    ) -> tuple[dict[str, Any] | None, str | None, str | None]:
+        """v3 父本解析：显式声明优先（factor_name / id / id 前缀精确命中），否则隐式兜底。
+
+        返回 (parent, origin, secondary_parent_id)；origin ∈ {'explicit','implicit',None}。
+        """
+        if declared:
+            row = conn.execute(
+                """
+                SELECT id, factor_name, expression, structure_fingerprint, stage_metrics_json
+                FROM memory_entries
+                WHERE (factor_name = ? OR id = ? OR id LIKE ?) AND id != COALESCE(?, '')
+                ORDER BY updated_at DESC LIMIT 1
+                """,
+                (declared, declared, declared + "%", exclude_id or ""),
+            ).fetchone()
+            if row is not None:
+                return dict(row), "explicit", None
+        parent = self._find_implicit_parent_conn(conn, child_expression, child_fingerprint, exclude_id=exclude_id)
+        if parent is None:
+            return None, None, None
+        return parent, "implicit", parent.get("secondary_id")
+
+    @staticmethod
+    def _weighted_counts(row: sqlite3.Row) -> tuple[float, float]:
+        """cells 行 → (successes_w, failures_w)。
+
+        列存**加权值**：explicit 正常 ±1.0 / implicit 正常 ±0.5 / invalid ±0.5（写入时已折算），
+        此处直接相加。v3 迁移前的 legacy 条目全为 implicit。
+        """
+        return float(row["explicit_s"]) + float(row["implicit_s"]), float(row["explicit_f"]) + float(row["implicit_f"])
+
+    def _same_bucket_baseline(
+        self,
+        conn: sqlite3.Connection,
+        family: str,
+        bucket: str,
+        parent_ic: float,
+    ) -> float:
+        """AlphaMemo Eq.4：基线 = 同 (family, bucket) 历史子代加权均值；无同桶历史回退父本自身质量。"""
+        row = conn.execute(
+            "SELECT v FROM store_meta WHERE k = ?", (f"v3_base_{family}_{bucket}",)
+        ).fetchone()
+        if row:
+            try:
+                state = json.loads(row["v"])
+            except json.JSONDecodeError:
+                state = {}
+            n = float(state.get("n", 0.0))
+            if n >= 1.0:
+                return float(state.get("sw", 0.0)) / n
+        return parent_ic
+
+    def _update_cell_conn(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        family: str,
+        motif: str,
+        bucket: str,
+        child_ic: float | None,
+        parent_ic: float,
+        success: bool,
+        origin: str,
+        weight: float,
+        invalid: bool = False,
+    ) -> None:
+        """AlphaMemo ResidualMemory.update（v3）：
+
+        - cell key = (family, motif, parent_bucket)，父本质量进入统计键；
+        - residual = child_ic − 同 (family, bucket) 时间衰减基线（half-life 90d），全量保留；
+        - 成败按 explicit/implicit 列分计（origin 决定列，weight 决定计入幅度：
+          正常 explicit ±1.0 / 正常 implicit ±0.5 / invalid ±0.5——列存加权值）；
+        - invalid 尝试只记失败（无 residual、不入基线）。
+        """
+        cell_key = hashlib.sha256(f"{family}|{motif}|{bucket}".encode("utf-8")).hexdigest()[:20]
+        now = _now()
+        cell = conn.execute(
+            "SELECT residuals_json, explicit_s, explicit_f, implicit_s, implicit_f FROM memory_cells WHERE cell_key = ?",
+            (cell_key,),
+        ).fetchone()
+        if cell:
+            try:
+                residuals = json.loads(cell["residuals_json"] or "[]")
+            except json.JSONDecodeError:
+                residuals = []
+            explicit_s, explicit_f = float(cell["expli…12529 chars truncated…l()
+            for row in recent_rows:
+                entry = self._row_to_entry(row)
+                entry["_bm25"] = 0.0
+                candidates[entry["id"]] = entry
+            match_query = self._fts_match_query(set(_tokens(research_goal)))
+            if match_query:
+                matched_rows = conn.execute(
+                    f"""
+                    SELECT e.*, -bm25(memory_fts) AS relevance
+                    FROM memory_fts JOIN memory_entries e ON e.id = memory_fts.entry_id
+                    WHERE memory_fts MATCH ? {filters}
+                    ORDER BY relevance DESC LIMIT ?
+                    """,
+                    (match_query, *filter_args, int(scan_limit)),
+                ).fetchall()
+                for row in matched_rows:
+                    entry = self._row_to_entry(row)
+                    entry["_bm25"] = float(row["relevance"])
+                    existing = candidates.get(entry["id"])
+                    if existing is None:
+                        candidates[entry["id"]] = entry
+                    else:
+                        existing["_bm25"] = max(float(existing.get("_bm25", 0.0)), float(row["relevance"]))
+        return list(candidates.values())
+
+    def _row_to_entry(self, row: sqlite3.Row) -> dict[str, Any]:
+        family = row["family"] if "family" in row.keys() else None
+        return {
+            "id": row["id"],
+            "factor_name": row["factor_name"],
+            "expression": row["expression"],
+            "conclusion": row["conclusion"],
+            "verdict": row["verdict"],
+            "stage": row["stage"],
+            "metrics": json.loads(row["metrics_json"] or "{}"),
+            "failure_code": row["failure_code"] if "failure_code" in row.keys() else None,
+            "fail_detail": row["fail_detail"] if "fail_detail" in row.keys() else None,
+            "family": family or classify_family(row["factor_name"], row["expression"]),
+            "updated_at": row["updated_at"],
+            "attempts": row["attempts"] if "attempts" in row.keys() else 1,
+        }
+
+    def _hybrid_score(
+        self,
+        entry: dict[str, Any],
+        *,
+        query_ops: set[str],
+        focus_families: set[str],
+        now_ts: float,
+    ) -> float:
+        bm25 = float(entry.get("_bm25", 0.0))
+        family_affinity = 0.3 if entry.get("family") in focus_families else 0.0
+        entry_ops = expression_ops(entry.get("expression") or "")
+        op_jaccard = (
+            len(query_ops & entry_ops) / len(query_ops | entry_ops) if (query_ops | entry_ops) else 0.0
+        )
+        verdict_w = VERDICT_WEIGHT.get(str(entry.get("verdict")), 0.2)
+        try:
+            age_days = max(0.0, (now_ts - datetime.fromisoformat(str(entry.get("updated_at"))).timestamp()) / 86400.0)
+        except (ValueError, TypeError):
+            age_days = 30.0
+        recency = math.exp(-age_days / 90.0)
+        return bm25 + family_affinity + 0.2 * op_jaccard + 0.3 * verdict_w + 0.2 * recency
+
+    def _select_diverse(
+        self,
+        scored: list[tuple[float, dict[str, Any]]],
+        *,
+        limit: int,
+        max_per_family: int = 2,
+    ) -> list[tuple[float, dict[str, Any]]]:
+        """(family ≤2, 结构指纹 =1) 双重去重后的贪心选择。"""
+        family_count: dict[str, int] = {}
+        seen_fp: set[str] = set()
+        out: list[tuple[float, dict[str, Any]]] = []
+        for score, entry in scored:
+            family = entry.get("family") or "other"
+            fp = _structure_fingerprint(entry.get("expression") or "")
+            if fp and fp in seen_fp:
+                continue
+            if family_count.get(family, 0) >= max_per_family:
+                continue
+            if fp:
+                seen_fp.add(fp)
+            family_count[family] = family_count.get(family, 0) + 1
+            out.append((score, entry))
+            if len(out) >= limit:
+                break
+        return out
+
+    def _format_entry(
+        self,
+        entry: dict[str, Any],
+        include_expression: bool,
+        max_expression_chars: int | None = None,
+    ) -> str:
+        m = entry.get("metrics", {})
+        metric_text = " ".join(
+            f"{key}={value:.4g}" for key, value in m.items() if isinstance(value, (int, float))
+        )
+        family = entry.get("family") or "other"
+        fail = f"；失效: {entry['fail_detail']}" if entry.get("fail_detail") else ""
+        expr = entry.get("expression")
+        if include_expression and expr and max_expression_chars is not None:
+            text = str(expr)
+            if int(max_expression_chars) <= 0:
+                expr = None
+            elif len(text) > int(max_expression_chars):
+                text = text[: max(int(max_expression_chars) - 3, 0)] + "..."
+            expr = text
+        expr_tail = f"；表达式：{expr}" if (include_expression and expr) else ""
+        return (

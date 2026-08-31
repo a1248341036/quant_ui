@@ -68,6 +68,7 @@ def test_step_fund_flow_writes_staging(cfg, monkeypatch):
             }
         )
 
+    monkeypatch.setattr(cap, "_tushare_capital_ready", lambda config: False)
     monkeypatch.setattr(cap, "fetch_fund_flow", fake_fetch)
     cfg.staging_root.mkdir(parents=True)
     result = cap.step_fund_flow(cfg, date(2024, 6, 28), "run-1", {})

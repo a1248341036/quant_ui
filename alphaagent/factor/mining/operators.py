@@ -1,7 +1,7 @@
-"""挖掘侧算子清单：复用 alphaagent.dsl.catalog（算子唯一定义在 alphaagent/dsl）。"""
+"""Shim: actual implementation moved to prompt/operators.py"""
+from alphaagent.factor.mining.prompt.operators import *  # noqa: F401,F403
 
-from __future__ import annotations
 
-from alphaagent.dsl.catalog import list_operator_names, operator_catalog_markdown
-
-__all__ = ["list_operator_names", "operator_catalog_markdown"]
+def __getattr__(name: str):
+    import alphaagent.factor.mining.prompt.operators as _m
+    return getattr(_m, name)

@@ -114,7 +114,13 @@ def cross_sectional_zscore(context: EvaluationContext, params: dict[str, Any]) -
 def size_residualize(context: EvaluationContext, params: dict[str, Any]) -> None:
     field = str(params.get("field", "float_cap"))
     if field not in context.panel.columns:
-        raise ValueError(f"size_residualize_missing_field:{field}")
+        # ETF 等无市值字段的面板：跳过残差化，保留原因子（与 size_neutral_decay
+        # 缺字段返回 note 的容错语义一致），避免 evaluate 整条流水报错。
+        context.replace_factor(
+            context.factor.to_numpy(dtype=np.float64, copy=True),
+            transform_name="size_residualize_skipped",
+        )
+        return
     log_scale = bool(params.get("log", True))
     out = context.factor.to_numpy(dtype=np.float64, copy=True)
     size = context.panel[field].to_numpy(dtype=np.float64, copy=False)

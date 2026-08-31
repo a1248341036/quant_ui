@@ -223,6 +223,14 @@ def _read_dataset(
                 df = df.filter(usable)
 
     if dataset in DATASET_SCHEMAS:
+        # External adapters own their column contract and data-quality
+        # filtering (e.g. tushare_wide maps ts_code→symbol and drops
+        # non-positive prices in scan(); local_assets preserves the source
+        # file's native columns like code/date/turnover).  validate_dataframe
+        # would select() only the registered schema columns and strip those
+        # extra columns, breaking downstream consumers that expect them.
+        if _ext is not None:
+            return dedupe_by_primary_key(df, dataset)
         df = validate_dataframe(df, dataset)
         return dedupe_by_primary_key(df, dataset)
     return df

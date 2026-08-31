@@ -1,0 +1,14 @@
+CMD: cmd /c "git show HEAD:alphaagent/factor/mining/research_memory.py > %TEMP%\research_memory_head.py"; python -c "import ast,os; p=os.path.join(os.environ['TEMP'],'research_memory_head.py'); s=open(p,encoding='utf-8').read(); t=ast.parse(s); cls=next(n for n in t.body if isinstance(n,ast.ClassDef)); print(len([n for n in cls.body if isinstance(n,ast.FunctionDef)])); [print(n.lineno,n.end_lineno,n.name) for n in cls.body if isinstance(n,ast.FunctionDef)]"
+
+Chunk ID: 14ceb8
+Wall time: 0.3038 seconds
+Process exited with code 1
+Original token count: 81
+Output:
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+  File "ast.py", line 52, in parse
+  File "<unknown>", line 1494
+    block_lines.append("����ģʽ��¼��"���ض��ź��������У����ֱ༭������Ч��ʧ��"��")
+                                         ^
+SyntaxError: invalid character '��' (U+FF0C)

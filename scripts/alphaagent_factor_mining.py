@@ -63,6 +63,12 @@ def _load_env() -> None:
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="LLM 股票因子挖掘（AgentScope 流式 CLI）")
     p.add_argument("--panel", default="cne://")
+    p.add_argument(
+        "--asset-type",
+        default="stock",
+        choices=["stock", "etf"],
+        help="资产类型：stock（默认）走股票 panel；etf 走场内 ETF panel（etf_bars，无市值字段，amount 已是元）",
+    )
     p.add_argument("--train-start", default=DEFAULT_TRAIN_START)
     p.add_argument("--train-end", default=DEFAULT_TRAIN_END)
     p.add_argument("--val-start", default=DEFAULT_VAL_START)
@@ -215,7 +221,7 @@ def main() -> int:
     else:
         from alphaagent.factor.window_config import resolve_test_end
 
-        test_end = resolve_test_end()
+        test_end = resolve_test_end(asset_type=args.asset_type)
 
     config = MiningConfig(
         eval=StockEvalContext(
@@ -228,6 +234,7 @@ def main() -> int:
             test_end=test_end,
             label_col=label_col,
             include_fundamentals=not args.no_fundamentals,
+            asset_type=args.asset_type,
         ),
         model=model,
         temperature=args.temperature,

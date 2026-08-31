@@ -1,0 +1,40 @@
+CMD: rg -n "^(class |def |from |import )" alphaagent\factor\mining\research_memory.py
+
+Chunk ID: af8742
+Wall time: 0.2364 seconds
+Process exited with code 0
+Original token count: 356
+Output:
+28:from __future__ import annotations
+30:import hashlib
+31:import json
+32:import logging
+33:import math
+34:import re
+35:import sqlite3
+36:import time
+37:from contextlib import contextmanager
+38:from datetime import datetime, timezone
+39:from pathlib import Path
+40:from typing import Any
+72:def _cjk_tokens(text: str) -> set[str]:
+85:def _tokens(*values: Any) -> list[str]:
+104:def expression_ops(expression: str) -> set[str]:
+108:def expression_features(expression: str) -> set[str]:
+112:def expression_windows(expression: str) -> set[str]:
+116:def _structure_fingerprint(expression: str) -> str:
+144:def extract_edit_motif(parent: str | None, child: str | None) -> str:
+193:def classify_family(factor_name: str, expression: str) -> str:
+202:def _parent_bucket(parent_ic: float | None) -> str:
+211:def _eq7_confidence(
+234:def _apv_gate(
+256:def motif_from_note(edit_note: str | None) -> str | None:
+274:def _safe_float(value: Any) -> float | None:
+284:def _parse_args(raw: Any) -> dict[str, Any]:
+296:def _now() -> str:
+300:def _deficit_label(metrics: dict[str, Any]) -> str:
+314:def _rebuild_conclusion(
+345:def _extract_fail_detail(name: str, result: dict[str, Any], error: str) -> str | None:
+372:def _failure_code(name: str, result: dict[str, Any], error: str, verdict: str) -> str | None:
+449:def _match_signature(expression: str, signatures: dict[str, dict[str, Any]]) -> str | None:
+462:class ResearchMemoryStore:

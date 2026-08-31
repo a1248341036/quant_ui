@@ -1,0 +1,67 @@
+CMD: python -c "import ast; p='alphaagent/factor/mining/research_memory.py'; s=open(p,encoding='utf-8').read(); t=ast.parse(s); [print(n.lineno, n.end_lineno, getattr(n,'name',type(n).__name__)) for n in t.body]"
+
+Chunk ID: ea39e2
+Wall time: 0.2845 seconds
+Process exited with code 0
+Original token count: 277
+Output:
+1 26 Expr
+28 28 ImportFrom
+30 30 Import
+31 31 Import
+32 32 Import
+33 33 Import
+34 34 Import
+35 35 Import
+36 36 Import
+37 37 ImportFrom
+38 38 ImportFrom
+39 39 ImportFrom
+40 40 ImportFrom
+42 42 Assign
+45 45 Assign
+46 46 Assign
+47 50 Assign
+51 54 Assign
+57 57 Assign
+58 58 Assign
+59 59 Assign
+60 60 Assign
+61 61 Assign
+62 62 Assign
+65 65 Assign
+66 66 Assign
+67 69 Assign
+72 82 _cjk_tokens
+85 95 _tokens
+99 99 Assign
+100 100 Assign
+101 101 Assign
+104 105 expression_ops
+108 109 expression_features
+112 113 expression_windows
+116 124 _structure_fingerprint
+128 132 Assign
+134 134 Assign
+135 135 Assign
+136 139 Assign
+140 140 Assign
+141 141 Assign
+144 174 extract_edit_motif
+178 190 AnnAssign
+193 198 classify_family
+202 208 _parent_bucket
+211 231 _eq7_confidence
+234 253 _apv_gate
+256 270 motif_from_note
+274 281 _safe_float
+284 293 _parse_args
+296 297 _now
+300 311 _deficit_label
+314 342 _rebuild_conclusion
+345 369 _extract_fail_detail
+372 390 _failure_code
+394 423 AnnAssign
+425 446 AnnAssign
+449 458 _match_signature
+462 2220 ResearchMemoryStore

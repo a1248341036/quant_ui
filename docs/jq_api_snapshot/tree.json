@@ -1,0 +1,324 @@
+[
+ {
+  "id": "956",
+  "level": 1,
+  "title": "API文档",
+  "depth": 0,
+  "content": ""
+ },
+ {
+  "id": "955",
+  "level": 1,
+  "title": "开始写策略",
+  "depth": 0,
+  "content": ""
+ },
+ {
+  "id": "949",
+  "level": 2,
+  "title": "简单但是完整的策略",
+  "depth": 1,
+  "content": ""
+ },
+ {
+  "id": "948",
+  "level": 2,
+  "title": "实用的策略",
+  "depth": 1,
+  "content": ""
+ },
+ {
+  "id": "953",
+  "level": 1,
+  "title": "策略引擎介绍",
+  "depth": 0,
+  "content": ""
+ },
+ {
+  "id": "945",
+  "level": 2,
+  "title": "安全",
+  "depth": 1,
+  "content": ""
+ },
+ {
+  "id": "946",
+  "level": 2,
+  "title": "数据",
+  "depth": 1,
+  "content": ""
+ },
+ {
+  "id": "944",
+  "level": 2,
+  "title": "运行频率",
+  "depth": 1,
+  "content": ""
+ },
+ {
+  "id": "937",
+  "level": 2,
+  "title": "运行时间",
+  "depth": 1,
+  "content": ""
+ },
+ {
+  "id": "943",
+  "level": 2,
+  "title": "订单处理",
+  "depth": 1,
+  "content": ""
+ },
+ {
+  "id": "942",
+  "level": 2,
+  "title": "拆分合并与分红",
+  "depth": 1,
+  "content": ""
+ },
+ {
+  "id": "941",
+  "level": 2,
+  "title": "股息红利税的计算",
+  "depth": 1,
+  "content": ""
+ },
+ {
+  "id": "940",
+  "level": 2,
+  "title": "滑点",
+  "depth": 1,
+  "content": ""
+ },
+ {
+  "id": "939",
+  "level": 2,
+  "title": "交易税费",
+  "depth": 1,
+  "content": ""
+ },
+ {
+  "id": "938",
+  "level": 2,
+  "title": "风险指标",
+  "depth": 1,
+  "content": ""
+ },
+ {
+  "id": "960",
+  "level": 2,
+  "title": "回测环境",
+  "depth": 1,
+  "content": ""
+ },
+ {
+  "id": "947",
+  "level": 2,
+  "title": "回测过程",
+  "depth": 1,
+  "content": ""
+ },
+ {
+  "id": "936",
+  "level": 2,
+  "title": "模拟盘注意事项",
+  "depth": 1,
+  "content": ""
+ },
+ {
+  "id": "935",
+  "level": 2,
+  "title": "模拟交易和回测的差别",
+  "depth": 1,
+  "content": ""
+ },
+ {
+  "id": "934",
+  "level": 2,
+  "title": "期货交割日",
+  "depth": 1,
+  "content": ""
+ },
+ {
+  "id": "958",
+  "level": 2,
+  "title": "还券细则",
+  "depth": 1,
+  "content": ""
+ },
+ {
+  "id": "2050",
+  "level": 2,
+  "title": "投资组合优化器",
+  "depth": 1,
+  "content": ""
+ },
+ {
+  "id": "954",
+  "level": 1,
+  "title": "策略程序架构♠",
+  "depth": 0,
+  "content": ""
+ },
+ {
+  "id": "952",
+  "level": 1,
+  "title": "策略API介绍",
+  "depth": 0,
+  "content": ""
+ },
+ {
+  "id": "933",
+  "level": 2,
+  "title": "注意事项",
+  "depth": 1,
+  "content": ""
+ },
+ {
+  "id": "932",
+  "level": 2,
+  "title": "策略设置函数",
+  "depth": 1,
+  "content": ""
+ },
+ {
+  "id": "931",
+  "level": 2,
+  "title": "数据获取函数",
+  "depth": 1,
+  "content": ""
+ },
+ {
+  "id": "930",
+  "level": 2,
+  "title": "jqlib",
+  "depth": 1,
+  "content": ""
+ },
+ {
+  "id": "1433",
+  "level": 2,
+  "title": "数据处理函数",
+  "depth": 1,
+  "content": ""
+ },
+ {
+  "id": "2051",
+  "level": 2,
+  "title": "组合优化函数",
+  "depth": 1,
+  "content": ""
+ },
+ {
+  "id": "929",
+  "level": 2,
+  "title": "交易函数",
+  "depth": 1,
+  "content": ""
+ },
+ {
+  "id": "927",
+  "level": 2,
+  "title": "对象♠",
+  "depth": 1,
+  "content": ""
+ },
+ {
+  "id": "928",
+  "level": 2,
+  "title": "其他函数",
+  "depth": 1,
+  "content": ""
+ },
+ {
+  "id": "926",
+  "level": 2,
+  "title": "策略组合操作",
+  "depth": 1,
+  "content": ""
+ },
+ {
+  "id": "923",
+  "level": 2,
+  "title": "Tick 级策略专用函数",
+  "depth": 1,
+  "content": ""
+ },
+ {
+  "id": "925",
+  "level": 2,
+  "title": "融资融券专用函数",
+  "depth": 1,
+  "content": ""
+ },
+ {
+  "id": "924",
+  "level": 2,
+  "title": "期货策略专用函数",
+  "depth": 1,
+  "content": ""
+ },
+ {
+  "id": "10510",
+  "level": 2,
+  "title": "归因分析说明",
+  "depth": 1,
+  "content": ""
+ },
+ {
+  "id": "10511",
+  "level": 3,
+  "title": "净值分析",
+  "depth": 2,
+  "content": ""
+ },
+ {
+  "id": "10512",
+  "level": 3,
+  "title": "Brinson 归因",
+  "depth": 2,
+  "content": ""
+ },
+ {
+  "id": "10513",
+  "level": 3,
+  "title": "因子分析",
+  "depth": 2,
+  "content": ""
+ },
+ {
+  "id": "950",
+  "level": 1,
+  "title": "策略示例",
+  "depth": 0,
+  "content": ""
+ },
+ {
+  "id": "959",
+  "level": 2,
+  "title": "均线策略",
+  "depth": 1,
+  "content": ""
+ },
+ {
+  "id": "918",
+  "level": 2,
+  "title": "多股票持仓示例",
+  "depth": 1,
+  "content": ""
+ },
+ {
+  "id": "917",
+  "level": 2,
+  "title": "多股票追涨策略",
+  "depth": 1,
+  "content": ""
+ },
+ {
+  "id": "916",
+  "level": 2,
+  "title": "万圣节效应策略",
+  "depth": 1,
+  "content": ""
+ }
+]

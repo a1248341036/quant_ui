@@ -1,0 +1,171 @@
+CMD: python -c "import pathlib; a=pathlib.Path('alphaagent/factor/mining/research_memory.py').read_text(encoding='utf-8').splitlines(); b=pathlib.Path('alphaagent/factor/mining/memory/expressions.py').read_text(encoding='utf-8').splitlines(); print('\n'.join(f'{i+1}: {x}' for i,x in enumerate(b)))"
+
+Chunk ID: 3070aa
+Wall time: 0.2844 seconds
+Process exited with code 0
+Original token count: 1718
+Output:
+1: # -*- coding: utf-8 -*-
+2: """����ʽ�ṹ������token �����ṹָ�ơ��༭���ͣ�motif�����ź�����ࡣ
+3: 
+4: ����� research_memory.py��v3-lite����������� / ָ�� / ������ / �����������á�
+5: """
+6: 
+7: from __future__ import annotations
+8: 
+9: import hashlib
+10: import re
+11: from typing import Any
+12: 
+13: # ���� tokenizer�������ã��ṹ������ʣ���������������������������������������������������������������������
+14: _TOKEN_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9_]{2,}")
+15: _CJK_RE = re.compile(r"[\u4e00-\u9fff]{2,}")
+16: _STOPWORDS = {
+17:     "add", "subtract", "multiply", "divide", "ts", "cs", "mean", "std", "rank", "expr", "factor",
+18: }
+19: 
+20: 
+21: def _cjk_tokens(text: str) -> set[str]:
+22:     """�������Ĵ� �� bigram���� jieba ��������"""
+23:     if not text:
+24:         return set()
+25:     out: set[str] = set()
+26:     for seq in _CJK_RE.findall(text):
+27:         if len(seq) == 2:
+28:             out.add(seq)
+29:             continue
+30:         out.update(seq[i:i + 2] for i in range(len(seq) - 1))
+31:     return out
+32: 
+33: 
+34: def _tokens(*values: Any) -> list[str]:
+35:     """�ӽṹ���ֶγ�ȡ�ɼ��� token��Ӣ�Ĵ� + �»��߲�� + ���� bigram����"""
+36:     found: set[str] = set()
+37:     for value in values:
+38:         text = str(value or "")
+39:         for token in _TOKEN_RE.findall(text):
+40:             token = token.lower()
+41:             found.add(token)
+42:             found.update(part for part in token.split("_") if len(part) >= 2)
+43:         found.update(_cjk_tokens(text))
+44:     return sorted(found - _STOPWORDS)
+45: 
+46: 
+47: # ���� ����ʽ�ṹ���ߣ��������򣻼������ / ָ�� / �����Թ��ã���������������������
+48: _OPS_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+49: _WINDOWS_RE = re.compile(r",\s*(\d+(?:\.\d+)?)\s*\)")
+50: _FEATURES_RE = re.compile(r"\$[a-z_][a-z0-9_]*")
+51: 
+52: 
+53: def expression_ops(expression: str) -> set[str]:
+54:     return {op.lower() for op in _OPS_RE.findall(str(expression or ""))}
+55: 
+56: 
+57: def expression_features(expression: str) -> set[str]:
+58:     return set(_FEATURES_RE.findall(str(expression or "").lower()))
+59: 
+60: 
+61: def expression_windows(expression: str) -> set[str]:
+62:     return set(_WINDOWS_RE.findall(str(expression or "")))
+63: 
+64: 
+65: def _structure_fingerprint(expression: str) -> str:
+66:     """�ṹָ�ƣ�������VAR�����֡�N�����ӱ�����ͬ������ʽָͬ�ơ�"""
+67:     if not expression:
+68:         return ""
+69:     text = str(expression).strip()
+70:     text = re.sub(r"\$[a-zA-Z_][a-zA-Z0-9_]*", "VAR", text)
+71:     text = re.sub(r"\d+(?:\.\d+)?", "N", text)
+72:     text = re.sub(r"\s+", "", text)
+73:     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+74: 
+75: 
+76: # ���� AlphaMemo motif ��ȡ���༭���ͷ��࣬~40 ����� v1 �� 300 �н�����������
+77: MOTIFS = (
+78:     "condition_gate", "rank_switch", "interaction_add", "window_rescale",
+79:     "operator_substitute", "feature_swap", "nesting_increase", "temporal_shift",
+80:     "normalization_change", "other",
+81: )
+82: 
+83: _RANK_OPS = {"rank", "cs_rank", "ts_rank"}
+84: _TEMPORAL_OPS = {"delay", "delta", "ts_delay", "ts_delta", "ts_pctchange"}
+85: _NORM_OPS = {
+86:     "log", "abs", "sign", "sqrt", "cs_winsorize", "cs_zscore", "cs_rank", "rank",
+87:     "cs_demean", "winsorize", "zscore", "normalize", "demean", "cs_quantile", "quantile",
+88: }
+89: _COMBINE_OPS = {"multiply", "divide", "add", "subtract"}
+90: _CONDITION_OPS = {"if_else", "cond", "where"}
+91: 
+92: 
+93: def extract_edit_motif(parent: str | None, child: str | None) -> str:
+94:     """���ӱ���ʽ �� �༭���ͣ�AlphaMemo extract_edit_motif ��ֲ�����䱾 DSL����"""
+95:     if not parent or not child:
+96:         return "other"
+97:     p, c = str(parent).strip(), str(child).strip()
+98:     if not p or not c or p == c:
+99:         return "other"
+100:     p_ops, c_ops = expression_ops(p), expression_ops(c)
+101:     added, removed = c_ops - p_ops, p_ops - c_ops
+102:     p_wins, c_wins = expression_windows(p), expression_windows(c)
+103:     p_feats, c_feats = expression_features(p), expression_features(c)
+104: 
+105:     if added & _CONDITION_OPS:
+106:         return "condition_gate"
+107:     if (_RANK_OPS & p_ops) and (_RANK_OPS & c_ops) and (_RANK_OPS & p_ops) != (_RANK_OPS & c_ops):
+108:         return "rank_switch"
+109:     if c_wins != p_wins and p_ops == c_ops:
+110:         return "window_rescale"
+111:     if p_feats != c_feats:
+112:         return "feature_swap"
+113:     if added & _COMBINE_OPS and len(c) > len(p) * 1.15:
+114:         return "interaction_add"
+115:     if added & _TEMPORAL_OPS:
+116:         return "temporal_shift"
+117:     if added & _NORM_OPS:
+118:         return "normalization_change"
+119:     if removed and added:
+120:         return "operator_substitute"
+121:     if c.count("(") > p.count("(") + 1:
+122:         return "nesting_increase"
+123:     return "other"
+124: 
+125: 
+126: def motif_from_note(edit_note: str | None) -> str | None:
+127:     """����༭˵�� �� motif��prompts �淶Ϊ `edit=<motif> <�����仯>`�����������ı��ؼ��ʣ���"""
+128:     text = str(edit_note or "").strip().lower().replace("-", "_").replace(" ", "_")
+129:     if not text:
+130:         return None
+131:     for motif in MOTIFS:
+132:         if motif != "other" and motif in text:
+133:             return motif
+134:     if "��������" in text:
+135:         return "window_rescale"
+136:     if "���ӱ���" in text:
+137:         return "operator_substitute"
+138:     if "���α���" in text:
+139:         return "normalization_change"
+140:     return "other"
+141: 
+142: 
+143: # ���� �ź������ ����������������������������������������������������������������������������������������������������������������
+144: _FAMILY_RULES: dict[str, tuple[str, ...]] = {
+145:     "gap_overnight": ("gap", "overnight", "open_close", "on_id", "on_ret", "id_ret"),
+146:     "vwap": ("vwap",),
+147:     "chip": ("chip", "peak", "entropy"),
+148:     "momentum": ("momentum", "pctchange", "ma_w", "ma20", "ma_dev", "delta"),
+149:     "reversal": ("reversal", "neg_ts"),
+150:     "volume": ("volume", "amount", "turnover"),
+151:     "volatility": ("std", "var", "vol_"),
+152:     "fundamental": ("funda_", "roe", "roa", "growth", "quality", "value"),
+153:     "correlation": ("corr", "cov", "rankcorr"),
+154:     "liquidity": ("liquidity", "float", "amihud"),
+155:     "breadth": ("breadth", "advance", "decline"),
+156: }
+157: 
+158: 
+159: def classify_family(factor_name: str, expression: str) -> str:
+160:     text = (str(factor_name or "") + " " + str(expression or "")).lower()
+161:     for family, keywords in _FAMILY_RULES.items():
+162:         if any(kw in text for kw in keywords):
+163:             return family
+164:     return "other"

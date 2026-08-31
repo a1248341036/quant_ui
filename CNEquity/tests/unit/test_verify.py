@@ -319,9 +319,11 @@ def test_dense_day_partitions_include_root_legacy_files_in_mixed_layout(tmp_path
 
 
 def test_snapshot_only_dataset_is_never_told_to_backfill(tmp_path):
-    """fund_flow is snapshot with no backfill_source — a missing day cannot be
-    filled, and proposing it would be proposing forged rows."""
-    spec = DATASETS["fund_flow"]
+    """analyst_consensus is snapshot with no backfill_source — a missing day
+    cannot be filled, and proposing it would be proposing forged rows.
+    (fund_flow left this club when Tushare moneyflow became its backfill
+    source; its missing days are now honestly repairable via `cne backfill`.)"""
+    spec = DATASETS["analyst_consensus"]
     assert spec.fetch_semantics == "snapshot" and spec.backfill_source is None
 
     cfg = Config(data_root=tmp_path / "lake")

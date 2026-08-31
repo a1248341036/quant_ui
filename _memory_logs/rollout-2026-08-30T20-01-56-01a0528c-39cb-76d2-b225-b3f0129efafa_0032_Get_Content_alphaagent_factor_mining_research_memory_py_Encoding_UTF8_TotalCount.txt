@@ -1,0 +1,107 @@
+CMD: Get-Content alphaagent\factor\mining\research_memory.py -Encoding UTF8 -TotalCount 100
+
+Chunk ID: 67a14c
+Wall time: 0.2615 seconds
+Process exited with code 0
+Original token count: 1327
+Output:
+"""Persistent, evidence-backed memory for AlphaAgent factor research.
+
+v3-lite（对标两论文协议校准 + 显式父本协议）：
+- **AlphaMemo Eq.7 置信**：c = n/(n+κ)·min(1,|μ|/(σ+ε))，κ=8（样本门×残差信噪比门）。
+  替换 v2 的"成功概率熵×方差惩罚"口径（该口径是对论文的误读，测的不是残差估计可靠度）。
+- **双门 APV（Eq.11/16）**：veto = c>τ_c ∧ π⁻>τ_v，π⁻=(1+f)/(2+n) Beta 均匀先验失败后验；
+  正证据软推荐封顶于"优先尝试"档（positive_boost_cap 语义），永不硬放行。
+- **显式父本协议**：eval/submit 工具新增 parent_factor / edit_note 可选参数；
+  显式命中权重 1.0，隐式结构匹配兜底权重 0.5；隐式匹配增加子串包含加成（≥0.55）
+  与 crossover 双父检测（second ≥0.35 且 ≥best−0.1）。
+- **cells 细化**：键升级为 (family × motif × 父本质量桶)；成败按 explicit/implicit
+  原始计数分列；残差基线 = 同 (family,bucket) 历史子代时间衰减均值（half-life 90d，
+  论文 Eq.4），无同桶历史回退父本自身质量；**无效尝试（报错/超时）入账失败观测**
+  （权重 0.5、无 residual）——"此路不通"的最早信号。
+- **注入门控矩阵 + 预算**：硬推荐(c≥0.7,μ>0) / 软推荐(0.4≤c<0.7) / APV 硬否决 /
+  软否决(fail_rate≥0.6) / 置信不足不注入；context_for 超预算按
+  编辑先验>经验>多样性>证据 的优先级截断。
+- **advisory 硬提醒通道**：评估前查指纹负证据（attempts≥2）与意向编辑 APV，
+  默认只提示，hard_block_duplicates=True 时指纹死路直接拦截。
+- **FactorMiner 经验记忆**：form_memory 蒸馏算子（v2 保留）；混合检索（BM25+族亲和
+  +算子重叠+verdict+recency）与多样性先验（v2 保留）；backfill_v3 幂等迁移
+  （store_meta.data_version="3"，v2 库自动重建 cells 并补 parent_origin）。
+
+v2 口径（保留）：数据化 conclusion、fail_detail 从 delivery_check/engine_gate 提取、
+7 成功签名 + 4 禁忌签名、FTS5 结构化 token、(family≤2,指纹=1) 检索去重、40% 正向保底。
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import math
+import re
+import sqlite3
+import time
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+# ── verdict 分类 ──────────────────────────────────────────────────────
+POSITIVE_VERDICTS = frozenset({"production_approved", "validated", "candidate_approved", "promising"})
+NEGATIVE_VERDICTS = frozenset({"rejected", "revise_required", "weak"})
+VERDICT_ORDER = {
+    "production_approved": 0, "validated": 1, "candidate_approved": 2, "promising": 3,
+    "revise_required": 4, "rejected": 5, "weak": 6,
+}
+VERDICT_WEIGHT = {
+    "production_approved": 1.0, "validated": 0.9, "candidate_approved": 0.7,
+    "promising": 0.5, "revise_required": 0.3, "rejected": 0.3, "weak": 0.2,
+}
+
+# ── v3-lite：AlphaMemo 论文口径校准（Eq.7 置信 / Eq.11+16 双门 APV / 同桶衰减基线）──
+EQ7_KAPPA_DEFAULT = 8.0          # Eq.7 样本门 κ：n/(n+κ)
+APV_TAU_C_DEFAULT = 0.35         # Eq.11 门 1：置信阈值
+APV_TAU_V_DEFAULT = 0.80         # Eq.11 门 2：失败后验阈值
+BASELINE_HALF_LIFE_DAYS = 90.0   # 同桶基线时间衰减半衰期
+PARENT_ORIGIN_WEIGHT = {"explicit": 1.0, "implicit": 0.5}  # 显式父本观测权重更高
+INVALID_WEIGHT = 0.5             # 无效尝试（报错/超时）入账权重：失败观测但无 residual
+
+# ── tokenizer（检索用：结构化语义词）──────────────────────────────────
+_TOKEN_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9_]{2,}")
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]{2,}")
+_STOPWORDS = {
+    "add", "subtract", "multiply", "divide", "ts", "cs", "mean", "std", "rank", "expr", "factor",
+}
+
+
+def _cjk_tokens(text: str) -> set[str]:
+    """连续中文串 → bigram（无 jieba 依赖）。"""
+    if not text:
+        return set()
+    out: set[str] = set()
+    for seq in _CJK_RE.findall(text):
+        if len(seq) == 2:
+            out.add(seq)
+            continue
+        out.update(seq[i:i + 2] for i in range(len(seq) - 1))
+    return out
+
+
+def _tokens(*values: Any) -> list[str]:
+    """从结构化字段抽取可检索 token（英文词 + 下划线拆分 + 中文 bigram）。"""
+    found: set[str] = set()
+    for value in values:
+        text = str(value or "")
+        for token in _TOKEN_RE.findall(text):
+            token = token.lower()
+            found.add(token)
+            found.update(part for part in token.split("_") if len(part) >= 2)
+        found.update(_cjk_tokens(text))
+    return sorted(found - _STOPWORDS)
+
+
+# ── 表达式结构工具（轻量正则；检索打分 / 指纹 / 多样性共用）──────────
+_OPS_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+_WINDOWS_RE = re.compile(r",\s*(\d+(?:\.\d+)?)\s*\)")

@@ -1,0 +1,7 @@
+CMD: git grep -n --cached "PARENT_ORIGIN_WEIGHT" -- alphaagent/factor/mining/research_memory.py
+
+Chunk ID: 08128c
+Wall time: 0.2267 seconds
+Process exited with code 1
+Original token count: 0
+Output:

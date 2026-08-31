@@ -852,6 +852,141 @@ def signals_post(req: SignalsRequest):
     return err if err is not None else data
 
 
+class SignalOrderRequest(BaseModel):
+    """信号 → 隔夜订单单请求。
+
+    持仓来源二选一：account_id（模拟盘账户，含 avg_cost → 止损触发价）
+    或 holdings（手动输入 [{code, shares, avg_cost}]）；都缺省视为空仓。
+    """
+    universe: str = "科技TMT"
+    strategy: str = "低换手冷门"
+    top_n: int = 10
+    composite_weights: dict[str, float] | None = None
+    composite_directions: dict[str, bool] | None = None
+    long_short: bool | None = None
+    short_n: int | None = None
+    use_financial: bool = False
+    capital: float = 100000.0
+    max_weight: float = 0.25
+    lot_size: int = trading_config.LOT_SIZE
+    buy_cost: float = trading_config.BUY_COST
+    sell_cost: float = trading_config.SELL_COST
+    limit_buffer_pct: float = 0.02   # 建议限价缓冲: 买 close*(1+b) / 卖 close*(1-b)
+    stoploss_pct: float = 0.07       # 止损条件单触发价: avg_cost*(1-该值)
+    account_id: int | None = None
+    holdings: list[dict] | None = None
+
+
+@router.post("/signals/orders")
+def signal_orders(req: SignalOrderRequest):
+    """把最新信号变成可挂隔夜单的订单清单（T-1 收盘信号 → T 开盘竞价成交）。
+
+    输出: 买入(权重/股数/预计金额/建议限价)、卖出(离场原因/现价/盈亏)、
+    止损条件单触发价、继续持有。挂单后无需看盘。
+    """
+    data, err = _compute_signals(
+        req.universe, req.strategy, req.top_n, req.composite_weights,
+        req.composite_directions, req.long_short, req.short_n, req.use_financial)
+    if err:
+        return {"error": err}
+    # 订单单只做纯多头（空头腿不适合散户隔夜单场景）
+    items = [it for it in data.get("items", []) if it.get("side", "多") == "多"]
+    if not items:
+        return {"error": "最新信号为空"}
+    n = len(items)
+    weight = min(1.0 / n, max(req.max_weight, 0.01))
+
+    # ---- 持仓来源 ----
+    held: dict[str, dict] = {}
+    if req.account_id is not None:
+        try:
+            from core.paper.details import account_positions
+            for r in account_positions(int(req.account_id)):
+                c = str(r["code"]).zfill(6)
+                if float(r.get("shares") or 0) > 0:
+                    held[c] = {"shares": float(r["shares"]),
+                               "avg_cost": float(r.get("avg_cost") or 0.0)}
+        except Exception as exc:
+            return {"error": f"读取模拟盘持仓失败: {type(exc).__name__}: {exc}"}
+    elif req.holdings:
+        for r in req.holdings:
+            c = str(r.get("code", "")).zfill(6)
+            if c and float(r.get("shares") or 0) > 0:
+                held[c] = {"shares": float(r["shares"]),
+                           "avg_cost": float(r.get("avg_cost") or 0.0)}
+
+    target_codes = [str(it["code"]).zfill(6) for it in items]
+    close_map = {str(it["code"]).zfill(6): float(it.get("close") or 0.0)
+                 for it in items}
+    nm = services.get_name_map()
+
+    # 持仓现价补查（信号 items 只含目标股）
+    missing = [c for c in held if c not in close_map]
+    if missing:
+        try:
+            hp = load_signal_panel(missing)
+            last = hp[hp["date"] == hp["date"].max()]
+            for c, px in zip(last["code"].astype(str).str.zfill(6),
+                             last["close"]):
+                close_map.setdefault(str(c), float(px))
+        except Exception as exc:
+            print(f"[signals/orders] 持仓现价补查失败: {exc}", file=sys.stderr)
+
+    lot = max(int(req.lot_size), 1)
+
+    def _buy_shares(px: float, pct: float) -> int:
+        if px <= 0:
+            return 0
+        return int(req.capital * pct // (px * (1 + req.buy_cost)) // lot) * lot
+
+    buys, holds = [], []
+    for it in items:
+        c = str(it["code"]).zfill(6)
+        px = close_map.get(c, 0.0) or float(it.get("close") or 0.0)
+        base = {"code": c, "name": it.get("name") or nm.get(c, ""),
+                "score": it.get("score"), "close": px,
+                "turnover": it.get("turnover"), "weight": round(weight, 4)}
+        if c in held:
+            holds.append({**base, "shares": int(held[c]["shares"]),
+                          "action": "继续持有"})
+            continue
+        sh = _buy_shares(px, weight)
+        buys.append({**base, "shares": sh,
+                     "action": "买入" if sh > 0 else "资金不足一手",
+                     "target_value": round(sh * px, 2),
+                     "limit_price": round(px * (1 + req.limit_buffer_pct), 2) if px else None})
+
+    sells, stoploss = [], []
+    for c, pos in held.items():
+        px = close_map.get(c, 0.0)
+        cost = float(pos["avg_cost"] or 0.0)
+        pnl = round(px / cost - 1, 4) if (px and cost) else None
+        if c not in target_codes:
+            sells.append({"code": c, "name": nm.get(c, ""),
+                          "shares": int(pos["shares"]), "close": px or None,
+                          "pnl_pct": pnl,
+                          "limit_price": round(px * (1 - req.limit_buffer_pct), 2) if px else None,
+                          "reason": "不在最新目标持仓"})
+        stoploss.append({"code": c, "name": nm.get(c, ""),
+                         "shares": int(pos["shares"]), "avg_cost": cost,
+                         "close": px or None, "pnl_pct": pnl,
+                         "trigger_price": round(cost * (1 - req.stoploss_pct), 2) if cost else None})
+
+    return {
+        "signal_date": data.get("signal_date"),
+        "strategy": data.get("factor"),
+        "universe": req.universe,
+        "capital": req.capital, "weight": round(weight, 4),
+        "n_held": len(held),
+        "buys": buys, "sells": sells, "holds": holds, "stoploss": stoploss,
+        "notes": [
+            "买入按 T 开盘集合竞价成交: 限价=收盘×(1+缓冲)，开盘高于限价自动放弃",
+            "卖出限价=收盘×(1-缓冲)，防止竞价砸跌停价成交",
+            "止损条件单触发价=成本×(1-止损%)，委托价请再留 2% 滑点空间",
+        ],
+    }
+
+
 @router.get("/signals/alpha")
 def alpha_signals(factor_id: str, library: str = "candidate", top_n: int = 10):
     """AlphaAgent 因子 → 实时信号：评估 DSL 表达式并返回最新截面 TopN 持仓。"""

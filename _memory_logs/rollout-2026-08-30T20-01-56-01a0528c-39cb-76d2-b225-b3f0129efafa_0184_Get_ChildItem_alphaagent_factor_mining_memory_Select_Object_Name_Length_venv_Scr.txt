@@ -1,0 +1,23 @@
+CMD: Get-ChildItem alphaagent\factor\mining\memory | Select-Object Name,Length; .venv\Scripts\python.exe -m py_compile alphaagent\factor\mining\research_memory.py alphaagent\factor\mining\memory\*.py
+
+Chunk ID: 0c0b0c
+Wall time: 0.3963 seconds
+Process exited with code 1
+Original token count: 100
+Output:
+
+[Errno 22] Invalid argument: 'alphaagent\\factor\\mining\\memory\\*.py'Name           Length
+----           ------
+__init__.py       181
+advisory.py      7750
+backfill.py     14481
+calibration.py   2169
+constants.py     1240
+diagnostics.py   8537
+experience.py   14436
+expressions.py   6573
+ingestion.py    15268
+retrieval.py    23631
+schema.py       13170
+store.py          686
+

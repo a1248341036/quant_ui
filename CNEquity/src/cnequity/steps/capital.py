@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from datetime import date
 
 import polars as pl
@@ -21,7 +22,12 @@ from cnequity.adapters.eastmoney.capital import (
 from cnequity.config import Config
 from cnequity.domain.datasets import should_fetch
 from cnequity.orchestrator.registry import register_step
-from cnequity.steps.common import BACKFILL_START, incremental_trade_dates, list_trading_dates
+from cnequity.steps.common import (
+    BACKFILL_START,
+    _validate_trade_date,
+    incremental_trade_dates,
+    list_trading_dates,
+)
 from cnequity.steps.http_common import run_incremental_fetched, write_fetched
 from cnequity.storage.state import StateStore
 
@@ -40,6 +46,47 @@ _MIN_NORTHBOUND_HOLDING_ROWS_PER_PERIOD = 100
 _MIN_NORTHBOUND_HOLDING_ROWS_PER_CHANNEL = 50
 
 
+def _tushare_capital_ready(config: Config) -> bool:
+    """Tushare 主源可用性：token 在 config 或环境变量中即可。"""
+    return bool(
+        getattr(config, "external_tushare_wide_token", "") or os.environ.get("TUSHARE_TOKEN", "")
+    )
+
+
+def _run_tushare_capital_step(
+    config: Config,
+    trade_date: date,
+    run_id: str,
+    dataset: str,
+    ts_fetch_fn,
+    *,
+    allow_empty: bool,
+) -> dict:
+    """Tushare 主源路径：按水位线窗口逐交易日全市场批量拉取。
+
+    与东财路径共用 write_fetched（provenance source="tushare"）；水位线由
+    finalize 从 curated 推进，与既有 capital 数据集一致。allow_empty=False
+    时空响应视为故障上抛（由调用方决定是否回落东财）。
+    """
+    dates = incremental_trade_dates(config, dataset, trade_date)
+    if not dates:
+        return {"rows_read": 0, "rows_written": 0}
+    frames: list[pl.DataFrame] = []
+    for d in dates:
+        part = ts_fetch_fn(d, config=config)
+        if part.is_empty():
+            if not allow_empty:
+                raise RuntimeError(f"{dataset}: tushare returned no rows for {d.isoformat()}")
+            continue
+        _validate_trade_date(part, dataset, d)
+        frames.append(part)
+    if not frames:
+        return {"rows_read": 0, "rows_written": 0}
+    return write_fetched(
+        config, run_id, dataset, pl.concat(frames, how="diagonal_relaxed"), source="tushare"
+    )
+
+
 def _run_capital_step(
     config: Config,
     trade_date: date,
@@ -48,7 +95,19 @@ def _run_capital_step(
     fetch_fn,
     *,
     allow_empty: bool = True,
+    ts_fetch_fn=None,
 ) -> dict:
+    if ts_fetch_fn is not None and _tushare_capital_ready(config):
+        try:
+            return _run_tushare_capital_step(
+                config, trade_date, run_id, dataset, ts_fetch_fn, allow_empty=allow_empty
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "%s: tushare primary source failed (%s); falling back to eastmoney",
+                dataset,
+                exc,
+            )
     if not config.sources.get("eastmoney", True):
         raise RuntimeError(f"{dataset}: eastmoney source disabled in config")
 
@@ -71,8 +130,30 @@ def _run_capital_step(
 
 @register_step("fund_flow", group="capital", depends_on=["instruments"])
 def step_fund_flow(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
+    from cnequity.external.tushare_capital import fetch_fund_flow_tushare
+
+    if getattr(config, "_backfill", False):
+        # moneyflow 支持任意历史交易日全市场回放；回填只补 curated 缺口
+        # （walk_day_backfill 跳过已有日期），已有东财历史不重写。
+        from cnequity.steps.common import walk_day_backfill
+
+        return walk_day_backfill(
+            config,
+            trade_date,
+            run_id,
+            "fund_flow",
+            lambda d: fetch_fund_flow_tushare(d, config=config),
+            source="tushare",
+            floor=BACKFILL_START,
+        )
     return _run_capital_step(
-        config, trade_date, run_id, "fund_flow", fetch_fund_flow, allow_empty=False
+        config,
+        trade_date,
+        run_id,
+        "fund_flow",
+        fetch_fund_flow,
+        allow_empty=False,
+        ts_fetch_fn=fetch_fund_flow_tushare,
     )
 
 
@@ -523,46 +604,57 @@ def _latest_published_margin_day(config: Config, trade_date: date) -> date:
     return days[-1] if days else trade_date
 
 
-def _backfill_daily_report(
-    config: Config, trade_date: date, run_id: str, dataset: str, fetch_fn, floor: date
-) -> dict:
-    """dragon_tiger / block_trades: each day's fetch works standalone and the
-    daily step never walked a range through it — see ``walk_day_backfill``."""
-    from cnequity.adapters.eastmoney.em_auth import EastMoneyClient
-    from cnequity.steps.common import walk_day_backfill
+@register_step("dragon_tiger", group="signals", depends_on=["instruments"])
+def step_dragon_tiger(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
+    from cnequity.external.tushare_capital import fetch_dragon_tiger_tushare
 
-    client = EastMoneyClient(config=config)
-    try:
+    if getattr(config, "_backfill", False):
+        # Tushare top_list 可回放任意历史交易日；curated 历史自 BACKFILL_START
+        # 起，回填只补缺口不重写已有东财历史。
+        from cnequity.steps.common import walk_day_backfill
+
         return walk_day_backfill(
             config,
             trade_date,
             run_id,
-            dataset,
-            lambda d: fetch_fn(d, client=client, config=config),
-            source="eastmoney",
-            floor=floor,
+            "dragon_tiger",
+            lambda d: fetch_dragon_tiger_tushare(d, config=config),
+            source="tushare",
+            floor=BACKFILL_START,
         )
-    finally:
-        client.close()
-
-
-@register_step("dragon_tiger", group="signals", depends_on=["instruments"])
-def step_dragon_tiger(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
-    if getattr(config, "_backfill", False):
-        # Confirmed live 2007-01-04 has rows, 2006-01-04 does not.
-        return _backfill_daily_report(
-            config, trade_date, run_id, "dragon_tiger", fetch_dragon_tiger, date(2007, 1, 1)
-        )
-    return _run_capital_step(config, trade_date, run_id, "dragon_tiger", fetch_dragon_tiger)
+    return _run_capital_step(
+        config,
+        trade_date,
+        run_id,
+        "dragon_tiger",
+        fetch_dragon_tiger,
+        ts_fetch_fn=fetch_dragon_tiger_tushare,
+    )
 
 
 @register_step("block_trades", group="signals", depends_on=["instruments"])
 def step_block_trades(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
+    from cnequity.external.tushare_capital import fetch_block_trades_tushare
+
     if getattr(config, "_backfill", False):
-        # Confirmed live from 2010-01-04; older single-day probes were
-        # ambiguous (block trades are sparse — a quiet day and "no report yet"
-        # look identical), so this floor is the conservative, confirmed one.
-        return _backfill_daily_report(
-            config, trade_date, run_id, "block_trades", fetch_block_trades, date(2010, 1, 1)
+        # Tushare block_trade 可回放任意历史交易日（确认 2010+ 可用，curated
+        # 口径自 2016 起）；premium_ratio 由宽表收盘价现算。
+        from cnequity.steps.common import walk_day_backfill
+
+        return walk_day_backfill(
+            config,
+            trade_date,
+            run_id,
+            "block_trades",
+            lambda d: fetch_block_trades_tushare(d, config=config),
+            source="tushare",
+            floor=BACKFILL_START,
         )
-    return _run_capital_step(config, trade_date, run_id, "block_trades", fetch_block_trades)
+    return _run_capital_step(
+        config,
+        trade_date,
+        run_id,
+        "block_trades",
+        fetch_block_trades,
+        ts_fetch_fn=fetch_block_trades_tushare,
+    )

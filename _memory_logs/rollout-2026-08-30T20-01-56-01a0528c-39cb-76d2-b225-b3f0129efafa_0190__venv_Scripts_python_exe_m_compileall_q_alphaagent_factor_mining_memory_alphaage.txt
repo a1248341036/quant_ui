@@ -1,0 +1,20 @@
+CMD: .venv\Scripts\python.exe -m compileall -q alphaagent\factor\mining\memory alphaagent\factor\mining\research_memory.py; .venv\Scripts\python.exe -c "from alphaagent.factor.mining.research_memory import ResearchMemoryStore, _structure_fingerprint; print(ResearchMemoryStore, _structure_fingerprint('rank(ts_mean($close, 5))'))"
+
+Chunk ID: ef5b38
+Wall time: 2.3936 seconds
+Process exited with code 1
+Original token count: 258
+Output:
+*** Error compiling 'alphaagent\\factor\\mining\\memory\\schema.py'...
+Sorry: IndentationError: unindent does not match any outer indentation level (schema.py, line 119)
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+  File "D:\Quant\quant_ui\alphaagent\factor\mining\research_memory.py", line 11, in <module>
+    from .memory.calibration import _apv_gate, _eq7_confidence, _parent_bucket
+  File "D:\Quant\quant_ui\alphaagent\factor\mining\memory\__init__.py", line 6, in <module>
+    from .store import ResearchMemoryStore
+  File "D:\Quant\quant_ui\alphaagent\factor\mining\memory\store.py", line 11, in <module>
+    from .backfill import BackfillMixin
+  File "D:\Quant\quant_ui\alphaagent\factor\mining\memory\backfill.py", line 14, in <module>
+    from .calibration import BASELINE_HALF_LIFE_DAYS, _parent_bucket
+ImportError: cannot import name 'BASELINE_HALF_LIFE_DAYS' from 'alphaagent.factor.mining.memory.calibration' (D:\Quant\quant_ui\alphaagent\factor\mining\memory\calibration.py)

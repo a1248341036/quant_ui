@@ -790,7 +790,9 @@ def test_delisted_backfill(cfg_path, monkeypatch):
 
 
 def test_backfill_snapshot_dataset_rejected(cfg_path):
-    result = CliRunner().invoke(cli, ["backfill", "fund_flow", "--config", cfg_path])
+    # fund_flow gained a Tushare backfill source; analyst_consensus is the
+    # remaining snapshot dataset with no honest historical replay.
+    result = CliRunner().invoke(cli, ["backfill", "analyst_consensus", "--config", cfg_path])
     assert result.exit_code != 0
     assert "snapshot" in result.output.lower() or "not supported" in result.output.lower()
 

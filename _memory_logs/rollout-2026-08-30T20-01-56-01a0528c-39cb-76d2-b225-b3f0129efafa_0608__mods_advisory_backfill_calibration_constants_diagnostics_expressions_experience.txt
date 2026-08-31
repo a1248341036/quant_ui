@@ -1,0 +1,18 @@
+CMD: $mods = @("advisory","backfill","calibration","constants","diagnostics","expressions","experience","ingestion","retrieval","schema","store"); foreach ($m in $mods) { .\pycdc.exe alphaagent\factor\mining\memory\__pycache__\$m.cpython-312.pyc > "$env:TEMP\${m}_decomp.py" 2>"$env:TEMP\${m}_decomp.err"; "$m $((Get-Item "$env:TEMP\${m}_decomp.py").Length)" }
+
+Chunk ID: 6c0fa2
+Wall time: 0.6822 seconds
+Process exited with code 0
+Original token count: 42
+Output:
+advisory 4420
+backfill 2009
+calibration 365
+constants 1053
+diagnostics 327
+expressions 5867
+experience 3638
+ingestion 7924
+retrieval 8851
+schema 0
+store 781

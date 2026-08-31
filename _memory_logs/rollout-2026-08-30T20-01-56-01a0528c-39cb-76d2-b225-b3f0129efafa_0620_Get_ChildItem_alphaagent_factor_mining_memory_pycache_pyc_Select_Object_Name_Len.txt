@@ -1,0 +1,39 @@
+CMD: Get-ChildItem alphaagent\factor\mining\memory\__pycache__\*.pyc | Select-Object Name,Length,LastWriteTime; Get-Content $env:TEMP\diagnostics_decomp.py -TotalCount 20; Get-Content $env:TEMP\calibration_decomp.py -TotalCount 20
+
+Chunk ID: 8f89a3
+Wall time: 0.2803 seconds
+Process exited with code 0
+Original token count: 351
+Output:
+
+Name                        Length LastWriteTime
+----                        ------ -------------
+__init__.cpython-312.pyc       333 2026/8/30 20:14:33
+advisory.cpython-312.pyc     10488 2026/8/30 20:13:37
+backfill.cpython-312.pyc     15436 2026/8/30 20:13:37
+calibration.cpython-312.pyc    452 2026/8/30 20:14:33
+constants.cpython-312.pyc     1007 2026/8/30 20:13:37
+diagnostics.cpython-312.pyc    385 2026/8/30 20:14:33
+experience.cpython-312.pyc   15821 2026/8/30 20:13:37
+expressions.cpython-312.pyc   8733 2026/8/30 20:13:37
+ingestion.cpython-312.pyc    15796 2026/8/30 20:13:37
+retrieval.cpython-312.pyc    30575 2026/8/30 20:13:37
+store.cpython-312.pyc          971 2026/8/30 20:14:33
+# Source Generated with Decompyle++
+# File: alphaagent\factor\mining\memory\__pycache__\diagnostics.cpython-312.pyc (Python 3.12)
+
+'''证据归因工具：结论重建、失败码、失效细节和 FactorMiner 式签名。'''
+from __future__ import annotations
+import json
+import math
+import re
+from typing import Any
+# Source Generated with Decompyle++
+# File: alphaagent\factor\mining\memory\__pycache__\calibration.cpython-312.pyc (Python 3.12)
+
+'''AlphaMemo 校准工具：父本质量桶、Eq.7 置信和 APV 双门。'''
+from __future__ import annotations
+import math
+from typing import Any
+from constants import APV_TAU_C_DEFAULT, APV_TAU_V_DEFAULT, EQ7_KAPPA_DEFAULT
+

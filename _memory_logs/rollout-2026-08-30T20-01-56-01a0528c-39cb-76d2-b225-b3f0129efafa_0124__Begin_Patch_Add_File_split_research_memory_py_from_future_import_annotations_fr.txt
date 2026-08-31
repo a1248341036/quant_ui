@@ -1,0 +1,271 @@
+CMD: @'
+*** Begin Patch
+*** Add File: _split_research_memory.py
++from __future__ import annotations
++
++from pathlib import Path
++
++
++ROOT = Path("alphaagent/factor/mining")
++SOURCE = ROOT / "research_memory.py"
++PACKAGE = ROOT / "memory"
++
++source = SOURCE.read_text(encoding="utf-8")
++lines = source.splitlines()
++
++
++def block(start: int, end: int) -> str:
++    return "\n".join(lines[start - 1:end])
++
++
++def indent(block_text: str) -> str:
++    return "\n".join(f"    {line}" if line.strip() else line for line in block_text.splitlines())
++
++
++def write(name: str, docstring: str, imports: list[str], body: str) -> None:
++    parts = [
++        "# -*- coding: utf-8 -*-",
++        f'"""{docstring}"""',
++        "",
++        "from __future__ import annotations",
++        "",
++        *imports,
++        "",
++        "",
++        body.rstrip(),
++        "",
++    ]
++    (PACKAGE / name).write_text("\n".join(parts), encoding="utf-8", newline="\n")
++
++
++write("constants.py", "研究记忆共享常量：verdict 分类、AlphaMemo 校准阈值、观测权重。", [], block(45, 62))
++write("expressions.py", "表达式结构分析：token 化、结构指纹、编辑类型（motif）、信号族分类。", ["import hashlib", "import re", "from typing import Any"], block(64, 208) + "\n\n\n" + block(255, 270))
++write("calibration.py", "AlphaMemo 校准工具：父本质量桶、Eq.7 置信和 APV 双门。", ["import math", "from typing import Any", "from .constants import APV_TAU_C_DEFAULT, APV_TAU_V_DEFAULT, EQ7_KAPPA_DEFAULT"], block(201, 253))
++write("diagnostics.py", "证据归因工具：结论重建、失败码、失效细节和 FactorMiner 式签名。", ["import json", "import math", "import re", "from typing import Any"], block(273, 458))
++
++schema_imports = [
++    "import hashlib",
++    "import json",
++    "import logging",
++    "import sqlite3",
++    "from contextlib import contextmanager",
++    "from pathlib import Path",
++    "from typing import Any",
++    "",
++    "from .calibration import APV_TAU_C_DEFAULT, APV_TAU_V_DEFAULT, EQ7_KAPPA_DEFAULT",
++    "from .constants import DATA_VERSION",
++    "from .diagnostics import _failure_code, _safe_float",
++    "from .expressions import _structure_fingerprint",
++]
++schema_body = "class SchemaMixin:\n" + indent(block(465, 560)) + "\n\n" + block(561, 730)
++write("schema.py", "SQLite schema、连接管理和基础指标规范化。", schema_imports, schema_body)
++
++ingestion_imports = [
++    "import json",
++    "import sqlite3",
++    "from typing import Any",
++    "",
++    "from .calibration import _parent_bucket",
++    "from .constants import INVALID_WEIGHT, PARENT_ORIGIN_WEIGHT, POSITIVE_VERDICTS",
++    "from .diagnostics import _extract_fail_detail, _failure_code, _now, _parse_args, _rebuild_conclusion, _safe_float",
++    "from .expressions import (",
++    "    _structure_fingerprint,",
++    "    _tokens,",
++    "    classify_family,",
++    "    expression_features,",
++    "    expression_ops,",
++    "    expression_windows,",
++    "    extract_edit_motif,",
++    "    motif_from_note,",
++    ")",
++]
++write("ingestion.py", "研究证据入库与父子关系解析。", ingestion_imports, "class IngestionMixin:\n" + block(731, 1012))
++
++experience_imports = [
++    "import hashlib",
++    "import json",
++    "import sqlite3",
++    "from datetime import datetime, timezone",
++    "from typing import Any",
++    "",
++    "from .calibration import _parent_bucket",
++    "from .constants import BASELINE_HALF_LIFE_DAYS",
++    "from .diagnostics import _SUCCESS_SIGNATURES, _FORBIDDEN_SIGNATURES, _match_signature, _now, _safe_float",
++    "from .expressions import expression_features, expression_ops",
++]
++write("experience.py", "编辑统计层（SSPM）与经验层蒸馏。", experience_imports, "class ExperienceMixin:\n" + block(1014, 1321))
++
++retrieval_imports = [
++    "import json",
++    "import math",
++    "import re",
++    "import sqlite3",
++    "import time",
++    "from collections import Counter",
++    "from datetime import datetime",
++    "from typing import Any",
++    "",
++    "from .calibration import _apv_gate, _eq7_confidence",
++    "from .constants import NEGATIVE_VERDICTS, POSITIVE_VERDICTS, VERDICT_WEIGHT",
++    "from .expressions import (",
++    "    _structure_fingerprint,",
++    "    _tokens,",
++    "    classify_family,",
++    "    expression_features,",
++    "    expression_ops,",
++    ")",
++]
++write("retrieval.py", "混合检索与提示上下文构建。", retrieval_imports, "class RetrievalMixin:\n" + block(1326, 1819))
++
++advisory_imports = [
++    "import json",
++    "import sqlite3",
++    "from typing import Any",
++    "",
++    "from .calibration import _apv_gate, _eq7_confidence",
++    "from .constants import VERDICT_ORDER",
++    "from .diagnostics import _parse_args",
++    "from .expressions import _structure_fingerprint, classify_family, motif_from_note",
++]
++write("advisory.py", "评估前 advisory、尝试查询和管理接口。", advisory_imports, "class AdvisoryMixin:\n" + block(1820, 1976))
++
++backfill_imports = [
++    "import hashlib",
++    "import json",
++    "import logging",
++    "import sqlite3",
++    "from datetime import datetime, timezone",
++    "from pathlib import Path",
++    "from typing import Any",
++    "",
++    "from .calibration import BASELINE_HALF_LIFE_DAYS, _parent_bucket",
++    "from .constants import POSITIVE_VERDICTS",
++    "from .diagnostics import _SUCCESS_SIGNATURES, _extract_fail_detail, _match_signature, _now, _rebuild_conclusion, _safe_float",
++    "from .expressions import (",
++    "    _structure_fingerprint,",
++    "    _tokens,",
++    "    classify_family,",
++    "    expression_features,",
++    "    expression_ops,",
++    "    expression_windows,",
++    "    extract_edit_motif,",
++    ")",
++]
++write("backfill.py", "历史 JSONL 轨迹回填与 v3 幂等迁移。", backfill_imports, "class BackfillMixin:\n" + block(1977, len(lines)))
++
++store = '''# -*- coding: utf-8 -*-
++"""AlphaAgent 研究记忆存储的组合根。
++
++按职责拆分为 schema、入库、经验蒸馏、检索、advisory 和回填 mixin；
++对外仍使用统一的 :class:`ResearchMemoryStore`。
++"""
++
++from __future__ import annotations
++
++from .advisory import AdvisoryMixin
++from .backfill import BackfillMixin
++from .experience import ExperienceMixin
++from .ingestion import IngestionMixin
++from .retrieval import RetrievalMixin
++from .schema import SchemaMixin
++
++
++class ResearchMemoryStore(
++    AdvisoryMixin,
++    BackfillMixin,
++    ExperienceMixin,
++    IngestionMixin,
++    RetrievalMixin,
++    SchemaMixin,
++):
++    """跨 run 持久化研究记忆的统一门面。"""
++'''
++(PACKAGE / "store.py").write_text(store, encoding="utf-8", newline="\n")
++
++init = '''# -*- coding: utf-8 -*-
++"""AlphaAgent 研究记忆内部模块。"""
++
++from __future__ import annotations
++
++from .store import ResearchMemoryStore
++
++
++__all__ = ["ResearchMemoryStore"]
++'''
++(PACKAGE / "__init__.py").write_text(init, encoding="utf-8", newline="\n")
++
++facade = '''# -*- coding: utf-8 -*-
++"""Persistent, evidence-backed memory for AlphaAgent factor research.
++
++This module is the stable import surface for the research memory. The v3-lite
++implementation is split by responsibility under
++:mod:`alphaagent.factor.mining.memory`.
++"""
++
++from __future__ import annotations
++
++from .memory.calibration import _apv_gate, _eq7_confidence, _parent_bucket
++from .memory.constants import (
++    APV_TAU_C_DEFAULT,
++    APV_TAU_V_DEFAULT,
++    BASELINE_HALF_LIFE_DAYS,
++    DATA_VERSION,
++    EQ7_KAPPA_DEFAULT,
++    INVALID_WEIGHT,
++    NEGATIVE_VERDICTS,
++    PARENT_ORIGIN_WEIGHT,
++    POSITIVE_VERDICTS,
++    VERDICT_ORDER,
++    VERDICT_WEIGHT,
++)
++from .memory.diagnostics import (
++    _FORBIDDEN_SIGNATURES,
++    _SUCCESS_SIGNATURES,
++    _extract_fail_detail,
++    _failure_code,
++    _match_signature,
++    _now,
++    _parse_args,
++    _rebuild_conclusion,
++    _safe_float,
++)
++from .memory.expressions import (
++    MOTIFS,
++    _cjk_tokens,
++    _structure_fingerprint,
++    _tokens,
++    classify_family,
++    expression_features,
++    expression_ops,
++    expression_windows,
++    extract_edit_motif,
++    motif_from_note,
++)
++from .memory.store import ResearchMemoryStore
++
++__all__ = [
++    "ResearchMemoryStore",
++    "MOTIFS",
++    "POSITIVE_VERDICTS",
++    "NEGATIVE_VERDICTS",
++    "VERDICT_ORDER",
++    "VERDICT_WEIGHT",
++    "EQ7_KAPPA_DEFAULT",
++    "APV_TAU_C_DEFAULT",
++    "APV_TAU_V_DEFAULT",
++    "BASELINE_HALF_LIFE_DAYS",
++    "PARENT_ORIGIN_WEIGHT",
++    "INVALID_WEIGHT",
++    "DATA_VERSION",
++]
++'''
++SOURCE.write_text(facade, encoding="utf-8", newline="\n")
+*** End Patch
+PATCH
+.venv\Scripts\python.exe _split_research_memory.py
+
+Chunk ID: 398774
+Wall time: 0.2259 seconds
+Process exited with code 1
+Original token count: 0
+Output:

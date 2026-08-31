@@ -221,7 +221,7 @@ class TestResearchMemory:
         return ResearchMemoryStore(tmp_path / "memory.json")
 
     def test_empty_store(self, store: ResearchMemoryStore) -> None:
-        assert store.recent() == []
+        assert store.recent()[0] == []
         stats = store.statistics()
         assert stats["entries"] == 0
 
@@ -229,7 +229,7 @@ class TestResearchMemory:
         row = _make_tool_row("evaluate_factor", "TS_MEAN($close, 5)", {"ic": 0.03, "icir": 0.4})
         entry = store.record_tool_result(run_id="r1", row=row)
         assert entry is not None
-        recent = store.recent(limit=10)
+        recent, _total = store.recent(limit=10)
         assert len(recent) >= 1
         assert recent[0]["factor_name"] == "test_factor"
 
@@ -247,4 +247,16 @@ class TestResearchMemory:
         row = _make_tool_row("evaluate_factor", "DELTA($close, 1)", {"ic": 0.02})
         store.record_tool_result(run_id="r1", row=row)
         fresh = ResearchMemoryStore(store.path)
-        assert len(fresh.recent()) == 1
+        assert len(fresh.recent()[0]) == 1
+
+    # ── Phase 5: 结构解析器与编辑模式单元测试 ──────────────────────────
+
+    def test_structure_fingerprint_stable(self, store: ResearchMemoryStore) -> None:
+        """相同结构不同变量应产生相同指纹；不同算子结构不同指纹。"""
+        from alphaagent.factor.mining.research_memory import _structure_fingerprint
+        fp1 = _structure_fingerprint("rank(ts_mean($close, 5))")
+        fp2 = _structure_fingerprint("rank(ts_mean($vwap, 5))")
+        fp3 = _structure_fingerprint("rank(ts_std($close, 5))")
+        assert fp1 == fp2  # 变量替换不影响指纹
+        assert fp1 != fp3  # 算子不同影响指纹
+

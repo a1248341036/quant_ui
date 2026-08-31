@@ -32,6 +32,7 @@ import pandas as pd
 # ── 单位换算常量（唯一事实来源）───────────────────────────────────────
 AMOUNT_CNE_TO_ENGINE = 1000.0      # CNE/Tushare amount 千元 → 引擎元
 AMOUNT_TEN_THOUSAND_TO_ENGINE = 10000.0  # 腾讯行情 amount 万元 → 引擎元
+AMOUNT_ETF_TO_ENGINE = 1.0         # ETF panel amount 已是元（腾讯 qfq 口径）→ 引擎元 ×1
 TURNOVER_PERCENT_TO_RATIO = 100.0  # turnover_rate 百分数 → 小数比例
 
 
@@ -97,12 +98,18 @@ def validate_alpha_panel(panel: pd.DataFrame) -> None:
         raise ValueError(f"alpha_panel_missing_columns:{missing}")
 
 
-def alpha_panel_to_engine_frame(panel: pd.DataFrame) -> pd.DataFrame:
+def alpha_panel_to_engine_frame(
+    panel: pd.DataFrame,
+    *,
+    asset_type: str = "stock",
+) -> pd.DataFrame:
     """AlphaAgent panel → core.engine.run_backtest 长表（纯内存）。
 
     口径：
-    - amount：千元 → 元（×1000）。引擎参与率预算按元计算，不复权原始
+    - stock：amount 千元 → 元（×1000）。引擎参与率预算按元计算，不复权原始
       千元口径会让预算缩水 1000 倍 → 大面积“现金不足”拒单。
+    - etf：amount 已是元（腾讯 qfq 口径，见 etf_panel.parquet），×1 不换算；
+      切勿按 stock 千元口径乘 1000，否则 1.2 亿元会被误放大 1000 倍。
     - turnover_rate：百分数 → 比例（/100），与 core/data.py 引擎面板口径一致。
     - am20/turn20 按 code 滚动 20 日均值现算（与 _finalize_stock_df 同 min_periods）。
 
@@ -117,7 +124,12 @@ def alpha_panel_to_engine_frame(panel: pd.DataFrame) -> pd.DataFrame:
     if df["date"].isna().any():
         raise ValueError("alpha_panel_invalid_datetime")
 
-    amount = pd.to_numeric(df["amount"], errors="coerce") * AMOUNT_CNE_TO_ENGINE
+    amount_mult = (
+        AMOUNT_ETF_TO_ENGINE
+        if asset_type == "etf"
+        else AMOUNT_CNE_TO_ENGINE
+    )
+    amount = pd.to_numeric(df["amount"], errors="coerce") * amount_mult
     if "turnover_rate" in df.columns:
         turnover = (pd.to_numeric(df["turnover_rate"], errors="coerce")
                     / TURNOVER_PERCENT_TO_RATIO)

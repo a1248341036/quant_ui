@@ -33,6 +33,46 @@
       <div v-if="!signals.length" class="empty">暂无信号，请先刷新</div>
     </div>
 
+    <!-- 隔夜订单单 -->
+    <div class="card">
+      <h3>隔夜订单单 <span class="muted" style="font-size:12px;font-weight:normal">收盘信号 → 次日开盘竞价成交，挂单后无需看盘</span></h3>
+      <div class="form-grid">
+        <label class="field"><span>资金</span><input type="number" v-model.number="orders.capital" step="10000"></label>
+        <label class="field"><span>单票上限</span><input type="number" v-model.number="orders.max_weight" step="0.05" min="0.01" max="1"></label>
+        <label class="field"><span>止损%</span><input type="number" v-model.number="orders.stoploss_pct" step="0.01" min="0.01"></label>
+        <label class="field"><span>限价缓冲%</span><input type="number" v-model.number="orders.limit_buffer_pct" step="0.005" min="0"></label>
+        <label class="field"><span>持仓来源</span>
+          <select v-model="orders.account_id">
+            <option :value="null">无持仓（纯新建仓）</option>
+            <option v-for="a in paperAccounts" :key="a.id" :value="a.id">{{ a.name }}（模拟盘）</option>
+          </select>
+        </label>
+      </div>
+      <div class="form-actions">
+        <p class="err left" v-if="ordersError">{{ ordersError }}</p>
+        <button class="primary" @click="genOrders" :disabled="ordersRunning"><span v-if="ordersRunning" class="spinner"></span>{{ ordersRunning ? '生成中…' : '生成订单单' }}</button>
+      </div>
+      <p class="muted" v-if="orderSheet">
+        信号日 {{ orderSheet.signal_date }} · 权重 {{ pct(orderSheet.weight) }} · 持仓 {{ orderSheet.n_held }} 只 · 资金 {{ fmt(orderSheet.capital) }}
+      </p>
+      <template v-if="orderSheet">
+        <div v-if="orderSheet.sells.length"><h4 style="margin:10px 0 4px">卖出（晚间挂单）</h4>
+          <div class="table-wrap"><table><tr><th>代码</th><th>名称</th><th>股数</th><th>现价</th><th>盈亏</th><th>卖出限价</th><th>原因</th></tr>
+          <tr v-for="r in orderSheet.sells" :key="'s'+r.code"><td>{{stock(r.code, r.name)}}</td><td>{{r.name||'-'}}</td><td>{{r.shares}}</td><td>{{fmt(r.close)}}</td><td :class="sign(r.pnl_pct)">{{pct(r.pnl_pct)}}</td><td>{{fmt(r.limit_price)}}</td><td>{{r.reason}}</td></tr></table></div></div>
+        <div v-if="orderSheet.buys.length"><h4 style="margin:10px 0 4px">买入（晚间挂单）</h4>
+          <div class="table-wrap"><table><tr><th>代码</th><th>名称</th><th>得分</th><th>收盘</th><th>权重</th><th>股数</th><th>预计金额</th><th>买入限价</th><th>备注</th></tr>
+          <tr v-for="r in orderSheet.buys" :key="'b'+r.code"><td>{{stock(r.code, r.name)}}</td><td>{{r.name||'-'}}</td><td>{{fmt(r.score,4)}}</td><td>{{fmt(r.close)}}</td><td>{{pct(r.weight)}}</td><td>{{r.shares}}</td><td>{{fmt(r.target_value)}}</td><td>{{fmt(r.limit_price)}}</td><td>{{r.action}}</td></tr></table></div></div>
+        <div v-if="orderSheet.holds.length"><h4 style="margin:10px 0 4px">继续持有</h4>
+          <div class="table-wrap"><table><tr><th>代码</th><th>名称</th><th>股数</th><th>现价</th><th>权重</th></tr>
+          <tr v-for="r in orderSheet.holds" :key="'h'+r.code"><td>{{stock(r.code, r.name)}}</td><td>{{r.name||'-'}}</td><td>{{r.shares}}</td><td>{{fmt(r.close)}}</td><td>{{pct(r.weight)}}</td></tr></table></div></div>
+        <div v-if="orderSheet.stoploss.length"><h4 style="margin:10px 0 4px">止损条件单（券商 App 预设，触发价=成本×(1-止损%)）</h4>
+          <div class="table-wrap"><table><tr><th>代码</th><th>名称</th><th>股数</th><th>成本</th><th>现价</th><th>盈亏</th><th>触发价</th></tr>
+          <tr v-for="r in orderSheet.stoploss" :key="'sl'+r.code"><td>{{stock(r.code, r.name)}}</td><td>{{r.name||'-'}}</td><td>{{r.shares}}</td><td>{{fmt(r.avg_cost)}}</td><td>{{fmt(r.close)}}</td><td :class="sign(r.pnl_pct)">{{pct(r.pnl_pct)}}</td><td>{{fmt(r.trigger_price)}}</td></tr></table></div></div>
+        <p class="muted" v-for="(n,i) in orderSheet.notes" :key="'n'+i">· {{n}}</p>
+      </template>
+      <div v-else class="empty">先刷新信号，再点「生成订单单」</div>
+    </div>
+
     <template v-if="false">
     <div class="card">
       <h3>策略对比（模拟）</h3>
@@ -135,6 +175,12 @@ export default {
       cmpRunning: false,
       cmpError: '',
       cmpHoldIdx: 0,
+      // 隔夜订单单
+      paperAccounts: [],
+      orders: { capital: 100000, max_weight: 0.25, stoploss_pct: 0.07, limit_buffer_pct: 0.02, account_id: null },
+      orderSheet: null,
+      ordersRunning: false,
+      ordersError: '',
     }
   },
   watch: {
@@ -155,6 +201,7 @@ export default {
     // this.loadAccount()
     // this.runCompare(true)
     this.loadSignals()
+    this.loadPaperAccounts()
   },
   methods: {
     fmt,
@@ -180,6 +227,44 @@ export default {
     },
     renderSignals() {
       renderBar('sigChart', this.signals.map(s => this.stock(s.code, s.name)), this.signals.map(s => +s.score.toFixed(4)));
+    },
+    // ---- 隔夜订单单 ----
+    async loadPaperAccounts() {
+      try {
+        const r = await api('/api/paper/accounts');
+        this.paperAccounts = (r.accounts || r || []).filter(a => a && a.id);
+      } catch (e) { /* 账户列表失败不阻塞页面 */ }
+    },
+    async genOrders() {
+      if (!this.signals.length) { this.ordersError = '请先刷新信号'; return; }
+      this.ordersRunning = true;
+      this.ordersError = '';
+      try {
+        const strat = (store.strategies || []).find(x => x.name === this.sig.strategy) || {};
+        const body = {
+          universe: this.sig.universe,
+          strategy: this.sig.strategy,
+          top_n: this.sig.top_n,
+          long_short: this.sig.long_short || strat.long_short || false,
+          short_n: this.sig.short_n,
+          capital: this.orders.capital,
+          max_weight: this.orders.max_weight,
+          stoploss_pct: this.orders.stoploss_pct,
+          limit_buffer_pct: this.orders.limit_buffer_pct,
+        };
+        if (this.orders.account_id) body.account_id = this.orders.account_id;
+        const r = await api('/api/signals/orders', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (r.error) { this.ordersError = r.error; return; }
+        this.orderSheet = r;
+      } catch (e) {
+        this.ordersError = '订单单生成失败: ' + e.message;
+      } finally {
+        this.ordersRunning = false;
+      }
     },
     // ---- 账户（已下架） ----
     async loadAccount() {

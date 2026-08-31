@@ -19,6 +19,56 @@ from core import trading_config
 router = APIRouter()
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 LABS_DIR = PROJECT_ROOT / "labs"
+EVENT_MODULES_DIR = PROJECT_ROOT / "strategies" / "event"
+JQ_UNIVERSE = "全A主板"
+_jq_codes_cache: list[str] | None = None
+
+
+def _jq_repro_import():
+    """导入 scripts/jq_repro/jq_data(全A主板域面板构建). 失败返回 None."""
+    import sys
+    d = PROJECT_ROOT / "scripts" / "jq_repro"
+    if str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    try:
+        import jq_data  # noqa
+        return jq_data
+    except Exception as exc:  # noqa: BLE001
+        print(f"[paper] jq_data 导入失败: {exc}", flush=True)
+        return None
+
+
+def _jq_mainboard_codes() -> list[str]:
+    """全A主板域代码(00/60 前缀, 与 CNE 日线数据域一致). 轻量读取."""
+    global _jq_codes_cache
+    if _jq_codes_cache is not None:
+        return _jq_codes_cache
+    import pyarrow.parquet as pq
+    years = sorted((PROJECT_ROOT / "data" / "quant_dataset").glob("[0-9]" * 4),
+                   reverse=True)
+    codes: set[str] = set()
+    for ydir in years:
+        f = ydir / ydir.name / "day" / "stock_daily.parquet"
+        if not f.exists():
+            continue
+        tbl = pq.read_table(f, columns=["ts_code"])
+        codes |= {s[:6] for s in tbl.column("ts_code").to_pylist()
+                  if s[:2] in ("00", "60")}
+        if len(codes) > 2000:
+            break
+    _jq_codes_cache = sorted(codes)
+    return _jq_codes_cache
+
+
+def _jq_panel(end: str | None = None) -> pd.DataFrame:
+    """全A主板事件面板(CNE 全市场日线, 前复权), 近 800 天."""
+    jd = _jq_repro_import()
+    if jd is None:
+        raise RuntimeError("全A主板面板构建失败: jq_data 不可用")
+    end_ts = pd.Timestamp(end) if end else pd.Timestamp.today()
+    start = (end_ts - pd.Timedelta(days=800)).date().isoformat()
+    panel, _, _ = jd.load_panel(start, end_ts.date().isoformat())
+    return panel
 
 
 class AccountRequest(BaseModel):
@@ -65,10 +115,15 @@ class RunRequest(BaseModel):
 
 
 def _stock_codes_by_universe() -> dict[str, list[str]]:
-    return {
+    out = {
         "科技TMT": services.build_codes("科技TMT", True),
         "沪深300+中证500+中证1000": services.build_codes("沪深300+中证500+中证1000", True),
     }
+    try:
+        out[JQ_UNIVERSE] = _jq_mainboard_codes()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[paper] 全A主板代码读取失败: {exc}", flush=True)
+    return out
 
 
 def _stock_panel(codes: list[str], end: str | None = None) -> pd.DataFrame:
@@ -86,6 +141,8 @@ def _panel_for_account(account_id: int) -> pd.DataFrame:
         end_ts = pd.Timestamp.today()
         start = (end_ts - pd.Timedelta(days=800)).date().isoformat()
         return load_etf_panel(start=start, end=end_ts.date().isoformat())
+    if acc and acc.get("universe") == JQ_UNIVERSE:
+        return _jq_panel()
     universe = (acc or {}).get("universe", "科技TMT")
     codes = services.build_codes(universe, True)
     return _stock_panel(codes)
@@ -112,8 +169,16 @@ def _event_strategies_from_source(src: str) -> list[str]:
 
 @router.get("/paper/event-strategies")
 def event_strategies():
-    """列出代码实验室已保存模块中的事件策略，供创建事件账户选择。"""
+    """列出代码实验室与内置事件策略模块, 供创建事件账户选择。"""
     items = []
+    for p in sorted(EVENT_MODULES_DIR.glob("*.py")):
+        try:
+            src = p.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        names = _event_strategies_from_source(src)
+        if names:
+            items.append({"module": str(p), "name": p.stem, "strategies": names})
     if LABS_DIR.exists():
         for p in sorted(LABS_DIR.glob("*.py")):
             try:
@@ -268,10 +333,13 @@ def paper_run(req: RunRequest):
         if req.account_id is not None:
             accounts = [a for a in accounts if a["id"] == int(req.account_id)]
 
-        # 分离 AlphaAgent 因子账户与普通/ETF 账户
+        # 分离 AlphaAgent 因子账户与普通/ETF/全A主板 账户
         alpha_accs = [a for a in accounts if a.get("strategy_type") == "alpha"]
-        normal_ids = [a["id"] for a in accounts if a.get("strategy_type") != "alpha" and a.get("universe") != "ETF"]
+        normal_ids = [a["id"] for a in accounts
+                      if a.get("strategy_type") != "alpha"
+                      and a.get("universe") not in ("ETF", JQ_UNIVERSE)]
         etf_ids = [a["id"] for a in accounts if a.get("universe") == "ETF"]
+        jq_ids = [a["id"] for a in accounts if a.get("universe") == JQ_UNIVERSE]
 
         out_accounts: list[dict] = []
         run_date = req.exec_date
@@ -334,6 +402,16 @@ def paper_run(req: RunRequest):
             res = paper_core.run_paper_trade(
                 etf_panel, etf_codes,
                 account_ids=etf_ids, exec_date=req.exec_date,
+                dry_run=req.dry_run,
+            )
+            run_date = res.get("run_date")
+            out_accounts += res.get("accounts", [])
+        if jq_ids:
+            jq_panel = _jq_panel(req.exec_date)
+            jq_codes = {JQ_UNIVERSE: sorted(jq_panel["code"].unique())}
+            res = paper_core.run_paper_trade(
+                jq_panel, jq_codes,
+                account_ids=jq_ids, exec_date=req.exec_date,
                 dry_run=req.dry_run,
             )
             run_date = res.get("run_date")

@@ -437,7 +437,9 @@ def test_only_dates_that_exist_are_offered(client):
 
 
 def test_snapshot_only_datasets_say_why_a_missing_day_stays_missing(client):
-    note = client.get("/api/datasets/fund_flow/dates").json()["note"]
+    # fund_flow left this club when Tushare moneyflow became its backfill
+    # source (snapshot_with_backfill); analyst_consensus is still tip-only.
+    note = client.get("/api/datasets/analyst_consensus/dates").json()["note"]
     assert "snapshot_only" in note
 
 

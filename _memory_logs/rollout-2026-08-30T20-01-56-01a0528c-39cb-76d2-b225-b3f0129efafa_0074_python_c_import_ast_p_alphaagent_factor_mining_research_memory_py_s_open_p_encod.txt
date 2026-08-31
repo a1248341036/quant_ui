@@ -1,0 +1,52 @@
+CMD: python -c "import ast; p='alphaagent/factor/mining/research_memory.py'; s=open(p,encoding='utf-8').read(); t=ast.parse(s); cls=next(n for n in t.body if isinstance(n,ast.ClassDef)); [print(n.lineno, n.end_lineno, getattr(n,'name',type(n).__name__)) for n in cls.body]"
+
+Chunk ID: 02e4a9
+Wall time: 0.2774 seconds
+Process exited with code 0
+Original token count: 278
+Output:
+463 463 Expr
+466 479 Assign
+482 547 Assign
+550 556 Assign
+558 558 Assign
+559 559 Assign
+560 560 Assign
+562 581 __init__
+584 597 _open
+602 632 _ensure_schema
+634 654 _ensure_data_version
+660 661 _metrics_json
+664 672 _compact_metrics
+675 695 _flatten_backtest_metrics
+697 725 _classify
+728 730 entry_signature
+732 899 record_tool_result
+902 910 _parent_stage_ic
+912 982 _find_implicit_parent_conn
+984 1012 _resolve_parent_conn
+1015 1021 _weighted_counts
+1023 1042 _same_bucket_baseline
+1044 1148 _update_cell_conn
+1153 1228 _upsert_experience
+1230 1321 form_memory
+1327 1328 _fts_match_query
+1330 1372 _retrieval_candidates
+1374 1389 _row_to_entry
+1391 1411 _hybrid_score
+1413 1437 _select_diverse
+1439 1463 _format_entry
+1465 1514 _evidence_block
+1519 1557 _experience_block
+1559 1641 _edit_prior_block
+1644 1652 AnnAssign
+1654 1711 _diversity_block
+1716 1819 context_for
+1821 1891 advisory_for
+1893 1915 query_for_attempts
+1920 1931 recent
+1933 1951 statistics
+1953 1956 delete_entry
+1958 1976 purge_factor
+1978 2006 backfill_from_logs
+2011 2220 _backfill_v3_conn

@@ -56,6 +56,10 @@ BT_DEFAULT_START: str = DEFAULT_TRAIN_START
 
 # 数据源优先级：panel 实际数据源优先，canonical 日线兜底。
 _DATASET_PRIORITY = ("stock_daily_wide", "daily_bars")
+# ETF 数据源：本地 etf_panel.parquet 桥接的 external 数据集（无 curated 兜底）。
+_ETF_DATASET_PRIORITY = ("etf_bars",)
+# external（非 curated）数据集：由 CNE external adapter 提供 coverage。
+_EXTERNAL_DATASETS = frozenset({"stock_daily_wide", "etf_bars"})
 
 # CNE 仓库根（window_config.py ← alphaagent/factor → 项目根）
 _CNE_ROOT = Path(__file__).resolve().parents[2] / "CNEquity"
@@ -123,9 +127,15 @@ def _to_iso(value) -> str:
     return value.isoformat() if hasattr(value, "isoformat") else str(value)
 
 
-@functools.lru_cache(maxsize=1)
-def resolve_test_end() -> str:
+@functools.lru_cache(maxsize=4)
+def resolve_test_end(asset_type: str = "stock") -> str:
     """解析测试段右端：数据源最新交易日（进程内缓存）。
+
+    Parameters
+    ----------
+    asset_type : str
+        "stock"（默认）或 "etf"。ETF 的数据源为本地 etf_bars，
+        无 curated 兜底；股票维持既有 stock_daily_wide → daily_bars 链。
 
     Returns
     -------
@@ -134,10 +144,11 @@ def resolve_test_end() -> str:
     """
     cfg = _load_cne_config()
     if cfg is not None:
-        for ds in _DATASET_PRIORITY:
+        priority = _ETF_DATASET_PRIORITY if asset_type == "etf" else _DATASET_PRIORITY
+        for ds in priority:
             val = (
                 _external_coverage_end(cfg, ds)
-                if ds == "stock_daily_wide"
+                if ds in _EXTERNAL_DATASETS
                 else _curated_coverage_end(cfg, ds)
             )
             if val:
@@ -163,9 +174,9 @@ def resolve_test_end() -> str:
     return end
 
 
-def test_window() -> tuple[str, str]:
+def test_window(asset_type: str = "stock") -> tuple[str, str]:
     """(test_start, test_end) 测试段完整窗口。"""
-    return DEFAULT_TEST_START, resolve_test_end()
+    return DEFAULT_TEST_START, resolve_test_end(asset_type)
 
 
 def mining_window() -> tuple[str, str, str, str]:
@@ -173,18 +184,18 @@ def mining_window() -> tuple[str, str, str, str]:
     return DEFAULT_TRAIN_START, DEFAULT_TRAIN_END, DEFAULT_VAL_START, DEFAULT_VAL_END
 
 
-def coverage_window() -> tuple[str, str]:
+def coverage_window(asset_type: str = "stock") -> tuple[str, str]:
     """panel 加载范围（train∪val∪test）。"""
-    test_start, test_end = test_window()
+    test_start, test_end = test_window(asset_type)
     return (
         min(DEFAULT_TRAIN_START, DEFAULT_VAL_START, test_start),
         max(DEFAULT_TRAIN_END, DEFAULT_VAL_END, test_end),
     )
 
 
-def window_defaults() -> dict[str, str]:
+def window_defaults(asset_type: str = "stock") -> dict[str, str]:
     """完整窗口字段 dict（train/val/test + 回测默认），供 CLI/API 默认值构造。"""
-    test_start, test_end = test_window()
+    test_start, test_end = test_window(asset_type)
     return {
         "train_start": DEFAULT_TRAIN_START,
         "train_end": DEFAULT_TRAIN_END,

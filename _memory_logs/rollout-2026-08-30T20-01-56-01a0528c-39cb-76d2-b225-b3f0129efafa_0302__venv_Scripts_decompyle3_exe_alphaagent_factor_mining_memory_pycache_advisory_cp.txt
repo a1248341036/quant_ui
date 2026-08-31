@@ -1,0 +1,23 @@
+CMD: .venv\Scripts\decompyle3.exe alphaagent\factor\mining\memory\__pycache__\advisory.cpython-312.pyc > $env:TEMP\advisory_decomp.py 2>$env:TEMP\advisory_decomp.err; Get-Content $env:TEMP\advisory_decomp.err -Tail 20; Get-Content $env:TEMP\advisory_decomp.py -TotalCount 20
+
+Chunk ID: a2e59b
+Wall time: 0.5338 seconds
+Process exited with code 0
+Original token count: 241
+Output:
+D:\Quant\quant_ui\.venv\Lib\site-packages\click\core.py:1307: UserWarning: The parameter --version is used more than once. Remove its duplicate as parameters should be unique.
+  parser = self.make_parser(ctx)
+D:\Quant\quant_ui\.venv\Lib\site-packages\click\core.py:1300: UserWarning: The parameter --version is used more than once. Remove its duplicate as parameters should be unique.
+  self.parse_args(ctx, args)
+
+# Unsupported bytecode in file alphaagent\factor\mining\memory\__pycache__\advisory.cpython-312.pyc
+# Unsupported Python version, 3.12.0, for decompilation
+# decompyle3 version 3.9.3
+# Python bytecode version base 3.12.0 (3531)
+# Decompiled from: Python 3.12.9 (tags/v3.12.9:fdb8142, Feb  4 2025, 15:27:58) [MSC v.1942 64 bit (AMD64)]
+# Embedded file name: alphaagent\factor\mining\memory\advisory.py
+# Compiled at: 2026-08-30 20:13:20
+# Size of source mod 2**32: 7750 bytes
+
+Unsupported Python version, 3.12.0, for decompilation
+

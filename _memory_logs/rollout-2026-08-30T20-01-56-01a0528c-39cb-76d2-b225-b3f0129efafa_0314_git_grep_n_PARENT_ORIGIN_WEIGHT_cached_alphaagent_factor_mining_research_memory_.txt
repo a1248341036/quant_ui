@@ -1,0 +1,8 @@
+CMD: git grep -n "PARENT_ORIGIN_WEIGHT" --cached -- alphaagent/factor/mining/research_memory.py
+
+Chunk ID: f92ffd
+Wall time: 0.2496 seconds
+Process exited with code 1
+Original token count: 11
+Output:
+fatal: unable to resolve revision: --cached

@@ -1,0 +1,80 @@
+CMD: .venv\Scripts\python.exe $env:TEMP\py312-decompiler-main\decompile.py alphaagent\factor\mining\memory\__pycache__\advisory.cpython-312.pyc -o $env:TEMP\advisory_312_cfg.py --cfg -v
+
+Chunk ID: 07ec16
+Wall time: 0.3575 seconds
+Process exited with code 0
+Original token count: 672
+Output:
+CFG: 1 blocks
+Entry: 0
+Exits: [0]
+
+Block 0 (0-126) ENTRY EXIT
+     0  RESUME               0
+     2  LOAD_CONST           ����ǰ advisory�����Բ�ѯ�͹����ӿڡ�
+     4  STORE_NAME           __doc__
+     6  LOAD_CONST           0
+     8  LOAD_CONST           ('annotations',)
+    10  IMPORT_NAME          __future__
+    12  IMPORT_FROM          annotations
+    14  STORE_NAME           annotations
+    16  POP_TOP              None
+    18  LOAD_CONST           0
+    20  LOAD_CONST           None
+    22  IMPORT_NAME          json
+    24  STORE_NAME           json
+    26  LOAD_CONST           0
+    28  LOAD_CONST           None
+    30  IMPORT_NAME          sqlite3
+    32  STORE_NAME           sqlite3
+    34  LOAD_CONST           0
+    36  LOAD_CONST           ('Any',)
+    38  IMPORT_NAME          typing
+    40  IMPORT_FROM          Any
+    42  STORE_NAME           Any
+    44  POP_TOP              None
+    46  LOAD_CONST           1
+    48  LOAD_CONST           ('_apv_gate', '_eq7_confidence
+    50  IMPORT_NAME          calibration
+    52  IMPORT_FROM          _apv_gate
+    54  STORE_NAME           _apv_gate
+    56  IMPORT_FROM          _eq7_confidence
+    58  STORE_NAME           _eq7_confidence
+    60  POP_TOP              None
+    62  LOAD_CONST           1
+    64  LOAD_CONST           ('VERDICT_ORDER',)
+    66  IMPORT_NAME          constants
+    68  IMPORT_FROM          VERDICT_ORDER
+    70  STORE_NAME           VERDICT_ORDER
+    72  POP_TOP              None
+    74  LOAD_CONST           1
+    76  LOAD_CONST           ('_parse_args',)
+    78  IMPORT_NAME          diagnostics
+    80  IMPORT_FROM          _parse_args
+    82  STORE_NAME           _parse_args
+    84  POP_TOP              None
+    86  LOAD_CONST           1
+    88  LOAD_CONST           ('_structure_fingerprint', 'cl
+    90  IMPORT_NAME          expressions
+    92  IMPORT_FROM          _structure_fingerprint
+    94  STORE_NAME           _structure_fingerprint
+    96  IMPORT_FROM          classify_family
+    98  STORE_NAME           classify_family
+   100  IMPORT_FROM          motif_from_note
+   102  STORE_NAME           motif_from_note
+   104  POP_TOP              None
+   106  PUSH_NULL            None
+   108  LOAD_BUILD_CLASS     None
+   110  LOAD_CONST           <code object AdvisoryMixin at 
+   112  MAKE_FUNCTION        0
+   114  LOAD_CONST           AdvisoryMixin
+   116  CALL                 2
+   124  STORE_NAME           AdvisoryMixin
+   126  RETURN_CONST         None
+
+=== Loops (0) ===
+
+=== Conditionals (0) ===
+
+=== Try/Except (0) ===
+Decompiled to: C:\Users\zhoubw\AppData\Local\Temp\advisory_312_cfg.py

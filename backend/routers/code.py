@@ -9,6 +9,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from core import trading_config
+from core import trading_config_store
 from alphaagent.factor.window_config import BT_DEFAULT_START
 
 
@@ -24,6 +25,14 @@ class SaveRequest(BaseModel):
     registry: str = ""
     factors: str = ""
     engine: str = "legacy"
+
+
+class JQRunRequest(BaseModel):
+    code: str
+    start: str
+    end: str = ""
+    capital: float = trading_config.CAPITAL
+    warmup_days: int = 60
 
 
 class QweaveRunRequest(BaseModel):
@@ -148,6 +157,51 @@ def get_saved(name: str):
         "factors": meta.get("factors", ""),
         "saved_at": meta.get("saved_at", ""),
     }
+
+
+@router.get("/config")
+def get_code_config():
+    """代码面板生效参数(全局默认 + 面板副本覆盖)。"""
+    return {"ok": True, "config": trading_config_store.effective(),
+            "editable": list(trading_config_store.EDITABLE_KEYS),
+            "customized": trading_config_store.OVERRIDE_FILE.exists()}
+
+
+@router.post("/config")
+def save_code_config(req: dict):
+    """保存代码面板参数副本(仅影响代码 tab)。"""
+    patch = (req or {}).get("config") or (req or {})
+    cfg = trading_config_store.save_overrides(patch)
+    return {"ok": True, "config": cfg,
+            "customized": trading_config_store.OVERRIDE_FILE.exists()}
+
+
+@router.post("/config/reset")
+def reset_code_config():
+    cfg = trading_config_store.reset_overrides()
+    return {"ok": True, "config": cfg, "customized": False}
+
+
+@router.post("/jq/run")
+def run_jq_strategy(req: JQRunRequest):
+    """聚宽模式: 用户贴聚宽风格代码(initialize + run_daily/weekly + 数据API), 直接回测。"""
+    from core.event_engine.jq import run_jq_backtest
+    cfg = trading_config_store.effective()
+    try:
+        return run_jq_backtest(
+            code=req.code, start=req.start,
+            end=req.end or None, capital=req.capital,
+            warmup_days=req.warmup_days or int(cfg["warmup_days"]),
+            buy_cost=float(cfg["buy_cost"]),
+            sell_cost=float(cfg["sell_cost"]),
+            slippage_bps=float(cfg["slippage_bps"]),
+        )
+    except NotImplementedError as exc:
+        return {"ok": False, "error": f"API 未支持: {exc}"}
+    except Exception as exc:
+        import traceback
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}",
+                "traceback": traceback.format_exc(limit=20)}
 
 
 @router.post("/save")
