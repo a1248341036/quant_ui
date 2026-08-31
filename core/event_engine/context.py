@@ -85,6 +85,7 @@ class Context:
         amount_q: float,
         slippage: float = 0.0,
         max_participation: float = 0.0,
+        min_commission: float = 0.0,
         field_mats: dict[str, np.ndarray] | None = None,
     ):
         self.codes = list(codes)
@@ -110,6 +111,7 @@ class Context:
         self.amount_q = float(amount_q)
         self.slippage = float(slippage)
         self.max_participation = float(max_participation)
+        self.min_commission = max(float(min_commission), 0.0)
 
         self.t = 0
         self.sig = 0
@@ -326,7 +328,12 @@ class Context:
             if shares <= 0:
                 continue
             amt = shares * px
-            self.cash += amt * (1.0 - self.sell_cost)
+            fee = amt * self.sell_cost
+            if self.min_commission > 0 and fee < self.min_commission:
+                fee = self.min_commission
+                self.cash += amt - fee
+            else:
+                self.cash += amt * (1.0 - self.sell_cost)
             new_pos = cur - shares
             if abs(new_pos) <= 1e-9:
                 del self.positions[code]
@@ -335,7 +342,7 @@ class Context:
             exec_list.append((code, amt, "sell"))
             self.fills.append({
                 "code": code, "side": "sell", "shares": shares,
-                "price": px, "fee": amt * self.sell_cost,
+                "price": px, "fee": fee,
                 "amount": amt,
             })
 
@@ -357,7 +364,13 @@ class Context:
                 continue  # 限价买入：成交价高于限价，不成交
             need = delta
             gross = px * (1.0 + self.buy_cost)
-            max_lots = int(self.cash // gross) // lot
+            if self.min_commission > 0:
+                # 预算仅为本笔预留一次最低佣金(非每手), 保证现金不为负;
+                # 与旧公式相比只在小数边缘(~mc/(lot*gross))相差至多一手
+                max_lots = int((self.cash - self.min_commission)
+                               // (lot * gross))
+            else:
+                max_lots = int(self.cash // gross) // lot
             need_lots = int(need // lot)
             lots = min(need_lots, max_lots)
             if self.max_participation > 0:
@@ -370,8 +383,12 @@ class Context:
             if lots <= 0:
                 continue
             shares = lots * lot
-            cost = shares * gross
             fee = shares * px * self.buy_cost
+            if self.min_commission > 0 and fee < self.min_commission:
+                fee = self.min_commission
+                cost = shares * px + fee
+            else:
+                cost = shares * gross
             self.cash -= cost
             new_pos = cur + shares
             if abs(new_pos) <= 1e-9:

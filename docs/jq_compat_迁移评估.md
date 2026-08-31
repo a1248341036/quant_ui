@@ -40,7 +40,7 @@
 | set_benchmark | 🟢→ | 现 no-op；CNE index_bars 齐备，可升级为真实基准并输出超额 |
 | set_slippage(FixedSlippage(v)) | 🟡 | JQ 语义是**绝对价差**（买卖各偏 v/2 元）；现 cost_cfg 当 bps 处理，小价差近似可用，精确需按元实现 |
 | set_slippage(PriceRelatedSlippage(r)) | 🟢 | 比例滑点 → slippage_bps 直接换算 |
-| set_order_cost | ✅ | 已生效：佣金/印花税折算 buy_cost/sell_cost；min_commission 最低佣金暂不支持（有提示） |
+| set_order_cost | ✅ | 已生效：佣金/印花税折算 buy_cost/sell_cost；min_commission 每笔最低佣金已接入引擎（单笔费用 = max(金额×费率, min_commission)，买卖均生效） |
 | set_universe | ✅ | no-op（旧 API） |
 | set_subportfolios / SubPortfolio / transfer_cash | 🟡 | 单账户可兼容（id=0），多账户资金划转无引擎支持 |
 

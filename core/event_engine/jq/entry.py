@@ -49,9 +49,11 @@ def run_jq_backtest(code: str, start: str, end: str | None = None,
         sell_cost = cfg["sell_cost"]
     if cfg.get("slippage_bps"):
         slippage_bps = cfg["slippage_bps"]
+    min_commission = float(cfg.get("min_commission") or 0.0)
     if cfg:
+        extra = f" min_commission={min_commission:.2f}" if min_commission else ""
         rt.log.info(f"[runtime] 应用策略内费率: buy={buy_cost:.5f} "
-                    f"sell={sell_cost:.5f} slippage={slippage_bps:.1f}bps")
+                    f"sell={sell_cost:.5f} slippage={slippage_bps:.1f}bps{extra}")
     _LAST_CTX, _LAST_RT = ctx, rt
 
     class _JQAdapter:
@@ -69,6 +71,7 @@ def run_jq_backtest(code: str, start: str, end: str | None = None,
         panel=ctx.panel, codes=ctx.codes, strategy_class=_JQAdapter,
         start=start, end=end_ts.date().isoformat(), capital=capital,
         buy_cost=buy_cost, sell_cost=sell_cost, slippage_bps=slippage_bps,
+        min_commission=min_commission,
         max_participation=0.0, lot_size=100, warmup_days=warmup_days,
         amount_q=0.2, limit_flags=True,
     )

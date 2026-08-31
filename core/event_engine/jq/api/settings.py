@@ -4,7 +4,7 @@ set_slippage/set_order_cost + FixedSlippage/PriceRelatedSlippage/OrderCost。
 
 费率语义:
 - set_order_cost 把 open/close 佣金+税费折算为引擎 buy_cost/sell_cost;
-  min_commission(最低佣金)引擎按比例计费, 暂不支持(有日志提示)
+  min_commission(每笔最低佣金, 元)传入引擎, 单笔费用 = max(金额×费率, min_commission)
 - set_slippage(PriceRelatedSlippage(r)): JQ 买卖各偏 r/2 -> 引擎单边 bps=r/2*1e4
 - set_slippage(FixedSlippage(v)): JQ 为绝对价差(元); 引擎仅支持万分比,
   按社区惯例(v=3/10000 意图即 3bp)作比例解释
@@ -51,9 +51,9 @@ def install(ns: dict, rt) -> None:
                 rt.cost_cfg["buy_cost"] = oc
             if sc > 0:
                 rt.cost_cfg["sell_cost"] = sc
-            if k.get("min_commission"):
-                rt.log.info("[runtime] min_commission(最低佣金)暂不支持, "
-                            "引擎按比例计费")
+            mc = k.get("min_commission")
+            if mc:
+                rt.cost_cfg["min_commission"] = float(mc)
         except (TypeError, ValueError):
             pass
 

@@ -48,6 +48,7 @@ def run_event_backtest(
     slippage_bps: float = trading_config.SLIPPAGE_BPS,
     max_participation: float = trading_config.MAX_PARTICIPATION,
     short_rate: float = 0.0,
+    min_commission: float = 0.0,
     execution_profile: AssetExecutionProfile | None = None,
 ) -> dict:
     """事件驱动回测。
@@ -146,6 +147,7 @@ def run_event_backtest(
         dates=dates, capital=capital, buy_cost=buy_cost,
         sell_cost=sell_cost, lot_size=lot_size, amount_q=amount_q,
         slippage=slippage_bps / 1e4, max_participation=max_participation,
+        min_commission=min_commission,
         field_mats=field_mats,
     )
     strategy = strategy_class()
