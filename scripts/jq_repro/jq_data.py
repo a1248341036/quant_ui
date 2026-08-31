@@ -1,57 +1,68 @@
 # -*- coding: utf-8 -*-
-"""聚宽策略复现 —— 数据层（与具体策略无关，全部点时口径）。
+"""聚宽策略复现 —— 数据层门面(具体加载实现已插件化)。
 
-数据源:
-- data/quant_dataset/<年>/<年>/day/stock_daily.parquet  tushare 全表日线
-  (未复权 OHLC / pre_close / up_limit / adj_factor / amount / turnover_rate
-   / total_mv(万元) / is_st / listed_days, 含退市股)
-- data/pg_parquet/income.parquet  利润表(ann_date/end_date/n_income/... 点时)
-- data/pg_parquet/stock_basic.parquet  当前快照(仅用于退市名静态过滤)
+加载实现位于 core/event_engine/jq/datalake/ (插件注册中心 + plugins/ 目录);
+本模块保留:
+- 策略域构建器: load_panel/build_tables/fin_ok_matrix/ew_index
+  (由插件原始帧派生的组合产物, 不属于单表插件)
+- 向后兼容门面: load_income/load_index_bars/load_industry_members/industry_asof
+  委托到注册中心(paper.py/_runtime.py/历史脚本零改动)
 
 约定:
 - code 统一 6 位数字字符串
 - 面板价格前复权(每股按自身最后交易日 adj_factor 锚定), 撮合/净值用它
 - 过滤用未复权原始值(市值/涨停价/价格上限), 消除复权对绝对价格的扭曲
+- 全部点时口径
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Callable
 
 import numpy as np
 import pandas as pd
-import pyarrow.parquet as pq
 
-ROOT = Path(__file__).resolve().parents[2]
-QDATA = ROOT / "data" / "quant_dataset"
-PG = ROOT / "data" / "pg_parquet"
-CNE_CURATED = ROOT / "CNEquity" / "data" / "quant_dataset" / "_cnequity" / "curated"
+from core.event_engine.jq import datalake
+
+# 兼容别名(历史代码直接引用 jq_data.PG 等)
+ROOT = datalake.ROOT
+QDATA = datalake.QDATA
+PG = datalake.PG
+CNE_CURATED = datalake.CNE_CURATED
 
 DEFAULT_PREFIXES = ("00", "60")   # 沪深主板(创业板30/科创68/北交8,4默认排除)
 
 
 # ============================================================
-# 指数日线(CNE index_bars, TDX 源; 由 cne backfill index_bars 补历史)
+# 指数日线 / 利润表 / 行业分类 —— 委托数据插件(门面)
 # ============================================================
 def load_index_bars() -> pd.DataFrame:
     """CNE curated 指数日线: symbol/trade_date/open/high/low/close/volume/amount."""
-    root = CNE_CURATED / "index_bars"
-    files = sorted(root.glob("trade_date=*/*.parquet"))
-    if not files:
-        return pd.DataFrame()
-    frames = [pd.read_parquet(f, columns=["symbol", "trade_date", "open",
-                                          "high", "low", "close",
-                                          "volume", "amount"])
-              for f in files]
-    df = pd.concat(frames, ignore_index=True)
-    df["trade_date"] = pd.to_datetime(df["trade_date"])
-    return (df.sort_values(["symbol", "trade_date"], kind="stable")
-              .reset_index(drop=True))
+    return datalake.load("index_bars")
+
+
+def load_income() -> pd.DataFrame:
+    """利润表(合并报表): 按 (code, end_date) 去重保留最新公告, 按 (code, ann_date) 排序."""
+    return datalake.load("income")
+
+
+def load_industry_members() -> pd.DataFrame:
+    """CNE curated industry_members 全量长表(约 42 万行, 进程级缓存)。"""
+    return datalake.load("industry_members")
+
+
+def industry_asof(date) -> pd.DataFrame:
+    """点时行业快照: as_of_date <= date 的每个 (code, system) 最新成员行。"""
+    return datalake.asof("industry_members", date)
+
+
+def data_status() -> pd.DataFrame:
+    """数据插件诊断表(行数/日期覆盖/内存) —— 排查"报错是否在数据"用。"""
+    return datalake.status()
 
 
 # ============================================================
-# 行情面板
+# 行情面板(策略域构建器: stock_daily 插件原始帧 -> 引擎面板)
 # ============================================================
 def load_panel(start: str, end: str,
                prefixes: tuple[str, ...] = DEFAULT_PREFIXES,
@@ -59,48 +70,16 @@ def load_panel(start: str, end: str,
                                                pd.DataFrame]:
     """返回 (engine_panel, meta, close_raw_df)。
 
-    engine_panel: date/code/open/close/turnover/am20 (前复权, 事件引擎直接可用)
+    engine_panel: date/code/open/close/turnover/am20/amount (前复权, 引擎可用)
     meta:         ts_code/trade_date/pre_close/up_limit/total_mv/is_st/listed_days
                   (全市场未复权, 供过滤矩阵使用, 不限 prefixes)
-    close_raw_df: date/code/close_raw (域内未复权收盘, 价格过滤/涨停判定用)
+    close_raw_df: date/code/close_raw/open_raw(/high_raw/low_raw) 未复权价格
     """
-    cols = ["ts_code", "trade_date", "open", "close", "high", "low",
-            "pre_close", "amount", "adj_factor", "up_limit", "down_limit",
-            "total_mv", "turnover_rate", "is_st", "listed_days"]
-    start_ts = pd.Timestamp(start) - pd.Timedelta(days=buffer_days)
-    end_ts = pd.Timestamp(end)
-    frames, meta_frames = [], []
-    years = sorted({p.name for p in QDATA.iterdir()
-                    if p.is_dir() and p.name.isdigit()})
-    for y in years:
-        f = QDATA / y / y / "day" / "stock_daily.parquet"
-        if not f.exists():
-            continue
-        schema = set(pq.read_schema(f).names)
-        usecols = [c for c in cols if c in schema]
-        df = pd.read_parquet(f, columns=usecols)
-        if "listed_days" not in df.columns:
-            df["listed_days"] = np.nan
-        df["trade_date"] = pd.to_datetime(df["trade_date"])
-        df = df[(df["trade_date"] >= start_ts) & (df["trade_date"] <= end_ts)]
-        if df.empty:
-            continue
-        keep = ["ts_code", "trade_date", "pre_close", "up_limit", "down_limit",
-                "total_mv", "is_st", "listed_days"]
-        keep = [c for c in keep if c in df.columns]
-        meta_frames.append(df[keep].copy())
-        code6 = df["ts_code"].str[:6]
-        df = df[code6.str.startswith(tuple(prefixes))]
-        if df.empty:
-            continue
-        sel = ["ts_code", "trade_date", "open", "close", "amount",
-               "adj_factor", "turnover_rate"]
-        sel += [c for c in ("high", "low") if c in df.columns]
-        frames.append(df[sel])
-    raw = pd.concat(frames, ignore_index=True)
-    meta = pd.concat(meta_frames, ignore_index=True)
+    raw, meta = datalake.load("stock_daily", start=start, end=end,
+                              buffer_days=buffer_days, prefixes=prefixes)
     raw["code"] = raw["ts_code"].str[:6]
-    raw = raw.sort_values(["code", "trade_date"], kind="stable").reset_index(drop=True)
+    raw = raw.sort_values(["code", "trade_date"], kind="stable")
+    raw = raw.reset_index(drop=True)
 
     # 前复权: 每股按其最后一个交易日 adj_factor 锚定
     last_factor = raw.groupby("code")["adj_factor"].last()
@@ -140,23 +119,6 @@ def load_panel(start: str, end: str,
 # ============================================================
 # 点时财务矩阵
 # ============================================================
-def load_income() -> pd.DataFrame:
-    """利润表(合并报表): 按 (code, end_date) 去重保留最新公告, 按 (code, ann_date) 排序."""
-    inc = pd.read_parquet(PG / "income.parquet",
-                          columns=["ts_code", "ann_date", "end_date",
-                                   "n_income", "n_income_attr_p", "revenue",
-                                   "report_type"])
-    inc = inc[pd.to_numeric(inc["report_type"], errors="coerce") == 1]
-    inc["code"] = inc["ts_code"].str[:6]
-    inc["ann_date"] = pd.to_datetime(inc["ann_date"], errors="coerce")
-    inc["end_date"] = pd.to_datetime(inc["end_date"], errors="coerce")
-    inc = inc.dropna(subset=["ann_date"])
-    inc = inc.sort_values(["code", "end_date", "ann_date"], kind="stable")
-    inc = inc.drop_duplicates(["code", "end_date"], keep="last")
-    inc = inc.sort_values(["code", "ann_date"], kind="stable")
-    return inc
-
-
 def fin_ok_matrix(inc: pd.DataFrame, calendar: pd.DatetimeIndex,
                   codes: list[str], pred: Callable[[pd.DataFrame], np.ndarray]
                   ) -> np.ndarray:
@@ -207,7 +169,6 @@ class MarketTables:
     listed_ok: np.ndarray          # bool 上市满 listed_days
     hl: np.ndarray                 # bool 收盘涨停(精确涨停价)
     delist_name: np.ndarray        # (K,) bool 当前名称含"退"
-    # 可选矩阵(部分年份 schema 缺列时为 None)
     high_raw: np.ndarray | None = None    # 未复权最高价
     low_raw: np.ndarray | None = None     # 未复权最低价
     pre_close: np.ndarray | None = None   # 未复权昨收
@@ -315,71 +276,3 @@ def ew_index(tables: MarketTables, clip: float = 0.2,
     level = (1.0 + ew).cumprod()
     ma = level.rolling(ma_window, min_periods=1).mean()
     return level, ma
-
-
-# ============================================================
-# 行业分类(CNE curated industry_members, 月度快照, 点时口径)
-# ============================================================
-_IND_MEMBERS_CACHE: pd.DataFrame | None = None
-
-# 聚宽分类键 -> CNE classification_system + 级别拆分方式
-# sw 申万 code 为 6 位层级编码(前2位=一级组, 后4位细分); CNE 快照到 6 位粒度
-# eastmoney 行业带中文名, 粒度近似聚宽二级行业, 用作 jq_l1/l2 与 zjw 的近似
-_INDUSTRY_KEY_MAP = {
-    "sw_l1": ("sw", "l1"),
-    "sw_l2": ("sw", "l2"),
-    "sw_l3": ("sw", "l3"),
-    "jq_l1": ("eastmoney", "name"),
-    "jq_l2": ("eastmoney", "name"),
-    "zjw": ("eastmoney", "name"),
-}
-
-
-def load_industry_members() -> pd.DataFrame:
-    """CNE curated industry_members 全量长表。
-
-    列: code(6位)/system/industry_code/industry_name/as_of_date;
-    进程内缓存(约 42 万行)。
-    """
-    global _IND_MEMBERS_CACHE
-    if _IND_MEMBERS_CACHE is not None:
-        return _IND_MEMBERS_CACHE
-    root = CNE_CURATED / "industry_members"
-    files = sorted(root.glob("**/*.parquet"))
-    if not files:
-        _IND_MEMBERS_CACHE = pd.DataFrame(
-            columns=["code", "system", "industry_code", "industry_name",
-                     "as_of_date"])
-        return _IND_MEMBERS_CACHE
-    df = pd.concat(
-        [pd.read_parquet(f, columns=["symbol", "classification_system",
-                                     "industry_code", "industry_name",
-                                     "as_of_date"])
-         for f in files], ignore_index=True)
-    df["code"] = df["symbol"].astype(str).str.split(".").str[0].str.zfill(6)
-    df["system"] = df["classification_system"].astype(str)
-    df["industry_code"] = df["industry_code"].astype(str)
-    df["industry_name"] = df["industry_name"].astype(str)
-    df["as_of_date"] = pd.to_datetime(df["as_of_date"])
-    _IND_MEMBERS_CACHE = (df[["code", "system", "industry_code",
-                              "industry_name", "as_of_date"]]
-                          .sort_values(["code", "system", "as_of_date"],
-                                       kind="stable")
-                          .reset_index(drop=True))
-    return _IND_MEMBERS_CACHE
-
-
-def industry_asof(date) -> pd.DataFrame:
-    """点时行业快照: as_of_date <= date 的每个 (code, system) 最新成员行。"""
-    ind = load_industry_members()
-    if not len(ind):
-        return ind
-    d = pd.Timestamp(date)
-    sub = ind[ind["as_of_date"] <= d]
-    if sub.empty:                        # 请求日早于最早快照 -> 取最早一期
-        first = ind["as_of_date"].min()
-        sub = ind[ind["as_of_date"] == first]
-    else:
-        sub = sub.sort_values("as_of_date", kind="stable")
-        sub = sub.drop_duplicates(["code", "system"], keep="last")
-    return sub.reset_index(drop=True)

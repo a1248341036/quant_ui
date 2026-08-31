@@ -161,10 +161,15 @@ class JQContext:
             if not sym.startswith("399"):
                 return None
         elif suf_n != "CSI":
+            # 无后缀: 股票码已在面板内(ci 命中, 不会走到这里); 未命中的
+            # 裸 000xxx/880xxx 几乎必为上证系指数(000300/000905/000852...),
+            # 裸 399xxx 必为深证系指数(399101/399006...)
             if sym.startswith("399"):
                 suf_n = "SZ"
+            elif sym.startswith(("000", "880", "950")):
+                suf_n = "SH"
             else:
-                return None          # 无后缀且非 399: 按股票处理
+                return None
         key = sym.zfill(6) + "." + suf_n
         if key in self._index_cache:
             return self._index_cache[key]
