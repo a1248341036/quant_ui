@@ -107,13 +107,42 @@ def _industry_entry(code: str, snap: pd.DataFrame) -> dict:
 
 def install(ns: dict, rt) -> None:
     def get_index_stocks(index_symbol, date=None):
-        # 全量池(域内全部股票), 点时口径: 剔除信号日尚未上市的代码;
-        # 已退市代码无可靠退市标记, 保留(由 paused 过滤兜底)
+        """点时成分近似。
+        - 399101(中小板综): 原 002/003 段, 2021 年并入主板后成分冻结,
+          前缀 + 点时上市过滤即可, 无未来泄漏。
+        - 其余指数: CNE index_constituents 快照仅当快照日 >= 请求日
+          (避免未来泄漏), 否则回落域内全池(旧行为)。
+        """
         d = (pd.Timestamp(date) if date is not None
              else rt.context.previous_date)
         ldm = rt.ctx.list_date_map
-        return [c for c in rt.ctx.codes
-                if c not in ldm or ldm[c] <= d]
+
+        def _listed(cs):
+            return [c for c in cs if c not in ldm or ldm[c] <= d]
+
+        c6 = str(index_symbol).split(".")[0].strip().zfill(6)
+        if c6 == "399101":
+            return _listed(c for c in rt.ctx.codes
+                           if c.startswith(("002", "003")))
+        try:
+            from core.event_engine.jq.datalake.base import CNE_CURATED
+            root = CNE_CURATED / "index_constituents"
+            parts = sorted(root.glob("as_of_date=*"))
+            if parts:
+                snap = pd.read_parquet(
+                    parts[-1], columns=["index_symbol", "symbol",
+                                        "as_of_date"])
+                hit = snap[snap["index_symbol"].str[:6] == c6]
+                if len(hit):
+                    as_of = pd.Timestamp(hit["as_of_date"].iloc[0])
+                    if as_of <= d:
+                        members = {str(s)[:6] for s in hit["symbol"]}
+                        out = _listed(members & set(rt.ctx.codes))
+                        if out:
+                            return out
+        except Exception:
+            pass
+        return _listed(rt.ctx.codes)          # 兜底: 域内全池(旧行为)
 
     def get_security_info(code):
         code = str(code).split(".")[0].strip().zfill(6)

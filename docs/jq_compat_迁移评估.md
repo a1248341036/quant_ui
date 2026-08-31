@@ -77,7 +77,7 @@
 | numpy 全局别名 | ✅ | zeros/ones/array/arange/mean/nanmean/std/where 等 28 个预载（不覆盖 max/min/sum/abs/round 内建；`log` 让位给策略日志对象） |
 | get_fundamentals（indicator） | 🟢 | fina_indicator.parquet 在库（ROE/EPS/毛利率等 JQ indicator 常用字段基本齐） |
 | get_fundamentals_continuously | 🟢 | 循环调用封装 |
-| get_index_stocks | ✅→ | 已支持（全量池点时）；**CNE curated/index_constituents 在库 → 可升级为真实指数成分**（国九策略用 399101 成分才是原意） |
+| get_index_stocks | ✅ | 399101(中小板综)=002/003 段点时近似（2021 并板后成分冻结，无未来泄漏）；其余指数优先 CNE index_constituents 快照（仅当快照日≥请求日），否则回落域内全池 |
 | get_all_securities(['stock']) | ✅ | 已支持；etf/index 类型可扩（CNE fund_bars/index_bars） |
 | get_security_info | ✅→ | start_date/display_name 已有；end_date/type 可由 namechange.parquet 补 |
 | get_trade_days / get_all_trade_days | 🟢 | tables.dates / CNE trade_cal 直接给 |
