@@ -90,7 +90,14 @@
 
 ## 建议落地顺序
 
-1. **P0（几十行级，立刻解锁大量社区策略）**：before_trading_start/after_trading_end/handle_data/process_initialize、get_trade_days、get_orders/get_open_orders/cancel_order、Trade 对象、Position.closeable_amount、get_price 补 high/low/volume/money、PriceRelatedSlippage 精确映射、normalize_code
-2. **P1（数据已在库，每个半天级）**：get_index_stocks 接 CNE index_constituents（真实成分）、get_fundamentals 扩 indicator/pe/pb、get_extras(is_st)、get_locked_shares、get_security_info.end_date、unschedule_all、set_benchmark 真实基准+超额输出
+> **P0 已全部落地（2026-08-31）**：生命周期四钩子（process_initialize/before_trading_start/
+> handle_data/after_trading_end，handle_data 注入 9:30 槽、data 为当日截面视图支持 .mavg(n)）、
+> get_trade_days/get_all_trade_days、get_orders/get_open_orders/cancel_order、get_trades+
+> Trade 对象、Position.closeable_amount、Portfolio.returns、normalize_code、unschedule_all、
+> get_price 全字段（high/low/pre_close/volume/money，并行会话完成数据层）、
+> PriceRelatedSlippage 精确映射（r/2→单边 bps）。回归：小盘三正与国九 2024 结果逐位一致。
+
+1. ~~**P0（几十行级，立刻解锁大量社区策略）**~~：已实现，见上
+2. **P1（数据已在库，每个半天级）**：get_index_stocks 接 CNE index_constituents（真实成分）、get_fundamentals 扩 indicator/pe/pb、get_extras(is_st)、get_locked_shares、get_security_info.end_date、set_benchmark 真实基准+超额输出
 3. **P2（工程较大或受限）**：60 分钟真数据 history、get_industry_stocks、get_mtss、get_money_fund、多账户、get_fundamentals_continuously
 4. **不做**：Tick/分钟撮合、期货/两融交易、宏观/债券、龙虎榜（待 CNE 扩数据源）

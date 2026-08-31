@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import datetime as _datetime
+import inspect
 import sys
 import types
 from pathlib import Path
@@ -33,7 +34,8 @@ from _runtime import JQContext  # noqa: E402  (facade: tables/snapshot/ew_level)
 from core.event_engine.jq.objects import (_CodeData, _Context, _CurrentData,  # noqa: E402
                                           _FixedSlippage, _G, _Log, _Order,
                                           _OrderCost, _OrderStatus, _Position,
-                                          _SecurityInfo)
+                                          _PriceRelatedSlippage, _SecurityInfo,
+                                          _Trade)
 from core.event_engine.jq.query import _Col, _Query, query  # noqa: E402,F401
 
 # 指数 get_price 字段 -> CNE index_bars 列
@@ -70,7 +72,7 @@ class JQRuntime:
         self.g = _G()
         self.log = _Log()
         self.scheduled: list[tuple[str, Callable, object, str, int]] = []
-        self.pending_orders: list[tuple[str, str, float]] = []  # (kind, code, arg)
+        self.pending_orders: list[tuple[str, str, float, _Order | None]] = []
         self._cost: dict[str, float] = {}
         self._engine_ctx = None
         self._snap_cache: dict[pd.Timestamp, pd.DataFrame] = {}
@@ -83,10 +85,21 @@ class JQRuntime:
         self._volume_cache: np.ndarray | None = None
         self._nan_mat_cache: np.ndarray | None = None
         self.cost_cfg: dict[str, float] = {}   # initialize 内采集的费率设置
+        self._hooks: dict[str, Callable] = {}  # 生命周期钩子(用户定义才生效)
+        self._day_orders: dict[int, _Order] = {}
+        self._order_seq = 0
+        self._day_trades: list[_Trade] = []
+        self._hd_injected = False
+        self._proc_init_done = False
         self.context = _Context(self)
         self._ns = self._build_namespace()
         exec(compile(code, "<聚宽策略>", "exec"), self._ns)  # noqa: S102
         self._init_fn = self._ns.get("initialize")
+        for _name in ("process_initialize", "before_trading_start",
+                      "handle_data", "after_trading_end"):
+            _fn = self._ns.get(_name)
+            if callable(_fn):
+                self._hooks[_name] = _fn
 
     # ================= 命名空间 =================
     def _build_namespace(self) -> dict:
@@ -122,9 +135,8 @@ class JQRuntime:
             code = str(code).zfill(6)
             o = rt._mk_order(code, value=value, shares=shares)
             if o is not None:
-                rt.pending_orders.append((kind, code,
-                                          float(value if value is not None
-                                                else shares)))
+                arg = float(value if value is not None else shares)
+                rt.pending_orders.append((kind, code, arg, o))
             return o
 
         def order_target_value(code, value):
@@ -149,7 +161,7 @@ class JQRuntime:
                   if rt._engine_ctx is not None else None) or rt.capital
             o = rt._mk_order(code, value=float(pct) * float(pv))
             if o is not None:
-                rt.pending_orders.append(("op", code, float(pct)))
+                rt.pending_orders.append(("op", code, float(pct), o))
             return o
 
         def set_order_cost(cost, type="stock", **kwargs):
@@ -170,9 +182,55 @@ class JQRuntime:
                 pass
 
         def set_slippage(s, **kwargs):
+            if isinstance(s, _PriceRelatedSlippage):
+                # JQ: 比例滑点, 买卖各偏 value/2 -> 引擎单边 bps = value/2*1e4
+                rt.cost_cfg["slippage_bps"] = float(s.value) / 2 * 1e4
+                return
             v = getattr(s, "value", s if isinstance(s, (int, float)) else None)
             if v:
+                # FixedSlippage 聚宽语义为绝对价差(元); 引擎仅支持万分比,
+                # 按社区惯例(v=3/10000 意图即 3bp)作比例解释
                 rt.cost_cfg["slippage_bps"] = float(v) * 1e4
+
+        def get_trade_days(start_date=None, end_date=None, count=None):
+            return rt._get_trade_days(start_date, end_date, count)
+
+        def get_all_trade_days():
+            return rt.ctx.tables.dates
+
+        def normalize_code(code):
+            s = str(code).strip().upper()
+            if "." in s:
+                return s
+            c = s.zfill(6)
+            return c + (".XSHG" if c.startswith(("5", "6", "9", "11", "13"))
+                        else ".XSHE")
+
+        def unschedule_all():
+            rt.scheduled.clear()
+
+        def get_orders():
+            # 当日全部订单 {order_id: Order}
+            return dict(rt._day_orders)
+
+        def get_open_orders():
+            # 未成交(尚未 flush)订单
+            return {oid: o for oid, o in rt._day_orders.items()
+                    if o.status == _OrderStatus.opened}
+
+        def cancel_order(order):
+            if order is None:
+                return None
+            for i, entry in enumerate(list(rt.pending_orders)):
+                if entry[3] is order:
+                    rt.pending_orders.pop(i)
+                    order.status = _OrderStatus.canceled
+                    break
+            return order
+
+        def get_trades():
+            # 当日成交(引擎撮合在 run_day 后执行, 此处为上一执行日开盘成交)
+            return list(rt._day_trades)
 
         def get_index_stocks(index_symbol, date=None):
             # 全量池(域内全部股票), 点时口径: 剔除信号日尚未上市的代码;
@@ -224,6 +282,15 @@ class JQRuntime:
             "datetime": _datetime, "timedelta": _datetime.timedelta,
             "date": _datetime.date, "time": _datetime.time,
             "OrderStatus": _OrderStatus,
+            "PriceRelatedSlippage": _PriceRelatedSlippage,
+            "get_trade_days": get_trade_days,
+            "get_all_trade_days": get_all_trade_days,
+            "normalize_code": normalize_code,
+            "unschedule_all": unschedule_all,
+            "get_orders": get_orders,
+            "get_open_orders": get_open_orders,
+            "cancel_order": cancel_order,
+            "get_trades": get_trades,
             "set_option": lambda *a, **k: None,
             "set_benchmark": lambda *a, **k: None,
             "set_universe": lambda *a, **k: None,
@@ -246,7 +313,12 @@ class JQRuntime:
         if shares is None:
             shares = (float(value) / px) if px else 0.0
         amt = float(value) if value is not None else float(shares)
-        return _Order(security=code, amount=float(shares), is_buy=amt > 0)
+        self._order_seq += 1
+        o = _Order(security=code, amount=float(shares), is_buy=amt > 0,
+                   add_time=self.context.current_dt)
+        o.order_id = self._order_seq
+        self._day_orders[o.order_id] = o
+        return o
 
     # ================= 数据 API =================
     def _row_index(self, end_date=None, count=None, start_date=None) -> list[int]:
@@ -361,13 +433,12 @@ class JQRuntime:
                         key = _IX_FIELD_MAP.get(f, f)
                         v = (ix[key].get(d, np.nan)
                              if key in ix.columns else np.nan)
-                    elif f in ("close", "open", "high_limit", "low_limit",
-                               "close_adj"):
-                        v = self._field_matrix(f)[i, k]
                     elif f == "turnover":
                         v = self.ctx._turnover_col(d).get(c, np.nan)
                     else:
-                        raise NotImplementedError(f"字段未支持: {f}")
+                        # 统一字段解析(close/open/high/low/pre_close/
+                        # high_limit/low_limit/close_adj/volume/money)
+                        v = self._field_matrix(f)[i, k]
                     vals[f] = v
                     if (not fill_paused or skip_paused) and not np.isfinite(v):
                         ok = False
@@ -533,7 +604,56 @@ class JQRuntime:
             if c not in engine_ctx.positions:
                 del self._cost[c]
 
+    @staticmethod
+    def _call_hook(fn, *args):
+        """按用户函数签名长度传参(兼容 (context) 与 (context, data) 两种形态)."""
+        try:
+            n = len(inspect.signature(fn).parameters)
+        except (TypeError, ValueError):
+            n = len(args)
+        if n <= 0:
+            return fn()
+        return fn(*args[:n])
+
+    def _snapshot_fills(self):
+        """上一执行日的引擎成交 -> 当日可查的 Trade 列表。"""
+        ctx = self._engine_ctx
+        fills = list(getattr(ctx, "fills", None) or [])
+        out = []
+        for f in fills:
+            shares = float(f.get("shares") or 0)
+            side = str(f.get("side") or "")
+            out.append(_Trade(
+                security=f.get("code"),
+                price=f.get("price") or 0.0,
+                amount=shares if side == "buy" else -shares,
+                time=self.context.previous_date,
+                fee=f.get("fee") or 0.0))
+        self._day_trades = out
+
+    def _get_trade_days(self, start_date=None, end_date=None, count=None):
+        dates = self.ctx.tables.dates
+        end = (pd.Timestamp(end_date) if end_date is not None
+               else self.context.previous_date)
+        hi = int(dates.searchsorted(end, side="right")) - 1
+        if start_date is not None:
+            lo = int(dates.searchsorted(pd.Timestamp(start_date), side="left"))
+        elif count is not None:
+            lo = max(0, hi - int(count) + 1)
+        else:
+            lo = 0
+        return dates[max(0, lo):hi + 1]
+
     def _ensure_schedule(self):
+        if not self._hd_injected:
+            # handle_data(context, data) 注入为 9:30 的 daily 任务(时间排序自动就位);
+            # 包一层以补上 data 参数(当日截面, 开盘价代理现价)
+            hd = self._hooks.get("handle_data")
+            if hd is not None:
+                def _hd_wrapper(ctx):
+                    self._call_hook(hd, ctx, self.get_current_data())
+                self.scheduled.append(("daily", _hd_wrapper, None, "9:30", -1))
+            self._hd_injected = True
         if not self._sched_sorted:
             self.scheduled.sort(key=_sched_sort_key)
             self._sched_sorted = True
@@ -559,6 +679,16 @@ class JQRuntime:
         self._ensure_schedule()
         self.context.current_dt = bar.exec_date
         self.context.previous_date = bar.date
+        self._day_orders = {}
+        self._snapshot_fills()
+        if not self._proc_init_done:
+            self._proc_init_done = True
+            fn = self._hooks.get("process_initialize")
+            if fn is not None:
+                self._call_hook(fn, self.context)
+        bts = self._hooks.get("before_trading_start")
+        if bts is not None:
+            self._call_hook(bts, self.context, self.get_current_data())
         monthly_first = bar.exec_date.month != bar.date.month
         for kind, func, arg, _tk, _seq in self.scheduled:
             if kind == "daily":
@@ -579,17 +709,22 @@ class JQRuntime:
                 if hit:
                     func(self.context)
         self._flush_orders(bar)
+        ate = self._hooks.get("after_trading_end")
+        if ate is not None:
+            self._call_hook(ate, self.context)
 
     def _flush_orders(self, bar):
         ctx = self._engine_ctx
         pending = self.pending_orders
         self.pending_orders = []
-        for kind, code, arg in pending:
+        for kind, code, arg, order in pending:
             px = ctx.last_close(code)
             if not px:
                 if code not in self._warned:
                     self._warned.add(code)
                     self.log.warn(f"[order] 无有效价格, 跳过下单: {code}")
+                if order is not None:
+                    order.status = _OrderStatus.rejected
                 continue
             if kind == "tv":          # 目标市值 -> 目标股数
                 ctx.order_target_shares(code, arg / px)
@@ -601,6 +736,12 @@ class JQRuntime:
                 ctx.order_shares(code, arg)
             elif kind == "op":        # 目标占比
                 ctx.order_target_pct(code, arg)
+            if order is not None:
+                # 提交即视为受理; 实际成交明细见 get_trades()(引擎逐笔)
+                order.status = _OrderStatus.held
+                order.filled = order.amount
+                order.price = px
+                order.avg_cost = px * 1.0001
             self._record_cost(code, bar, px)
 
     def _record_cost(self, code: str, bar, px: float):
