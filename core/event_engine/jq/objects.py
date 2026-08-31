@@ -17,25 +17,27 @@ class _Log:
     def __init__(self):
         self.buffer: list[str] = []
 
-    def _add(self, level, msg):
+    def _add(self, level, *args):
+        # JQ log.info('a', b, c) 多参数空格拼接(DataFrame 等对象 str 化)
+        msg = " ".join(str(a) for a in args)
         line = f"[{level}] {msg}"
         self.buffer.append(line)
         if level in ("warn", "error"):
             print(line, flush=True)
 
-    def info(self, msg):
-        self._add("info", msg)
+    def info(self, *args):
+        self._add("info", *args)
 
-    def debug(self, msg):
-        self._add("debug", msg)
+    def debug(self, *args):
+        self._add("debug", *args)
 
-    def warn(self, msg):
-        self._add("warn", msg)
+    def warn(self, *args):
+        self._add("warn", *args)
 
     warning = warn
 
-    def error(self, msg):
-        self._add("error", msg)
+    def error(self, *args):
+        self._add("error", *args)
 
     def set_level(self, *a, **k):
         pass
@@ -156,7 +158,13 @@ class _CurrentData:
         self._name_map = name_map
         self._rt = rt
 
+    @staticmethod
+    def _norm(code):
+        # '601988.XSHG'/'601988' -> '601988' (用户常写聚宽风格后缀码)
+        return str(code).split(".")[0].strip().zfill(6)
+
     def __getitem__(self, code):
+        code = self._norm(code)
         if code not in self._snap.index:
             # 停牌/无数据股票: 返回"不可交易"视图
             return _CodeData(pd.Series({"paused": True, "st": False}),
@@ -164,6 +172,7 @@ class _CurrentData:
         return _CodeData(self._snap.loc[code], self._name_map, self._rt)
 
     def get(self, code, default=None):
+        code = self._norm(code)
         return self[code] if code in self._snap.index else default
 
     def __iter__(self):
@@ -173,7 +182,7 @@ class _CurrentData:
         return len(self._snap)
 
     def __contains__(self, code):
-        return code in self._snap.index
+        return self._norm(code) in self._snap.index
 
 
 class _Position:
@@ -207,6 +216,10 @@ class _Portfolio:
 
     @property
     def cash(self):
+        return self._rt._engine_ctx.cash
+
+    @property
+    def available_cash(self):
         return self._rt._engine_ctx.cash
 
     @property

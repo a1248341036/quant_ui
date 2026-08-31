@@ -70,8 +70,11 @@
 | attribute_history | ✅ | 已支持 |
 | get_current_data() | ✅ | 已支持（T 日涨跌停/ST/停牌，last_price≈开盘防泄漏） |
 | get_current_tick / get_ticks | 🔴 | Tick 级不做 |
-| get_fundamentals（valuation） | 🟢→ | market_cap 已有；pe_ratio/pb_ratio 可由 fina_indicator.parquet / mv÷净利 补 |
+| get_fundamentals（valuation） | ✅ | market_cap 已有；**pe_ratio/pb_ratio 已补**（市值/年化归母净利、市值/归母净资产，balancesheet.parquet 点时口径，亏损/负净资产→NaN） |
 | get_fundamentals（income） | ✅ | 已支持三字段（ann_date 点时）；balancesheet/cashflow.parquet 在库，可扩 |
+| finance.run_query + STK_XR_XD（分红送转） | ✅ | **已补**（api/finance.py）：dividend.parquet 映射（code/company_name/report_date/board_plan_pub_date/dividend_ratio/bonus_ratio_rmb/bonus_amount_rmb(=每股派息×总股本, 万元)/record_date/ex_date/pay_date）；同报告期 预案/实施 多行去重；日期列为 datetime.date（与聚宽一致，可直接与 dt.date 比较） |
+| 代码归一化 | ✅ | 聚宽风格 '601988.XSHG' 与裸码 '601988' 全链路等价（in_/get_current_data/get_price/get_security_info/下单/持仓） |
+| numpy 全局别名 | ✅ | zeros/ones/array/arange/mean/nanmean/std/where 等 28 个预载（不覆盖 max/min/sum/abs/round 内建；`log` 让位给策略日志对象） |
 | get_fundamentals（indicator） | 🟢 | fina_indicator.parquet 在库（ROE/EPS/毛利率等 JQ indicator 常用字段基本齐） |
 | get_fundamentals_continuously | 🟢 | 循环调用封装 |
 | get_index_stocks | ✅→ | 已支持（全量池点时）；**CNE curated/index_constituents 在库 → 可升级为真实指数成分**（国九策略用 399101 成分才是原意） |

@@ -62,6 +62,7 @@ class JQRuntime:
         self._engine_ctx = None
         self._snap_cache: dict[pd.Timestamp, pd.DataFrame] = {}
         self._fin_value_mats: dict[str, np.ndarray] | None = None
+        self._bal_value_mats: dict[str, np.ndarray] | None = None
         self._warned: set[str] = set()
         self._sched_sorted = False
         self._month_map: dict[pd.Timestamp, tuple[int, int]] | None = None
@@ -78,7 +79,10 @@ class JQRuntime:
         self._proc_init_done = False
         self.context = _Context(self)
         self._ns = self._build_namespace()
-        exec(compile(code, "<聚宽策略>", "exec"), self._ns)  # noqa: S102
+        from core.event_engine.jq.api.misc import legacy_exec_scope
+        with legacy_exec_scope():
+            # exec 期间启用旧版研究环境兼容(pandas 旧选项/time.clock)
+            exec(compile(code, "<聚宽策略>", "exec"), self._ns)  # noqa: S102
         self._init_fn = self._ns.get("initialize")
         for _name in ("process_initialize", "before_trading_start",
                       "handle_data", "after_trading_end"):
@@ -96,6 +100,16 @@ class JQRuntime:
             "datetime": _datetime, "timedelta": _datetime.timedelta,
             "date": _datetime.date, "time": _datetime.time,
             "OrderStatus": _OrderStatus,
+            # 聚宽预载的 numpy 别名(不覆盖 max/min/sum/abs/round 等内建)
+            "zeros": np.zeros, "ones": np.ones, "array": np.array,
+            "arange": np.arange, "linspace": np.linspace, "full": np.full,
+            "where": np.where, "mean": np.mean, "nanmean": np.nanmean,
+            "std": np.std, "nanstd": np.nanstd,
+            "exp": np.exp, "sqrt": np.sqrt, "dot": np.dot,
+            "unique": np.unique, "median": np.median, "cumsum": np.cumsum,
+            "diff": np.diff, "nanmax": np.nanmax, "nanmin": np.nanmin,
+            "nansum": np.nansum, "corrcoef": np.corrcoef, "cov": np.cov,
+            "power": np.power, "maximum": np.maximum, "minimum": np.minimum,
         }
         _api.install_all(ns, self)
         return ns
@@ -104,6 +118,7 @@ class JQRuntime:
     def _mk_order(self, code: str, value: float | None = None,
                   shares: float | None = None):
         """构造下单回执; 无行情代码警告并返回 None(聚宽拒单语义)。"""
+        code = str(code).split(".")[0].strip().zfill(6)
         if code not in self.ctx._ci:
             if code not in self._warned:
                 self._warned.add(code)
@@ -198,8 +213,9 @@ class JQRuntime:
         if frequency not in ("daily", "1d", "1m"):
             raise NotImplementedError(f"频率未支持: {frequency}(日线引擎)")
         multi = isinstance(security, (list, tuple, set))
-        codes = [str(s).zfill(6) for s in
-                 (security if multi else [security])]
+        # '601988.XSHG'/'601988' -> '601988' (用户常写聚宽风格后缀码)
+        codes = [str(s).split(".")[0].strip().zfill(6)
+                 for s in (security if multi else [security])]
         if fields is None:
             fields = ["close"]
         if isinstance(fields, str):
@@ -249,7 +265,12 @@ class JQRuntime:
                 else:
                     single_dates.append(d)
                     single_vals.append(vals)
-        if panel or multi:
+        if panel:
+            # 聚宽旧式 Panel 近似: panel.close / panel.open -> 日期x代码 矩阵
+            from core.event_engine.jq.api.data_api import _pivot_panel
+            return _pivot_panel(self, long_rows, fields, fill_paused,
+                                skip_paused)
+        if multi:
             return pd.DataFrame(long_rows, columns=["time", "code", *fields])
         out = {f: [v[f] for v in single_vals] for f in fields if f != "time"}
         return pd.DataFrame(out, index=pd.DatetimeIndex(single_dates))
@@ -314,12 +335,26 @@ class JQRuntime:
                 for col, mat in self._income_value_mats().items():
                     snap[col] = [mat[i, j[c]] if c in j else np.nan
                                  for c in snap.index]
+                for col, mat in self._balance_value_mats().items():
+                    snap[col] = [mat[i, j[c]] if c in j else np.nan
+                                 for c in snap.index]
                 snap["income_end_date"] = np.nan
+                # 估值指标(JQ 口径): pe=市值/年化归母净利; pb=市值/归母净资产
+                # 亏损/净资产为负 -> NaN(与 JQ 的 >0 过滤语义一致)
+                mv_yuan = snap["mv"] * 1e4
+                ann = snap["ann_netprofit"]
+                snap["pe_ratio"] = np.where(ann > 0, mv_yuan / ann, np.nan)
+                eq = snap["total_equity"]
+                snap["pb_ratio"] = np.where(eq > 0, mv_yuan / eq, np.nan)
             self._snap_cache[key] = snap
         return self._snap_cache[key]
 
     def _income_value_mats(self) -> dict[str, np.ndarray]:
-        """点时财务值矩阵(懒构建): 归母净利/净利/营收, 元, ann_date 点时。"""
+        """点时财务值矩阵(懒构建): 归母净利/净利/营收/年化归母净利, 元, 点时。
+
+        ann_netprofit = 最新一期归母净利 × 12/累计月数(年化, PE 分母口径);
+        累计月数按报告期末月份数(3/6/9/12)。
+        """
         if self._fin_value_mats is not None:
             return self._fin_value_mats
         t = self.ctx.tables
@@ -328,7 +363,7 @@ class JQRuntime:
         inc = inc[inc["code"].isin(set(t.codes))]
         mats = {k: np.full((len(t.dates), len(t.codes)), np.nan, dtype=np.float64)
                 for k in ("np_parent_company_owners", "net_profit",
-                          "operating_revenue")}
+                          "operating_revenue", "ann_netprofit")}
         for code, g in inc.groupby("code", sort=False):
             k = self.ctx._ci.get(code)
             if k is None:
@@ -336,12 +371,52 @@ class JQRuntime:
             ann = g["ann_date"].values.astype("datetime64[D]")
             pos = np.searchsorted(ann, cal_d, side="right") - 1
             rows = np.where(pos >= 0)[0]
-            for key, col in (("np_parent_company_owners", "n_income_attr_p"),
-                             ("net_profit", "n_income"),
-                             ("operating_revenue", "revenue")):
-                mats[key][rows, k] = g[col].to_numpy()[pos[rows]]
+            values = {
+                "np_parent_company_owners": g["n_income_attr_p"].to_numpy(),
+                "net_profit": g["n_income"].to_numpy(),
+                "operating_revenue": g["revenue"].to_numpy(),
+            }
+            months = (pd.DatetimeIndex(g["end_date"]).month
+                      .to_numpy().astype(float))
+            factor = 12.0 / np.clip(months, 1.0, None)
+            values["ann_netprofit"] = values["np_parent_company_owners"] * factor
+            for key, arr in values.items():
+                mats[key][rows, k] = arr[pos[rows]]
         self._fin_value_mats = mats
         return mats
+
+    def _balance_value_mats(self) -> dict[str, np.ndarray]:
+        """点时归母净资产矩阵(懒构建): total_hldr_eqy_exc_min_int, 元, 点时。"""
+        if self._bal_value_mats is not None:
+            return self._bal_value_mats
+        t = self.ctx.tables
+        cal_d = t.dates.values.astype("datetime64[D]")
+        bal = pd.read_parquet(
+            _ROOT / "data" / "pg_parquet" / "balancesheet.parquet",
+            columns=["ts_code", "f_ann_date", "ann_date", "end_date",
+                     "report_type", "total_hldr_eqy_exc_min_int"])
+        bal = bal[pd.to_numeric(bal["report_type"], errors="coerce") == 1]
+        bal["code"] = bal["ts_code"].str[:6]
+        ann = pd.to_datetime(bal["f_ann_date"], errors="coerce").fillna(
+            pd.to_datetime(bal["ann_date"], errors="coerce"))
+        bal["ann_date"] = ann
+        bal = bal.dropna(subset=["ann_date"])
+        bal = bal.sort_values(["code", "end_date", "ann_date"], kind="stable")
+        bal = bal.drop_duplicates(["code", "end_date"], keep="last")
+        bal = bal.sort_values(["code", "ann_date"], kind="stable")
+        mat = np.full((len(t.dates), len(t.codes)), np.nan, dtype=np.float64)
+        for code, g in bal.groupby("code", sort=False):
+            k = self.ctx._ci.get(code)
+            if k is None:
+                continue
+            ann = g["ann_date"].values.astype("datetime64[D]")
+            pos = np.searchsorted(ann, cal_d, side="right") - 1
+            rows = np.where(pos >= 0)[0]
+            mat[rows, k] = pd.to_numeric(
+                g["total_hldr_eqy_exc_min_int"], errors="coerce"
+            ).to_numpy()[pos[rows]]
+        self._bal_value_mats = {"total_equity": mat}
+        return self._bal_value_mats
 
     def get_fundamentals(self, q: _Query, date=None):
         snap = self.get_snapshot(date)

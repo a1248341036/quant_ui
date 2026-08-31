@@ -12,6 +12,8 @@
                               get_all_securities/get_security_info/get_trade_days/
                               normalize_code/get_factor); 重型矩阵实现为
                               JQRuntime 方法, 本模块负责装配与轻量实现
+- 数据获取函数 -> 财务数据 -> finance.py (finance.run_query + STK_XR_XD
+                              分红送转表)
 - 交易函数                -> trading.py (order 四件套/order_shares/
                               order_target_percent/cancel_order/get_orders/
                               get_open_orders/get_trades)
@@ -22,11 +24,11 @@
 - 其他函数                -> misc.py (jqdata/jqfactor 模块桩, write_file 等占位)
 
 每个模块暴露 install(ns, rt); install_all 按序装配(顺序: misc 的模块桩先于
-data_api 的导入钩子)。
+finance 的 jqdata.finance 升级)。
 """
-from . import data_api, framework, misc, portfolio, settings, trading
+from . import data_api, finance, framework, misc, portfolio, settings, trading
 
-_MODULES = (misc, framework, settings, trading, data_api, portfolio)
+_MODULES = (misc, finance, framework, settings, trading, data_api, portfolio)
 
 
 def install_all(ns: dict, rt) -> None:

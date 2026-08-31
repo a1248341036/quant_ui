@@ -315,3 +315,71 @@ def ew_index(tables: MarketTables, clip: float = 0.2,
     level = (1.0 + ew).cumprod()
     ma = level.rolling(ma_window, min_periods=1).mean()
     return level, ma
+
+
+# ============================================================
+# 行业分类(CNE curated industry_members, 月度快照, 点时口径)
+# ============================================================
+_IND_MEMBERS_CACHE: pd.DataFrame | None = None
+
+# 聚宽分类键 -> CNE classification_system + 级别拆分方式
+# sw 申万 code 为 6 位层级编码(前2位=一级组, 后4位细分); CNE 快照到 6 位粒度
+# eastmoney 行业带中文名, 粒度近似聚宽二级行业, 用作 jq_l1/l2 与 zjw 的近似
+_INDUSTRY_KEY_MAP = {
+    "sw_l1": ("sw", "l1"),
+    "sw_l2": ("sw", "l2"),
+    "sw_l3": ("sw", "l3"),
+    "jq_l1": ("eastmoney", "name"),
+    "jq_l2": ("eastmoney", "name"),
+    "zjw": ("eastmoney", "name"),
+}
+
+
+def load_industry_members() -> pd.DataFrame:
+    """CNE curated industry_members 全量长表。
+
+    列: code(6位)/system/industry_code/industry_name/as_of_date;
+    进程内缓存(约 42 万行)。
+    """
+    global _IND_MEMBERS_CACHE
+    if _IND_MEMBERS_CACHE is not None:
+        return _IND_MEMBERS_CACHE
+    root = CNE_CURATED / "industry_members"
+    files = sorted(root.glob("**/*.parquet"))
+    if not files:
+        _IND_MEMBERS_CACHE = pd.DataFrame(
+            columns=["code", "system", "industry_code", "industry_name",
+                     "as_of_date"])
+        return _IND_MEMBERS_CACHE
+    df = pd.concat(
+        [pd.read_parquet(f, columns=["symbol", "classification_system",
+                                     "industry_code", "industry_name",
+                                     "as_of_date"])
+         for f in files], ignore_index=True)
+    df["code"] = df["symbol"].astype(str).str.split(".").str[0].str.zfill(6)
+    df["system"] = df["classification_system"].astype(str)
+    df["industry_code"] = df["industry_code"].astype(str)
+    df["industry_name"] = df["industry_name"].astype(str)
+    df["as_of_date"] = pd.to_datetime(df["as_of_date"])
+    _IND_MEMBERS_CACHE = (df[["code", "system", "industry_code",
+                              "industry_name", "as_of_date"]]
+                          .sort_values(["code", "system", "as_of_date"],
+                                       kind="stable")
+                          .reset_index(drop=True))
+    return _IND_MEMBERS_CACHE
+
+
+def industry_asof(date) -> pd.DataFrame:
+    """点时行业快照: as_of_date <= date 的每个 (code, system) 最新成员行。"""
+    ind = load_industry_members()
+    if not len(ind):
+        return ind
+    d = pd.Timestamp(date)
+    sub = ind[ind["as_of_date"] <= d]
+    if sub.empty:                        # 请求日早于最早快照 -> 取最早一期
+        first = ind["as_of_date"].min()
+        sub = ind[ind["as_of_date"] == first]
+    else:
+        sub = sub.sort_values("as_of_date", kind="stable")
+        sub = sub.drop_duplicates(["code", "system"], keep="last")
+    return sub.reset_index(drop=True)
