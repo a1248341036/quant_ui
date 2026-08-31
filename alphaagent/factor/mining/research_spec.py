@@ -178,6 +178,10 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
         "max_inject_chars": 2400,           # 注入块总预算，超限按 编辑先验>经验>多样性>证据 截断
         "apv_tau_c": 0.35,                  # APV 双门 1：置信阈值（Eq.7 置信）
         "apv_tau_v": 0.80,                  # APV 双门 2：失败 Beta 后验阈值
+        # 编辑先验（cells 注入）置信阈值：硬档共用，软推荐/软否决分向
+        "edit_prior_hard_conf": 0.7,        # 硬推荐（有显式成功）/硬否决（有失败）
+        "edit_prior_recommend_conf": 0.4,   # 软推荐（有显式成功）
+        "edit_prior_veto_conf": 0.3,        # 软否决（有失败）——低于推荐向，放行避坑证据
     },
     "delivery_policy": _default_delivery_policy(),
 }
@@ -336,6 +340,9 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
     memory["max_inject_chars"] = int(_bounded_number(memory.get("max_inject_chars"), "memory_policy.max_inject_chars", 0, 20000))
     memory["apv_tau_c"] = float(_bounded_number(memory.get("apv_tau_c"), "memory_policy.apv_tau_c", 0, 1))
     memory["apv_tau_v"] = float(_bounded_number(memory.get("apv_tau_v"), "memory_policy.apv_tau_v", 0, 1))
+    memory["edit_prior_hard_conf"] = float(_bounded_number(memory.get("edit_prior_hard_conf"), "memory_policy.edit_prior_hard_conf", 0, 1))
+    memory["edit_prior_recommend_conf"] = float(_bounded_number(memory.get("edit_prior_recommend_conf"), "memory_policy.edit_prior_recommend_conf", 0, 1))
+    memory["edit_prior_veto_conf"] = float(_bounded_number(memory.get("edit_prior_veto_conf"), "memory_policy.edit_prior_veto_conf", 0, 1))
 
     delivery = _require_dict(spec.get("delivery_policy"), "delivery_policy")
     # 盲测终审门槛（2026-08-29 新增）

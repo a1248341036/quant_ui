@@ -24,13 +24,13 @@ def test_purge_factor_removes_memory_and_rag(tmp_path):
 
     # 两条都在
     assert store.purge_factor(factor_names=["factor_a"], expressions=[expr_a]) >= 1
-    remaining = store.recent()
+    remaining, _ = store.recent()
     names = {e.get("factor_name") for e in remaining}
     assert "factor_a" not in names
 
     # 按 name 清除另一条
     assert store.purge_factor(factor_names=["factor_b"]) >= 1
-    assert all(e.get("factor_name") != "factor_b" for e in store.recent())
+    assert all(e.get("factor_name") != "factor_b" for e in store.recent()[0])
 
     # 再清一次应为 0（幂等）
     assert store.purge_factor(factor_names=["factor_b"], expressions=[expr_b]) == 0

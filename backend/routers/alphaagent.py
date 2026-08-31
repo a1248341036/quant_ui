@@ -8,6 +8,14 @@ from pydantic import BaseModel, Field
 
 from backend import alphaagent_service as service
 from alphaagent.factor.mining.research_memory import ResearchMemoryStore
+from alphaagent.factor.mining.research_memory import (
+    APV_TAU_C_DEFAULT,
+    APV_TAU_V_DEFAULT,
+    EDIT_PRIOR_HARD_CONF_DEFAULT,
+    EDIT_PRIOR_RECOMMEND_CONF_DEFAULT,
+    EDIT_PRIOR_VETO_CONF_DEFAULT,
+)
+from alphaagent.factor.mining.memory.calibration import _apv_gate, _eq7_confidence
 from alphaagent.factor.mining.research_spec import (
     RESEARCH_MODES,
     default_research_spec as build_default_research_spec,
@@ -94,10 +102,10 @@ def runs(include_archived: bool = False, archived_only: bool = False) -> list[di
 
 
 @router.get("/research-memory")
-def research_memory(limit: int = 30) -> dict[str, Any]:
+def research_memory(limit: int = 50, offset: int = 0) -> dict[str, Any]:
     store = ResearchMemoryStore(service.RESEARCH_MEMORY_FILE)
-    entries = store.recent(limit=max(1, min(limit, 100)))
-    return {"path": str(service.RESEARCH_MEMORY_FILE), "statistics": store.statistics(), "entries": entries}
+    entries, total = store.recent(limit=max(1, min(limit, 500)), offset=max(0, int(offset)))
+    return {"path": str(service.RESEARCH_MEMORY_FILE), "statistics": store.statistics(), "entries": entries, "total": total}
 
 
 @router.delete("/research-memory/{entry_id}")
@@ -108,6 +116,93 @@ def delete_research_memory(entry_id: str) -> dict[str, Any]:
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="entry not found")
     return {"ok": True}
+
+
+@router.get("/research-memory/layers")
+def research_memory_layers(mode: str = "technical") -> dict[str, Any]:
+    """研究记忆分层明细：SSPM 编辑统计层（cells）+ 经验层（experience）。
+
+    cells 附带 Eq.7 置信度与注入门控状态，口径与 retrieval._edit_prior_block
+    （硬/软推荐、硬/软否决）和 advisory APV 双门（(family, motif) 聚合否决）
+    完全一致，保证 UI 展示 = Agent 运行时行为。
+    门控阈值取 effective_research_spec(mode).memory_policy，与挖掘运行时同源。
+    """
+    try:
+        memory_policy = effective_research_spec(mode).get("memory_policy") or {}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    store = ResearchMemoryStore(
+        service.RESEARCH_MEMORY_FILE,
+        apv_tau_c=float(memory_policy.get("apv_tau_c") or APV_TAU_C_DEFAULT),
+        apv_tau_v=float(memory_policy.get("apv_tau_v") or APV_TAU_V_DEFAULT),
+        edit_prior_hard_conf=float(memory_policy.get("edit_prior_hard_conf") or EDIT_PRIOR_HARD_CONF_DEFAULT),
+        edit_prior_recommend_conf=float(memory_policy.get("edit_prior_recommend_conf") or EDIT_PRIOR_RECOMMEND_CONF_DEFAULT),
+        edit_prior_veto_conf=float(memory_policy.get("edit_prior_veto_conf") or EDIT_PRIOR_VETO_CONF_DEFAULT),
+    )
+    cells = store.list_cells()
+    experience = store.list_experience()
+
+    # APV 硬否决按 (family, motif) 跨桶聚合，与 advisory._edit_veto_findings 同口径
+    pair_agg: dict[tuple[str, str], dict[str, Any]] = {}
+    for cell in cells:
+        key = (cell["family"], cell["motif"])
+        agg = pair_agg.setdefault(key, {"s": 0.0, "f": 0.0, "residuals": []})
+        agg["s"] += cell["explicit_s"] + cell["implicit_s"]
+        agg["f"] += cell["explicit_f"] + cell["implicit_f"]
+        agg["residuals"].extend(cell["residuals"])
+    pair_veto = {
+        key: _apv_gate(
+            agg["s"], agg["f"],
+            _eq7_confidence(agg["residuals"]) if agg["residuals"] else 0.0,
+            tau_c=store.apv_tau_c, tau_v=store.apv_tau_v,
+        )[0]
+        for key, agg in pair_agg.items()
+    }
+
+    hard_conf = store.edit_prior_hard_conf
+    recommend_conf = store.edit_prior_recommend_conf
+    veto_conf = store.edit_prior_veto_conf
+    for cell in cells:
+        s_w = cell["explicit_s"] + cell["implicit_s"]
+        f_w = cell["explicit_f"] + cell["implicit_f"]
+        n_w = s_w + f_w
+        conf = _eq7_confidence(cell["residuals"]) if cell["residuals"] else 0.0
+        if pair_veto.get((cell["family"], cell["motif"])):
+            gate = "apv_hard_veto"
+        elif s_w > 0 and conf > hard_conf:
+            gate = "hard_recommend"
+        elif s_w > 0 and conf > recommend_conf:
+            gate = "soft_recommend"
+        elif f_w > 0 and conf > hard_conf:
+            gate = "hard_veto"
+        elif f_w > 0 and conf > veto_conf:
+            gate = "soft_veto"
+        else:
+            gate = "not_injected"
+        cell.update({
+            "weighted_s": round(s_w, 2),
+            "weighted_fail": round(f_w, 2),
+            "weighted_n": round(n_w, 2),
+            "fail_rate": round(f_w / n_w, 4) if n_w > 0 else 0.0,
+            "confidence": round(conf, 4),
+            "residual_count": len(cell["residuals"]),
+            "gate": gate,
+        })
+        del cell["residuals"]
+
+    return {
+        "path": str(service.RESEARCH_MEMORY_FILE),
+        "totals": {"cells": len(cells), "experience": len(experience)},
+        "thresholds": {
+            "hard_conf": store.edit_prior_hard_conf,
+            "recommend_conf": store.edit_prior_recommend_conf,
+            "veto_conf": store.edit_prior_veto_conf,
+            "apv_tau_c": store.apv_tau_c,
+            "apv_tau_v": store.apv_tau_v,
+        },
+        "cells": cells,
+        "experience": experience,
+    }
 
 
 @router.get("/research-modes")

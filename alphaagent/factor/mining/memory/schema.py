@@ -11,7 +11,13 @@ from pathlib import Path
 from typing import Any
 
 from .calibration import APV_TAU_C_DEFAULT, APV_TAU_V_DEFAULT, EQ7_KAPPA_DEFAULT, _parent_bucket
-from .constants import DATA_VERSION, POSITIVE_VERDICTS
+from .constants import (
+    DATA_VERSION,
+    EDIT_PRIOR_HARD_CONF_DEFAULT,
+    EDIT_PRIOR_RECOMMEND_CONF_DEFAULT,
+    EDIT_PRIOR_VETO_CONF_DEFAULT,
+    POSITIVE_VERDICTS,
+)
 from .diagnostics import _failure_code, _now, _safe_float
 from .expressions import _structure_fingerprint, classify_family
 from .expressions import extract_edit_motif
@@ -161,6 +167,9 @@ class SchemaMixin:
         eq7_kappa: float = EQ7_KAPPA_DEFAULT,
         max_inject_chars: int = 2400,
         hard_block_duplicates: bool = False,
+        edit_prior_hard_conf: float = EDIT_PRIOR_HARD_CONF_DEFAULT,
+        edit_prior_recommend_conf: float = EDIT_PRIOR_RECOMMEND_CONF_DEFAULT,
+        edit_prior_veto_conf: float = EDIT_PRIOR_VETO_CONF_DEFAULT,
     ) -> None:
         self.path = Path(path).expanduser().resolve()
         if self.path.suffix.lower() == ".json":
@@ -171,6 +180,9 @@ class SchemaMixin:
         self.eq7_kappa = eq7_kappa
         self.max_inject_chars = int(max_inject_chars or 2400)
         self.hard_block_duplicates = bool(hard_block_duplicates)
+        self.edit_prior_hard_conf = float(edit_prior_hard_conf)
+        self.edit_prior_recommend_conf = float(edit_prior_recommend_conf)
+        self.edit_prior_veto_conf = float(edit_prior_veto_conf)
         self._schema_ready = False
 
     @contextmanager

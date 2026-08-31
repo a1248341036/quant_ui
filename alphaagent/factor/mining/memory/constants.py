@@ -28,6 +28,13 @@ APV_TAU_C_DEFAULT = 0.35       # APV 置信度门控阈值
 APV_TAU_V_DEFAULT = 0.80       # APV 失败率否决阈值
 BASELINE_HALF_LIFE_DAYS = 90   # 残差基线时间衰减半衰期
 
+# ── 编辑先验注入门控（retrieval._edit_prior_block）──
+# 硬档（硬推荐/硬否决）共用；软推荐与软否决分向设阈值，
+# 否决向放宽（默认 0.3）以放行「一致失败」的避坑证据
+EDIT_PRIOR_HARD_CONF_DEFAULT = 0.7
+EDIT_PRIOR_RECOMMEND_CONF_DEFAULT = 0.4
+EDIT_PRIOR_VETO_CONF_DEFAULT = 0.3
+
 # ── 起源权重 ──
 # explicit 父本（LLM 明确声明变异轨）权重 1.0
 # implicit 父本（结构相似度自动链接）权重 0.5

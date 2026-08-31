@@ -134,22 +134,73 @@ class AdvisoryMixin:
 
     # ── 管理接口（v2 兼容）──
 
-    def recent(self, *, limit: int = 50) -> list[dict[str, Any]]:
-        """按 verdict 优先级（正值优先）+ 时间排序返回条目。"""
+    def recent(self, *, limit: int = 50, offset: int = 0) -> tuple[list[dict[str, Any]], int]:
+        """按 verdict 优先级（正值优先）+ 时间排序返回条目，支持分页。
+
+        返回 (entries, total)，total 为 memory_entries 总行数。
+        """
         case_parts = " ".join(
             f"WHEN '{verdict}' THEN {rank}" for verdict, rank in VERDICT_ORDER.items()
         )
         with self._open() as conn:
+            total = int(conn.execute("SELECT COUNT(*) FROM memory_entries").fetchone()[0])
             rows = conn.execute(
                 f"""
                 SELECT * FROM memory_entries
                 ORDER BY CASE verdict {case_parts} ELSE 99 END,
                          updated_at DESC
-                LIMIT ?
+                LIMIT ? OFFSET ?
                 """,
-                (max(0, int(limit)),),
+                (max(0, int(limit)), max(0, int(offset))),
             ).fetchall()
-            return self._hydrate_entries(conn, rows)
+            return self._hydrate_entries(conn, rows), total
+
+    def list_cells(self) -> list[dict[str, Any]]:
+        """全部 SSPM 单元（编辑统计层明细），供 UI 门控视图使用。"""
+        with self._open() as conn:
+            rows = conn.execute("SELECT * FROM memory_cells ORDER BY updated_at DESC").fetchall()
+            return [
+                {
+                    "family": row["family"],
+                    "motif": row["motif"],
+                    "parent_bucket": row["parent_bucket"],
+                    "explicit_s": float(row["explicit_s"] or 0),
+                    "explicit_f": float(row["explicit_f"] or 0),
+                    "implicit_s": float(row["implicit_s"] or 0),
+                    "implicit_f": float(row["implicit_f"] or 0),
+                    "residuals": json.loads(row["residuals_json"] or "[]"),
+                    "updated_at": row["updated_at"],
+                }
+                for row in rows
+            ]
+
+    def list_experience(self, *, kind: str | None = None) -> list[dict[str, Any]]:
+        """经验层条目（success_pattern / forbidden / insight）。"""
+        with self._open() as conn:
+            if kind:
+                rows = conn.execute(
+                    "SELECT * FROM memory_experience WHERE kind = ? ORDER BY updated_at DESC",
+                    (kind,),
+                ).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM memory_experience ORDER BY updated_at DESC").fetchall()
+            return [
+                {
+                    "id": row["id"],
+                    "kind": row["kind"],
+                    "name": row["name"],
+                    "content": row["content"],
+                    "template": row["template"],
+                    "example_factors": json.loads(row["example_factors_json"] or "[]"),
+                    "correlated": json.loads(row["correlated_json"] or "[]"),
+                    "typical_correlation": row["typical_correlation"],
+                    "occurrence_count": int(row["occurrence_count"] or 1),
+                    "run_id": row["run_id"],
+                    "created_at": row["created_at"],
+                    "updated_at": row["updated_at"],
+                }
+                for row in rows
+            ]
 
     def statistics(self) -> dict[str, Any]:
         with self._open() as conn:

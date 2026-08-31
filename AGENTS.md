@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: '2026ff4d-368d-4fab-8ce6-c0e389d20eb1'
-  PropagateID: '2026ff4d-368d-4fab-8ce6-c0e389d20eb1'
-  ReservedCode1: 'ebcb91a8-f70a-43ce-afa6-4fc139373b47'
-  ReservedCode2: 'ebcb91a8-f70a-43ce-afa6-4fc139373b47'
+  ProduceID: '5db1b93d-b4f4-407e-a844-6bf9ad1638dd'
+  PropagateID: '5db1b93d-b4f4-407e-a844-6bf9ad1638dd'
+  ReservedCode1: 'd099cc50-3195-4f93-a0ad-f1c9ac4f1143'
+  ReservedCode2: 'd099cc50-3195-4f93-a0ad-f1c9ac4f1143'
 ---
 
 # AlphaAgent — 项目架构与开发指南
@@ -160,11 +160,20 @@ logs/factor_mining/ui/        # 每次 Web run 的 JSONL 轨迹 + run_meta.json�
 全平台唯一默认交易参数来源（散户口径），回测/模拟盘/因子门禁/前端默认值均从此取。
 后端 API `/api/trading-defaults` 供前端启动时自动获取。
 
-### 9. 研究记忆（research_memory.py）
+### 9. 研究记忆（research_memory.py，v3-lite）
 
-- BM25 检索历史评估证据（含 jieba 中文分词，无 jieba 回退 bigram）。
-- 正向 verdict（production_approved, validated 等）鼓励邻域探索；负向 verdict（rejected, weak 等）防止重复无效路径。
-- 存储在 `artifacts/alphaagent/research_memory.db`（SQLite，跨会话持久化）。
+三层结构（SQLite WAL + FTS5，单文件 `artifacts/alphaagent/research_memory.db`，`store_meta.data_version="3"` 幂等迁移）：
+- **原始证据层** `memory_entries`：每次评估/提交一条，verdict 7 级 + 数据化结论 + 失败码/失效项 + 结构指纹 + 父子关系（`parent_origin`=explicit/implicit、`secondary_parent_id` crossover 双父、`intended_motif` 意向编辑）。
+- **编辑统计层（SSPM）** `memory_cells`：键 = (family × motif × 父本质量桶)；残差 = 子代 IC − 同桶时间衰减基线（half-life 90d，无历史回退父本 IC，AlphaMemo Eq.4）；成败按 explicit（±1.0）/implicit（±0.5）加权分列；**无效尝试（报错）入账失败观测（权重 0.5）**。
+- **经验层** `memory_experience`：成功模式（签名 + 模板 + 实例）/ 禁忌方向（典型相关 + 失效项）/ 洞察（入库率）。
+
+校准与注入（AlphaMemo 论文口径）：
+- 置信度 Eq.7：`c = n/(n+κ)·min(1,|μ|/(σ+ε))`，κ=8；APV 双门 Eq.11/16：`veto = c>τ_c ∧ π⁻>τ_v`（默认 0.35/0.80，`memory_policy.apv_tau_c/apv_tau_v` 可调）；正证据软推荐封顶"优先尝试"档。
+- 注入门控矩阵（`retrieval._edit_prior_block`，阈值经 `memory_policy.edit_prior_*_conf` 可调）：硬推荐(s>0 ∧ c>0.7) / 软推荐(s>0 ∧ c>0.4) / 硬否决(f>0 ∧ c>0.7) / 软否决(f>0 ∧ c>0.3，低于推荐向以放行"一致失败"避坑证据) / 其余不注入；APV 双门(τ_c=0.35, τ_v=0.80)另在评估前 advisory 做 (family, motif) 聚合否决。2026-08-30 修正：旧文档写的"软否决 fail_rate≥0.6"与实现不符，实际口径全部基于 Eq.7 置信度分档。`memory_policy.max_inject_chars`（默认 2400）超限时核心块（经验、编辑先验）始终保留，次级块按 证据 > 饱和度 > 多样性 用剩余预算填充，所有截断在行边界。
+- **v2 模式层已下线（2026-08-30）**：`memory_patterns` 表停止注入（`context_for` 不再调 `_pattern_block`），其规则蒸馏（同族饱和 forbid / 族内 |IC|≥0.02 recommend / 全局 insight）由 `distill_batch_experience` 迁到 v3 `memory_experience`（同 (kind, family) 去重 + occurrence_count 累加，recommend 文本标注 IC 方向）。旧表数据保留只读，UI 不展示。
+- **显式父本协议**：A/B/C 变异轨的 eval/submit 调用必须传 `parent_factor` + `edit_note`（`edit=<motif> <参数变化>`）；工具结果带 `memory_advisory` 硬提醒（指纹死路 attempts≥2 / 意向编辑 APV veto），默认只提示，`memory_policy.hard_block_duplicates=true` 时拦截。
+- 检索：BM25 + 族亲和 + 算子重叠 + verdict/recency；证据块 40% 正向保底 + (family≤2, 指纹=1) 去重。
+- 正向 verdict 鼓励邻域探索；负向 verdict 防止重复无效路径。
 
 ## REST API
 
@@ -184,6 +193,7 @@ logs/factor_mining/ui/        # 每次 Web run 的 JSONL 轨迹 + run_meta.json�
 | DELETE | `/api/alphaagent/runs/archived` | 清理全部已归档 run |
 | GET | `/api/alphaagent/runs/{id}/events` | SSE 事件流（实时轨迹） |
 | GET | `/api/alphaagent/research-memory` | 查看研究记忆 |
+| GET | `/api/alphaagent/research-memory/layers` | 记忆分层明细：SSPM cells（含 Eq.7 置信度 + 注入门控）+ 经验层 |
 | DELETE | `/api/alphaagent/research-memory/{entry_id}` | 删除单条研究记忆 |
 | GET | `/api/alphaagent/research-modes` | 研究模式选项（label/推荐 label/默认消息） |
 | GET | `/api/alphaagent/research-spec/default` | 当前模式生效研究策略（默认+保存覆盖） |
@@ -226,14 +236,16 @@ logs/factor_mining/ui/        # 每次 Web run 的 JSONL 轨迹 + run_meta.json�
 
 ## 开发效率
 
-### 代码搜索必须带筛选
+### 代码搜索必须先带筛选（强制）
 
-本仓库包含大量**大型数据产物**：`artifacts/`（JSON/parquet/npy 因子库、面板缓存、报告）、`logs/`（JSONL 轨迹）、`.venv/`、`static/node_modules/` 等。**全量 grep 会扫描这些目录，动辄数百毫秒甚至更久**。
+本仓库包含大量**大型数据产物**：`artifacts/`（JSON/parquet/npy 因子库、面板缓存、报告）、`logs/`（JSONL 轨迹）、`.venv/`、`static/node_modules/`、`CNEquity/`、`sentiment-mvp/` 等。**全量搜索会扫描这些目录，动辄数百毫秒甚至更久，且污染结果**。这是用户明确要求的硬性规则，任何搜索/匹配都必须先过滤。
 
-规则：
-- Grep 必须带 `include` 参数（如 `*.py` / `*.vue` / `*.ts` / `*.js`），只搜源码文件。
-- 能限定 `path` 时就限定到源码目录：`alphaagent/`、`backend/`、`core/`、`scripts/`、`static/src/`、`tests/`。
+强制规则：
+- **搜索（grep/glob）必须带 `include` 参数**（如 `*.py` / `*.vue` / `*.ts` / `*.js` / `*.md`），只搜源码文件；禁止不带 include 的全仓 grep。
+- **能限定 `path` 时就限定到源码目录**：`alphaagent/`、`backend/`、`core/`、`scripts/`、`static/src/`、`tests/`、`docs/`。
+- 禁止无筛选扫描：`artifacts/`、`logs/`、`.venv/`、`node_modules/`、`CNEquity/`（除非明确要查数据产物/第三方库本身）。
 - 查 DSL 算子/因子评估逻辑 → `alphaagent/dsl/`、`alphaagent/factor/`；查回测引擎 → `core/`；查前端 → `static/src/`；查 API → `backend/`。
+- 文件读取（glob/read）同样先确认目标是否在源码目录；数据产物目录不得直接列目录全文。
 
 ## 常用命令
 

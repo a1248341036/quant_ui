@@ -11,7 +11,7 @@ from typing import Any
 from .calibration import _parent_bucket
 from .constants import BASELINE_HALF_LIFE_DAYS
 from .diagnostics import _SUCCESS_SIGNATURES, _FORBIDDEN_SIGNATURES, _match_signature, _now, _safe_float
-from .expressions import expression_features, expression_ops
+from .expressions import classify_family, expression_features, expression_ops
 
 
 class ExperienceMixin:
@@ -290,4 +290,350 @@ class ExperienceMixin:
                             run_id=run_id,
                         )
                         formed["insights"] += 1
+        return formed
+
+    # ── 模式层记忆 CRUD（v3 恢复：从 commit 7966fd1 移植）──
+
+    def record_pattern(
+        self,
+        *,
+        layer: str,
+        category: str,
+        content: str,
+        evidence: dict[str, Any] | None = None,
+    ) -> str:
+        """写入或更新一条模式记忆。
+
+        ``layer`` ∈ {"recommend", "forbid", "insight"}。
+        按 ``layer|category|content`` 签名去重；已存在则 total_attempts += 1。
+        """
+        if layer not in ("recommend", "forbid", "insight"):
+            raise ValueError(f"invalid layer: {layer}")
+        pattern_id = hashlib.sha256(
+            f"{layer}|{category}|{content}".encode("utf-8")
+        ).hexdigest()[:20]
+        now = _now()
+        evidence_json = json.dumps(evidence or {}, ensure_ascii=False, separators=(",", ":"))
+        with self._open() as conn:
+            existing = conn.execute(
+                "SELECT total_attempts, success_count FROM memory_patterns WHERE id = ?",
+                (pattern_id,),
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    """
+                    UPDATE memory_patterns
+                    SET evidence_json = ?, total_attempts = total_attempts + 1, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (evidence_json, now, pattern_id),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO memory_patterns
+                        (id, layer, category, content, evidence_json,
+                         total_attempts, success_count, saturation_score,
+                         confidence, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, 1, 0, 0, 0.5, ?, ?)
+                    """,
+                    (pattern_id, layer, category, content, evidence_json, now, now),
+                )
+        return pattern_id
+
+    def update_pattern_stats(self, pattern_id: str, *, success: bool) -> None:
+        """评估结果返回后更新模式的成功/失败计数和置信度。"""
+        with self._open() as conn:
+            row = conn.execute(
+                "SELECT total_attempts, success_count FROM memory_patterns WHERE id = ?",
+                (pattern_id,),
+            ).fetchone()
+            if not row:
+                return
+            total = int(row["total_attempts"]) + 1
+            succ = int(row["success_count"]) + (1 if success else 0)
+            rate = succ / total if total else 0.0
+            conf = max(0.1, min(0.95, 1.0 - 1.0 / (total ** 0.5)))
+            conn.execute(
+                """
+                UPDATE memory_patterns
+                SET total_attempts = ?, success_count = ?, success_rate = ?,
+                    confidence = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (total, succ, round(rate, 4), round(conf, 4), _now(), pattern_id),
+            )
+
+    def query_patterns(
+        self,
+        *,
+        layer: str | None = None,
+        category: str | None = None,
+        min_confidence: float = 0.3,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """检索模式记忆，按置信度降序。"""
+        clauses = ["confidence >= ?"]
+        params: list[Any] = [min_confidence]
+        if layer:
+            clauses.append("layer = ?")
+            params.append(layer)
+        if category:
+            clauses.append("category = ?")
+            params.append(category)
+        where = " AND ".join(clauses)
+        with self._open() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM memory_patterns WHERE {where} "
+                f"ORDER BY confidence DESC, success_rate DESC LIMIT ?",
+                (*params, int(limit)),
+            ).fetchall()
+        return [
+            {
+                "id": r["id"],
+                "layer": r["layer"],
+                "category": r["category"],
+                "content": r["content"],
+                "evidence": json.loads(r["evidence_json"] or "{}"),
+                "success_rate": r["success_rate"],
+                "total_attempts": r["total_attempts"],
+                "success_count": r["success_count"],
+                "saturation_score": r["saturation_score"],
+                "confidence": r["confidence"],
+                "created_at": r["created_at"],
+                "updated_at": r["updated_at"],
+            }
+            for r in rows
+        ]
+
+    # ── 每批蒸馏算子（规则式，零 LLM 成本）──
+
+    def _group_by_family(self, results: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+        """按信号族分组评估结果。"""
+        families: dict[str, list[dict[str, Any]]] = {}
+        for r in results:
+            family = classify_family(
+                str(r.get("factor_name", "")),
+                str(r.get("expression", "")),
+            )
+            families.setdefault(family, []).append(r)
+        return families
+
+    def distill_batch_patterns(
+        self,
+        *,
+        run_id: str,
+        turn: int,
+        batch_results: list[dict[str, Any]],
+    ) -> list[str]:
+        """从一批评估结果中蒸馏模式记忆，返回写入的 pattern_ids。
+
+        规则蒸馏（不调用 LLM，零成本）：
+        1. 同族因子 >= 3 个且全部 IC < 0.01 → forbid 模式
+        2. 同族因子中有 >= 1 个 IC > 0.02 → recommend 模式
+        3. 全部因子 IC < 0.005 → insight 模式
+        """
+        pattern_ids: list[str] = []
+        if not batch_results:
+            return pattern_ids
+
+        families = self._group_by_family(batch_results)
+
+        for family_name, members in families.items():
+            ics = [
+                abs(float(m.get("metrics", {}).get("ic", 0) or 0))
+                for m in members
+            ]
+            n = len(members)
+            if n < 2:
+                continue
+
+            all_weak = all(ic < 0.01 for ic in ics)
+            any_promising = any(ic >= 0.02 for ic in ics)
+
+            if all_weak and n >= 3:
+                content = (
+                    f"{family_name} 信号族在 {n} 次尝试中 IC 均低于 0.01，"
+                    f"最高 {max(ics):.4f}。该族在当前数据/label 下可能已饱和，"
+                    f"除非引入新变量或交互机制，否则不建议机械重复。"
+                )
+                pid = self.record_pattern(
+                    layer="forbid",
+                    category=family_name,
+                    content=content,
+                    evidence={
+                        "factor_names": [m.get("factor_name") for m in members],
+                        "ic_range": [round(min(ics), 6), round(max(ics), 6)],
+                        "n_attempts": n,
+                        "run_id": run_id,
+                        "turn": turn,
+                    },
+                )
+                pattern_ids.append(pid)
+
+            if any_promising:
+                best = max(
+                    members,
+                    key=lambda m: abs(float(m.get("metrics", {}).get("ic", 0) or 0)),
+                )
+                best_ic = float(best.get("metrics", {}).get("ic", 0) or 0)
+                content = (
+                    f"{family_name} 信号族中有因子 IC 达 {best_ic:+.4f}，"
+                    f"其经济机制值得在邻近空间继续探索。"
+                    f"建议变异方向：换窗口、换修饰算子、引入正交交互。"
+                )
+                pid = self.record_pattern(
+                    layer="recommend",
+                    category=family_name,
+                    content=content,
+                    evidence={
+                        "best_factor": best.get("factor_name"),
+                        "best_ic": round(best_ic, 6),
+                        "n_attempts": n,
+                        "run_id": run_id,
+                        "turn": turn,
+                    },
+                )
+                pattern_ids.append(pid)
+
+        # 全局洞察
+        all_ics = [
+            abs(float(r.get("metrics", {}).get("ic", 0) or 0))
+            for r in batch_results
+        ]
+        if len(all_ics) >= 5 and max(all_ics) < 0.005:
+            content = (
+                f"连续 {len(all_ics)} 个因子 IC 均低于 0.005，"
+                f"当前数据/label 组合下 alpha 可能极度稀薄。"
+                f"建议：切换 label 列、扩展数据源、或尝试交互信号。"
+            )
+            pid = self.record_pattern(
+                layer="insight",
+                category="global",
+                content=content,
+                evidence={
+                    "n_consecutive": len(all_ics),
+                    "max_ic": round(max(all_ics), 6),
+                    "run_id": run_id,
+                    "turn": turn,
+                },
+            )
+            pattern_ids.append(pid)
+
+        return pattern_ids
+
+    def distill_batch_experience(
+        self,
+        *,
+        run_id: str,
+        turn: int,
+        batch_results: list[dict[str, Any]],
+    ) -> dict[str, int]:
+        """v3 经验层批量蒸馏（规则式，零 LLM 成本），替代 v2 distill_batch_patterns。
+
+        规则（与 v2 版一致，口径修正）：
+        1. 同族 >= 3 个且全部 |IC| < 0.01 → forbidden（族饱和禁忌）
+        2. 同族中有 >= 1 个 |IC| >= 0.02 → success_pattern（族机制可用；文本标注方向）
+        3. 全部 >= 5 个 |IC| < 0.005 → insight（全局 alpha 稀薄预警）
+
+        去重：同 (kind, family) 只保留一行，occurrence_count 累加（_upsert_experience），
+        不再按具体 IC 值生成重复行。返回 {kind: n} 计数。
+        """
+        formed = {"success_patterns": 0, "forbidden": 0, "insights": 0}
+        if not batch_results:
+            return formed
+        with self._open() as conn:
+            for family_name, members in self._group_by_family(batch_results).items():
+                ics = [
+                    (float(m.get("metrics", {}).get("ic", 0) or 0))
+                    for m in members
+                ]
+                abs_ics = [abs(ic) for ic in ics]
+                n = len(members)
+                if n < 2:
+                    continue
+
+                all_weak = all(a < 0.01 for a in abs_ics)
+                any_promising = any(a >= 0.02 for a in abs_ics)
+
+                if all_weak and n >= 3:
+                    content = (
+                        f"{family_name} 信号族在 {n} 次尝试中 |IC| 均低于 0.01"
+                        f"（最高 {max(abs_ics):.4f}），该方向在当前数据/label 下可能已饱和；"
+                        f"除非引入新变量或交互机制，不建议机械重复。"
+                    )
+                    self._upsert_experience(
+                        conn,
+                        kind="forbidden",
+                        name=f"family_saturated:{family_name}",
+                        content=content,
+                        evidence={
+                            "factor_names": [m.get("factor_name") for m in members],
+                            "abs_ic_max": round(max(abs_ics), 6),
+                            "n_attempts": n,
+                            "run_id": run_id,
+                            "turn": turn,
+                        },
+                        example_factor=str(members[0].get("factor_name") or "") or None,
+                        run_id=run_id,
+                    )
+                    formed["forbidden"] += 1
+
+                if any_promising:
+                    best = max(
+                        members,
+                        key=lambda m: abs(float(m.get("metrics", {}).get("ic", 0) or 0)),
+                    )
+                    best_ic = float(best.get("metrics", {}).get("ic", 0) or 0)
+                    direction = (
+                        "方向为负，反向构造同样有效" if best_ic < 0 else "方向为正"
+                    )
+                    content = (
+                        f"{family_name} 信号族中 {best.get('factor_name')} 的 |IC| 达 "
+                        f"{abs(best_ic):.4f}（{direction}），其经济机制值得在邻近空间继续探索；"
+                        f"建议变异方向：换窗口、换修饰算子、引入正交交互。"
+                    )
+                    self._upsert_experience(
+                        conn,
+                        kind="success_pattern",
+                        name=f"family_mechanism:{family_name}",
+                        content=content,
+                        evidence={
+                            "best_factor": best.get("factor_name"),
+                            "best_abs_ic": round(abs(best_ic), 6),
+                            "best_ic_signed": round(best_ic, 6),
+                            "n_attempts": n,
+                            "run_id": run_id,
+                            "turn": turn,
+                        },
+                        example_factor=str(best.get("factor_name") or "") or None,
+                        run_id=run_id,
+                    )
+                    formed["success_patterns"] += 1
+
+            # 全局洞察
+            all_abs_ics = [
+                abs(float(r.get("metrics", {}).get("ic", 0) or 0))
+                for r in batch_results
+            ]
+            if len(all_abs_ics) >= 5 and max(all_abs_ics) < 0.005:
+                content = (
+                    f"连续 {len(all_abs_ics)} 个因子 |IC| 均低于 0.005，"
+                    f"当前数据/label 组合下 alpha 可能极度稀薄；"
+                    f"建议：切换 label 列、扩展数据源、或尝试交互信号。"
+                )
+                self._upsert_experience(
+                    conn,
+                    kind="insight",
+                    name="global_alpha_thin",
+                    content=content,
+                    evidence={
+                        "n_consecutive": len(all_abs_ics),
+                        "max_abs_ic": round(max(all_abs_ics), 6),
+                        "run_id": run_id,
+                        "turn": turn,
+                    },
+                    run_id=run_id,
+                )
+                formed["insights"] += 1
         return formed

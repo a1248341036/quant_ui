@@ -280,6 +280,9 @@ class IngestionMixin:
         return self._find_implicit_parent_conn(conn, child_struct, exclude_id=exclude_id, limit=limit)
 
     # ── cells 更新 ──
+    # 注意：`_update_cell` / `_same_bucket_baseline` 的唯一生效实现在 ExperienceMixin
+    # （experience.py，MRO 中更靠前）。此处历史上曾有第二份带时间衰减的实现，
+    # 因从未被调用已于 2026-08-30 删除——改 cells 入账逻辑只改 experience.py。
 
     @staticmethod
     def _weighted_counts(row: sqlite3.Row) -> tuple[float, float]:
@@ -291,118 +294,6 @@ class IngestionMixin:
         s = float(row["explicit_s"] or 0) + float(row["implicit_s"] or 0)
         f = float(row["explicit_f"] or 0) + float(row["implicit_f"] or 0)
         return s, f
-
-    def _same_bucket_baseline(self, conn: sqlite3.Connection, cell_row: sqlite3.Row) -> float | None:
-        """同桶历史残差的时间衰减均值（半衰期 90 天）；无历史则回退父本 IC。"""
-        residuals = json.loads(cell_row["residuals_json"] or "[]")
-        if not residuals:
-            # 无同桶历史 → 回退父本自身 IC（cell 的 parent_bucket 即父本桶，取 entries 中最优）
-            row = conn.execute(
-                """
-                SELECT metrics_json FROM memory_entries
-                WHERE parent_id IS NOT NULL
-                ORDER BY updated_at DESC LIMIT 1
-                """
-            ).fetchone()
-            if row:
-                ic = _safe_float(json.loads(row["metrics_json"] or "{}").get("ic"))
-                if ic is not None:
-                    return ic
-            return None
-        now = _now()
-        try:
-            import datetime
-            now_ts = datetime.datetime.fromisoformat(now).timestamp()
-        except Exception:
-            now_ts = 0.0
-        half_life = 90 * 86400.0
-        total_w = 0.0
-        total_v = 0.0
-        # residuals_json 为 [value, ...]（迁移/简化）；此处按最近残差直接求均值
-        for v in residuals:
-            v = _safe_float(v)
-            if v is None:
-                continue
-            w = 1.0
-            total_w += w
-            total_v += v * w
-        return total_v / total_w if total_w else None
-
-    def _update_cell(
-        self,
-        conn: sqlite3.Connection,
-        entry: dict[str, Any],
-        struct: dict[str, Any],
-        *,
-        parent_id: str | None,
-        parent_origin: str | None,
-        intended_motif: str | None,
-        verdict: str,
-        error: str,
-    ) -> None:
-        """v3 cells 入账：键 (family, motif, parent_bucket)，残差 = child − 同桶基线。"""
-        if not parent_id:
-            return
-        # 解析父本 IC → 桶
-        parent_row = conn.execute(
-            "SELECT metrics_json FROM memory_entries WHERE id = ?",
-            (parent_id,),
-        ).fetchone()
-        if not parent_row:
-            return
-        parent_metrics = json.loads(parent_row["metrics_json"] or "{}")
-        parent_ic = _safe_float(parent_metrics.get("ic"))
-        bucket = _parent_bucket(parent_ic)
-        family = entry.get("family") or classify_family(str(entry.get("factor_name", "")), str(entry.get("expression", "")))
-        motif = intended_motif or "other"
-        # 残差：child IC − 同桶基线
-        child_ic = _safe_float(entry.get("metrics", {}).get("ic"))
-        residual: float | None = None
-        if child_ic is not None:
-            cell_row = conn.execute(
-                "SELECT residuals_json FROM memory_cells WHERE family = ? AND motif = ? AND parent_bucket = ?",
-                (family, motif, bucket),
-            ).fetchone()
-            baseline = self._same_bucket_baseline(conn, cell_row) if cell_row else None
-            if baseline is None and parent_ic is not None:
-                baseline = parent_ic
-            if baseline is not None:
-                residual = child_ic - baseline
-        is_positive = verdict in POSITIVE_VERDICTS
-        # invalid 尝试（报错/超时，无有效指标）→ 入账失败观测（权重 INVALID_WEIGHT，无残差）
-        invalid = bool(error) or child_ic is None
-        if parent_origin == "explicit":
-            s_col, f_col = "explicit_s", "explicit_f"
-        else:
-            s_col, f_col = "implicit_s", "implicit_f"
-        if invalid:
-            delta = INVALID_WEIGHT
-            is_valid = False
-        else:
-            delta = 1.0 if parent_origin == "explicit" else PARENT_ORIGIN_WEIGHT["implicit"]
-            is_valid = is_positive
-        col = s_col if is_valid else f_col
-        # 残差追加
-        if residual is not None:
-            old = conn.execute(
-                "SELECT residuals_json FROM memory_cells WHERE family = ? AND motif = ? AND parent_bucket = ?",
-                (family, motif, bucket),
-            ).fetchone()
-            old_res = json.loads(old["residuals_json"] or "[]") if old else []
-            new_res = old_res + [residual]
-        else:
-            new_res = []
-        conn.execute(
-            f"""
-            INSERT INTO memory_cells (family, motif, parent_bucket, {col}, residuals_json, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(family, motif, parent_bucket) DO UPDATE SET
-                {col} = {col} + excluded.{col},
-                residuals_json = excluded.residuals_json,
-                updated_at = excluded.updated_at
-            """,
-            (family, motif, bucket, delta, json.dumps(new_res, ensure_ascii=False), _now()),
-        )
 
     # ── 编辑模式记录（v2 兼容） ──
 

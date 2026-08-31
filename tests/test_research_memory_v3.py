@@ -408,6 +408,6 @@ def test_store_backward_compat_tools(tmp_path):
     expr_a = "leg_a = RANK(x)\nleg_a"
     store.record_tool_result(run_id="r1", row=_eval_row("evaluate_factor", expr_a, "factor_a", ic=0.03))
     assert store.purge_factor(factor_names=["factor_a"]) >= 1
-    assert store.recent() == []
+    assert store.recent()[0] == []
     stats = store.statistics()
     assert stats["entries"] == 0
