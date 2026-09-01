@@ -18,8 +18,14 @@ from core.event_engine.jq.objects import (_FixedSlippage, _OrderCost,
 
 def install(ns: dict, rt) -> None:
     def set_option(option, value=True, **kwargs):
-        # use_real_price/avoid_future_data 本引擎恒成立; order_volume_ratio
-        # 近似对应引擎 max_participation(20日均额口径), 运行参数侧控制
+        # avoid_future_data: 真生效——数据 API 以 current_dt/previous_date 为界,
+        # 显式请求未来数据时抛错(聚宽同语义: 检测到未来函数报错);
+        # use_real_price 本引擎恒为真实价; order_volume_ratio 近似对应
+        # 引擎 max_participation(20日均额口径), 运行参数侧控制
+        if str(option) == "avoid_future_data":
+            rt.avoid_future_data = bool(value)
+            rt.log.info(f"[runtime] avoid_future_data = {bool(value)} "
+                        f"(数据 API 将拒绝未来日期请求)")
         return None
 
     def set_benchmark(security, **kwargs):

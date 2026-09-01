@@ -14,6 +14,7 @@ from alphaagent.factor.mining.research_memory import (
     _eq7_confidence,
     _structure_fingerprint,
     motif_from_note,
+    template_from_expression,
 )
 
 
@@ -411,3 +412,234 @@ def test_store_backward_compat_tools(tmp_path):
     assert store.recent()[0] == []
     stats = store.statistics()
     assert stats["entries"] == 0
+
+
+# ---------------------------------------------------------------------------
+# 经验层蒸馏：run 累计口径（单批族类分散也能触发）+ recent 时间倒序
+# ---------------------------------------------------------------------------
+
+def test_distill_experience_run_cumulative(tmp_path):
+    """同族 3 条全弱跨批累计 → forbidden；族内出现 |IC|>=0.02 → success_pattern；
+    末尾连续 5 条全弱 → insight。单批口径下这些规则永远不会触发。
+    注意：记忆条目按表达式指纹去重，每个因子必须用不同表达式。"""
+    store = ResearchMemoryStore(tmp_path / "m.db")
+
+    def vwap_expr(w):
+        return f"RANK(SUBTRACT($adj_close, TS_MEAN($vwap, {w})))"
+
+    # 第一批：同族 2 条弱（旧单批口径 n<2 不触发，累计口径也不该触发 forbidden）
+    store.record_tool_result(run_id="r1", row=_eval_row("eval_on_train_set", vwap_expr(10), "chip_a_10", ic=0.004))
+    store.record_tool_result(run_id="r1", row=_eval_row("eval_on_train_set", vwap_expr(20), "chip_a_20", ic=0.006))
+    formed1 = store.distill_batch_experience(run_id="r1", turn=1, batch_results=[{"dummy": 1}])
+    assert formed1 == {"success_patterns": 0, "forbidden": 0, "insights": 0}
+    # 第二批：同族再补 1 条弱 → run 累计 3 条全弱 → forbidden 触发
+    store.record_tool_result(run_id="r1", row=_eval_row("eval_on_train_set", vwap_expr(30), "chip_a_30", ic=0.002))
+    formed2 = store.distill_batch_experience(run_id="r1", turn=2, batch_results=[{"dummy": 1}])
+    assert formed2["forbidden"] == 1
+    forb = [r for r in store.list_experience() if r["kind"] == "forbidden"]
+    assert len(forb) == 1 and forb[0]["name"] == "family_saturated:vwap"
+    # 同族出现强 IC → success_pattern（文本标注方向），occurrence 累加去重
+    store.record_tool_result(run_id="r1", row=_eval_row("eval_on_train_set", vwap_expr(40), "chip_a_40", ic=-0.021))
+    formed3 = store.distill_batch_experience(run_id="r1", turn=3, batch_results=[{"dummy": 1}])
+    assert formed3["success_patterns"] == 1
+    succ = [r for r in store.list_experience() if r["kind"] == "success_pattern"]
+    assert len(succ) == 1 and succ[0]["name"] == "family_mechanism:vwap"
+    assert "反向构造" in succ[0]["content"]
+    # insight：强 IC 打断 streak，其后连续 5 条 |IC|<0.005（跨批累计）才触发
+    for i in range(4):
+        store.record_tool_result(run_id="r1", row=_eval_row(
+            "eval_on_train_set", vwap_expr(50 + i), f"thin_{i}", ic=0.001 + 0.0001 * i))
+    formed4 = store.distill_batch_experience(run_id="r1", turn=4, batch_results=[{"dummy": 1}])
+    assert formed4["insights"] == 0  # 只有 4 条连续弱
+    store.record_tool_result(run_id="r1", row=_eval_row(
+        "eval_on_train_set", vwap_expr(60), "thin_4", ic=0.0012))
+    formed5 = store.distill_batch_experience(run_id="r1", turn=5, batch_results=[{"dummy": 1}])
+    assert formed5["insights"] == 1
+    ins = [r for r in store.list_experience() if r["kind"] == "insight"]
+    assert len(ins) == 1 and ins[0]["name"] == "global_alpha_thin"
+
+
+def test_recent_order_default_time_desc(tmp_path):
+    """recent 默认按 updated_at 倒序（新 run 的 weak 条目在前）；
+    order="verdict" 保留旧的 verdict 优先口径。"""
+    store = ResearchMemoryStore(tmp_path / "m.db")
+    expr_old = "RANK(SUBTRACT($adj_close, TS_MEAN($vwap, 10)))"
+    expr_new = "RANK(SUBTRACT($adj_close, TS_MEAN($vwap, 20)))"
+    # eval_on_train_set 行会提取 metrics：ic=0.03/icir=0.4/cov=0.9 → promising
+    store.record_tool_result(run_id="r1", row=_eval_row("eval_on_train_set", expr_old, "good_old", ic=0.03))
+    store.record_tool_result(run_id="r2", row=_eval_row("eval_on_train_set", expr_new, "weak_new", ic=0.004))
+    entries_recent, _ = store.recent()
+    assert entries_recent[0]["factor_name"] == "weak_new"
+    assert entries_recent[0]["verdict"] == "weak"
+    entries_verdict, _ = store.recent(order="verdict")
+    assert entries_verdict[0]["factor_name"] == "good_old"
+    assert entries_verdict[0]["verdict"] == "promising"
+
+
+# ---------------------------------------------------------------------------
+# 饱和度口径（promising 降权）+ 证据块跨族正向保底
+# ---------------------------------------------------------------------------
+
+def test_saturation_promising_downweighted(tmp_path):
+    """promising 只轻度计入拥挤（8 个封顶 → 贡献 ≤0.2）：出过大量正信号但无
+    幸存者的族不再被封禁；拥挤度以 validated/candidate 等真实幸存者为主。"""
+    store = ResearchMemoryStore(tmp_path / "m.db")
+    # vwap 族：10 条 promising（不同窗口表达式），0 条 validated → 饱和度 0.2，不拥挤
+    for w in range(10, 20):
+        store.record_tool_result(run_id="r1", row=_eval_row(
+            "eval_on_train_set",
+            f"RANK(SUBTRACT($adj_close, TS_MEAN($vwap, {w})))", f"vwap_dev_{w}", ic=0.02))
+    # 另一族：3 条 validated（eval_on_val_set + |ic|>=0.015）→ 饱和度 >=1.0，拥挤
+    for w in (10, 20, 30):
+        store.record_tool_result(run_id="r1", row=_eval_row(
+            "eval_on_val_set", f"TS_MEAN($close, {w}) - 1", f"mom_{w}", ic=0.02))
+    sat = store.compute_saturation()
+    assert sat["vwap"]["n_promising"] == 10
+    assert sat["vwap"]["saturation_score"] == pytest.approx(0.2)
+    val_fams = [f for f, d in sat.items() if d["n_validated"] == 3]
+    assert len(val_fams) == 1
+    assert sat[val_fams[0]]["saturation_score"] >= 1.0
+    block = store._saturation_block()
+    assert val_fams[0] in block                # 拥挤族被点名
+    assert "优先深挖" in block and "vwap" in block  # 定向建议点名未拥挤但有正信号的族
+
+
+def test_evidence_positive_guarantee(tmp_path):
+    """即使 query 与强正因子毫无词汇交集，跨族最优正向因子也必被注入（保底）。"""
+    store = ResearchMemoryStore(tmp_path / "m.db")
+    store.record_tool_result(run_id="r1", row=_eval_row(
+        "eval_on_train_set", "TS_STD($volume, 20)", "vol_std_20", ic=0.003))
+    store.record_tool_result(run_id="r1", row=_eval_row(
+        "eval_on_train_set", "RANK(SUBTRACT($adj_close, TS_MEAN($vwap, 10)))",
+        "vwap_dev_10", ic=0.038))
+    store.record_tool_result(run_id="r1", row=_eval_row(
+        "eval_on_train_set", "RANK(SUBTRACT($close, DELAY($close, 5)))",
+        "rev_5", ic=0.025))
+    block = store.context_for(
+        "成交量波动率风险", enable_factor_retrieval=True,
+        enable_edit_patterns=False, limit=6)
+    assert "已验证 / 有潜力的因子" in block
+    assert "vwap_dev_10" in block              # 全库 |IC| 最高的正向因子保底在场
+    assert "[promising]" in block
+
+
+def test_recent_sort_and_verdict_filter(tmp_path):
+    """sort/dir 服务端按列排序（NULL 恒排最后），verdict 过滤后 total 为过滤数。"""
+    store = ResearchMemoryStore(tmp_path / "m.db")
+    rows = [
+        ("RANK(SUBTRACT($adj_close, TS_MEAN($vwap, 10)))", "f10", 0.03),
+        ("RANK(SUBTRACT($adj_close, TS_MEAN($vwap, 20)))", "f20", 0.004),
+        ("RANK(SUBTRACT($adj_close, TS_MEAN($vwap, 30)))", "f30", -0.002),
+    ]
+    for expr, name, ic in rows:
+        store.record_tool_result(run_id="r1", row=_eval_row("eval_on_train_set", expr, name, ic=ic))
+    # 无 metrics 的报错行：verdict=rejected，无 IC（排序时 NULL 恒排最后）
+    store.record_tool_result(run_id="r1", row=_eval_row(
+        "eval_on_train_set", "RANK(SUBTRACT($adj_close, TS_MEAN($vwap, 40)))", "f40",
+        error="dsl_compile_failed: x"))
+    entries, total = store.recent(sort="ic", dir=-1)
+    assert total == 4
+    assert [e["factor_name"] for e in entries[:3]] == ["f10", "f20", "f30"]
+    assert entries[-1]["factor_name"] == "f40"
+    entries, _ = store.recent(sort="ic", dir=1)
+    assert entries[0]["factor_name"] == "f30"
+    # verdict 过滤：weak 档 total=2 且条目全为 weak
+    entries, total = store.recent(sort="ic", dir=-1, verdict="weak")
+    assert total == 2 and len(entries) == 2
+    assert all(e["verdict"] == "weak" for e in entries)
+    # sort="verdict"：按 verdict 排名，promising 在 weak/rejected 前
+    entries, _ = store.recent(sort="verdict", dir=1)
+    assert entries[0]["verdict"] == "promising"
+    # 未知名 sort 回落 updated_at（不抛错）
+    _, total = store.recent(sort="not_a_column", dir=-1)
+    assert total == 4
+
+
+# ---------------------------------------------------------------------------
+# 记忆出题 + FactorMiner 式经验条目（模板/示例/禁令）+ engine_gate 回流
+# ---------------------------------------------------------------------------
+
+def test_template_from_expression():
+    t = template_from_expression("RANK(SUBTRACT($adj_close, TS_MEAN($vwap, 20)))")
+    assert t == "RANK(SUBTRACT($adj_close, TS_MEAN($vwap, {w1})))"
+    t2 = template_from_expression("ADD(TS_MEAN($close, 5), TS_STD($close, 20))")
+    assert "{w1}" in t2 and "{w2}" in t2 and "5" not in t2 and "20" not in t2
+    assert template_from_expression("") == ""
+
+
+def test_experience_block_renders_template_and_do_not(tmp_path):
+    """成功模式渲染 模板+示例+达标率；禁忌（族饱和）渲染 DO NOT 禁令。
+    注意族饱和要求族内全部尝试 |IC|<0.01，所以禁忌族与成功族要分开。"""
+    store = ResearchMemoryStore(tmp_path / "m.db")
+    # vwap 族：1 强（→ 成功模式：模板+示例+达标率）
+    store.record_tool_result(run_id="r1", row=_eval_row("eval_on_train_set",
+        "RANK(SUBTRACT($adj_close, TS_MEAN($vwap, 10)))", "good_1", ic=0.03))
+    store.record_tool_result(run_id="r1", row=_eval_row("eval_on_train_set",
+        "RANK(SUBTRACT($adj_close, TS_MEAN($vwap, 20)))", "vwap_weak_1", ic=0.004))
+    # 波动率族：3 条全弱（→ 族饱和 DO NOT）
+    store.record_tool_result(run_id="r1", row=_eval_row("eval_on_train_set",
+        "RANK(TS_STD($close, 60))", "vol_weak_1", ic=0.004))
+    store.record_tool_result(run_id="r1", row=_eval_row("eval_on_train_set",
+        "RANK(TS_STD($close, 90))", "vol_weak_2", ic=0.006))
+    store.record_tool_result(run_id="r1", row=_eval_row("eval_on_train_set",
+        "RANK(TS_STD($close, 120))", "vol_weak_3", ic=0.002))
+    store.distill_batch_experience(run_id="r1", turn=1, batch_results=[{"dummy": 1}])
+    block = store._experience_block()
+    assert "成功模式" in block and "模板:" in block and "{w1}" in block
+    assert "1/2" in block  # vwap 族 1/2 条达标
+    assert "【禁止】" in block and "DO NOT" in block
+    assert "TS_STD" in block  # 禁令带死路模板骨架
+    assert "vol_weak_1" in block  # 禁令带死路因子名单
+
+
+def test_recommend_edits_scores_cells(tmp_path):
+    """正残差×高置信的 (family, motif) 排前，附族内最优父本；无正 cells 回退族级推荐。"""
+    store = ResearchMemoryStore(tmp_path / "m.db")
+    parent_expr = "RANK(SUBTRACT($adj_close, TS_MEAN($vwap, 10)))"
+    store.record_tool_result(run_id="r1", row=_eval_row("eval_on_train_set", parent_expr, "vwap_p", ic=0.02))
+    # 6 次同 (family, motif, bucket) 的显式子代编辑、残差持续为正 → 置信 > 0.3
+    for i, ic in enumerate([0.03, 0.034, 0.036, 0.038, 0.04, 0.042]):
+        store.record_tool_result(run_id="r1", row=_eval_row(
+            "eval_on_train_set", f"RANK(SUBTRACT($adj_close, TS_MEAN($vwap, {20 + i})))", f"vwap_c{i}",
+            ic=ic, extra_args={"parent_factor": "vwap_p",
+                               "edit_note": "edit=window_rescale 10→20"}))
+    recs = store.recommend_edits(k=2)
+    assert recs, "有正 cells 时应给出推荐"
+    top = recs[0]
+    assert top["family"] == "vwap"
+    assert top["motif"] == "window_rescale"
+    # 族内最优父本 = 验证档位最高、|IC| 最大的正向条目（强子代优于原始父本）
+    assert top["parent_factor"] == "vwap_c5"
+    assert abs(top["parent_ic"] - 0.042) < 1e-9
+    assert "残差" in top["reason"]
+    # 空库：回退族级推荐或返回空，均不得抛错
+    empty = ResearchMemoryStore(tmp_path / "empty.db")
+    assert isinstance(empty.recommend_edits(k=2), list)
+
+
+def test_gate_feedback_flow(tmp_path):
+    """engine_gate 拒绝 → gate_rejected 禁忌；正式入库 → gate_validated 成功经验。"""
+    store = ResearchMemoryStore(tmp_path / "m.db")
+    expr = "RANK(SUBTRACT($adj_close, TS_MEAN($vwap, 10)))"
+    # 模拟一次 submit：engine_gate 拒绝（error 带 engine_gate_failed）
+    store.record_tool_result(run_id="r1", row=_eval_row(
+        "submit_factor", expr, "vwap_g1", ic=0.03,
+        error="engine_gate_failed:avg_daily_side_turnover>0.4"))
+    store.record_tool_result(run_id="r1", row=_eval_row(
+        "eval_on_train_set", "RANK(SUBTRACT($adj_close, TS_MEAN($vwap, 20)))", "vwap_g2", ic=0.028))
+    formed = store.distill_batch_experience(run_id="r1", turn=1, batch_results=[{"dummy": 1}])
+    assert formed["forbidden"] >= 1
+    rows = {r["name"]: r for r in store.list_experience()}
+    assert "gate_rejected:vwap" in rows
+    assert "gate_rejected" in rows["gate_rejected:vwap"]["content"] or "DO NOT" in rows["gate_rejected:vwap"]["content"]
+    assert "换手" in rows["gate_rejected:vwap"]["content"]
+
+    # 正式入库（production_approved）→ gate_validated
+    row = _eval_row("submit_factor", "RANK(SUBTRACT($adj_close, TS_MEAN($vwap, 30)))", "vwap_g3", ic=0.03)
+    row = dict(row)
+    row["result"] = {**row["result"], "stored": True}
+    store.record_tool_result(run_id="r1", row=row)
+    store.distill_batch_experience(run_id="r1", turn=2, batch_results=[{"dummy": 1}])
+    rows = {r["name"]: r for r in store.list_experience()}
+    assert "gate_validated:vwap" in rows
+    assert rows["gate_validated:vwap"]["template"]

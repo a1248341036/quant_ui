@@ -60,7 +60,10 @@ def _client_kwargs() -> dict[str, Any]:
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[3]
+    # 本文件位于 <repo>/alphaagent/factor/mining/agent/ 下：parents[4] 才是仓库根。
+    # （从 mining/ 迁入 agent/ 子包时曾误留 parents[3]，导致 submit 写候选池时
+    #   dsl_path.relative_to(repo_root) 抛 "not in the subpath"——所有提交全部失败。）
+    return Path(__file__).resolve().parents[4]
 
 
 def _now() -> str:
@@ -227,6 +230,7 @@ async def run_factor_mining_agentscope(
             edit_prior_hard_conf=float(memory_policy.get("edit_prior_hard_conf") or EDIT_PRIOR_HARD_CONF_DEFAULT),
             edit_prior_recommend_conf=float(memory_policy.get("edit_prior_recommend_conf") or EDIT_PRIOR_RECOMMEND_CONF_DEFAULT),
             edit_prior_veto_conf=float(memory_policy.get("edit_prior_veto_conf") or EDIT_PRIOR_VETO_CONF_DEFAULT),
+            suggest_slots=int(memory_policy.get("suggest_slots") if memory_policy.get("suggest_slots") is not None else 2),
         )
         if research_memory_path is not None
         else None
@@ -675,6 +679,39 @@ async def run_factor_mining_agentscope(
                     explored_dims.add("overnight")
             if len(explored_dims) <= 1 and len(all_ics) >= 3:
                 reflection_lines.append(f"💡 已探索维度: {explored_dims or {'unknown'}}。未探索: 动量(TS_MEAN($ret,N)), 波动率(TS_STD($ret,N)), 量价关系(TS_CORR), 隔夜跳空($adj_open vs prev_close), VWAP偏离, 筹码(CHIP_*). 请选一个未尝试的维度。")
+
+            # ── 记忆出题（AlphaMemo 口径）：每轮前 k 个名额由记忆推荐驱动 ──
+            # 与注入块（阅卷统计）不同，这里直接指定"本轮该试什么"：
+            # 父本 × 编辑类型按 cells 残差×置信排序，APV 否决方向不推荐。
+            if memory_store is not None and getattr(memory_store, "suggest_slots", 0) > 0:
+                try:
+                    recs = memory_store.recommend_edits(int(memory_store.suggest_slots))
+                except Exception:
+                    recs = []
+                if recs:
+                    reflection_lines.append("")
+                    reflection_lines.append(
+                        f"## 本轮记忆推荐（前 {len(recs)} 个评估名额请优先用于以下方向，"
+                        f"evaluate_factor 调用时必须带 parent_factor + edit_note）"
+                    )
+                    for i, rec in enumerate(recs, 1):
+                        if rec.get("motif"):
+                            reflection_lines.append(
+                                f"{i}. 【{rec['family']}族 × {rec['motif_cn']}】"
+                                f"父本: {rec['parent_factor']}（|IC|={rec['parent_ic']:.4f}）"
+                                f"表达式: {rec['parent_expression']}"
+                                f" → 按此父本做 1 条「{rec['motif_cn']}」变异，edit_note 写 "
+                                f"edit={rec['motif']} <参数变化>。理由: {rec['reason']}"
+                            )
+                        else:
+                            reflection_lines.append(
+                                f"{i}. 【{rec['family']}族】"
+                                f"父本: {rec['parent_factor']}（|IC|={rec['parent_ic']:.4f}）"
+                                f"表达式: {rec['parent_expression']}"
+                                f" → 在该族邻近空间构造 1 条（换窗口/修饰算子/交互项均可，"
+                                f"edit_note 照实写）。理由: {rec['reason']}"
+                            )
+
             reflection_lines.append("请基于以上分析，发起下一轮 evaluate_factor 调用（建议并行2-3条不同维度的假设）。")
             pending = "\n".join(reflection_lines)
 

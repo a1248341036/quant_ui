@@ -102,9 +102,16 @@ def runs(include_archived: bool = False, archived_only: bool = False) -> list[di
 
 
 @router.get("/research-memory")
-def research_memory(limit: int = 50, offset: int = 0) -> dict[str, Any]:
+def research_memory(limit: int = 50, offset: int = 0, order: str = "recent",
+                    verdict: str = "", sort: str = "", dir: int = 0) -> dict[str, Any]:
+    """分页查询研究记忆。sort/dir 为研究总结页按列排序（白名单见 memory.advisory），
+    verdict 为该档过滤（total 为过滤后总数）；不传 sort 时按 order 口径。"""
     store = ResearchMemoryStore(service.RESEARCH_MEMORY_FILE)
-    entries, total = store.recent(limit=max(1, min(limit, 500)), offset=max(0, int(offset)))
+    entries, total = store.recent(
+        limit=max(1, min(limit, 500)), offset=max(0, int(offset)),
+        order="verdict" if order == "verdict" else "recent",
+        verdict=verdict or "", sort=sort or "", dir=int(dir),
+    )
     return {"path": str(service.RESEARCH_MEMORY_FILE), "statistics": store.statistics(), "entries": entries, "total": total}
 
 

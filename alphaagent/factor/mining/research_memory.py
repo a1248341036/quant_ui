@@ -47,6 +47,7 @@ from .memory.expressions import (
     expression_windows,
     extract_edit_motif,
     motif_from_note,
+    template_from_expression,
 )
 from .memory.store import ResearchMemoryStore
 
@@ -67,4 +68,11 @@ __all__ = [
     "PARENT_ORIGIN_WEIGHT",
     "INVALID_WEIGHT",
     "DATA_VERSION",
+    "template_from_expression",
+    "extract_edit_motif",
+    "motif_from_note",
+    "classify_family",
+    "expression_features",
+    "expression_ops",
+    "expression_windows",
 ]

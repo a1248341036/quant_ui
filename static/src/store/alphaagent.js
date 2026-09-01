@@ -83,9 +83,16 @@ export const agentStore = reactive({
   researchMemoryStats: null,
   memoryLayers: null,
   memoryLayersLoading: false,
-  summarySortKey: 'verdict',
-  summarySortOrder: 1,
+  summarySortKey: 'updated_at',
+  summarySortOrder: -1,
   summaryVerdictFilter: '',  // '' = 全部
+  // 研究总结分页（服务端排序/verdict 过滤）。独立于 researchMemory 共享列表：
+  // 后者的"加载更多"累计语义被 AgentThread 记忆面板 / 研究记忆库证据层使用。
+  summaryEntries: [],
+  summaryPage: 1,
+  summaryPageSize: 50,
+  summaryTotal: 0,
+  summaryLoading: false,
 
   // 统一时间窗口默认值（后端 window_config 唯一真源，供因子实验室等复用）
   windowDefaults: null,
@@ -100,6 +107,10 @@ export const agentStore = reactive({
     return agentStore.running || ['starting', 'running', 'stopping'].includes(status)
   }),
   canStopAgent: computed(() => ['starting', 'running'].includes(agentStore.current?.status)),
+  summaryTotalPages: computed(() =>
+    Math.max(1, Math.ceil(agentStore.summaryTotal / agentStore.summaryPageSize))),
+  summaryAllCount: computed(() =>
+    agentStore.researchMemoryStats?.entries ?? agentStore.summaryTotal),
   menuRun: computed(() => agentStore.runs.find(run => run.run_id === agentStore.menuRunId) || null),
   renameRun: computed(() => agentStore.runs.find(run => run.run_id === agentStore.renameRunId) || null),
   timeline: computed(() => buildTimeline(agentStore.events)),
@@ -442,7 +453,10 @@ export const agentStore = reactive({
           this.usage = { ...this.usage, ...event }
         } else {
           this.events.push(event)
-          if (event.event === 'research_memory_updated') this.loadResearchMemory(true)
+          if (event.event === 'research_memory_updated') {
+            this.loadResearchMemory(true)
+            this.loadSummaryPage()
+          }
           if (event.event === 'continuation_accepted') {
             this.pendingMessages = Math.max(0, this.pendingMessages - Number(event.count || 1))
           }
@@ -498,11 +512,51 @@ export const agentStore = reactive({
     this.researchMemoryPage += 1
     await this.loadResearchMemory(false)
   },
+  // ── 研究总结分页（服务端排序 + verdict 过滤）──
+  async loadSummaryPage(page) {
+    if (this.summaryLoading) return
+    if (Number.isFinite(page) && page >= 1) this.summaryPage = page
+    this.summaryLoading = true
+    try {
+      const offset = (this.summaryPage - 1) * this.summaryPageSize
+      const params = new URLSearchParams({
+        limit: String(this.summaryPageSize),
+        offset: String(offset),
+        sort: this.summarySortKey,
+        dir: String(this.summarySortOrder),
+        t: String(Date.now()),
+      })
+      if (this.summaryVerdictFilter) params.set('verdict', this.summaryVerdictFilter)
+      const payload = await api('/api/alphaagent/research-memory?' + params.toString())
+      this.summaryEntries = payload.entries || []
+      this.summaryTotal = payload.total || this.summaryEntries.length
+      this.researchMemoryStats = payload.statistics || null
+      // 删除/过滤后页码越界：回退到最后一页重取一次
+      const totalPages = Math.max(1, Math.ceil(this.summaryTotal / this.summaryPageSize))
+      if (!this.summaryEntries.length && this.summaryPage > totalPages) {
+        this.summaryLoading = false
+        await this.loadSummaryPage(totalPages)
+        return
+      }
+    } catch (e) {
+      this.error = '读取研究总结失败: ' + e.message
+    } finally {
+      this.summaryLoading = false
+    }
+  },
+  async setSummaryPage(page) {
+    if (page < 1 || page > this.summaryTotalPages || page === this.summaryPage) return
+    await this.loadSummaryPage(page)
+  },
   async deleteMemoryEntry(entry) {
     try {
       await api('/api/alphaagent/research-memory/' + encodeURIComponent(entry.id), { method: 'DELETE' })
       this.researchMemory = this.researchMemory.filter(item => item.id !== entry.id)
       this.memory = this.memory.filter(item => item.id !== entry.id)
+      if (this.summaryEntries.some(item => item.id === entry.id)) {
+        this.summaryTotal = Math.max(0, this.summaryTotal - 1)
+        await this.loadSummaryPage()
+      }
     } catch (e) {
       this.error = '删除记忆失败: ' + e.message
     }
@@ -524,17 +578,25 @@ export const agentStore = reactive({
     if (mode === 'normal') this.loadResearchMemory(true)
   },
   setSummarySort(key) {
+    const NUMERIC_SORT_KEYS = new Set([
+      'ic', 'icir', 'coverage', 'annualized_excess_return', 'sharpe', 'excess_sharpe',
+      'annualized_return', 'max_drawdown', 'annual_turnover', 'daily_overlap',
+      'monotonicity', 'attempts',
+    ])
     if (this.summarySortKey === key) {
       // 同列再点：升序 ↔ 降序
       this.summarySortOrder = this.summarySortOrder === 1 ? -1 : 1
     } else {
       this.summarySortKey = key
-      this.summarySortOrder = 1
+      // 数值列默认降序（最好在前），文本列默认升序
+      this.summarySortOrder = (key === 'updated_at' || NUMERIC_SORT_KEYS.has(key)) ? -1 : 1
     }
+    this.loadSummaryPage(1)
   },
   setSummaryVerdictFilter(verdict) {
     // 同一 verdict 再点 → 取消筛选
     this.summaryVerdictFilter = this.summaryVerdictFilter === verdict ? '' : verdict
+    this.loadSummaryPage(1)
   },
   async loadResearchModes() {
     try {
@@ -834,7 +896,8 @@ export const agentStore = reactive({
   },
 })
 
-// 研究总结表格排序视图（供 AgentThread 使用）
+// 研究总结表格视图：排序/verdict 过滤已在服务端完成（分页口径），
+// 这里只暴露当前页条目与全量 verdict 计数（来自后端 statistics）。
 export const summaryView = {
   counts: computed(() => {
     // 优先用后端 statistics 的 verdict_counts（全量统计），分页时也准确
@@ -844,43 +907,11 @@ export const summaryView = {
     }
     // 兜底：前端本地统计已加载条目
     const counts = {}
-    for (const entry of agentStore.researchMemory) {
+    for (const entry of agentStore.summaryEntries) {
       const v = entry.verdict || 'unknown'
       counts[v] = (counts[v] || 0) + 1
     }
     return counts
   }),
-  filtered: computed(() => {
-    const order = {
-      production_approved: 0, validated: 1, candidate_approved: 2,
-      promising: 3, revise_required: 4, rejected: 5, weak: 6,
-    }
-    const key = agentStore.summarySortKey
-    const dir = agentStore.summarySortOrder
-    const filter = agentStore.summaryVerdictFilter
-    let list = agentStore.researchMemory
-    if (filter) list = list.filter(e => e.verdict === filter)
-    const getVal = (entry) => {
-      if (key === 'verdict') return order[entry.verdict] ?? 99
-      if (key === 'updated_at') return Date.parse(entry.updated_at || '') || 0
-      if (key === 'attempts') return entry.attempts || 1
-      if (key === 'coverage') return entry.metrics?.coverage ?? entry.metrics?.factor_coverage ?? null
-      if (key === 'annualized_excess_return') return entry.metrics?.annualized_excess_return ?? entry.metrics?.long_group_annual_excess_return ?? null
-      if (key === 'factor_name' || key === 'stage') return String(entry[key] || '')
-      return entry.metrics?.[key] ?? null
-    }
-    return [...list].sort((a, b) => {
-      const va = getVal(a, key)
-      const vb = getVal(b, key)
-      // 空值（null/undefined/NaN）始终排最后
-      if (va == null || Number.isNaN(va)) return 1
-      if (vb == null || Number.isNaN(vb)) return -1
-      if (typeof va === 'string' && typeof vb === 'string') {
-        const r = va.localeCompare(vb)
-        return r * dir
-      }
-      const r = va - vb
-      return r * dir
-    })
-  }),
+  filtered: computed(() => agentStore.summaryEntries),
 }

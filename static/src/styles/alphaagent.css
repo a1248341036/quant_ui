@@ -146,6 +146,13 @@
 .load-more-btn { padding:7px 20px; border:1px solid var(--line); border-radius:8px; background:var(--bg-soft); color:var(--muted); font-size:12px; cursor:pointer; transition:all .12s; }
 .load-more-btn:hover:not(:disabled) { color:var(--text); border-color:var(--accent, #5b9dff); background:rgb(79 140 255 / .08); }
 .load-more-btn:disabled { opacity:.5; cursor:default; }
+.summary-pagination { display:flex; align-items:center; justify-content:center; gap:5px; padding:14px 0 6px; flex-wrap:wrap; }
+.page-btn { min-width:28px; height:28px; padding:0 7px; border:1px solid var(--line); border-radius:6px; background:transparent; color:var(--muted); font:12px var(--font-mono); cursor:pointer; transition:all .12s; }
+.page-btn:hover:not(:disabled) { color:var(--text); border-color:var(--accent, #5b9dff); background:rgb(79 140 255 / .08); }
+.page-btn.active { color:#fff; border-color:var(--accent, #5b9dff); background:var(--accent, #5b9dff); }
+.page-btn:disabled { opacity:.45; cursor:default; }
+.page-ellipsis { color:var(--muted); font-size:12px; padding:0 2px; }
+.page-info { margin-left:8px; color:var(--muted); font-size:11px; white-space:nowrap; }
 .usage-chip { display:flex; align-items:center; gap:5px; padding:5px 8px; border:1px solid var(--line); border-radius:7px; color:var(--muted); font:10px var(--font-mono); white-space:nowrap; }
 .usage-chip em { color:#91d4ac; font-style:normal; }
 .activity-line { display:flex; align-items:center; gap:6px; color:#b9a3e8; font-size:11px; white-space:nowrap; }

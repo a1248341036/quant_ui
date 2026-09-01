@@ -12,6 +12,32 @@ from .constants import VERDICT_ORDER
 from .diagnostics import _parse_args
 from .expressions import _structure_fingerprint, classify_family, motif_from_note
 
+# recent() 服务端排序白名单：前端排序列 → SQL 表达式（metrics 为 JSON 字段）。
+# 覆盖率/年化超额存在双键（新键缺失时回退旧键），其余直接取单键。
+_RECENT_SORT_EXPRS: dict[str, str] = {
+    "updated_at": "updated_at",
+    "factor_name": "factor_name",
+    "stage": "stage",
+    "attempts": "CAST(attempts AS REAL)",
+    "ic": "CAST(json_extract(metrics_json, '$.ic') AS REAL)",
+    "icir": "CAST(json_extract(metrics_json, '$.icir') AS REAL)",
+    "coverage": (
+        "COALESCE(CAST(json_extract(metrics_json, '$.coverage') AS REAL), "
+        "CAST(json_extract(metrics_json, '$.factor_coverage') AS REAL))"
+    ),
+    "sharpe": "CAST(json_extract(metrics_json, '$.sharpe') AS REAL)",
+    "excess_sharpe": "CAST(json_extract(metrics_json, '$.excess_sharpe') AS REAL)",
+    "annualized_return": "CAST(json_extract(metrics_json, '$.annualized_return') AS REAL)",
+    "annualized_excess_return": (
+        "COALESCE(CAST(json_extract(metrics_json, '$.annualized_excess_return') AS REAL), "
+        "CAST(json_extract(metrics_json, '$.long_group_annual_excess_return') AS REAL))"
+    ),
+    "max_drawdown": "CAST(json_extract(metrics_json, '$.max_drawdown') AS REAL)",
+    "annual_turnover": "CAST(json_extract(metrics_json, '$.annual_turnover') AS REAL)",
+    "daily_overlap": "CAST(json_extract(metrics_json, '$.daily_overlap') AS REAL)",
+    "monotonicity": "CAST(json_extract(metrics_json, '$.monotonicity') AS REAL)",
+}
+
 
 class AdvisoryMixin:
     """评估前 advisory（硬提醒）与查询/管理接口。"""
@@ -134,24 +160,53 @@ class AdvisoryMixin:
 
     # ── 管理接口（v2 兼容）──
 
-    def recent(self, *, limit: int = 50, offset: int = 0) -> tuple[list[dict[str, Any]], int]:
-        """按 verdict 优先级（正值优先）+ 时间排序返回条目，支持分页。
+    def recent(self, *, limit: int = 50, offset: int = 0,
+               order: str = "recent", verdict: str = "",
+               sort: str = "", dir: int = 0) -> tuple[list[dict[str, Any]], int]:
+        """分页返回条目，支持服务端 verdict 过滤与按列排序（分页 UI 口径）。
 
-        返回 (entries, total)，total 为 memory_entries 总行数。
+        order="recent"（默认）: updated_at DESC, rowid DESC —— 最新评估在前；
+        研究总结页默认口径，新 run 的条目（多为 weak/rejected）不再被
+        verdict 优先级压到深部分页不可见。
+        order="verdict": 正值 verdict 优先 + 时间倒序（旧口径，正证据一屏可见）。
+        sort/dir 覆盖 order：sort 为 _RECENT_SORT_EXPRS 白名单键（含 metrics JSON
+        字段，verdict 列按 VERDICT_ORDER 排名），dir=1 升序 / -1 降序；
+        NULL 值恒排最后。未知名回落 updated_at。
+        verdict 非空（须为合法 verdict）时只返回该档条目，total 为过滤后总数。
+
+        返回 (entries, total)。
         """
         case_parts = " ".join(
-            f"WHEN '{verdict}' THEN {rank}" for verdict, rank in VERDICT_ORDER.items()
+            f"WHEN '{v}' THEN {rank}" for v, rank in VERDICT_ORDER.items()
         )
+        sort_expr = _RECENT_SORT_EXPRS.get(sort) if sort else None
+        if sort == "verdict":
+            sort_expr = f"CASE verdict {case_parts} ELSE 99 END"
+        where_sql, where_args = "", []
+        if verdict and verdict in VERDICT_ORDER:
+            where_sql, where_args = "WHERE verdict = ?", [verdict]
+        if sort_expr is not None:
+            direction = "DESC" if dir == -1 else "ASC"
+            order_sql = (f"({sort_expr} IS NULL), {sort_expr} {direction}, "
+                         f"rowid {direction}")
+        elif order == "verdict":
+            order_sql = f"CASE verdict {case_parts} ELSE 99 END, updated_at DESC"
+        else:
+            # id 是表达式指纹（十六进制串）非时间序，插入顺序用 rowid
+            order_sql = "updated_at DESC, rowid DESC"
         with self._open() as conn:
-            total = int(conn.execute("SELECT COUNT(*) FROM memory_entries").fetchone()[0])
+            total = int(conn.execute(
+                f"SELECT COUNT(*) FROM memory_entries {where_sql}",
+                where_args,
+            ).fetchone()[0])
             rows = conn.execute(
                 f"""
                 SELECT * FROM memory_entries
-                ORDER BY CASE verdict {case_parts} ELSE 99 END,
-                         updated_at DESC
+                {where_sql}
+                ORDER BY {order_sql}
                 LIMIT ? OFFSET ?
                 """,
-                (max(0, int(limit)), max(0, int(offset))),
+                [*where_args, max(0, int(limit)), max(0, int(offset))],
             ).fetchall()
             return self._hydrate_entries(conn, rows), total
 

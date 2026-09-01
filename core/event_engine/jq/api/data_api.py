@@ -195,6 +195,7 @@ def install(ns: dict, rt) -> None:
             stocks = [str(security).zfill(6)]
         d = (pd.Timestamp(date) if date is not None
              else rt.context.previous_date)
+        rt._guard_no_future(d)
         snap = jq_data.industry_asof(d)
         return {c: _industry_entry(c, snap) for c in stocks}
 
@@ -211,6 +212,7 @@ def install(ns: dict, rt) -> None:
                 f"get_extras 仅支持 'is_st'(基金净值类 extras 未接入): {tag}")
         codes = ([str(s).split(".")[0].zfill(6) for s in security_list]
                  if security_list else list(rt.ctx.codes))
+        rt._guard_no_future(end_date)
         dates = rt.ctx.tables.dates
         if end_date is not None:
             hi = int(dates.searchsorted(pd.Timestamp(end_date), side="right")) - 1
@@ -249,7 +251,11 @@ def install(ns: dict, rt) -> None:
         if start_date is not None:
             df = df[df["trade_date"] >= pd.Timestamp(start_date)]
         if end_date is not None:
+            rt._guard_no_future(end_date)
             df = df[df["trade_date"] <= pd.Timestamp(end_date)]
+        else:
+            # 缺省终点=信号日(不暴露未来榜单)
+            df = df[df["trade_date"] <= rt.context.previous_date]
         out = (df.sort_values(["trade_date", "code"], kind="stable")
                  .set_index("trade_date"))
         out.index.name = "day"

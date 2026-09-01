@@ -93,6 +93,9 @@ class JQRuntime:
         self._code_alias: dict[str, str] = {}
         self._hd_injected = False
         self._proc_init_done = False
+        # set_option('avoid_future_data', True) 置位: 数据 API 显式请求
+        # 超过当前时点的数据时抛错(聚宽同语义)
+        self.avoid_future_data = False
         self.context = _Context(self)
         self._ns = self._build_namespace()
         from core.event_engine.jq.api.misc import legacy_exec_scope
@@ -152,6 +155,23 @@ class JQRuntime:
         return o
 
     # ================= 数据 API(矩阵/截面, 由 api/data_api.py 装配) =================
+    def _guard_no_future(self, end_date, frequency: str = "daily") -> None:
+        """avoid_future_data 守卫: 显式请求超过当前时点的数据时抛错。
+
+        daily 的边界是前一交易日(当日日线盘中不可得), '1m' 是当前交易日
+        (当日盘中价以收盘代理的口径已另行说明)。
+        """
+        if not self.avoid_future_data or end_date is None:
+            return
+        d = pd.Timestamp(end_date)
+        boundary = (self.context.current_dt if frequency == "1m"
+                    else self.context.previous_date)
+        if d > boundary:
+            raise ValueError(
+                f"avoid_future_data: 请求了未来数据 end_date={d.date()} "
+                f"(当前时点 {boundary.date()}); 聚宽同语义报错。"
+                f"如需历史区间请以 {boundary.date()} 为终点")
+
     def _row_index(self, end_date=None, count=None, start_date=None) -> list[int]:
         dates = self.ctx.tables.dates
         if end_date is not None:
@@ -228,6 +248,7 @@ class JQRuntime:
         """
         if frequency not in ("daily", "1d", "1m"):
             raise NotImplementedError(f"频率未支持: {frequency}(日线引擎)")
+        self._guard_no_future(end_date, frequency)
         multi = isinstance(security, (list, tuple, set))
         # '601988.XSHG'/'601988' -> '601988' (用户常写聚宽风格后缀码)
         codes = [str(s).split(".")[0].strip().zfill(6)
@@ -358,8 +379,19 @@ class JQRuntime:
                               panel=False)
 
     def get_snapshot(self, date=None) -> pd.DataFrame:
-        """信号日截面(JQ 单位): market_cap(亿元) + 财务值(元) 等。"""
+        """信号日截面(JQ 单位): market_cap(亿元) + 财务值(元) 等。
+
+        avoid_future_data 边界为 current_dt(当日截面属当日已知信息:
+        涨跌停/停牌/开盘价), get_current_data 走此路径不会被误拦;
+        get_fundamentals 的显式 date 请求(未来报告期截面)仍会拦截。
+        """
         d = pd.Timestamp(date) if date is not None else self.context.previous_date
+        if self.avoid_future_data:
+            boundary = max(self.context.previous_date, self.context.current_dt)
+            if pd.Timestamp(d) > boundary:
+                raise ValueError(
+                    f"avoid_future_data: 请求了未来截面 date={pd.Timestamp(d).date()} "
+                    f"(当前时点 {boundary.date()})")
         key = pd.Timestamp(d).normalize()   # current_dt 可带盘中时点
         if key not in self._snap_cache:
             snap = self.ctx.snapshot(key)

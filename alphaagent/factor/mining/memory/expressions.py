@@ -246,6 +246,26 @@ def expression_windows(expression: str) -> dict[str, list[int | float]]:
     return _parse_expression_structure(expression).get("window_params", {})
 
 
+def template_from_expression(expression: str) -> str:
+    """表达式 → 参数槽模板：数字字面量按出现顺序替换为 {w1}/{w2}/...
+
+    FactorMiner 式"可模仿形状"：RANK(SUBTRACT($adj_close, TS_MEAN($vwap, 20)))
+    → RANK(SUBTRACT($adj_close, TS_MEAN($vwap, {w1})))。
+    模板用于经验层注入（成功模式可照抄骨架换参、死路结构可整条禁掉）。
+    """
+    text = str(expression or "").strip()
+    if not text:
+        return ""
+    counter = 0
+
+    def _sub(_m: re.Match) -> str:
+        nonlocal counter
+        counter += 1
+        return f"{{w{counter}}}"
+
+    return re.sub(r"\d+(?:\.\d+)?", _sub, text)
+
+
 # ── 编辑类型识别 ──
 
 def _identify_edit_type(

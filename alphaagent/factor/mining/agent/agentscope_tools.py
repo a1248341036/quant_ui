@@ -42,6 +42,85 @@ _CONFLICTING_OPERATORS = {
 }
 
 
+_FLOAT_CAP_TOKEN = "$FLOAT_CAP"
+# 这些场景下 $float_cap 不是信号本体，无需 LOG：
+# - CHIP_*/CROWD_* 算子的市值参数（按设计吃流通市值）
+# - LOG/LOG1P 变换本身
+# - DIVIDE 的任一位置（比值输出，如 amount/float_cap=换手）
+# - CS_NEUTRALIZE/CS_RESIDUALIZE/CS_BUCKET 的分组/条件位置（arg>=1，按秩不变）
+_FLOAT_CAP_ALLOW_OPS = {"LOG", "LOG1P"}
+_FLOAT_CAP_ALLOW_NONFIRST = {"CS_NEUTRALIZE", "CS_RESIDUALIZE", "CS_BUCKET", "DIVIDE"}
+_FLOAT_CAP_BLOCK_ALL_ARGS = {"ADD", "SUBTRACT", "MULTIPLY"}
+
+
+def _float_cap_signal_use(multi_line_expr: str) -> tuple[bool, str]:
+    """判断 $float_cap 是否被当作信号值使用（而非算子参数/分组变量）。
+
+    返回 (is_signal_use, detail)。信号用法（裸用、四则运算、值算子第一参数）
+    才要求 LOG 包裹；CHIP_*/CROWD_* 的市值参数、分组位置、比值分母属合法用法。
+    """
+    code_lines = []
+    for raw in multi_line_expr.splitlines():
+        code = raw.split("#", 1)[0]
+        if code.strip():
+            code_lines.append(code)
+    upper = "\n".join(code_lines).upper()
+    if _FLOAT_CAP_TOKEN not in upper:
+        return False, ""
+
+    # 扫描每个 $float_cap 出现位置：记录完整调用链（内层→外层的 (算子, 参数下标)）
+    stack: list[list] = []  # [op_name, next_arg_index]
+    usages: list[list[tuple[str, int]]] = []
+    i, n = 0, len(upper)
+    while i < n:
+        ch = upper[i]
+        if upper.startswith(_FLOAT_CAP_TOKEN, i):
+            # stack[0] 是最外层调用；reversed 让 chain[0] = 最内层
+            usages.append([(op, idx) for op, idx in reversed(stack)])
+            i += len(_FLOAT_CAP_TOKEN)
+            continue
+        if ch == "(":
+            j = i - 1
+            while j >= 0 and (upper[j].isalnum() or upper[j] == "_"):
+                j -= 1
+            stack.append([upper[j + 1:i], 0])
+            i += 1
+            continue
+        if ch == ",":
+            if stack:
+                stack[-1][1] += 1
+            i += 1
+            continue
+        if ch == ")":
+            if stack:
+                stack.pop()
+            i += 1
+            continue
+        i += 1
+
+    for chain in usages:
+        if not chain:
+            return True, "裸用 $float_cap（未经过任何变换或算子参数位置）"
+        # 链上任一环处于"条件/分组位置"（如 CS_NEUTRALIZE 的第二参数）→ 整体是条件变量
+        for op, idx in chain[1:]:
+            if op in _FLOAT_CAP_ALLOW_NONFIRST and idx >= 1:
+                break
+        else:
+            inner_op, inner_idx = chain[0]
+            if inner_op.startswith(("CHIP_", "CROWD_")) or inner_op in _FLOAT_CAP_ALLOW_OPS:
+                continue
+            if inner_op in _FLOAT_CAP_BLOCK_ALL_ARGS:
+                return True, f"{inner_op} 中把 $float_cap 当运算值（市值量纲直接进入信号）"
+            if inner_op in _FLOAT_CAP_ALLOW_NONFIRST:
+                if inner_idx == 0:
+                    return True, f"{inner_op} 的信号输入直接用 $float_cap"
+                continue
+            # 其它算子：第一参数 = 信号本体；非第一参数视为窗口/分组等参数位置
+            if inner_idx <= 0:
+                return True, f"{inner_op} 的信号输入直接用 $float_cap"
+    return False, ""
+
+
 def _parse_signal_dims(expr: str) -> set[str]:
     """粗略提取表达式涉及的信号维度。"""
     dims: set[str] = set()
@@ -116,12 +195,18 @@ def _preflight_check(multi_line_expr: str, factor_name: str) -> dict[str, Any] |
                 "suggestion": "考虑用 MULTIPLY 做波动率调整反转，或用残差化剥离。",
             }
 
-    # ── 检查2: 纯 $float_cap 无变换 ──
-    if re.search(r'(?:^|\(|,\s*)\$FLOAT_CAP\s*(?:\)|,)', upper) and "LOG" not in upper:
+    # ── 检查2: $float_cap 被当信号值使用且无变换 ──
+    # （CHIP_*/CROWD_* 市值参数、LOG 变换、分组位置、比值分母属合法用法，不拦）
+    cap_signal_use, cap_detail = _float_cap_signal_use(expr)
+    if cap_signal_use:
         return {
             "blocked": True,
-            "warning": "纯市值因子: 直接使用 $float_cap 无 LOG 变换，截面分布极端右偏。",
-            "suggestion": "至少包一层 LOG($float_cap)，或使用 CS_BUCKET(LOG($float_cap), 10) 做分组中性化。",
+            "warning": f"纯市值因子: {cap_detail}，无 LOG 变换，截面分布极端右偏。",
+            "suggestion": (
+                "对信号用法至少包一层 LOG($float_cap)，或用 CS_BUCKET(LOG($float_cap), 10) 做分组中性化。"
+                "注意：CHIP_*/CROWD_* 算子的市值参数、CS_NEUTRALIZE/CS_BUCKET 的分组位置、"
+                "DIVIDE 的分母属合法用法，直接用即可，无需 LOG。"
+            ),
         }
 
     # ── 检查3: 两个相同信号简单相加（同质化） ──

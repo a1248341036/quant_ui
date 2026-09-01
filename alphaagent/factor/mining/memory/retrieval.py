@@ -124,6 +124,54 @@ class RetrievalMixin:
 
         return list(candidates.values())
 
+    def _guaranteed_positives(self, k: int) -> list[dict[str, Any]]:
+        """跨族保底正向父本：全库正向条目按（验证档位, |IC|）全局排序，同族轮转取最优。
+
+        与 BM25 命中无关 —— 通用 query 打不中 FTS 时正向通道也不断供，
+        保证每轮证据块里一定有"值得作为父本"的正样本（2026-09-01）。
+        """
+        if k <= 0:
+            return []
+        tier = {
+            "production_approved": 0, "validated": 1,
+            "candidate_approved": 2, "promising": 3,
+        }
+        try:
+            with self._open() as conn:
+                rows = conn.execute(
+                    "SELECT * FROM memory_entries WHERE verdict IN "
+                    "('production_approved','validated','candidate_approved','promising')"
+                ).fetchall()
+        except sqlite3.Error:
+            return []
+        ranked: list[tuple[tuple[int, float], dict[str, Any], str]] = []
+        for row in rows:
+            e = self._row_to_entry(row)
+            m = e.get("metrics") if isinstance(e.get("metrics"), dict) else {}
+            ic = m.get("ic") if m else None
+            abs_ic = abs(float(ic)) if isinstance(ic, (int, float)) else 0.0
+            fam = str(e.get("family") or "other")
+            ranked.append(((tier.get(str(e.get("verdict")), 9), -abs_ic), e, fam))
+        ranked.sort(key=lambda t: t[0])
+        # 家族按其最优条目的全局排名排序；同族轮转（先各家一条，再补第二条）
+        fam_order: list[str] = []
+        for _, _, fam in ranked:
+            if fam not in fam_order:
+                fam_order.append(fam)
+        by_fam: dict[str, list[dict[str, Any]]] = {f: [] for f in fam_order}
+        for _, e, fam in ranked:
+            by_fam[fam].append(e)
+        out: list[dict[str, Any]] = []
+        while len(out) < k:
+            progressed = False
+            for f in fam_order:
+                if by_fam[f] and len(out) < k:
+                    out.append(by_fam[f].pop(0))
+                    progressed = True
+            if not progressed:
+                break
+        return out
+
     # ── 条目格式化 ──
 
     @staticmethod
@@ -266,8 +314,17 @@ class RetrievalMixin:
         pos_pool = [(s, e) for s, e in scored if e.get("verdict") in POSITIVE_VERDICTS]
         neg_pool = [(s, e) for s, e in scored if e.get("verdict") in NEGATIVE_VERDICTS]
 
-        pos_quota = max(1, int(limit * 0.4)) if pos_pool else 0
-        pos_selected = self._select_diverse(pos_pool, limit=pos_quota, max_per_family=2)
+        pos_quota = max(1, int(limit * 0.4))
+        # 正向保底（2026-09-01）：跨族最优正向因子无条件入选约 2/3 正向配额，
+        # BM25 正池只补充剩余 —— 通用 query 打不中 FTS 时正向通道不断供。
+        guaranteed = self._guaranteed_positives(max(0, pos_quota - 1))
+        g_names = {e.get("factor_name") for e in guaranteed}
+        pos_pool_rest = [(s, e) for s, e in pos_pool
+                         if e.get("factor_name") not in g_names]
+        bm25_pos = (self._select_diverse(pos_pool_rest, limit=pos_quota - len(guaranteed),
+                                         max_per_family=2)
+                    if pos_quota > len(guaranteed) else [])
+        pos_selected = [(0.0, e) for e in guaranteed] + bm25_pos
         neg_quota = limit - len(pos_selected)
         neg_selected = self._select_diverse(neg_pool, limit=neg_quota, max_per_family=2) if neg_quota > 0 else []
 
@@ -279,7 +336,8 @@ class RetrievalMixin:
             block_lines.append("")
             block_lines.append("## 已验证 / 有潜力的因子（优先在其邻近空间继续挖掘相似机制）")
             block_lines.append(
-                "这些因子在训练集或验证集上表现可用。**鼓励**基于它们的经济逻辑，"
+                "这些因子在训练集或验证集上表现可用，排在最前的是全库最强正向因子"
+                "（跨族保底，与检索无关）。**鼓励**基于它们的经济逻辑，"
                 "通过更换窗口、算子族或原始字段，在相似但不重复的方向上继续探索。"
             )
             if prefer_orthogonal:
@@ -300,7 +358,11 @@ class RetrievalMixin:
         return "\n".join(block_lines)
 
     def _experience_block(self) -> str:
-        """经验块：成功模式 / 禁忌方向 / 战略洞察（按 occurrence 排序）。"""
+        """经验块：FactorMiner 式可执行条目。
+
+        success_pattern = 机制说明 + 参数槽模板 + 真实示例表达式（可照抄骨架）；
+        forbidden = DO NOT 禁令（模板 + 死路/被拒因子名单）；insight = 战略洞察。
+        """
         try:
             with self._open() as conn:
                 rows = conn.execute(
@@ -316,17 +378,167 @@ class RetrievalMixin:
             return ""
         block_lines: list[str] = []
         block_lines.append("")
-        block_lines.append("## 经验记忆（跨因子成功模式 / 禁忌方向 / 战略洞察）")
-        for row in rows:
-            kind = str(row["kind"])
+        block_lines.append("## 经验记忆（成功模式可照抄模板变异；DO NOT 行本轮不得违反）")
+        success_rows = [r for r in rows if str(r["kind"]) == "success_pattern"]
+        forbidden_rows = [r for r in rows if str(r["kind"]) == "forbidden"]
+        insight_rows = [r for r in rows if str(r["kind"]) == "insight"]
+        for row in forbidden_rows:
             content = str(row["content"] or "")
-            if kind == "success_pattern":
-                block_lines.append(f"- 成功模式：{content}")
-            elif kind == "forbidden":
-                block_lines.append(f"- 禁忌方向：{content}")
-            else:
-                block_lines.append(f"- 洞察：{content}")
+            block_lines.append(f"- 【禁止】{content}")
+        for row in success_rows:
+            content = str(row["content"] or "")
+            template = str(row["template"] or "") if "template" in row.keys() else ""
+            try:
+                evidence = json.loads(row["evidence_json"] or "{}")
+            except (TypeError, ValueError):
+                evidence = {}
+            examples = [e for e in (evidence.get("examples") or []) if e]
+            line = f"- 成功模式：{content}"
+            if template:
+                line += f"\n  模板: `{template}`"
+            for ex in examples[:2]:
+                line += f"\n  示例: {ex}"
+            block_lines.append(line)
+        for row in insight_rows:
+            block_lines.append(f"- 洞察：{row['content']}")
         return "\n".join(block_lines)
+
+    # ── 记忆出题（AlphaMemo 口径：记忆参与搜索决策）──
+
+    def recommend_edits(self, k: int = 2) -> list[dict[str, Any]]:
+        """按 cells 残差×置信度给 (family, motif) 出题，附族内最优父本。
+
+        与 _edit_prior_block 的区别：那边是"阅卷"（事后统计表），这里是
+        "出题"——每轮前 k 个评估名额直接由记忆推荐（父本 × 编辑类型），
+        run 循环把它们写进任务消息。排序键 = 平均残差 × Eq.7 置信度，
+        APV 双门否决的 (family, motif) 不推荐；无正 cells 时回退
+        「出过正信号且未拥挤族 + 族内最优父本」的族级推荐。
+        """
+        if k <= 0:
+            return []
+        try:
+            with self._open() as conn:
+                cell_rows = conn.execute("SELECT * FROM memory_cells").fetchall()
+        except sqlite3.Error:
+            return []
+        agg: dict[tuple[str, str], dict[str, Any]] = {}
+        for row in cell_rows:
+            family = str(row["family"] or "other")
+            motif = str(row["motif"] or "other")
+            s_w, f_w = self._weighted_counts(row)
+            try:
+                residuals = [float(v) for v in json.loads(row["residuals_json"] or "[]")]
+            except (TypeError, ValueError):
+                residuals = []
+            cell = agg.setdefault(
+                (family, motif),
+                {"s_w": 0.0, "f_w": 0.0, "residuals": []},
+            )
+            cell["s_w"] += s_w
+            cell["f_w"] += f_w
+            cell["residuals"].extend(residuals)
+
+        scored: list[dict[str, Any]] = []
+        for (family, motif), cell in agg.items():
+            if not cell["residuals"]:
+                continue
+            conf = _eq7_confidence(cell["residuals"])
+            delta = sum(cell["residuals"]) / len(cell["residuals"])
+            vetoed, _, _ = _apv_gate(cell["s_w"], cell["f_w"], conf)
+            if vetoed or delta <= 0 or conf < 0.3:
+                continue
+            scored.append({
+                "family": family, "motif": motif,
+                "delta": delta, "conf": conf,
+                "score": delta * conf, "n": len(cell["residuals"]),
+            })
+        scored.sort(key=lambda c: -c["score"])
+
+        picks: list[dict[str, Any]] = []
+        seen_families: set[str] = set()
+        for cand in scored:
+            if cand["family"] in seen_families:
+                continue
+            parent = self._best_family_parent(cand["family"])
+            if parent is None:
+                continue
+            picks.append({
+                **cand,
+                **parent,
+                "family_cn": FAMILY_LABELS.get(cand["family"], cand["family"]),
+                "motif_cn": MOTIF_LABELS.get(cand["motif"], cand["motif"]),
+                "reason": (
+                    f"历史 {cand['n']} 次该编辑平均残差 {cand['delta']:+.4f}、"
+                    f"置信 {cand['conf']:.0%}"
+                ),
+            })
+            seen_families.add(cand["family"])
+            if len(picks) >= k:
+                return picks
+
+        # 回退：无可用正 cells → 出过正信号且未拥挤的族级推荐
+        saturation = self.compute_saturation()
+        open_fams = sorted(
+            (
+                (f, d) for f, d in saturation.items()
+                if d.get("saturation_score", 0) <= 0.6 and d.get("n_promising", 0) > 0
+            ),
+            key=lambda x: (-x[1].get("n_promising", 0), x[1].get("saturation_score", 0)),
+        )
+        for family, data in open_fams:
+            if family in seen_families:
+                continue
+            parent = self._best_family_parent(family)
+            if parent is None:
+                continue
+            picks.append({
+                "family": family, "motif": None,
+                "family_cn": FAMILY_LABELS.get(family, family),
+                "motif_cn": None,
+                "n": int(data.get("n_promising", 0)),
+                **parent,
+                "reason": (
+                    f"该族出过 {int(data.get('n_promising', 0))} 个正信号且未拥挤"
+                    f"（饱和 {data.get('saturation_score', 0):.0%}）"
+                ),
+            })
+            seen_families.add(family)
+            if len(picks) >= k:
+                break
+        return picks
+
+    def _best_family_parent(self, family: str) -> dict[str, Any] | None:
+        """族内最优正向父本（验证档位优先，其次 |IC|）。"""
+        tier = {"production_approved": 0, "validated": 1,
+                "candidate_approved": 2, "promising": 3}
+        try:
+            with self._open() as conn:
+                rows = conn.execute(
+                    "SELECT factor_name, expression, verdict, metrics_json "
+                    "FROM memory_entries WHERE family = ? AND verdict IN "
+                    "('production_approved','validated','candidate_approved','promising')",
+                    (family,),
+                ).fetchall()
+        except sqlite3.Error:
+            return None
+        best: tuple[tuple[int, float], str, str, float] | None = None
+        for row in rows:
+            try:
+                m = json.loads(row["metrics_json"] or "{}")
+                ic = float(m.get("ic") or 0.0)
+            except (TypeError, ValueError):
+                ic = 0.0
+            key = (tier.get(str(row["verdict"]), 9), -abs(ic))
+            if best is None or key < best[0]:
+                best = (key, str(row["factor_name"] or ""),
+                        str(row["expression"] or ""), ic)
+        if best is None or not best[2]:
+            return None
+        return {
+            "parent_factor": best[1],
+            "parent_expression": best[2],
+            "parent_ic": best[3],
+        }
 
     def _edit_prior_block(self, focus_families: set[str] | None = None) -> str:
         """AlphaMemo 单元注入（v3 的门控残差记忆）。
@@ -462,8 +674,14 @@ class RetrievalMixin:
     def compute_saturation(self) -> dict[str, dict[str, float]]:
         """计算各因子族的饱和度。
 
-        saturation_score = min(1.0, n_promising / 5 + n_validated / 3)
+        saturation_score = min(1.0, min(n_promising, 8) / 40 + n_candidate / 5
+                                        + n_validated / 3)
         > 0.6 时标记为"拥挤"，建议切换方向。
+
+        2026-09-01 修正：promising（仅过训练集海选，多数未通过验证/晋升）
+        不再与 candidate 同权计入拥挤 —— 出过正信号 ≠ 已入库拥挤。
+        promising 只轻度计入（上限 8 个 → 贡献 ≤0.2），拥挤度以真实幸存者
+        （candidate / validated / production）为主，避免把整个出信号的族封禁。
         """
         families: dict[str, dict[str, float]] = {}
         with self._open() as conn:
@@ -474,23 +692,29 @@ class RetrievalMixin:
         for row in rows:
             family = classify_family(row["factor_name"], row["expression"])
             fam = families.setdefault(
-                family, {"n_entries": 0, "n_promising": 0, "n_validated": 0}
+                family, {"n_entries": 0, "n_promising": 0, "n_candidate": 0,
+                         "n_validated": 0}
             )
             fam["n_entries"] += 1
-            if row["verdict"] in ("promising", "candidate_approved"):
+            if row["verdict"] == "promising":
                 fam["n_promising"] += 1
-            if row["verdict"] in ("validated", "production_approved"):
+            elif row["verdict"] == "candidate_approved":
+                fam["n_candidate"] += 1
+            elif row["verdict"] in ("validated", "production_approved"):
                 fam["n_validated"] += 1
 
         for fam_data in families.values():
-            n_p = fam_data["n_promising"]
-            n_v = fam_data["n_validated"]
-            fam_data["saturation_score"] = round(min(1.0, n_p / 5.0 + n_v / 3.0), 3)
+            fam_data["saturation_score"] = round(min(
+                1.0,
+                min(fam_data["n_promising"], 8) / 40.0
+                + fam_data["n_candidate"] / 5.0
+                + fam_data["n_validated"] / 3.0,
+            ), 3)
 
         return families
 
     def _saturation_block(self) -> str:
-        """饱和度层注入：因子族拥挤度 > 0.6 时注入警告。"""
+        """饱和度层注入：拥挤族警告 + 出过正信号且未拥挤族的定向建议。"""
         saturation = self.compute_saturation()
         crowded = {
             f: d for f, d in saturation.items()
@@ -501,14 +725,27 @@ class RetrievalMixin:
         block_lines: list[str] = []
         block_lines.append("")
         block_lines.append("### 饱和度警告")
-        block_lines.append("以下因子族已拥挤（多个相似因子入库），继续微调边际收益低：")
+        block_lines.append("以下因子族已拥挤（相似因子已入库/多次验证），继续微调边际收益低：")
         for family, data in sorted(crowded.items(), key=lambda x: -x[1].get("saturation_score", 0)):
             block_lines.append(
                 f"- {family}: {int(data['n_promising'])} 个有潜力 + "
                 f"{int(data['n_validated'])} 个已验证，"
                 f"饱和度 {data['saturation_score']:.0%}"
             )
-        block_lines.append("建议切换到饱和度 < 0.3 的未探索族。")
+        open_fams = [
+            (f, d) for f, d in saturation.items()
+            if d.get("saturation_score", 0) <= 0.6 and d.get("n_promising", 0) > 0
+        ]
+        if open_fams:
+            open_fams.sort(key=lambda x: (-x[1].get("n_promising", 0),
+                                          x[1].get("saturation_score", 0)))
+            sug = ", ".join(
+                f"{f}（{int(d['n_promising'])} 个潜力, 饱和 {d['saturation_score']:.0%}）"
+                for f, d in open_fams[:5]
+            )
+            block_lines.append(f"出过正信号且未拥挤的族（优先深挖）：{sug}。")
+        else:
+            block_lines.append("建议切换到饱和度 < 0.3 的未探索族。")
         return "\n".join(block_lines)
 
     def _diversity_block(self, recent_batch: list[dict[str, Any]] | None = None) -> str:

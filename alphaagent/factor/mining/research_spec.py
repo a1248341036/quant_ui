@@ -166,7 +166,7 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
     },
     "memory_policy": {
         "retrieve_limit": 12,
-        "dynamic_retrieve_limit": 6,
+        "dynamic_retrieve_limit": 8,        # 每轮动态注入条数（正向配额 40%，其中约 2/3 为跨族保底父本）
         "max_expression_chars": 320,
         "include_rejected_paths": True,
         "prefer_orthogonal_to_approved": True,
@@ -182,6 +182,9 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
         "edit_prior_hard_conf": 0.7,        # 硬推荐（有显式成功）/硬否决（有失败）
         "edit_prior_recommend_conf": 0.4,   # 软推荐（有显式成功）
         "edit_prior_veto_conf": 0.3,        # 软否决（有失败）——低于推荐向，放行避坑证据
+        # 记忆出题（AlphaMemo 口径）：每轮前 k 个评估名额由 recommend_edits 推荐
+        # （父本×编辑类型，残差×置信排序），0 = 关闭。注入块只做解释，名额由推荐驱动。
+        "suggest_slots": 2,
     },
     "delivery_policy": _default_delivery_policy(),
 }
@@ -343,6 +346,7 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
     memory["edit_prior_hard_conf"] = float(_bounded_number(memory.get("edit_prior_hard_conf"), "memory_policy.edit_prior_hard_conf", 0, 1))
     memory["edit_prior_recommend_conf"] = float(_bounded_number(memory.get("edit_prior_recommend_conf"), "memory_policy.edit_prior_recommend_conf", 0, 1))
     memory["edit_prior_veto_conf"] = float(_bounded_number(memory.get("edit_prior_veto_conf"), "memory_policy.edit_prior_veto_conf", 0, 1))
+    memory["suggest_slots"] = int(_bounded_number(memory.get("suggest_slots"), "memory_policy.suggest_slots", 0, 10))
 
     delivery = _require_dict(spec.get("delivery_policy"), "delivery_policy")
     # 盲测终审门槛（2026-08-29 新增）

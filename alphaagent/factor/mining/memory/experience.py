@@ -9,9 +9,9 @@ import sqlite3
 from typing import Any
 
 from .calibration import _parent_bucket
-from .constants import BASELINE_HALF_LIFE_DAYS
+from .constants import BASELINE_HALF_LIFE_DAYS, POSITIVE_VERDICTS
 from .diagnostics import _SUCCESS_SIGNATURES, _FORBIDDEN_SIGNATURES, _match_signature, _now, _safe_float
-from .expressions import classify_family, expression_features, expression_ops
+from .expressions import classify_family, expression_features, expression_ops, template_from_expression
 
 
 class ExperienceMixin:
@@ -531,94 +531,205 @@ class ExperienceMixin:
     ) -> dict[str, int]:
         """v3 经验层批量蒸馏（规则式，零 LLM 成本），替代 v2 distill_batch_patterns。
 
-        规则（与 v2 版一致，口径修正）：
-        1. 同族 >= 3 个且全部 |IC| < 0.01 → forbidden（族饱和禁忌）
-        2. 同族中有 >= 1 个 |IC| >= 0.02 → success_pattern（族机制可用；文本标注方向）
-        3. 全部 >= 5 个 |IC| < 0.005 → insight（全局 alpha 稀薄预警）
+        口径 = 本 run 已落库评估的累计视图（batch_results 仅作空批短路）。
+        早期版本按"单批"触发，挖掘每批族类分散、单批几乎凑不齐同族 3 条，
+        规则形同虚设（experience 表长期 0 行）；改为 run 累计后每批增量判定：
 
-        去重：同 (kind, family) 只保留一行，occurrence_count 累加（_upsert_experience），
-        不再按具体 IC 值生成重复行。返回 {kind: n} 计数。
+        1. forbidden: 同族本 run 累计 >=3 条有效评估全部 |IC| < 0.01 → 族饱和禁忌
+           （FactorMiner 式禁令：DO NOT + 参数槽模板 + 死路因子名单）
+        2. success_pattern: 同族累计出现 |IC| >= 0.02 → 机制可用
+           （模板 + 族内真实示例表达式 + 达标率，可直接照抄骨架变异）
+        3. insight: 本 run 末尾连续 >=5 条有效评估全部 |IC| < 0.005 → alpha 稀薄预警
+        4. gate 回流：engine_gate 拒绝（统计达标但实盘口径不可用）与正式入库
+           （机制通过可交易性确认）分别写入禁忌/成功经验（AlphaCrafter 反馈思想）
+
+        有效评估 = metrics.ic 为数值（报错 / coverage=0 的 N/A 不入 IC 统计）。
+        去重：同 (kind, name) 只保留一行，occurrence_count 累加（_upsert_experience）。
+        返回 {kind: n} 计数。
         """
         formed = {"success_patterns": 0, "forbidden": 0, "insights": 0}
         if not batch_results:
             return formed
         with self._open() as conn:
-            for family_name, members in self._group_by_family(batch_results).items():
-                ics = [
-                    (float(m.get("metrics", {}).get("ic", 0) or 0))
-                    for m in members
-                ]
-                abs_ics = [abs(ic) for ic in ics]
+            rows = conn.execute(
+                "SELECT factor_name, expression, family, metrics_json, verdict, error "
+                "FROM memory_entries WHERE last_run_id = ? ORDER BY rowid",
+                (str(run_id),),
+            ).fetchall()
+        obs: list[tuple[str, str, float, str, str]] = []  # (family, name, ic, expr, verdict)
+        gate_failed: dict[str, list[tuple[str, str, str]]] = {}  # family → [(name, expr, reasons)]
+        gate_passed: dict[str, list[tuple[str, str, float]]] = {}  # family → [(name, expr, ic)]
+        for r in rows:
+            verdict = str(r["verdict"] or "")
+            expr = str(r["expression"] or "")
+            family = (str(r["family"] or "").strip()
+                      or classify_family(str(r["factor_name"] or ""), expr))
+            error = str(r["error"] or "")
+            if "engine_gate" in error:
+                reasons = (error.split("engine_gate_failed:", 1)[-1]
+                           if "engine_gate_failed" in error else error[:160])
+                gate_failed.setdefault(family, []).append(
+                    (str(r["factor_name"] or ""), expr, reasons[:160]))
+                continue
+            if verdict == "production_approved":
+                try:
+                    m = json.loads(r["metrics_json"] or "{}")
+                    ic = float(m.get("ic") or 0.0)
+                except (TypeError, ValueError):
+                    ic = 0.0
+                gate_passed.setdefault(family, []).append(
+                    (str(r["factor_name"] or ""), expr, ic))
+                continue
+            try:
+                metrics = json.loads(r["metrics_json"] or "{}")
+            except (TypeError, ValueError):
+                continue
+            ic = metrics.get("ic")
+            if not isinstance(ic, (int, float)) or isinstance(ic, bool):
+                continue
+            obs.append((family, str(r["factor_name"] or ""), float(ic), expr, verdict))
+        if not obs and not gate_failed and not gate_passed:
+            return formed
+
+        by_family: dict[str, list[tuple[str, float, str, str]]] = {}
+        for family, fname, ic, expr, verdict in obs:
+            by_family.setdefault(family, []).append((fname, ic, expr, verdict))
+
+        with self._open() as conn:
+            # 1/2) 族级累计规则（模板 + 示例 + 达标率 / DO NOT 禁令）
+            for family, members in by_family.items():
+                abs_ics = [abs(ic) for _, ic, _, _ in members]
+                names = [nm for nm, _, _, _ in members]
                 n = len(members)
-                if n < 2:
-                    continue
-
-                all_weak = all(a < 0.01 for a in abs_ics)
-                any_promising = any(a >= 0.02 for a in abs_ics)
-
-                if all_weak and n >= 3:
+                n_pos = sum(1 for *_, v in members if v in POSITIVE_VERDICTS)
+                best_name, best_ic, best_expr, _ = max(
+                    members, key=lambda t: abs(t[1]))
+                best_template = template_from_expression(best_expr)
+                # 1) 族饱和禁忌：累计 >=3 次尝试全部弱 → DO NOT 禁令
+                if n >= 3 and max(abs_ics) < 0.01:
                     content = (
-                        f"{family_name} 信号族在 {n} 次尝试中 |IC| 均低于 0.01"
-                        f"（最高 {max(abs_ics):.4f}），该方向在当前数据/label 下可能已饱和；"
-                        f"除非引入新变量或交互机制，不建议机械重复。"
+                        f"DO NOT 生成形如 `{best_template}` 的结构及其参数变体："
+                        f"{family} 族 {n} 次尝试 |IC| 全部 < 0.01（最高 {max(abs_ics):.4f}），"
+                        f"该方向在当前数据/label 下已饱和。除非引入新变量或新交互机制，"
+                        f"不得机械重复（死路因子: {', '.join(names[:4])}）。"
                     )
                     self._upsert_experience(
                         conn,
                         kind="forbidden",
-                        name=f"family_saturated:{family_name}",
+                        name=f"family_saturated:{family}",
                         content=content,
+                        template=best_template,
                         evidence={
-                            "factor_names": [m.get("factor_name") for m in members],
+                            "factor_names": names[:6],
                             "abs_ic_max": round(max(abs_ics), 6),
                             "n_attempts": n,
                             "run_id": run_id,
                             "turn": turn,
                         },
-                        example_factor=str(members[0].get("factor_name") or "") or None,
+                        example_factor=names[0] or None,
+                        correlated_with=names[:6],
                         run_id=run_id,
                     )
                     formed["forbidden"] += 1
-
-                if any_promising:
-                    best = max(
-                        members,
-                        key=lambda m: abs(float(m.get("metrics", {}).get("ic", 0) or 0)),
-                    )
-                    best_ic = float(best.get("metrics", {}).get("ic", 0) or 0)
+                # 2) 族机制可用：累计出现强 IC → 模板 + 真实示例 + 达标率
+                if abs(best_ic) >= 0.02:
                     direction = (
                         "方向为负，反向构造同样有效" if best_ic < 0 else "方向为正"
                     )
                     content = (
-                        f"{family_name} 信号族中 {best.get('factor_name')} 的 |IC| 达 "
-                        f"{abs(best_ic):.4f}（{direction}），其经济机制值得在邻近空间继续探索；"
-                        f"建议变异方向：换窗口、换修饰算子、引入正交交互。"
+                        f"{family} 族机制可用（{n_pos}/{n} 条达标）：最强 {best_name} "
+                        f"|IC|={abs(best_ic):.4f}（{direction}）。"
+                        f"优先照抄模板骨架、只换参数/修饰算子，在邻近空间继续探索。"
                     )
+                    examples = [
+                        ex for nm, _, ex, _ in members
+                        if nm != best_name and ex
+                    ][:2]
                     self._upsert_experience(
                         conn,
                         kind="success_pattern",
-                        name=f"family_mechanism:{family_name}",
+                        name=f"family_mechanism:{family}",
                         content=content,
+                        template=best_template,
                         evidence={
-                            "best_factor": best.get("factor_name"),
+                            "best_factor": best_name,
+                            "best_expression": best_expr,
                             "best_abs_ic": round(abs(best_ic), 6),
                             "best_ic_signed": round(best_ic, 6),
                             "n_attempts": n,
+                            "n_positive": n_pos,
+                            "examples": examples,
                             "run_id": run_id,
                             "turn": turn,
                         },
-                        example_factor=str(best.get("factor_name") or "") or None,
+                        example_factor=best_expr or None,
                         run_id=run_id,
                     )
                     formed["success_patterns"] += 1
 
-            # 全局洞察
-            all_abs_ics = [
-                abs(float(r.get("metrics", {}).get("ic", 0) or 0))
-                for r in batch_results
-            ]
-            if len(all_abs_ics) >= 5 and max(all_abs_ics) < 0.005:
+            # 4) engine_gate 回流：拒绝 → 可交易性禁忌；正式入库 → 实盘口径确认
+            for family, items in gate_failed.items():
+                names = [nm for nm, _, _ in items]
+                _, expr, reasons = items[0]
                 content = (
-                    f"连续 {len(all_abs_ics)} 个因子 |IC| 均低于 0.005，"
+                    f"DO NOT 直接把 {family} 族的高 IC 结构当实盘可用："
+                    f"族内因子（{', '.join(names[:3])}）统计达标但被完整回测门禁拒绝"
+                    f"（{reasons}）。统计强 ≠ 实盘可用，新构造优先压低换手、"
+                    f"提升可交易性，再谈 IC。"
+                )
+                self._upsert_experience(
+                    conn,
+                    kind="forbidden",
+                    name=f"gate_rejected:{family}",
+                    content=content,
+                    template=template_from_expression(expr),
+                    evidence={
+                        "factor_names": names[:6],
+                        "fail_reasons": reasons,
+                        "run_id": run_id,
+                        "turn": turn,
+                    },
+                    example_factor=names[0] or None,
+                    correlated_with=names[:6],
+                    run_id=run_id,
+                )
+                formed["forbidden"] += 1
+            for family, items in gate_passed.items():
+                name, expr, ic = items[0]
+                content = (
+                    f"{family} 族机制已通过实盘口径确认：{name} 走完完整回测门禁并正式入库"
+                    f"（train IC={ic:+.4f}）。该族经济机制 + 可交易性同时成立，"
+                    f"优先照抄下方模板在邻近空间扩展。"
+                )
+                self._upsert_experience(
+                    conn,
+                    kind="success_pattern",
+                    name=f"gate_validated:{family}",
+                    content=content,
+                    template=template_from_expression(expr),
+                    evidence={
+                        "best_factor": name,
+                        "best_expression": expr,
+                        "train_ic": round(ic, 6),
+                        "run_id": run_id,
+                        "turn": turn,
+                    },
+                    example_factor=expr or None,
+                    run_id=run_id,
+                )
+                formed["success_patterns"] += 1
+
+            # 3) 全局洞察：本 run 末尾连续弱 IC（trailing streak）
+            streak = 0
+            for entry in reversed(obs):
+                if abs(entry[2]) < 0.005:
+                    streak += 1
+                else:
+                    break
+            if streak >= 5:
+                tail = obs[-streak:]
+                content = (
+                    f"连续 {streak} 个因子 |IC| 均低于 0.005，"
                     f"当前数据/label 组合下 alpha 可能极度稀薄；"
                     f"建议：切换 label 列、扩展数据源、或尝试交互信号。"
                 )
@@ -628,8 +739,8 @@ class ExperienceMixin:
                     name="global_alpha_thin",
                     content=content,
                     evidence={
-                        "n_consecutive": len(all_abs_ics),
-                        "max_abs_ic": round(max(all_abs_ics), 6),
+                        "n_consecutive": streak,
+                        "max_abs_ic": round(max(abs(t[2]) for t in tail), 6),
                         "run_id": run_id,
                         "turn": turn,
                     },

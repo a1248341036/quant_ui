@@ -172,7 +172,8 @@ logs/factor_mining/ui/        # 每次 Web run 的 JSONL 轨迹 + run_meta.json�
 - 注入门控矩阵（`retrieval._edit_prior_block`，阈值经 `memory_policy.edit_prior_*_conf` 可调）：硬推荐(s>0 ∧ c>0.7) / 软推荐(s>0 ∧ c>0.4) / 硬否决(f>0 ∧ c>0.7) / 软否决(f>0 ∧ c>0.3，低于推荐向以放行"一致失败"避坑证据) / 其余不注入；APV 双门(τ_c=0.35, τ_v=0.80)另在评估前 advisory 做 (family, motif) 聚合否决。2026-08-30 修正：旧文档写的"软否决 fail_rate≥0.6"与实现不符，实际口径全部基于 Eq.7 置信度分档。`memory_policy.max_inject_chars`（默认 2400）超限时核心块（经验、编辑先验）始终保留，次级块按 证据 > 饱和度 > 多样性 用剩余预算填充，所有截断在行边界。
 - **v2 模式层已下线（2026-08-30）**：`memory_patterns` 表停止注入（`context_for` 不再调 `_pattern_block`），其规则蒸馏（同族饱和 forbid / 族内 |IC|≥0.02 recommend / 全局 insight）由 `distill_batch_experience` 迁到 v3 `memory_experience`（同 (kind, family) 去重 + occurrence_count 累加，recommend 文本标注 IC 方向）。旧表数据保留只读，UI 不展示。
 - **显式父本协议**：A/B/C 变异轨的 eval/submit 调用必须传 `parent_factor` + `edit_note`（`edit=<motif> <参数变化>`）；工具结果带 `memory_advisory` 硬提醒（指纹死路 attempts≥2 / 意向编辑 APV veto），默认只提示，`memory_policy.hard_block_duplicates=true` 时拦截。
-- 检索：BM25 + 族亲和 + 算子重叠 + verdict/recency；证据块 40% 正向保底 + (family≤2, 指纹=1) 去重。
+- 检索：BM25 + 族亲和 + 算子重叠 + verdict/recency；证据块 40% 正向配额 + (family≤2, 指纹=1) 去重。**正向跨族保底（2026-09-01）**：正向配额约 2/3 无条件取全库最优正向因子（validated/production 优先，按 |IC|，同族轮转保证跨族，`_guaranteed_positives`），BM25 只补剩余——通用 query 打不中 FTS 时正向通道不断供；`dynamic_retrieve_limit` 默认 6→8。
+- 饱和度（2026-09-01 修正）：`min(1, min(n_promising,8)/40 + n_candidate/5 + n_validated/3)`——promising（仅过训练集海选，多数未晋升）只轻度计入（≤0.2），拥挤度以真实幸存者（candidate/validated/production）为主；注入时除拥挤族警告外，同时给出"出过正信号且未拥挤"的族作定向深挖建议，不再只说"去别处"。
 - 正向 verdict 鼓励邻域探索；负向 verdict 防止重复无效路径。
 
 ## REST API

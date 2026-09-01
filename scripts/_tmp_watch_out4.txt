@@ -1,0 +1,58 @@
+﻿=== evaluate_factor ===
+ - vpin_gated_mom5: IC=nan (全 NaN / 数据缺失)
+   gap_net20_reversal: IC=-0.0008 ICIR=-0.014808180516592363 cov=1.0 parent=None edit=None
+   lowvol_neg_std20: IC=+0.0123 ICIR=0.0874441335253165 cov=0.9967641021673093 parent=None edit=None
+   rev10_med5: IC=+0.0027 ICIR=0.021730857943868327 cov=0.9838648597473559 parent=short_reversal_10_ema_val edit=edit=operator_substitute EMA(3)→TS_MEDIAN(5)，抗极值污染、提升平滑度与自相关
+   chip_mass_asym_60: IC=+0.0091 ICIR=0.11414592283591264 cov=1.0 parent=None edit=None
+ - vpin_gated_mom5_fix: IC=nan (全 NaN / 数据缺失)
+   vol_contraction_20: IC=+0.0044 ICIR=0.059455303565005 cov=0.9646076819862273 parent=None edit=None
+   lowvol_kurt60: IC=-0.0002 ICIR=-0.0022920634692166833 cov=0.9935329223038536 parent=lowvol_neg_std20 edit=edit=operator_substitute TS_STD(20)→TS_KURT(60)，从波动率水平转向尾部结构（彩票偏好剔除）
+   chip_asym_smooth_10: IC=-0.0019 ICIR=-0.022068599032609295 cov=1.0 parent=None edit=None
+   kline_geom_20: IC=-0.0096 ICIR=-0.0702448482835855 cov=0.9983811074898076 parent=None edit=None
+   wick_eff_5: IC=+0.0073 ICIR=0.16931193069811112 cov=0.9919190622941786 parent=None edit=None
+   lowvol_std60: IC=+0.0121 ICIR=0.08555589923002857 cov=0.9967641021673093 parent=lowvol_neg_std20 edit=edit=window_rescale TS_STD窗口 20→60，更长窗口降低换手并观察低波动异象强度变化
+   chip_asym_120: IC=+0.0095 ICIR=0.11845202384298621 cov=1.0 parent=None edit=None
+   chip_entropy_30: IC=-0.0042 ICIR=-0.05420558897523052 cov=1.0 parent=None edit=None
+   perm_entropy_20: IC=+0.0020 ICIR=0.05012166289320087 cov=0.9967641021673093 parent=None edit=None
+ * lowvol_zscore60: IC=+0.0150 ICIR=0.1045869073195523 cov=0.9967641021673093 parent=lowvol_std60 edit=B算子变异：RANK→CS_ZSCORE，保留高波动尾部幅度信息以修复 Pearson IC 与 rank_ic 的 4 倍缺口；窗口 60 不变
+   turnover_premium20: IC=+0.0141 ICIR=0.10427952614214452 cov=0.9999937093743533 parent=None edit=None
+   overnight_lowvol60: IC=+0.0131 ICIR=0.12688560877900867 cov=0.9967641021673093 parent=None edit=None
+   max_lottery20: IC=+0.0101 ICIR=0.08399423699437893 cov=0.9983811074898076 parent=None edit=None
+   vp_rankcorr20: IC=-0.0089 ICIR=-0.11324447672247681 cov=0.9983027892005055 parent=None edit=None
+   ov_premium_rev_w40: IC=-0.0146 ICIR=-0.2137852809968768 cov=0.9983811074898076 parent=None edit=None
+ * ov_premium_rev_w60: IC=-0.0158 ICIR=-0.22613550225824916 cov=0.9983811074898076 parent=None edit=None
+ - super_net_accum10: IC=nan (全 NaN / 数据缺失)
+ * ov_premium_rev_med60: IC=-0.0180 ICIR=-0.3079938885421899 cov=0.9983811074898076 parent=ov_premium_rev_w60 edit=edit=operator_substitute TS_MEAN→TS_MEDIAN，稳健化隔夜溢价均值以提升IC稳定性
+   skew_lottery60: IC=+0.0063 ICIR=0.11437692903344938 cov=0.9951477259073755 parent=None edit=None
+   crowd_highvol_sell60: IC=+0.0108 ICIR=0.10518149585889003 cov=0.9774352112738076 parent=None edit=None
+   gap_rev_active: IC=-0.0017 ICIR=-0.03855906991202686 cov=0.9988233384727745 parent=None edit=None
+ * ov_prem_med_winsor60: IC=-0.0180 ICIR=-0.3079064164866535 cov=0.9983811074898076 parent=ov_premium_rev_med60 edit=edit=normalization_change add_winsorize
+   crowd_highprice_share60: IC=+0.0040 ICIR=0.045384741365796274 cov=0.9774352112738076 parent=None edit=None
+   close_loc_rev20: IC=+0.0012 ICIR=0.013053638720447912 cov=1.0 parent=None edit=None
+   tr_rev60: IC=-0.0003 ICIR=-0.002166801818869724 cov=0.9983027892005055 parent=None edit=None
+   vp_rankcorr10: IC=-0.0071 ICIR=-0.10248912645273717 cov=0.9983027892005055 parent=None edit=None
+   wick_efficiency10: IC=+0.0006 ICIR=0.03286648635925691 cov=0.9838648597473559 parent=None edit=None
+   intraday_prem_rev20: IC=+0.0076 ICIR=0.058905705903707556 cov=1.0 parent=None edit=None
+   path_efficiency_rev20: IC=+0.0100 ICIR=0.14295113785986133 cov=0.997195953617959 parent=None edit=None
+   vp_divergence20: IC=-0.0036 ICIR=-0.04502260346969015 cov=0.9678174737224841 parent=None edit=None
+   runlength_rev20: IC=-0.0052 ICIR=-0.05958195308866807 cov=0.9988233384727745 parent=None edit=None
+   hot_rate20: IC=+0.0109 ICIR=0.09810900421135538 cov=0.9988233384727745 parent=None edit=None
+   ma20_bias_rev: IC=+0.0078 ICIR=0.05832775321361251 cov=0.9988233384727745 parent=None edit=None
+   mi_lag1: IC=-0.0040 ICIR=-0.059783832121112566 cov=0.9838648597473559 parent=None edit=None
+ * ov_prem_med90: IC=-0.0172 ICIR=-0.29542361562069136 cov=0.9983811074898076 parent=ov_premium_rev_med60 edit=edit=window_rescale 60→90
+ * ov_prem_med40: IC=-0.0176 ICIR=-0.301149684402157 cov=0.9983811074898076 parent=ov_premium_rev_med60 edit=edit=window_rescale 60→40
+ * ov_prem_med60_size_neutral: IC=-0.0176 ICIR=-0.3138693754746399 cov=0.9983767040518549 parent=ov_premium_rev_med60 edit=edit=normalization_change 外层加市值分桶中性化(log float_cap,10)
+   holder_concentration: IC=+0.0001 ICIR=0.001787697318012101 cov=0.9562751192545357 parent=None edit=None
+   ov_prem_med60_size_neutral: IC=-0.0128 ICIR=-0.17663296459257316 cov=0.9978528002720335 parent=ov_premium_rev_med60 edit=edit=normalization_change 外层加市值分桶中性化(log float_cap,10)
+   fractal_recency_div: IC=-0.0033 ICIR=-0.07972795614128439 cov=0.9789946573716383 parent=None edit=None
+   dt_heat_reversal: IC=+0.0128 ICIR=0.16258266069061542 cov=0.7599255064110911 parent=None edit=None
+   bt_premium_smooth60: IC=-0.0006 ICIR=-0.01548621572308955 cov=1.0 parent=None edit=None
+-- 有效 45 条: avg|IC|=0.0082 best=ov_premium_rev_med60(-0.0180) >=0.015: 7
+=== submit ===
+  {"name": "ov_prem_med60_size_neutral", "stored": false, "candidate": false, "err": "blind_test_failed:blind_test_ic_retention"}
+  {"name": "ov_prem_med60_size_neutral_wins", "stored": false, "candidate": false, "err": "'D:\\\\Quant\\\\quant_ui\\\\artifacts\\\\alphaagent\\\\factorzoo\\\\candidate_technical\\\\expressions\\\\ov_prem_med60_size_neutral_wins.dsl' is not in the subpath of 'D:\\\\Quant\\\\quant_ui\\\\alphaagent'"}
+  {"name": "ov_prem_med60_size_neutral_wins", "stored": false, "candidate": false, "err": "'D:\\\\Quant\\\\quant_ui\\\\artifacts\\\\alphaagent\\\\factorzoo\\\\candidate_technical\\\\expressions\\\\ov_prem_med60_size_neutral_wins.dsl' is not in the subpath of 'D:\\\\Quant\\\\quant_ui\\\\alphaagent'"}
+  {"name": "ov_prem_med60_size_neutral", "stored": false, "candidate": false, "err": "'D:\\\\Quant\\\\quant_ui\\\\artifacts\\\\alphaagent\\\\factorzoo\\\\candidate_technical\\\\expressions\\\\ov_prem_med60_size_neutral.dsl' is not in the subpath of 'D:\\\\Quant\\\\quant_ui\\\\alphaagent'"}
+  {"name": "ov_prem_med60_size_neutral", "stored": false, "candidate": false, "err": "'D:\\\\Quant\\\\quant_ui\\\\artifacts\\\\alphaagent\\\\factorzoo\\\\candidate_technical\\\\expressions\\\\ov_prem_med60_size_neutral.dsl' is not in the subpath of 'D:\\\\Quant\\\\quant_ui\\\\alphaagent'"}
+任务消息含「本轮记忆推荐」: 2 次 | experience_distilled: 1 次
+   {"turn": 0, "success_patterns": 1, "forbidden": 2, "insights": 0}

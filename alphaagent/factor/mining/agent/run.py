@@ -20,7 +20,8 @@ from core import factor_categories
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[3]
+    # 本文件位于 <repo>/alphaagent/factor/mining/agent/ 下：parents[4] 才是仓库根。
+    return Path(__file__).resolve().parents[4]
 
 
 def run_factor_mining(

@@ -170,6 +170,7 @@ class SchemaMixin:
         edit_prior_hard_conf: float = EDIT_PRIOR_HARD_CONF_DEFAULT,
         edit_prior_recommend_conf: float = EDIT_PRIOR_RECOMMEND_CONF_DEFAULT,
         edit_prior_veto_conf: float = EDIT_PRIOR_VETO_CONF_DEFAULT,
+        suggest_slots: int = 2,
     ) -> None:
         self.path = Path(path).expanduser().resolve()
         if self.path.suffix.lower() == ".json":
@@ -183,6 +184,7 @@ class SchemaMixin:
         self.edit_prior_hard_conf = float(edit_prior_hard_conf)
         self.edit_prior_recommend_conf = float(edit_prior_recommend_conf)
         self.edit_prior_veto_conf = float(edit_prior_veto_conf)
+        self.suggest_slots = max(0, int(suggest_slots))
         self._schema_ready = False
 
     @contextmanager

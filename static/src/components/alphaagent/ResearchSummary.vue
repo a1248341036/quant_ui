@@ -18,12 +18,12 @@
         <div class="summary-panel-head">
           <h3>研究记忆因子一览</h3>
         </div>
-        <div class="summary-filter-bar" v-if="agent.researchMemory.length || loading">
+        <div class="summary-filter-bar" v-if="agent.summaryTotal || loading">
           <button
             class="verdict-filter-btn"
             :class="{ active: !agent.summaryVerdictFilter }"
             @click="agent.setSummaryVerdictFilter('')"
-          >全部 <b>{{ agent.researchMemoryTotal }}</b></button>
+          >全部 <b>{{ agent.summaryAllCount }}</b></button>
           <button
             v-for="verdict in verdictOrder"
             :key="verdict"
@@ -36,8 +36,8 @@
             <b>{{ summaryVerdictCounts[verdict] || 0 }}</b>
           </button>
         </div>
-        <div v-if="!agent.researchMemory.length && !loading" class="normal-mode-empty">暂无研究记忆</div>
-        <div v-else-if="!agent.researchMemory.length && loading" class="normal-mode-empty">加载中…</div>
+        <div v-if="!agent.summaryEntries.length && !loading" class="normal-mode-empty">暂无研究记忆</div>
+        <div v-else-if="!agent.summaryEntries.length && loading" class="normal-mode-empty">加载中…</div>
         <div v-else-if="summaryFiltered.length" class="summary-table-wrap">
           <table class="summary-table">
           <thead>
@@ -116,11 +116,29 @@
           </tbody>
         </table>
         </div>
-        <div v-if="!summaryFiltered.length && agent.researchMemory.length" class="normal-mode-empty">没有匹配的因子</div>
-        <div v-if="agent.researchMemoryHasMore" class="summary-load-more">
-          <button class="load-more-btn" :disabled="agent.researchMemoryLoading" @click="loadMore">
-            {{ agent.researchMemoryLoading ? '加载中…' : '加载更多（剩余 ' + (agent.researchMemoryTotal - agent.researchMemory.length) + ' 条）' }}
-          </button>
+        <div v-if="!summaryFiltered.length && agent.summaryEntries.length" class="normal-mode-empty">没有匹配的因子</div>
+        <div v-if="agent.summaryTotalPages > 1" class="summary-pagination">
+          <button
+            class="page-btn"
+            :disabled="agent.summaryPage <= 1 || agent.summaryLoading"
+            @click="agent.setSummaryPage(agent.summaryPage - 1)"
+          >‹</button>
+          <template v-for="(p, i) in pageList" :key="i">
+            <span v-if="p === '…'" class="page-ellipsis">…</span>
+            <button
+              v-else
+              class="page-btn"
+              :class="{ active: p === agent.summaryPage }"
+              :disabled="agent.summaryLoading"
+              @click="agent.setSummaryPage(p)"
+            >{{ p }}</button>
+          </template>
+          <button
+            class="page-btn"
+            :disabled="agent.summaryPage >= agent.summaryTotalPages || agent.summaryLoading"
+            @click="agent.setSummaryPage(agent.summaryPage + 1)"
+          >›</button>
+          <span class="page-info">共 {{ agent.summaryTotal }} 条 · 第 {{ agent.summaryPage }} / {{ agent.summaryTotalPages }} 页</span>
         </div>
       </div>
     </div>
@@ -166,6 +184,23 @@ export default {
     summaryFiltered() {
       return summaryView.filtered.value
     },
+    totalPages() {
+      return this.agent.summaryTotalPages
+    },
+    /** 页码列表：首尾常驻 + 当前页 ±1，间隙用 … 占位 */
+    pageList() {
+      const total = this.totalPages
+      const cur = this.agent.summaryPage
+      if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1)
+      const pages = [1]
+      const lo = Math.max(2, cur - 1)
+      const hi = Math.min(total - 1, cur + 1)
+      if (lo > 2) pages.push('…')
+      for (let p = lo; p <= hi; p++) pages.push(p)
+      if (hi < total - 1) pages.push('…')
+      pages.push(total)
+      return pages
+    },
   },
   mounted() {
     this.refresh()
@@ -178,13 +213,10 @@ export default {
     async refresh() {
       this.loading = true
       try {
-        await agentStore.loadResearchMemory(true)
+        await agentStore.loadSummaryPage()
       } finally {
         this.loading = false
       }
-    },
-    async loadMore() {
-      await agentStore.loadMoreResearchMemory()
     },
   },
 }
