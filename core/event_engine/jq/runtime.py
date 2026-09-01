@@ -640,20 +640,21 @@ class JQRuntime:
             return
         placed = getattr(self, "_placed_report", None) or []
         if placed or fills:
-            filled_codes = set()
+            filled_keys = set()
             for f in fills:
                 code = str(f.get("code"))
-                filled_codes.add(code)
+                side = str(f.get("side"))
+                filled_keys.add((code, side))
                 name = self.ctx.name_map.get(code, "")
-                side = ("买入" if str(f.get("side")) == "buy" else "卖出")
+                side_cn = ("买入" if side == "buy" else "卖出")
                 self.log.info(
-                    f"[成交 {d.date()}] {side} {code} {name} "
+                    f"[成交 {d.date()}] {side_cn} {code} {name} "
                     f"{float(f.get('shares') or 0):.0f}股 "
                     f"@ {float(f.get('price') or 0):.3f} "
                     f"金额 {float(f.get('amount') or 0):,.0f}元 "
                     f"费 {float(f.get('fee') or 0):.2f}")
             for p in placed:
-                if str(p["code"]) not in filled_codes:
+                if (str(p["code"]), p["side"]) not in filled_keys:
                     self.log.warn(
                         f"[未成交 {d.date()}] {p['desc']} "
                         f"(涨停/跌停/停牌/资金不足)")
@@ -894,9 +895,10 @@ class JQRuntime:
                     f"[委托 {bar.exec_date.date()} {slot}] {direction} {code} "
                     f"{name} {self._KIND_DESC.get(kind, kind)} {arg_desc} "
                     f"参考价 {px:.3f}({src}){block}")
-                self._placed_report.append({"code": str(code),
-                                            "desc": f"{direction} {code} "
-                                                    f"{name} {arg_desc}"})
+                self._placed_report.append({
+                    "code": str(code),
+                    "side": "buy" if direction == "买入" else "sell",
+                    "desc": f"{direction} {code} {name} {arg_desc}"})
             if kind == "tv":          # 目标市值 -> 目标股数
                 ctx.order_target_shares(code, arg / px, fill_price=fill_px,
                                         limit_price=style_limit)
