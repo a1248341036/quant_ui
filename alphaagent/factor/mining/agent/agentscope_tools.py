@@ -277,7 +277,12 @@ def _sample_orthogonality_panel(panel: pd.DataFrame) -> pd.DataFrame:
 
 
 def _orthogonality_check(tools: FactorEvalTools, multi_line_expr: str) -> dict[str, Any]:
-    """Post-review sampled check against production/candidate zoos and registry candidates."""
+    """Post-review sampled check against production/candidate zoos and registry candidates.
+
+    2026-09-01 起附带 top-3 相似因子清单（similar_factors），供评估结果直接
+    回传"和谁相似、多相似"——LLM 在评估阶段即可看到与库内因子的相近程度，
+    不必等到 submit 被正交门拦下才知道。
+    """
     result = {
         "passed": True,
         "skipped_reason": None,
@@ -285,6 +290,7 @@ def _orthogonality_check(tools: FactorEvalTools, multi_line_expr: str) -> dict[s
         "max_abs_corr": 0.0,
         "compared_factors": 0,
         "blocked_factor_id": None,
+        "similar_factors": [],
     }
     try:
         session = tools.service.sessions.get(tools.session_id)
@@ -308,10 +314,18 @@ def _orthogonality_check(tools: FactorEvalTools, multi_line_expr: str) -> dict[s
         raw = eval_factor(multi_line_expr, sampled_panel)
         if not isinstance(raw, pd.Series):
             raise TypeError(f"factor_output_must_be_series:{type(raw)!r}")
-        new_aligned = align_series_to_panel(raw, sampled_panel)
-
+        # align_series_to_panel 返回 ndarray（panel index 序），须包成 Series 才能 reindex
         compared: set[str] = set()
+        corr_pairs: list[tuple[str, float]] = []
         sampled_keys = sampled_panel.index
+        # align_series_to_panel 返回 ndarray（panel index 序），包成 Series 对齐抽样键
+        new_values = np.asarray(
+            pd.Series(
+                np.asarray(align_series_to_panel(raw, sampled_panel), dtype=np.float64),
+                index=sampled_panel.index,
+            ).reindex(sampled_keys),
+            dtype=np.float64,
+        )
         for zoo in zoos:
             rows = zoo.index.rows
             selected_dates = set(sampled_panel.index.get_level_values("datetime"))
@@ -338,13 +352,14 @@ def _orthogonality_check(tools: FactorEvalTools, multi_line_expr: str) -> dict[s
                         index=subset_keys,
                     )
                     old_values = np.asarray(old_by_key.reindex(sampled_keys), dtype=np.float64)
-                    new_values = np.asarray(new_aligned.reindex(sampled_keys), dtype=np.float64)
                 except Exception:
                     continue
                 valid = np.isfinite(old_values) & np.isfinite(new_values)
                 if int(valid.sum()) < 30:
                     continue
                 corr = abs(float(spearman_ic(old_values[valid], new_values[valid], min_pairs=30)))
+                if np.isfinite(corr):
+                    corr_pairs.append((factor_id, corr))
                 if np.isfinite(corr) and corr > result["max_abs_corr"]:
                     result["max_abs_corr"] = corr
                     result["blocked_factor_id"] = factor_id
@@ -360,20 +375,31 @@ def _orthogonality_check(tools: FactorEvalTools, multi_line_expr: str) -> dict[s
             compared.add(factor_id)
             try:
                 old_raw = eval_factor(expr, sampled_panel)
-                old_aligned = align_series_to_panel(old_raw, sampled_panel)
-                old_values = np.asarray(old_aligned.reindex(sampled_keys), dtype=np.float64)
-                new_values = np.asarray(new_aligned.reindex(sampled_keys), dtype=np.float64)
+                # registry 分支同样：align 返回 ndarray，包 Series 后对齐
+                old_values = np.asarray(
+                    pd.Series(
+                        np.asarray(align_series_to_panel(old_raw, sampled_panel), dtype=np.float64),
+                        index=sampled_panel.index,
+                    ).reindex(sampled_keys),
+                    dtype=np.float64,
+                )
             except Exception:
                 continue
             valid = np.isfinite(old_values) & np.isfinite(new_values)
             if int(valid.sum()) < 30:
                 continue
             corr = abs(float(spearman_ic(old_values[valid], new_values[valid], min_pairs=30)))
+            if np.isfinite(corr):
+                corr_pairs.append((factor_id, corr))
             if np.isfinite(corr) and corr > result["max_abs_corr"]:
                 result["max_abs_corr"] = corr
                 result["blocked_factor_id"] = factor_id
 
         result["compared_factors"] = len(compared)
+        corr_pairs.sort(key=lambda p: -p[1])
+        result["similar_factors"] = [
+            {"factor_id": fid, "corr": round(c, 4)} for fid, c in corr_pairs[:3]
+        ]
         result["passed"] = result["max_abs_corr"] < _ORTHO_MAX_CORR
         return result
     except Exception as exc:  # noqa: BLE001
@@ -610,6 +636,35 @@ def build_factor_eval_toolkit(
                     state = tools.service.record_candidate_review(tools.session_id, candidate_id, result["factor_review"])
                     if state is not None:
                         result["candidate_state"] = state["state"]
+        # ── 相似因子召回（2026-09-01）：评估达标后立即对比库内已有因子 ──
+        # 只对通过训练筛的因子跑（弱因子反正不会提交，省算力）；结果附
+        # similar_existing（top-3 相似清单），高相似时直接在结果里警告，
+        # LLM 不必等 submit 被正交门拦下才发现白跑。
+        if result.get("ok") and result.get("passed"):
+            try:
+                ortho = await asyncio.wait_for(
+                    loop.run_in_executor(
+                        _executor(max_workers), _orthogonality_check, tools, multi_line_expr,
+                    ),
+                    timeout=120,
+                )
+                similar = ortho.get("similar_factors") or []
+                if ortho.get("skipped_reason"):
+                    result["similar_existing"] = {"skipped": ortho["skipped_reason"]}
+                elif similar:
+                    result["similar_existing"] = {
+                        "max_abs_corr": ortho.get("max_abs_corr"),
+                        "top": similar,
+                        "compared_factors": ortho.get("compared_factors"),
+                    }
+                    if (ortho.get("max_abs_corr") or 0) >= _ORTHO_MAX_CORR:
+                        tops = ", ".join(f"{s['factor_id']}({s['corr']:.2f})" for s in similar[:2])
+                        result["similarity_warning"] = (
+                            f"⚠ 与已有因子高度相似: {tops} —— 提交将被正交门拦截。"
+                            "建议换信号机制，或直接以这些因子为父本做正交化改造。"
+                        )
+            except Exception as exc:  # noqa: BLE001 — 召回是增益信息，失败不影响评估
+                result["similar_existing"] = {"error": f"{type(exc).__name__}: {str(exc)[:120]}"}
         result.setdefault("factor_name", factor_name)
         return _result_tool_chunk(result)
 
@@ -763,7 +818,9 @@ def build_factor_eval_toolkit(
             if reviewer is not None:
                 def review_hook(candidate: dict[str, Any]) -> dict[str, Any]:
                     future = asyncio.run_coroutine_threadsafe(
-                        reviewer.review(candidate, turn=getattr(reviewer, "current_turn", 0)),
+                        reviewer.review(
+                            candidate, turn=getattr(reviewer, "current_turn", 0), stage="pre_submit"
+                        ),
                         loop,
                     )
                     return future.result()

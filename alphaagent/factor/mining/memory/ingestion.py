@@ -11,10 +11,11 @@ from typing import Any
 from .calibration import _parent_bucket
 from .constants import INVALID_WEIGHT, PARENT_ORIGIN_WEIGHT, POSITIVE_VERDICTS
 from .diagnostics import _extract_fail_detail, _failure_code, _now, _parse_args, _rebuild_conclusion, _safe_float
+from ..runlog import log_step
 from .expressions import (
     _structure_fingerprint,
     _tokens,
-    classify_family,
+    classify_family_ex,
     expression_features,
     expression_ops,
     expression_windows,
@@ -54,7 +55,7 @@ class IngestionMixin:
 
         # Phase 1: 解析表达式结构
         struct = expression_features(expression)
-        family = classify_family(factor_name, expression)
+        family, entry_facets = classify_family_ex(factor_name, expression)
 
         # v3-lite: 显式父本协议（edit_note / parent_factor）
         parent_factor = str(args.get("parent_factor") or "").strip() or None
@@ -114,6 +115,7 @@ class IngestionMixin:
             "fail_detail": _extract_fail_detail(name, result, error),
             "mechanism": (args.get("interaction") or {}).get("economic_mechanism") if isinstance(args.get("interaction"), dict) else None,
             "family": family,
+            "facets_json": json.dumps(sorted(entry_facets), ensure_ascii=False) if entry_facets else None,
             "stage_metrics": {},
             "last_run_id": run_id,
             "attempts": previous_attempts + 1,
@@ -165,6 +167,15 @@ class IngestionMixin:
                 verdict=verdict,
                 error=error,
             )
+        log_step(
+            "memory.record",
+            f"{factor_name} verdict={verdict}",
+            family=family,
+            motif=intended_motif,
+            parent=parent_factor,
+            fail_code=failure_code,
+            attempts=entry["attempts"],
+        )
 
         # Phase 2/4: 记录编辑模式（历史兼容）
         if parent_id and struct.get("fingerprint"):

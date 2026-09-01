@@ -28,7 +28,7 @@ def test_criteria_defaults_match_research_spec():
 
     # 关键数值抽查（防止整体相等被结构差异掩盖后仍然误报）
     cand = criteria_dp["candidate"]
-    assert cand["min_abs_ic"] == 0.015
+    assert cand["min_abs_ic"] == 0.02  # 2026-09-01 从 0.015 上调
     assert cand["min_icir"] == 0.25
     assert cand["min_coverage"] == 0.85
     assert cand["max_abs_corr"] == 0.5

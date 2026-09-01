@@ -188,6 +188,20 @@
                 <option :value="36">×36</option>
               </select></label>
             </div>
+            <div v-if="agent.agentMode==='research'" class="facet-row" title="数据面聚焦：多选后 Agent 优先探索所选面的因子与跨面融合（选中非价量面会自动载入对应列族）">
+              <span class="facet-label">数据面</span>
+              <button
+                v-for="f in agent.focusFacetOptions"
+                :key="f.key"
+                class="facet-chip"
+                :class="{ active: (agent.form.focus_facets || []).includes(f.key) }"
+                :disabled="agent.agentBusy"
+                :title="f.hint"
+                @click="agent.toggleFocusFacet(f.key)"
+              >{{ f.label }}</button>
+              <span v-if="!(agent.form.focus_facets || []).length" class="facet-hint">未选 = 不限（Agent 自主探索）</span>
+              <span v-else-if="(agent.form.focus_facets || []).length >= 2" class="facet-hint fusion">融合 {{ (agent.form.focus_facets || []).length }} 面</span>
+            </div>
             <div class="composer-actions">
               <button v-if="agent.agentMode==='research'" class="spec-toggle" :class="{ active: agent.showResearchSpec }" :disabled="agent.agentBusy" @click="agent.showResearchSpec = !agent.showResearchSpec">研究规范</button>
               <button v-if="agent.agentMode==='research' && !agent.current" class="spec-toggle quick-start-btn" :disabled="agent.agentBusy" @click="agent.startDefaultResearch" title="使用默认研究规范和提示词立即启动">▶ 默认研究</button>

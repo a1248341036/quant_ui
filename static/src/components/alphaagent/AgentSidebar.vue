@@ -41,22 +41,6 @@
       <div v-if="!agent.runs.length" class="sidebar-empty">{{ agent.showArchived ? '还没有归档任务' : '还没有研究任务' }}</div>
     </div>
 
-    <section class="memory-panel" :class="{ collapsed: agent.memoryCollapsed }" aria-label="长期研究记忆">
-      <div class="memory-head" @click="agent.memoryCollapsed = !agent.memoryCollapsed" role="button" tabindex="0" @keydown.enter.prevent="agent.memoryCollapsed = !agent.memoryCollapsed">
-        <span class="memory-head-label"><span class="memory-caret">{{ agent.memoryCollapsed ? '▸' : '▾' }}</span>长期研究记忆</span>
-        <b>{{ agent.memory.length }}</b>
-      </div>
-      <template v-if="!agent.memoryCollapsed">
-        <div v-if="agent.memory.length" class="memory-items">
-          <div v-for="entry in agent.memory" :key="entry.id" class="memory-item" :class="'memory-' + entry.verdict" role="button" tabindex="0" @click="agent.memoryDetail = entry" @keydown.enter.prevent="agent.memoryDetail = entry">
-            <strong>{{ memoryVerdictLabel(entry.verdict) }} · {{ entry.factor_name }}</strong>
-            <small>{{ entry.conclusion }}</small>
-          </div>
-        </div>
-        <small v-else>评估结果会在这里沉淀为跨会话研究记忆</small>
-      </template>
-    </section>
-
     <div class="sidebar-footer">
       <span class="status-dot status-running"></span>
       <span>Codex 当前模型配置</span>
@@ -99,7 +83,7 @@
 
 <script>
 import { agentStore } from '../../store/alphaagent.js'
-import { runTitle, formatTime, memoryVerdictLabel } from '../../utils/alphaagent.js'
+import { runTitle, formatTime } from '../../utils/alphaagent.js'
 
 export default {
   name: 'AgentSidebar',
@@ -121,7 +105,6 @@ export default {
   methods: {
     runTitle,
     formatTime,
-    memoryVerdictLabel,
     toggleMenu(runId, event) {
       if (agentStore.menuRunId === runId) {
         agentStore.menuRunId = ''

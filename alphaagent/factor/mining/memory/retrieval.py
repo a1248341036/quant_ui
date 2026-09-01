@@ -18,8 +18,10 @@ from .expressions import (
     _structure_fingerprint,
     _tokens,
     classify_family,
+    expr_facets,
     expression_features,
     expression_ops,
+    FACET_DEFS,
 )
 
 # 注入文本自解释化：信号族 / 编辑类型的中文展开（缺省回退原文）
@@ -179,6 +181,15 @@ class RetrievalMixin:
         """将 memory_entries 行转为检索条目 dict（兼容两种列布局）。"""
         family = row["family"] if "family" in row.keys() else None
         metrics = json.loads(row["metrics_json"] or "{}")
+        # facets：新行读 facets_json；老行（列缺失/值为空）按表达式现算兜底
+        facets: set[str] = set()
+        if "facets_json" in row.keys() and row["facets_json"]:
+            try:
+                facets = set(json.loads(row["facets_json"]))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                facets = set()
+        if not facets:
+            facets = expr_facets(str(row["expression"] or ""))
         if "attempts" in row.keys():
             return {
                 "id": row["id"],
@@ -191,6 +202,7 @@ class RetrievalMixin:
                 "failure_code": row["failure_code"] if "failure_code" in row.keys() else None,
                 "fail_detail": row["fail_detail"] if "fail_detail" in row.keys() else None,
                 "family": family or classify_family(row["factor_name"], row["expression"]),
+                "facets": facets,
                 "updated_at": row["updated_at"],
                 "attempts": row["attempts"],
             }
@@ -206,6 +218,7 @@ class RetrievalMixin:
             "failure_code": json.loads("{}"),
             "fail_detail": row["failure_code"] if "failure_code" in row.keys() else None,
             "family": row["fail_detail"] if "fail_detail" in row.keys() else None,
+            "facets": facets,
             "updated_at": classify_family(row["factor_name"], row["expression"]),
             "attempts": row["updated_at"],
         }
@@ -217,10 +230,20 @@ class RetrievalMixin:
         query_ops: set[str],
         focus_families: set[str],
         now_ts: float,
+        query_facets: set[str] | None = None,
     ) -> float:
-        """BM25 + 族亲和 + 算子 Jaccard + verdict 权重 + 时间衰减。"""
+        """BM25 + 族亲和 + facets 重叠 + 算子 Jaccard + verdict 权重 + 时间衰减。
+
+        族亲和两档（2026-09-03）：family 精确命中 +0.3（融合 query ↔ 融合条目
+        天然精确匹配——双侧同走 classify_family）；facets 有交集 +0.15（单面
+        query ↔ 融合条目的跨召回，老条目无 facets_json 时读取侧已现算兜底）。
+        """
         bm25 = float(entry.get("_bm25", 0))
         family_affinity = 0.3 if entry.get("family") in focus_families else 0
+        if family_affinity == 0 and query_facets:
+            entry_facets = entry.get("facets")
+            if isinstance(entry_facets, set) and entry_facets & query_facets:
+                family_affinity = 0.15
         entry_ops = set(expression_ops(str(entry.get("expression") or "")))
         op_jaccard = len(query_ops & entry_ops) / len(query_ops | entry_ops) if (query_ops | entry_ops) else 0
         verdict_w = VERDICT_WEIGHT.get(str(entry.get("verdict")), 0.2)
@@ -296,6 +319,7 @@ class RetrievalMixin:
         max_expression_chars: int | None = None,
         focus_families: set[str] | None = None,
         query_ops: set[str] | None = None,
+        query_facets: set[str] | None = None,
     ) -> str:
         """构建单因子证据块（正/负池独立排序 + 各自多样性去重 + 40% 正池配额）。"""
         entries = self._retrieval_candidates(research_goal, include_rejected)
@@ -305,7 +329,7 @@ class RetrievalMixin:
         query_ops = query_ops or set()
         now_ts = time.time()
         scored = [
-            (self._hybrid_score(e, query_ops=query_ops, focus_families=focus_families, now_ts=now_ts), e)
+            (self._hybrid_score(e, query_ops=query_ops, focus_families=focus_families, now_ts=now_ts, query_facets=query_facets), e)
             for e in entries
         ]
         scored.sort(key=lambda pair: pair[0], reverse=True)
@@ -748,9 +772,43 @@ class RetrievalMixin:
             block_lines.append("建议切换到饱和度 < 0.3 的未探索族。")
         return "\n".join(block_lines)
 
+    # ── 数据面覆盖（跨面融合引导）：facet 表与识别逻辑在 expressions.expr_facets ──
+
     def _diversity_block(self, recent_batch: list[dict[str, Any]] | None = None) -> str:
-        """多样性块：词法集中 + 重复空格 + 族新频度（占位实现）。"""
-        return ""
+        """多样性块：近批尝试的数据面覆盖统计 + 跨面融合引导（窄覆盖时注入）。
+
+        recent_batch 由运行层传入（最近 ≤8 次尝试的表达式）。覆盖 ≥3 个面时
+        不注入（已经很分散）；否则给出未触面清单与融合算子示例。
+        """
+        if not recent_batch:
+            return ""
+        exprs = [str(item.get("expression") or "") for item in recent_batch]
+        exprs = [e for e in exprs if e]
+        if len(exprs) < 4:
+            return ""
+        facet_count: Counter[str] = Counter()
+        for e in exprs:
+            for f in expr_facets(e):
+                facet_count[f] += 1
+        touched = set(facet_count)
+        untouched = [name for name, _ in FACET_DEFS if name not in touched]
+        if len(touched) >= 3 or not untouched:
+            return ""
+        dist = ", ".join(f"{name}×{facet_count[name]}" for name, _ in FACET_DEFS
+                         if facet_count[name])
+        untried = "、".join(untouched[:4])
+        lines = [
+            "",
+            "### 数据面覆盖警告（跨面融合引导）",
+            f"最近 {len(exprs)} 次尝试面分布: {dist}。",
+            f"未触及的数据面: {untried}。单面因子的信息增量已边际递减，"
+            "跨面融合的拥挤度低、IC 增量更高。",
+            "融合模式（任选其一）：① 条件门控 MULTIPLY(基本面信号, 价量门控)；"
+            "② 分歧表达 DIVERGENCE_RANK(基本面变化, 量价动量)；"
+            "③ 正交残差 CS_RESIDUALIZE(价量因子, CS_BUCKET(LOG($float_cap),10))；"
+            "④ 比值结构 DIVIDE(量能, 基本面规模)。",
+        ]
+        return "\n".join(lines)
 
     # ── 主入口 ──
 
@@ -773,16 +831,27 @@ class RetrievalMixin:
         v3 预算策略（2026-08-30 起）：核心块（经验、编辑先验）始终保留；
         次级块按 证据 > 饱和度 > 多样性 的优先级用剩余预算填充——证据块承载
         具体死路因子清单，不再被尾部一刀切截掉。所有截断均在行边界。
+        2026-09-01 预算分段：经验块膨胀后曾把证据块挤出注入（检索 0 条），
+        证据块保底 reserve = min(900, 总预算/3)，核心块用剩余预算。
         """
         max_inject_chars = self.max_inject_chars if max_inject_chars is None else int(max_inject_chars)
+        # 预算分段（2026-09-01）：经验块膨胀（成功模式带模板+示例表达式）后曾把
+        # 证据块整个挤出注入（entry_count=0，"检索 0 条"）。给证据块预留保底
+        # 空间，核心块（经验+编辑先验）用剩余预算——核心再多不能饿死证据。
+        evidence_reserve = (min(900, max_inject_chars // 3)
+                            if max_inject_chars > 0 else 0)
+        core_budget = (max(0, max_inject_chars - evidence_reserve)
+                       if max_inject_chars > 0 else 10 ** 9)
         focus_families: set[str] = set()
         query_ops: set[str] = set()
+        query_facets: set[str] = set()
         if research_goal:
             for expr in re.split(r"[\n;]", str(research_goal)):
                 if expression_features(expr):
                     fam = classify_family("", expr)
                     if fam != "other":
                         focus_families.add(fam)
+                    query_facets |= expr_facets(expr)
                 query_ops |= set(expression_ops(expr))
 
         def _clip(text: str, budget: int) -> str:
@@ -804,7 +873,7 @@ class RetrievalMixin:
         core_text = "\n\n".join(core)
         if max_inject_chars > 0:
             header_len = len("# 长期研究记忆\n以下结论必须作为实验先验。\n\n")
-            core_text = _clip(core_text, max(0, max_inject_chars - header_len))
+            core_text = _clip(core_text, max(0, core_budget - header_len))
             remaining = max_inject_chars - len(core_text) - header_len
         else:
             remaining = 10 ** 9
@@ -821,6 +890,7 @@ class RetrievalMixin:
                 max_expression_chars=max_expression_chars,
                 focus_families=focus_families,
                 query_ops=query_ops,
+                query_facets=query_facets,
             )
             if factor_block:
                 secondary.append((0, factor_block))

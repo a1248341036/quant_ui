@@ -33,6 +33,9 @@ class MiningConfig:
     enable_submit: bool = True  # 始终启用，已移除关闭开关
     enable_reviewer: bool = True
     research_spec: dict[str, Any] | None = None
+    focus_facets: list[str] | None = None
+    """数据面聚焦（跨面融合）：用户在前端多选的面名（FACET_DEFS 键）。
+    非空时每轮记忆注入附带聚焦提醒块，持续引导跨面融合。"""
     max_cs_corr: float = 0.8
     similar_top_k: int = 3
     ingest_overwrite: bool = False

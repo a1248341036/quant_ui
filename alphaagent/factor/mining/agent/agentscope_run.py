@@ -5,6 +5,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import logging
 import sys
 import traceback
 from datetime import datetime, timezone
@@ -197,12 +198,16 @@ async def run_factor_mining_agentscope(
         population_max=config.population_max,
         research_spec=config.research_spec,
         asset_type=ctx.asset_type,
+        focus_facets=getattr(config, "focus_facets", None),
     )
 
     log_dir = Path(log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_jsonl = log_dir / f"run_{stamp}.jsonl"
+    # 步骤日志：每一步（评估/门禁/审查/记忆）一行，落 steps.log + stdout 镜像
+    from alphaagent.factor.mining.runlog import log_step, set_turn, setup_run_logger
+    setup_run_logger(log_dir)
     artifact_dir = log_dir / f"artifacts_{stamp}"
     artifact_dir.mkdir(parents=True, exist_ok=True)
     factorlib_for_manifest = (config.factorlib_path or default_factorlib_path(root)).resolve()
@@ -251,6 +256,7 @@ async def run_factor_mining_agentscope(
         population_max=config.population_max,
         research_spec=config.research_spec,
         asset_type=ctx.asset_type,
+        focus_facets=getattr(config, "focus_facets", None),
     )
 
     # Windows 控制台默认 GBK：模型/工具输出含 emoji 时会中断会话，统一转 UTF-8 容错。
@@ -324,6 +330,18 @@ async def run_factor_mining_agentscope(
         "framework": "agentscope",
         "manifest": "run_manifest.json",
     })
+    log_step(
+        "run_start",
+        f"run={log_dir.name} model={config.model}",
+        train=f"{ctx.train_start}~{ctx.train_end}",
+        val=f"{ctx.val_start}~{ctx.val_end}",
+        label=ctx.label_col,
+        panel=ctx.panel_path,
+        mode=(config.research_spec or {}).get("research_mode"),
+        max_turns=config.max_turns,
+        max_parallel_eval=config.max_parallel_eval,
+        memory_slots=(memory_store.suggest_slots if memory_store is not None else 0),
+    )
     _emit("user_message", {"turn": 0, "content": user_message})
 
     # 写 run_meta.json：与 backend/alphaagent_service.save_meta 同 schema，
@@ -440,7 +458,10 @@ async def run_factor_mining_agentscope(
             max_recent_attempts=8,
             max_expression_chars=1200,
         )
-        return memory_store.context_for(
+        # 数据面聚焦（用户多选）：与多样性块互斥——用户显式指定的数据面优先，
+        # 聚焦生效时不再注入"去探索其他面"的自动多样性引导。
+        focus = getattr(config, "focus_facets", None) or []
+        block = memory_store.context_for(
             query,
             limit=limit,
             include_rejected=bool(policy.get("include_rejected_paths", True)),
@@ -449,12 +470,39 @@ async def run_factor_mining_agentscope(
             max_expression_chars=int(policy.get("max_expression_chars", 320)),
             enable_factor_retrieval=bool(policy.get("enable_factor_retrieval", False)),
             enable_edit_patterns=bool(policy.get("enable_edit_patterns", False)),
-            recent_batch=[
+            recent_batch=None if focus else [
                 {"expression": r.get("expression")}
                 for r in tool_call_rows[-8:]
                 if r.get("expression")
             ] or None,
         )
+        # 数据面聚焦（用户多选）：每轮追加聚焦提醒，持续引导数据面方向。
+        if focus:
+            facets_exprs = [
+                r.get("expression") for r in tool_call_rows[-8:] if r.get("expression")
+            ]
+            from alphaagent.factor.mining.memory.expressions import expr_facets
+
+            touched = set()
+            for e in facets_exprs:
+                touched |= expr_facets(e)
+            off_focus = [f for f in focus if f not in touched]
+            lines = [
+                "",
+                "### 数据面聚焦指令（用户指定，持续生效）",
+                f"聚焦面: {'、'.join(focus)}。",
+            ]
+            if len(focus) >= 2:
+                lines.append(
+                    "- 本轮优先构造同时触及 ≥2 个聚焦面的融合因子"
+                    "（DIVERGENCE_RANK / MULTIPLY 门控 / CS_RESIDUALIZE / DIVIDE）。"
+                )
+            else:
+                lines.append("- 本轮表达式应触及该面的算子或数据列（单面聚焦，不要求跨面融合）。")
+            if off_focus:
+                lines.append(f"- 聚焦面 {'、'.join(off_focus)} 至今未出现在任何尝试中，本轮必须至少给出 1 条触及它的表达式。")
+            block = f"{block}\n{chr(10).join(lines)}" if block else "\n".join(lines).lstrip("\n")
+        return block
 
     def _queued_prompt(messages: list[str]) -> str:
         return "用户在当前研究会话追加了指令，请优先结合已有评估结果执行：\n" + "\n\n".join(messages)
@@ -469,6 +517,8 @@ async def run_factor_mining_agentscope(
             printer.turn(outer_turn)
 
         observer = MiningStreamObserver(printer=printer, emit=_emit, turn=outer_turn)
+        set_turn(outer_turn)
+        log_step("turn_start", "")
 
         def _on_stream_emit(event: str, payload: dict[str, Any]) -> None:
             _emit(event, payload)
@@ -548,6 +598,37 @@ async def run_factor_mining_agentscope(
                             result=res,
                         )
                     )
+                if row.get("name") == "submit_factor":
+                    log_step(
+                        "submit_result",
+                        str(args_obj.get("factor_name") or "?"),
+                        verdict=(memory_entry or {}).get("verdict") if memory_entry else None,
+                        stored=bool(res.get("stored")),
+                        candidate=bool(res.get("candidate_stored")),
+                        skipped=str(res.get("skipped_reason") or "") or None,
+                        error=str(res.get("error_type") or "") or None,
+                        elapsed=row.get("elapsed_seconds"),
+                    )
+                elif row.get("name") in ("evaluate_factor", "eval_on_train_set", "eval_on_val_set"):
+                    log_step(
+                        "evaluate",
+                        f"{row.get('name')} {args_obj.get('factor_name') or '?'}",
+                        split=res.get("split"),
+                        ic=summary_metrics.get("ic"),
+                        icir=summary_metrics.get("icir"),
+                        rank_ic=summary_metrics.get("rank_ic"),
+                        cov=summary_metrics.get("factor_coverage", summary_metrics.get("coverage")),
+                        verdict=(memory_entry or {}).get("verdict") if memory_entry else None,
+                        err=res.get("error_type"),
+                        elapsed=row.get("elapsed_seconds"),
+                    )
+                else:
+                    log_step(
+                        "tool",
+                        str(row.get("name") or "?"),
+                        err=res.get("error_type"),
+                        elapsed=row.get("elapsed_seconds"),
+                    )
                 if memory_entry is not None:
                         _emit(
                             "research_memory_updated",
@@ -575,7 +656,12 @@ async def run_factor_mining_agentscope(
                 "turn": outer_turn,
                 "entry_count": retrieved_count,
                 "recent_attempt_count": len(tool_call_rows),
+                # 注入块审计字段：block_chars=记忆块长度；preview 含经验/证据段
+                # 开头（user_message 事件只记 pending，从这里看每轮实际注入了什么）
+                "block_chars": len(turn_memory),
+                "block_preview": turn_memory[:400],
             })
+            log_step("memory_retrieve", f"entries={retrieved_count} chars={len(turn_memory)}")
 
         user_msg = UserMsg(name="user", content=agent_prompt)
         try:
@@ -694,6 +780,14 @@ async def run_factor_mining_agentscope(
                         f"## 本轮记忆推荐（前 {len(recs)} 个评估名额请优先用于以下方向，"
                         f"evaluate_factor 调用时必须带 parent_factor + edit_note）"
                     )
+                    log_step(
+                        "memory_suggest",
+                        " | ".join(
+                            f"{rec.get('family')}×{rec.get('motif') or '邻域'}:{rec.get('parent_factor')}"
+                            for rec in recs
+                        ),
+                        slots=len(recs),
+                    )
                     for i, rec in enumerate(recs, 1):
                         if rec.get("motif"):
                             reflection_lines.append(
@@ -726,7 +820,7 @@ async def run_factor_mining_agentscope(
                     metrics = r.get("metrics") or {}
                     ic = metrics.get("ic")
                     admitted = bool(r.get("stored") or r.get("candidate_stored")) or (
-                        r.get("ok") and isinstance(ic, (int, float)) and abs(ic) >= 0.015
+                        r.get("ok") and isinstance(ic, (int, float)) and abs(ic) >= 0.02
                     )
                     batch_for_form.append({
                         "factor_name": r.get("factor_name") or "",
@@ -746,9 +840,14 @@ async def run_factor_mining_agentscope(
                         turn=outer_turn - 1,
                         batch_results=batch_for_form,
                     )
+                    log_step(
+                        "memory_form",
+                        f"success={formed.get('success_patterns', 0)} forbidden={formed.get('forbidden', 0)} insights={formed.get('insights', 0)}",
+                    )
                     if any(formed.values()):
                         _emit("memory_formed", {"turn": outer_turn - 1, **formed})
                 except Exception as exc:
+                    log_step("memory_form", "error", error=str(exc)[:200], level=logging.ERROR)
                     _emit("memory_form_error", {
                         "turn": outer_turn - 1,
                         "error": str(exc),
@@ -760,12 +859,17 @@ async def run_factor_mining_agentscope(
                         turn=outer_turn - 1,
                         batch_results=batch_for_form,
                     )
+                    log_step(
+                        "memory_distill",
+                        f"success={distilled.get('success_patterns', 0)} forbidden={distilled.get('forbidden', 0)} insights={distilled.get('insights', 0)}",
+                    )
                     if any(distilled.values()):
                         _emit("experience_distilled", {
                             "turn": outer_turn - 1,
                             **distilled,
                         })
                 except Exception as exc:
+                    log_step("memory_distill", "error", error=str(exc)[:200], level=logging.ERROR)
                     _emit("experience_distill_error", {
                         "turn": outer_turn - 1,
                         "error": str(exc),
@@ -868,6 +972,14 @@ async def run_factor_mining_agentscope(
     (log_dir / "run_summary.json").write_text(summary_text, encoding="utf-8")
     _emit("run_summary", summary)
     _emit("session_end", {"turn": outer_turn, "reason": end_reason})
+    log_step(
+        "run_end",
+        f"outcome={outcome} reason={end_reason}",
+        tool_calls=len(tool_call_rows),
+        candidate_stored=candidate_stored,
+        production_stored=production_stored,
+        usage_calls=usage_total.get("calls"),
+    )
 
     return {
         "session_id": session_resp.session_id,

@@ -11,7 +11,13 @@ from typing import Any
 from .calibration import _parent_bucket
 from .constants import BASELINE_HALF_LIFE_DAYS, POSITIVE_VERDICTS
 from .diagnostics import _SUCCESS_SIGNATURES, _FORBIDDEN_SIGNATURES, _match_signature, _now, _safe_float
-from .expressions import classify_family, expression_features, expression_ops, template_from_expression
+from .expressions import (
+    classify_family,
+    expr_facets,
+    expression_features,
+    expression_ops,
+    template_from_expression,
+)
 
 
 class ExperienceMixin:
@@ -93,7 +99,10 @@ class ExperienceMixin:
                 residual = child_ic - baseline
 
         is_positive = verdict in POSITIVE_VERDICTS
-        invalid = bool(error) or child_ic is None
+        # 入库成功（production/candidate_approved）不算 invalid：submit 的 gate
+        # 失败（stage_two_failed/engine_gate_failed）以 error 文本返回但因子已在
+        # 候选池，该次编辑对 SSPM 是有效正观测（cells 只认 verdict 极性）。
+        invalid = verdict not in POSITIVE_VERDICTS and (bool(error) or child_ic is None)
         if parent_origin == "explicit":
             s_col, f_col = "explicit_s", "explicit_f"
         else:
@@ -236,6 +245,12 @@ class ExperienceMixin:
 
         batch_results 每项：factor_name / expression / metrics{ic,...} /
         admitted / rejection_reason / max_corr / correlated_with / fail_detail
+
+        2026-09-01 硬门槛：移除"未命中签名 → 逐因子写 insight"的兜底分支——
+        单因子结论（指标不足/有潜力）属于证据层（memory_entries 已有），
+        进经验层只会稀释真正的结构化经验（族级模板/禁忌/全局洞察）。
+        经验层的 insight 现在只由 distill_batch_experience 的全局规则产出
+        （如 global_alpha_thin 连续弱 IC 预警）。
         """
         formed = {"success_patterns": 0, "forbidden": 0, "insights": 0}
         if not batch_results:
@@ -257,39 +272,58 @@ class ExperienceMixin:
                 success_key = _match_signature(text, _SUCCESS_SIGNATURES)
 
                 if forbidden_key:
+                    # 2026-09-01 补全：签名行与蒸馏行同规格（代表因子 + IC + 失效
+                    # 原因 + 参数槽模板），不再只写"{签名}（{因子名}）"这种
+                    # 无机制信息的身份行。content 摘要 + template 由
+                    # _experience_block 渲染为可执行禁令。
+                    reason = reason[:140] or "（无结构化失效原因）"
+                    content = (
+                        f"禁忌方向：{forbidden_key}。代表 {factor_name or '（未命名）'}"
+                        f"（ic={ic if ic is not None else 'N/A'}）；失效原因：{reason}。"
+                        f"DO NOT 重复该签名对应的结构或其参数变体。"
+                    )
                     self._upsert_experience(
                         conn,
                         kind="forbidden",
-                        name=f"{factor_name or expression}",
-                        content=f"禁忌方向：{forbidden_key}（{factor_name or expression}）",
-                        evidence={"ic": ic, "reason": reason},
+                        name=f"signature:{forbidden_key}",
+                        content=content,
+                        template=template_from_expression(expression) if expression else None,
+                        evidence={
+                            "ic": ic,
+                            "reason": reason,
+                            "factor_names": [factor_name],
+                            "examples": [expression] if expression else [],
+                        },
                         example_factor=factor_name or None,
                         run_id=run_id,
                     )
                     formed["forbidden"] += 1
                 elif success_key and admitted:
+                    direction = (
+                        "方向为负，反向构造同样有效" if (ic is not None and ic < 0)
+                        else "方向为正"
+                    )
+                    ic_text = f"{abs(ic):.4f}" if ic is not None else "N/A"
+                    content = (
+                        f"成功模式：{success_key}。代表 {factor_name or '（未命名）'} "
+                        f"|IC|={ic_text}（{direction}）。该结构命中历史成功签名："
+                        f"优先照抄下方模板骨架，只换参数/修饰算子，在邻近空间变异。"
+                    )
                     self._upsert_experience(
                         conn,
                         kind="success_pattern",
-                        name=f"{success_key}|{factor_name}",
-                        content=f"成功模式：{success_key}（{factor_name or expression}）",
-                        evidence={"ic": ic},
+                        name=f"signature:{success_key}",
+                        content=content,
+                        template=template_from_expression(expression) if expression else None,
+                        evidence={
+                            "ic": ic,
+                            "factor_names": [factor_name],
+                            "examples": [expression] if expression else [],
+                        },
                         example_factor=factor_name or None,
                         run_id=run_id,
                     )
                     formed["success_patterns"] += 1
-                else:
-                    insight = conclusion or (f"{factor_name}: 结果 {verdict or 'unknown'}" if factor_name else None)
-                    if insight:
-                        self._upsert_experience(
-                            conn,
-                            kind="insight",
-                            name=f"{factor_name or expression}",
-                            content=insight,
-                            evidence={"ic": ic},
-                            run_id=run_id,
-                        )
-                        formed["insights"] += 1
         return formed
 
     # ── 模式层记忆 CRUD（v3 恢复：从 commit 7966fd1 移植）──
@@ -636,10 +670,22 @@ class ExperienceMixin:
                     direction = (
                         "方向为负，反向构造同样有效" if best_ic < 0 else "方向为正"
                     )
+                    # 跨面融合标注：成功表达式触及 ≥2 个数据面时点出，
+                    # 让注入的正向经验示范"融合因子更有效"
+                    facets = expr_facets(best_expr)
+                    fusion = (
+                        f"（跨面融合: {'×'.join(sorted(facets))}）"
+                        if len(facets) >= 2 else ""
+                    )
+                    # n_strong 按 |IC|>=0.02 口径统计（verdict 是记录时点的快照，
+                    # 阈值调整后可能与新线不一致，避免出现"0 条达标却说可用"的矛盾）
+                    n_strong = sum(1 for _, ic, _, _ in members if abs(ic) >= 0.02)
                     content = (
-                        f"{family} 族机制可用（{n_pos}/{n} 条达标）：最强 {best_name} "
+                        f"{family} 族机制可用{fusion}（{n_strong}/{n} 条 |IC|≥0.02）：最强 {best_name} "
                         f"|IC|={abs(best_ic):.4f}（{direction}）。"
-                        f"优先照抄模板骨架、只换参数/修饰算子，在邻近空间继续探索。"
+                        + (f"该成功结构为跨面融合（触及 {'、'.join(sorted(facets))}），"
+                           "跨面组合拥挤度低，可在同构不同面上继续复制。" if fusion else "")
+                        + f"优先照抄模板骨架、只换参数/修饰算子，在邻近空间继续探索。"
                     )
                     examples = [
                         ex for nm, _, ex, _ in members

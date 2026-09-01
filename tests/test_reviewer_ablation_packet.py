@@ -64,3 +64,26 @@ def test_extract_eval_metrics_prefers_summary_over_metrics():
     }
     out = FactorReviewer._extract_eval_metrics(entry)
     assert out["ic"] == 0.1
+
+
+# ---------------------------------------------------------------------------
+# 证据口径统计预检只在 validation 阶段做；pre_submit 的统计裁决归 stage_one
+# （ingest 口径，无 winsorize），避免同一门槛套两个口径产出矛盾 revise。
+# ---------------------------------------------------------------------------
+
+def test_metric_precheck_only_at_validation_stage():
+    import types
+
+    r = _mk()
+    r.config = types.SimpleNamespace(research_spec={})
+    expr = "TS_MEAN($close, 5)"
+    r.record_evaluation("train", {"multi_line_expr": expr},
+                        {"ok": True, "summary": {"ic": 0.001, "icir": 0.05, "factor_coverage": 0.99}})
+    r.record_evaluation("val", {"multi_line_expr": expr},
+                        {"ok": True, "summary": {"ic": 0.005, "icir": 0.08, "factor_coverage": 0.99}})
+    # validation 阶段：证据口径预检生效（早期「别浪费提交名额」反馈）
+    precheck = r._metric_precheck(expr, stage="validation")
+    assert precheck is not None and precheck["verdict"] == "revise"
+    assert precheck["source"] == "research_spec_metric_precheck"
+    # pre_submit：stage_one 已按 ingest 口径裁决完毕且因子已入池，预检不再运行
+    assert r._metric_precheck(expr, stage="pre_submit") is None

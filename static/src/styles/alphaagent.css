@@ -541,3 +541,36 @@ textarea.lab-input { resize:vertical; font:12px/1.5 var(--font-mono); }
 .rmb-del { padding: 2px 8px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--muted); font-size: 10px; cursor: pointer; }
 .rmb-del:hover { color: #ef8b92; border-color: rgb(239 139 146 / .4); background: rgb(239 139 146 / .08); }
 .rmb-load-more { display: flex; justify-content: center; padding: 10px 0 2px; }
+
+/* ── 数据面聚焦多选（跨面融合）── */
+.facet-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 2px 0 0;
+}
+.facet-label {
+  font-size: 11px;
+  color: var(--text-dim, #8a93a6);
+  flex: none;
+}
+.facet-chip {
+  border: 1px solid var(--border, #2a3244);
+  background: transparent;
+  color: var(--text-dim, #8a93a6);
+  border-radius: 999px;
+  padding: 1px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all .15s ease;
+}
+.facet-chip:hover:not(:disabled) { color: var(--text, #d6dbe7); border-color: var(--text-dim, #8a93a6); }
+.facet-chip.active {
+  color: #fff;
+  border-color: var(--accent, #5b8cff);
+  background: color-mix(in srgb, var(--accent, #5b8cff) 22%, transparent);
+}
+.facet-chip:disabled { opacity: .45; cursor: not-allowed; }
+.facet-hint { font-size: 11px; color: var(--text-dim, #8a93a6); }
+.facet-hint.fusion { color: var(--accent, #5b8cff); }

@@ -266,6 +266,64 @@ def template_from_expression(expression: str) -> str:
     return re.sub(r"\d+(?:\.\d+)?", _sub, text)
 
 
+# ── 数据面识别（跨面融合引导用）────────────────────────────────
+# 面板实际接入的数据列族（与 data/adapters/plugins 一致）：
+# 价量(stock_daily_wide) / 筹码(CHIP_*) / 拥挤(CROWD_*) / 基本面(funda_*) /
+# 股东(holder_*) / 业绩预告(forecast) / 事件(event_faces: 龙虎榜+大宗) / 资金流(fund_flow)
+FACET_DEFS: list[tuple[str, tuple[str, ...]]] = [
+    ("价量面", ("$adj_", "$close", "$open", "$high", "$low", "$ret", "$vwap")),
+    ("量能面", ("$volume", "$amount", "$turnover")),
+    ("筹码面", ("chip_",)),
+    ("拥挤面", ("crowd_",)),
+    ("基本面", ("funda_",)),
+    ("股东面", ("holder_",)),
+    ("事件面", ("forecast", "dragon", "event_", "$event")),
+    ("资金面", ("fund_flow", "$inflow", "$outflow")),
+]
+
+# 数据源分组：融合（family 用面对组合键）只在跨组时成立。
+# 同组多面（如 价量面+量能面 都来自 stock_daily_wide 行情面板）是普通单因子
+# 的常见形态，判成"融合"会把族分类从细粒度退化为粗粒度对键，污染记忆桶。
+# $float_cap 是行情面板列，已从股东面识别键移出，不参与面判定。
+FACET_GROUPS: dict[str, tuple[str, ...]] = {
+    "行情组": ("价量面", "量能面", "筹码面", "拥挤面"),
+    "基本面组": ("基本面", "股东面"),
+    "事件资金组": ("事件面", "资金面"),
+}
+
+_FACET_ORDER: dict[str, int] = {name: i for i, (name, _) in enumerate(FACET_DEFS)}
+_FACET_TO_GROUP: dict[str, str] = {
+    facet: group for group, facets in FACET_GROUPS.items() for facet in facets
+}
+
+
+def expr_facets(expression: str) -> set[str]:
+    """识别一个表达式触及的数据面（按列/算子前缀匹配）。"""
+    low = str(expression or "").lower()
+    out: set[str] = set()
+    for name, keys in FACET_DEFS:
+        if any(k.lower() in low for k in keys):
+            out.add(name)
+    return out
+
+
+def facet_groups(facets: set[str]) -> set[str]:
+    """一个面集合覆盖的数据源组。"""
+    return {_FACET_TO_GROUP[f] for f in facets if f in _FACET_TO_GROUP}
+
+
+def is_cross_group_fusion(facets: set[str]) -> bool:
+    """≥2 个面且跨数据源组才算融合（同组多面不算，防线见 FACET_GROUPS 注释）。"""
+    return len(facets) >= 2 and len(facet_groups(facets)) >= 2
+
+
+def fusion_family_key(facets: set[str]) -> str:
+    """融合因子的族键：面名按 FACET_DEFS 稳定排序 × 连接（如 基本面×价量面）。"""
+    ordered = sorted((f for f in facets if f in _FACET_ORDER),
+                     key=lambda f: _FACET_ORDER[f])
+    return "×".join(ordered)
+
+
 # ── 编辑类型识别 ──
 
 def _identify_edit_type(
@@ -489,10 +547,24 @@ def motif_from_note(edit_note: str) -> str | None:
 
 # ── 信号族分类 ──
 
-def classify_family(factor_name: str, expression: str) -> str:
-    """根据因子名和表达式启发式分类到信号族。"""
+def classify_family_ex(factor_name: str, expression: str) -> tuple[str, set[str]]:
+    """分类到信号族，返回 (family, facets)。
+
+    facets 跨数据源组 ≥2 面（is_cross_group_fusion）→ family = 面对组合键
+    （如 基本面×价量面），融合因子在记忆桶/饱和度中按融合对聚合；
+    否则走 _FAMILY_RULES 细粒度规则（单面/同组多面行为与历史一致）。
+    facets 无论是否融合都返回，供 facets_json 与检索亲和使用。
+    """
     text = (str(factor_name or "") + " " + str(expression or "")).lower()
+    facets = expr_facets(text)
+    if is_cross_group_fusion(facets):
+        return fusion_family_key(facets), facets
     for family, keywords in _FAMILY_RULES.items():
         if any(kw in text for kw in keywords):
-            return family
-    return "other"
+            return family, facets
+    return "other", facets
+
+
+def classify_family(factor_name: str, expression: str) -> str:
+    """根据因子名和表达式启发式分类到信号族（classify_family_ex 的薄包装）。"""
+    return classify_family_ex(factor_name, expression)[0]

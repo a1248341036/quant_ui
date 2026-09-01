@@ -17,6 +17,7 @@ from agentscope.workspace import LocalWorkspace
 
 from alphaagent.factor.mining.cli_stream import MiningStreamObserver, stream_to_cli
 from alphaagent.factor.mining.config import MiningConfig
+from alphaagent.factor.mining.runlog import log_step
 
 
 REVIEW_PROMPT = """你是独立的量化因子评估子 Agent（FactorReviewer），职责是阻止伪创新和经典风险暴露改名进入正式因子库。
@@ -169,7 +170,7 @@ class FactorReviewer:
             retry_delay=self.config.model_retry_delay,
         )
 
-    async def review(self, arguments: dict[str, Any], *, turn: int) -> dict[str, Any]:
+    async def review(self, arguments: dict[str, Any], *, turn: int, stage: str = "validation") -> dict[str, Any]:
         expr = str(arguments.get("multi_line_expr") or "")
         factor_name = str(arguments.get("factor_name") or "expr")
         key = _expr_key(expr)
@@ -182,13 +183,15 @@ class FactorReviewer:
         precheck = _classic_precheck(expr) if review_policy.get("block_classic_transforms", True) else None
         if precheck is not None:
             self.emit("factor_review", {"turn": turn, "factor_name": factor_name, "multi_line_expr": expr, **precheck})
+            log_step("review", f"{factor_name} classic_precheck verdict={precheck['verdict']}")
             if has_comment:
                 self.reviews[key] = precheck
             return precheck
 
-        metric_precheck = self._metric_precheck(expr)
+        metric_precheck = self._metric_precheck(expr, stage=stage)
         if metric_precheck is not None:
             self.emit("factor_review", {"turn": turn, "factor_name": factor_name, "multi_line_expr": expr, **metric_precheck})
+            log_step("review", f"{factor_name} metric_precheck verdict=revise stage={stage}")
             if has_comment:
                 self.reviews[key] = metric_precheck
             return metric_precheck
@@ -240,11 +243,26 @@ class FactorReviewer:
                 f"当前新颖性低于本次 ResearchSpec 要求的 {review_policy.get('minimum_novelty', 'medium')}。"
             )
         self.emit("factor_review", {"turn": turn, "factor_name": factor_name, "multi_line_expr": expr, **verdict})
+        log_step(
+            "review",
+            f"{factor_name} llm verdict={verdict.get('verdict')} stage={stage}",
+            novelty=verdict.get("novelty"),
+            canonical=str(verdict.get("canonical_form") or "")[:80] or None,
+            reasons=str(verdict.get("reasons") or "")[:160] or None,
+        )
         if has_comment:
             self.reviews[key] = verdict
         return verdict
 
-    def _metric_precheck(self, expr: str) -> dict[str, Any] | None:
+    def _metric_precheck(self, expr: str, *, stage: str = "validation") -> dict[str, Any] | None:
+        if stage != "validation":
+            # pre_submit 不做证据口径统计预检：review_hook 在 stage_one 之后触发，
+            # 同一批统计门槛已由 ingest 口径（CandidateCriteria，无 winsorize）裁决
+            # 完毕且因子已入池；证据口径（train_screen 截面 winsorize）与 ingest 口径
+            # 数字不同源（Pearson IC 系统性偏低、rank IC 一致），再跑只会产出与门禁
+            # 矛盾的 revise（例：证据 IC 0.0186 vs ingest 0.0224，被记「未达门槛」
+            # 实则已进候选池）。
+            return None
         evidence = self.evaluations.get(_expr_key(expr), {})
         train = (evidence.get("train") or [])[-1:]
         val = (evidence.get("val") or [])[-1:]

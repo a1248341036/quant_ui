@@ -51,6 +51,8 @@ def upsert_mining_registry(
     source: str = "submit",
     merge: bool = True,
     interaction: dict[str, Any] | None = None,
+    facets: list[str] | None = None,
+    eval_label: str | None = None,
 ) -> tuple[str, str]:
     """写入或合并一条 registry 记录；返回 (registry_path, dsl_path)。"""
     registry_path = Path(registry_path).expanduser().resolve()
@@ -74,6 +76,18 @@ def upsert_mining_registry(
         "ingest_metrics": metrics,
         "ingest_status": ingest_status,
     }
+    # 数据面元数据（2026-09-03）：facets/is_fusion/family/eval_label；
+    # 未显式传 facets（zoo_sync 等路径）时按表达式现算，老条目自然补齐。
+    from alphaagent.factor.mining.memory.expressions import (
+        classify_family_ex,
+        expr_facets,
+    )
+
+    facet_list = sorted(facets) if facets else sorted(expr_facets(expr))
+    entry["facets"] = facet_list
+    entry["is_fusion"] = len(facet_list) >= 2
+    entry["family"] = classify_family_ex(name, expr)[0]
+    entry["eval_label"] = eval_label or prev.get("eval_label")
     sim = _trim_similarity(similarity)
     if sim:
         entry["similarity"] = sim
@@ -112,6 +126,8 @@ def write_candidate_registry(
     evaluation_evidence: dict[str, Any] | None = None,
     data_fingerprint: dict[str, Any] | None = None,
     interaction: dict[str, Any] | None = None,
+    facets: list[str] | None = None,
+    eval_label: str | None = None,
 ) -> tuple[str, str]:
     """Registry-only candidate storage: evidence and DSL, never dense values."""
     registry_path = Path(registry_path).expanduser().resolve()
@@ -124,6 +140,13 @@ def write_candidate_registry(
 
     registry = load_mining_registry(registry_path)
     prev = registry.get(factor_id, {})
+    # 数据面元数据（2026-09-03）：与 upsert_mining_registry 同口径
+    from alphaagent.factor.mining.memory.expressions import (
+        classify_family_ex,
+        expr_facets,
+    )
+
+    facet_list = sorted(facets) if facets else sorted(expr_facets(expr))
     entry: dict[str, Any] = {
         "schema_version": 2,
         "name": name,
@@ -141,6 +164,10 @@ def write_candidate_registry(
         "promotion_status": "pending",
         "ingest_status": "candidate",
         "source": source,
+        "facets": facet_list,
+        "is_fusion": len(facet_list) >= 2,
+        "family": classify_family_ex(name, expr)[0],
+        "eval_label": eval_label or prev.get("eval_label"),
     }
     for key in ("source_runs", "mining_metrics", "review", "reviewed_at"):
         if key in prev:

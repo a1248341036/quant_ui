@@ -5,7 +5,8 @@ from __future__ import annotations
 
 # ── 数据版本 ──
 # v3：cells 键升级为 (family, motif, parent_bucket)，显式/隐式父本分列 + 同桶残差基线
-DATA_VERSION = "3"
+# v4：memory_entries 加 facets_json（数据面标签）；family 允许面对组合键（跨组融合）
+DATA_VERSION = "4"
 
 # ── Verdict 分类 ──
 POSITIVE_VERDICTS = frozenset({"production_approved", "validated", "candidate_approved", "promising"})

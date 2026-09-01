@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from alphaagent.factor.mining.runlog import log_step
 from alphaagent.factor.mining.schemas import EvalProfileRequest, EvalTrainRequest, EvalValRequest
 from alphaagent.factor.mining.service import StockEvalService
 from alphaagent.factor.mining.submit import FactorSubmitService
@@ -37,16 +38,25 @@ class _DispatchMixin:
             return None
         if not advisory:
             return None
+        blocked = None
         if getattr(self.memory_store, "hard_block_duplicates", False):
             for item in advisory.get("advisories", []):
                 if item.get("kind") == "duplicate_known_dead_end":
-                    return {
+                    blocked = {
                         "ok": False,
                         "error": f"memory_blocked_duplicate: {item.get('message', '')}",
                         "error_type": "MemoryAdvisoryBlock",
                         "memory_advisory": advisory,
                     }
-        return advisory
+        try:
+            kinds = [item.get("kind") for item in advisory.get("advisories", [])]
+            if blocked is not None:
+                log_step("memory.advisory_block", f"kinds={kinds}", detail=str(advisory.get("advisories"))[:160])
+            else:
+                log_step("memory.advisory", f"kinds={kinds}")
+        except Exception:
+            pass
+        return blocked if blocked is not None else advisory
 
     def schemas(self) -> list[dict[str, Any]]:
         out = [

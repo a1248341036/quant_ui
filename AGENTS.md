@@ -70,8 +70,16 @@ artifacts/alphaagent/
 ├── research_specs/<mode>.json        # 每模式门槛文件的增量覆盖（diff）
 └── research_memory.db                # 跨会话持久化研究记忆（BM25）
 
-logs/factor_mining/ui/        # 每次 Web run 的 JSONL 轨迹 + run_meta.json（按 run_id 分目录）
+logs/factor_mining/ui/        # 每次 Web run 的 JSONL 轨迹 + run_meta.json + steps.log 分步日志（按 run_id 分目录）
 ```
+
+> **steps.log 分步日志**：挖掘 run 内每个关键步骤一行（`run_start / turn_start / evaluate /
+> submit.stage_one_stats / submit.blind_test / submit.val_retention / submit.stage_one /
+> submit.review / submit.candidate_stored / submit.stage_two / submit.engine_gate /
+> submit.promoted / submit_result / memory.record / memory.advisory / memory_retrieve /
+> memory_suggest / memory_form / memory_distill / run_end`），k=v 字段 + turn 号，
+> 写 `<run_id>/steps.log` 并镜像 stdout（进 `console.log`）。实现 `alphaagent/factor/mining/runlog.py`，
+> 由 `agentscope_run.setup_run_logger(log_dir)` 装配；日志异常全吞，绝不阻断挖掘。
 
 ## 核心流程
 
@@ -122,7 +130,7 @@ logs/factor_mining/ui/        # 每次 Web run 的 JSONL 轨迹 + run_meta.json�
 
 | 阶段 | 门槛（默认） | 写入位置 |
 |---|---|---|
-| candidate（海选） | \|IC\| ≥ 0.015, \|ICIR\| > 0.25, coverage > 0.85, max_corr < 0.5, lag1 自相关 ≥ 0.18, val 保留比 ≥ 0.5 | candidate_technical/ |
+| candidate（海选） | \|IC\| ≥ 0.02（2026-09-01 从 0.015 上调：0.015~0.02 区间因子经盲测/换手门禁几乎全灭）, \|ICIR\| > 0.25, coverage > 0.85, max_corr < 0.5, lag1 自相关 ≥ 0.18, val 保留比 ≥ 0.5 | candidate_technical/ |
 | production | \|train IC\| ≥ 0.025, \|train ICIR\| ≥ 0.30, \|val IC\| ≥ 0.015, val 保留比 ≥ 0.60, winsorized 衰减 ≤ 0.10, max_corr < 0.4 | production_technical/ |
 
 提交流程顺序：
@@ -162,8 +170,8 @@ logs/factor_mining/ui/        # 每次 Web run 的 JSONL 轨迹 + run_meta.json�
 
 ### 9. 研究记忆（research_memory.py，v3-lite）
 
-三层结构（SQLite WAL + FTS5，单文件 `artifacts/alphaagent/research_memory.db`，`store_meta.data_version="3"` 幂等迁移）：
-- **原始证据层** `memory_entries`：每次评估/提交一条，verdict 7 级 + 数据化结论 + 失败码/失效项 + 结构指纹 + 父子关系（`parent_origin`=explicit/implicit、`secondary_parent_id` crossover 双父、`intended_motif` 意向编辑）。
+三层结构（SQLite WAL + FTS5，单文件 `artifacts/alphaagent/research_memory.db`，`store_meta.data_version="4"` 幂等迁移）：
+- **原始证据层** `memory_entries`：每次评估/提交一条，verdict 7 级 + 数据化结论 + 失败码/失效项 + 结构指纹 + 父子关系（`parent_origin`=explicit/implicit、`secondary_parent_id` crossover 双父、`intended_motif` 意向编辑）+ `facets_json` 数据面标签（v4 新增；老行读取时按表达式现算兜底）。
 - **编辑统计层（SSPM）** `memory_cells`：键 = (family × motif × 父本质量桶)；残差 = 子代 IC − 同桶时间衰减基线（half-life 90d，无历史回退父本 IC，AlphaMemo Eq.4）；成败按 explicit（±1.0）/implicit（±0.5）加权分列；**无效尝试（报错）入账失败观测（权重 0.5）**。
 - **经验层** `memory_experience`：成功模式（签名 + 模板 + 实例）/ 禁忌方向（典型相关 + 失效项）/ 洞察（入库率）。
 
@@ -174,7 +182,9 @@ logs/factor_mining/ui/        # 每次 Web run 的 JSONL 轨迹 + run_meta.json�
 - **显式父本协议**：A/B/C 变异轨的 eval/submit 调用必须传 `parent_factor` + `edit_note`（`edit=<motif> <参数变化>`）；工具结果带 `memory_advisory` 硬提醒（指纹死路 attempts≥2 / 意向编辑 APV veto），默认只提示，`memory_policy.hard_block_duplicates=true` 时拦截。
 - 检索：BM25 + 族亲和 + 算子重叠 + verdict/recency；证据块 40% 正向配额 + (family≤2, 指纹=1) 去重。**正向跨族保底（2026-09-01）**：正向配额约 2/3 无条件取全库最优正向因子（validated/production 优先，按 |IC|，同族轮转保证跨族，`_guaranteed_positives`），BM25 只补剩余——通用 query 打不中 FTS 时正向通道不断供；`dynamic_retrieve_limit` 默认 6→8。
 - 饱和度（2026-09-01 修正）：`min(1, min(n_promising,8)/40 + n_candidate/5 + n_validated/3)`——promising（仅过训练集海选，多数未晋升）只轻度计入（≤0.2），拥挤度以真实幸存者（candidate/validated/production）为主；注入时除拥挤族警告外，同时给出"出过正信号且未拥挤"的族作定向深挖建议，不再只说"去别处"。
+- **数据面聚焦（跨面融合，2026-09-02）**：前端 run 表单多选数据面（价量/量能/筹码/拥挤/基本面/股东/事件/资金，与 `expressions.FACET_DEFS` 对齐）→ StartRequest `focus_facets` → 子进程 `--focus-facets`。选中后：① 用户消息追加融合指令（融合算子模式：MULTIPLY 门控 / DIVERGENCE_RANK 分歧 / CS_RESIDUALIZE 正交残差 / DIVIDE 比值）；② 每轮记忆注入附"数据面聚焦指令"块（含未触面强制提醒——聚焦面未出现在任何尝试中时要求本轮必须给出触及它的表达式）；③ 选中非价量面时自动加载对应列族（不加 --no-fundamentals）。`_diversity_block` 同步启用：近 8 次尝试面覆盖 <3 时注入面覆盖警告 + 融合模式示例（聚焦生效时抑制——用户显式聚焦优先于自动多样性引导）；蒸馏对跨 ≥2 面的成功经验打"跨面融合"标签。**单选一个面时退化为单面聚焦指令**：不要求融合、不要求 _x_ 命名、单面因子正常提交，仅要求表达式触及该面（用户消息块与每轮提醒两处同口径，2026-09-02）。
 - 正向 verdict 鼓励邻域探索；负向 verdict 防止重复无效路径。
+- **融合族键与 facets 亲和（2026-09-03，data_version=4）**：`classify_family_ex` 对**跨数据源组**（`FACET_GROUPS`：行情组=价量/量能/筹码/拥挤、基本面组=基本面/股东、事件资金组=事件/资金）触及 ≥2 面的表达式返回面对组合键（如 `价量面×基本面`，面名按 FACET_DEFS 稳定排序）；同组多面与单面保持旧 `_FAMILY_RULES` 细粒度口径（防"假融合"——`$close+$volume`、`$float_cap` 这类常见组合不算融合，`$float_cap` 已移出股东面识别键）。`memory_entries.facets_json` 记录全量面集合，检索亲和两档：family 精确命中 +0.3、facets 有交集 +0.15（单面 query ↔ 融合条目的跨召回）。registry（候选/正式）入库写 `facets`/`is_fusion`/`family`/`eval_label`。facet_focus 为 system prompt 插件模块（ORDER=135，含信号族白名单豁免声明——`research_policy_prompt` 经 extra_instructions 注入的白名单与融合指令矛盾，聚焦生效时显式解禁）。
 
 ## REST API
 

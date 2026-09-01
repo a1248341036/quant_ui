@@ -37,6 +37,7 @@ from alphaagent.factor.mining.registry_io import (
 )
 from alphaagent.factor.mining.delivery_criteria import DeliveryCriteria
 from alphaagent.factor.mining.delivery_checker import DeliveryChecker
+from alphaagent.factor.mining.runlog import log_step
 from core import factor_categories
 
 
@@ -343,6 +344,7 @@ class FactorSubmitService:
 
         factor_id = slug_factor_id(factor_name)
         name = str(factor_name).strip() or factor_id
+        log_step("submit.start", name)
 
         engine_cfg = self.delivery_policy.get("production", {}).get("engine_gate") or {}
         allowed_freqs = [str(f).lower() for f in (engine_cfg.get("allowed_freqs") or ["daily"])]
@@ -463,6 +465,14 @@ class FactorSubmitService:
 
         # 盲测终审门禁（enabled=False 时跳过）
         blind_result = self.checker.blind_test(metrics_train, test_metrics)
+        log_step(
+            "submit.blind_test",
+            name,
+            test_ic=test_report.get("ic"),
+            retention=test_report.get("ic_retention"),
+            sign=test_report.get("sign_consistent"),
+            fail=(blind_result.fail_reasons or None) if not blind_result.passed else None,
+        )
         if not blind_result.passed:
             payload = {
                 "ok": False,
@@ -488,6 +498,16 @@ class FactorSubmitService:
             return payload
 
         gate_reasons = self.checker.stage_one_stats(metrics_train).fail_reasons
+        log_step(
+            "submit.stage_one_stats",
+            name,
+            ic=metrics_train.get("ic"),
+            icir=metrics_train.get("icir"),
+            coverage=metrics_train.get("factor_coverage"),
+            autocorr=metrics_train.get("cs_pearson_autocorr"),
+            turnover=(metrics_train.get("quantile_portfolio") or {}).get("avg_daily_side_turnover"),
+            fail=gate_reasons or None,
+        )
 
         val_metrics: dict[str, Any] = {}
         if not gate_reasons and ctx.val_start > ctx.train_end:
@@ -495,9 +515,18 @@ class FactorSubmitService:
             val_metrics = _ingest_metrics_cached(
                 dataclasses.replace(stage_one_policy, train_start=ctx.val_start)
             )
-            gate_reasons += self.checker.stage_one_val_retention(
+            retention_reasons = self.checker.stage_one_val_retention(
                 metrics_train, val_metrics
             ).fail_reasons
+            gate_reasons += retention_reasons
+            log_step(
+                "submit.val_retention",
+                name,
+                val_ic=val_metrics.get("ic"),
+                val_icir=val_metrics.get("icir"),
+                retention=round(abs(float(val_metrics.get("ic") or 0) / float(metrics_train.get("ic") or 1e-12)), 4),
+                fail=retention_reasons or None,
+            )
             # val 多头端毛值超额（方向自适应）：IC 为正不代表多头组合为正，
             # alpha 可能全在空头端/中段排名——纯多头可交易口径必须单独为正。
             label_col = stage_one_policy.label_col
@@ -514,6 +543,7 @@ class FactorSubmitService:
 
         similarity_report: dict[str, Any] | None = None
         candidate_similarity: dict[str, Any] | None = None
+        production_similarity: dict[str, Any] | None = None
         if not gate_reasons:
             # ── 正式库相似度（抽样行快速口径）──
             # 正式库准入只查正式库：候选池内部冗余不卡正式库晋升
@@ -553,6 +583,13 @@ class FactorSubmitService:
             corr_result = self.checker.stage_one_correlation(production_similarity)
             stage_one_ok = corr_result.passed
             stage_one_reasons = corr_result.fail_reasons
+        log_step(
+            "submit.stage_one",
+            name,
+            passed=stage_one_ok,
+            max_corr=(production_similarity or {}).get("max_abs_corr"),
+            fail=stage_one_reasons or None,
+        )
 
         # 上报/存档指标仍用全窗口（与历史 registry 口径一致），附 train/val 分解。
         metrics = _ingest_metrics_cached(stage_one_policy)
@@ -649,6 +686,14 @@ class FactorSubmitService:
         review_status = (
             {"approve": "approved", "revise": "revise", "reject": "rejected"}.get(review_verdict, "pending_review")
         )
+        log_step(
+            "submit.review",
+            name,
+            verdict=review_verdict or "none",
+            source=(review or {}).get("source"),
+            canonical=str((review or {}).get("canonical_form") or "")[:80] or None,
+            novelty=(review or {}).get("novelty"),
+        )
         payload.update(
             review_status=review_status,
         )
@@ -682,6 +727,7 @@ class FactorSubmitService:
             source="submit_stage_one",
             evaluation_evidence=evaluation_evidence,
             interaction=interaction,
+            eval_label=str(ctx.label_col),
             data_fingerprint={
                 "panel_path": str(ctx.panel_path),
                 "index_hash": zoo.manifest.index_hash,
@@ -701,6 +747,7 @@ class FactorSubmitService:
             candidate_registry_path=candidate_reg,
             candidate_dsl_path=candidate_dsl,
         )
+        log_step("submit.candidate_stored", name, path=str(candidate_reg))
 
         # review 意见已记录：reject 在上方硬拦（抄袭/经典暴露不进任何库）。
         # revise / pending_review 不阻断晋升——stage_two 统计门槛 + engine_gate
@@ -719,6 +766,14 @@ class FactorSubmitService:
             "passed": stage_two_ok,
             "fail_reasons": stage_two_reasons,
         }
+        log_step(
+            "submit.stage_two",
+            name,
+            passed=stage_two_ok,
+            train_ic=metrics_train.get("ic"),
+            val_ic=val_metrics.get("ic"),
+            fail=stage_two_reasons or None,
+        )
         if not stage_two_ok:
             set_candidate_promotion(
                 self.candidate_registry_path,
@@ -756,6 +811,13 @@ class FactorSubmitService:
                 asset_type=getattr(ctx, "asset_type", "stock"),
             )
             payload["engine_backtest"] = gate
+            log_step(
+                "submit.engine_gate",
+                name,
+                passed=bool(gate.get("passed")),
+                freq=chosen_freq,
+                fail=gate.get("fail_reasons") or None,
+            )
             if not gate.get("passed"):
                 set_candidate_promotion(
                     self.candidate_registry_path,
@@ -837,6 +899,7 @@ class FactorSubmitService:
             ingest_status="production",
             source="submit_stage_two",
             interaction=interaction,
+            eval_label=str(ctx.label_col),
         )
         set_candidate_promotion(
             self.candidate_registry_path,
@@ -851,6 +914,13 @@ class FactorSubmitService:
             dsl_path=dsl_path,
             factorlib_path=str(self.factorlib_path),
             skipped_reason=None,
+        )
+        log_step(
+            "submit.promoted",
+            name,
+            train_ic=metrics_train.get("ic"),
+            val_ic=val_metrics.get("ic"),
+            registry=str(reg_path),
         )
 
         return payload

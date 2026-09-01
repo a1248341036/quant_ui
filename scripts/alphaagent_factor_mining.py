@@ -127,9 +127,15 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="运行中追加用户指令的 JSONL 队列文件（由 Web UI 使用）",
     )
+    p.add_argument("--user-message", default="请在训练集上提出并迭代多个多行因子表达式，再于验证集上检验泛化；目标为提高 abs(IC)/RANKIC 与 ICIR，并兼顾月度稳健性。")
     p.add_argument(
-        "--user-message",
-        default="请在训练集上提出并迭代多个多行因子表达式，再于验证集上检验泛化；目标为提高 abs(IC)/RANKIC 与 ICIR，并兼顾月度稳健性。",
+        "--focus-facets",
+        default="",
+        help=(
+            "数据面聚焦（跨面融合）：逗号分隔的面名，如 '基本面,价量面'。"
+            "合法面名来自 FACET_DEFS（价量面/量能面/筹码面/拥挤面/基本面/股东面/事件面/资金面）。"
+            "设置后用户消息追加融合指令，且每轮记忆注入附带聚焦提醒。"
+        ),
     )
     p.add_argument("--user-file", type=Path, help="从文件读取 user 消息（覆盖 --user-message）")
     p.add_argument(
@@ -186,6 +192,37 @@ def main() -> int:
         return 2
 
     user_message = args.user_file.read_text(encoding="utf-8") if args.user_file else args.user_message
+    # 数据面聚焦（跨面融合）：校验面名 → 用户消息追加融合指令（最强引导杠杆）。
+    # 非价量面被选中时提示需要 panel 载入对应列族（调用方负责 --no-fundamentals 联动）。
+    focus_facets: list[str] = []
+    if getattr(args, "focus_facets", ""):
+        from alphaagent.factor.mining.memory.expressions import FACET_DEFS
+
+        valid_names = {name for name, _ in FACET_DEFS}
+        raw = [s.strip() for s in str(args.focus_facets).split(",") if s.strip()]
+        focus_facets = [s for s in raw if s in valid_names]
+        unknown = [s for s in raw if s not in valid_names]
+        if unknown:
+            print(f"警告：忽略未知数据面 {unknown}（合法面名: {sorted(valid_names)}）", file=sys.stderr)
+    if focus_facets:
+        if len(focus_facets) >= 2:
+            focus_block = (
+                "## 数据面聚焦指令（用户指定，优先级最高）\n"
+                f"本轮挖掘聚焦以下数据面的因子与跨面融合：{'、'.join(focus_facets)}。\n"
+                "- 优先构造同时触及 ≥2 个所选面的融合因子，融合模式：\n"
+                "  ① 条件门控 MULTIPLY(面A信号, 面B门控)；② 分歧表达 DIVERGENCE_RANK(面A, 面B)；\n"
+                "  ③ 正交残差 CS_RESIDUALIZE(主信号, CS_BUCKET(面B控制变量,10))；④ 比值 DIVIDE(面A, 面B 规模)。\n"
+                "- 单面因子只有在融合尝试失败后才能提交，且 eval 调用须在 edit_note 里说明失败原因。\n"
+                "- 因子名用 _x_ 连接面名（如 funda_mom_x_price），便于辨识融合因子。"
+            )
+        else:
+            focus_block = (
+                "## 数据面聚焦指令（用户指定，优先级最高）\n"
+                f"本轮挖掘聚焦【{focus_facets[0]}】：表达式应触及该面的算子或数据列，"
+                "不要漂移到其他数据面。\n"
+                "- 单面聚焦不要求跨面融合，正常按该面思路构造并提交因子即可。"
+            )
+        user_message = f"{user_message}\n\n{focus_block}"
     try:
         research_spec = load_research_spec(args.research_spec_file)
     except ValueError as exc:
@@ -249,6 +286,7 @@ def main() -> int:
         enable_submit=True,
         enable_reviewer=not args.no_reviewer and research_spec["review_policy"]["enabled"],
         research_spec=research_spec,
+        focus_facets=focus_facets or None,
         max_cs_corr=research_spec["delivery_policy"]["candidate"]["max_abs_corr"],
         similar_top_k=args.similar_top_k,
         ingest_overwrite=args.ingest_overwrite,

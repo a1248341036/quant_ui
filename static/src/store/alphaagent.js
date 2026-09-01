@@ -37,7 +37,6 @@ export const agentStore = reactive({
   renameRunId: '',
   renameTitle: '',
   renamePosition: { top: 0, left: 0 },
-  memoryCollapsed: false,
   memoryDetail: null,
   composerCollapsed: false,
   agentMode: 'research',
@@ -70,7 +69,20 @@ export const agentStore = reactive({
     allow_submit: false,
     research_mode: 'technical',
     label_col: 'label_1d_open_to_open',
+    focus_facets: [],
   },
+
+  // 数据面多选选项（与 alphaagent/factor/mining/memory/expressions.py FACET_DEFS 对齐）
+  focusFacetOptions: [
+    { key: '价量面', label: '价量', hint: '日线 K 线/动量/反转/波动' },
+    { key: '量能面', label: '量能', hint: '成交量/成交额/换手' },
+    { key: '筹码面', label: '筹码', hint: 'CHIP_* 筹码分布算子' },
+    { key: '拥挤面', label: '拥挤', hint: 'CROWD_* 拥挤度算子' },
+    { key: '基本面', label: '基本面', hint: 'funda_* 财务列族（30+ 列）' },
+    { key: '股东面', label: '股东', hint: 'holder_* 股东户数/持股集中度' },
+    { key: '事件面', label: '事件', hint: '业绩预告/龙虎榜/大宗交易' },
+    { key: '资金面', label: '资金流', hint: 'fund_flow 资金流入流出' },
+  ],
 
   // ── 研究模式 / 记忆 / 总结 ──
   researchModes: [],
@@ -328,6 +340,11 @@ export const agentStore = reactive({
   useSuggestion(text) {
     this.form.user_message = text
   },
+  toggleFocusFacet(key) {
+    const list = this.form.focus_facets || []
+    const next = list.includes(key) ? list.filter(k => k !== key) : [...list, key]
+    this.form.focus_facets = next
+  },
   async startAgent() {
     if (this.agentBusy || !this.form.user_message.trim()) return
     this.error = ''
@@ -345,7 +362,7 @@ export const agentStore = reactive({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ...this.form,
-          no_fundamentals: !(this.researchModes.find(m => m.value === this.form.research_mode)?.needs_fundamentals),
+          no_fundamentals: !(this.researchModes.find(m => m.value === this.form.research_mode)?.needs_fundamentals) && !(this.form.focus_facets || []).length,
           research_spec: researchSpec,
           allow_submit: Boolean(researchSpec.delivery_policy?.allow_submit),
         }),
@@ -497,7 +514,6 @@ export const agentStore = reactive({
       } else {
         this.researchMemory = [...this.researchMemory, ...entries]
       }
-      this.memory = this.researchMemory
     } catch (e) {
       this.error = '读取长期研究记忆失败: ' + e.message
     } finally {
@@ -552,7 +568,6 @@ export const agentStore = reactive({
     try {
       await api('/api/alphaagent/research-memory/' + encodeURIComponent(entry.id), { method: 'DELETE' })
       this.researchMemory = this.researchMemory.filter(item => item.id !== entry.id)
-      this.memory = this.memory.filter(item => item.id !== entry.id)
       if (this.summaryEntries.some(item => item.id === entry.id)) {
         this.summaryTotal = Math.max(0, this.summaryTotal - 1)
         await this.loadSummaryPage()

@@ -86,6 +86,7 @@ def run_factor_mining(
         population_max=config.population_max,
         research_spec=config.research_spec,
         asset_type=ctx.asset_type,
+        focus_facets=getattr(config, "focus_facets", None),
     )
 
     printer = ConsolePrinter() if verbose else None

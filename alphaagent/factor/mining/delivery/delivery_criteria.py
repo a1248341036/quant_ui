@@ -32,7 +32,7 @@ class CandidateCriteria:
     样本外保留比 = val_ic / train_ic 绝对比值下限（方向反转直接拦截）。
     """
 
-    min_abs_ic: float = 0.015
+    min_abs_ic: float = 0.02
     min_icir: float = 0.25
     min_coverage: float = 0.85
     max_abs_corr: float = 0.5

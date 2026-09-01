@@ -19,7 +19,7 @@ from .constants import (
     POSITIVE_VERDICTS,
 )
 from .diagnostics import _failure_code, _now, _safe_float
-from .expressions import _structure_fingerprint, classify_family
+from .expressions import _structure_fingerprint, classify_family, expr_facets
 from .expressions import extract_edit_motif
 
 
@@ -234,6 +234,7 @@ class SchemaMixin:
             "parent_origin": "TEXT",
             "intended_motif": "TEXT",
             "edit_note": "TEXT",
+            "facets_json": "TEXT",
         }
         for col, ddl in _ENTRY_COLUMNS.items():
             if col not in entry_columns:
@@ -363,7 +364,11 @@ class SchemaMixin:
         )
 
     def _ensure_data_version(self, conn: sqlite3.Connection) -> None:
-        """幂等升级 data_version 到 v3（在索引建好后执行，避免 v1 库炸）。"""
+        """幂等升级 data_version 到当前版（在索引建好后执行，避免 v1 库炸）。
+
+        v3→v4 仅加列（facets_json，见 _ensure_schema 的逐列补齐），无需重放
+        cells：family 新口径只影响新写入，存量行由读取侧现算兜底。
+        """
         row = conn.execute("SELECT v FROM store_meta WHERE k='data_version'").fetchone()
         if row is None:
             # v1 存量库（无 store_meta 行）：同样重放 cells 并补 parent_origin
@@ -372,7 +377,8 @@ class SchemaMixin:
             return
         if str(row["v"]) == DATA_VERSION:
             return
-        # v2→v3：重建 cells 并补 parent_origin（legacy 全 implicit）
+        # v2/v3 → 当前版：重放 cells 并补 parent_origin（v4 的 facets_json
+        # 已在 _ensure_schema 逐列补齐，这里不重复处理）
         self._backfill_v3_conn(conn)
         conn.execute("INSERT OR REPLACE INTO store_meta(k, v) VALUES ('data_version', ?)", (DATA_VERSION,))
 
@@ -422,8 +428,8 @@ class SchemaMixin:
                 last_run_id, attempts, tokens_json,
                 created_at, updated_at,
                 structure_fingerprint, operator_list_json, window_params_json, parent_id,
-                parent_origin, intended_motif, edit_note
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                parent_origin, intended_motif, edit_note, facets_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 factor_name=excluded.factor_name,
                 expression=excluded.expression,
@@ -452,7 +458,8 @@ class SchemaMixin:
                 parent_id=excluded.parent_id,
                 parent_origin=excluded.parent_origin,
                 intended_motif=excluded.intended_motif,
-                edit_note=excluded.edit_note
+                edit_note=excluded.edit_note,
+                facets_json=excluded.facets_json
             """,
             (
                 entry["id"], entry.get("factor_name"), entry.get("expression"),
@@ -473,6 +480,7 @@ class SchemaMixin:
                 entry.get("parent_origin"),
                 entry.get("intended_motif"),
                 entry.get("edit_note"),
+                entry.get("facets_json"),
             ),
         )
         conn.execute("DELETE FROM memory_observations WHERE entry_id = ?", (entry["id"],))
@@ -562,6 +570,17 @@ class SchemaMixin:
                 "intended_motif": row["intended_motif"],
                 "edit_note": row["edit_note"],
             }
+            # 数据面标签（2026-09-03）：读 facets_json，老行为空时按表达式现算兜底
+            facets: set[str] = set()
+            row_keys = row.keys()
+            if "facets_json" in row_keys and row["facets_json"]:
+                try:
+                    facets = set(json.loads(row["facets_json"]))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    facets = set()
+            if not facets:
+                facets = expr_facets(str(row["expression"] or ""))
+            item["facets"] = facets
             output.append(item)
         return output
 
@@ -616,23 +635,37 @@ class SchemaMixin:
 
     @staticmethod
     def _classify(name: str, result: dict[str, Any], metrics: dict[str, Any], error: str) -> tuple[str, str]:
-        """从工具结果重建 verdict 与 conclusion（纯规则，确定性）。"""
+        """从工具结果重建 verdict 与 conclusion（纯规则，确定性）。
+
+        入库事实优先于 Reviewer 意见：revise 不阻断提交（候选池照常收纳），
+        已入库的 submit 即使携带 revise/gate 错误码也按 production_approved /
+        candidate_approved 记账，Reviewer 意见并入结论文本——避免「进了候选池
+        却记负证据」的口径错位（cells / 检索极性 / 父本质量排序都受影响）。
+        """
         review = result.get("factor_review") if isinstance(result.get("factor_review"), dict) else {}
+        if not review and isinstance(result.get("review"), dict):
+            # submit payload 的审查意见存于 "review" 键（evaluate 工具用 "factor_review"）
+            review = result.get("review")
         review_verdict = review.get("verdict")
         canonical = str(review.get("canonical_form") or "因子结构审核")
         reasons = review.get("reasons") if isinstance(review.get("reasons"), list) else []
+        review_note = ""
+        if review_verdict == "revise":
+            first_reason = str(reasons[0]) if reasons else canonical
+            review_note = f" Reviewer 意见：{canonical}（{first_reason}）。"
         if review_verdict == "reject":
             return "rejected", f"{canonical}：Reviewer 拒绝；{str(reasons[0]) if reasons else '不得重复同构表达式。'}"
+        if name == "submit_factor":
+            if result.get("stored"):
+                return "production_approved", "已通过精筛并正式入库，应保留其经济机制并避免重复。" + review_note
+            if result.get("candidate_stored"):
+                return "candidate_approved", "通过海选进入候选池，尚未满足精筛条件，应针对失败项改进。" + review_note
         if review_verdict == "revise":
             return "revise_required", f"{canonical}：Reviewer 要求结构性改造后再评估。"
         if error:
             snippet = error if len(error) <= 500 else error[:497] + "..."
             return "rejected", f"{name} 被否定：{snippet}"
         if name == "submit_factor":
-            if result.get("stored"):
-                return "production_approved", "已通过精筛并正式入库，应保留其经济机制并避免重复。"
-            if result.get("candidate_stored"):
-                return "candidate_approved", "通过海选进入候选池，尚未满足精筛条件，应针对失败项改进。"
             return "rejected", "提交未通过，避免在未改变机制或拒绝原因的情况下重复提交。"
         ic = _safe_float(metrics.get("ic"))
         icir = _safe_float(metrics.get("icir"))
@@ -643,7 +676,8 @@ class SchemaMixin:
         cov_str = f"Coverage={coverage:.2f}" if coverage is not None else ""
         if is_val and (result.get("sign_check", {}).get("matches_expected_sign") is not False) and abs(ic or 0) >= 0.015:
             return "validated", f"训练外验证通过：{ic_str} {icir_str} {cov_str}。方向一致且有可用相关性，可在相邻但不重复的机制上扩展。"
-        if abs(ic or 0) >= 0.015 and (icir or 0) > 0.2 and (coverage or 0) > 0.85:
+        # 海选线 2026-09-01 对齐 0.02（与 CandidateCriteria.min_abs_ic 同步）
+        if abs(ic or 0) >= 0.02 and (icir or 0) > 0.2 and (coverage or 0) > 0.85:
             return "promising", f"训练阶段有潜力：{ic_str} {icir_str} {cov_str}。优先进行训练外验证或独立性改造。"
         return "weak", f"指标不足：{ic_str} {icir_str} {cov_str}。除非改变变量、经济机制或处理方式，否则不要机械重试。"
 

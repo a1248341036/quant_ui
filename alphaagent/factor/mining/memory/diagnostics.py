@@ -74,23 +74,34 @@ def _rebuild_conclusion(name: str, result: dict[str, Any], metrics: dict[str, An
     """从工具结果中重建 verdict 和 conclusion。
 
     原始 ResearchMemoryStore._classify 方法的逻辑。
+    入库事实优先于 Reviewer 意见：revise 不阻断提交，已入库的 submit 即使
+    携带 revise/gate 错误码也按 candidate_approved/production_approved 记账
+    （与 schema._classify 同序，gate 失败的 error 文本不得掩盖入库事实）。
     """
     review = result.get("factor_review") if isinstance(result.get("factor_review"), dict) else {}
+    if not review and isinstance(result.get("review"), dict):
+        # submit payload 的审查意见存于 "review" 键（evaluate 工具用 "factor_review"）
+        review = result.get("review")
     review_verdict = review.get("verdict")
     canonical = str(review.get("canonical_form") or "因子结构审核")
     reasons = review.get("reasons") if isinstance(review.get("reasons"), list) else []
+    review_note = ""
+    if review_verdict == "revise":
+        first_reason = str(reasons[0]) if reasons else canonical
+        review_note = f" Reviewer 意见：{canonical}（{first_reason}）。"
     if review_verdict == "reject":
         return "rejected", f"{canonical}：Reviewer 拒绝；{str(reasons[0]) if reasons else '不得重复同构表达式。'}"
+    if name == "submit_factor":
+        if result.get("stored"):
+            return "production_approved", "已通过精筛并正式入库，应保留其经济机制并避免重复。" + review_note
+        if result.get("candidate_stored"):
+            return "candidate_approved", "通过海选进入候选池，尚未满足精筛条件，应针对失败项改进。" + review_note
     if review_verdict == "revise":
         return "revise_required", f"{canonical}：Reviewer 要求结构性改造后再评估。"
     if error:
         snippet = error if len(error) <= 500 else error[:497] + "..."
         return "rejected", f"{name} 被否定：{snippet}"
     if name == "submit_factor":
-        if result.get("stored"):
-            return "production_approved", "已通过精筛并正式入库，应保留其经济机制并避免重复。"
-        if result.get("candidate_stored"):
-            return "candidate_approved", "通过海选进入候选池，尚未满足精筛条件，应针对失败项改进。"
         return "rejected", "提交未通过，避免在未改变机制或拒绝原因的情况下重复提交。"
     ic = _safe_float(metrics.get("ic"))
     icir = _safe_float(metrics.get("icir"))
@@ -103,7 +114,9 @@ def _rebuild_conclusion(name: str, result: dict[str, Any], metrics: dict[str, An
 
     if is_val and (result.get("sign_check", {}).get("matches_expected_sign") is not False) and abs(ic or 0) >= 0.015:
         return "validated", f"训练外验证通过：{ic_str} {icir_str} {cov_str}。方向一致且有可用相关性，可在相邻但不重复的机制上扩展。"
-    if abs(ic or 0) >= 0.015 and (icir or 0) > 0.2 and (coverage or 0) > 0.85:
+    # 2026-09-01 起海选线对齐 0.02：0.015~0.02 区间因子经盲测/换手门禁几乎全灭，
+    # 不再授予 promising（正向 verdict 会驱动记忆与父本策略向其倾斜）。
+    if abs(ic or 0) >= 0.02 and (icir or 0) > 0.2 and (coverage or 0) > 0.85:
         return "promising", f"训练阶段有潜力：{ic_str} {icir_str} {cov_str}。优先进行训练外验证或独立性改造。"
     return "weak", f"指标不足：{ic_str} {icir_str} {cov_str}。除非改变变量、经济机制或处理方式，否则不要机械重试。"
 

@@ -475,6 +475,13 @@ def start_run(
     # 研究模式决定是否载入基本面列：needs_fundamentals=True 的模式必须载入
     # funda_* 字段（如基本面模式）；其余省内存。
     wants_fundamentals = bool(get_research_mode(mode).needs_fundamentals)
+    # 数据面聚焦联动：选中非价量面（基本面/股东/事件/资金等）时 panel 必须
+    # 载入对应列族——当前列族随 funda_* 开关一起加载，故强制不省略。
+    focus_facets_raw = params.get("focus_facets") or []
+    if isinstance(focus_facets_raw, list):
+        command.extend(["--focus-facets", ",".join(str(s) for s in focus_facets_raw)])
+        if any(str(s) not in ("价量面", "量能面", "筹码面", "拥挤面") for s in focus_facets_raw):
+            wants_fundamentals = True
     if not wants_fundamentals or params.get("no_fundamentals"):
         command.append("--no-fundamentals")
     if resume_context_file is not None:
@@ -848,6 +855,7 @@ def evaluate_single_factor(
             profile_id=profile_id,
             multi_line_expr=multi_line_expr,
             factor_name=factor_name,
+            ic_prefilter=False,
         )
         return service.eval_profile(eval_req)
     finally:
@@ -897,6 +905,7 @@ def evaluate_multi_profile(
                 profile_id=profile_id,
                 multi_line_expr=multi_line_expr,
                 factor_name=factor_name,
+                ic_prefilter=False,
             )
             results[profile_id] = service.eval_profile(eval_req)
     finally:
@@ -1375,6 +1384,7 @@ def save_factor(
             profile_id="validation",
             multi_line_expr=multi_line_expr.strip(),
             factor_name=factor_id,
+            ic_prefilter=False,
         )
         profile_result = service.eval_profile(profile_req)
         qp = profile_result.get("metrics", {}).get("quantile_portfolio")

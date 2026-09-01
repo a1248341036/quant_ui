@@ -8,6 +8,7 @@ import pytest
 from alphaagent.factor.mining.research_memory import (
     APV_TAU_C_DEFAULT,
     APV_TAU_V_DEFAULT,
+    DATA_VERSION,
     EQ7_KAPPA_DEFAULT,
     ResearchMemoryStore,
     _apv_gate,
@@ -137,7 +138,8 @@ def test_implicit_fallback_weighted(tmp_path):
     store = ResearchMemoryStore(tmp_path / "m.db")
     store.record_tool_result(run_id="r1", row=_eval_row("eval_on_train_set", PARENT_EXPR, "vwap_dev_10", ic=0.020))
     # 不声明父本 → 结构相似隐式兜底（窗口 10→20 是真实编辑观测）
-    entry = store.record_tool_result(run_id="r1", row=_eval_row("eval_on_train_set", CHILD_EXPR, "vwap_dev_20b", ic=0.018))
+    # ic=0.024：新海选线 0.02 之上（promising），且父本桶仍在 medium [0.015, 0.025)
+    entry = store.record_tool_result(run_id="r1", row=_eval_row("eval_on_train_set", CHILD_EXPR, "vwap_dev_20b", ic=0.024))
     assert entry["parent_origin"] == "implicit"
     with store._open() as conn:
         row = conn.execute("SELECT implicit_s, explicit_s, implicit_f, explicit_f FROM memory_cells").fetchone()
@@ -165,6 +167,94 @@ def test_invalid_attempt_recorded_as_failure(tmp_path):
         row = conn.execute("SELECT explicit_f, residuals_json FROM memory_cells").fetchone()
     assert row["explicit_f"] == pytest.approx(0.5)  # invalid 权重 0.5
     assert json.loads(row["residuals_json"]) == []  # 无 residual
+
+
+# ---------------------------------------------------------------------------
+# 入库事实优先：revise / gate 失败的 error 文本不得掩盖 candidate_stored/stored
+# ---------------------------------------------------------------------------
+
+_REVIEW_REVISE = {
+    "verdict": "revise",
+    "canonical_form": "统计验证未满足本次 ResearchSpec",
+    "reasons": ["训练集 abs(IC) 未达到 ResearchSpec 门槛。"],
+}
+
+
+def _submit_row(expr, factor_name, *, candidate_stored=False, stored=False, error=None,
+                review=None, metrics=None, parent=None, edit_note=None):
+    args = {"multi_line_expr": expr, "factor_name": factor_name}
+    if parent:
+        args["parent_factor"] = parent
+    if edit_note:
+        args["edit_note"] = edit_note
+    result = {"ok": stored, "stored": stored, "candidate_stored": candidate_stored}
+    if metrics:
+        result["metrics"] = metrics
+    if error:
+        result["error"] = error
+    if review:
+        result["factor_review"] = review
+    return {"name": "submit_factor", "arguments_raw": json.dumps(args), "result": result}
+
+
+def test_classify_pool_entry_overrides_review_revise():
+    # 进了候选池 + revise + gate 错误码 → candidate_approved（Reviewer 意见并入结论）
+    verdict, conclusion = ResearchMemoryStore._classify(
+        "submit_factor",
+        {"candidate_stored": True, "error": "stage_two_failed:train_ic",
+         "factor_review": _REVIEW_REVISE},
+        {},
+        "stage_two_failed:train_ic",
+    )
+    assert verdict == "candidate_approved"
+    assert "Reviewer 意见" in conclusion and "统计验证未满足本次 ResearchSpec" in conclusion
+    # 正式入库 + revise → production_approved
+    verdict2, _ = ResearchMemoryStore._classify(
+        "submit_factor", {"stored": True, "factor_review": _REVIEW_REVISE}, {}, ""
+    )
+    assert verdict2 == "production_approved"
+    # 未入库 + revise → 仍 revise_required
+    verdict3, _ = ResearchMemoryStore._classify(
+        "submit_factor", {"candidate_stored": False, "factor_review": _REVIEW_REVISE}, {}, ""
+    )
+    assert verdict3 == "revise_required"
+
+
+def test_classify_gate_failure_without_review_still_pool_entry():
+    # stage_two_failed 无 review（error 文本非空）也不得记成 rejected
+    verdict, conclusion = ResearchMemoryStore._classify(
+        "submit_factor",
+        {"candidate_stored": True, "error": "stage_two_failed:train_ic"},
+        {},
+        "stage_two_failed:train_ic",
+    )
+    assert verdict == "candidate_approved"
+    assert "候选池" in conclusion
+
+
+def test_pool_entry_submit_counts_as_cell_success(tmp_path):
+    store = ResearchMemoryStore(tmp_path / "m.db")
+    store.record_tool_result(run_id="r1", row=_eval_row("eval_on_train_set", PARENT_EXPR, "vwap_dev_10", ic=0.020))
+    entry = store.record_tool_result(
+        run_id="r1",
+        row=_submit_row(
+            CHILD_EXPR, "vwap_dev_20_sub",
+            candidate_stored=True,
+            error="stage_two_failed:train_ic",
+            review=_REVIEW_REVISE,
+            metrics={"ic": 0.0224, "icir": 0.295},
+            parent="vwap_dev_10",
+            edit_note="edit=window_rescale 10→20",
+        ),
+    )
+    assert entry is not None
+    assert entry["verdict"] == "candidate_approved"
+    assert entry["failure_code"] == "stage_two_failed"
+    with store._open() as conn:
+        row = conn.execute("SELECT explicit_s, explicit_f, residuals_json FROM memory_cells").fetchone()
+    assert row["explicit_s"] == pytest.approx(1.0)  # 已入池 → 有效正观测（非 invalid 失败）
+    assert row["explicit_f"] == pytest.approx(0.0)
+    assert json.loads(row["residuals_json"])  # child IC 在 → 有 residual
 
 
 def test_same_bucket_baseline_uses_history(tmp_path):
@@ -323,7 +413,7 @@ def test_v2_migration_rebuilds_cells(tmp_path):
         origin = conn.execute(
             "SELECT parent_origin FROM memory_entries WHERE id=?", (sig(CHILD_EXPR),)
         ).fetchone()[0]
-    assert version == "3"
+    assert version == DATA_VERSION
     assert "parent_bucket" in cols and "implicit_s" in cols and "explicit_s" in cols
     # 子代被隐式链接到父本并重建进 cells（legacy 全 implicit）
     assert origin == "implicit"
@@ -394,7 +484,7 @@ def test_v1_legacy_db_migration(tmp_path):
         origin = conn.execute(
             "SELECT parent_origin FROM memory_entries WHERE id=?", (sig(child_expr),)
         ).fetchone()[0]
-    assert version == "3"
+    assert version == DATA_VERSION
     assert {"family", "stage_metrics_json", "parent_origin", "intended_motif", "edit_note"} <= cols
     assert origin == "implicit"
     assert cell_row is not None
@@ -592,6 +682,38 @@ def test_experience_block_renders_template_and_do_not(tmp_path):
     assert "vol_weak_1" in block  # 禁令带死路因子名单
 
 
+def test_diversity_block_fusion_guidance(tmp_path):
+    """近批全部集中在价量面 → 注入面覆盖警告 + 未触面清单 + 融合算子示例；
+    已覆盖 ≥3 个面时不注入（避免喧宾夺主）。"""
+    store = ResearchMemoryStore(tmp_path / "m.db")
+    mono = [{"expression": e} for e in (
+        "RANK(TS_MEAN($adj_close, 10))",
+        "RANK(TS_MEAN($adj_close, 20))",
+        "NEG(TS_STD($ret, 5))",
+        "RANK($volume)",
+        "CS_ZSCORE($amount)",
+    )]
+    block = store._diversity_block(mono)
+    assert "数据面覆盖警告" in block
+    assert "未触及的数据面" in block and "基本面" in block and "股东面" in block
+    assert "DIVERGENCE_RANK" in block and "CS_RESIDUALIZE" in block
+
+    diverse = mono + [
+        {"expression": "CHIP_ENTROPY($adj_close, $adj_low, $adj_high, $volume, 60, $float_cap)"},
+        {"expression": "RANK($funda_roe)"},
+    ]
+    assert store._diversity_block(diverse) == ""
+
+    # 正向经验的跨面融合标注：表达式触及价量+基本面两个面
+    store.record_tool_result(run_id="r1", row=_eval_row(
+        "eval_on_train_set",
+        "DIVERGENCE_RANK(RANK($funda_roe), RANK(TS_MEAN($adj_close, 10)))",
+        "fusion_roe_mom", ic=0.025))
+    store.distill_batch_experience(run_id="r1", turn=1, batch_results=[{"dummy": 1}])
+    succ = [r for r in store.list_experience() if r["kind"] == "success_pattern"]
+    assert any("跨面融合" in r["content"] and "基本面" in r["content"] for r in succ)
+
+
 def test_recommend_edits_scores_cells(tmp_path):
     """正残差×高置信的 (family, motif) 排前，附族内最优父本；无正 cells 回退族级推荐。"""
     store = ResearchMemoryStore(tmp_path / "m.db")
@@ -643,3 +765,67 @@ def test_gate_feedback_flow(tmp_path):
     rows = {r["name"]: r for r in store.list_experience()}
     assert "gate_validated:vwap" in rows
     assert rows["gate_validated:vwap"]["template"]
+
+
+def test_context_evidence_not_starved_by_core_blocks(tmp_path):
+    """预算分段回归：经验块（成功模式带模板+示例表达式）+ 编辑先验膨胀后，
+    证据块仍必须在场（'- [' 条目行 >= 2），不被核心块饿死到 0 条。"""
+    store = ResearchMemoryStore(tmp_path / "m.db", max_inject_chars=2400)
+    # 造 3 条正向因子（证据块保底来源）+ 6 条弱因子（触发禁令经验）
+    for i, ic in enumerate([0.038, 0.03, 0.025]):
+        store.record_tool_result(run_id="r1", row=_eval_row(
+            "eval_on_train_set", f"RANK(SUBTRACT($adj_close, TS_MEAN($vwap, {10 + i})))",
+            f"pos_{i}", ic=ic))
+    for i in range(6):
+        store.record_tool_result(run_id="r1", row=_eval_row(
+            "eval_on_train_set", f"RANK(TS_STD($close, {30 + i}))", f"weak_{i}", ic=0.004))
+    store.distill_batch_experience(run_id="r1", turn=1, batch_results=[{"dummy": 1}])
+    block = store.context_for(
+        "A股量价因子挖掘", enable_factor_retrieval=True,
+        enable_edit_patterns=True, limit=8)
+    n_entries = sum(1 for line in block.splitlines() if line.startswith("- ["))
+    assert len(block) <= 2400 + 50
+    assert n_entries >= 2, f"证据块被核心块挤出（条目行 {n_entries}）"
+
+
+def test_form_memory_signature_rows_enriched(tmp_path):
+    """form_memory 签名行与蒸馏行同规格：content 带因子/IC/方向/指导语，
+    template 参数槽化，evidence.examples 带真实表达式——不再是
+    "成功模式：{签名}（{因子名}）"式的无信息身份行。"""
+    store = ResearchMemoryStore(tmp_path / "m.db")
+    expr = "ov_gap = SUBTRACT($adj_open, DELAY($adj_close, 1))\nCS_ZSCORE(NEG(TS_MEDIAN(DIVIDE(ov_gap, DELAY($adj_close, 1)), 60)))"
+    row = _eval_row("eval_on_train_set", expr, "ov_prem_med60", ic=-0.0349)
+    formed = store.form_memory(run_id="r1", turn=1, batch_results=[{
+        "factor_name": "ov_prem_med60",
+        "expression": expr,
+        "metrics": {"ic": -0.0349, "icir": 0.4},
+        "admitted": True,
+        "verdict": "promising",
+        "conclusion": "训练阶段指标有潜力",
+        "rejection_reason": "",
+    }])
+    # 签名是否命中取决于 _SUCCESS_SIGNATURES；未命中时不产生行（合法性由签名表保证）
+    rows = {r["name"]: r for r in store.list_experience()}
+    sig_rows = [n for n in rows if n.startswith("signature:")]
+    if not sig_rows:
+        assert formed["success_patterns"] == 0
+        return
+    r = rows[sig_rows[0]]
+    assert formed["success_patterns"] >= 1
+    # content 不再是裸身份行：含代表因子名、IC 数值、方向说明、行动指导
+    assert "ov_prem_med60" in r["content"]
+    assert "0.0349" in r["content"]
+    assert "反向" in r["content"] or "方向为正" in r["content"]
+    assert "模板骨架" in r["content"]
+    # template 参数槽化 + evidence.examples 带真实表达式
+    assert r["template"]
+    with sqlite3.connect(tmp_path / "m.db") as conn:
+        conn.row_factory = sqlite3.Row
+        raw = conn.execute(
+            "SELECT evidence_json FROM memory_experience WHERE name=?", (r["name"],)
+        ).fetchone()
+    ev = json.loads(raw["evidence_json"])
+    assert ev.get("examples") == [expr]
+    # 注入块渲染出模板与示例
+    block = store._experience_block()
+    assert "成功模式" in block and "模板:" in block

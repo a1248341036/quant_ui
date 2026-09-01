@@ -57,6 +57,9 @@ class StartRequest(BaseModel):
     max_tokens: int = Field(default=16384, ge=256, le=32768)  # hy3 thinking 需 >8K
     population_max: int = Field(default=24, ge=0, le=36)  # 种群批量上限；0=关闭路径B
     no_fundamentals: bool = False
+    # 数据面聚焦（跨面融合）：前端多选（如 ["基本面","价量面"]）→ 子进程
+    # --focus-facets，用户消息追加融合指令 + 每轮记忆注入聚焦提醒。
+    focus_facets: list[str] = Field(default_factory=list)
     # 研究模式开关（前端切换）：优先级高于 research_spec JSON 内的 research_mode。
     research_mode: str = "technical"
     research_spec: dict[str, Any] = Field(default_factory=build_default_research_spec)

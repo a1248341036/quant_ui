@@ -165,3 +165,29 @@ def test_submit_stage_two_fail_keeps_candidate(submit_service):
     # 注:桩里 metrics 全达标,这里只验证候选路径字段存在
     assert "candidate_stored" in result
     assert "delivery_check" in result
+
+
+def test_submit_stage_one_fail_returns_payload_not_crash(submit_service, monkeypatch):
+    """stage_one 统计失败 → 正常返回 payload（skipped_reason=stage_one_failed）。
+
+    回归：分步日志 submit.stage_one 引用了仅在 `if not gate_reasons` 分支内
+    赋值的 production_similarity，stage_one 失败路径直接 UnboundLocalError，
+    preflight 冒烟提交（必然失败）被它打死 → 每次 run 秒退（2026-09-02）。
+    """
+    monkeypatch.setattr(
+        submit_module, "compute_ingest_metrics",
+        lambda *a, **k: {"ic": 0.005, "icir": 0.08, "coverage": 0.9,
+                         "cs_pearson_autocorr": 0.05, "winsorized_abs_ic_decay": 0.01},
+    )
+    result = submit_service.submit(
+        "s1",
+        multi_line_expr="CLOSE",
+        factor_name="factor_bad",
+        comment="economic logic",
+        review_hook=lambda cand: {"verdict": "approve"},
+        orthogonality_hook=lambda: {"passed": True},
+    )
+    assert result["ok"] is False
+    assert result["stored"] is False
+    assert result["candidate_stored"] is False
+    assert str(result.get("skipped_reason") or "").startswith("stage_one_failed")
