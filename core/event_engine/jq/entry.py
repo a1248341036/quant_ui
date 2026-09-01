@@ -30,7 +30,7 @@ def run_jq_backtest(code: str, start: str, end: str | None = None,
     lookback = max(800, (end_ts - pd.Timestamp(start)).days + lookback_buffer_days)
     ctx = JQContext(end=end_ts.date().isoformat(), lookback_days=lookback)
     t0 = time.time()
-    rt = JQRuntime(code, ctx, capital=capital)
+    rt = JQRuntime(code, ctx, capital=capital, window_start=start)
     init_fn = rt._init_fn
     # 干跑 initialize: 采集 set_order_cost/set_slippage(引擎费率需在建引擎前
     # 确定), 随后清空调度/挂单, 由引擎 init 正式注册

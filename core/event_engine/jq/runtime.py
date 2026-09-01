@@ -50,9 +50,14 @@ def _load_income():
 class JQRuntime:
     """聚宽风格运行时。"""
 
-    def __init__(self, code: str, ctx: JQContext, capital: float):
+    def __init__(self, code: str, ctx: JQContext, capital: float,
+                 window_start: str | None = None):
         self.ctx = ctx
         self.capital = float(capital)
+        # 回测窗口起点: 周/月内交易日序数从它起计数(聚宽自窗口首日驱动,
+        # 残缺周从窗口首日重数); None = 全日历口径(旧行为)
+        self.window_start = (pd.Timestamp(window_start) if window_start
+                             else None)
         self.benchmark: str | None = None
         self.g = _G()
         self.log = _Log()
@@ -623,23 +628,32 @@ class JQRuntime:
         if not self._sched_sorted:
             self.scheduled.sort(key=sched_sort_key)
             self._sched_sorted = True
-        if self._month_map is None:
+        if self._month_map is None or self._week_map is None:
             dates = self.ctx.tables.dates
-            per = dates.to_period("M")
-            nth = pd.Series(1, index=dates).groupby(per).cumsum()
-            tot = pd.Series(1, index=dates).groupby(per).transform("size")
-            self._month_map = {d: (int(n), int(t))
-                               for d, n, t in zip(dates, nth, tot)}
-        if self._week_map is None:
-            dates = self.ctx.tables.dates
-            iso = dates.isocalendar()
-            wk = (iso["year"].to_numpy().astype(np.int64) * 100
-                  + iso["week"].to_numpy().astype(np.int64))
-            s = pd.Series(1, index=dates)
-            wn = s.groupby(wk).cumsum()
-            wt = s.groupby(wk).transform("size")
-            self._week_map = {d: (int(n), int(t))
-                              for d, n, t in zip(dates, wn, wt)}
+            # 窗口起点之前(预热段)的日期不参与周/月内计数: 聚宽自回测
+            # 首日驱动, 残缺周/月从窗口首日重数(实证: 2025-01-02 起的
+            # 回测, 聚宽把 01-03 当首周第 2 个交易日)
+            if self.window_start is not None:
+                keep = np.asarray(dates) >= self.window_start
+            else:
+                keep = np.ones(len(dates), dtype=bool)
+            d_keep = dates[keep]
+            if self._month_map is None:
+                per = d_keep.to_period("M")
+                s = pd.Series(1, index=d_keep)
+                nth = s.groupby(per).cumsum()
+                tot = s.groupby(per).transform("size")
+                self._month_map = {d: (int(n), int(t))
+                                   for d, n, t in zip(d_keep, nth, tot)}
+            if self._week_map is None:
+                iso = d_keep.isocalendar()
+                wk = (iso["year"].to_numpy().astype(np.int64) * 100
+                      + iso["week"].to_numpy().astype(np.int64))
+                s = pd.Series(1, index=d_keep)
+                wn = s.groupby(wk).cumsum()
+                wt = s.groupby(wk).transform("size")
+                self._week_map = {d: (int(n), int(t))
+                                  for d, n, t in zip(d_keep, wn, wt)}
 
     def run_day(self, bar):
         self._ensure_schedule()

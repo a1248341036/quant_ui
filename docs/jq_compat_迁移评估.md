@@ -27,7 +27,7 @@
 | before_trading_start(context, data) | 🟢 | 映射 'before_open' 时间槽（schedule 排序已就绪） |
 | handle_data(context, data) | 🟢 | 映射 'every_bar'；data 需 SecurityUnitData 轻量对象 |
 | after_trading_end(context) | 🟢 | 映射 'after_close' 时间槽 |
-| run_daily / run_weekly / run_monthly | ✅ | 已支持：时间排序、kwargs 忽略、月内第 N 交易日 |
+| run_daily / run_weekly / run_monthly | ✅ | 已支持：时间排序、kwargs 忽略、周/月内第 N 交易日（序数自回测窗口首日起计数，残缺周/月从窗口重数，对齐聚宽驱动语义） |
 | unschedule_all() | 🟢 | 清空 scheduled 列表 |
 | run_interval / Tick 级专用函数 | 🔴 | 日线引擎无意义（数据湖有分钟线，属另一档工程） |
 
