@@ -50,10 +50,27 @@ export function fmtVol(x) {
   return fmt(x, 0) + '手';
 }
 
+const PCT_KEYS = new Set([
+  '总收益', '年化收益', '年化波动', '最大回撤', '卡玛', '胜率',
+  '策略收益', '策略年化收益', '基准收益', '超额收益', '超额收益最大回撤',
+  '策略波动率', '基准波动率',
+]);
+
+const INT_KEYS = new Set(['盈利次数', '亏损次数']);
+
+const RATIO_KEYS = new Set([
+  '阿尔法', '贝塔', '夏普比率', '索提诺比率', '信息比率',
+  '日均超额收益', '超额收益夏普比率',
+]);
+
 export function metricText(k, v) {
-  return ['总收益', '年化收益', '年化波动', '最大回撤', '卡玛', '胜率'].includes(k)
-    ? pct(v)
-    : fmt(v);
+  if (PCT_KEYS.has(k)) return pct(v);
+  if (INT_KEYS.has(k)) return fmt(v, 0);
+  if (RATIO_KEYS.has(k)) {
+    const n = Number(v);
+    return Number.isFinite(n) ? n.toFixed(3) : '-';
+  }
+  return fmt(v);
 }
 
 export function numOrNull(x) {

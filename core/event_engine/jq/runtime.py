@@ -81,6 +81,7 @@ class JQRuntime:
         self._day_orders: dict[int, _Order] = {}
         self._order_seq = 0
         self._day_trades: list[_Trade] = []
+        self._placed_report: list[dict] = []
         self._hd_injected = False
         self._proc_init_done = False
         self.context = _Context(self)
@@ -519,10 +520,11 @@ class JQRuntime:
         return fn(*args[:n])
 
     def _snapshot_fills(self):
-        """上一执行日的引擎成交 -> 当日可查的 Trade 列表。"""
+        """上一执行日的引擎成交 -> 当日可查的 Trade 列表 + 回执日志。"""
         ctx = self._engine_ctx
         fills = list(getattr(ctx, "fills", None) or [])
         out = []
+        d = self.context.previous_date
         for f in fills:
             shares = float(f.get("shares") or 0)
             side = str(f.get("side") or "")
@@ -530,9 +532,48 @@ class JQRuntime:
                 security=f.get("code"),
                 price=f.get("price") or 0.0,
                 amount=shares if side == "buy" else -shares,
-                time=self.context.previous_date,
+                time=d,
                 fee=f.get("fee") or 0.0))
         self._day_trades = out
+        # ---- 回执日志: 昨日委托的成交/未成交 + 日终快照(预热段不记) ----
+        if (self.window_start is not None
+                and d < self.window_start):
+            self._placed_report = []
+            return
+        placed = getattr(self, "_placed_report", None) or []
+        if placed or fills:
+            filled_codes = set()
+            for f in fills:
+                code = str(f.get("code"))
+                filled_codes.add(code)
+                name = self.ctx.name_map.get(code, "")
+                side = ("买入" if str(f.get("side")) == "buy" else "卖出")
+                self.log.info(
+                    f"[成交 {d.date()}] {side} {code} {name} "
+                    f"{float(f.get('shares') or 0):.0f}股 "
+                    f"@ {float(f.get('price') or 0):.3f} "
+                    f"金额 {float(f.get('amount') or 0):,.0f}元 "
+                    f"费 {float(f.get('fee') or 0):.2f}")
+            for p in placed:
+                if str(p["code"]) not in filled_codes:
+                    self.log.warn(
+                        f"[未成交 {d.date()}] {p['desc']} "
+                        f"(涨停/跌停/停牌/资金不足)")
+        self._placed_report = []
+        if ctx is not None:
+            pv = float(getattr(ctx, "portfolio_value", 0.0) or 0.0)
+            cash = float(getattr(ctx, "cash", 0.0) or 0.0)
+            pos = getattr(ctx, "positions", None) or {}
+            if pos:
+                items = " ".join(
+                    f"{c}({sh:.0f})" for c, sh in sorted(pos.items()))
+                self.log.info(
+                    f"[日终 {d.date()}] 净值 {pv / self.capital:.4f} "
+                    f"资产 {pv:,.0f} 现金 {cash:,.0f} 持仓 {items}")
+            else:
+                self.log.info(
+                    f"[日终 {d.date()}] 净值 {pv / self.capital:.4f} "
+                    f"资产 {pv:,.0f} 现金 {cash:,.0f} 持仓 (空仓)")
 
     def _get_trade_days(self, start_date=None, end_date=None, count=None):
         dates = self.ctx.tables.dates
@@ -696,15 +737,25 @@ class JQRuntime:
             self.context.current_dt = self._slot_dt(bar.exec_date, "15:00")
             self._call_hook(ate, self.context)
 
+    _KIND_DESC = {"tv": "目标市值", "ot": "目标股数", "ov": "买入市值",
+                  "os": "增减股数", "op": "目标占比"}
+
     def _flush_orders(self, bar):
         ctx = self._engine_ctx
         pending = self.pending_orders
         self.pending_orders = []
+        self._placed_report = []
+        warmup = (self.window_start is not None
+                  and bar.exec_date < self.window_start)
         for kind, code, arg, order in pending:
             # 盘中价撮合: 下单时点(order.add_time)的分钟价(面板前复权空间),
             # 无分钟数据回落 signal 日收盘定价(引擎再按执行日开盘成交)
             pxm = self._minute_px_panel(code, order.add_time) if order is not None else None
             px = pxm or ctx.last_close(code)
+            name = self.ctx.name_map.get(str(code), "")
+            slot = (order.add_time.strftime("%H:%M")
+                    if order is not None and order.add_time is not None
+                    else "--:--")
             if not px:
                 if code not in self._warned:
                     self._warned.add(code)
@@ -712,6 +763,32 @@ class JQRuntime:
                 if order is not None:
                     order.status = _OrderStatus.rejected
                 continue
+            # 方向推断 + 拒单预判(引擎侧涨跌停/停牌检查)
+            cur = float(ctx.position(code) or 0.0)
+            if kind in ("tv", "ot"):
+                target = (arg / px) if kind == "tv" else arg
+                direction = "买入" if target > cur else "卖出"
+            elif kind == "op":
+                direction = "买入" if arg > 0 else "卖出"
+            else:
+                direction = "买入" if arg > 0 else "卖出"
+            block = ""
+            if direction == "买入" and not ctx.can_buy(code):
+                block = "  [预计废单:涨停/停牌]"
+            elif direction == "卖出" and not ctx.can_sell(code):
+                block = "  [预计废单:跌停/停牌]"
+            src = "分钟价" if pxm is not None else "前收盘"
+            arg_desc = (f"{arg:,.0f}元" if kind in ("tv", "ov")
+                        else (f"{arg:,.0f}股" if kind in ("ot", "os")
+                              else f"{arg:.2%}"))
+            if not warmup:
+                self.log.info(
+                    f"[委托 {bar.exec_date.date()} {slot}] {direction} {code} "
+                    f"{name} {self._KIND_DESC.get(kind, kind)} {arg_desc} "
+                    f"参考价 {px:.3f}({src}){block}")
+                self._placed_report.append({"code": str(code),
+                                            "desc": f"{direction} {code} "
+                                                    f"{name} {arg_desc}"})
             if kind == "tv":          # 目标市值 -> 目标股数
                 ctx.order_target_shares(code, arg / px, fill_price=pxm)
             elif kind == "ot":        # 目标股数
