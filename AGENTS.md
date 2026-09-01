@@ -234,6 +234,59 @@ logs/factor_mining/ui/        # 每次 Web run 的 JSONL 轨迹 + run_meta.json�
 - **评估 metrics 快路径（`factor/metrics.py`）**：逐日 IC / Rank IC / lag1 自相关 / 十分位分组 / 分位组合 / 市值中性化全部改为「datetime 连续区间切片（`_day_slices`，面板按 datetime 排序时 O(1) 取每日切片，消除逐日 `groupby+xs` 全表查找）」；`pd.qcut` 换成数值等价的快速等频分箱 `_fast_equal_freq_codes`（分位边界浮点重合时自动回落 qcut，保证语义一致）；`mls_fmb` 与 `long_short_portfolio` 经 `context.cache` 共享同一份每日十分位结果。回落路径保留（未排序面板/测试注入 `_day_slices_override`）。门禁：`tests/test_metrics_fastpaths.py`（快慢路径输出一致 + 分箱等价对照）。
 - **慢算子三重门禁**：① 静态拦截 `scripts/check_dsl_slow_patterns.py`（AST 扫描 operators.py，新增逐品种 pandas 循环/纯 Python 逐 bar 循环即失败，存量白名单只减不增；由 `tests/test_dsl_slow_patterns.py` 挂进 pytest）；② 性能门禁 `tests/test_dsl_operator_perf.py`（720k 行标准面板上 9 个优化算子的耗时预算断言 + 快路径接线检查，防并行层静默退化）；③ 一致性门禁 `tests/test_dsl_operator_consistency.py`（35 用例，快路径 vs 回落路径逐位一致，覆盖 NaN/跳空/零量/乱序面板/动态窗）。运行时慢算子发现走 `dsl-monitor` API（top_k 耗时榜）。
 
+## 聚宽策略兼容层（JQ Shim）——代码面板跑聚宽策略
+
+对标聚宽策略 API 的本地回测层（代码面板 /api/code/jq/run、模拟盘事件策略共用）。实现位于 `core/event_engine/jq/`，**按聚宽官方文档类别拆分**：
+
+```
+core/event_engine/jq/
+├── api/                # 命名空间装配（每模块 install(ns, rt)，对应聚宽文档类别）
+│   ├── framework.py    #   策略程序架构/运行时间: run_daily/run_weekly/run_monthly/unschedule_all
+│   ├── settings.py     #   策略设置函数: set_option/set_benchmark/set_slippage/set_order_cost
+│   ├── trading.py      #   交易函数: order 四件套/cancel_order/get_orders/get_trades
+│   ├── data_api.py     #   数据获取函数: get_price/history/get_fundamentals/get_industry/
+│   │                   #     get_extras/get_billboard_list/get_index_stocks/交易日历/normalize_code
+│   ├── portfolio.py    #   策略组合操作: set_subportfolios/transfer_cash（单账户兼容）
+│   └── misc.py         #   其他函数: jqdata/jqfactor 模块桩、display、旧版 pandas/time.clock exec 兼容
+├── objects.py          # 对象: Context/Portfolio/Position/Order/Trade 壳视图
+├── query.py            # get_fundamentals 的 query DSL（valuation/income 列过滤）
+├── runtime.py          # 编排: exec 用户代码 → 生命周期（before_trading_start→定时任务→flush→
+│                       #   after_trading_end）→ 撮合对接；有状态数据实现（矩阵/截面/财务缓存）
+├── entry.py            # run_jq_backtest 入口（干跑采集费率 → 引擎回测）
+├── factor_bridge.py    # get_factor: AlphaAgent DSL 因子表达式在策略内调用
+└── datalake/           # ★ 数据接入插件体系（见下节）
+```
+
+### 数据接入方式（datalake 插件体系）——加数据的标准流程
+
+数据源三目录：`data/quant_dataset`（CNE 管理的 tushare wide 日线）、`data/pg_parquet`（CNE 注册外部财务/基本信息）、`CNEquity/.../_cnequity/curated`（CNE 原生 curated 表，46+ 数据集）。
+
+**规则 1：CNE curated 已有的表 = 零代码**。启动时 `discover_cne_curated()` 把 curated 下全部目录批量注册为 `cne:<dataset>` 通用插件（裸名/带前缀等价：`load("dragon_tiger")` == `load("cne:dragon_tiger")`），全部即刻可 `datalake.load(name)` / `datalake.asof(name, date)`（点时：日期过滤 + 按 `entity_keys` 每实体取最新）。覆盖见 `jq_data.data_status()` 诊断表（行数/日期范围/内存）。**接入一个"已有 CNE 表"的新 API 不需要写任何插件文件**。
+
+**规则 2：需要专属清洗/换算的表才写插件**。在 `core/event_engine/jq/datalake/plugins/` 新增非下划线 `.py`（与 alphaagent 数据插件同风格）：
+
+```python
+from core.event_engine.jq.datalake.base import JQDataPlugin
+
+PLUGIN = JQDataPlugin(
+    name="income",                    # 唯一 id；load() 缺省取模块级同名函数
+    date_column="ann_date",           # 点时列（None=无日期概念）
+    entity_keys=("code",),            # asof 去重键（每实体取最新一行）
+    asof_fallback_first=False,        # 请求早于最早数据时回退首期（月度快照类才需要）
+)
+
+def load() -> pd.DataFrame:
+    ...                               # 进程级缓存，kwargs 参与缓存键
+```
+
+已迁移专表插件：`stock_daily`（日线原始帧，按 start/end/prefixes 参数缓存）、`income`（利润表 ann_date 点时）、`index_bars`（CNE 指数日线）、`industry_members`（行业月度快照 sw+eastmoney，fallback 首期）、`fina_indicator`/`balancesheet`/`cashflow`（财务三表）。调用未注册名抛**带扩展指引**的 NotImplementedError（列出已注册名单+怎么加插件），不抛裸 KeyError。
+
+**规则 3：API 层封装**。在 `api/<对应类别>.py` 加一个函数：内部 `datalake.load(...)`（或 `asof`）+ 单位/口径换算（元/千元/万元、前复权口径见 jq_data docstring）+ 点时裁剪（信号日为界，禁止未来数据）。参考实现 `get_billboard_list`（api/data_api.py，从 CNE dragon_tiger 到 API 共 ~25 行）。
+
+**规则 4：`scripts/jq_repro/jq_data.py` 是门面**。保留常量别名（PG/QDATA/CNE_CURATED）与策略域构建器（load_panel/build_tables/fin_ok_matrix/ew_index，由 stock_daily 原始帧派生引擎面板）；paper.py、strategies/event/_runtime.py 等历史调用零改动。
+
+撮合/点时语义注意：日线引擎信号 T-1 收盘 → T 开盘撮合（100 股整手、涨跌停/停牌拒单）；`history` 以信号日为界（NaN 前置补齐）；货基 ETF（511880/511990）为合成行情（年化 2% 直线）。验证脚本：`scripts/jq_repro/_test_datalake.py`（插件体系）、`_test_p0_api.py`（API 面）、`_validate_jq_compat.py`（小盘三正基线）、`_test_guojiu.py`/`_test_billboard.py`/`_test_research_api.py`（真实策略端到端）。API 迁移对照评估见 `docs/jq_compat_迁移评估.md`，聚宽官方文档快照 `docs/jq_api_snapshot/api_full.html`。
+
 ## 开发效率
 
 ### 代码搜索必须先带筛选（强制）
