@@ -82,6 +82,9 @@ def run_factor_mining(
         extra_instructions=extra_instructions,
         label_col=ctx.label_col,
         include_fundamentals=ctx.include_fundamentals,
+        panel_columns=session_resp.available_columns,
+        population_max=config.population_max,
+        research_spec=config.research_spec,
         asset_type=ctx.asset_type,
     )
 
