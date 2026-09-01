@@ -1,6 +1,46 @@
 <template>
   <section>
     <div class="card">
+      <h2>聚宽策略回测</h2>
+      <p class="muted">代码页每次运行自动留存（含策略代码、净值、持仓、日志）；点击「打开」回到回测详情页查看完整结果。</p>
+      <div class="row">
+        <button class="ghost" @click="loadJqRuns" :disabled="jqRuns.loading">{{ jqRuns.loading ? '刷新中…' : '刷新' }}</button>
+        <button class="primary" @click="store.requestTab = 'code'">去代码页运行</button>
+      </div>
+      <div class="table-wrap" v-if="jqRuns.items.length">
+        <table>
+          <thead><tr>
+            <th>启动时间</th>
+            <th>状态</th>
+            <th>窗口</th>
+            <th>资金</th>
+            <th>策略收益</th>
+            <th>基准收益</th>
+            <th>年化</th>
+            <th>最大回撤</th>
+            <th>策略</th>
+            <th></th>
+          </tr></thead>
+          <tbody>
+            <tr v-for="r in jqRuns.items" :key="r.run_id" class="clickable-row" @click="openJqRun(r)">
+              <td>{{fmtTime(r.started_at)}}</td>
+              <td><span :class="'run-dot run-' + r.phase"></span>{{jqPhaseText(r.phase)}}</td>
+              <td>{{(r.start||'').slice(0,10)}} ~ {{(r.end||'').slice(0,10) || '今'}}</td>
+              <td>{{fmt(r.capital, 0)}}</td>
+              <td :class="sign(r['策略收益'])">{{pct(r['策略收益'])}}</td>
+              <td :class="sign(r['基准收益'])">{{pct(r['基准收益'])}}</td>
+              <td :class="sign(r['策略年化收益'])">{{pct(r['策略年化收益'])}}</td>
+              <td>{{pct(r['最大回撤'])}}</td>
+              <td class="ellipsis" :title="r.code_head">{{r.code_head}}</td>
+              <td><button class="ghost" @click.stop="openJqRun(r)">打开</button></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div v-else-if="!jqRuns.loading" class="empty">暂无聚宽策略回测记录</div>
+    </div>
+
+    <div class="card">
       <h2>AlphaAgent 因子评估</h2>
       <p class="muted">因子实验室每次评估自动记录；点击"打开"可恢复到评估时的完整界面（指标、图表、导出、保存）。</p>
       <div class="row">
@@ -207,11 +247,13 @@ export default {
       history: { kind: '', limit: 50, items: [], loading: false, error: '', detail: null, sortKey: 'created_at', sortDir: 'desc' },
       labHist: { limit: 50, error: '' },
       histSweepSort: { key: '', dir: 'asc' },
+      jqRuns: { items: [], loading: false },
     }
   },
   mounted() {
     this.loadHistory()
     store.loadLabHistory()
+    this.loadJqRuns()
   },
   methods: {
     fmt,
@@ -223,6 +265,28 @@ export default {
     sortCompare,
     labHistRows() {
       return (store.labHistory || []).slice(0, this.labHist.limit)
+    },
+    async loadJqRuns() {
+      this.jqRuns.loading = true
+      try {
+        const r = await api('/api/code/jq/runs?limit=50')
+        this.jqRuns.items = r.items || []
+      } catch (e) { /* ignore */ }
+      this.jqRuns.loading = false
+    },
+    jqPhaseText(p) {
+      return { queued: '排队中', context: '数据加载', minutes: '分钟预取', engine: '逐日回测',
+               done: '完成', error: '失败', cancelled: '已停止' }[p] || p
+    },
+    fmtTime(ts) {
+      if (!ts) return '—'
+      const d = new Date(ts * 1000)
+      const p = (n) => String(n).padStart(2, '0')
+      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+    },
+    openJqRun(r) {
+      store.jqRunId = r.run_id
+      store.requestTab = 'jqrun'
     },
     openLabHistory(h) {
       if (!h) return

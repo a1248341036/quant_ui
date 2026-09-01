@@ -59,6 +59,7 @@
     <Backtest v-else-if="tab==='backtest'" />
     <Composite v-else-if="tab==='composite'" />
     <CodeView v-else-if="tab==='code'" />
+    <JqRun v-else-if="tab==='jqrun'" />
     <AlphaAgent v-else-if="tab==='alphaagent'" />
     <Paper v-else-if="tab==='paper'" />
     <History v-else-if="tab==='history'" />
@@ -80,6 +81,7 @@ import Stock from './views/Stock.vue'
 import Backtest from './views/Backtest.vue'
 import Composite from './views/Composite.vue'
 import CodeView from './views/Code.vue'
+import JqRun from './views/JqRun.vue'
 import AlphaAgent from './views/AlphaAgent.vue'
 import Paper from './views/Paper.vue'
 import History from './views/History.vue'
@@ -89,7 +91,7 @@ import Sentiment from './views/Sentiment.vue'
 
 export default {
   name: 'App',
-  components: { Dashboard, Pool, Stock, Backtest, Composite, CodeView, AlphaAgent, Paper, History, Account, DataView, Sentiment },
+  components: { Dashboard, Pool, Stock, Backtest, Composite, CodeView, JqRun, AlphaAgent, Paper, History, Account, DataView, Sentiment },
   data() {
     return {
       store,

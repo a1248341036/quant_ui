@@ -232,11 +232,12 @@ def run_jq_strategy(req: JQRunRequest):
                 "traceback": traceback.format_exc(limit=20)}
 
 
-# ---- 异步运行管理器: 边跑边报进度(轮询), 支持停止 ----
+# ---- 异步运行管理器: 边跑边报进度(轮询), 支持停止, 完成落盘成历史 ----
 _JQ_RUNS: dict[str, dict] = {}
 _JQ_RUNS_LOCK = threading.Lock()
 _JQ_ACTIVE_PHASES = {"queued", "context", "minutes", "engine"}
 _JQ_RUN_KEEP = 8
+JQ_RUNS_DIR = PROJECT_ROOT / "artifacts" / "jq_runs"
 
 
 def _jq_run_worker(state: dict, req: JQRunRequest) -> None:
@@ -282,6 +283,71 @@ def _jq_run_worker(state: dict, req: JQRunRequest) -> None:
             state["error"] = f"{type(exc).__name__}: {exc}"
             state["traceback"] = traceback.format_exc(limit=20)
             state["ended_at"] = time.time()
+    _persist_jq_run(state, req)
+
+
+def _persist_jq_run(state: dict, req: JQRunRequest) -> None:
+    """完成的运行落盘(策略代码一并保存), 供历史页回看。"""
+    try:
+        JQ_RUNS_DIR.mkdir(parents=True, exist_ok=True)
+        record = {
+            "run_id": state["run_id"],
+            "phase": state["phase"],
+            "error": state.get("error"),
+            "traceback": state.get("traceback"),
+            "started_at": state["started_at"],
+            "ended_at": state.get("ended_at"),
+            "elapsed": state.get("ended_at", time.time()) - state["started_at"],
+            "req": {"start": req.start, "end": req.end,
+                    "capital": req.capital, "warmup_days": req.warmup_days,
+                    "code": req.code},
+            "result": state.get("result"),
+        }
+        (JQ_RUNS_DIR / f"{state['run_id']}.json").write_text(
+            json.dumps(record, ensure_ascii=False, default=str),
+            encoding="utf-8")
+    except Exception as exc:   # noqa: BLE001 - 历史落盘失败不影响回测本身
+        print(f"[jq-runs] 历史落盘失败 {state.get('run_id')}: "
+              f"{type(exc).__name__}: {exc}", flush=True)
+
+
+def _load_jq_run_record(run_id: str) -> dict | None:
+    """内存没有(进程重启/已被清理)时从磁盘读历史运行。"""
+    run_id = re.sub(r"[^0-9a-f]", "", str(run_id))
+    f = JQ_RUNS_DIR / f"{run_id}.json"
+    if not f.exists():
+        return None
+    try:
+        return json.loads(f.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _jq_run_list_item(record: dict) -> dict:
+    """列表条目: 摘要指标, 不带全量 result。"""
+    result = record.get("result") or {}
+    metrics = result.get("metrics") or {}
+    req = record.get("req") or {}
+    code_head = next((ln.strip() for ln in (req.get("code") or "").splitlines()
+                      if ln.strip() and not ln.strip().startswith("#")), "")
+    return {
+        "run_id": record["run_id"],
+        "phase": record.get("phase"),
+        "error": record.get("error"),
+        "started_at": record.get("started_at"),
+        "ended_at": record.get("ended_at"),
+        "elapsed": record.get("elapsed"),
+        "start": req.get("start"),
+        "end": req.get("end"),
+        "capital": req.get("capital"),
+        "code_head": code_head[:40],
+        "codes_count": result.get("codes_count"),
+        "bench_code": result.get("bench_code"),
+        "策略收益": metrics.get("策略收益"),
+        "基准收益": metrics.get("基准收益"),
+        "策略年化收益": metrics.get("策略年化收益"),
+        "最大回撤": metrics.get("最大回撤"),
+    }
 
 
 def _prune_jq_runs() -> None:
@@ -292,6 +358,31 @@ def _prune_jq_runs() -> None:
             key=lambda k: _JQ_RUNS[k].get("ended_at", 0))
         for k in finished[:-_JQ_RUN_KEEP]:
             _JQ_RUNS.pop(k, None)
+
+
+@router.get("/jq/runs")
+def list_jq_runs(limit: int = 50):
+    """运行历史: 活跃运行(内存) + 已完成运行(磁盘), 按开始时间倒序。"""
+    items: dict[str, dict] = {}
+    with _JQ_RUNS_LOCK:
+        for s in _JQ_RUNS.values():
+            items[s["run_id"]] = _jq_run_list_item({
+                "run_id": s["run_id"], "phase": s["phase"],
+                "error": s.get("error"), "started_at": s["started_at"],
+                "ended_at": s.get("ended_at"),
+                "elapsed": (s.get("ended_at") or time.time()) - s["started_at"],
+                "req": s.get("req", {}), "result": s.get("result"),
+            })
+    if JQ_RUNS_DIR.exists():
+        files = sorted(JQ_RUNS_DIR.glob("*.json"),
+                       key=lambda f: f.stat().st_mtime, reverse=True)
+        for f in files[: max(limit, 0) or 50]:
+            rec = _load_jq_run_record(f.stem)
+            if rec:
+                items.setdefault(rec["run_id"], _jq_run_list_item(rec))
+    out = sorted(items.values(), key=lambda x: x.get("started_at") or 0,
+                 reverse=True)
+    return {"ok": True, "items": out[: max(limit, 0) or 50]}
 
 
 @router.post("/jq/run_async")
@@ -307,6 +398,9 @@ def start_jq_run_async(req: JQRunRequest):
     state = {"run_id": run_id, "phase": "queued", "done": 0, "total": 0,
              "nav": [], "result": None, "error": None, "traceback": None,
              "cancel_event": threading.Event(),
+             "req": {"start": req.start, "end": req.end,
+                     "capital": req.capital, "warmup_days": req.warmup_days,
+                     "code": req.code},
              "started_at": time.time(), "ended_at": None}
     with _JQ_RUNS_LOCK:
         _JQ_RUNS[run_id] = state
@@ -319,12 +413,18 @@ def start_jq_run_async(req: JQRunRequest):
 def get_jq_run(run_id: str):
     with _JQ_RUNS_LOCK:
         s = _JQ_RUNS.get(run_id)
-        if s is None:
-            raise HTTPException(404, "run not found")
-        out = {k: v for k, v in s.items() if k != "cancel_event"}
-        out["nav"] = list(s["nav"])
-    out["elapsed"] = round(
-        (out.get("ended_at") or time.time()) - out["started_at"], 1)
+        if s is not None:
+            out = {k: v for k, v in s.items() if k != "cancel_event"}
+            out["nav"] = list(s["nav"])
+            out.update(s.get("req") or {})   # start/end/capital/code 提平
+            out["elapsed"] = round(
+                (out.get("ended_at") or time.time()) - out["started_at"], 1)
+            return out
+    rec = _load_jq_run_record(run_id)
+    if rec is None:
+        raise HTTPException(404, "run not found")
+    out = {k: v for k, v in rec.items() if k != "req"}
+    out.update(rec.get("req") or {})   # start/end/capital/code 提平
     return out
 
 

@@ -185,6 +185,7 @@ def run_jq_backtest(code: str, start: str, end: str | None = None,
     trades = res["trades"].copy()
     if len(trades):
         trades["date"] = trades["date"].astype(str)
+        trades["signal_date"] = trades["signal_date"].astype(str)
     deals = []
     for f in res.get("trades_detail") or []:
         deals.append({

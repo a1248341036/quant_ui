@@ -46,6 +46,8 @@ export const store = reactive({
   labLoadPayload: null,
   // 跨页面跳转请求（History → alphaagent 等），App.vue watch 后消费并清空
   requestTab: '',
+  // 聚宽回测运行详情: 当前打开的 run_id（Code 启动 / History 或详情页切换时更新）
+  jqRunId: '',
 
   // 因子实验室评估历史 —— localStorage 持久化（上限 100 条，最新在前）
   LAB_HISTORY_KEY: 'alphaagent_lab_history_v1',

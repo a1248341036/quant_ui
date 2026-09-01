@@ -10,21 +10,13 @@
         <span v-if="preflightRunning" class="spinner"></span>{{preflightRunning ? '预检中…' : '🔍 API 预检'}}
       </button>
       <button class="primary" @click="runJq" :disabled="codeRunning">
-        <span v-if="codeRunning" class="spinner"></span>{{codeRunning ? '回测中…' : '▶ 运行策略'}}
+        <span v-if="codeRunning" class="spinner"></span>{{codeRunning ? '启动中…' : '▶ 运行策略'}}
       </button>
-      <button class="ghost" v-if="codeRunning && jqRunId" @click="stopRun">■ 停止</button>
     </div>
 
-    <div v-if="runState && codeRunning" class="card" style="padding:8px 12px;margin-bottom:8px">
-      <div style="font-size:13px;display:flex;justify-content:space-between;gap:12px">
-        <span><strong>{{phaseText}}</strong>
-          <span class="muted" v-if="runState.total > 0"> {{runState.done}}/{{runState.total}}</span>
-          <span class="muted" v-if="etaText"> · 剩余约 {{etaText}}</span>
-        </span>
-        <span class="muted">已用 {{fmtElapsed(runState.elapsed)}}</span>
-      </div>
-      <div class="jq-pbar"><div class="jq-pfill" :style="{width: pctText}"></div></div>
-      <div id="jqEquity" class="chart" v-if="runState.nav && runState.nav.length > 1"></div>
+    <div v-if="codeRunning" class="card" style="padding:8px 12px;margin-bottom:8px">
+      <strong>回测已启动——进度与结果在「回测详情」页展示</strong>
+      <div style="font-size:12px;color:#888;margin-top:4px">可在顶部「历史」查看历史回测，或在详情页切换多次运行。</div>
     </div>
 
     <div v-if="preflightResult" class="card" :style="preflightResult.ok ? 'border-left:4px solid #2e7d32;padding:8px 12px;margin-bottom:8px' : 'border-left:4px solid #c62828;padding:8px 12px;margin-bottom:8px'">
@@ -93,30 +85,6 @@
       </div>
     </details>
   </div>
-
-  <div v-if="jqResult">
-    <div class="card">
-      <h3>回测结果 <span class="muted" style="font-size:12px">{{jqResult.start}} ~ {{jqResult.end}} · 资金 {{fmt(jqResult.capital,0)}} · {{jqResult.codes_count}} 只候选域</span></h3>
-      <div class="cards">
-        <div class="metric" v-for="(v,k) in jqResult.metrics" :key="k"><div class="label">{{k}}</div><div class="value" :class="sign(v)">{{metricText(k,v)}}</div></div>
-      </div>
-      <div id="jqEquity" class="chart"></div>
-    </div>
-    <div class="card">
-      <h3>期末持仓</h3>
-      <div class="table-wrap"><table>
-        <tr><th>代码</th><th>名称</th><th>权重</th><th>现价</th><th>市值</th></tr>
-        <tr v-for="(h,i) in jqResult.holdings" :key="i">
-          <td>{{h.code}}</td><td>{{h.name}}</td><td>{{pct(h.weight)}}</td><td>{{fmt(h.price,2)}}</td><td>{{fmt(h.market_value,0)}}</td>
-        </tr>
-      </table></div>
-    </div>
-    <div class="card">
-      <h3>运行日志</h3>
-      <pre style="max-height:300px;overflow:auto;font-size:12px">{{jqResult.logs.join('\n')}}</pre>
-    </div>
-  </div>
-  <div v-else class="card"><div class="empty">写好策略后点「▶ 运行策略」查看回测结果</div></div>
 
   <!-- 设置弹窗(仅本页生效的参数副本) -->
   <Teleport to="body">
@@ -188,19 +156,18 @@
 <script>
 import { api } from '../utils/api.js'
 import { fmt, pct, sign, metricText, today } from '../utils/format.js'
-import { renderLine } from '../utils/charts.js'
+import { store } from '../store/index.js'
 
 export default {
   name: 'CodeView',
   data() {
     return {
+      store,
       code: {
         code: '', savedName: '', savedList: [],
         capital: 100000, start: '2025-01-01', end: today(),
       },
       codeResult: null, codeRunning: false, codeError: '', codeSaveMsg: '',
-      jqResult: null,
-      jqRunId: null, runState: null, pollTimer: null,
       preflightRunning: false, preflightResult: null,
       showSettings: false, cfgDraft: {}, cfgCustomized: false, cfgSaving: false,
       loadSavedDialog: false,
@@ -210,28 +177,6 @@ export default {
     this.refreshSaved();
     this.loadConfig();
     this.loadDefaultCode();
-  },
-  beforeUnmount() {
-    if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null; }
-  },
-  computed: {
-    phaseText() {
-      const m = { queued: '排队中', context: '构建数据上下文', minutes: '预取分钟线',
-                  engine: '逐日回测', done: '完成', error: '失败', cancelled: '已停止' };
-      return m[this.runState && this.runState.phase] || '';
-    },
-    pctText() {
-      const s = this.runState;
-      if (!s || !s.total) return '0%';
-      return Math.min(100, Math.round(s.done / s.total * 100)) + '%';
-    },
-    etaText() {
-      const s = this.runState;
-      if (!s || !s.total || !s.done || !s.elapsed) return '';
-      const eta = s.elapsed * (s.total - s.done) / s.done;
-      if (eta >= 90) return Math.round(eta / 60) + ' 分钟';
-      return Math.round(eta) + ' 秒';
-    },
   },
   methods: {
     fmt, pct, sign, metricText,
@@ -416,63 +361,17 @@ def trade_afternoon(context):
       } catch (e) { this.preflightResult = { ok: false, missing: [], message: '预检请求失败: ' + e.message }; }
       finally { this.preflightRunning = false; }
     },
-    // ---- 运行(异步轮询: 边跑边画图 + 进度/ETA) ----
-    fmtElapsed(sec) {
-      if (sec == null) return '0 秒';
-      const s = Math.round(sec);
-      if (s >= 60) return Math.floor(s / 60) + ' 分 ' + (s % 60) + ' 秒';
-      return s + ' 秒';
-    },
-    renderJqChart(r) {
-      this.$nextTick(() => {
-        const series = [{ name: '策略', dates: r.nav.map(x => x.date), values: r.nav.map(x => x.value) }];
-        if (Array.isArray(r.benchmark) && r.benchmark.length) {
-          series.push({ name: '基准 ' + (r.bench_code || ''), dash: true, dates: r.benchmark.map(x => x.date), values: r.benchmark.map(x => x.value) });
-        }
-        renderLine('jqEquity', series);
-      });
-    },
+    // ---- 运行: 异步启动 -> 跳转「回测详情」页(进度/曲线/结果/切换) ----
     async runJq() {
       if (!this.code.code.trim()) { this.codeError = '请先粘贴策略代码'; return; }
       this.codeRunning = true; this.codeError = ''; this.codeSaveMsg = ''; this.preflightResult = null;
-      this.jqResult = null; this.runState = null;
       try {
         const r = await api('/api/code/jq/run_async', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: this.code.code, start: this.code.start, end: this.code.end, capital: this.code.capital }) });
         if (r.ok === false) { this.codeError = r.error || '启动失败'; this.codeRunning = false; return; }
-        this.jqRunId = r.run_id;
-        await this.pollRun();
-        if (this.codeRunning && !this.pollTimer) this.pollTimer = setInterval(() => this.pollRun(), 1000);
-      } catch (e) { this.codeError = '运行失败: ' + e.message; this.codeRunning = false; }
-    },
-    async pollRun() {
-      let s;
-      try {
-        s = await api('/api/code/jq/runs/' + this.jqRunId);
-      } catch (e) { return; }   // 瞬时网络错误: 下次轮询重试
-      this.runState = s;
-      if (s.nav && s.nav.length > 1) {
-        this.renderJqChart({ nav: s.nav });
-      }
-      if (s.phase === 'done') {
-        this.finishPoll();
-        this.jqResult = s.result;
-        this.renderJqChart(s.result);
-      } else if (s.phase === 'error') {
-        this.finishPoll();
-        this.codeError = '运行失败: ' + s.error + (s.traceback ? '\n' + s.traceback : '');
-      } else if (s.phase === 'cancelled') {
-        this.finishPoll();
-        this.codeError = '已手动停止';
-      }
-    },
-    finishPoll() {
-      if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null; }
-      this.jqRunId = null;
-      this.codeRunning = false;
-    },
-    async stopRun() {
-      if (!this.jqRunId) return;
-      try { await api('/api/code/jq/runs/' + this.jqRunId + '/stop', { method: 'POST' }); } catch (e) { /* ignore */ }
+        store.jqRunId = r.run_id;
+        store.goto('jqrun');
+      } catch (e) { this.codeError = '运行失败: ' + e.message; }
+      finally { this.codeRunning = false; }
     },
   },
 }

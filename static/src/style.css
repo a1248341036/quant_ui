@@ -158,6 +158,12 @@ tbody tr:last-child td { border-bottom: none; }
 .chart.small { height: 220px; }
 .jq-pbar { height: 6px; border-radius: 3px; background: rgb(255 255 255 / .07); margin-top: 7px; overflow: hidden; }
 .jq-pfill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, var(--accent), var(--accent-strong)); transition: width .6s ease; }
+.run-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: middle; background: var(--muted); }
+.run-dot.run-done { background: #35b779; }
+.run-dot.run-error { background: #c94b55; }
+.run-dot.run-cancelled { background: #b8860b; }
+.run-dot.run-queued, .run-dot.run-context, .run-dot.run-minutes, .run-dot.run-engine { background: var(--accent); animation: run-pulse 1.2s ease-in-out infinite; }
+@keyframes run-pulse { 50% { opacity: .35; } }
 .muted { color: var(--muted); font-size: 12px; }
 .agent-log { max-height: 620px; overflow: auto; display: flex; flex-direction: column; gap: 8px; }
 .agent-event { border: 1px solid var(--line); border-radius: 9px; padding: 9px 11px; background: rgb(255 255 255 / .018); }
