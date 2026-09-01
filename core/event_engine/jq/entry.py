@@ -158,7 +158,7 @@ def run_jq_backtest(code: str, start: str, end: str | None = None,
             "amount": float(f.get("amount") or 0),
             "fee": float(f.get("fee") or 0),
         })
-    return {
+    result = {
         "ok": True,
         "metrics": metrics,
         "nav": [{"date": str(pd.Timestamp(d).date()), "value": float(v)}
@@ -172,4 +172,9 @@ def run_jq_backtest(code: str, start: str, end: str | None = None,
         "codes_count": len(ctx.codes),
         "start": start, "end": end_ts.date().isoformat(),
         "capital": capital,
+        "bench_code": str(bench_code),
     }
+    if bench_curve is not None:
+        result["benchmark"] = [{"date": str(pd.Timestamp(d).date()), "value": float(v)}
+                               for d, v in bench_curve.items()]
+    return result

@@ -8,9 +8,12 @@ sys.stdout.reconfigure(encoding='utf-8')
 
 BASE = 'http://127.0.0.1:17891'
 
+sys.path.insert(0, r'D:\Quant\quant_ui\scripts\jq_repro')
+from _code_block import extract_jq_code
+
 src = open('scripts/jq_repro/_validate_jq_compat.py', encoding='utf-8').read()
-m = src.find("CODE = '''")
-code = src[m + len("CODE = '''"):src.find("'''", m)]
+code = extract_jq_code(src)
+assert 'def initialize' in code and 'get_fundamentals' in code, '策略代码提取失败'
 
 def post(path, payload):
     req = urllib.request.Request(

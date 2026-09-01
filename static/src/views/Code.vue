@@ -388,9 +388,13 @@ def trade_afternoon(context):
         const r = await api('/api/code/jq/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: this.code.code, start: this.code.start, end: this.code.end, capital: this.code.capital }) });
         if (r.ok === false) { this.codeError = r.error + (r.traceback ? '\n' + r.traceback : ''); return; }
         this.jqResult = r;
-        this.$nextTick(() => renderLine('jqEquity', [
-          { name: '策略', dates: r.nav.map(x => x.date), values: r.nav.map(x => x.value) },
-        ]));
+        this.$nextTick(() => {
+          const series = [{ name: '策略', dates: r.nav.map(x => x.date), values: r.nav.map(x => x.value) }];
+          if (Array.isArray(r.benchmark) && r.benchmark.length) {
+            series.push({ name: '基准 ' + (r.bench_code || ''), dash: true, dates: r.benchmark.map(x => x.date), values: r.benchmark.map(x => x.value) });
+          }
+          renderLine('jqEquity', series);
+        });
       } catch (e) { this.codeError = '运行失败: ' + e.message; }
       finally { this.codeRunning = false; }
     },
