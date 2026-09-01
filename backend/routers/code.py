@@ -35,6 +35,10 @@ class JQRunRequest(BaseModel):
     warmup_days: int = 60
 
 
+class JQPreflightRequest(BaseModel):
+    code: str
+
+
 class QweaveRunRequest(BaseModel):
     code: str = ""
     universe: str = "沪深300+中证500+中证1000"
@@ -183,7 +187,7 @@ def reset_code_config():
 
 
 @router.post("/jq/preflight")
-def preflight_jq_strategy(req: JQRunRequest):
+def preflight_jq_strategy(req: JQPreflightRequest):
     """聚宽策略 API 预检: AST 静态扫描, 秒级报告兼容层缺失的 API/字段。
 
     回测前调用, 避免"跑 90 秒后炸在缺失 API 上"的验证循环。
