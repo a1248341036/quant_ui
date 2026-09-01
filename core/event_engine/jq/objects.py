@@ -18,7 +18,14 @@ class _Log:
         self.buffer: list[str] = []
 
     def _add(self, level, *args):
-        # JQ log.info('a', b, c) 多参数空格拼接(DataFrame 等对象 str 化)
+        # 聚宽 log.info(fmt, *args) 支持 printf 风格(首参 str 含 % 时);
+        # 其余为多参数空格拼接(DataFrame 等对象 str 化)
+        if (len(args) > 1 and isinstance(args[0], str)
+                and "%" in args[0]):
+            try:
+                args = (args[0] % tuple(args[1:]),)
+            except (TypeError, ValueError):
+                pass
         msg = " ".join(str(a) for a in args)
         line = f"[{level}] {msg}"
         self.buffer.append(line)
@@ -51,6 +58,23 @@ class _OrderStatus:
     held = "held"
     canceled = "canceled"
     rejected = "rejected"
+
+
+class _MarketOrderStyle:
+    """聚宽市价单: limit_price 为保护价(可选), 撮合时作为限价边界。"""
+
+    def __init__(self, limit_price=None):
+        self.limit_price = (float(limit_price)
+                            if limit_price is not None else None)
+        self.type = "market"
+
+
+class _LimitOrderStyle(_MarketOrderStyle):
+    """聚宽限价单(本引擎与保护价语义一致: 越界不成交)."""
+
+    def __init__(self, limit_price=None):
+        super().__init__(limit_price)
+        self.type = "limit"
 
 
 class _Order:
@@ -127,7 +151,16 @@ class _CodeData:
         self.high_limit = row.get("limit_price", np.nan)
         self.low_limit = row.get("low_limit", np.nan)
         self.day_open = row.get("open_raw", np.nan)
-        op = self.day_open
+        # 聚宽语义: last_price = 决策时刻实时价 -> 分钟价优先(未复权),
+        # 缺失回落当日开盘
+        op = np.nan
+        if self._rt is not None:
+            mp = self._rt._minute_px_raw(self.code,
+                                         self._rt.context.current_dt)
+            if mp is not None:
+                op = mp
+        if not np.isfinite(op):
+            op = self.day_open
         self.last_price = (float(op) if op is not None and np.isfinite(op)
                            else row.get("close_raw", np.nan))
         self.last_price_closed = row.get("close_raw", np.nan)
@@ -167,12 +200,17 @@ class _CurrentData:
         return str(code).split(".")[0].strip().zfill(6)
 
     def __getitem__(self, code):
-        code = self._norm(code)
-        if code not in self._snap.index:
+        key = self._norm(code)
+        if key not in self._snap.index and self._rt is not None:
+            # 注入 ETF 等带后缀键: 裸码 miss 后按实际键(带后缀)重试
+            actual = self._rt._code_alias.get(key)
+            if actual is not None and actual in self._snap.index:
+                key = actual
+        if key not in self._snap.index:
             # 停牌/无数据股票: 返回"不可交易"视图
             return _CodeData(pd.Series({"paused": True, "st": False}),
                              self._name_map, self._rt)
-        return _CodeData(self._snap.loc[code], self._name_map, self._rt)
+        return _CodeData(self._snap.loc[key], self._name_map, self._rt)
 
     def get(self, code, default=None):
         code = self._norm(code)
@@ -241,6 +279,9 @@ class _Portfolio:
     @property
     def in_out_cash(self):
         return 0.0
+
+    # 聚宽属性名: inout_cash
+    inout_cash = in_out_cash
 
     @property
     def positions_value(self):

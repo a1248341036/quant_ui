@@ -58,8 +58,11 @@ DEFAULT_PARAMS = dict(
 )
 
 # 聚宽空仓月常买货基ETF -> 注入合成行情(年化~2%), 使下单可撮合
-MONEY_ETFS = ("511880.XSHG", "511990.XSHG")
-METF_NAME = {"511880.XSHG": "银华日利", "511990.XSHG": "华宝添益"}
+# (货币ETF收益曲线可精确建模; 518880/513500 等风险类 ETF 无 CNE 行情,
+#  不合成 —— 待 CNE fund_bars 扩展)
+MONEY_ETFS = ("511880.XSHG", "511990.XSHG", "511220.XSHG")
+METF_NAME = {"511880.XSHG": "银华日利", "511990.XSHG": "华宝添益",
+             "511220.XSHG": "国泰货币"}
 
 import re as _re  # noqa: E402
 
@@ -83,11 +86,13 @@ def _inject_money_etfs(panel: pd.DataFrame, close_raw_df: pd.DataFrame
         return panel, close_raw_df
     dates = pd.DatetimeIndex(sorted(panel["date"].unique()))
     path = 100.0 * (1.0 + 0.02 / 250.0) ** np.arange(len(dates))
+    # 带后缀注入(聚宽口径): 策略常量/持仓/下单字符串环环相扣保持一致;
+    # 引擎侧通过 _code_alias 支持裸码/后缀码双查
     pans = [pd.DataFrame({"date": dates, "code": c, "open": path,
                           "close": path, "turnover": 0.01, "am20": 1e9})
             for c in todo]
-    crs = [pd.DataFrame({"date": dates, "code": c, "close_raw": path,
-                         "open_raw": path}) for c in todo]
+    crs = [pd.DataFrame({"date": dates, "code": c,
+                         "close_raw": path, "open_raw": path}) for c in todo]
     print(f"[runtime] 注入货基ETF合成行情: {todo}", flush=True)
     return (pd.concat([panel, *pans], ignore_index=True),
             pd.concat([close_raw_df, *crs], ignore_index=True))
@@ -232,6 +237,10 @@ class JQContext:
             _strip_st_prefix(nm) if (nm and not bool(st))
             else nm
             for nm, st in zip(df["name"], df["st"])]
+        # 合成注入的货基ETF无 st/paused 元数据(NaN) -> bool(NaN)=True
+        # 会被误判停牌/ST, 统一 NaN -> False
+        df["st"] = df["st"].fillna(False)
+        df["paused"] = df["paused"].fillna(False)
         for name, mat in self._fin_mats.items():
             df[name] = mat[i][keep]
         tr = self._turnover_col(pd.Timestamp(date))

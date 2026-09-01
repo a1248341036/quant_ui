@@ -210,8 +210,10 @@ class Context:
         k = self._idx.get(code)
         if k is None:
             return False
-        if self._limit_up is not None and self._limit_up[self.t, k]:
-            return False
+        if self._limit_up is not None:
+            lu = self._limit_up[self.t, k]
+            if np.isfinite(lu) and lu:      # NaN(注入ETF等) 视为不限
+                return False
         return self._valid_open[self.t, k]
 
     def can_sell(self, code: str) -> bool:
@@ -219,8 +221,10 @@ class Context:
         k = self._idx.get(code)
         if k is None:
             return False
-        if self._limit_down is not None and self._limit_down[self.t, k]:
-            return False
+        if self._limit_down is not None:
+            ld = self._limit_down[self.t, k]
+            if np.isfinite(ld) and ld:
+                return False
         return self._valid_open[self.t, k]
 
     # ---------- 下单 ----------

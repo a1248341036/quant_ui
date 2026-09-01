@@ -21,7 +21,7 @@ import pandas as pd
 
 import jq_data
 from core.event_engine.jq.objects import _SecurityInfo
-from core.event_engine.jq.query import income, query, valuation
+from core.event_engine.jq.query import income, indicator, query, valuation
 
 # 聚宽分类键 -> (CNE classification_system, 级别拆分方式)
 _INDUSTRY_KEY_MAP = {
@@ -228,6 +228,34 @@ def install(ns: dict, rt) -> None:
         return pd.DataFrame(out,
                             index=dates[lo:hi + 1]).astype(bool)
 
+    def get_billboard_list(tag=None, start_date=None, end_date=None,
+                           **kwargs):
+        """龙虎榜(CNE curated/dragon_tiger, eastmoney 源, 2016 起)。
+
+        返回长表 DataFrame(index=day): code/trade_date/reason/buy_amount/
+        sell_amount/net_amount(元)。tag 兼容聚宽 'total'(全部)/行业分类键
+        ——行业过滤在龙虎榜原始数据中无对应口径, 传行业键时按全量返回。
+        """
+        from core.event_engine.jq import datalake
+        df = datalake.load("dragon_tiger")
+        if not len(df):
+            return pd.DataFrame(columns=["code", "trade_date", "reason",
+                                         "buy_amount", "sell_amount",
+                                         "net_amount"])
+        df = df.copy()
+        df["code"] = df["symbol"].astype(str).str.split(".").str[0]
+        df["code"] = df["code"].str.zfill(6)
+        df["trade_date"] = pd.to_datetime(df["trade_date"])
+        if start_date is not None:
+            df = df[df["trade_date"] >= pd.Timestamp(start_date)]
+        if end_date is not None:
+            df = df[df["trade_date"] <= pd.Timestamp(end_date)]
+        out = (df.sort_values(["trade_date", "code"], kind="stable")
+                 .set_index("trade_date"))
+        out.index.name = "day"
+        return out[["code", "reason", "buy_amount", "sell_amount",
+                    "net_amount"]]
+
     ns.update({
         # 有状态实现: JQRuntime 方法(矩阵/截面/财务缓存)
         "get_price": rt.get_price,
@@ -246,8 +274,10 @@ def install(ns: dict, rt) -> None:
         "normalize_code": normalize_code,
         "get_industry": get_industry,
         "get_extras": get_extras,
+        "get_billboard_list": get_billboard_list,
         # query DSL(get_fundamentals 的查询构造器)
         "query": query,
         "valuation": valuation,
         "income": income,
+        "indicator": indicator,
     })

@@ -121,6 +121,29 @@ class income:
     end_date = _Col("income_end_date")
 
 
+class indicator:
+    """聚宽财务指标指标表(get_fundamentals 常用字段)。
+
+    单位与聚宽一致: inc_return/roe 等百分比数为 %, eps 为元/股。
+    数据源 CNE curated fina_indicator(+cashflow/income 派生), ann_date 点时。
+    """
+
+    code = _Col("__code__")
+    inc_return = _Col("inc_return")                     # 净资产收益率ROE(%)
+    roe_dt = _Col("roe_dt")                             # 扣非ROE(%)
+    roe_waa = _Col("roe_waa")                           # 加权ROE(%)
+    q_roe = _Col("q_roe")                               # 单季ROE(%)
+    eps = _Col("eps")                                   # 每股收益(元)
+    bps = _Col("bps")                                   # 每股净资产(元)
+    ocfps = _Col("ocfps")                               # 每股经营现金流(元)
+    cfps = _Col("cfps")                                 # 每股现金流(元)
+    gross_income_ratio = _Col("gross_income_ratio")     # 销售毛利率(%)
+    netprofit_margin = _Col("netprofit_margin")         # 销售净利率(%)
+    current_ratio = _Col("current_ratio")               # 流动比率
+    quick_ratio = _Col("quick_ratio")                   # 速动比率
+    ocf_to_revenue = _Col("ocf_to_revenue")             # 经营现金流/营业收入(%)
+
+
 class _Query:
     def __init__(self, cols):
         self.cols = list(cols)

@@ -47,6 +47,12 @@ def _load_income():
     return jq_data.load_income()
 
 
+def _load_datalake(name: str):
+    """CNE curated 表统一加载入口(数据统一走 CNE)。"""
+    from core.event_engine.jq import datalake
+    return datalake.load(name)
+
+
 class JQRuntime:
     """聚宽风格运行时。"""
 
@@ -62,12 +68,14 @@ class JQRuntime:
         self.g = _G()
         self.log = _Log()
         self.scheduled: list[tuple[str, Callable, object, str, int]] = []
-        self.pending_orders: list[tuple[str, str, float, _Order | None]] = []
+        self.pending_orders: list[tuple[str, str, float, _Order | None,
+                                      float | None]] = []
         self._cost: dict[str, float] = {}
         self._engine_ctx = None
         self._snap_cache: dict[pd.Timestamp, pd.DataFrame] = {}
         self._fin_value_mats: dict[str, np.ndarray] | None = None
         self._bal_value_mats: dict[str, np.ndarray] | None = None
+        self._ind_value_mats: dict[str, np.ndarray] | None = None
         self._minute_frames: dict[str, pd.DataFrame] = {}
         self._warned: set[str] = set()
         self._sched_sorted = False
@@ -82,6 +90,7 @@ class JQRuntime:
         self._order_seq = 0
         self._day_trades: list[_Trade] = []
         self._placed_report: list[dict] = []
+        self._code_alias: dict[str, str] = {}
         self._hd_injected = False
         self._proc_init_done = False
         self.context = _Context(self)
@@ -125,7 +134,7 @@ class JQRuntime:
     def _mk_order(self, code: str, value: float | None = None,
                   shares: float | None = None):
         """构造下单回执; 无行情代码警告并返回 None(聚宽拒单语义)。"""
-        code = str(code).split(".")[0].strip().zfill(6)
+        code = self._resolve(code)
         if code not in self.ctx._ci:
             if code not in self._warned:
                 self._warned.add(code)
@@ -367,6 +376,9 @@ class JQRuntime:
                 for col, mat in self._balance_value_mats().items():
                     snap[col] = [mat[i, j[c]] if c in j else np.nan
                                  for c in snap.index]
+                for col, mat in self._indicator_value_mats().items():
+                    snap[col] = [mat[i, j[c]] if c in j else np.nan
+                                 for c in snap.index]
                 snap["income_end_date"] = np.nan
                 # 估值指标(JQ 口径): pe=市值/年化归母净利; pb=市值/归母净资产
                 # 亏损/净资产为负 -> NaN(与 JQ 的 >0 过滤语义一致)
@@ -420,19 +432,9 @@ class JQRuntime:
             return self._bal_value_mats
         t = self.ctx.tables
         cal_d = t.dates.values.astype("datetime64[D]")
-        bal = pd.read_parquet(
-            _ROOT / "data" / "pg_parquet" / "balancesheet.parquet",
-            columns=["ts_code", "f_ann_date", "ann_date", "end_date",
-                     "report_type", "total_hldr_eqy_exc_min_int"])
-        bal = bal[pd.to_numeric(bal["report_type"], errors="coerce") == 1]
-        bal["code"] = bal["ts_code"].str[:6]
-        ann = pd.to_datetime(bal["f_ann_date"], errors="coerce").fillna(
-            pd.to_datetime(bal["ann_date"], errors="coerce"))
-        bal["ann_date"] = ann
-        bal = bal.dropna(subset=["ann_date"])
-        bal = bal.sort_values(["code", "end_date", "ann_date"], kind="stable")
-        bal = bal.drop_duplicates(["code", "end_date"], keep="last")
-        bal = bal.sort_values(["code", "ann_date"], kind="stable")
+        bal = _load_datalake("balancesheet")
+        keep_cols = ["code", "ann_date", "total_hldr_eqy_exc_min_int"]
+        bal = bal[[c for c in keep_cols if c in bal.columns]]
         mat = np.full((len(t.dates), len(t.codes)), np.nan, dtype=np.float64)
         for code, g in bal.groupby("code", sort=False):
             k = self.ctx._ci.get(code)
@@ -446,6 +448,84 @@ class JQRuntime:
             ).to_numpy()[pos[rows]]
         self._bal_value_mats = {"total_equity": mat}
         return self._bal_value_mats
+
+    def _indicator_value_mats(self) -> dict[str, np.ndarray]:
+        """点时财务指标矩阵(懒构建, 聚宽 indicator 口径)。
+
+        - 数据源 CNE curated: fina_indicator(roe/eps/bps/毛利率等)
+        - ocf_to_revenue = cashflow.n_cashflow_act / income.revenue x 100
+          (按 (code, end_date) 对齐两表, 点时取两表公告日较晚者)
+        """
+        if self._ind_value_mats is not None:
+            return self._ind_value_mats
+        t = self.ctx.tables
+        cal_d = t.dates.values.astype("datetime64[D]")
+
+        def _blank(keys):
+            return {k: np.full((len(t.dates), len(t.codes)), np.nan,
+                               dtype=np.float64) for k in keys}
+
+        mats: dict[str, np.ndarray] = {}
+
+        def _fill(mat: np.ndarray, g: pd.DataFrame, col: str,
+                  ann_key: str = "ann_date") -> None:
+            k = self.ctx._ci.get(code)
+            if k is None:
+                return
+            ann = g[ann_key].values.astype("datetime64[D]")
+            pos = np.searchsorted(ann, cal_d, side="right") - 1
+            rows = np.where(pos >= 0)[0]
+            vals = pd.to_numeric(g[col], errors="coerce").to_numpy()
+            mat[rows, k] = vals[pos[rows]]
+
+        # -- fina_indicator: roe/eps/bps 等, 点时 ann_date --
+        fi = _load_datalake("fina_indicator")
+        if len(fi):
+            fi_map = {"roe": "inc_return", "roe_dt": "roe_dt",
+                      "roe_waa": "roe_waa", "q_roe": "q_roe",
+                      "eps": "eps", "bps": "bps", "ocfps": "ocfps",
+                      "cfps": "cfps", "gross_margin": "gross_income_ratio",
+                      "netprofit_margin": "netprofit_margin",
+                      "current_ratio": "current_ratio",
+                      "quick_ratio": "quick_ratio"}
+            fi_cols = [c for c in fi_map if c in fi.columns]
+            fi = fi[["code", "ann_date", "end_date"] + fi_cols]
+            for code, g in fi.groupby("code", sort=False):
+                for src, dst in fi_map.items():
+                    if src not in g.columns:
+                        continue
+                    if dst not in mats:
+                        mats[dst] = _blank([dst])[dst]
+                    _fill(mats[dst], g, src)
+
+        # -- ocf_to_revenue: cashflow.n_cashflow_act / income.revenue x 100 --
+        ocf = _blank(["ocf_to_revenue"])["ocf_to_revenue"]
+        cf = _load_datalake("cashflow")
+        inc = _load_income()
+        if len(cf) and len(inc):
+            cf2 = cf[["code", "ann_date", "end_date", "n_cashflow_act"]].copy()
+            cf2 = cf2.rename(columns={"ann_date": "cf_ann"})
+            in2 = inc[["code", "end_date", "revenue"]].copy()
+            m = cf2.merge(in2, on=["code", "end_date"], how="inner")
+            m = m[(pd.to_numeric(m["n_cashflow_act"], errors="coerce")
+                   .notna())
+                  & (pd.to_numeric(m["revenue"], errors="coerce").notna())]
+            m = m[m["revenue"] != 0]
+            m["ann_date"] = pd.to_datetime(m["cf_ann"], errors="coerce")
+            m = m.dropna(subset=["ann_date"])
+            m = m.sort_values(["code", "end_date", "ann_date"], kind="stable")
+            m = m.drop_duplicates(["code", "end_date"], keep="last")
+            m = m.sort_values(["code", "ann_date"], kind="stable")
+            for code, g in m.groupby("code", sort=False):
+                g = g.copy()
+                g["ocf_to_revenue"] = (
+                    pd.to_numeric(g["n_cashflow_act"], errors="coerce")
+                    / pd.to_numeric(g["revenue"], errors="coerce") * 100.0)
+                _fill(ocf, g, "ocf_to_revenue")
+        mats["ocf_to_revenue"] = ocf
+
+        self._ind_value_mats = mats
+        return mats
 
     def get_fundamentals(self, q: _Query, date=None):
         snap = self.get_snapshot(date)
@@ -469,9 +549,11 @@ class JQRuntime:
         return out.reset_index().rename(columns={"index": "code"})
 
     def get_current_data(self) -> _CurrentData:
-        # 当日截面: 涨跌停/停牌/ST 为 T 日口径(JQ 语义); last_price≈开盘价(无泄漏)
-        return _CurrentData(self.get_snapshot(self.context.current_dt),
-                            self.ctx.name_map)
+        # 当日截面: 涨跌停/停牌/ST 为 T 日口径(JQ 语义);
+        # last_price = 决策时刻分钟价(缺失回落开盘, 无未来泄漏)
+        cd = _CurrentData(self.get_snapshot(self.context.current_dt),
+                          self.ctx.name_map, self)
+        return cd
 
     # ================= 因子桥 =================
     def get_factor(self, expr, date=None):
@@ -504,9 +586,25 @@ class JQRuntime:
     # ================= 日循环 =================
     def bind(self, engine_ctx):
         self._engine_ctx = engine_ctx
+        # 裸码 -> 实际键别名(注入 ETF 等带后缀码双查; 股票域裸码即实际键)
+        alias: dict[str, str] = {}
+        for c in self.ctx._ci:
+            bare = str(c).split(".")[0].zfill(6)
+            alias.setdefault(bare, c)
+        self._code_alias = alias
         for c in list(self._cost):
             if c not in engine_ctx.positions:
                 del self._cost[c]
+
+    def _resolve(self, code) -> str:
+        """'511220' -> '511220.XSHG'(注入键); '000012.XSHG' 不误命中深市
+        股票 000012 —— 带后缀查询仅精确匹配实际键, 裸码查询经别名命中。"""
+        c = str(code).strip()
+        if c in self.ctx._ci:
+            return c
+        if "." not in c:                    # 裸码: 经别名查带后缀键
+            return self._code_alias.get(c.zfill(6), c)
+        return c                            # 带后缀: 仅精确命中(已在上判)
 
     @staticmethod
     def _call_hook(fn, *args):
@@ -747,7 +845,9 @@ class JQRuntime:
         self._placed_report = []
         warmup = (self.window_start is not None
                   and bar.exec_date < self.window_start)
-        for kind, code, arg, order in pending:
+        for kind, code, arg, order, style_limit in pending:
+            # 代码归一: '511220.XSHG'/'511220' -> 面板实际键
+            code = self._resolve(code)
             # 盘中价撮合: 下单时点(order.add_time)的分钟价(面板前复权空间),
             # 无分钟数据回落 signal 日收盘定价(引擎再按执行日开盘成交)
             pxm = self._minute_px_panel(code, order.add_time) if order is not None else None
@@ -798,15 +898,20 @@ class JQRuntime:
                                             "desc": f"{direction} {code} "
                                                     f"{name} {arg_desc}"})
             if kind == "tv":          # 目标市值 -> 目标股数
-                ctx.order_target_shares(code, arg / px, fill_price=fill_px)
+                ctx.order_target_shares(code, arg / px, fill_price=fill_px,
+                                        limit_price=style_limit)
             elif kind == "ot":        # 目标股数
-                ctx.order_target_shares(code, arg, fill_price=fill_px)
+                ctx.order_target_shares(code, arg, fill_price=fill_px,
+                                        limit_price=style_limit)
             elif kind == "ov":        # 市值增量
-                ctx.order_shares(code, arg / px, fill_price=fill_px)
+                ctx.order_shares(code, arg / px, fill_price=fill_px,
+                                 limit_price=style_limit)
             elif kind == "os":        # 股数增量
-                ctx.order_shares(code, arg, fill_price=fill_px)
+                ctx.order_shares(code, arg, fill_price=fill_px,
+                                 limit_price=style_limit)
             elif kind == "op":        # 目标占比
-                ctx.order_target_pct(code, arg, fill_price=fill_px)
+                ctx.order_target_pct(code, arg, fill_price=fill_px,
+                                     limit_price=style_limit)
             if order is not None:
                 # 提交即视为受理; 实际成交明细见 get_trades()(引擎逐笔)
                 order.status = _OrderStatus.held

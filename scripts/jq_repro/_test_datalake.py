@@ -34,12 +34,17 @@ def main() -> None:
     assert per_code["code"].is_unique
     print(f"industry asof: {len(snap)} 行; income asof: {len(per_code)} 只")
 
-    # 4) 未注册插件 -> 带指引的报错
+    # 4) CNE curated 懒注册: dragon_tiger 没写插件文件也能直接用
+    bb = datalake.load("dragon_tiger")
+    print(f"dragon_tiger(懒注册): {len(bb)} 行")
+    assert len(bb) > 0
+
+    # 4b) 未注册且 CNE 无同名数据集 -> 带指引的报错
     try:
-        datalake.load("dragon_tiger")
+        datalake.load("not_a_real_table")
         raise SystemExit("应当抛错")
     except NotImplementedError as exc:
-        print("未注册报错OK:", str(exc)[:50], "...")
+        print("未注册报错OK:", str(exc)[:40], "...")
 
     # 5) 门面等价(jq_data 委托同一缓存)
     assert jq_data.load_income() is inc

@@ -42,7 +42,8 @@ def run_jq_backtest(code: str, start: str, end: str | None = None,
             pass
         try:
             # 聚宽语义: 盘中下单按下单时点真实价成交 -> 预取调度时点分钟线
-            minutes = ({t[3] for t in rt.scheduled if t[3]} | {"9:30"})
+            minutes = ({t[3] for t in rt.scheduled
+                        if t[3] and ":" in str(t[3])} | {"9:30"})
             rt.prefetch_minutes(sorted(minutes))
         except Exception:
             pass
@@ -100,15 +101,15 @@ def run_jq_backtest(code: str, start: str, end: str | None = None,
     # 聚宽回测详情面板同口径指标(见 core/metrics.compute_jq_panel);
     # 基准用 set_benchmark 的真实指数日线(CNE index_bars), 缺失时超额类为 NaN
     bench_curve = None
-    if rt.benchmark:
-        try:
-            ix = ctx.index_frame(str(rt.benchmark))
-            if ix is not None and len(ix):
-                b = ix["close"].astype(float).dropna()
-                b = b.reindex(nav.index).ffill().bfill()
-                bench_curve = b / b.iloc[0]
-        except Exception:
-            bench_curve = None
+    bench_code = rt.benchmark or "000300.XSHG"   # 聚宽默认基准: 沪深300
+    try:
+        ix = ctx.index_frame(str(bench_code))
+        if ix is not None and len(ix):
+            b = ix["close"].astype(float).dropna()
+            b = b.reindex(nav.index).ffill().bfill()
+            bench_curve = b / b.iloc[0]
+    except Exception:
+        bench_curve = None
     jq_panel = compute_jq_panel(
         nav=nav.astype(float), bench=bench_curve,
         fills=res.get("trades_detail") or [])
