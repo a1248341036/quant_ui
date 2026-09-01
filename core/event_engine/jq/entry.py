@@ -13,6 +13,7 @@ import pandas as pd
 
 from core.event_engine import run_event_backtest
 from core.event_engine.jq.runtime import JQRuntime
+from core.metrics import compute_jq_panel
 from _runtime import JQContext  # noqa: E402  (facade: scripts+strategies 路径已在 runtime 注入)
 
 _LAST_CTX: JQContext | None = None   # 调试/冒烟: 最近一次回测的数据上下文
@@ -86,8 +87,23 @@ def run_jq_backtest(code: str, start: str, end: str | None = None,
                      f"候选域 {len(ctx.codes)} 只")
 
     nav = res["nav"]
+    # 聚宽回测详情面板同口径指标(见 core/metrics.compute_jq_panel);
+    # 基准用 set_benchmark 的真实指数日线(CNE index_bars), 缺失时超额类为 NaN
+    bench_curve = None
+    if rt.benchmark:
+        try:
+            ix = ctx.index_frame(str(rt.benchmark))
+            if ix is not None and len(ix):
+                b = ix["close"].astype(float).dropna()
+                b = b.reindex(nav.index).ffill().bfill()
+                bench_curve = b / b.iloc[0]
+        except Exception:
+            bench_curve = None
+    jq_panel = compute_jq_panel(
+        nav=nav.astype(float), bench=bench_curve,
+        fills=res.get("trades_detail") or [])
     metrics = {k: (float(v) if isinstance(v, (int, float, np.floating)) else v)
-               for k, v in res["metrics"].items()}
+               for k, v in jq_panel.items()}
     holdings = res["holdings"].copy()
     if len(holdings):
         holdings["name"] = [ctx.name_map.get(str(c), "") for c in holdings["code"]]
