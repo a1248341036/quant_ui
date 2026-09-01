@@ -182,6 +182,26 @@ def reset_code_config():
     return {"ok": True, "config": cfg, "customized": False}
 
 
+@router.post("/jq/preflight")
+def preflight_jq_strategy(req: JQRunRequest):
+    """聚宽策略 API 预检: AST 静态扫描, 秒级报告兼容层缺失的 API/字段。
+
+    回测前调用, 避免"跑 90 秒后炸在缺失 API 上"的验证循环。
+    """
+    from core.event_engine.jq.preflight import preflight
+    try:
+        missing = preflight(req.code)
+        return {"ok": len(missing) == 0, "missing": missing,
+                "message": ("预检通过: 策略引用的 API 均已支持" if not missing
+                            else f"缺失 {len(missing)} 项: {', '.join(missing)}")}
+    except SyntaxError as exc:
+        return {"ok": False, "missing": [],
+                "message": f"代码语法错误: {exc}"}
+    except Exception as exc:
+        return {"ok": False, "missing": [],
+                "message": f"预检失败: {type(exc).__name__}: {exc}"}
+
+
 @router.post("/jq/run")
 def run_jq_strategy(req: JQRunRequest):
     """聚宽模式: 用户贴聚宽风格代码(initialize + run_daily/weekly + 数据API), 直接回测。"""

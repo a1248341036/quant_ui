@@ -6,9 +6,20 @@
       <span class="err left" v-if="codeError">{{codeError}}</span>
       <button class="ghost" @click="saveCode" :disabled="codeRunning">保存</button>
       <button class="ghost" @click="loadSavedDialog = !loadSavedDialog">载入</button>
+      <button class="ghost" @click="runPreflight" :disabled="codeRunning || preflightRunning">
+        <span v-if="preflightRunning" class="spinner"></span>{{preflightRunning ? '预检中…' : '🔍 API 预检'}}
+      </button>
       <button class="primary" @click="runJq" :disabled="codeRunning">
         <span v-if="codeRunning" class="spinner"></span>{{codeRunning ? '回测中…' : '▶ 运行策略'}}
       </button>
+    </div>
+
+    <div v-if="preflightResult" class="card" :style="preflightResult.ok ? 'border-left:4px solid #2e7d32;padding:8px 12px;margin-bottom:8px' : 'border-left:4px solid #c62828;padding:8px 12px;margin-bottom:8px'">
+      <strong v-if="preflightResult.ok">✅ {{preflightResult.message}}</strong>
+      <template v-else>
+        <strong style="color:#c62828">⚠ {{preflightResult.message}}</strong>
+        <div style="font-size:12px;color:#888;margin-top:4px">缺失 API 回测会在运行时报错；可对照「可用 API 说明」改写，或提交需求接入。</div>
+      </template>
     </div>
 
     <div class="form-grid" style="margin-bottom:10px;align-items:end">
@@ -176,6 +187,7 @@ export default {
       },
       codeResult: null, codeRunning: false, codeError: '', codeSaveMsg: '',
       jqResult: null,
+      preflightRunning: false, preflightResult: null,
       showSettings: false, cfgDraft: {}, cfgCustomized: false, cfgSaving: false,
       loadSavedDialog: false,
     };
@@ -358,10 +370,20 @@ def trade_afternoon(context):
       } catch (e) { this.codeError = '恢复默认失败: ' + e.message; }
       finally { this.cfgSaving = false; }
     },
+    // ---- 预检 ----
+    async runPreflight() {
+      if (!this.code.code.trim()) { this.codeError = '请先粘贴策略代码'; return; }
+      this.preflightRunning = true; this.preflightResult = null; this.codeError = '';
+      try {
+        const r = await api('/api/code/jq/preflight', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: this.code.code }) });
+        this.preflightResult = r;
+      } catch (e) { this.preflightResult = { ok: false, missing: [], message: '预检请求失败: ' + e.message }; }
+      finally { this.preflightRunning = false; }
+    },
     // ---- 运行 ----
     async runJq() {
       if (!this.code.code.trim()) { this.codeError = '请先粘贴策略代码'; return; }
-      this.codeRunning = true; this.codeError = ''; this.codeSaveMsg = '';
+      this.codeRunning = true; this.codeError = ''; this.codeSaveMsg = ''; this.preflightResult = null;
       try {
         const r = await api('/api/code/jq/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: this.code.code, start: this.code.start, end: this.code.end, capital: this.code.capital }) });
         if (r.ok === false) { this.codeError = r.error + (r.traceback ? '\n' + r.traceback : ''); return; }
