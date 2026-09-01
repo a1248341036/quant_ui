@@ -11,6 +11,10 @@ from .. import trading_config
 from .context import Context, Bar, EventStrategy
 
 
+class BacktestAborted(Exception):
+    """外部取消: 由进度回调抛出, 引擎循环立即终止。"""
+
+
 def _load_st_mask_for(
     cal: pd.DatetimeIndex,
     codes_used: list[str],
@@ -52,6 +56,7 @@ def run_event_backtest(
     buy_tax: float = 0.0,
     sell_tax: float = 0.0,
     execution_profile: AssetExecutionProfile | None = None,
+    progress=None,
 ) -> dict:
     """事件驱动回测。
 
@@ -59,6 +64,8 @@ def run_event_backtest(
     max_participation: 流动性约束，单笔买入金额 <= 20日均成交额 × 该比例。
         0 表示不限。
     short_rate: 空头年化融券费率（占空头市值比例/年），每日按 short_rate/252 扣。
+    progress(done, total, date, nav): 每个交易日收盘估值后回调一次
+        (done=t, total=T-1, 含窗口前预热段); 抛异常(如 BacktestAborted)即终止。
     """
     profile = execution_profile or STOCK_PROFILE
     if profile.asset_type == "etf":
@@ -179,6 +186,8 @@ def run_event_backtest(
             holdings_history.append({})
             weight_history.append({})
             cash_history.append(ctx.cash)
+            if progress is not None:
+                progress(t, T - 1, dates[t], 1.0)
             continue
 
         # 基准：股票池等权（开盘到开盘收益）
@@ -238,6 +247,8 @@ def run_event_backtest(
             ctx.cash -= short_val * short_rate / 252.0
         nav[t] = ctx.portfolio_value / capital
         bench[t] = bench[t - 1] * (1.0 + bench_ret)
+        if progress is not None:
+            progress(t, T - 1, dates[t], float(nav[t]))
         holdings_history.append(dict(ctx.positions))
         cash_history.append(ctx.cash)
         pv = ctx.portfolio_value or 1.0

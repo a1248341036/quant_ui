@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import json
 import re
+import threading
+import time
+import traceback
+import uuid
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from core import trading_config
@@ -226,6 +230,112 @@ def run_jq_strategy(req: JQRunRequest):
         import traceback
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}",
                 "traceback": traceback.format_exc(limit=20)}
+
+
+# ---- 异步运行管理器: 边跑边报进度(轮询), 支持停止 ----
+_JQ_RUNS: dict[str, dict] = {}
+_JQ_RUNS_LOCK = threading.Lock()
+_JQ_ACTIVE_PHASES = {"queued", "context", "minutes", "engine"}
+_JQ_RUN_KEEP = 8
+
+
+def _jq_run_worker(state: dict, req: JQRunRequest) -> None:
+    from core.event_engine.jq import run_jq_backtest
+    from core.event_engine.runner import BacktestAborted
+
+    def emit(ev: dict) -> None:
+        with _JQ_RUNS_LOCK:
+            s = _JQ_RUNS.get(state["run_id"])
+            if s is None:
+                return
+            if ev.get("phase"):
+                s["phase"] = ev["phase"]
+            if "done" in ev:
+                s["done"] = ev["done"]
+            if "total" in ev:
+                s["total"] = ev["total"]
+            if ev.get("in_window") and ev.get("date"):
+                s["nav"].append({"date": ev["date"], "value": ev["nav"]})
+
+    try:
+        cfg = trading_config_store.effective()
+        result = run_jq_backtest(
+            code=req.code, start=req.start,
+            end=req.end or None, capital=req.capital,
+            warmup_days=req.warmup_days or int(cfg["warmup_days"]),
+            buy_cost=float(cfg["buy_cost"]),
+            sell_cost=float(cfg["sell_cost"]),
+            slippage_bps=float(cfg["slippage_bps"]),
+            progress=emit, cancel_event=state["cancel_event"])
+        with _JQ_RUNS_LOCK:
+            state["result"] = result
+            state["phase"] = "done"
+            state["ended_at"] = time.time()
+    except BacktestAborted:
+        with _JQ_RUNS_LOCK:
+            state["phase"] = "cancelled"
+            state["error"] = "已手动停止"
+            state["ended_at"] = time.time()
+    except Exception as exc:
+        with _JQ_RUNS_LOCK:
+            state["phase"] = "error"
+            state["error"] = f"{type(exc).__name__}: {exc}"
+            state["traceback"] = traceback.format_exc(limit=20)
+            state["ended_at"] = time.time()
+
+
+def _prune_jq_runs() -> None:
+    with _JQ_RUNS_LOCK:
+        finished = sorted(
+            (k for k, v in _JQ_RUNS.items()
+             if v["phase"] not in _JQ_ACTIVE_PHASES),
+            key=lambda k: _JQ_RUNS[k].get("ended_at", 0))
+        for k in finished[:-_JQ_RUN_KEEP]:
+            _JQ_RUNS.pop(k, None)
+
+
+@router.post("/jq/run_async")
+def start_jq_run_async(req: JQRunRequest):
+    """后台线程启动聚宽回测, 立即返回 run_id; 进度经 /jq/runs/{id} 轮询。"""
+    with _JQ_RUNS_LOCK:
+        busy = [k for k, v in _JQ_RUNS.items()
+                if v["phase"] in _JQ_ACTIVE_PHASES]
+    if busy:
+        return {"ok": False, "error": "已有回测在运行中, 请等待完成或先停止"}
+    _prune_jq_runs()
+    run_id = uuid.uuid4().hex[:12]
+    state = {"run_id": run_id, "phase": "queued", "done": 0, "total": 0,
+             "nav": [], "result": None, "error": None, "traceback": None,
+             "cancel_event": threading.Event(),
+             "started_at": time.time(), "ended_at": None}
+    with _JQ_RUNS_LOCK:
+        _JQ_RUNS[run_id] = state
+    threading.Thread(target=_jq_run_worker, args=(state, req),
+                     daemon=True, name=f"jq-run-{run_id}").start()
+    return {"ok": True, "run_id": run_id}
+
+
+@router.get("/jq/runs/{run_id}")
+def get_jq_run(run_id: str):
+    with _JQ_RUNS_LOCK:
+        s = _JQ_RUNS.get(run_id)
+        if s is None:
+            raise HTTPException(404, "run not found")
+        out = {k: v for k, v in s.items() if k != "cancel_event"}
+        out["nav"] = list(s["nav"])
+    out["elapsed"] = round(
+        (out.get("ended_at") or time.time()) - out["started_at"], 1)
+    return out
+
+
+@router.post("/jq/runs/{run_id}/stop")
+def stop_jq_run(run_id: str):
+    with _JQ_RUNS_LOCK:
+        s = _JQ_RUNS.get(run_id)
+        if s is None:
+            raise HTTPException(404, "run not found")
+        s["cancel_event"].set()
+    return {"ok": True}
 
 
 @router.post("/save")

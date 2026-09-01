@@ -688,10 +688,11 @@ class JQRuntime:
         return dates[max(0, lo):hi + 1]
 
     # ================= 分钟数据(盘中价撮合/查询) =================
-    def prefetch_minutes(self, minutes) -> None:
+    def prefetch_minutes(self, minutes, progress=None) -> None:
         """预取调度时点的分钟收盘(未复权), 供盘中价撮合/查询。
 
         数据缺失时保持空 dict, 所有路径自动回落日线近似(旧行为)。
+        progress(done, total): 逐代码进度透传 load_minute_close。
         """
         minutes = [str(m) for m in minutes if m]
         if not minutes:
@@ -701,7 +702,8 @@ class JQRuntime:
             dates = self.ctx.tables.dates
             years = sorted({int(d.year) for d in dates})
             codes = [c for c in self.ctx.codes if str(c)[:1] in "036"]
-            frames = jq_data.load_minute_close(years, minutes, codes)
+            frames = jq_data.load_minute_close(years, minutes, codes,
+                                               progress=progress)
             self._minute_frames = {m: f for m, f in frames.items()
                                    if f is not None and len(f)}
             n = sum(len(f.index) for f in self._minute_frames.values())

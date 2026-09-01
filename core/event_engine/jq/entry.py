@@ -13,6 +13,7 @@ import pandas as pd
 
 from core.event_engine import run_event_backtest
 from core.event_engine.jq.runtime import JQRuntime
+from core.event_engine.runner import BacktestAborted
 from core.metrics import compute_jq_panel
 from _runtime import JQContext  # noqa: E402  (facade: scripts+strategies 路径已在 runtime 注入)
 
@@ -25,13 +26,30 @@ def run_jq_backtest(code: str, start: str, end: str | None = None,
                     lookback_buffer_days: int = 500,
                     buy_cost: float = 0.0001, sell_cost: float = 0.0011,
                     slippage_bps: float = 0.0,
-                    smoke: bool = False) -> dict:
+                    smoke: bool = False,
+                    progress=None, cancel_event=None) -> dict:
     """聚宽风格策略回测。返回 {metrics, nav, holdings, trades, logs}。
 
     smoke=True: 冒烟模式(短窗口+跳过分钟预取), 用于快速验证策略能否跑通。
     回测前自动执行 API 预检(_preflight_api), 缺失 API 秒级报错。
+    progress(ev: dict): 阶段/进度事件回调, ev 形如
+        {"phase": "context"|"minutes"|"engine", "done": int, "total": int,
+         "date": "YYYY-MM-DD", "nav": float, "in_window": bool}
+        (date/nav/in_window 仅 engine 阶段); 抛 BacktestAborted 即取消。
+    cancel_event: threading.Event, 置位后在下一个检查点终止并抛 BacktestAborted。
     """
     global _LAST_CTX, _LAST_RT
+
+    def _emit(phase: str, **kw) -> None:
+        if progress is not None:
+            progress({"phase": phase, **kw})
+
+    def _check_cancel() -> None:
+        if cancel_event is not None and cancel_event.is_set():
+            raise BacktestAborted("已手动停止")
+
+    _check_cancel()
+    _emit("context", done=0, total=1)
     # ---- API 预检(秒级): 缺失 API 不再等 90 秒回测后才炸 ----
     try:
         from core.event_engine.jq.preflight import preflight as _preflight
@@ -55,6 +73,7 @@ def run_jq_backtest(code: str, start: str, end: str | None = None,
     lookback = max(45 if smoke else 800,
                    (end_ts - pd.Timestamp(start)).days + lookback_buffer_days)
     ctx = JQContext(end=end_ts.date().isoformat(), lookback_days=lookback)
+    _emit("context", done=1, total=1)
     t0 = time.time()
     rt = JQRuntime(code, ctx, capital=capital, window_start=start)
     init_fn = rt._init_fn
@@ -70,7 +89,14 @@ def run_jq_backtest(code: str, start: str, end: str | None = None,
                 # 聚宽语义: 盘中下单按下单时点真实价成交 -> 预取调度时点分钟线
                 minutes = ({t[3] for t in rt.scheduled
                             if t[3] and ":" in str(t[3])} | {"9:30"})
-                rt.prefetch_minutes(sorted(minutes))
+
+                def _min_prog(done: int, total: int) -> None:
+                    _check_cancel()
+                    _emit("minutes", done=done, total=total)
+
+                rt.prefetch_minutes(sorted(minutes), progress=_min_prog)
+            except BacktestAborted:
+                raise
             except Exception:
                 pass
         rt.scheduled = []
@@ -98,6 +124,14 @@ def run_jq_backtest(code: str, start: str, end: str | None = None,
                     f"slippage={slippage_bps:.1f}bps{extra}")
     _LAST_CTX, _LAST_RT = ctx, rt
     rt.fixed_slippage = fixed_slippage
+    start_ts = pd.Timestamp(start)
+
+    def _eng_prog(t_idx: int, t_total: int, d, nav_v: float) -> None:
+        _check_cancel()
+        d_ts = pd.Timestamp(d)
+        _emit("engine", done=t_idx, total=t_total,
+              date=d_ts.date().isoformat(), nav=nav_v,
+              in_window=bool(d_ts >= start_ts))
 
     class _JQAdapter:
         """事件引擎适配器: init=用户 initialize; on_bar=按序跑注册函数。"""
@@ -118,6 +152,7 @@ def run_jq_backtest(code: str, start: str, end: str | None = None,
         buy_tax=buy_tax, sell_tax=sell_tax,
         max_participation=0.0, lot_size=100, warmup_days=warmup_days,
         amount_q=0.2, limit_flags=True,
+        progress=_eng_prog,
     )
     exec_logs += rt.log.buffer[len(exec_logs):]
     exec_logs.append(f"[runtime] 回测完成 {time.time()-t0:.0f}s, "

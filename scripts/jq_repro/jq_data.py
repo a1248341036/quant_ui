@@ -68,13 +68,15 @@ _MINUTE_CACHE: dict[tuple, dict[str, pd.DataFrame]] = {}
 
 
 def load_minute_close(years, minutes, codes,
-                      workers: int = 8) -> dict[str, pd.DataFrame]:
+                      workers: int = 8, progress=None) -> dict[str, pd.DataFrame]:
     """调度时点的分钟收盘价(未复权): {HH:MM: DataFrame(index=date, columns=code6)}。
 
     - 数据源 QDATA/<年>/<年>/1min/<ts_code>.parquet(每股每年一文件,
       含 trade_time/close/adj_factor), 只扫 codes 域内股票
     - 单次扫描同时抽取全部请求分钟; 会话级缓存, 撮合/盘中价查询共用
     - 缺文件/停牌分钟 -> NaN(由调用方回落日线近似)
+    - progress(done, total): 每完成一只股票回调一次; 抛异常即取消
+      (未完成任务排队撤销, 不写缓存)
     """
     key = (tuple(sorted(set(years))), tuple(sorted(set(minutes))))
     if key in _MINUTE_CACHE:
@@ -118,10 +120,23 @@ def load_minute_close(years, minutes, codes,
 
     codes = [c for c in dict.fromkeys(codes)
              if str(c)[:1] in ("0", "3", "5", "6")]
-    with ThreadPoolExecutor(max_workers=workers) as ex:
-        for part in ex.map(_one, codes):
+    from concurrent.futures import as_completed
+    n_total = len(codes)
+    done_n = 0
+    ex = ThreadPoolExecutor(max_workers=workers)
+    try:
+        futs = [ex.submit(_one, c) for c in codes]
+        for fut in as_completed(futs):
+            part = fut.result()
+            done_n += 1
             for m, lst in part.items():
                 per_minute[m].extend(lst)
+            if progress is not None:
+                progress(done_n, n_total)
+    except BaseException:
+        ex.shutdown(wait=False, cancel_futures=True)
+        raise
+    ex.shutdown(wait=True)
 
     out: dict[str, pd.DataFrame] = {}
     for m in minutes:

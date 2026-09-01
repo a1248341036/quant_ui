@@ -12,6 +12,19 @@
       <button class="primary" @click="runJq" :disabled="codeRunning">
         <span v-if="codeRunning" class="spinner"></span>{{codeRunning ? '回测中…' : '▶ 运行策略'}}
       </button>
+      <button class="ghost" v-if="codeRunning && jqRunId" @click="stopRun">■ 停止</button>
+    </div>
+
+    <div v-if="runState && codeRunning" class="card" style="padding:8px 12px;margin-bottom:8px">
+      <div style="font-size:13px;display:flex;justify-content:space-between;gap:12px">
+        <span><strong>{{phaseText}}</strong>
+          <span class="muted" v-if="runState.total > 0"> {{runState.done}}/{{runState.total}}</span>
+          <span class="muted" v-if="etaText"> · 剩余约 {{etaText}}</span>
+        </span>
+        <span class="muted">已用 {{fmtElapsed(runState.elapsed)}}</span>
+      </div>
+      <div class="jq-pbar"><div class="jq-pfill" :style="{width: pctText}"></div></div>
+      <div id="jqEquity" class="chart" v-if="runState.nav && runState.nav.length > 1"></div>
     </div>
 
     <div v-if="preflightResult" class="card" :style="preflightResult.ok ? 'border-left:4px solid #2e7d32;padding:8px 12px;margin-bottom:8px' : 'border-left:4px solid #c62828;padding:8px 12px;margin-bottom:8px'">
@@ -187,6 +200,7 @@ export default {
       },
       codeResult: null, codeRunning: false, codeError: '', codeSaveMsg: '',
       jqResult: null,
+      jqRunId: null, runState: null, pollTimer: null,
       preflightRunning: false, preflightResult: null,
       showSettings: false, cfgDraft: {}, cfgCustomized: false, cfgSaving: false,
       loadSavedDialog: false,
@@ -196,6 +210,28 @@ export default {
     this.refreshSaved();
     this.loadConfig();
     this.loadDefaultCode();
+  },
+  beforeUnmount() {
+    if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null; }
+  },
+  computed: {
+    phaseText() {
+      const m = { queued: '排队中', context: '构建数据上下文', minutes: '预取分钟线',
+                  engine: '逐日回测', done: '完成', error: '失败', cancelled: '已停止' };
+      return m[this.runState && this.runState.phase] || '';
+    },
+    pctText() {
+      const s = this.runState;
+      if (!s || !s.total) return '0%';
+      return Math.min(100, Math.round(s.done / s.total * 100)) + '%';
+    },
+    etaText() {
+      const s = this.runState;
+      if (!s || !s.total || !s.done || !s.elapsed) return '';
+      const eta = s.elapsed * (s.total - s.done) / s.done;
+      if (eta >= 90) return Math.round(eta / 60) + ' 分钟';
+      return Math.round(eta) + ' 秒';
+    },
   },
   methods: {
     fmt, pct, sign, metricText,
@@ -380,23 +416,63 @@ def trade_afternoon(context):
       } catch (e) { this.preflightResult = { ok: false, missing: [], message: '预检请求失败: ' + e.message }; }
       finally { this.preflightRunning = false; }
     },
-    // ---- 运行 ----
+    // ---- 运行(异步轮询: 边跑边画图 + 进度/ETA) ----
+    fmtElapsed(sec) {
+      if (sec == null) return '0 秒';
+      const s = Math.round(sec);
+      if (s >= 60) return Math.floor(s / 60) + ' 分 ' + (s % 60) + ' 秒';
+      return s + ' 秒';
+    },
+    renderJqChart(r) {
+      this.$nextTick(() => {
+        const series = [{ name: '策略', dates: r.nav.map(x => x.date), values: r.nav.map(x => x.value) }];
+        if (Array.isArray(r.benchmark) && r.benchmark.length) {
+          series.push({ name: '基准 ' + (r.bench_code || ''), dash: true, dates: r.benchmark.map(x => x.date), values: r.benchmark.map(x => x.value) });
+        }
+        renderLine('jqEquity', series);
+      });
+    },
     async runJq() {
       if (!this.code.code.trim()) { this.codeError = '请先粘贴策略代码'; return; }
       this.codeRunning = true; this.codeError = ''; this.codeSaveMsg = ''; this.preflightResult = null;
+      this.jqResult = null; this.runState = null;
       try {
-        const r = await api('/api/code/jq/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: this.code.code, start: this.code.start, end: this.code.end, capital: this.code.capital }) });
-        if (r.ok === false) { this.codeError = r.error + (r.traceback ? '\n' + r.traceback : ''); return; }
-        this.jqResult = r;
-        this.$nextTick(() => {
-          const series = [{ name: '策略', dates: r.nav.map(x => x.date), values: r.nav.map(x => x.value) }];
-          if (Array.isArray(r.benchmark) && r.benchmark.length) {
-            series.push({ name: '基准 ' + (r.bench_code || ''), dash: true, dates: r.benchmark.map(x => x.date), values: r.benchmark.map(x => x.value) });
-          }
-          renderLine('jqEquity', series);
-        });
-      } catch (e) { this.codeError = '运行失败: ' + e.message; }
-      finally { this.codeRunning = false; }
+        const r = await api('/api/code/jq/run_async', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: this.code.code, start: this.code.start, end: this.code.end, capital: this.code.capital }) });
+        if (r.ok === false) { this.codeError = r.error || '启动失败'; this.codeRunning = false; return; }
+        this.jqRunId = r.run_id;
+        await this.pollRun();
+        if (this.codeRunning && !this.pollTimer) this.pollTimer = setInterval(() => this.pollRun(), 1000);
+      } catch (e) { this.codeError = '运行失败: ' + e.message; this.codeRunning = false; }
+    },
+    async pollRun() {
+      let s;
+      try {
+        s = await api('/api/code/jq/runs/' + this.jqRunId);
+      } catch (e) { return; }   // 瞬时网络错误: 下次轮询重试
+      this.runState = s;
+      if (s.nav && s.nav.length > 1) {
+        this.renderJqChart({ nav: s.nav });
+      }
+      if (s.phase === 'done') {
+        this.finishPoll();
+        this.jqResult = s.result;
+        this.renderJqChart(s.result);
+      } else if (s.phase === 'error') {
+        this.finishPoll();
+        this.codeError = '运行失败: ' + s.error + (s.traceback ? '\n' + s.traceback : '');
+      } else if (s.phase === 'cancelled') {
+        this.finishPoll();
+        this.codeError = '已手动停止';
+      }
+    },
+    finishPoll() {
+      if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null; }
+      this.jqRunId = null;
+      this.codeRunning = false;
+    },
+    async stopRun() {
+      if (!this.jqRunId) return;
+      try { await api('/api/code/jq/runs/' + this.jqRunId + '/stop', { method: 'POST' }); } catch (e) { /* ignore */ }
     },
   },
 }

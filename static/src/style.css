@@ -156,6 +156,8 @@ tbody tr:last-child td { border-bottom: none; }
 .chart { width: 100%; height: 340px; }
 .chart.heatmap { height: 360px; }
 .chart.small { height: 220px; }
+.jq-pbar { height: 6px; border-radius: 3px; background: rgb(255 255 255 / .07); margin-top: 7px; overflow: hidden; }
+.jq-pfill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, var(--accent), var(--accent-strong)); transition: width .6s ease; }
 .muted { color: var(--muted); font-size: 12px; }
 .agent-log { max-height: 620px; overflow: auto; display: flex; flex-direction: column; gap: 8px; }
 .agent-event { border: 1px solid var(--line); border-radius: 9px; padding: 9px 11px; background: rgb(255 255 255 / .018); }
