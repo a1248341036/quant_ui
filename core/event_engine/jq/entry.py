@@ -56,12 +56,21 @@ def run_jq_backtest(code: str, start: str, end: str | None = None,
         sell_cost = cfg["sell_cost"]
     if cfg.get("slippage_bps"):
         slippage_bps = cfg["slippage_bps"]
+    buy_tax = float(cfg.get("buy_tax") or 0.0)
+    sell_tax = float(cfg.get("sell_tax") or 0.0)
+    fixed_slippage = float(cfg.get("fixed_slippage") or 0.0)
+    if fixed_slippage:
+        slippage_bps = 0.0     # 绝对价差由运行时在 fill_price 上加, 引擎侧置 0
     min_commission = float(cfg.get("min_commission") or 0.0)
     if cfg:
         extra = f" min_commission={min_commission:.2f}" if min_commission else ""
-        rt.log.info(f"[runtime] 应用策略内费率: buy={buy_cost:.5f} "
-                    f"sell={sell_cost:.5f} slippage={slippage_bps:.1f}bps{extra}")
+        if fixed_slippage:
+            extra += f" 固定滑点={fixed_slippage:.4f}元"
+        rt.log.info(f"[runtime] 应用策略内费率: 佣金买={buy_cost:.5f} "
+                    f"卖={sell_cost:.5f} 税买={buy_tax:.4f} 卖={sell_tax:.4f} "
+                    f"slippage={slippage_bps:.1f}bps{extra}")
     _LAST_CTX, _LAST_RT = ctx, rt
+    rt.fixed_slippage = fixed_slippage
 
     class _JQAdapter:
         """事件引擎适配器: init=用户 initialize; on_bar=按序跑注册函数。"""
@@ -79,6 +88,7 @@ def run_jq_backtest(code: str, start: str, end: str | None = None,
         start=start, end=end_ts.date().isoformat(), capital=capital,
         buy_cost=buy_cost, sell_cost=sell_cost, slippage_bps=slippage_bps,
         min_commission=min_commission,
+        buy_tax=buy_tax, sell_tax=sell_tax,
         max_participation=0.0, lot_size=100, warmup_days=warmup_days,
         amount_q=0.2, limit_flags=True,
     )

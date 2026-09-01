@@ -98,7 +98,8 @@ def main() -> int:
                                     min_commission=5.0), type="stock")
     assert rt.cost_cfg.get("min_commission") == 5.0, rt.cost_cfg
     assert rt.cost_cfg.get("buy_cost") == 0.0003, rt.cost_cfg
-    assert rt.cost_cfg.get("sell_cost") == 0.0013, rt.cost_cfg
+    assert rt.cost_cfg.get("sell_cost") == 0.0003, rt.cost_cfg
+    assert rt.cost_cfg.get("sell_tax") == 0.001, rt.cost_cfg
     print("[compat] set_order_cost -> cost_cfg:",
           {k: rt.cost_cfg[k] for k in sorted(rt.cost_cfg)})
 

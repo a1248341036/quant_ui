@@ -2,12 +2,13 @@
 """策略设置函数(聚宽文档类别): set_option/set_benchmark/set_universe/
 set_slippage/set_order_cost + FixedSlippage/PriceRelatedSlippage/OrderCost。
 
-费率语义:
-- set_order_cost 把 open/close 佣金+税费折算为引擎 buy_cost/sell_cost;
-  min_commission(每笔最低佣金, 元)传入引擎, 单笔费用 = max(金额×费率, min_commission)
-- set_slippage(PriceRelatedSlippage(r)): JQ 买卖各偏 r/2 -> 引擎单边 bps=r/2*1e4
-- set_slippage(FixedSlippage(v)): JQ 为绝对价差(元); 引擎仅支持万分比,
-  按社区惯例(v=3/10000 意图即 3bp)作比例解释
+费率语义(与聚宽逐项一致, 经聚宽成交明细校验):
+- set_order_cost: buy_cost/sell_cost = 佣金费率, buy_tax/sell_tax = 税率,
+  min_commission 只作用于佣金单项: 单笔费用 = max(金额×佣金, 最低佣金)
+  + 金额×税 (实证: 聚宽卖出 18198 元收 23.20 = 5 + 18.198)
+- set_slippage(PriceRelatedSlippage(r)): JQ 买卖各偏 r/2 -> 引擎单边 bps=r*1e4/2
+- set_slippage(FixedSlippage(v)): JQ 语义 = 绝对价差 v 元(买卖各偏 v/2),
+  引擎侧 slippage_bps=0, 由运行时在 fill_price 上加绝对偏移
 """
 from __future__ import annotations
 
@@ -33,24 +34,29 @@ def install(ns: dict, rt) -> None:
         if isinstance(s, _PriceRelatedSlippage):
             # JQ: 比例滑点, 买卖各偏 value/2 -> 引擎单边 bps = value/2*1e4
             rt.cost_cfg["slippage_bps"] = float(s.value) / 2 * 1e4
+            rt.cost_cfg.pop("fixed_slippage", None)
             return
         v = getattr(s, "value", s if isinstance(s, (int, float)) else None)
         if v:
-            # FixedSlippage 聚宽语义为绝对价差(元); 引擎仅支持万分比,
-            # 按社区惯例(v=3/10000 意图即 3bp)作比例解释
-            rt.cost_cfg["slippage_bps"] = float(v) * 1e4
+            # FixedSlippage: 绝对价差 v 元, 买卖各偏 v/2(元)
+            rt.cost_cfg["fixed_slippage"] = float(v)
+            rt.cost_cfg.pop("slippage_bps", None)
 
     def set_order_cost(cost, type="stock", **kwargs):
         k = getattr(cost, "kwargs", None) or {}
         try:
-            oc = (float(k.get("open_commission") or 0)
-                  + float(k.get("open_tax") or 0))
-            sc = (float(k.get("close_commission") or 0)
-                  + float(k.get("close_tax") or 0))
+            oc = float(k.get("open_commission") or 0)
+            sc = float(k.get("close_commission") or 0)
+            ot = float(k.get("open_tax") or 0)
+            st_ = float(k.get("close_tax") or 0)
             if oc > 0:
                 rt.cost_cfg["buy_cost"] = oc
             if sc > 0:
                 rt.cost_cfg["sell_cost"] = sc
+            if ot:
+                rt.cost_cfg["buy_tax"] = ot
+            if st_:
+                rt.cost_cfg["sell_tax"] = st_
             mc = k.get("min_commission")
             if mc:
                 rt.cost_cfg["min_commission"] = float(mc)

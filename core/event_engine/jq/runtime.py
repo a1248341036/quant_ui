@@ -752,6 +752,11 @@ class JQRuntime:
             # 无分钟数据回落 signal 日收盘定价(引擎再按执行日开盘成交)
             pxm = self._minute_px_panel(code, order.add_time) if order is not None else None
             px = pxm or ctx.last_close(code)
+            # FixedSlippage(v): 聚宽语义 = 绝对价差 v 元, 买卖各偏 v/2
+            fs = float(getattr(self, "fixed_slippage", 0.0) or 0.0)
+            fill_px = None
+            if pxm is not None:
+                fill_px = pxm  # 先占位, 方向判定后再加偏移
             name = self.ctx.name_map.get(str(code), "")
             slot = (order.add_time.strftime("%H:%M")
                     if order is not None and order.add_time is not None
@@ -781,6 +786,9 @@ class JQRuntime:
             arg_desc = (f"{arg:,.0f}元" if kind in ("tv", "ov")
                         else (f"{arg:,.0f}股" if kind in ("ot", "os")
                               else f"{arg:.2%}"))
+            # 绝对滑点偏移: 买入 +fs/2, 卖出 -fs/2(元, 面板空间)
+            if fill_px is not None and fs:
+                fill_px = fill_px + (fs / 2 if direction == "买入" else -fs / 2)
             if not warmup:
                 self.log.info(
                     f"[委托 {bar.exec_date.date()} {slot}] {direction} {code} "
@@ -790,15 +798,15 @@ class JQRuntime:
                                             "desc": f"{direction} {code} "
                                                     f"{name} {arg_desc}"})
             if kind == "tv":          # 目标市值 -> 目标股数
-                ctx.order_target_shares(code, arg / px, fill_price=pxm)
+                ctx.order_target_shares(code, arg / px, fill_price=fill_px)
             elif kind == "ot":        # 目标股数
-                ctx.order_target_shares(code, arg, fill_price=pxm)
+                ctx.order_target_shares(code, arg, fill_price=fill_px)
             elif kind == "ov":        # 市值增量
-                ctx.order_shares(code, arg / px, fill_price=pxm)
+                ctx.order_shares(code, arg / px, fill_price=fill_px)
             elif kind == "os":        # 股数增量
-                ctx.order_shares(code, arg, fill_price=pxm)
+                ctx.order_shares(code, arg, fill_price=fill_px)
             elif kind == "op":        # 目标占比
-                ctx.order_target_pct(code, arg, fill_price=pxm)
+                ctx.order_target_pct(code, arg, fill_price=fill_px)
             if order is not None:
                 # 提交即视为受理; 实际成交明细见 get_trades()(引擎逐笔)
                 order.status = _OrderStatus.held

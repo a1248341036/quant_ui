@@ -87,6 +87,8 @@ class Context:
         slippage: float = 0.0,
         max_participation: float = 0.0,
         min_commission: float = 0.0,
+        buy_tax: float = 0.0,
+        sell_tax: float = 0.0,
         field_mats: dict[str, np.ndarray] | None = None,
     ):
         self.codes = list(codes)
@@ -113,6 +115,11 @@ class Context:
         self.slippage = float(slippage)
         self.max_participation = float(max_participation)
         self.min_commission = max(float(min_commission), 0.0)
+        # 组件化费用(聚宽口径): 最低佣金只作用于佣金单项, 税费另加;
+        # buy_cost/sell_cost 此时为佣金费率, tax 为印花税率
+        self.buy_tax = max(float(buy_tax), 0.0)
+        self.sell_tax = max(float(sell_tax), 0.0)
+        self._component_fees = self.buy_tax > 0 or self.sell_tax > 0
 
         self.t = 0
         self.sig = 0
@@ -121,6 +128,11 @@ class Context:
         self._last_close: dict[str, float] = {}
         self.orders: list[Order] = []
         self.fills: list[dict] = []  # 逐笔成交明细（供模拟盘落库/归因）
+
+    def _trade_fee(self, amount: float, rate: float, tax_rate: float) -> float:
+        """单边费用: 佣金(含最低佣金) + 税。非组件模式退化为 max(amount*rate, mc)。"""
+        comm = max(amount * rate, self.min_commission) if amount > 0 else 0.0
+        return comm + amount * tax_rate
 
     # ---------- 只读信息 ----------
 
@@ -338,12 +350,16 @@ class Context:
             if shares <= 0:
                 continue
             amt = shares * px
-            fee = amt * self.sell_cost
-            if self.min_commission > 0 and fee < self.min_commission:
-                fee = self.min_commission
+            if self._component_fees:
+                fee = self._trade_fee(amt, self.sell_cost, self.sell_tax)
                 self.cash += amt - fee
             else:
-                self.cash += amt * (1.0 - self.sell_cost)
+                fee = amt * self.sell_cost
+                if self.min_commission > 0 and fee < self.min_commission:
+                    fee = self.min_commission
+                    self.cash += amt - fee
+                else:
+                    self.cash += amt * (1.0 - self.sell_cost)
             new_pos = cur - shares
             if abs(new_pos) <= 1e-9:
                 del self.positions[code]
@@ -393,12 +409,16 @@ class Context:
             if lots <= 0:
                 continue
             shares = lots * lot
-            fee = shares * px * self.buy_cost
-            if self.min_commission > 0 and fee < self.min_commission:
-                fee = self.min_commission
+            if self._component_fees:
+                fee = self._trade_fee(shares * px, self.buy_cost, self.buy_tax)
                 cost = shares * px + fee
             else:
-                cost = shares * gross
+                fee = shares * px * self.buy_cost
+                if self.min_commission > 0 and fee < self.min_commission:
+                    fee = self.min_commission
+                    cost = shares * px + fee
+                else:
+                    cost = shares * gross
             self.cash -= cost
             new_pos = cur + shares
             if abs(new_pos) <= 1e-9:
