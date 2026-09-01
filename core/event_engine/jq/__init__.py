@@ -20,4 +20,15 @@ get_price / get_fundamentals(query(...)) / get_current_data / order_target_value
 - get_index_stocks: 399101(中小板综) -> 沪深主板域近似; 其余指数未接入
 - finance.run_query(审计意见等) 未接入
 """
-from core.event_engine.jq.entry import run_jq_backtest  # noqa: F401
+
+
+def __getattr__(name: str):
+    # 惰性导入 entry: entry -> runtime -> `from _runtime import JQContext`
+    # 会反向依赖 strategies/event/_runtime.py, 后者又 import jq_data ->
+    # core.event_engine.jq(本包)。eager 导入时若 _runtime 先被加载
+    # (如 strategies/event/_run_backtest.py)即成循环; 惰性化后由调用方
+    # 的导入顺序决定, 两条链都能通。
+    if name == "run_jq_backtest":
+        from core.event_engine.jq.entry import run_jq_backtest
+        return run_jq_backtest
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

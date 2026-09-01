@@ -279,10 +279,21 @@ def parse_function_call(s, loc, tokens):
 # 先定义一个 Forward 对象以便在定义 function_call 时引用
 expr = Forward()
 
+# 关键字参数：name=expr（算子签名中 * 之后的 keyword-only 参数）
+kwarg_name = Word(alphas + "_", alphanums + "_").set_name("kwarg_name")
+kwarg = (kwarg_name + '=' + expr).set_parse_action(
+    lambda t: f"{t[0]}={t[2]}"
+)
+kwarg.set_name("kwarg")
+
+# 函数参数可以是普通表达式或关键字参数；关键字参数必须在位置参数之后（Python 语法要求）
+func_arg = kwarg | expr
+func_arg.set_name("func_arg")
+
 # 定义函数调用
 ## 定义可选的一元操作符，这里使用 one_of 选择器来匹配 "+" 或 "-"
 unary_op = Optional(one_of("+ -")).set_parse_action(lambda t: t[0] if t else '')
-function_call = var + '(' + Optional(DelimitedList(expr)) + ')'  # 使用 expr
+function_call = var + '(' + Optional(DelimitedList(func_arg)) + ')'  # 使用 func_arg
 function_call.set_parse_action(parse_function_call)
 nested_expr = Group('(' + expr + ')')
 # sign_var = unary_op + var
@@ -301,7 +312,7 @@ def parse_entire_expression(s, loc, tokens):
 
 
 def check_for_invalid_operators(expression):
-    valid_operators = {"(", ")", ",", "+", "-", "*", "/", "&&", "||", "&", "|", ">", "<", ">=", "<=", "==", "!=", "?", ":", ".", "\'", "\""}
+    valid_operators = {"(", ")", ",", "+", "-", "*", "/", "&&", "||", "&", "|", ">", "<", ">=", "<=", "==", "!=", "?", ":", ".", "\'", "\"", "="}
     # 使用正则表达式查找所有的运算符，但排除字符串内容
     # 先移除字符串字面量，避免误判
     import re
