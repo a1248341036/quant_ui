@@ -3,7 +3,7 @@
 
 用法：
   .venv\\Scripts\\python.exe scripts\\recheck_engine_gate.py \
-      --factorlib artifacts/alphaagent/factorzoo/candidate_technical \
+      --factorlib artifacts/alphaagent/factorzoo/candidate_main \
       --val-start 2023-01-01 --val-end 2024-12-31
 
 - panel 默认 cne://（CNE 数据湖实时构建），全程内存，不落盘中间表。
@@ -38,7 +38,7 @@ def _load_panel(panel_path: str, start: str, end: str):
 def main() -> int:
     parser = argparse.ArgumentParser(description="存量候选引擎门禁复检")
     parser.add_argument("--panel", default="cne://")
-    parser.add_argument("--factorlib", default="artifacts/alphaagent/factorzoo/candidate_technical")
+    parser.add_argument("--factorlib", default="artifacts/alphaagent/factorzoo/candidate_main")
     parser.add_argument("--registry-name", default=None, help="默认自动选择 candidate/delivered registry")
     parser.add_argument("--val-start", default="2023-01-01")
     parser.add_argument("--val-end", default="2024-12-31")

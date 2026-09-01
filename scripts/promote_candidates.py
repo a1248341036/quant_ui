@@ -162,9 +162,16 @@ def main() -> int:
     ap.add_argument("--all", action="store_true", help="也重放已 stage_two_failed/engine_gate_failed 的候选")
     args = ap.parse_args()
 
+    # 2026-09-03 统一大库：两模式指向同一 candidate_main registry，
+    # 按 (registry路径) 去重，避免同一候选池被两个模式重复重放。
     modes = [args.mode] if args.mode else ["technical", "fundamental"]
+    seen_registries: set[str] = set()
     for mode in modes:
         cand_path = factor_categories.candidate_registry_path(mode)
+        if str(cand_path) in seen_registries:
+            print(f"[{mode}] 与前一模式共享统一候选池，跳过（{cand_path}）")
+            continue
+        seen_registries.add(str(cand_path))
         registry = load_mining_registry(cand_path)
         if not registry:
             print(f"[{mode}] 候选池为空（{cand_path}）")

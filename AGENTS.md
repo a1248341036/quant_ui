@@ -63,10 +63,10 @@ scripts/
 static/src/views/AlphaAgent.vue  # 前端页面：研究 / 因子实验室 / 因子库三个子标签
 
 artifacts/alphaagent/
-├── factorzoo/production_technical/   # 正式因子库（技术模式，FactorZoo 密集矩阵）
-├── factorzoo/candidate_technical/    # 候选因子池（技术模式）
-├── factorzoo/production_fundamental/ # 正式因子库（基本面模式）
-├── factorzoo/candidate_fundamental/  # 候选因子池（基本面模式）
+├── factorzoo/
+│   ├── candidate_main/               # 统一候选池（2026-09-03 大库合并，原 4 库并入，因子带 facets 标签）
+│   ├── production_main/              # 统一正式库（原 production_technical/fundamental 并入）
+│   ├── <旧库名>.bak-unified-*/       # 大库合并前的备份（rename 保留，可回滚）
 ├── research_specs/<mode>.json        # 每模式门槛文件的增量覆盖（diff）
 └── research_memory.db                # 跨会话持久化研究记忆（BM25）
 
@@ -96,7 +96,7 @@ logs/factor_mining/ui/        # 每次 Web run 的 JSONL 轨迹 + run_meta.json 
 
 - `panel_path` 默认 `"cne://"`，触发 `alphaagent/data/adapters/cnequity.py` 从 CNE 数据湖实时构建 panel。CNE adapter 有磁盘面板缓存（`artifacts/panel/cache/panel_*.parquet`），请求区间被缓存覆盖时秒级命中，不重复重建。
 - **因子值缓存**（`alphaagent/factor/cache.py`）：`eval_factor(expr, panel)` 确定性结果的会话级复用。key = sha256(expr + panel 内容指纹 + schema 版本)；值只存对齐行序的 float32 数组，命中时用当前 `panel.index` 重建 Series。**内存 LRU 跨会话共享**（进程级单一 `_SHARED_MEM`，上限 16 条 `ALPHA_FACTOR_CACHE_MEM_MAX_ENTRIES` 覆盖，多开会话内存不线性增长）+ 磁盘持久化（`artifacts/factor_value_cache/`，`.npy` + `.json` 元数据，跨会话/跨进程共享）。**磁盘空间控制**：总字节上限 `_FV_MAX_BYTES`（默认 2GB，`ALPHA_FACTOR_CACHE_MAX_BYTES` 覆盖）+ 文件数上限（默认 1500），写入后按 `last_access` LRU 淘汰最久未用条目；孤儿/损坏文件在启动对账时清理。接入点：`EvaluationEngine.evaluate()`、`materialize_factor()`、`_candidate_registry_similarity()`。
-- `factorlib_path` 默认 `factor_categories.production_dir(research_mode)`（如 `artifacts/alphaagent/factorzoo/production_technical`），由 research_mode 路由。
+- `factorlib_path` 默认 `factor_categories.production_dir(research_mode)`（统一大库 `artifacts/alphaagent/factorzoo/production_main`，2026-09-03 起两模式共享）。
 - **DSL 算子耗时监控**（`alphaagent/dsl/core/monitor.py`）：零侵入自动计时。`eval_factor` 在求值命名空间层包计时代理，每次 DSL 求值自动采集各算子 `(calls/total/avg/max/参数摘要)`，附到结果 Series 的 `attrs["operator_timing"]`（引擎结果带 `operator_timing` 字段），并追加写 `artifacts/dsl_operator_profiling.jsonl` 累计历史。thread-local 隔离（挖掘 4 并行 worker 互不污染）；`ALPHA_DSL_OPERATOR_MONITOR=0` 关闭。查询 API：`GET /api/alphaagent/dsl-monitor?top_k=&since_hours=`。
 - 环境变量 `ALPHA_LLM_PROVIDER=codex` 时从 `~/.codex/config.toml` 读取 bearer token 和 model。
 
@@ -130,8 +130,8 @@ logs/factor_mining/ui/        # 每次 Web run 的 JSONL 轨迹 + run_meta.json 
 
 | 阶段 | 门槛（默认） | 写入位置 |
 |---|---|---|
-| candidate（海选） | \|IC\| ≥ 0.02（2026-09-01 从 0.015 上调：0.015~0.02 区间因子经盲测/换手门禁几乎全灭）, \|ICIR\| > 0.25, coverage > 0.85, max_corr < 0.5, lag1 自相关 ≥ 0.18, val 保留比 ≥ 0.5 | candidate_technical/ |
-| production | \|train IC\| ≥ 0.025, \|train ICIR\| ≥ 0.30, \|val IC\| ≥ 0.015, val 保留比 ≥ 0.60, winsorized 衰减 ≤ 0.10, max_corr < 0.4 | production_technical/ |
+| candidate（海选） | \|IC\| ≥ 0.02（2026-09-01 从 0.015 上调：0.015~0.02 区间因子经盲测/换手门禁几乎全灭）, \|ICIR\| > 0.25, coverage > 0.85, max_corr < 0.5, lag1 自相关 ≥ 0.18, val 保留比 ≥ 0.5 | candidate_main/（统一大库） |
+| production | \|train IC\| ≥ 0.025, \|train ICIR\| ≥ 0.30, \|val IC\| ≥ 0.015, val 保留比 ≥ 0.60, winsorized 衰减 ≤ 0.10, max_corr < 0.4 | production_main/（统一大库） |
 
 提交流程顺序：
 1. **stage_one 统计门槛**（IC/ICIR/coverage/换手/val 保留比）→ 不通过拒绝
@@ -160,8 +160,11 @@ logs/factor_mining/ui/        # 每次 Web run 的 JSONL 轨迹 + run_meta.json 
 
 ### 7. 因子类别注册表（`core/factor_categories.py`）
 
-候选库 + 正式库按 `research_mode` 分目录管理。加新类别只需在 `FACTOR_CATEGORIES` 中注册一行，
-库路径自动跟随 `research_mode`（已在整条链路传递）。
+候选库 + 正式库路径由 `RESEARCH_MODES[mode].candidate_dir/production_dir` 派生。
+**2026-09-03 统一大库**：两模式均指向 `candidate_main`/`production_main`（因子带
+facets 标签，跨模式正交查重生效）；`research_mode` 不再是库边界，只保留门槛档位/
+label/panel 列加载/engine_gate 频率的语义。迁移脚本
+`scripts/migrate_unified_factorzoo.py`（旧库 rename 为 `*.bak-unified-*` 备份）。
 
 ### 8. 统一交易参数（`core/trading_config.py`）
 
@@ -213,7 +216,7 @@ logs/factor_mining/ui/        # 每次 Web run 的 JSONL 轨迹 + run_meta.json 
 | DELETE | `/api/alphaagent/research-specs/{mode}` | 删除门槛文件，恢复注册表默认 |
 | GET | `/api/alphaagent/evaluation-capabilities` | 可用评估插件和 profiles |
 | POST | `/api/alphaagent/eval-factor` | 单因子评估（因子实验室） |
-| GET | `/api/alphaagent/factors` | 列因子（library=production/candidate） |
+| GET | `/api/alphaagent/factors` | 列因子（library=production/candidate；facet=数据面筛选，"融合" 过滤融合因子） |
 | GET | `/api/alphaagent/factors/{id}` | 因子详情 |
 | POST | `/api/alphaagent/factors` | 保存因子 |
 | DELETE | `/api/alphaagent/factors/{id}` | 删除因子 |
@@ -321,7 +324,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start_backend_with_s
 # 仅后端（若只需 API 不想起 CNE dashboard）
 .venv\Scripts\python.exe -m uvicorn backend.main:app --host 127.0.0.1 --port 17891
 
-# CLI 直接启动挖掘（默认 cne:// panel + production_technical factorlib）
+# CLI 直接启动挖掘（默认 cne:// panel + production_main 统一大库）
 .venv\Scripts\python.exe scripts\run_alphaagent.py
 
 # 候选池重放晋升（把候选池已有因子重新走一遍修复后的两阶段链路）

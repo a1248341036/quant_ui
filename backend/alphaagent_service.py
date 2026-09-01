@@ -922,6 +922,26 @@ def _candidate_root(category: str = "technical") -> Path:
     return factor_categories.candidate_dir(category)
 
 
+def _entry_matches_facet(entry: dict[str, Any], facet: str) -> bool:
+    """registry 条目的数据面匹配：facets 交集，或 "融合" 匹配 is_fusion。
+
+    老条目缺 facets 字段时按表达式现算兜底（与记忆层同口径）。
+    """
+    from alphaagent.factor.mining.memory.expressions import classify_family_ex, expr_facets
+
+    facets = entry.get("facets")
+    if not isinstance(facets, list) or not facets:
+        expr = str(entry.get("expr") or "")
+        if not expr:
+            rel = str(entry.get("expression_file") or "")
+            path = ROOT / rel if rel else None
+            expr = path.read_text(encoding="utf-8") if path and path.is_file() else ""
+        facets = sorted(expr_facets(str(entry.get("name") or "") + " " + expr))
+    if facet == "融合":
+        return entry.get("is_fusion") if isinstance(entry.get("is_fusion"), bool) else len(facets) >= 2
+    return facet in facets
+
+
 def _candidate_registry(category: str = "technical") -> dict[str, Any]:
     path = _candidate_root(category) / "mining_candidate_registry.json"
     if not path.is_file():
@@ -1010,17 +1030,18 @@ def _candidate_factor_view(factor_id: str, entry: dict[str, Any], *, category: s
         "extra": entry,
     }
 
-def list_factors(*, library: str = "production", category: str = "technical") -> dict[str, Any]:
+def list_factors(*, library: str = "production", category: str = "technical", facet: str | None = None) -> dict[str, Any]:
     """列出因子库中的所有因子。
-    
+
     使用 FactorRepository 服务，支持缓存和统一接口。
 
     library:
       - "production": 正式因子库
       - "candidate": 候选因子库
     category:
-      - "technical": 日线技术因子
-      - "fundamental": 基本面因子
+      - "technical"/"fundamental"：统一大库下仅作为门槛档位语义保留，
+        两模式现指向同一物理目录（candidate_main/production_main）。
+    facet: 数据面筛选（如 "基本面"）；支持 "融合" 关键字过滤 is_fusion 因子。
     """
     from alphaagent.factor.zoo import FactorZoo
 
@@ -1032,6 +1053,11 @@ def list_factors(*, library: str = "production", category: str = "technical") ->
     # 候选库仍使用原有逻辑（包含 registry）
     if library == "candidate":
         registry = _candidate_registry(category)
+        if facet:
+            registry = {
+                fid: e for fid, e in registry.items()
+                if isinstance(e, dict) and _entry_matches_facet(e, facet)
+            }
         factors = [_candidate_factor_view(fid, entry, category=category) for fid, entry in sorted(registry.items())]
         return {
             "library": library,
@@ -1096,6 +1122,15 @@ def list_factors(*, library: str = "production", category: str = "technical") ->
         return merged
 
     factors = [_merge_production_entry(item) for item in factors]
+
+    if facet:
+        factors = [
+            item for item in factors
+            if _entry_matches_facet(
+                registry.get(str(item.get("factor_id"))) or registry.get(str(item.get("name"))) or item,
+                facet,
+            )
+        ]
 
     return {
         "library": library,

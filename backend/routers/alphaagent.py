@@ -501,9 +501,9 @@ def eval_factor(req: EvalFactorRequest) -> dict[str, Any]:
 # ══════════════════════════════════════════════════════════════════════
 
 @router.get("/factors")
-def list_factors(library: str = "production", category: str = "technical") -> dict[str, Any]:
-    """列出因子库中的所有因子。"""
-    return service.list_factors(library=library, category=category)
+def list_factors(library: str = "production", category: str = "technical", facet: str | None = None) -> dict[str, Any]:
+    """列出因子库中的所有因子（facet: 数据面筛选，"融合" 过滤融合因子）。"""
+    return service.list_factors(library=library, category=category, facet=facet)
 
 
 @router.get("/factors/{factor_id}")

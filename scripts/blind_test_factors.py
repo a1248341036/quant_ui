@@ -128,8 +128,7 @@ def main() -> int:
                         help="面板预热起点（默认 test_start 往前 400 个自然日，供滚动算子预热）")
     parser.add_argument("--label-col", default="label_1d_open_to_open")
     parser.add_argument("--libs", nargs="*", default=[
-        "production_technical", "production_fundamental",
-        "candidate_technical", "candidate_fundamental",
+        "production_main", "candidate_main",
     ])
     parser.add_argument("--clean", action="store_true",
                         help="清理失效因子（retention < 阈值）并同步研究记忆")

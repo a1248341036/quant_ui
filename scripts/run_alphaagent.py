@@ -12,7 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 UPSTREAM_ENTRY = ROOT / "scripts" / "alphaagent_factor_mining.py"
 DEFAULT_PANEL = "cne://"  # 从 CNE 数据湖实时构建
-DEFAULT_FACTORLIB = ROOT / "artifacts" / "alphaagent" / "factorzoo" / "production_technical"
+DEFAULT_FACTORLIB = ROOT / "artifacts" / "alphaagent" / "factorzoo" / "production_main"
 
 
 def load_codex_provider() -> None:

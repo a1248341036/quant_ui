@@ -50,8 +50,10 @@ RESEARCH_MODES: dict[str, ResearchModeSpec] = {
         signal_families=("volume_price", "volatility", "chip", "momentum_reversal"),
         forbidden_families=("pure_size",),
         needs_fundamentals=False,
-        candidate_dir="candidate_technical",
-        production_dir="production_technical",
+        # 2026-09-03 统一大库：候选/正式库不再按模式分目录，两模式共享
+        # candidate_main/production_main（因子带 facets 标签，跨模式正交查重生效）。
+        candidate_dir="candidate_main",
+        production_dir="production_main",
         default_user_message=(
             "请自主挖掘A股日频价量因子，先训练集评估，再验证集检验；"
             "只有通过验证和去重门槛的因子才提交。"
@@ -68,8 +70,8 @@ RESEARCH_MODES: dict[str, ResearchModeSpec] = {
         ),
         forbidden_families=("pure_size", "pure_price_momentum"),
         needs_fundamentals=True,
-        candidate_dir="candidate_fundamental",
-        production_dir="production_fundamental",
+        candidate_dir="candidate_main",
+        production_dir="production_main",
         default_user_message=(
             "请基于已载入的基本面字段（盈利质量、杠杆、现金流、财报科目等，"
             "PIT 日频）结合价量信息挖掘A股日频因子，先训练集评估，再验证集检验；"

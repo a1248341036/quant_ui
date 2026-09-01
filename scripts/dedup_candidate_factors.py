@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
-CAND_REGISTRY = ROOT / "artifacts" / "alphaagent" / "factorzoo" / "candidate_technical" / "mining_candidate_registry.json"
+CAND_REGISTRY = ROOT / "artifacts" / "alphaagent" / "factorzoo" / "candidate_main" / "mining_candidate_registry.json"
 
 
 def _load_panel() -> pd.DataFrame:
@@ -284,7 +284,7 @@ def main() -> None:
         entry = registry.pop(fid, None)
         # 删除 DSL 文件
         rel = str((entry or {}).get("expression_file") or "")
-        dsl_path = ROOT / rel if rel else ROOT / "artifacts" / "alphaagent" / "factorzoo" / "candidate_technical" / "expressions" / f"{fid}.dsl"
+        dsl_path = ROOT / rel if rel else ROOT / "artifacts" / "alphaagent" / "factorzoo" / "candidate_main" / "expressions" / f"{fid}.dsl"
         if dsl_path.exists():
             dsl_path.unlink()
             print(f"  删除文件: {dsl_path}", flush=True)
