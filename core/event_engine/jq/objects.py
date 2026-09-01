@@ -117,7 +117,10 @@ class _CodeData:
     def __init__(self, row: pd.Series, name_map: dict, rt=None):
         self._rt = rt
         self.code = (str(row.name) if hasattr(row, "name") else "")
-        nm = name_map.get(self.code, "")
+        # 点时名称优先(snapshot 已按当日 is_st 重写), 回落当前名快照
+        nm_row = row.get("name")
+        nm = (str(nm_row) if nm_row is not None and str(nm_row) != "nan"
+              else name_map.get(self.code, ""))
         self.paused = bool(row.get("paused", False))
         self.is_st = bool(row.get("st", False)) or ("ST" in nm.upper())
         self.name = nm

@@ -110,6 +110,17 @@ def run_jq_backtest(code: str, start: str, end: str | None = None,
     trades = res["trades"].copy()
     if len(trades):
         trades["date"] = trades["date"].astype(str)
+    deals = []
+    for f in res.get("trades_detail") or []:
+        deals.append({
+            "date": str(pd.Timestamp(f["date"]).date()),
+            "code": str(f.get("code")),
+            "side": str(f.get("side")),
+            "shares": float(f.get("shares") or 0),
+            "price": float(f.get("price") or 0),
+            "amount": float(f.get("amount") or 0),
+            "fee": float(f.get("fee") or 0),
+        })
     return {
         "ok": True,
         "metrics": metrics,
@@ -119,6 +130,7 @@ def run_jq_backtest(code: str, start: str, end: str | None = None,
                       "value": float(v)} for d, v in res["drawdown"].items()],
         "holdings": holdings.to_dict(orient="records"),
         "trades": trades.to_dict(orient="records"),
+        "trades_detail": deals,
         "logs": exec_logs,
         "codes_count": len(ctx.codes),
         "start": start, "end": end_ts.date().isoformat(),

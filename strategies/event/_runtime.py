@@ -61,6 +61,15 @@ DEFAULT_PARAMS = dict(
 MONEY_ETFS = ("511880.XSHG", "511990.XSHG")
 METF_NAME = {"511880.XSHG": "银华日利", "511990.XSHG": "华宝添益"}
 
+import re as _re  # noqa: E402
+
+_ST_PREFIX = _re.compile(r"^\*(?:ST|st)|^ST|^st|^退|^Del")
+
+
+def _strip_st_prefix(name: str) -> str:
+    """剥名称里的 ST/*ST/退 前缀(点时未戴帽时使用)。"""
+    return _ST_PREFIX.sub("", str(name), count=1)
+
 
 def _inject_money_etfs(panel: pd.DataFrame, close_raw_df: pd.DataFrame
                        ) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -215,6 +224,14 @@ class JQContext:
             "low_limit": t.down_limit[i][keep],
         }, index=idx)
         df["name"] = [self.name_map.get(c, "") for c in idx]
+        # 点时名称: 名称快照是"当前"口径, 历史时点的 ST/退 前缀按当日
+        # is_st 重写(未戴帽则剥前缀), 消除名称过滤的未来函数
+        # (实证: 002856/002207/002719 均 2026-04-29 才戴帽, 2025-01-03
+        # 聚宽按"美芝股份/准油股份/麦趣尔"正常买入)
+        df["name"] = [
+            _strip_st_prefix(nm) if (nm and not bool(st))
+            else nm
+            for nm, st in zip(df["name"], df["st"])]
         for name, mat in self._fin_mats.items():
             df[name] = mat[i][keep]
         tr = self._turnover_col(pd.Timestamp(date))
