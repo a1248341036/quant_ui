@@ -250,7 +250,10 @@ class _Portfolio:
         out = _PositionsDict()
         for code, shares in ctx.positions.items():
             if shares:
-                px = ctx.last_close(code) or 0.0
+                # 聚宽语义: price = 决策时刻的实时价 -> 分钟价优先,
+                # 缺失回落最近收盘(旧行为)
+                px = (self._rt._minute_px_panel(code, self._rt.context.current_dt)
+                      or ctx.last_close(code) or 0.0)
                 out[code] = _Position(code, shares,
                                       self._rt._cost.get(code, 0.0), px)
         return out
