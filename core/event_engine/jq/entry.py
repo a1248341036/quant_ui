@@ -24,11 +24,36 @@ def run_jq_backtest(code: str, start: str, end: str | None = None,
                     capital: float = 100_000.0, warmup_days: int = 60,
                     lookback_buffer_days: int = 500,
                     buy_cost: float = 0.0001, sell_cost: float = 0.0011,
-                    slippage_bps: float = 0.0) -> dict:
-    """聚宽风格策略回测。返回 {metrics, nav, holdings, trades, logs}。"""
+                    slippage_bps: float = 0.0,
+                    smoke: bool = False) -> dict:
+    """聚宽风格策略回测。返回 {metrics, nav, holdings, trades, logs}。
+
+    smoke=True: 冒烟模式(短窗口+跳过分钟预取), 用于快速验证策略能否跑通。
+    回测前自动执行 API 预检(_preflight_api), 缺失 API 秒级报错。
+    """
     global _LAST_CTX, _LAST_RT
+    # ---- API 预检(秒级): 缺失 API 不再等 90 秒回测后才炸 ----
+    try:
+        from core.event_engine.jq.preflight import preflight as _preflight
+        missing = _preflight(code)
+        if missing:
+            raise RuntimeError(
+                "策略引用了兼容层尚未支持的 API: "
+                + ", ".join(missing)
+                + " (详见 docs/jq_compat_迁移评估.md)")
+    except RuntimeError:
+        raise
+    except Exception:
+        pass  # 预检自身异常不阻断回测
+    if smoke:
+        warmup_days = min(warmup_days, 10)
+        lookback_buffer_days = 30
+        end_ts_smoke = pd.Timestamp(start) + pd.Timedelta(days=90)
+        if end is None or pd.Timestamp(end) > end_ts_smoke:
+            end = end_ts_smoke.date().isoformat()
     end_ts = pd.Timestamp(end) if end else pd.Timestamp.today()
-    lookback = max(800, (end_ts - pd.Timestamp(start)).days + lookback_buffer_days)
+    lookback = max(45 if smoke else 800,
+                   (end_ts - pd.Timestamp(start)).days + lookback_buffer_days)
     ctx = JQContext(end=end_ts.date().isoformat(), lookback_days=lookback)
     t0 = time.time()
     rt = JQRuntime(code, ctx, capital=capital, window_start=start)
@@ -40,13 +65,14 @@ def run_jq_backtest(code: str, start: str, end: str | None = None,
             init_fn(rt.context)
         except Exception:
             pass
-        try:
-            # 聚宽语义: 盘中下单按下单时点真实价成交 -> 预取调度时点分钟线
-            minutes = ({t[3] for t in rt.scheduled
-                        if t[3] and ":" in str(t[3])} | {"9:30"})
-            rt.prefetch_minutes(sorted(minutes))
-        except Exception:
-            pass
+        if not smoke:
+            try:
+                # 聚宽语义: 盘中下单按下单时点真实价成交 -> 预取调度时点分钟线
+                minutes = ({t[3] for t in rt.scheduled
+                            if t[3] and ":" in str(t[3])} | {"9:30"})
+                rt.prefetch_minutes(sorted(minutes))
+            except Exception:
+                pass
         rt.scheduled = []
         rt.pending_orders = []
     exec_logs = list(rt.log.buffer)
