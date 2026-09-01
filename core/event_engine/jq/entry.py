@@ -131,9 +131,12 @@ def run_jq_backtest(code: str, start: str, end: str | None = None,
     try:
         ix = ctx.index_frame(str(bench_code))
         if ix is not None and len(ix):
-            b = ix["close"].astype(float).dropna()
-            b = b.reindex(nav.index).ffill().bfill()
-            bench_curve = b / b.iloc[0]
+            b_all = ix["close"].astype(float).dropna().sort_index()
+            # 聚宽口径: 基点 = 窗口首日之前的收盘(首日涨跌计入基准收益)
+            loc = int(b_all.index.searchsorted(nav.index[0]))
+            base = float(b_all.iloc[loc - 1]) if loc > 0 else float(b_all.iloc[0])
+            b = b_all.reindex(nav.index).ffill().bfill()
+            bench_curve = b / base
     except Exception:
         bench_curve = None
     jq_panel = compute_jq_panel(
