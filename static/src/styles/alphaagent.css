@@ -439,6 +439,14 @@ textarea.lab-input { resize:vertical; font:12px/1.5 var(--font-mono); }
 .lib-toolbar-label { color:var(--muted); font-size:11px; }
 .lib-toolbar input[type="date"] { background:var(--bg-soft); border:1px solid var(--line); color:var(--text); border-radius:6px; font-size:11px; padding:3px 6px; }
 .lib-range-sep { color:var(--muted); font-size:11px; }
+.lib-facet-btn { padding:3px 10px; border:1px solid var(--line); border-radius:12px; background:transparent; color:var(--muted); font-size:11px; cursor:pointer; white-space:nowrap; }
+.lib-facet-btn:hover { color:var(--text); border-color:rgb(126 168 255 / .45); }
+.lib-facet-btn.active { border-color:rgb(126 168 255 / .7); background:rgb(79 140 255 / .15); color:#7ea8ff; }
+.lib-facet-btn.fusion.active { border-color:rgb(190 132 255 / .7); background:rgb(190 132 255 / .15); color:#c98aff; }
+.lib-facets { white-space:nowrap; }
+.lib-facet-text { color:var(--muted); font-size:10px; }
+.lib-facet-tag { display:inline-block; margin-right:4px; padding:1px 5px; border-radius:8px; font-size:9px; font-weight:600; }
+.lib-facet-tag.fusion { border:1px solid rgb(190 132 255 / .55); background:rgb(190 132 255 / .12); color:#c98aff; }
 .lib-export-all { padding:4px 12px; border:1px solid rgb(126 168 255 / .45); border-radius:6px; background:rgb(79 140 255 / .1); color:#7ea8ff; font-size:11px; cursor:pointer; }
 .lib-export-all:hover { background:rgb(79 140 255 / .2); }
 .lib-export-json { margin-left:auto; padding:4px 12px; border:1px solid rgb(94 224 160 / .45); border-radius:6px; background:rgb(94 224 160 / .1); color:#5ee0a0; font-size:11px; cursor:pointer; }
@@ -574,3 +582,18 @@ textarea.lab-input { resize:vertical; font:12px/1.5 var(--font-mono); }
 .facet-chip:disabled { opacity: .45; cursor: not-allowed; }
 .facet-hint { font-size: 11px; color: var(--text-dim, #8a93a6); }
 .facet-hint.fusion { color: var(--accent, #5b8cff); }
+
+/* ── 研究总结 数据面列（2026-09-03）── */
+.summary-facets { white-space: nowrap; font-size: 11px; }
+.summary-facet-text { color: var(--text-dim, #8a93a6); }
+.summary-fusion-tag {
+  display: inline-block;
+  margin-right: 4px;
+  padding: 0 5px;
+  border-radius: 8px;
+  font-size: 10px;
+  color: #fff;
+  border: 1px solid var(--accent, #5b8cff);
+  background: color-mix(in srgb, var(--accent, #5b8cff) 24%, transparent);
+}
+.summary-facet-hint { color: var(--text-dim, #8a93a6); font-size: 10px; cursor: help; }

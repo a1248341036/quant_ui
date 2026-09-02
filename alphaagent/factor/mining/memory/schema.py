@@ -19,8 +19,13 @@ from .constants import (
     POSITIVE_VERDICTS,
 )
 from .diagnostics import _failure_code, _now, _safe_float
-from .expressions import _structure_fingerprint, classify_family, expr_facets
-from .expressions import extract_edit_motif
+from .expressions import (
+    _structure_fingerprint,
+    classify_family,
+    expr_facets,
+    extract_edit_motif,
+    is_cross_group_fusion,
+)
 
 
 def _compute_motif(parent_expr: str, child_expr: str) -> str:
@@ -580,7 +585,8 @@ class SchemaMixin:
                     facets = set()
             if not facets:
                 facets = expr_facets(str(row["expression"] or ""))
-            item["facets"] = facets
+            item["facets"] = sorted(facets)
+            item["is_fusion"] = is_cross_group_fusion(facets)
             output.append(item)
         return output
 

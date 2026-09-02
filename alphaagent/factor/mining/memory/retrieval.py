@@ -202,7 +202,7 @@ class RetrievalMixin:
                 "failure_code": row["failure_code"] if "failure_code" in row.keys() else None,
                 "fail_detail": row["fail_detail"] if "fail_detail" in row.keys() else None,
                 "family": family or classify_family(row["factor_name"], row["expression"]),
-                "facets": facets,
+                "facets": sorted(facets),
                 "updated_at": row["updated_at"],
                 "attempts": row["attempts"],
             }
@@ -218,7 +218,7 @@ class RetrievalMixin:
             "failure_code": json.loads("{}"),
             "fail_detail": row["failure_code"] if "failure_code" in row.keys() else None,
             "family": row["fail_detail"] if "fail_detail" in row.keys() else None,
-            "facets": facets,
+            "facets": sorted(facets),
             "updated_at": classify_family(row["factor_name"], row["expression"]),
             "attempts": row["updated_at"],
         }
@@ -242,7 +242,7 @@ class RetrievalMixin:
         family_affinity = 0.3 if entry.get("family") in focus_families else 0
         if family_affinity == 0 and query_facets:
             entry_facets = entry.get("facets")
-            if isinstance(entry_facets, set) and entry_facets & query_facets:
+            if entry_facets and set(entry_facets) & query_facets:
                 family_affinity = 0.15
         entry_ops = set(expression_ops(str(entry.get("expression") or "")))
         op_jaccard = len(query_ops & entry_ops) / len(query_ops | entry_ops) if (query_ops | entry_ops) else 0

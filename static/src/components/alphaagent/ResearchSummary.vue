@@ -88,6 +88,9 @@
               <th @click="agent.setSummarySort('attempts')" :class="{ sortable: true, 'sort-active': agent.summarySortKey === 'attempts' }">
                 评估次数 <span class="sort-ind" v-if="agent.summarySortKey === 'attempts'">{{ agent.summarySortOrder === 1 ? '▲' : '▼' }}</span>
               </th>
+              <th>
+                数据面 <span class="summary-facet-hint" title="触及的数据面（×连接 = 跨数据源组融合因子）">ⓘ</span>
+              </th>
               <th @click="agent.setSummarySort('updated_at')" :class="{ sortable: true, 'sort-active': agent.summarySortKey === 'updated_at' }">
                 更新时间 <span class="sort-ind" v-if="agent.summarySortKey === 'updated_at'">{{ agent.summarySortOrder === 1 ? '▲' : '▼' }}</span>
               </th>
@@ -111,6 +114,10 @@
               <td>{{ formatMetricValue(entry.metrics?.monotonicity ?? '—') }}</td>
               <td class="summary-reason" :title="entry.conclusion">{{ entry.conclusion || entry.error || '—' }}</td>
               <td class="summary-attempts">{{ entry.attempts || 1 }}</td>
+              <td class="summary-facets" :title="(entry.facets || []).join(' + ')">
+                <span v-if="entry.is_fusion" class="summary-fusion-tag">融合</span>
+                <span class="summary-facet-text">{{ facetText(entry) }}</span>
+              </td>
               <td class="summary-time">{{ formatTime(entry.updated_at) }}</td>
             </tr>
           </tbody>
@@ -210,6 +217,12 @@ export default {
     memoryVerdictLabel,
     formatMetricValue,
     icClass,
+    facetText(entry) {
+      const facets = entry.facets || []
+      if (!facets.length) return '—'
+      // 与记忆 family 口径一致：跨数据源组融合用 × 连接，单面/同组用 +
+      return entry.is_fusion ? facets.join('×') : facets.join('+')
+    },
     async refresh() {
       this.loading = true
       try {
