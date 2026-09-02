@@ -594,6 +594,7 @@ class SchemaMixin:
     def _compact_metrics(metrics: dict[str, Any]) -> dict[str, float]:
         keys = (
             "ic", "icir", "rank_ic", "factor_coverage", "coverage",
+            "cs_pearson_autocorr",
             "long_group_annual_excess_return", "winsorized_abs_ic_decay",
             "annualized_return", "annualized_excess_return", "sharpe",
             "max_drawdown", "annual_turnover", "daily_overlap",
