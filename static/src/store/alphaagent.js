@@ -60,7 +60,7 @@ export const agentStore = reactive({
     train_end: '2022-12-31',
     val_start: '2023-01-01',
     val_end: '2024-12-31',
-    population_max: 24,
+    population_max: 0,
     user_message: '',
     max_turns: 5,
     max_tool_calls_per_round: 20,
@@ -549,6 +549,24 @@ export const agentStore = reactive({
     if (!this.researchMemoryHasMore || this.researchMemoryLoading) return
     this.researchMemoryPage += 1
     await this.loadResearchMemory(false)
+  },
+  // 已加载范围的整体刷新（轮询用）：按已加载条数一次取回并替换，不重置浏览位置
+  async refreshResearchMemory() {
+    if (this.researchMemoryLoading) return
+    this.researchMemoryLoading = true
+    try {
+      const limit = Math.min(500, Math.max(this.researchMemoryPageSize, this.researchMemory.length))
+      const payload = await api(`/api/alphaagent/research-memory?limit=${limit}&offset=0&t=${Date.now()}`)
+      const entries = payload.entries || []
+      this.researchMemoryTotal = payload.total || entries.length
+      this.researchMemoryStats = payload.statistics || null
+      this.researchMemory = entries
+      this.researchMemoryPage = Math.max(0, Math.ceil(entries.length / this.researchMemoryPageSize) - 1)
+    } catch (e) {
+      this.error = '刷新长期研究记忆失败: ' + e.message
+    } finally {
+      this.researchMemoryLoading = false
+    }
   },
   // ── 研究总结分页（服务端排序 + verdict 过滤）──
   async loadSummaryPage(page) {

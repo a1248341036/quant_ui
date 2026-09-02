@@ -98,8 +98,8 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument(
         "--population-max",
         type=int,
-        default=24,
-        help="种群批量筛选(propose_population)单轮候选上限；0=关闭路径B",
+        default=0,
+        help="种群批量筛选(propose_population)单轮候选上限；0=关闭路径B（2026-09-03 默认关：批量扩容后常规并行评估已覆盖其吞吐，种群仅保留参数敏感性扫描用途）",
     )
     p.add_argument(
         "--max-parallel-eval",

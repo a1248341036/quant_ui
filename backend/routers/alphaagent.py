@@ -55,7 +55,7 @@ class StartRequest(BaseModel):
     max_tool_workers: int = Field(default=12, ge=1, le=24)
     max_parallel_eval: int | None = Field(default=12, ge=1, le=24)
     max_tokens: int = Field(default=16384, ge=256, le=32768)  # hy3 thinking 需 >8K
-    population_max: int = Field(default=24, ge=0, le=36)  # 种群批量上限；0=关闭路径B
+    population_max: int = Field(default=0, ge=0, le=36)  # 种群批量上限；0=关闭（默认关：并行批量扩容后仅保留参数扫描用途）
     no_fundamentals: bool = False
     # 数据面聚焦（跨面融合）：前端多选（如 ["基本面","价量面"]）→ 子进程
     # --focus-facets，用户消息追加融合指令 + 每轮记忆注入聚焦提醒。

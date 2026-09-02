@@ -21,8 +21,10 @@ class MiningConfig:
     """单次 LLM 调用的重试次数（框架默认 3）。抖动型代理/上游需要更大韧性。"""
     model_retry_delay: float = 5.0
     """重试间隔秒数（框架默认 1.0）；配合指数外的大间隔穿透上游抖动。"""
-    population_max: int = 24
-    """种群批量筛选（propose_population）单轮候选上限；0 = 关闭路径 B。"""
+    population_max: int = 0
+    """种群批量筛选（propose_population）单轮候选上限；0 = 关闭路径 B。
+    2026-09-03 默认关：并行批量扩容（12~20/轮）后常规路径已覆盖其吞吐，
+    种群仅保留参数敏感性扫描用途，需要时显式开启。"""
     max_turns: int = 16
     max_tool_calls_per_round: int = 20
     max_tool_workers: int = 12
