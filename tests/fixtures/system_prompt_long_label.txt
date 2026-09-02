@@ -410,7 +410,7 @@ tri_gap = CHIP_COM_W_GAP($adj_close, $adj_low, $adj_high, $volume, 40, $vwap, 64
 - `GT(df1, df2)` — 双面板逐元素 ``>``。
 - `IF_THEN_ELSE(cond, then_val, else_val=0.0)` — 条件选择：``cond`` 为真取 ``then_val``，否则取 ``else_val``（默认 0）。
 - `INV(df)` — 逐元素倒数；0 变 NaN。
-- `KLINE_GEOMETRY(open_df, high_df, low_df, close_df, window, eps=1e-15)` — 窗口内将每根 K 线视为 ``(o,h,l,c)∈R^4``，堆成 ``X∈R^{k×4}`` 做 SVD，输出 ``σ₂/σ₁``。
+- `KLINE_GEOMETRY(open_df, high_df, low_df, close_df, window, *, eps=1e-15)` — 窗口内将每根 K 线视为 ``(o,h,l,c)∈R^4``，堆成 ``X∈R^{k×4}`` 做 SVD，输出 ``σ₂/σ₁``。
 - `LE(df1, df2)` — 双面板逐元素 ``<=``。
 - `LOG(df)` — 自然对数；0 先变 NaN。
 - `LT(df1, df2)` — 双面板逐元素 ``<``；列名可不同，规则同 ``ADD``。
@@ -419,7 +419,7 @@ tri_gap = CHIP_COM_W_GAP($adj_close, $adj_low, $adj_high, $volume, 40, $vwap, 64
 - `MIN(x, y, z=None)` — 两/三列逐元素 min；同 MAXIMUM，支持对标量边界（如 clip）。
 - `MINIMUM(x, y, z=None)` — 两/三列逐元素 min；同 MAXIMUM，支持对标量边界（如 clip）。
 - `MULTIPLY(df1, df2)` — 逐元素乘；规则同 ADD。
-- `MUTUAL_INFO_LAG(df_close, df_volume, window, lag, n_bins=8, min_pairs=None)` — 滚动直方图（秩分箱）估计 Shannon 互信息 I(close(t); volume(t-k))，单位为 nats。
+- `MUTUAL_INFO_LAG(df_close, df_volume, window, lag, *, n_bins=8, min_pairs=None)` — 滚动直方图（秩分箱）估计 Shannon 互信息 I(close(t); volume(t-k))，单位为 nats。
 - `NE(df1, df2)` — 双面板逐元素 ``!=``。
 - `NEG(df)` — 逐元素取负；等价 ``MULTIPLY(df, -1)``。
 - `OR(df1, df2)` — 按位或（先转 bool）。
@@ -496,7 +496,7 @@ tri_gap = CHIP_COM_W_GAP($adj_close, $adj_low, $adj_high, $volume, 40, $vwap, 64
 - `TS_VAR(df, window, ddof=1)` — 滚动方差；window 同 TS_MIN，ddof 默认 1。
 - `TS_ZSCORE(df, window, ddof=1)` — 滚动 z-score：``(x - TS_MEAN) / TS_STD``；std=0 时输出 NaN，ddof 默认 1。
 - `VOLUME_CLOCK_VPIN(price, volume, window, bucket_size, classification='tick', min_buckets=5, sigma_window=20, eps=1e-12)` — 成交量同步 VPIN（Volume-Synchronized Probability of Informed Trading）∈ [0,1]。
-- `WICK_EFFICIENCY(open_df, high_df, low_df, close_df, lag, eps=1e-12)` — 影线能量效率：当前柱上影线与 k 根前下影线的交叉耦合，按实体尺度归一化。
+- `WICK_EFFICIENCY(open_df, high_df, low_df, close_df, lag, *, eps=1e-12)` — 影线能量效率：当前柱上影线与 k 根前下影线的交叉耦合，按实体尺度归一化。
 - `WMA(df, p=20)` — 线性加权均线，近端权重大，窗口 p 根。
 
 ---

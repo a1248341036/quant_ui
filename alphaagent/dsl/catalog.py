@@ -17,13 +17,21 @@ def _slim_signature(fn) -> str:
     `TS_MEAN(df: 'pd.DataFrame', window: 'Window')` → `TS_MEAN(df, window)`；
     `CHIP_PEAK_LOC(..., nbins: 'int' = 64, method: 'str' = 'cyq')` → `(..., nbins=64, method='cyq')`。
     位置参数顺序与真实签名严格一致（DSL 按位置传参，顺序即语义）。
+
+    keyword-only 参数（`*` 后）显式渲染 `*` 分隔符：`MUTUAL_INFO_LAG(df, volume,
+    window, lag, *, n_bins=8)`——LLM 曾把 n_bins 按第 5 个位置参数传入而 exec
+    报 "takes 4 positional arguments but 5 were given"，catalog 平铺签名是根因。
     """
     try:
         sig = inspect.signature(fn)
     except (TypeError, ValueError):
         return "(...)"
     parts: list[str] = []
+    star_done = False
     for p in sig.parameters.values():
+        if p.kind is inspect.Parameter.KEYWORD_ONLY and not star_done:
+            parts.append("*")
+            star_done = True
         if p.default is inspect.Parameter.empty:
             parts.append(p.name)
             continue
