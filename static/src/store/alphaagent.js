@@ -809,6 +809,8 @@ export const agentStore = reactive({
     draft.delivery_policy.screener.adx_threshold = draft.delivery_policy.screener.adx_threshold ?? 25
     draft.delivery_policy.screener.ma_period = draft.delivery_policy.screener.ma_period ?? 60
     draft.delivery_policy.screener.min_cross_section = draft.delivery_policy.screener.min_cross_section ?? 30
+    draft.search_policy = draft.search_policy || {}
+    draft.search_policy.max_candidates_per_round = draft.search_policy.max_candidates_per_round ?? 8
     this.thresholdDraft = draft
   },
   async openThresholdModal() {
@@ -872,6 +874,7 @@ export const agentStore = reactive({
       ['Screener ADX 阈值', d.delivery_policy.screener?.adx_threshold, 0, 100],
       ['Screener 均线周期', d.delivery_policy.screener?.ma_period, 10, 500],
       ['Screener 最小截面数', d.delivery_policy.screener?.min_cross_section, 1, 1000],
+      ['每轮候选数', d.search_policy?.max_candidates_per_round, 1, 24],
     ]
     for (const [label, value, lo, hi] of nums) {
       if (value == null || Number.isNaN(Number(value))) throw new Error(label + ' 必须是数字')

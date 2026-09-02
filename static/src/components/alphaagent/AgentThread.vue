@@ -187,6 +187,12 @@
               </select></label>
               <label class="composer-date">训练 <input v-model="agent.form.train_start" type="date" :disabled="agent.agentBusy" class="composer-date-input"> → <input v-model="agent.form.train_end" type="date" :disabled="agent.agentBusy" class="composer-date-input"></label>
               <label class="composer-date">验证 <input v-model="agent.form.val_start" type="date" :disabled="agent.agentBusy" class="composer-date-input"> → <input v-model="agent.form.val_end" type="date" :disabled="agent.agentBusy" class="composer-date-input"></label>
+              <label class="composer-date" title="每轮并行评估数（train/val 同时算多少个因子）；上限受机器 CPU/内存约束。每轮候选总数在「门槛」弹窗的搜索策略里配置">并发 <select v-model.number="agent.form.max_parallel_eval" :disabled="agent.agentBusy" class="composer-date-input">
+                <option :value="6">×6</option>
+                <option :value="12">×12</option>
+                <option :value="16">×16</option>
+                <option :value="24">×24</option>
+              </select></label>
               <label class="composer-date" title="种群批量筛选：每轮一次参数网格扫描（propose_population）；关闭则仅单点迭代">种群 <select v-model.number="agent.form.population_max" :disabled="agent.agentBusy" class="composer-date-input">
                 <option :value="0">关</option>
                 <option :value="12">×12</option>

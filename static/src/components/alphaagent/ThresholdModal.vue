@@ -5,7 +5,7 @@
         <div class="threshold-modal-head">
           <div>
             <strong>门槛配置</strong>
-            <span class="threshold-modal-mode">{{ agent.researchModes.find(m => m.value === agent.form.research_mode)?.label || agent.form.research_mode }} 模式</span>
+            <span class="threshold-modal-mode">{{ agent.inferredModeLabel }}</span>
             <span v-if="agent.researchSpecCustom" class="research-spec-custom">已自定义</span>
             <span v-if="agent.researchSpecDirty" class="research-spec-dirty">未保存</span>
             <span v-if="agent.specError" class="research-spec-error">{{ agent.specError }}</span>
@@ -190,6 +190,17 @@
                 <input type="number" step="1" min="1" max="1000" class="threshold-input" v-model.number="thresholdDraft.delivery_policy.screener.min_cross_section">
               </label>
             </div>
+          </section>
+
+          <section class="threshold-group">
+            <h4>⑥ 搜索策略</h4>
+            <div class="threshold-grid">
+              <label title="每轮 LLM 并行提出的候选因子数上限（同时渲染进提示词）；上限 24">
+                每轮候选数 ≤
+                <input type="number" step="1" min="1" max="24" class="threshold-input" v-model.number="thresholdDraft.search_policy.max_candidates_per_round">
+              </label>
+            </div>
+            <p class="threshold-search-hint">每轮实际并行评估还受 composer 的"并发"（评估并发度）与 max_tool_calls_per_round 约束；批量越大，单轮耗时与 token 消耗越高。</p>
           </section>
 
           <details class="threshold-advanced">
