@@ -60,6 +60,9 @@
               <th @click="agent.setSummarySort('coverage')" :class="{ sortable: true, 'sort-active': agent.summarySortKey === 'coverage' }">
                 覆盖率 <span class="sort-ind" v-if="agent.summarySortKey === 'coverage'">{{ agent.summarySortOrder === 1 ? '▲' : '▼' }}</span>
               </th>
+              <th title="截面 lag-1 自相关（换手代理）：低于 0.18 的因子排名日度变化过快，交易成本吃掉 alpha，海选自动拦截">
+                换手 <span class="summary-facet-hint">ⓘ</span>
+              </th>
               <th @click="agent.setSummarySort('annualized_excess_return')" :class="{ sortable: true, 'sort-active': agent.summarySortKey === 'annualized_excess_return' }">
                 年化超额 <span class="sort-ind" v-if="agent.summarySortKey === 'annualized_excess_return'">{{ agent.summarySortOrder === 1 ? '▲' : '▼' }}</span>
               </th>
@@ -75,8 +78,8 @@
               <th @click="agent.setSummarySort('max_drawdown')" :class="{ sortable: true, 'sort-active': agent.summarySortKey === 'max_drawdown' }">
                 最大回撤 <span class="sort-ind" v-if="agent.summarySortKey === 'max_drawdown'">{{ agent.summarySortOrder === 1 ? '▲' : '▼' }}</span>
               </th>
-              <th @click="agent.setSummarySort('annual_turnover')" :class="{ sortable: true, 'sort-active': agent.summarySortKey === 'annual_turnover' }">
-                年换手 <span class="sort-ind" v-if="agent.summarySortKey === 'annual_turnover'">{{ agent.summarySortOrder === 1 ? '▲' : '▼' }}</span>
+              <th @click="agent.setSummarySort('annual_turnover')" :class="{ sortable: true, 'sort-active': agent.summarySortKey === 'annual_turnover' }" title="组合层年换手（仅走过提交回测的因子有值）">
+                组合年换手 <span class="sort-ind" v-if="agent.summarySortKey === 'annual_turnover'">{{ agent.summarySortOrder === 1 ? '▲' : '▼' }}</span>
               </th>
               <th @click="agent.setSummarySort('daily_overlap')" :class="{ sortable: true, 'sort-active': agent.summarySortKey === 'daily_overlap' }">
                 日重叠 <span class="sort-ind" v-if="agent.summarySortKey === 'daily_overlap'">{{ agent.summarySortOrder === 1 ? '▲' : '▼' }}</span>
@@ -84,13 +87,13 @@
               <th @click="agent.setSummarySort('monotonicity')" :class="{ sortable: true, 'sort-active': agent.summarySortKey === 'monotonicity' }">
                 单调性 <span class="sort-ind" v-if="agent.summarySortKey === 'monotonicity'">{{ agent.summarySortOrder === 1 ? '▲' : '▼' }}</span>
               </th>
-              <th>拒绝原因</th>
               <th @click="agent.setSummarySort('attempts')" :class="{ sortable: true, 'sort-active': agent.summarySortKey === 'attempts' }">
                 评估次数 <span class="sort-ind" v-if="agent.summarySortKey === 'attempts'">{{ agent.summarySortOrder === 1 ? '▲' : '▼' }}</span>
               </th>
               <th>
                 数据面 <span class="summary-facet-hint" title="触及的数据面（×连接 = 跨数据源组融合因子）">ⓘ</span>
               </th>
+              <th>拒绝原因</th>
               <th @click="agent.setSummarySort('updated_at')" :class="{ sortable: true, 'sort-active': agent.summarySortKey === 'updated_at' }">
                 更新时间 <span class="sort-ind" v-if="agent.summarySortKey === 'updated_at'">{{ agent.summarySortOrder === 1 ? '▲' : '▼' }}</span>
               </th>
@@ -104,6 +107,7 @@
               <td :class="icClass(entry.metrics?.ic)">{{ formatMetricValue(entry.metrics?.ic ?? '—') }}</td>
               <td>{{ formatMetricValue(entry.metrics?.icir ?? '—') }}</td>
               <td>{{ formatMetricValue(entry.metrics?.coverage ?? entry.metrics?.factor_coverage ?? '—') }}</td>
+              <td :class="{ neg: (entry.metrics?.cs_pearson_autocorr ?? 1) < 0.18 }">{{ formatMetricValue(entry.metrics?.cs_pearson_autocorr ?? '—') }}</td>
               <td :class="{ neg: (entry.metrics?.annualized_excess_return ?? entry.metrics?.long_group_annual_excess_return ?? 0) < 0 }">{{ formatMetricValue(entry.metrics?.annualized_excess_return ?? entry.metrics?.long_group_annual_excess_return ?? '—') }}</td>
               <td :class="{ neg: (entry.metrics?.sharpe ?? 0) < 0 }">{{ formatMetricValue(entry.metrics?.sharpe ?? '—') }}</td>
               <td :class="{ neg: (entry.metrics?.excess_sharpe ?? 0) < 0 }">{{ formatMetricValue(entry.metrics?.excess_sharpe ?? '—') }}</td>
@@ -112,12 +116,12 @@
               <td>{{ formatMetricValue(entry.metrics?.annual_turnover ?? '—') }}</td>
               <td>{{ formatMetricValue(entry.metrics?.daily_overlap ?? '—') }}</td>
               <td>{{ formatMetricValue(entry.metrics?.monotonicity ?? '—') }}</td>
-              <td class="summary-reason" :title="entry.conclusion">{{ entry.conclusion || entry.error || '—' }}</td>
               <td class="summary-attempts">{{ entry.attempts || 1 }}</td>
               <td class="summary-facets" :title="(entry.facets || []).join(' + ')">
                 <span v-if="entry.is_fusion" class="summary-fusion-tag">融合</span>
                 <span class="summary-facet-text">{{ facetText(entry) }}</span>
               </td>
+              <td class="summary-reason" :title="entry.conclusion">{{ entry.conclusion || entry.error || '—' }}</td>
               <td class="summary-time">{{ formatTime(entry.updated_at) }}</td>
             </tr>
           </tbody>
