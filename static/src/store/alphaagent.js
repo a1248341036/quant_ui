@@ -70,6 +70,8 @@ export const agentStore = reactive({
     research_mode: 'technical',
     label_col: 'label_1d_open_to_open',
     focus_facets: [],
+    // 调仓频率（交付门禁）：'' = 自动（随档位默认 + LLM 按评估证据自选）
+    rebalance_freq: '',
   },
 
   // 数据面多选选项（与 alphaagent/factor/mining/memory/expressions.py FACET_DEFS 对齐）
@@ -136,6 +138,14 @@ export const agentStore = reactive({
     const mode = agentStore.form.research_mode
     const overrides = agentStore.specOverridesByMode[mode] || {}
     return Object.keys(overrides).length > 0
+  }),
+  // 方案 B：档位由数据面组合推断（与后端 core.research_modes.infer_research_mode 同口径）
+  inferredMode: computed(() => {
+    const slow = ['基本面', '股东面']
+    return slow.some(f => (agentStore.form.focus_facets || []).includes(f)) ? 'fundamental' : 'technical'
+  }),
+  inferredModeLabel: computed(() => {
+    return agentStore.inferredMode === 'fundamental' ? '慢信号档（label_20d · 月调仓）' : '短周期档（label_1d · 周调仓）'
   }),
   researchSpecDirty: computed(() => {
     const mode = agentStore.form.research_mode
@@ -344,6 +354,15 @@ export const agentStore = reactive({
     const list = this.form.focus_facets || []
     const next = list.includes(key) ? list.filter(k => k !== key) : [...list, key]
     this.form.focus_facets = next
+    this.syncInferredMode()
+  },
+  // 方案 B：勾面变化时自动同步评估档位（label/门槛/门禁频率跟随），复用
+  // switchResearchMode 的 spec 加载链路；label_col 由 spec.recommended_label_col 覆盖。
+  async syncInferredMode() {
+    const mode = this.inferredMode
+    if (mode && mode !== this.form.research_mode) {
+      await this.switchResearchMode(mode)
+    }
   },
   async startAgent() {
     if (this.agentBusy || !this.form.user_message.trim()) return
@@ -362,7 +381,10 @@ export const agentStore = reactive({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ...this.form,
-          no_fundamentals: !(this.researchModes.find(m => m.value === this.form.research_mode)?.needs_fundamentals) && !(this.form.focus_facets || []).length,
+          // 方案 B：research_mode 取推断档位（勾面时 syncInferredMode 已同步 spec 文本）
+          research_mode: this.inferredMode,
+          no_fundamentals: !['基本面', '股东面'].some(f => (this.form.focus_facets || []).includes(f)) && !(this.form.focus_facets || []).length,
+          rebalance_freq: this.form.rebalance_freq || null,
           research_spec: researchSpec,
           allow_submit: Boolean(researchSpec.delivery_policy?.allow_submit),
         }),

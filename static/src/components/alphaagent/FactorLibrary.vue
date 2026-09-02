@@ -5,10 +5,18 @@
         <button :class="{active: lib.library==='production'}" @click="switchLibrary('production')">正式因子库</button>
         <button :class="{active: lib.library==='candidate'}" @click="switchLibrary('candidate')">候选因子库</button>
       </div>
-      <div class="lib-cat-tabs">
+      <div class="lib-cat-tabs" v-if="false" hidden>
+        <!-- 统一大库（2026-09-03）：模式页签退役——两模式共享同一物理库，类别过滤由 facet 筛选取代 -->
         <button v-for="m in agent.researchModes" :key="m.value"
                 :class="{active: lib.category===m.value}"
                 @click="switchCategory(m.value)">{{ m.label }}</button>
+      </div>
+      <div class="lib-cat-tabs" title="按数据面筛选（后端 facets 标签）">
+        <button :class="{active: !lib.facet}" @click="switchFacet('')">全部</button>
+        <button v-for="f in agent.focusFacetOptions" :key="f.key"
+                :class="{active: lib.facet===f.key}"
+                @click="switchFacet(f.key)">{{ f.label }}</button>
+        <button :class="{active: lib.facet==='融合'}" @click="switchFacet('融合')">融合</button>
       </div>
       <span class="lib-count" v-if="lib.data">{{ lib.data.n_factors || 0 }} 个因子</span>
       <button class="lib-export-json" @click="exportAllJSON" :disabled="!lib.data?.factors?.length"
@@ -23,7 +31,18 @@
       {{ lib.data.error === 'library_not_initialized' ? '因子库尚未初始化，请在挖掘流程中启用因子提交。' : '暂无因子。' }}
     </div>
     <div class="lib-toolbar">
-      <span class="lib-toolbar-label">按加入时间导出</span>
+      <span class="lib-toolbar-label">数据面</span>
+      <button class="lib-facet-btn" :class="{active: !lib.facetFilter}"
+              @click="lib.facetFilter = ''" title="显示全部数据面">全部</button>
+      <button v-for="opt in agent.focusFacetOptions" :key="opt.key"
+              class="lib-facet-btn" :class="{active: lib.facetFilter === opt.key}"
+              :title="opt.hint" @click="lib.facetFilter = lib.facetFilter === opt.key ? '' : opt.key">
+        {{ opt.label }}
+      </button>
+      <button class="lib-facet-btn fusion" :class="{active: lib.facetFilter === '融合'}"
+              title="跨数据面融合因子（触及 ≥2 个数据面）"
+              @click="lib.facetFilter = lib.facetFilter === '融合' ? '' : '融合'">融合</button>
+      <span class="lib-toolbar-label" style="margin-left:auto">按加入时间导出</span>
       <input type="date" v-model="lib.exportStart">
       <span class="lib-range-sep">~</span>
       <input type="date" v-model="lib.exportEnd">
@@ -47,6 +66,10 @@
       <tbody>
         <tr v-for="f in libFactorsSorted" :key="f.factor_id">
           <td class="lib-fid" @click="showFactorDetail(f)" :title="f.factor_id">{{ f.name }}</td>
+          <td class="lib-facets" :title="(f.facets || []).join(' + ')">
+            <span v-if="f.is_fusion" class="lib-facet-tag fusion" :title="'跨面融合：' + (f.facets || []).join(' + ')">融</span>
+            <span class="lib-facet-text">{{ f.facets_label || '—' }}</span>
+          </td>
           <td :class="icClass(f.train_ic)">{{ formatMetricValue(f.train_ic ?? '—') }}</td>
           <td :class="icClass(f.val_ic)">{{ formatMetricValue(f.val_ic ?? '—') }}</td>
           <td :class="icClass(f.metrics?.ic)"><strong>{{ formatMetricValue(f.metrics?.ic) }}</strong></td>
@@ -110,6 +133,8 @@ export default {
       lib: {
         library: 'production',
         category: 'technical',
+        facet: '',
+        facetFilter: '',
         data: null,
         loading: false,
         error: '',
@@ -120,6 +145,7 @@ export default {
         exportEnd: '',
         columns: [
           { key: 'name', label: '名称', sortable: true },
+          { key: 'facets', label: '数据面', sortable: true },
           { key: 'train_ic', label: 'Train IC', sortable: true },
           { key: 'val_ic', label: 'Val IC', sortable: true },
           { key: 'ic', label: '全区间 IC', sortable: true },
@@ -136,8 +162,20 @@ export default {
     }
   },
   computed: {
-    libFactorsSorted() {
+    libFactorsFaceted() {
+      const facet = this.lib.facetFilter
       const fs = this.lib.data?.factors || []
+      if (!facet) return fs
+      return fs.filter(f => {
+        const facets = f.facets || []
+        if (facet === '融合') {
+          return typeof f.is_fusion === 'boolean' ? f.is_fusion : facets.length >= 2
+        }
+        return facets.includes(facet)
+      })
+    },
+    libFactorsSorted() {
+      const fs = this.libFactorsFaceted
       const key = this.lib.sortKey
       if (!key) return fs
       const dir = this.lib.sortDir
@@ -146,6 +184,7 @@ export default {
           case 'name': return String(f.name || '').toLowerCase()
           case 'label_col': return String(f.label_col || '')
           case 'status': return String(f.status || '')
+          case 'facets': return String(f.facets_label || '')
           case 'created_at': { const t = Date.parse(f.created_at || ''); return Number.isFinite(t) ? t : -Infinity }
           default: {
             const raw = key === 'ic' ? f.metrics?.ic : key === 'icir' ? f.metrics?.icir : f[key]
@@ -163,7 +202,7 @@ export default {
       const s = this.lib.exportStart ? new Date(this.lib.exportStart + 'T00:00:00').getTime() : null
       const e = this.lib.exportEnd ? new Date(this.lib.exportEnd + 'T23:59:59').getTime() : null
       if (!s && !e) return this.libFactorsSorted
-      return (this.lib.data?.factors || []).filter(f => {
+      return this.libFactorsFaceted.filter(f => {
         const t = Date.parse(f.created_at || '')
         if (!Number.isFinite(t)) return false
         if (s && t < s) return false
@@ -196,19 +235,26 @@ export default {
       this.lib.error = ''
       this.lib.data = null
       try {
-        this.lib.data = await api('/api/alphaagent/factors?library=' + this.lib.library + '&category=' + this.lib.category + '&t=' + Date.now())
+        const facetQ = this.lib.facet ? '&facet=' + encodeURIComponent(this.lib.facet) : ''
+        this.lib.data = await api('/api/alphaagent/factors?library=' + this.lib.library + '&category=' + this.lib.category + facetQ + '&t=' + Date.now())
       } catch (e) {
         this.lib.error = e.message
       } finally {
         this.lib.loading = false
       }
     },
+    switchFacet(f) {
+      this.lib.facet = f
+      this.loadFactors()
+    },
     switchLibrary(lib) {
       this.lib.library = lib
+      this.lib.facetFilter = ''
       this.loadFactors()
     },
     switchCategory(cat) {
       this.lib.category = cat
+      this.lib.facetFilter = ''
       this.loadFactors()
     },
     toggleLibSort(key) {
@@ -225,7 +271,7 @@ export default {
         alert('所选时间范围内没有因子')
         return
       }
-      const cols = ['加入时间', 'factor_id', '名称', '准入状态', '审查判定',
+      const cols = ['加入时间', 'factor_id', '名称', '数据面', '融合', '准入状态', '审查判定',
                     'Train IC', 'Val IC', '全区间 IC', 'ICIR', 'RankIC', 'Coverage',
                     '多头年化', '超额年化', '夏普', 'val保留比', 'val多头超额',
                     'Label', 'Expr']
@@ -238,6 +284,7 @@ export default {
       for (const f of rows) {
         lines.push([
           this.fmtTime(f.created_at), f.factor_id, f.name,
+          (f.facets || []).join('+'), f.is_fusion ? '是' : '',
           f.promotion_status || f.status, f.review_verdict || '',
           num(f.train_ic), num(f.val_ic), num(f.metrics?.ic), num(f.metrics?.icir),
           num(f.metrics?.rank_ic), num(f.metrics?.factor_coverage),

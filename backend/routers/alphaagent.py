@@ -59,9 +59,13 @@ class StartRequest(BaseModel):
     no_fundamentals: bool = False
     # 数据面聚焦（跨面融合）：前端多选（如 ["基本面","价量面"]）→ 子进程
     # --focus-facets，用户消息追加融合指令 + 每轮记忆注入聚焦提醒。
+    # 研究档位（label/门槛/门禁频率）由面组合自动推断（方案 B），前端无模式下拉。
     focus_facets: list[str] = Field(default_factory=list)
-    # 研究模式开关（前端切换）：优先级高于 research_spec JSON 内的 research_mode。
-    research_mode: str = "technical"
+    # 调仓频率（交付门禁）：显式指定时覆盖档位默认 engine_gate.freq；空 = 档位
+    # 默认 + LLM 按评估证据自选（submit_factor 的 rebalance_freq 参数）。
+    rebalance_freq: str | None = Field(default=None, pattern="^(daily|weekly|monthly)$")
+    # 兼容保留：显式传入优先于自动推断；前端不再展示模式下拉。
+    research_mode: str | None = None
     research_spec: dict[str, Any] = Field(default_factory=build_default_research_spec)
 
 
@@ -79,9 +83,17 @@ class PinRequest(BaseModel):
 
 @router.post("/runs")
 def start(req: StartRequest) -> dict[str, Any]:
-    if req.research_mode not in RESEARCH_MODES:
-        raise HTTPException(status_code=422, detail=f"research_mode_invalid:{req.research_mode}")
+    mode = req.research_mode
+    if mode is not None and mode not in RESEARCH_MODES:
+        raise HTTPException(status_code=422, detail=f"research_mode_invalid:{mode}")
+    # 方案 B：档位自动推断——勾选基本面/股东面 → fundamental 档
+    # （label_20d + 松门槛 + monthly 门禁）；否则 technical 档。
+    if mode is None:
+        from core.research_modes import infer_research_mode
+
+        mode = infer_research_mode(req.focus_facets)
     payload = req.model_dump()
+    payload["research_mode"] = mode
     # pydantic 的 default_factory 总会填充 technical 默认 spec，无法用 None 判断。
     # 改用 model_fields_set 判断用户是否显式传了 research_spec：
     #   - 未传 → 基于 research_mode 构造正确的默认 spec
@@ -89,8 +101,14 @@ def start(req: StartRequest) -> dict[str, Any]:
     if "research_spec" in req.model_fields_set:
         spec = dict(payload.get("research_spec") or {})
     else:
-        spec = build_default_research_spec(req.research_mode)
-    spec["research_mode"] = payload["research_mode"]
+        spec = build_default_research_spec(mode)
+    spec["research_mode"] = mode
+    # 用户显式调仓频率：覆盖档位默认 engine_gate.freq（allowed_freqs 白名单
+    # 仍生效——LLM 的 submit_factor(rebalance_freq=) 只能选白名单内的值）。
+    if req.rebalance_freq:
+        spec.setdefault("delivery_policy", {}).setdefault("production", {}).setdefault(
+            "engine_gate", {}
+        )["freq"] = req.rebalance_freq
     payload["research_spec"] = spec
     try:
         run = service.start_run(payload)

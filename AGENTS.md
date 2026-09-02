@@ -189,11 +189,27 @@ label/panel 列加载/engine_gate 频率的语义。迁移脚本
 - 正向 verdict 鼓励邻域探索；负向 verdict 防止重复无效路径。
 - **融合族键与 facets 亲和（2026-09-03，data_version=4）**：`classify_family_ex` 对**跨数据源组**（`FACET_GROUPS`：行情组=价量/量能/筹码/拥挤、基本面组=基本面/股东、事件资金组=事件/资金）触及 ≥2 面的表达式返回面对组合键（如 `价量面×基本面`，面名按 FACET_DEFS 稳定排序）；同组多面与单面保持旧 `_FAMILY_RULES` 细粒度口径（防"假融合"——`$close+$volume`、`$float_cap` 这类常见组合不算融合，`$float_cap` 已移出股东面识别键）。`memory_entries.facets_json` 记录全量面集合，检索亲和两档：family 精确命中 +0.3、facets 有交集 +0.15（单面 query ↔ 融合条目的跨召回）。registry（候选/正式）入库写 `facets`/`is_fusion`/`family`/`eval_label`。facet_focus 为 system prompt 插件模块（ORDER=135，含信号族白名单豁免声明——`research_policy_prompt` 经 extra_instructions 注入的白名单与融合指令矛盾，聚焦生效时显式解禁）。
 
+## 评估档位自动推断 + 调仓频率（2026-09-03，方案 B）
+
+前端"日线技术/基本面"模式下拉退役，档位由数据面多选自动推断：
+- `core.research_modes.infer_research_mode(focus_facets)`：勾选基本面/股东面 → fundamental 档
+  （label_20d + 松门槛 + monthly 门禁）；其余/未选 → technical 档（label_1d + 严门槛 + weekly 门禁）。
+  混合勾选落 technical（融合因子以价量为主信号）；纯函数，前后端同口径。
+- 前端 composer 显示推断档位徽章（`inferredModeLabel`），勾面变化经 `syncInferredMode()` 自动
+  切换 spec（复用 `switchResearchMode` 链路：门槛弹窗/保存门槛/label_col 跟随全部保留）。
+- `StartRequest.rebalance_freq`（daily/weekly/monthly，可空）：用户显式指定时写入
+  `spec.delivery_policy.production.engine_gate.freq` 覆盖档位默认；`DeliveryCriteria.to_prompt_text`
+  渲染 "rebalance_freq 必传" 指令约束 LLM；`allowed_freqs` 白名单仍生效。前端 composer 新增
+  "调仓" 选择器（自动/日/周/月）。
+- `research_mode` 参数兼容保留：显式传入优先于自动推断（历史调用方/脚本不受影响）。
+- 因子库页模式页签退役（`FactorLibrary.vue`），由 facet 筛选 chips（全部/八面/融合）取代；
+  ML 组合训练的 `collect_factor_entries` 按解析后库路径去重，避免大库下重复枚举。
+
 ## REST API
 
 | 方法 | 路径 | 功能 |
 |---|---|---|
-| POST | `/api/alphaagent/runs` | 启动新挖掘 |
+| POST | `/api/alphaagent/runs` | 启动新挖掘（focus_facets 自动定档；rebalance_freq 覆盖门禁频率） |
 | GET | `/api/alphaagent/runs` | 列出所有 runs |
 | GET | `/api/alphaagent/runs/{id}` | 查看 run 详情（事件轨迹尾部） |
 | POST | `/api/alphaagent/runs/{id}/stop` | 终止 |
@@ -209,7 +225,7 @@ label/panel 列加载/engine_gate 频率的语义。迁移脚本
 | GET | `/api/alphaagent/research-memory` | 查看研究记忆 |
 | GET | `/api/alphaagent/research-memory/layers` | 记忆分层明细：SSPM cells（含 Eq.7 置信度 + 注入门控）+ 经验层 |
 | DELETE | `/api/alphaagent/research-memory/{entry_id}` | 删除单条研究记忆 |
-| GET | `/api/alphaagent/research-modes` | 研究模式选项（label/推荐 label/默认消息） |
+| GET | `/api/alphaagent/research-modes` | 档位选项（label/推荐 label/默认消息；档位现由 focus_facets 自动推断，前端仅用于门槛弹窗） |
 | GET | `/api/alphaagent/research-spec/default` | 当前模式生效研究策略（默认+保存覆盖） |
 | GET | `/api/alphaagent/research-specs/{mode}` | 模式门槛文件三视图：defaults/overrides/effective |
 | PUT | `/api/alphaagent/research-specs/{mode}` | 保存模式门槛（diff 出增量覆盖，全链路生效） |

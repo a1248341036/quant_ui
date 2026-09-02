@@ -172,13 +172,19 @@
           ></textarea>
           <div class="composer-bottom">
             <div v-if="agent.agentMode==='research'" class="composer-options">
-              <div class="mode-switch" role="tablist" aria-label="研究模式">
-                <select class="mode-select" :value="agent.form.research_mode" :disabled="agent.agentBusy" @change="agent.switchResearchMode($event.target.value)">
-                  <option v-for="m in agent.researchModes" :key="m.value" :value="m.value" :title="m.hint">{{ m.label }}</option>
-                </select>
-                <button class="threshold-btn" :class="{ active: agent.showThresholdModal }" :disabled="agent.agentBusy" title="编辑当前模式的挖掘/入库/回测门槛（保存后全链路生效）" @click="agent.openThresholdModal">{{ agent.researchSpecCustom ? '门槛·已改' : '门槛' }}</button>
+              <div class="mode-switch" role="tablist" aria-label="评估档位">
+                <span class="mode-auto-badge" title="档位由数据面自动推断：勾选基本面/股东面 → 慢信号档（label_20d+松门槛+月调仓）；否则短周期档（label_1d+严门槛+周调仓）">
+                  {{ agent.inferredModeLabel }}
+                </span>
+                <button class="threshold-btn" :class="{ active: agent.showThresholdModal }" :disabled="agent.agentBusy" title="编辑当前档位的挖掘/入库/回测门槛（保存后全链路生效）" @click="agent.openThresholdModal">{{ agent.researchSpecCustom ? '门槛·已改' : '门槛' }}</button>
               </div>
-              <span class="composer-label-hint" :title="'本次评估使用的 label 列，随研究模式自动切换'">{{ agent.form.label_col }}</span>
+              <span class="composer-label-hint" :title="'本次评估使用的 label 列，随数据面组合自动切换'">{{ agent.form.label_col }}</span>
+              <label class="composer-date" title="交付门禁的调仓频率：影响 engine_gate 回测与实盘可交易性判定；默认随档位（短周期=weekly，慢信号=monthly）">调仓 <select v-model="agent.form.rebalance_freq" :disabled="agent.agentBusy" class="composer-date-input">
+                <option value="">自动</option>
+                <option value="daily">日</option>
+                <option value="weekly">周</option>
+                <option value="monthly">月</option>
+              </select></label>
               <label class="composer-date">训练 <input v-model="agent.form.train_start" type="date" :disabled="agent.agentBusy" class="composer-date-input"> → <input v-model="agent.form.train_end" type="date" :disabled="agent.agentBusy" class="composer-date-input"></label>
               <label class="composer-date">验证 <input v-model="agent.form.val_start" type="date" :disabled="agent.agentBusy" class="composer-date-input"> → <input v-model="agent.form.val_end" type="date" :disabled="agent.agentBusy" class="composer-date-input"></label>
               <label class="composer-date" title="种群批量筛选：每轮一次参数网格扫描（propose_population）；关闭则仅单点迭代">种群 <select v-model.number="agent.form.population_max" :disabled="agent.agentBusy" class="composer-date-input">
@@ -214,7 +220,7 @@
         </div>
         <div v-if="agent.showResearchSpec" class="research-spec-editor">
           <div class="research-spec-head">
-            <strong>ResearchSpec · {{ agent.researchModes.find(m => m.value === agent.form.research_mode)?.label || agent.form.research_mode }}</strong>
+            <strong>ResearchSpec · {{ agent.inferredModeLabel }}</strong>
             <div>
               <span v-if="agent.researchSpecCustom" class="research-spec-custom" title="该模式门槛文件已自定义保存，运行/晋升全链路生效">已自定义</span>
               <span v-if="agent.researchSpecDirty" class="research-spec-dirty" title="当前 JSON 与已保存门槛不一致">未保存</span>

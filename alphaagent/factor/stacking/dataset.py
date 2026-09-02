@@ -83,8 +83,10 @@ def collect_factor_entries(
     include_candidate: bool = True,
     include_production: bool = True,
 ) -> list[FactorEntry]:
-    """枚举四个因子库（candidate/production × technical/fundamental）的全部因子。
+    """枚举因子库（candidate/production × modes）的全部因子。
 
+    2026-09-03 统一大库：两 mode 指向同一物理目录（candidate_main/production_main），
+    此处按解析后路径去重，避免重复枚举；modes 参数保留兼容旧调用方。
     双数据源合并：catalog（meta/factors.parquet）+ candidate registry
     （mining_candidate_registry.json，挖掘中尚未写 catalog 的候选也在内）。
     同一表达式只保留首个（production 优先于 candidate，modes 顺序优先）。
@@ -99,6 +101,7 @@ def collect_factor_entries(
         seen_exprs.add(expr)
         entries.append(entry)
 
+    seen_roots: set[Path] = set()
     for mode in modes:
         libs: list[tuple[str, Path]] = []
         if include_production:
@@ -106,6 +109,9 @@ def collect_factor_entries(
         if include_candidate:
             libs.append((f"candidate_{mode}", candidate_dir(mode)))
         for lib_name, root in libs:
+            if root in seen_roots:
+                continue
+            seen_roots.add(root)
             catalog = FactorCatalog(root / "meta" / "factors.parquet")
             for fid in catalog.list_factor_ids():
                 meta = catalog.get(fid)

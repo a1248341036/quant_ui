@@ -328,6 +328,8 @@ class DeliveryCriteria:
             f"动态 top {_pct(eg.selection_pct)} 选股、净超额年化 >= "
             f"{_pct(eg.min_excess_annual)}、超额夏普 >= {eg.min_excess_sharpe}、"
             f"回撤 <= {_pct(eg.max_drawdown)}、仓位利用率 >= {_pct(eg.min_invested_ratio)}）。"
+            f"submit_factor 的 rebalance_freq 必须传 \"{eg.freq}\""
+            f"（用户指定档位；可选范围 {', '.join(eg.allowed_freqs)}）。"
         )
         return (
             "`submit_factor` 会先执行 pre-submit Reviewer，再在 train-start~val-end 全区间复核。"

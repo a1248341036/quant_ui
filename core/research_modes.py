@@ -132,3 +132,24 @@ def ui_options() -> list[dict]:
         }
         for spec in RESEARCH_MODES.values()
     ]
+
+
+# ── 自动定档（2026-09-03，方案 B）─────────────────────────────────────
+# 前端模式下拉（日线技术/基本面）退役后，档位由数据面多选自动推断：
+# 勾选基本面/股东面（慢因子数据源）→ fundamental 档（label_20d + 松门槛 +
+# monthly 门禁）；其余（纯价量族或混合）→ technical 档（label_1d + 严门槛 +
+# weekly 门禁）。混合勾选落 technical：融合因子以价量为主信号、1d 评估合理，
+# 且用户可用 rebalance_freq 显式覆盖门禁频率。
+
+_SLOW_FACETS: frozenset[str] = frozenset({"基本面", "股东面"})
+
+
+def infer_research_mode(focus_facets: list[str] | tuple[str, ...] | None) -> str:
+    """按数据面多选自动推断研究档位（mode_id：technical/fundamental）。
+
+    纯函数，前后端共享。空/未选 → technical（原默认行为不变）。
+    """
+    facets = {str(f).strip() for f in (focus_facets or []) if str(f).strip()}
+    if facets & _SLOW_FACETS:
+        return "fundamental"
+    return "technical"
