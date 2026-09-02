@@ -134,7 +134,8 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
         # 降为 1 后 Agent 可专注单一信息源的深度挖掘（多层算子链而非多字段拼凑）。
         "min_distinct_raw_fields": 1,
         "require_time_series_structure": False,
-        "max_candidates_per_round": 5,
+        # 2026-09-03：5 → 8（并行批量验证用户诉求 20/轮；上限 24 覆盖）。
+        "max_candidates_per_round": 8,
     },
     "evaluation_policy": {
         "min_train_abs_ic": 0.02,
@@ -272,7 +273,7 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
     search["forbidden_signal_families"] = _string_list(search.get("forbidden_signal_families"), "search_policy.forbidden_signal_families")
     search["min_distinct_raw_fields"] = int(_bounded_number(search.get("min_distinct_raw_fields"), "search_policy.min_distinct_raw_fields", 1, 10))
     search["require_time_series_structure"] = _require_bool(search.get("require_time_series_structure"), "search_policy.require_time_series_structure")
-    search["max_candidates_per_round"] = int(_bounded_number(search.get("max_candidates_per_round"), "search_policy.max_candidates_per_round", 1, 16))
+    search["max_candidates_per_round"] = int(_bounded_number(search.get("max_candidates_per_round"), "search_policy.max_candidates_per_round", 1, 24))
 
     evaluation = _require_dict(spec.get("evaluation_policy"), "evaluation_policy")
     for key in ("min_train_abs_ic", "min_val_abs_ic"):
