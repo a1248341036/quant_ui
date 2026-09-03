@@ -43,31 +43,49 @@ def test_generic_profile_tool_dispatches_frozen_profile() -> None:
     assert service.request.multi_line_expr == "$adj_close"
 
 
-def test_evaluate_factor_requires_prediction() -> None:
-    """prediction 缺失/缺字段必须被拦截（A 项硬性必填）。"""
+def test_evaluate_factor_soft_gate_on_missing_prediction() -> None:
+    """prediction 缺失走软门：前两次放行+warning，第三次拦截（防整轮重试白烧）。"""
+    service = _ProfileService()
+    tools = FactorEvalTools(service, "session")
+    base_args = {"profile_id": "train_screen", "multi_line_expr": "$adj_close"}
+
+    first = tools.dispatch("evaluate_factor", dict(base_args))
+    assert first["ok"] is True
+    assert "prediction_warning" in first
+    assert "1/3" in first["prediction_warning"]
+
+    second = tools.dispatch("evaluate_factor", dict(base_args))
+    assert second["ok"] is True
+    assert "2/3" in second["prediction_warning"]
+
+    third = tools.dispatch("evaluate_factor", dict(base_args))
+    assert third["ok"] is False
+    assert "prediction_required" in third["error"]
+    assert third["error_type"] == "ToolArgumentsError"
+
+    # 拦截后计数清零，重新开始记账
+    fourth = tools.dispatch("evaluate_factor", dict(base_args))
+    assert fourth["ok"] is True
+    assert "1/3" in fourth["prediction_warning"]
+
+
+def test_evaluate_factor_rejects_malformed_prediction() -> None:
+    """prediction 携带但字段非法 → 直接拦截（软门只针对缺失）。"""
     service = _ProfileService()
     tools = FactorEvalTools(service, "session")
     result = tools.dispatch(
         "evaluate_factor",
-        {"profile_id": "train_screen", "multi_line_expr": "$adj_close"},
-    )
-    assert not result["ok"]
-    assert result["error_type"] == "ToolArgumentsError"
-    assert "prediction_required" in result["error"]
-
-    result_partial = tools.dispatch(
-        "evaluate_factor",
         {
             "profile_id": "train_screen",
             "multi_line_expr": "$adj_close",
-            "prediction": {"expected_shape": "monotonic_increasing"},
+            "prediction": {"expected_shape": "bogus"},
         },
     )
-    assert not result_partial["ok"]
-    assert "prediction_required" in result_partial["error"]
+    assert result["ok"] is False
+    assert "prediction_invalid" in result["error"]
 
 
-def test_eval_on_train_set_requires_prediction() -> None:
+def test_eval_on_train_set_soft_gate_on_missing_prediction() -> None:
     class _TrainService:
         def eval_train(self, request):
             return {
@@ -83,18 +101,20 @@ def test_eval_on_train_set_requires_prediction() -> None:
             }
 
     tools = FactorEvalTools(_TrainService(), "session")
-    result = tools.dispatch("eval_on_train_set", {"multi_line_expr": "$adj_close"})
-    assert not result["ok"]
-    assert "prediction_required" in result["error"]
+    args = {"multi_line_expr": "$adj_close"}
+
+    first = tools.dispatch("eval_on_train_set", dict(args))
+    assert first["ok"] is True
+    assert "prediction_warning" in first
 
     result_ok = tools.dispatch(
         "eval_on_train_set",
         {
-            "multi_line_expr": "$adj_close",
+            **args,
             "prediction": {"expected_shape": "monotonic_increasing", "expected_strong_side": "high_factor", "expected_sign": 1},
         },
     )
-    assert result_ok["ok"]
+    assert result_ok["ok"] is True
     assert result_ok["prediction_check"]["verdict"] == "confirmed"
 
 
