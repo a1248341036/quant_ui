@@ -18,6 +18,8 @@ TITLE = "交付入库操作约定"
 ORDER = 110
 REQUIRED = False
 SEP_BEFORE = "\n\n---\n\n"
+# 分阶段注入：仅交付阶段和全量模式注入
+PHASES = frozenset({"deliver", "full"})
 
 
 def render(ctx) -> str:  # noqa: ANN001

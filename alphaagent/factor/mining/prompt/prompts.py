@@ -40,12 +40,19 @@ def build_system_prompt(
     research_spec: dict[str, Any] | None = None,
     asset_type: str = "stock",
     focus_facets: list[str] | tuple[str, ...] | None = None,
+    prompt_phase: str = "full",
 ) -> str:
     """按模块注册表装配系统提示词；返回最终文本。
 
     板块启用与否由运行时事实（panel 实际列、基本面开关、种群模式、数据面聚焦、
-    用户额外指令）决定；装配报告（每模块 on/off + 字符数 + 占位符残留）写入
+    用户额外指令、分阶段注入策略）决定；装配报告（每模块 on/off + 字符数 + 占位符残留）写入
     ``last_assembly_report``。
+
+    ``prompt_phase`` 控制分阶段动态注入：
+    - ``"full"``（默认）：全量装配，向后兼容；
+    - ``"explore"``：探索阶段，裁剪冷门算子/IC 形态学/中性化/交付等模块；
+    - ``"deepen"``：深耕阶段，恢复全部约束；
+    - ``"deliver"``：交付阶段，全量 + 交付模块。
     """
     cols = frozenset(panel_columns) if panel_columns is not None else None
     ctx = PromptContext(
@@ -57,6 +64,7 @@ def build_system_prompt(
         research_spec=research_spec,
         population_max=population_max,
         focus_facets=tuple(focus_facets or ()),
+        prompt_phase=prompt_phase,
         extra={"extra_instructions": extra_instructions or ""},
     )
 

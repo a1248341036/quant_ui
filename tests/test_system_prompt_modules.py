@@ -157,3 +157,72 @@ def test_disabled_module_not_rendered():
     row = next(r for r in report if r["module"] == "population_mode")
     assert row["enabled"] is False and row["chars"] == 0
     assert "propose_population" not in text
+
+
+# ── 分阶段动态注入测试 ──
+
+def _phase_report(phase: str) -> tuple[str, list[dict]]:
+    """在 full 场景参数下指定 prompt_phase 装配，返回 (text, report)。"""
+    text = build_system_prompt(**_CASES["full"], prompt_phase=phase)
+    from alphaagent.factor.mining.prompts import last_assembly_report
+    return text, list(last_assembly_report)
+
+
+def test_explore_disables_deepen_only_modules():
+    """explore 阶段：multi_period / neutralization_guide / ic_robustness / delivery_submission 不注入。"""
+    text, report = _phase_report("explore")
+    disabled = {r["module"] for r in report if not r["enabled"]}
+    assert "multi_period" in disabled
+    assert "neutralization_guide" in disabled
+    assert "ic_robustness" in disabled
+    assert "delivery_submission" in disabled
+    # 核心模块仍启用
+    enabled = {r["module"] for r in report if r["enabled"]}
+    for must_on in ("core_identity", "strategy_tracks", "operator_catalog",
+                     "behavior_rules", "tool_contracts", "delivery_interface"):
+        assert must_on in enabled, f"{must_on} should be enabled in explore phase"
+    # strategy_tracks 探索版不含 A/B/C 轨和正交预判
+    assert "轨道 A/B/C" not in text
+    assert "正交预判" not in text
+    assert "如何阅读每轮注入" not in text
+    # operator_catalog 探索提示
+    assert "探索阶段优先使用高频算子" in text
+
+
+def test_deepen_includes_deepen_modules():
+    """deepen 阶段：multi_period / neutralization_guide / ic_robustness 注入，delivery_submission 不注入。"""
+    text, report = _phase_report("deepen")
+    enabled = {r["module"] for r in report if r["enabled"]}
+    assert "multi_period" in enabled
+    assert "neutralization_guide" in enabled
+    assert "ic_robustness" in enabled
+    # delivery_submission 仅 deliver 阶段
+    assert "delivery_submission" not in enabled
+    # strategy_tracks 含完整三层
+    assert "轨道 A/B/C" in text
+    assert "正交预判" in text
+
+
+def test_deliver_includes_all_modules():
+    """deliver 阶段：所有模块注入（含 delivery_submission）。"""
+    text, report = _phase_report("deliver")
+    enabled = {r["module"] for r in report if r["enabled"]}
+    assert "delivery_submission" in enabled
+    for must_on in ("multi_period", "neutralization_guide", "ic_robustness"):
+        assert must_on in enabled
+
+
+def test_full_phase_equals_no_phase():
+    """full 阶段与不传 prompt_phase 完全等价（向后兼容）。"""
+    text_full = build_system_prompt(**_CASES["full"], prompt_phase="full")
+    text_default = build_system_prompt(**_CASES["full"])
+    assert text_full == text_default
+
+
+def test_explore_fewer_chars_than_full():
+    """explore 阶段字符数应明显少于 full 阶段。"""
+    text_explore, _ = _phase_report("explore")
+    text_full, _ = _phase_report("full")
+    assert len(text_explore) < len(text_full)
+    # 至少减少 10%
+    assert len(text_explore) < len(text_full) * 0.9

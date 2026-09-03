@@ -52,6 +52,8 @@ TITLE = "多周期与筹码算子"
 ORDER = 60
 REQUIRED = False
 SEP_BEFORE = "\n\n"
+# 分阶段注入：探索阶段不注入（用基础算子即可），深耕/交付阶段注入
+PHASES = frozenset({"deepen", "deliver", "full"})
 
 
 def render(ctx) -> str:  # noqa: ANN001

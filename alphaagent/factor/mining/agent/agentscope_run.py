@@ -383,6 +383,26 @@ async def run_factor_mining_agentscope(
     turn_limit = config.max_turns
     control_offset = 0
 
+    def _compute_prompt_phase(turn: int, limit: int, spec: dict | None) -> str:
+        """按 outer_turn 比例计算 prompt 注入阶段。
+
+        - research_spec.prompt_policy.phase_mode == "auto" → 按比例分三段；
+        - 否则 → "full"（默认，全量注入，向后兼容）。
+        """
+        policy = (spec or {}).get("prompt_policy") or {}
+        mode = policy.get("phase_mode", "full")
+        if mode != "auto" or limit < 3:
+            return "full"
+        ratios = policy.get("phase_ratio", [1 / 3, 1 / 3, 1 / 3])
+        t1 = max(1, int(limit * ratios[0]))
+        t2 = max(t1 + 1, int(limit * (ratios[0] + ratios[1])))
+        if turn < t1:
+            return "explore"
+        elif turn < t2:
+            return "deepen"
+        else:
+            return "deliver"
+
     def _review_emit(event: str, payload: dict[str, Any]) -> None:
         _emit(event, payload)
         if event != "reviewer_usage":
@@ -509,6 +529,27 @@ async def run_factor_mining_agentscope(
         return "用户在当前研究会话追加了指令，请优先结合已有评估结果执行：\n" + "\n\n".join(messages)
 
     while outer_turn < turn_limit:
+        # ── 分阶段动态注入：按 outer_turn 比例切换 prompt_phase ──
+        _phase = _compute_prompt_phase(outer_turn, turn_limit, config.research_spec)
+        if _phase != getattr(agent, "_current_prompt_phase", None):
+            _new_prompt = build_system_prompt(
+                include_operator_catalog=include_operator_catalog,
+                extra_instructions=extra_instructions,
+                label_col=ctx.label_col,
+                include_fundamentals=ctx.include_fundamentals,
+                panel_columns=session_resp.available_columns,
+                population_max=config.population_max,
+                research_spec=config.research_spec,
+                asset_type=ctx.asset_type,
+                focus_facets=getattr(config, "focus_facets", None),
+                prompt_phase=_phase,
+            )
+            if hasattr(agent, "_system_prompt"):
+                agent._system_prompt = _new_prompt
+                agent._current_prompt_phase = _phase
+                logger.info("prompt phase switched: turn=%d phase=%s", outer_turn, _phase)
+                _emit("prompt_phase", {"turn": outer_turn, "phase": _phase})
+
         if outer_turn == 0:
             # 清空批次历史，避免跨 run 污染
             FactorEvalTools._batch_history.clear()

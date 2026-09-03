@@ -45,6 +45,8 @@ class PromptContext:
     population_max: int = 0
     # 数据面聚焦（用户多选，与 expressions.FACET_DEFS 对齐）；空 = 未启用
     focus_facets: tuple[str, ...] = ()
+    # 分阶段动态注入：full=全量(默认), explore=探索, deepen=深耕, deliver=交付
+    prompt_phase: str = "full"
     extra: dict[str, Any] = field(default_factory=dict)
 
 

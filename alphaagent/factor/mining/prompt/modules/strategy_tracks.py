@@ -1,10 +1,13 @@
 # -*- coding: utf-8 -*-
 """模块 02 · strategy_tracks：三层枷锁（经济直觉/双轨策略/交互契约/正交预判）。
 
-原文精确切片；含尾部空行分隔。
+分阶段注入：
+- explore：第一层经济直觉 + D 轨新族开拓 + 多因子交互约束
+- deepen/deliver/full：完整三层枷锁（含 A/B/C 轨变异 + 研究记忆阅读 + 正交预判）
 """
 
-RAW = """# 理性枷锁（三条硬性约束，违反即跳过本轮）
+# ── 第一层：经济直觉强制 ──
+_LAYER1 = """# 理性枷锁（三条硬性约束，违反即跳过本轮）
 
 本系统通过三层枷锁约束因子生成质量，确保每条因子都有经济意义、继承优秀基因、且与已有因子正交。
 
@@ -31,7 +34,10 @@ RAW = """# 理性枷锁（三条硬性约束，违反即跳过本轮）
 - ✅ "上方筹码峰（CHIP_PEAK_LOC）是套牢盘压力位；价格回撤越深，距压力位越远，上方卖压越小，后续反弹弹性越大。用 NEG(TS_PCTCHANGE) 量化回撤深度，与筹码峰位置做交互。"
 - ✅ "隔夜跳空反映非交易时段信息冲击；VWAP 偏离反映日内主力的成本基准。两者背离时，隔夜信息被日内交易消化但未完全定价，次日开盘存在修正空间。"
 
-## 第二层：探索 × 变异双轨策略（Explore × Exploit）
+"""
+
+# ── 第二层 D 轨：新族开拓 ──
+_TRACK_D = """## 第二层：探索 × 变异双轨策略（Explore × Exploit）
 
 搜索 = **新族开拓（D 轨，探索）** 与 **父本变异（A/B/C 轨，深耕）** 两条轨道并行，禁止所有候选都挤在单轨：
 
@@ -58,7 +64,10 @@ RAW = """# 理性枷锁（三条硬性约束，违反即跳过本轮）
 - **条件化前先消融**：门控/条件结构（GATED_SIGNAL / IF_THEN_ELSE / PIECEWISE_STATE / CS_GROUP_RANK）默认是"基信号 × 状态过滤"——
   状态过滤经常摧毁基信号而非增强它（反转类信号在"强势股"条件下必然失效）。契约必须传 `base_expr`，
   系统自动跑 base-only 对比并返回 `ablation_check`；`conditioning_destroyed_value` / `conditioning_flipped_signal`
-  = 该门控方向错误，删门控或反转条件，不要在这个门控上调参。
+  = 该门控方向错误，删门控或反转条件，不要在这个门控上调参。"""
+
+# ── 第二层 A/B/C 轨：父本变异（探索阶段裁掉） ──
+_TRACK_ABC = """
 
 ### 轨道 A/B/C：父本变异（每轮合计 ≤ 6 条，只深耕高质量父本）
 
@@ -69,7 +78,10 @@ RAW = """# 理性枷锁（三条硬性约束，违反即跳过本轮）
    - **B. 算子变异**：替换核心运算符但不变信息源（如 DIVIDE → CS_RANK，TS_STD → TS_VAR）
    - **C. 修饰变异**：在父本外层叠加衰减/平滑/中性化（如 TS_DECAY(父本, 5)、CS_NEUTRALIZE(父本, 行业)）
 3. **父本声明（A/B/C 轨必填）**：变异候选调用 `evaluate_factor` / `eval_on_train_set` / `eval_on_val_set` / `submit_factor` 时必须传 `parent_factor`（父本因子逻辑名）与 `edit_note`（意向编辑，固定格式 `edit=<motif> <参数变化>`，motif 取 `window_rescale`（参数变异）/ `operator_substitute`（算子变异）/ `normalization_change`（修饰变异），如 `edit=window_rescale 10→20`）。comment 中保留一句变异说明。
-   - 工具返回的 `memory_advisory` 是研究记忆的硬提醒（同结构死路 / 编辑方向被否决）：**命中后必须换方向**；无视提醒重复提交只会积累更多负证据。
+   - 工具返回的 `memory_advisory` 是研究记忆的硬提醒（同结构死路 / 编辑方向被否决）：**命中后必须换方向**；无视提醒重复提交只会积累更多负证据。"""
+
+# ── 如何阅读研究记忆（探索阶段裁掉） ──
+_READ_MEMORY = """
 
 ### 如何阅读每轮注入的"长期研究记忆"块
 
@@ -90,7 +102,10 @@ RAW = """# 理性枷锁（三条硬性约束，违反即跳过本轮）
 ### 轨道切换规则
 
 - 连续 2 个因子 IC < 0.01 → 本轮**全部**转 D 新族开拓（不再是"允许"而是强制）。
-- 研究记忆对某机制已有负证据 → 该机制不得再作为 D 新族提出，也不得作为父本。
+- 研究记忆对某机制已有负证据 → 该机制不得再作为 D 新族提出，也不得作为父本。"""
+
+# ── 第二层补充：多因子交互约束 ──
+_INTERACTION = """
 
 ## 第二层补充：多因子交互必须先选机制，再写公式
 
@@ -156,7 +171,10 @@ evaluate_factor(
 分段状态 `PIECEWISE_STATE` 或必要条件 `IF_THEN_ELSE`。
 仅当本次 ResearchSpec 的 `interaction_policy.allowed_interaction_types` 显式包含
 `"multiplication"` 时才可使用，且必须提供 base-only / condition-only / combined 完整消融，
-并证明组合优于最强单腿；"两个 zscore 相乘"永远不算经济创新。
+并证明组合优于最强单腿；"两个 zscore 相乘"永远不算经济创新。"""
+
+# ── 第三层：正交预判（探索阶段裁掉） ──
+_LAYER3 = """
 
 ## 第三层：正交预判（Orthogonality Guard）
 
@@ -166,6 +184,13 @@ evaluate_factor(
 
 """
 
+# ── 全量原文（full 模式等价改造前行为） ──
+RAW = _LAYER1 + _TRACK_D + _TRACK_ABC + _READ_MEMORY + _INTERACTION + _LAYER3
+
+# ── 探索阶段精简版 ──
+RAW_EXPLORE = _LAYER1 + _TRACK_D + _INTERACTION
+
+
 NAME = "strategy_tracks"
 TITLE = "三层枷锁与双轨策略"
 ORDER = 20
@@ -174,4 +199,7 @@ SEP_BEFORE = "\n\n"
 
 
 def render(ctx) -> str:  # noqa: ANN001
+    phase = getattr(ctx, "prompt_phase", "full")
+    if phase == "explore":
+        return RAW_EXPLORE
     return RAW

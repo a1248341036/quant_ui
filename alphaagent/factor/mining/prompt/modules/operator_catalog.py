@@ -33,10 +33,14 @@ def render(ctx) -> str:  # noqa: ANN001
     )
     focused_note = ""
     focused = _focused_prefixes(getattr(ctx, "focus_facets", ()))
+    phase = getattr(ctx, "prompt_phase", "full")
     if focused and ctx.include_operator_catalog:
         focused_note = f"本轮聚焦数据面：{'/'.join(focused)} 开头的算子已附完整签名，优先在聚焦族内构建机制。"
+    explore_hint = ""
+    if phase == "explore" and ctx.include_operator_catalog:
+        explore_hint = " 探索阶段优先使用高频算子（已附完整签名），冷门算子签名见报错自愈。"
     return f"""### 可用算子
 
-算子均为**大写**（如 `TS_MEAN`、`DELTA`）。支持位置参数，也支持关键字参数语法 `name=value`（关键字参数必须在位置参数之后）。按机制分节列出；签名省略类型标注，**参数顺序即语义**（位置传参必须严格按签名顺序）；语义自明的基础四则/比较/初等函数折叠在末行。选算子前先想机制（见「A 股市场机制与 alpha 分布」），再按节定位。低频算子未附签名——传参报错时错误信息会附真实签名，按提示修正即可，不必回避。{focused_note}
+算子均为**大写**（如 `TS_MEAN`、`DELTA`）。支持位置参数，也支持关键字参数语法 `name=value`（关键字参数必须在位置参数之后）。按机制分节列出；签名省略类型标注，**参数顺序即语义**（位置传参必须严格按签名顺序）；语义自明的基础四则/比较/初等函数折叠在末行。选算子前先想机制（见「A 股市场机制与 alpha 分布」），再按节定位。低频算子未附签名——传参报错时错误信息会附真实签名，按提示修正即可，不必回避。{focused_note}{explore_hint}
 
 {catalog}"""

@@ -32,21 +32,40 @@ from . import (
 )
 
 
+def _phase_enabled(module, base_enabled):  # noqa: ANN001
+    """组合阶段过滤与模块自身 enabled：PHASES 为空 → 全阶段启用。"""
+    phases = getattr(module, "PHASES", None)
+    if phases is None:
+        return base_enabled
+
+    def _check(ctx):  # noqa: ANN001
+        if not base_enabled(ctx):
+            return False
+        phase = getattr(ctx, "prompt_phase", "full")
+        # full 始终启用；否则要求当前阶段在 PHASES 集合中
+        return phase == "full" or phase in phases
+
+    return _check
+
+
 def _static(module) -> PromptModule:  # noqa: ANN001
     """RAW 切片型模块（渲染固定文本）。"""
+    base = lambda ctx: True  # noqa: E731
     return PromptModule(
         name=module.NAME, title=module.TITLE, order=module.ORDER,
         render=lambda ctx, _m=module: _m.RAW, required=module.REQUIRED,
+        enabled=_phase_enabled(module, base),
         sep_before=module.SEP_BEFORE,
     )
 
 
 def _dynamic(module) -> PromptModule:  # noqa: ANN001
     """render(ctx) 动态渲染型模块。"""
+    base_enabled = getattr(module, "enabled", lambda ctx: True)
     return PromptModule(
         name=module.NAME, title=module.TITLE, order=module.ORDER,
         render=module.render,
-        enabled=getattr(module, "enabled", lambda ctx: True),
+        enabled=_phase_enabled(module, base_enabled),
         required=module.REQUIRED,
         sep_before=module.SEP_BEFORE,
     )
@@ -54,7 +73,7 @@ def _dynamic(module) -> PromptModule:  # noqa: ANN001
 
 DEFAULT_MODULES: list[PromptModule] = [
     _static(_core_identity_mod),
-    _static(_strategy_tracks_mod),
+    _dynamic(_strategy_tracks_mod),
     _dynamic(_delivery_interface_mod),
     _dynamic(_data_calibration_mod),
     _dynamic(_data_fields_mod),
