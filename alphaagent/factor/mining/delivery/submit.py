@@ -6,6 +6,7 @@ import dataclasses
 import hashlib
 import json
 import re
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -344,6 +345,12 @@ class FactorSubmitService:
 
         factor_id = slug_factor_id(factor_name)
         name = str(factor_name).strip() or factor_id
+        t0 = time.perf_counter()
+
+        def _stage_ms() -> int:
+            """自 submit 起的累计耗时（ms）；各阶段日志行间差值即阶段耗时。"""
+            return round((time.perf_counter() - t0) * 1000)
+
         log_step("submit.start", name)
 
         engine_cfg = self.delivery_policy.get("production", {}).get("engine_gate") or {}
@@ -397,7 +404,9 @@ class FactorSubmitService:
             ctx, max_cs_corr=self.criteria.candidate.max_abs_corr, similar_top_k=self.similar_top_k
         )
         # ①+③ 会话域物化：长度恒等于 panel 行数，指标直接可算。
+        t_mat = time.perf_counter()
         materialized = materialize_factor(expr, panel, cache=getattr(session, "factor_cache", None))
+        mat_ms = round((time.perf_counter() - t_mat) * 1000)
         cand_values = materialized.values
         if stage_one_policy.clip_pct is not None:
             lo_pct, hi_pct = float(stage_one_policy.clip_pct[0]), float(stage_one_policy.clip_pct[1])
@@ -418,9 +427,11 @@ class FactorSubmitService:
         #    - 准入看 train 窗口，防止 val 衰减被混合窗口稀释；
         #    - cs_autocorr 硬门淘汰排名日度剧变的不可交付因子；
         #    - 任一不达标直接拒绝，跳过最贵的相似度对比。
+        t_train = time.perf_counter()
         metrics_train = _ingest_metrics_cached(
             dataclasses.replace(stage_one_policy, val_end=ctx.train_end)
         )
+        train_ms = round((time.perf_counter() - t_train) * 1000)
         # 组合换手预检：quantile_portfolio 提前到门槛前算一次（全窗口径——
         # 换手是因子结构性属性，与窗口无关），供 stage_one 换手硬门与最终报告复用，
         # 避免高换手因子走完全流程才在 engine_gate 被拒。
@@ -429,11 +440,15 @@ class FactorSubmitService:
         # 逐日重叠计入 20 次，组合年化/回撤/夏普全部失真（曾致回撤虚标 99%）。
         label_digits = "".join(ch for ch in str(ctx.label_col) if ch.isdigit())
         qp_holding_days = max(1, int(label_digits) if label_digits else 1)
+        t_qp = time.perf_counter()
         qp_metrics = quantile_portfolio_metrics(
             pd.Series(cand_values, index=panel.index), panel[ctx.label_col],
             n_groups=10, cost_bps=0.0, holding_days=qp_holding_days,
         )
+        qp_ms = round((time.perf_counter() - t_qp) * 1000)
         metrics_train["quantile_portfolio"] = qp_metrics
+        # 门槛前三段耗时分解：DSL 物化 / train 指标 / 组合换手预检
+        log_step("submit.precheck", name, mat_ms=mat_ms, train_ms=train_ms, qp_ms=qp_ms)
 
         # ── 盲测终审（stage_one 之前，不通过不进候选池）──────────────────
         # test 段从未参与 train/val/engine_gate，是最干净的样本外验证。
@@ -476,6 +491,7 @@ class FactorSubmitService:
             retention=test_report.get("ic_retention"),
             sign=test_report.get("sign_consistent"),
             fail=(blind_result.fail_reasons or None) if not blind_result.passed else None,
+            ms=_stage_ms(),
         )
         if not blind_result.passed:
             payload = {
@@ -511,6 +527,7 @@ class FactorSubmitService:
             autocorr=metrics_train.get("cs_pearson_autocorr"),
             turnover=(metrics_train.get("quantile_portfolio") or {}).get("avg_daily_side_turnover"),
             fail=gate_reasons or None,
+            ms=_stage_ms(),
         )
 
         val_metrics: dict[str, Any] = {}
@@ -530,6 +547,7 @@ class FactorSubmitService:
                 val_icir=val_metrics.get("icir"),
                 retention=round(abs(float(val_metrics.get("ic") or 0) / float(metrics_train.get("ic") or 1e-12)), 4),
                 fail=retention_reasons or None,
+                ms=_stage_ms(),
             )
             # val 多头端毛值超额（方向自适应）：IC 为正不代表多头组合为正，
             # alpha 可能全在空头端/中段排名——纯多头可交易口径必须单独为正。
@@ -593,6 +611,7 @@ class FactorSubmitService:
             passed=stage_one_ok,
             max_corr=(production_similarity or {}).get("max_abs_corr"),
             fail=stage_one_reasons or None,
+            ms=_stage_ms(),
         )
 
         # 上报/存档指标仍用全窗口（与历史 registry 口径一致），附 train/val 分解。
@@ -697,6 +716,7 @@ class FactorSubmitService:
             source=(review or {}).get("source"),
             canonical=str((review or {}).get("canonical_form") or "")[:80] or None,
             novelty=(review or {}).get("novelty"),
+            ms=_stage_ms(),
         )
         payload.update(
             review_status=review_status,
@@ -751,7 +771,7 @@ class FactorSubmitService:
             candidate_registry_path=candidate_reg,
             candidate_dsl_path=candidate_dsl,
         )
-        log_step("submit.candidate_stored", name, path=str(candidate_reg))
+        log_step("submit.candidate_stored", name, path=str(candidate_reg), ms=_stage_ms())
 
         # review 意见已记录：reject 在上方硬拦（抄袭/经典暴露不进任何库）。
         # revise / pending_review 不阻断晋升——stage_two 统计门槛 + engine_gate
@@ -777,6 +797,7 @@ class FactorSubmitService:
             train_ic=metrics_train.get("ic"),
             val_ic=val_metrics.get("ic"),
             fail=stage_two_reasons or None,
+            ms=_stage_ms(),
         )
         if not stage_two_ok:
             set_candidate_promotion(
@@ -821,6 +842,7 @@ class FactorSubmitService:
                 passed=bool(gate.get("passed")),
                 freq=chosen_freq,
                 fail=gate.get("fail_reasons") or None,
+                ms=_stage_ms(),
             )
             if not gate.get("passed"):
                 set_candidate_promotion(
@@ -925,6 +947,7 @@ class FactorSubmitService:
             train_ic=metrics_train.get("ic"),
             val_ic=val_metrics.get("ic"),
             registry=str(reg_path),
+            ms=_stage_ms(),
         )
 
         return payload

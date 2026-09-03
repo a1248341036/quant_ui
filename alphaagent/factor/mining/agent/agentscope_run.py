@@ -611,6 +611,23 @@ async def run_factor_mining_agentscope(
                         elapsed=row.get("elapsed_seconds"),
                     )
                 elif row.get("name") in ("evaluate_factor", "eval_on_train_set", "eval_on_val_set"):
+                    # 三段耗时（engine.timing_ms）+ 最慢算子（operator_timing）：
+                    # dsl=DSL 求值 / tf=transforms 预处理 / mtc=metrics 指标计算，
+                    # 用于定位单因子评估 55-83s 的耗时分布。
+                    timing_obj = res.get("timing_ms") if isinstance(res.get("timing_ms"), dict) else {}
+                    op_timing = res.get("operator_timing") if isinstance(res.get("operator_timing"), dict) else {}
+                    top_op, top_op_s = None, None
+                    if op_timing:
+                        try:
+                            _ranked = sorted(
+                                ((str(k), float(v.get("total_s") or 0)) for k, v in op_timing.items()),
+                                key=lambda kv: -kv[1],
+                            )
+                            if _ranked:
+                                top_op, _top_s = _ranked[0]
+                                top_op_s = round(_top_s, 2)
+                        except (TypeError, ValueError):
+                            top_op, top_op_s = None, None
                     log_step(
                         "evaluate",
                         f"{row.get('name')} {args_obj.get('factor_name') or '?'}",
@@ -622,6 +639,11 @@ async def run_factor_mining_agentscope(
                         verdict=(memory_entry or {}).get("verdict") if memory_entry else None,
                         err=res.get("error_type"),
                         elapsed=row.get("elapsed_seconds"),
+                        dsl_ms=timing_obj.get("dsl_eval_ms"),
+                        tf_ms=timing_obj.get("transforms_ms"),
+                        mtc_ms=timing_obj.get("metrics_ms"),
+                        slow_op=top_op,
+                        slow_op_s=top_op_s,
                     )
                 else:
                     log_step(
