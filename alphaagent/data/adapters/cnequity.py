@@ -94,7 +94,11 @@ def _cache_path(start: str | None, end: str | None, include_fundamentals: bool) 
 
 
 def _find_cached_panel(start: str | None, end: str | None, include_fundamentals: bool) -> pd.DataFrame | None:
-    """遍历缓存目录，返回第一个覆盖请求区间且基本面开关匹配的缓存面板。"""
+    """遍历缓存目录，返回第一个覆盖请求区间且基本面开关匹配的缓存面板。
+
+    优先走 arrow mmap 路径（数值列跨进程零拷贝共享物理页，多会话并发时
+    内存不按会话数叠加）；arrow 缺失/读取失败回退 parquet 解压路径。
+    """
     try:
         if not _CACHE_ROOT.is_dir():
             return None
@@ -102,7 +106,15 @@ def _find_cached_panel(start: str | None, end: str | None, include_fundamentals:
         req_end = pd.Timestamp(end) if end else None
         for path in sorted(_CACHE_ROOT.glob(f"panel_v{_CACHE_SCHEMA_VERSION}_*.parquet")):
             try:
-                df = pd.read_parquet(path)
+                # arrow mmap 快路径：与 parquet 同 key 的 .arrow 存在即优先
+                from alphaagent.data.adapters.panel_mmap import read_panel_arrow_mmap
+
+                arrow_path = path.with_suffix(".arrow")
+                df = None
+                if arrow_path.is_file():
+                    df = read_panel_arrow_mmap(arrow_path)
+                if df is None:
+                    df = pd.read_parquet(path)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("CNE panel 缓存读取失败，跳过 %s: %s", path.name, exc)
                 continue
@@ -141,7 +153,11 @@ def _panel_coverage(panel: pd.DataFrame) -> tuple[Any, Any]:
 
 
 def _purge_old_cache(keep: Path) -> None:
-    """缓存目录超过上限时删除最旧文件（保留刚写入的 keep）。"""
+    """缓存目录超过上限时删除最旧文件（保留刚写入的 keep）。
+
+    parquet 与同 key 的 .arrow 成对淘汰；.arrow 若正被其他进程 mmap
+    （Windows unlink 会失败），单独跳过并警告——不影响主缓存淘汰。
+    """
     try:
         if not _CACHE_ROOT.is_dir():
             return
@@ -156,13 +172,25 @@ def _purge_old_cache(keep: Path) -> None:
                 logger.info("CNE panel 缓存淘汰旧文件: %s (%.0fMB)",
                             victim.name, victim.stat().st_size / 1e6)
             except OSError as exc:
-                logger.warning("CNE panel 缓存淘汰失败: %s", exc)
+                logger.warning("CNE panel 缓存淘汰失败: %s (%s)", victim.name, exc)
+            arrow_victim = victim.with_suffix(".arrow")
+            if arrow_victim.is_file():
+                try:
+                    arrow_victim.unlink()
+                except OSError as exc:
+                    logger.warning("CNE panel arrow 缓存淘汰失败（可能被其他进程 mmap 占用）: %s (%s)",
+                                   arrow_victim.name, exc)
     except Exception as exc:  # noqa: BLE001
         logger.warning("CNE panel 缓存淘汰异常（忽略）: %s", exc)
 
 
 def _save_cached_panel(path: Path, panel: pd.DataFrame) -> None:
-    """原子写缓存（MultiIndex 先落平表列），写入后按上限淘汰旧文件。"""
+    """原子写缓存（MultiIndex 先落平表列），写入后按上限淘汰旧文件。
+
+    同时顺带写一份未压缩 Arrow IPC（同 key .arrow）：后续会话走
+    panel_mmap.read_panel_arrow_mmap 零拷贝共享物理页，多会话并发时
+    panel 物理内存不按会话数叠加。arrow 写失败不影响 parquet 主缓存。
+    """
     try:
         _CACHE_ROOT.mkdir(parents=True, exist_ok=True)
         flat = panel.reset_index()
@@ -177,6 +205,13 @@ def _save_cached_panel(path: Path, panel: pd.DataFrame) -> None:
             except OSError:
                 pass
             raise
+        # 顺带生成 arrow mmap 副本（供后续会话零拷贝 attach；失败不影响主缓存）
+        try:
+            from alphaagent.data.adapters.panel_mmap import write_panel_arrow
+
+            write_panel_arrow(path.with_suffix(".arrow"), flat)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("CNE panel arrow 副本生成异常（忽略）: %s", exc)
         # 写入成功后清理超出上限的旧文件
         _purge_old_cache(path)
     except Exception as exc:  # noqa: BLE001
