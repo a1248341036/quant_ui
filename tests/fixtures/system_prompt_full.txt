@@ -440,7 +440,7 @@ tri_gap = CHIP_COM_W_GAP($adj_close, $adj_low, $adj_high, $volume, 40, $vwap, 64
 
 ### 可用算子
 
-算子均为**大写**（如 `TS_MEAN`、`DELTA`）。支持位置参数，也支持关键字参数语法 `name=value`（关键字参数必须在位置参数之后）。按机制分节列出；签名省略类型标注，**参数顺序即语义**（位置传参必须严格按签名顺序）；语义自明的基础四则/比较/初等函数折叠在末行。选算子前先想机制（见「A 股市场机制与 alpha 分布」），再按节定位。
+算子均为**大写**（如 `TS_MEAN`、`DELTA`）。支持位置参数，也支持关键字参数语法 `name=value`（关键字参数必须在位置参数之后）。按机制分节列出；签名省略类型标注，**参数顺序即语义**（位置传参必须严格按签名顺序）；语义自明的基础四则/比较/初等函数折叠在末行。选算子前先想机制（见「A 股市场机制与 alpha 分布」），再按节定位。低频算子未附签名——传参报错时错误信息会附真实签名，按提示修正即可，不必回避。
 
 **结构化交互（门控/残差/分歧/分段——配合 interaction 契约使用）**
 - `CS_GROUP_RANK(x, group)` — 组内截面百分位秩：每个 datetime 内先按 ``group`` 分组，再对 ``x`` 做 rank(pct=T…
@@ -451,61 +451,18 @@ tri_gap = CHIP_COM_W_GAP($adj_close, $adj_low, $adj_high, $volume, 40, $vwap, 64
 - `PIECEWISE_STATE(signal, state, low_q=0.2, high_q=0.8, low_sign=1.0, high_sign=-1.0, mid_value=0.0)` — 分段状态信号：state 低区/中区/高区分别使用不同方向或中性值。
 
 **时序滚动（TS_；其中 TS_CORR/TS_COV/TS_RANKCORR 属交互类，须传契约）**
-- `TS_ALL(cond, window)` — 滚动窗内是否全部为真：是 → 1，否 → 0。
-- `TS_AMPARGPEAK(df, confirm_window=10)` — 已确认波峰中，左右价宽之和最大者距今 bar 数；确认规则同 ``TS_LAST_ARGPEAK``。
-- `TS_AMPARGTROUGH(df, confirm_window=10)` — 已确认波谷中，左右价宽之和最大者距今 bar 数；确认规则同 ``TS_LAST_ARGTROUGH``。
-- `TS_AMPPEAK(df, confirm_window=10)` — 已确认波峰中，选左右价宽和最大者，输出该峰价格。
-- `TS_AMPTROUGH(df, confirm_window=10)` — 已确认波谷中，选左右价宽和最大者，输出该谷价格。
-- `TS_ANY(cond, window)` — 滚动窗内是否存在真 bar：有 → 1，无 → 0。
-- `TS_ARGGAP(open_df, high_df, low_df, close_df, min_pct=0.0)` — [兼容] 同 ``TS_LAST_ARGGAP``。
-- `TS_ARGMAX(df, window)` — 极大值距今 bar 数；window 同 TS_MIN。
-- `TS_ARGMEDIAN(df, window)` — 窗口内最接近中位数的 bar 距今数；window 同 TS_MIN。
-- `TS_ARGMIN(df, window)` — 极小值距今 bar 数；window 同 TS_MIN。
-- `TS_ARGNTH(df, window, n, ascending=False, unique=False)` — 窗口内第 n 大 (ascending=False) 或第 n 小 (ascending=True) 的 bar 距今…
-- `TS_ARGPEAK(df, confirm_window=10)` — [兼容] 同 ``TS_LAST_ARGPEAK``。
-- `TS_ARGTROUGH(df, confirm_window=10)` — [兼容] 同 ``TS_LAST_ARGTROUGH``。
 - `TS_CORR(df1, df2, window)` — 滚动 Pearson 相关系数；按品种分组，对 df1、df2 对应列在窗口内计算相关性。
-- `TS_COUNT(cond, window)` — 滚动窗内 ``cond`` 为真的 bar 数。
 - `TS_COV(df1, df2, window, ddof=1)` — 滚动协方差；按品种分组，对 df1、df2 对应列在窗口内计算样本协方差（ddof 默认 1）。
-- `TS_CROSS_ABOVE(x, y)` — 上穿事件：``x[t-1] <= y[t-1] and x[t] > y[t]`` 为 1，否则 0；缺失为 NaN。
-- `TS_CROSS_BELOW(x, y)` — 下穿事件：``x[t-1] >= y[t-1] and x[t] < y[t]`` 为 1，否则 0；缺失为 NaN。
-- `TS_CUMPROD(df, base=1.0)` — 逐品种从开始到当前的**连乘** ``cumprod``（非滚动窗）。
-- `TS_EFFICIENCY_RATIO(df, window)` — Kaufman 效率比 ER∈[0,1]；window 可为整数固定窗或单列 DataFrame 动态窗（如峰谷间距）。
-- `TS_KURT(df, window)` — 滚动峰度（pandas adjusted Fisher–Pearson 超额峰度 G2）；窗宽同 TS_MIN，
-- `TS_LAST_ARGBOTTOMFRACTAL(df_high, df_low)` — 三 K 线底分型（严格不等）：连续三根编号 1→3 由旧到新须满足 ``h1>h2<h3`` 且 ``l1>l2<l3…
-- `TS_LAST_ARGGAP(open_df, high_df, low_df, close_df, min_pct=0.0)` — 最近一次缺口形成距今 bar 数（形成当根=0）；无活跃缺口为 NaN。
-- `TS_LAST_ARGPEAK(df, confirm_window=10)` — 最近一次已确认局部波峰距今 bar 数。
-- `TS_LAST_ARGTOPFRACTAL(df_high, df_low)` — 三 K 线顶分型（严格不等）：须满足 ``h1<h2>h3`` 且 ``l1<l2>l3``；第三根收盘后确认，中心为…
-- `TS_LAST_ARGTROUGH(df, confirm_window=10)` — 最近一次已确认局部波谷距今 bar 数。
-- `TS_LAST_BOTTOMFRACTAL(df_high, df_low)` — 底分型确认规则同 ``TS_LAST_ARGBOTTOMFRACTAL``；输出为分型中心 K 的最低价。
-- `TS_LAST_PEAK(df, confirm_window=10)` — 最近一次已确认局部波峰的价格。
-- `TS_LAST_TOPFRACTAL(df_high, df_low)` — 顶分型确认规则同 ``TS_LAST_ARGTOPFRACTAL``；输出为分型中心 K 的最高价。
-- `TS_LAST_TROUGH(df, confirm_window=10)` — 最近一次已确认局部波谷的价格。
 - `TS_MAX(df, window)` — 滚动最大值；window 同 TS_MIN。
 - `TS_MEAN(df, window)` — 滚动均值；window 同 TS_MIN。
 - `TS_MEDIAN(df, window)` — 滚动中位数；window 同 TS_MIN。
 - `TS_MIN(df, window)` — 滚动最小值；window 为 int 或单列 DataFrame 动态窗宽。
-- `TS_MONTH_POS(df)` — 自然月进度 ∈ [0,1]：``(day-1)/(days_in_month-1)``；每月 1 日=0，该月最后一日…
-- `TS_PCTCHANGE(df, p=1)` — 相对 p 根前的涨跌幅；±inf 置 NaN。
-- `TS_PEAK(df, confirm_window=10)` — [兼容] 同 ``TS_LAST_PEAK``。
-- `TS_PERMUTATION_ENTROPY(df, window, order=3)` — Bandt-Pompe 排列熵：窗口内所有长度 ``order`` 的子序列按"序数模式"计数并做
-- `TS_PROD(df, window)` — 滚动乘积；window 同 TS_MIN。窗口内 ``NaN`` 按乘法单位元 **1** 参与（不改变乘积）。
 - `TS_QUANTILE(df, window, q)` — 滚动 q 分位数（线性插值），等价 pandas ``rolling(w, min_periods=1).quanti…
 - `TS_RANK(df, window)` — 滚动分位秩 pct=True；window 同 TS_MIN。
 - `TS_RANKCORR(df1, df2, window)` — 滚动 Spearman（秩）相关系数：每个窗口内先对 df1、df2 各自取平均秩（等同
-- `TS_RATE(cond, window)` — 滚动窗内 ``cond`` 真值占比 ∈ [0, 1]。
-- `TS_RUNLENGTH_DOWN(df)` — 当前连续严格下跌根数（``x[i] < x[i-1]``）；中断或 NaN 重置为 0。
-- `TS_RUNLENGTH_UP(df)` — 当前连续严格上涨根数（``x[i] > x[i-1]``）；中断或 NaN 重置为 0。
-- `TS_SINCE(cond)` — 距上一次 cond 为真的 bar 数；``cond`` 为面板 DataFrame（单列），
-- `TS_SINCE_N(cond, n)` — 距倒数第 ``n`` 次 cond 为真的 bar 数（``n=1`` 同 ``TS_SINCE``）。
-- `TS_SKEW(df, window)` — 滚动偏度；window 同 TS_MIN。
 - `TS_STD(df, window)` — 滚动样本标准差（ddof=1）；window 同 TS_MIN。
-- `TS_STREAK(cond)` — 当前连续为真的根数（含当根）；假或 0 中断为 0，``cond`` 为 NaN 时输出 NaN 并重置。
 - `TS_SUM(df, window)` — 滚动求和；window 同 TS_MIN。
-- `TS_TREND_RANK(df, window)` — Mann-Kendall 风格秩趋势：每个窗口内对 x 值与"时间位置"做 Spearman 相关，
-- `TS_TROUGH(df, confirm_window=10)` — [兼容] 同 ``TS_LAST_TROUGH``。
-- `TS_VAR(df, window, ddof=1)` — 滚动方差；window 同 TS_MIN，ddof 默认 1。
-- `TS_ZSCORE(df, window, ddof=1)` — 滚动 z-score：``(x - TS_MEAN) / TS_STD``；std=0 时输出 NaN，ddof 默认…
+- 其余（签名见报错自愈，慎用）：`TS_ALL` `TS_AMPARGPEAK` `TS_AMPARGTROUGH` `TS_AMPPEAK` `TS_AMPTROUGH` `TS_ANY` `TS_ARGGAP` `TS_ARGMAX` `TS_ARGMEDIAN` `TS_ARGMIN` `TS_ARGNTH` `TS_ARGPEAK` `TS_ARGTROUGH` `TS_COUNT` `TS_CROSS_ABOVE` `TS_CROSS_BELOW` `TS_CUMPROD` `TS_EFFICIENCY_RATIO` `TS_KURT` `TS_LAST_ARGBOTTOMFRACTAL` `TS_LAST_ARGGAP` `TS_LAST_ARGPEAK` `TS_LAST_ARGTOPFRACTAL` `TS_LAST_ARGTROUGH` `TS_LAST_BOTTOMFRACTAL` `TS_LAST_PEAK` `TS_LAST_TOPFRACTAL` `TS_LAST_TROUGH` `TS_MONTH_POS` `TS_PCTCHANGE` `TS_PEAK` `TS_PERMUTATION_ENTROPY` `TS_PROD` `TS_RATE` `TS_RUNLENGTH_DOWN` `TS_RUNLENGTH_UP` `TS_SINCE` `TS_SINCE_N` `TS_SKEW` `TS_STREAK` `TS_TREND_RANK` `TS_TROUGH` `TS_VAR` `TS_ZSCORE`
 
 **时序基础（差分/滞后/均线——高频主力，窗口语义见签名）**
 - `DELAY(df, p)` — 滞后 shift；p 为 int 根数或非负，或为与 df 对齐的单列 DataFrame 表示逐行动态滞后。
@@ -515,49 +472,32 @@ tri_gap = CHIP_COM_W_GAP($adj_close, $adj_low, $adj_high, $volume, 40, $vwap, 64
 - `WMA(df, p=20)` — 线性加权均线，近端权重大，窗口 p 根。
 
 **截面变换与分组（CS_、RANK）**
-- `CS_BUCKET(df, n_bins)` — 截面等频分 N 组：每个 datetime 内对变量做 ``qcut``，输出组号 ``0…K-1``（``K≤N``…
-- `CS_DEMEAN(df)` — 截面去均值：``x - mean``（按 datetime 分组）。有效样本 < 1 时该截面为 NaN。
 - `CS_NEUTRALIZE(x, group)` — 截面组内去均值：每个 datetime 内按 ``group`` 分组，输出 ``x - group_mean(x)`…
 - `CS_WINSORIZE(df, lower_pct, upper_pct)` — 截面分位裁剪：将每个 datetime 截面内的值限制在 ``[lower_pct, upper_pct]`` 分位之…
 - `CS_ZSCORE(df, ddof=1)` — 截面标准化：``(x - mean) / std``（按 datetime 分组）。
 - `RANK(df)` — 每个 **datetime 截面**内的百分位秩 ∈ [0, 1]（``rank(pct=True, method='…
+- 其余（签名见报错自愈，慎用）：`CS_BUCKET` `CS_DEMEAN`
 
 **筹码分布（CHIP_）**
-- `CHIP_BIMODAL_SCORE(close, low, high, volume, window, float_cap, nbins=64, implementation='simple', lambda_scale=1.0, method='cyq')` — 双峰结构得分（日频，默认 cyq）：``simple`` 或 ``dip``。
-- `CHIP_COM_W_GAP(close, low, high, volume, window, float_cap, nbins=64, method='cyq')` — 筹码重心相对现价的偏离：``(bar_p - P) / P``（日频，默认 cyq）。
 - `CHIP_ENTROPY(close, low, high, volume, window, float_cap, nbins=64, method='cyq')` — 筹码密度归一化 Shannon 熵 ``H / log(nbins)`` ∈ [0, 1]（日频，默认 cyq）。
-- `CHIP_MASS_ASYM(close, low, high, volume, window, float_cap, nbins=64, method='cyq')` — 以现价为界的上下筹码质量不对称度 ``M_below - M_above`` ∈ [-1, 1]（日频，默认 cyq）。
 - `CHIP_PEAK_LOC(close, low, high, volume, window, float_cap, nbins=64, method='cyq')` — 筹码主峰价相对现价的偏离：``(p* - P) / P``（日频 CYQ，默认）。
-- `CHIP_PEAK_SHARPNESS(close, low, high, volume, window, float_cap, nbins=64, implementation='curvature', method='cyq')` — 主峰尖锐度（日频，默认 cyq）：``curvature`` / ``fwhm`` / ``combined``。
-- `CHIP_WASS_DIST(close, low, high, volume, window, float_cap, nbins=64, lag=0, implementation='moment', method='cyq')` — 当前窗与参照窗筹码直方图漂移（日频 CYQ，ρ=``lag``）。
+- 其余（签名见报错自愈，慎用）：`CHIP_BIMODAL_SCORE` `CHIP_COM_W_GAP` `CHIP_MASS_ASYM` `CHIP_PEAK_SHARPNESS` `CHIP_WASS_DIST`
 
 **拥挤度（CROWD_）**
-- `CROWD_CONTRAST(dimension, attribute, window, split=0.5)` — **高低环境差**：高维区 ``attribute`` 均值 − 低维区 ``attribute`` 均值。
-- `CROWD_MEAN_RATIO(dimension, attribute, window, side_or_nbuckets='high', split_or_bucket_idx=0.5)` — **属性抬升倍数**：目标环境桶内 ``attribute`` 均值 / 全窗 ``attribute`` 均值。
-- `CROWD_RANK_WEIGHTED(dimension, attribute, window, weight)` — **软倾斜加权**：``Σ rank_norm(dim)·attr·weight / Σ weight``（不硬切桶）。
-- `CROWD_SHARE(dimension, weight, window, side_or_nbuckets='high', split_or_bucket_idx=0.5)` — **量拥挤占比** ∈ [0,1]：窗口内 ``weight`` 有多少落在指定 **dimension 环境桶**。
+- 其余（签名见报错自愈，慎用）：`CROWD_CONTRAST` `CROWD_MEAN_RATIO` `CROWD_RANK_WEIGHTED` `CROWD_SHARE`
 
 **缺口结构（PRICE_）**
-- `PRICE_GAP_CEILING(open_df, high_df, low_df, close_df, min_pct=0.0)` — 当前活跃缺口的**上沿价格**；无活跃缺口为 NaN。
-- `PRICE_GAP_EVENT(open_df, high_df, low_df, close_df, min_pct=0.0)` — 缺口**形成当根**事件：+1 向上、-1 向下、0 无缺口；其余 bar 为 0。
-- `PRICE_GAP_FILL(open_df, high_df, low_df, close_df, min_pct=0.0)` — 当前活跃缺口的**回补比例** ∈ [0,1]（0=未回补，1=完全回补）；无活跃缺口为 NaN。
-- `PRICE_GAP_FLOOR(open_df, high_df, low_df, close_df, min_pct=0.0)` — 当前活跃缺口的**下沿价格**；无活跃缺口为 NaN。
-- `PRICE_GAP_SIZE(open_df, high_df, low_df, close_df, min_pct=0.0)` — 活跃缺口**带符号相对幅度**（向上为正、向下为负）；无活跃缺口为 0。
+- 其余（签名见报错自愈，慎用）：`PRICE_GAP_CEILING` `PRICE_GAP_EVENT` `PRICE_GAP_FILL` `PRICE_GAP_FLOOR` `PRICE_GAP_SIZE`
 
 **K线几何与影线**
-- `KLINE_GEOMETRY(open_df, high_df, low_df, close_df, window, *, eps=1e-15)` — 窗口内将每根 K 线视为 ``(o,h,l,c)∈R^4``，堆成 ``X∈R^{k×4}`` 做 SVD，输出 ``…
-- `WICK_EFFICIENCY(open_df, high_df, low_df, close_df, lag, *, eps=1e-12)` — 影线能量效率：当前柱上影线与 k 根前下影线的交叉耦合，按实体尺度归一化。
+- 其余（签名见报错自愈，慎用）：`KLINE_GEOMETRY` `WICK_EFFICIENCY`
 
 **量钟与信息流**
 - `MUTUAL_INFO_LAG(df_close, df_volume, window, lag, *, n_bins=8, min_pairs=None)` — 滚动直方图（秩分箱）估计 Shannon 互信息 I(close(t); volume(t-k))，单位为 nats。
-- `VOLUME_CLOCK_VPIN(price, volume, window, bucket_size, classification='tick', min_buckets=5, sigma_window=20, eps=1e-12)` — 成交量同步 VPIN（Volume-Synchronized Probability of Informed Trad…
+- 其余（签名见报错自愈，慎用）：`VOLUME_CLOCK_VPIN`
 
 **回归拟合**
-- `REGBETA(df1, df2, p=5, n_jobs=1)` — 滚动 OLS 斜率 β；df2 为 ndarray 取前 p 元为自变量；DataFrame 时对齐索引且自变量为 S…
-- `REGRESI(df1, df2, p=5, n_jobs=1)` — 滚动 OLS 末点残差； ndarray 取自变量 ravel(df2)[:p]；零维数值则视为窗口长度并按 SEQU…
-- `RESI(df1, p=5, n_jobs=1)` — 对 SEQUENCE(p) 的滚动残差，等价 REGRESI(df1, SEQUENCE(p), p)。
-- `SEQUENCE(n)` — 长度 n 的 1…n 浮点向量，用于回归自变量形状。
-- `SLOPE(df, p=5, n_jobs=1)` — 对时间 1…p 的滚动斜率，等价 REGBETA(df, SEQUENCE(p), p)。
+- 其余（签名见报错自愈，慎用）：`REGBETA` `REGRESI` `RESI` `SEQUENCE` `SLOPE`
 
 - 基础四则/比较/初等函数（语义自明，直用）：`ADD/SUBTRACT/MULTIPLY/DIVIDE(df1, df2)` 逐元素四则；`GT/LT/GE/LE/EQ/NE(df1, df2)` 比较得 0/1 面板；`AND/OR` 组合布尔；`MAXIMUM/MINIMUM/MAX/MIN(x, y, z=None)` 逐元素极值（支持标量广播）；`ABS/SIGN/LOG/EXP/POW/SQRT/INV/NEG(df)` 初等函数；`CAST(df, dtype)` 面板类型转换；`FILLNA(df, value=0.0)` 非有限值替换。
 

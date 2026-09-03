@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from alphaagent.factor.mining.runlog import log_step
@@ -115,6 +116,28 @@ class _DispatchMixin:
                 '{"expected_shape": ..., "expected_strong_side": ..., "expected_sign": 1|-1}。'
             )
         return None
+
+    def _attach_signature_hints(self, expr: str, result: dict[str, Any]) -> None:
+        """传参错误自愈：DSL 求值因参数个数/名字错误失败时，把表达式里出现的
+        算子的真实签名附进错误结果——LLM 按提示修正即可，不必回避没见过的算子。
+        """
+        try:
+            err = str(result.get("error") or "")
+            if not any(k in err for k in ("positional argument", "keyword argument", "unexpected keyword", "missing ")):
+                return
+            from alphaagent.dsl.catalog import _slim_signature
+            from alphaagent.dsl.registry import build_operator_namespace
+
+            ns = build_operator_namespace()
+            used = sorted(
+                {tok.upper() for tok in re.findall(r"\b([A-Z][A-Z_]{2,})\b", expr) if tok.upper() in ns}
+            )
+            if not used:
+                return
+            result["operator_signatures"] = {name: _slim_signature(ns[name]) for name in used[:8]}
+            result["error"] = err + "（正确签名见 operator_signatures 字段——按参数顺序传参修正后重试）"
+        except Exception:  # noqa: BLE001 — 自愈是增益信息，绝不改变失败语义
+            pass
 
     def _memory_gate(self, expr: str, arguments: dict[str, Any]) -> Any:
         """评估/提交前查研究记忆 advisory。返回 None | advisory dict | 拦截 result（ok=False）。"""
@@ -315,6 +338,8 @@ class _DispatchMixin:
                 pred_block = self._prediction_gate("evaluate_factor", arguments, result)
                 if pred_block is not None:
                     return pred_block
+            elif isinstance(result, dict):
+                self._attach_signature_hints(expr, result)
             if isinstance(gate, dict):
                 result["memory_advisory"] = gate
             return result
@@ -362,6 +387,8 @@ class _DispatchMixin:
                 pred_block = self._prediction_gate("eval_on_train_set", arguments, result)
                 if pred_block is not None:
                     return pred_block
+            elif isinstance(result, dict):
+                self._attach_signature_hints(expr, result)
             if isinstance(gate, dict):
                 result["memory_advisory"] = gate
             return result

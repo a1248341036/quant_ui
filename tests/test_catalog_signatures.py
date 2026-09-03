@@ -53,6 +53,34 @@ def test_catalog_markdown_contains_star_for_mutual_info():
     assert "*, n_bins=8" in line
 
 
+# ── hybrid 分层：高频全签名 + 冷门名字清单 + 聚焦族注入 ──
+
+def test_hybrid_tier_keeps_frequent_and_folds_cold_names():
+    """hybrid 档：高频算子有签名行，冷门算子只出现在名字清单行。"""
+    md = operator_catalog_markdown()  # 默认 hybrid
+    lines = md.splitlines()
+    # 高频：TS_MEAN 全签名
+    assert any(l.startswith("- `TS_MEAN(") for l in lines)
+    # 交互契约算子必须全签名（无论频率）
+    assert any(l.startswith("- `GATED_SIGNAL(") for l in lines)
+    assert any(l.startswith("- `PIECEWISE_STATE(") for l in lines)
+    # 冷门：CHIP_BIMODAL_SCORE 不应有签名行，只出现在名字清单
+    assert not any(l.startswith("- `CHIP_BIMODAL_SCORE(") for l in lines)
+    assert any("CHIP_BIMODAL_SCORE" in l and l.startswith("- 其余") for l in lines)
+    # full 档恢复
+    md_full = operator_catalog_markdown(tier="full")
+    assert any(l.startswith("- `CHIP_BIMODAL_SCORE(") for l in md_full.splitlines())
+
+
+def test_hybrid_tier_focused_prefixes_get_signatures():
+    """聚焦面联动：传 focused_prefixes 后对应族算子升级为全签名行。"""
+    md = operator_catalog_markdown(focused_prefixes=("CHIP_",))
+    assert any(l.startswith("- `CHIP_PEAK_LOC(") for l in md.splitlines())
+    assert any(l.startswith("- `CHIP_BIMODAL_SCORE(") for l in md.splitlines())
+    # 未聚焦的族仍折叠（CROWD_ 不在 _FREQUENT_OPERATORS）
+    assert not any(l.startswith("- `CROWD_SHARE(") for l in md.splitlines())
+
+
 # ── 机制分组 + 摘要截断 + 基础件折叠 ──
 
 def test_catalog_markdown_grouped_by_mechanism():
@@ -76,20 +104,17 @@ def test_catalog_markdown_grouped_by_mechanism():
 
 
 def test_catalog_markdown_summary_truncated():
-    """长摘要截断到 max_summary_chars 且以 … 结尾；签名部分永不截断。"""
-    md = operator_catalog_markdown(max_summary_chars=40)
+    """长摘要截断到 max_summary_chars 且以 … 结尾；签名部分永不截断（full 档校验）。"""
+    md = operator_catalog_markdown(max_summary_chars=40, tier="full")
     chip_line = next(l for l in md.splitlines() if "CHIP_PEAK_SHARPNESS(" in l)
     assert len(chip_line) < 200  # 原始行 176+，截断后明显变短
     assert "nbins=64" in chip_line  # 签名完整保留
     # 逐行校验：签名之后的摘要部分不超过 40 chars（含省略号）
-    import re
-
     for ln in md.splitlines():
         if not ln.startswith("- `") or "— " not in ln:
             continue
         summary = ln.split("— ", 1)[1]
         assert len(summary) <= 40, f"{ln[:80]} -> {len(summary)}"
-        assert not summary.endswith("…") or len(summary) <= 40
 
 
 def test_catalog_markdown_include_basic_restores_flat():
@@ -110,10 +135,10 @@ def test_catalog_markdown_all_operators_accounted():
         """算子是否被渲染成独立列表行（而非在折叠说明/其他名字的子串中出现）。"""
         return any(l.startswith(f"- `{name}(") for l in md.splitlines())
 
-    md_basic = operator_catalog_markdown(include_basic=True)
+    md_basic = operator_catalog_markdown(include_basic=True, tier="full")
     for name in ns:
         assert rendered_as_item(md_basic, name), f"{name} missing from catalog"
-    md_folded = operator_catalog_markdown()
+    md_folded = operator_catalog_markdown(tier="full")
     for name in ns:
         if name in {
             "ADD", "SUBTRACT", "MULTIPLY", "DIVIDE", "GT", "LT", "GE", "LE", "EQ", "NE",

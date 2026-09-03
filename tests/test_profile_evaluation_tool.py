@@ -118,6 +118,51 @@ def test_eval_on_train_set_soft_gate_on_missing_prediction() -> None:
     assert result_ok["prediction_check"]["verdict"] == "confirmed"
 
 
+def test_signature_hints_attached_on_arg_error() -> None:
+    """传参错误自愈：签名类 TypeError 的失败结果附 operator_signatures。"""
+
+    class _FailingService:
+        def eval_profile(self, request):
+            return {
+                "ok": False,
+                "error": "CHIP_PEAK_LOC() takes 6 positional arguments but 7 were given",
+                "error_type": "TypeError",
+            }
+
+    tools = FactorEvalTools(_FailingService(), "session")
+    result = tools.dispatch(
+        "evaluate_factor",
+        {
+            "profile_id": "train_screen",
+            "multi_line_expr": "CHIP_PEAK_LOC($adj_close, $adj_low, $adj_high, $volume, 60, $float_cap, 64)",
+            "prediction": {"expected_shape": "monotonic_decreasing", "expected_strong_side": "low_factor", "expected_sign": 1},
+        },
+    )
+    assert result["ok"] is False
+    hints = result.get("operator_signatures") or {}
+    assert "CHIP_PEAK_LOC" in hints
+    assert hints["CHIP_PEAK_LOC"].startswith("(")
+    assert "正确签名" in result["error"]
+
+
+def test_signature_hints_not_attached_on_other_errors() -> None:
+    class _FailingService:
+        def eval_profile(self, request):
+            return {"ok": False, "error": "表达式引用了不可用字段: $nope", "error_type": "MultiLineFactorEvalError"}
+
+    tools = FactorEvalTools(_FailingService(), "session")
+    result = tools.dispatch(
+        "evaluate_factor",
+        {
+            "profile_id": "train_screen",
+            "multi_line_expr": "TS_MEAN($nope, 20)",
+            "prediction": {"expected_shape": "irregular", "expected_strong_side": "middle", "expected_sign": -1},
+        },
+    )
+    assert result["ok"] is False
+    assert "operator_signatures" not in result
+
+
 def test_generic_profile_evidence_is_persisted_in_research_memory(tmp_path: Path) -> None:
     store = ResearchMemoryStore(tmp_path / "research_memory.json")
     entry = store.record_tool_result(

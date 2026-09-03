@@ -73,6 +73,26 @@ _FOLD_SUMMARY = (
     "`CAST(df, dtype)` 面板类型转换；`FILLNA(df, value=0.0)` 非有限值替换。"
 )
 
+# hybrid 档保留完整签名的算子清单。数据依据（2026-09-03，research_memory
+# 2773 条评估记录的 operator_list_json 统计）：历史实际使用 ≥5 次的 24 个
+# 全收录；交互契约算子（strategy_tracks 硬约束）无论频率全收录；其余为
+# prompt 文档明确推荐的入门算子。
+_FREQUENT_OPERATORS = frozenset({
+    # 历史高频（usage≥5）
+    "TS_MEAN", "DIVIDE", "RANK", "CS_WINSORIZE", "CS_ZSCORE", "LOG",
+    "SUBTRACT", "CS_NEUTRALIZE", "ADD", "CS_RESIDUALIZE", "TS_STD",
+    "MULTIPLY", "TS_MEDIAN", "MAX", "ABS", "TS_RANK", "TS_SUM",
+    "TS_MAX", "TS_CORR", "MIN", "TS_QUANTILE", "SIGN", "TS_MIN",
+    # 交互契约算子（strategy_tracks 硬约束，签名必须随目录提供）
+    "GATED_SIGNAL", "CS_GROUP_RANK", "DIVERGENCE_RANK",
+    "PIECEWISE_STATE", "IF_THEN_ELSE", "TS_RANKCORR", "TS_COV",
+    "MUTUAL_INFO_LAG", "NEG",
+    # 数据面/时序基础
+    "DELTA", "DELAY", "EMA", "SMA", "WMA",
+    # 交叉结构（CHIP 主力样例，签名形状族内可参照）
+    "CHIP_PEAK_LOC", "CHIP_ENTROPY",
+})
+
 
 def _summary_of(fn, max_chars: int) -> str:
     doc = (inspect.getdoc(fn) or "").strip().splitlines()
@@ -86,6 +106,8 @@ def operator_catalog_markdown(
     *,
     max_summary_chars: int = 60,
     include_basic: bool = False,
+    tier: str = "hybrid",
+    focused_prefixes: tuple[str, ...] = (),
 ) -> str:
     """按机制分组渲染算子目录。
 
@@ -93,6 +115,19 @@ def operator_catalog_markdown(
     - 摘要截断到 ``max_summary_chars``（签名永不截断——传参顺序即语义）；
     - 语义自明的基础四则/比较/初等函数默认折叠为一行（``include_basic=True``
       恢复逐个渲染，含未归组的算子全量平铺）。
+
+    tier
+    ----
+    - ``"hybrid"``（默认）：高频算子（历史挖掘实际使用，见 _FREQUENT_OPERATORS）
+      与交互契约算子渲染完整签名行；其余冷门算子按节压成纯名字清单（无签名、
+      无摘要）——数据依据：2773 条历史评估记录仅触及 28 个算子（2026-09 统计），
+      未用过的签名占目录篇幅 60%+。冷门算子传参出错时 dispatch 会在错误信息
+      中附真实签名（自愈路径）。
+    - ``"full"``：全部算子完整签名行（旧行为）。
+
+    focused_prefixes：按数据面聚焦动态注入签名的族前缀（如选中筹码面 →
+    ``("CHIP_",)``）——匹配的算子在 hybrid 档也渲染完整签名行。探索路径
+    不因瘦身堵死：聚焦哪一面，哪一面的专业算子签名就常驻。
     """
     ns = build_operator_namespace()
     folded: list[str] = []
@@ -113,6 +148,7 @@ def operator_catalog_markdown(
             line += f" — {summary}"
         return line
 
+    hybrid = tier == "hybrid"
     lines: list[str] = []
     for title, _match in _CATALOG_GROUPS:
         names = groups.get(title)
@@ -121,7 +157,20 @@ def operator_catalog_markdown(
         if lines:
             lines.append("")
         lines.append(f"**{title}**")
-        lines.extend(_render(n) for n in names)
+        if hybrid:
+            full = [
+                n for n in names
+                if n in _FREQUENT_OPERATORS
+                or n.startswith(tuple(focused_prefixes))
+            ]
+            cold = [n for n in names if n not in full]
+            lines.extend(_render(n) for n in full)
+            # 冷门算子：纯名字清单，提示签名走报错自愈
+            if cold:
+                names_text = " ".join(f"`{n}`" for n in cold)
+                lines.append(f"- 其余（签名见报错自愈，慎用）：{names_text}")
+        else:
+            lines.extend(_render(n) for n in names)
     if include_basic:
         if lines:
             lines.append("")
