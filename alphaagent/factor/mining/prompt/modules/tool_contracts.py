@@ -24,7 +24,7 @@ def render(ctx) -> str:  # noqa: ANN001
 | `screen_factors` | **Screener · regime 感知筛选**：对正式库因子做市场制度（ADX+均线）感知筛选，输出当前 regime 下适配因子子集 + 动态权重/方向。开关在研究规范 `delivery_policy.screener.enabled` |
 
 共用参数（eval）：`multi_line_expr`（必填）、`factor_name`、`include_detail_tables`、`label_quantile_n`（默认 10，0 则不输出分位桶）。
-`evaluate_factor` / `eval_on_train_set` 还必须传 **`prediction`**（可证伪预测：`expected_shape` + `expected_strong_side` + `expected_sign`，可选 `falsifier`）——缺失直接报错不执行。
+`evaluate_factor` / `eval_on_train_set` 必须传 **`prediction`**（可证伪预测：`expected_shape` + `expected_strong_side` + `expected_sign`，可选 `falsifier`）。缺失不会立刻拦截，但结果会带 `prediction_warning` 记账（累计 3 次升级拦截）——每次都带上，别依赖宽限。
 
 **`submit_factor` 参数**：`multi_line_expr`、`factor_name`（蛇形英文名）、`comment`（必填，描述因子经济含义与结构）。
 

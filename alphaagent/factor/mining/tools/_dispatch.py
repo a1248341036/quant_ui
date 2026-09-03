@@ -25,14 +25,25 @@ from ._schemas import (
 from ._prefilter import _is_naive_signal_addition
 
 
+_PREDICTION_SOFT_LIMIT = 3
+
+
 def _prediction_argument_error(arguments: dict[str, Any]) -> dict[str, Any] | None:
-    """prediction 必填校验：缺失/缺字段返回 ToolArgumentsError，合法时返回规范化结果。"""
+    """prediction 参数校验：携带但字段非法时返回 ToolArgumentsError。
+
+    缺失走软门（``_DispatchMixin._prediction_gate``）：放行 + 结果附
+    prediction_warning，同工具累计缺失 ≥ ``_PREDICTION_SOFT_LIMIT`` 次才拦截
+    ——GLM 系 provider 不稳定遵守 schema required，硬拦截会导致整轮并发
+    tool_calls 作废重试（实测一次 run 白烧 ~19 分钟），代价远大于纪律收益。
+    """
     pred = normalize_prediction(arguments.get("prediction"))
+    if arguments.get("prediction") is None:
+        return None  # 缺失 → 软门
     if pred is None:
         return {
             "ok": False,
             "error": (
-                "prediction_required: 评估必须携带可证伪预测 prediction="
+                "prediction_invalid: prediction 携带但字段非法——"
                 '{"expected_shape": "monotonic_increasing|monotonic_decreasing|inverted_u|u_shape|spike_at_extreme|irregular", '
                 '"expected_strong_side": "high_factor|low_factor|middle", "expected_sign": 1|-1, "falsifier": "可选"}。'
                 "评估结果会自动对账注入 prediction_check——预期被证伪说明机制错误，"
@@ -73,6 +84,37 @@ class _DispatchMixin:
     submit_service: FactorSubmitService | None
     _screener_config_dict: dict[str, Any]
     memory_store: Any
+    _missing_prediction_counts: dict[str, int]
+
+    def _prediction_gate(self, tool_name: str, arguments: dict[str, Any], result: dict[str, Any]) -> dict[str, Any] | None:
+        """prediction 软门：缺失放行但记账 + 附 prediction_warning；累计缺失
+        ≥ ``_PREDICTION_SOFT_LIMIT`` 次升级拦截。返回拦截 result 或 None
+        （result 原地注入 warning）。
+        """
+        if arguments.get("prediction") is None:
+            counts = getattr(self, "_missing_prediction_counts", None)
+            if counts is None:
+                counts = {}
+                self._missing_prediction_counts = counts
+            counts[tool_name] = counts.get(tool_name, 0) + 1
+            n = counts[tool_name]
+            if n >= _PREDICTION_SOFT_LIMIT:
+                counts.pop(tool_name, None)  # 拦截后重新计数，给 provider 自纠机会
+                return {
+                    "ok": False,
+                    "error": (
+                        f"prediction_required: 已连续 {n} 次调用 {tool_name} 未携带 prediction。"
+                        '每次评估必须传 prediction={"expected_shape": ..., "expected_strong_side": ..., '
+                        '"expected_sign": 1|-1, "falsifier": 可选}——不可证伪的评估没有研究价值。'
+                    ),
+                    "error_type": "ToolArgumentsError",
+                }
+            result["prediction_warning"] = (
+                f"本次未携带 prediction，结果未做预期对账（第 {n}/{_PREDICTION_SOFT_LIMIT} 次，"
+                "累计缺失将拦截）。后续每次 evaluate 必须传 prediction="
+                '{"expected_shape": ..., "expected_strong_side": ..., "expected_sign": 1|-1}。'
+            )
+        return None
 
     def _memory_gate(self, expr: str, arguments: dict[str, Any]) -> Any:
         """评估/提交前查研究记忆 advisory。返回 None | advisory dict | 拦截 result（ok=False）。"""
@@ -242,6 +284,7 @@ class _DispatchMixin:
                 return {"ok": False, "error": "multi_line_expr_required_non_empty_string", "error_type": "ToolArgumentsError"}
             if not isinstance(profile_id, str) or not profile_id.strip():
                 return {"ok": False, "error": "profile_id_required_non_empty_string", "error_type": "ToolArgumentsError"}
+            # prediction 软门：携带但字段非法 → 拦截；缺失 → 放行记账（见 _prediction_gate）
             pred_error = _prediction_argument_error(arguments)
             if pred_error is not None:
                 return pred_error
@@ -269,6 +312,9 @@ class _DispatchMixin:
                 ic, decile_rows = _engine_decile(result)
                 _attach_prediction_check(result, arguments.get("prediction"), ic=ic, decile_rows=decile_rows)
                 self._attach_ablation(expr, arguments, profile_id=profile_id, result=result)
+                pred_block = self._prediction_gate("evaluate_factor", arguments, result)
+                if pred_block is not None:
+                    return pred_block
             if isinstance(gate, dict):
                 result["memory_advisory"] = gate
             return result
@@ -313,6 +359,9 @@ class _DispatchMixin:
                 ic, decile_rows = _legacy_decile(result)
                 _attach_prediction_check(result, arguments.get("prediction"), ic=ic, decile_rows=decile_rows)
                 self._attach_ablation(expr, arguments, profile_id="train_screen", result=result)
+                pred_block = self._prediction_gate("eval_on_train_set", arguments, result)
+                if pred_block is not None:
+                    return pred_block
             if isinstance(gate, dict):
                 result["memory_advisory"] = gate
             return result
