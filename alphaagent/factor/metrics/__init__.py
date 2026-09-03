@@ -141,18 +141,18 @@ def cross_sectional_lag1_pearson_autocorr(factor, *, min_pairs=30):
     return _cslpa_raw(factor, min_pairs=min_pairs, _day_slices=_DSLICE())
 
 
-def evaluate_cs_on_panel(values, panel, *, label_col=None, min_pairs=5):
+def evaluate_cs_on_panel(values, panel, *, label_col=None, min_pairs=5, holding_days=1):
     kw = {"_day_slices": _DSLICE(), "_fast_equal_freq_codes": _FCODE()}
     if label_col is not None:
         kw["label_col"] = label_col
-    return _ecsp_raw(values, panel, min_pairs=min_pairs, **kw)
+    return _ecsp_raw(values, panel, min_pairs=min_pairs, holding_days=holding_days, **kw)
 
 
-def evaluate_on_panel(values, panel, *, label_col=None, min_ic_pairs=5):
+def evaluate_on_panel(values, panel, *, label_col=None, min_ic_pairs=5, holding_days=1):
     kw = {"_day_slices": _DSLICE(), "_fast_equal_freq_codes": _FCODE()}
     if label_col is not None:
         kw["label_col"] = label_col
-    return _eop_raw(values, panel, min_ic_pairs=min_ic_pairs, **kw)
+    return _eop_raw(values, panel, min_ic_pairs=min_ic_pairs, holding_days=holding_days, **kw)
 
 
 def cross_sectional_size_neutralize_values(values, panel, *, market_cap_field="float_cap",
@@ -199,18 +199,21 @@ def daily_long_short_series(factor, label, *, time_level="datetime",
 
 
 def mls_fmb_summary(factor, label, *, n_deciles=10, min_stocks=30,
-                    annualization_factor=252.0, nw_lags=None):
+                    annualization_factor=252.0, nw_lags=None, holding_days=1):
     return _mfs_raw(factor, label, n_deciles=n_deciles, min_stocks=min_stocks,
                    annualization_factor=annualization_factor, nw_lags=nw_lags,
+                   holding_days=holding_days,
                    _day_slices=_DSLICE(), _fast_equal_freq_codes=_FCODE())
 
 
 def quantile_portfolio_metrics(factor, label, *, time_level="datetime",
                                n_groups=10, min_stocks=30, cost_bps=15.0,
-                               annualization_factor=252.0, direction=None):
+                               annualization_factor=252.0, direction=None,
+                               holding_days=1):
     return _qpm_raw(factor, label, time_level=time_level, n_groups=n_groups,
                    min_stocks=min_stocks, cost_bps=cost_bps,
                    annualization_factor=annualization_factor, direction=direction,
+                   holding_days=holding_days,
                    _day_slices=_DSLICE(), _fast_equal_freq_codes=_FCODE())
 
 

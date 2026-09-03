@@ -15,11 +15,17 @@ RAW = """# 理性枷锁（三条硬性约束，违反即跳过本轮）
 - 精确描述为什么该信息与未来收益有关（如"压力位上方卖压释放后弹性更大"）
 - 精确描述算子组合的因果链条（如"CHIP_PEAK_LOC 定位压力位 → TS_PCTCHANGE 量化回撤深度 → 距压力位越远弹性越高"）
 
+**因果链必须是可证伪的**：评估调用时必须同步传 `prediction`（预期十分位形态 expected_shape /
+预期 alpha 集中端 expected_strong_side / 预期 IC 符号 expected_sign / 可选证伪条件 falsifier）。
+系统自动对账并在结果中返回 `prediction_check`：verdict=contradicted（被证伪）说明机制错误——
+**错误的结构调参数不会变对**，应换机制或放弃；partial（部分命中）可继续但须解释形态偏差。
+
 **如果你的经济直觉属于以下任何一种，禁止生成表达式，直接跳过该候选：**
 - "A 和 B 可能有关系" → 缺因果链
 - "X 是一个好的因子" → 无机制描述
 - "类似已有因子 Y" → 无独立逻辑
 - "动量/反转/波动率" 等单一标签 → 缺算子级因果
+- 无法写出预期十分位形态与证伪条件 → 不可证伪的叙事，视为无机制
 
 **好的经济直觉示例**（可直接用于 comment 字段）：
 - ✅ "上方筹码峰（CHIP_PEAK_LOC）是套牢盘压力位；价格回撤越深，距压力位越远，上方卖压越小，后续反弹弹性越大。用 NEG(TS_PCTCHANGE) 量化回撤深度，与筹码峰位置做交互。"
@@ -33,10 +39,26 @@ RAW = """# 理性枷锁（三条硬性约束，违反即跳过本轮）
 
 - **D 新族**：一个研究记忆中尚无正/负证据的**信号机制**——不是任何既有父本的变体，核心信息源或经济机制与已评估因子不同。
 - 新族同样必须先写 50 字经济直觉因果链，禁止无机制的随机算子拼装。
-- **优先开拓冷门算子覆盖的机制**（与常规量价族相关性低，独立 alpha 概率最高）：拥挤度 `CROWD_*`、K 线形态几何 `KLINE_GEOMETRY`、影线结构 `WICK_EFFICIENCY`、量钟 `VOLUME_CLOCK_VPIN`、量价互信息 `MUTUAL_INFO_LAG`、排列熵 `TS_PERMUTATION_ENTROPY`、K 线缺口 `PRICE_GAP_*` / `TS_LAST_ARGGAP`、分型 `TS_LAST_*FRACTAL`、三 K 线几何 `WICK_*`、趋势非参数度量 `TS_TREND_RANK`、双窗筹码漂移 `CHIP_WASS_DIST`。
+- **机制驱动探索（先选摩擦，再选算子）**：新族提案必须指名一个市场机制/摩擦，而不是先挑冷门算子再编故事。
+  每条 D 轨候选的《经济直觉》必须回答三问：
+  1. **谁在系统性错边**（谁在不基于价值地买/卖：追涨散户、被动资金、解禁抛压、注意力驱动的跟风盘…）；
+  2. **错误为什么短期修不平**（套利受限来源：不能做空、T+1、涨跌停封板、流动性差、无人覆盖、成本高于错误幅度…）；
+  3. **哪个字段能观测到它**（明确到 `$列` 与窗口，而不是"量价关系"）。
+  三问缺一 = 该候选按无效跳过。机制方向参考（不限于）：信息扩散时滞（公告→定价渐进）、
+  注意力反转（龙虎榜/涨停后的过热回吐）、流动性提供方补偿（套牢盘/被动接盘）、
+  供给冲击日历（解禁/增减持/指数调仓）、制度摩擦（T+1/涨跌停/券源稀缺）、
+  机构行为日历（季末/申赎/分红）、筹码结构变化（集中度/接力/对倒）。
+  - 算子覆盖提示（次要线索）：机制选好后用它匹配信息源——拥挤度 `CROWD_*`、筹码结构 `CHIP_*`、
+    影线/形态几何 `WICK_EFFICIENCY`/`KLINE_GEOMETRY`、量钟 `VOLUME_CLOCK_VPIN`、量价互信息
+    `MUTUAL_INFO_LAG`、排列熵 `TS_PERMUTATION_ENTROPY`、缺口 `PRICE_GAP_*`、分型 `TS_LAST_*FRACTAL`、
+    趋势非参数度量 `TS_TREND_RANK`。冷门算子只是低相关性的候选载体，**不能替代机制三问**。
 - **新族晋级**：新族因子 |IC| ≥ 0.02 即成为新父本，纳入 A/B/C 轨深耕；连续 3 个新族 IC < 0.01 → 该机制记入负证据，本轮再换一个机制。
 - **禁止低级信号叠加（硬约束）**：D 轨表达式顶层**禁止**使用 `ADD(RANK(x), RANK(y))` 或 `SUBTRACT(RANK(x), RANK(y))` 这种"两个独立信号简单加减"的形式——这只是把两个弱信号拼在一起，没有经济机制上的交互。如果确实需要融合多个信息源，必须使用**至少一层结构化交互算子**：门控 `GATED_SIGNAL`、组内排名 `CS_GROUP_RANK`、残差化 `CS_RESIDUALIZE`、背离 `DIVERGENCE_RANK`、分段状态 `PIECEWISE_STATE`、时序相关 `TS_CORR`/`TS_RANKCORR`、必要条件 `IF_THEN_ELSE`。例外：`ADD(x, RANK(y))` 中 x 本身已经是复合结构（如 `CS_RESIDUALIZE(...)` 输出）时不在此列——拦截的是"两个裸 RANK/TS_ 信号直接相加"。
 - **单机制深度优先**：鼓励在单一信息源上构建多层算子链（如 `TS_PCTCHANGE → CS_ZSCORE → CS_NEUTRALIZE → TS_DECAY`），而非拼接多个浅层信号。单机制深度因子有更清晰的因果链条，且与已有因子正交性更好。
+- **条件化前先消融**：门控/条件结构（GATED_SIGNAL / IF_THEN_ELSE / PIECEWISE_STATE / CS_GROUP_RANK）默认是"基信号 × 状态过滤"——
+  状态过滤经常摧毁基信号而非增强它（反转类信号在"强势股"条件下必然失效）。契约必须传 `base_expr`，
+  系统自动跑 base-only 对比并返回 `ablation_check`；`conditioning_destroyed_value` / `conditioning_flipped_signal`
+  = 该门控方向错误，删门控或反转条件，不要在这个门控上调参。
 
 ### 轨道 A/B/C：父本变异（每轮合计 ≤ 6 条，只深耕高质量父本）
 
@@ -89,9 +111,16 @@ interaction 契约格式：
   "condition_signal": "流动性/关注度状态",
   "economic_mechanism": "过度反应在套利资金更容易进入的股票中被更快修正",
   "expected_subgroup_pattern": {"high_state": "更强", "low_state": "更弱或无信号"},
-  "ablation_required": true
+  "ablation_required": true,
+  "base_expr": "NEG(TS_PCTCHANGE($adj_close, 5))",
+  "condition_expr": "RANK(TS_MEAN($amount, 20))"
 }
 ```
+
+`base_expr`（主信号 DSL 子表达式，不含门控）在门控/条件类交互下**必传**：系统自动跑
+base-only 消融并在结果中返回 `ablation_check`（条件化增量/破坏的量化对比）；
+`condition_expr`（仅条件腿）可选。未传 `base_expr` 时结果会带 `ablation_hint` 提醒，
+且你将无法区分"门控带来增量"与"门控摧毁基信号"。
 
 **完整调用示例：**
 

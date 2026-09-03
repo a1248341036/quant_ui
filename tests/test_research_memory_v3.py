@@ -300,6 +300,42 @@ def test_advisory_duplicate_known_dead_end(tmp_path):
     assert store2.advisory_for(expr) is None
 
 
+def test_advisory_duplicate_prior_result(tmp_path):
+    store = ResearchMemoryStore(tmp_path / "m.db")
+    # 同指纹的历史正向条目（窗口参数不同 → 同结构指纹：数字归一化为 N）
+    store.record_tool_result(
+        run_id="r1", row=_eval_row("eval_on_train_set", "TS_MEAN($adj_close, 9) + 0.25", "prior_prom", ic=0.024)
+    )
+    advisory = store.advisory_for("TS_MEAN($adj_close, 5) + 0.5")
+    assert advisory is not None
+    kinds = [a["kind"] for a in advisory["advisories"]]
+    assert "duplicate_prior_result" in kinds
+    item = next(a for a in advisory["advisories"] if a["kind"] == "duplicate_prior_result")
+    assert item["prior_factor"] == "prior_prom"
+    assert item["prior_verdict"] == "promising"
+    assert item["n_prior_positive"] == 1
+    assert "ic=" in item["message"] and "勿原样重测" in item["message"]
+    # 重复评估历史条目自身（同表达式）同样命中
+    advisory2 = store.advisory_for("TS_MEAN($adj_close, 9) + 0.25")
+    assert advisory2 is not None
+    assert "duplicate_prior_result" in [a["kind"] for a in advisory2["advisories"]]
+    # 仅负向历史（attempts=1）不触发任何提醒
+    store2 = ResearchMemoryStore(tmp_path / "m2.db")
+    store2.record_tool_result(run_id="r0", row=_eval_row("eval_on_train_set", "TS_MEAN($adj_close, 5) + 0.5", "weak_0", ic=0.005))
+    assert store2.advisory_for("TS_MEAN($adj_close, 5) + 0.5") is None
+    # 死路与正向并存：两种提醒同时出现（互补不互斥）
+    store3 = ResearchMemoryStore(tmp_path / "m3.db")
+    store3.record_tool_result(
+        run_id="r0", row=_eval_row("eval_on_train_set", "TS_MEAN($adj_close, 9) + 0.25", "prior_prom", ic=0.024)
+    )
+    for i in range(2):
+        store3.record_tool_result(
+            run_id=f"r{i}", row=_eval_row("eval_on_train_set", "TS_MEAN($adj_close, 5) + 0.5", f"weak_{i}", ic=0.005)
+        )
+    kinds3 = [a["kind"] for a in store3.advisory_for("TS_MEAN($adj_close, 5) + 0.5")["advisories"]]
+    assert "duplicate_known_dead_end" in kinds3 and "duplicate_prior_result" in kinds3
+
+
 def test_advisory_edit_veto(tmp_path):
     store = ResearchMemoryStore(tmp_path / "m.db")
     parent_expr = "RANK(TS_MEAN($vwap, 10))"

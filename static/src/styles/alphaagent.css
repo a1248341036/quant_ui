@@ -35,13 +35,14 @@
 .session-rename-popover input { flex:1; min-width:0; border:0; outline:0; padding:0 7px; background:transparent; color:var(--text); font:600 12px/1 var(--font-sans); letter-spacing:0; }
 .session-rename-popover button { width:27px; padding:0; border:0; border-radius:4px; background:rgb(79 140 255 / .18); color:var(--accent); font:16px/1 var(--font-mono); }
 .session-rename-popover button:hover { background:rgb(79 140 255 / .3); }
-.status-dot { width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--muted); }
-.status-running { background: #43d17a; box-shadow: 0 0 10px rgb(67 209 122 / .65); }
-.status-starting { background: #f5bd4f; }
-.status-stopping { background: #f5bd4f; }
-.status-completed { background: #6680a8; }
-.status-failed { background: #ef6b73; }
-.status-interrupted { background: #f5bd4f; }
+/* 加 .agent-sidebar 前缀压过 style.css 的全局 .status-dot 绿色规则（层叠顺序靠后） */
+.agent-sidebar .status-dot { width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--muted); }
+.agent-sidebar .status-running { background: #43d17a; box-shadow: 0 0 10px rgb(67 209 122 / .65); }
+.agent-sidebar .status-starting { background: #f5bd4f; }
+.agent-sidebar .status-stopping { background: #f5bd4f; }
+.agent-sidebar .status-completed { background: #6680a8; }
+.agent-sidebar .status-failed { background: #ef6b73; }
+.agent-sidebar .status-interrupted { background: #f5bd4f; }
 .session-copy { min-width:0; flex:1; }
 .session-copy strong, .session-copy small { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .session-copy strong { font-size:12px; font-weight:550; }
@@ -105,6 +106,11 @@
 .summary-refresh-btn:disabled { opacity:.5; cursor:default; }
 .summary-panel-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
 .summary-panel-head h3 { font-size:16px; }
+.blind-test-block { margin-bottom:14px; }
+.blind-test-head { font-size:11px; color:var(--muted); margin-bottom:6px; }
+.blind-test-table { font-size:11px; min-width:0; width:auto; }
+.blind-test-table th, .blind-test-table td { padding:4px 10px; text-align:left; }
+.blind-test-table td.neg { color:#ef6b73; }
 .summary-table-wrap { max-height:520px; overflow:auto; border:1px solid var(--line); border-radius:9px; }
 .summary-table { width:100%; border-collapse:collapse; font-size:11px; min-width:1450px; }
 .summary-table thead th { position:sticky; top:0; z-index:1; padding:8px 8px; text-align:left; border-bottom:1px solid var(--line-strong); background:var(--bg); color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.04em; white-space:nowrap; }
@@ -343,7 +349,6 @@
 .lab-options input[type="date"] { padding:3px 6px; border:1px solid var(--line); border-radius:5px; background:var(--bg-soft); color:var(--text); font-size:11px; }
 .lab-date-row { display:flex; gap:8px; }
 .lab-date-row label { flex:1; }
-.lab-funda { cursor:pointer; }
 .lab-run-btn { margin-top:10px; padding:9px; border:0; border-radius:8px; background:var(--accent); color:#fff; font-size:13px; cursor:pointer; transition:opacity .12s; }
 .lab-run-btn:disabled { opacity:.5; cursor:not-allowed; }
 .lab-error { margin-top:8px; color:#f58b93; font-size:11px; }

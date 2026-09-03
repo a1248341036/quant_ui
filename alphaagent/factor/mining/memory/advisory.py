@@ -8,7 +8,7 @@ import sqlite3
 from typing import Any
 
 from .calibration import _apv_gate, _eq7_confidence
-from .constants import VERDICT_ORDER
+from .constants import POSITIVE_VERDICTS, VERDICT_ORDER
 from .diagnostics import _parse_args
 from .expressions import _structure_fingerprint, classify_family, motif_from_note
 
@@ -39,16 +39,26 @@ _RECENT_SORT_EXPRS: dict[str, str] = {
 }
 
 
+# 正向 verdict 集合的 SQL IN 占位（①b 指纹正证据查重；sorted 保证参数顺序稳定）
+_POSITIVE_VERDICTS = sorted(POSITIVE_VERDICTS)
+_POSITIVE_PH = ",".join("?" * len(_POSITIVE_VERDICTS))
+
+
 class AdvisoryMixin:
     """评估前 advisory（硬提醒）与查询/管理接口。"""
 
     # ── 评估前 advisory ──
 
     def advisory_for(self, expression: str | None, *, edit_note: str | None = None) -> dict[str, Any] | None:
-        """评估前硬提醒通道（v3：指纹负证据 / 意向编辑 APV 双门）。默认只提醒不拦截。
+        """评估前硬提醒通道（v3：指纹负证据 / 指纹正证据 / 意向编辑 APV 双门）。默认只提醒不拦截。
 
         返回 None（无提醒）或 {"advisories": [...], "blocked": False}。
-        hard_block_duplicates=True 时调用方（tools.dispatch）可将 duplicate 升级为拦截。
+        - duplicate_known_dead_end：同结构指纹负证据（同表达式 ≥2 次尝试）→ 已知死路，
+          `hard_block_duplicates=True` 时由调用方（tools.dispatch）升级为拦截；
+        - duplicate_prior_result：同结构指纹曾有正向结果（promising/入库）→ 重复劳动
+          提醒（历史条目名/verdict/IC/未晋升原因），仅提醒、永不拦截——正向重复说明
+          结构出过信号，正确动作是变异或核查晋升卡点，而非机械重测；
+        - edit_veto：意向编辑 APV 双门否决。
         """
         if not expression:
             return None
@@ -76,6 +86,47 @@ class AdvisoryMixin:
                     findings.append({
                         "kind": "duplicate_known_dead_end",
                         "message": f"该表达式结构与历史死路相同（{row['factor_name']}，{reason}），不建议重复评估。",
+                    })
+
+            # ①b 指纹正证据：同结构曾有正向 verdict（promising/入库）→ 重复劳动提醒。
+            #    与死路提醒独立并存（死路指失败变体，正向条目指值得改造的变体，
+            #    互补不矛盾）；仅提醒、永不拦截——hard_block_duplicates 只作用于死路。
+            if fingerprint:
+                pos_row = conn.execute(
+                    f"""
+                    SELECT factor_name, verdict, fail_detail, attempts, metrics_json, updated_at,
+                           COUNT(*) OVER () AS n_positive
+                    FROM memory_entries
+                    WHERE structure_fingerprint = ?
+                      AND verdict IN ({_POSITIVE_PH})
+                    ORDER BY updated_at DESC LIMIT 1
+                    """,
+                    (fingerprint, *_POSITIVE_VERDICTS),
+                ).fetchone()
+                if pos_row:
+                    metrics = json.loads(pos_row["metrics_json"] or "{}")
+                    metric_bits = []
+                    for key in ("ic", "val_ic", "icir", "rank_ic"):
+                        v = metrics.get(key)
+                        if isinstance(v, (int, float)) and v == v:
+                            metric_bits.append(f"{key}={v:+.4f}")
+                    fail = str(pos_row["fail_detail"] or "").strip()
+                    name = str(pos_row["factor_name"])
+                    when = str(pos_row["updated_at"] or "")[:10]
+                    metrics_txt = ("，" + "，".join(metric_bits)) if metric_bits else ""
+                    fail_txt = f"，未晋升原因：{fail}" if fail else ""
+                    findings.append({
+                        "kind": "duplicate_prior_result",
+                        "message": (
+                            f"该表达式结构与历史条目重复：{name}（{when}，verdict={pos_row['verdict']}"
+                            f"{metrics_txt}，已评估 {int(pos_row['attempts'])} 次{fail_txt}）。"
+                            "同结构已测出过正向结果，勿原样重测："
+                            "以其为父本做显式变异（parent_factor=该历史因子），或核查其未晋升原因后决定。"
+                        ),
+                        "prior_factor": name,
+                        "prior_verdict": str(pos_row["verdict"]),
+                        "prior_updated_at": pos_row["updated_at"],
+                        "n_prior_positive": int(pos_row["n_positive"]),
                     })
 
             # ② 意向编辑 APV：从 edit_note 解析 motif，查 cells 统计否决

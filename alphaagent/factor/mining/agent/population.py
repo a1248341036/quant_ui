@@ -107,9 +107,12 @@ def screen_expr(expr: str, panel: pd.DataFrame, label_col: str, *, min_pairs: in
     values = align_series_to_panel(out, panel)
     factor = pd.Series(values, index=panel.index, name="cand", dtype=np.float32)
     label = panel[label_col]
+    # label 名义持有期（label_20d → 20）：ICIR 按持有期重采样去重叠，避免虚高
+    label_digits = "".join(ch for ch in str(label_col) if ch.isdigit())
+    holding_days = max(1, int(label_digits) if label_digits else 1)
     daily_ic = cross_sectional_ic(factor, label, min_pairs=min_pairs)
     daily_ric = cross_sectional_rank_ic(factor, label, min_pairs=min_pairs)
-    cs = cs_ic_summary(daily_ic, daily_ric)
+    cs = cs_ic_summary(daily_ic, daily_ric, holding_days=holding_days)
     n_inst = int(factor.index.get_level_values("instrument").nunique())
     finite_vals = values[np.isfinite(values)]
     return {

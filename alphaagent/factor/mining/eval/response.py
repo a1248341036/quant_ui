@@ -6,6 +6,8 @@ from typing import Any
 
 import numpy as np
 
+from alphaagent.factor.mining.infra.jsonutil import json_safe
+
 
 def _round_float4(value: object) -> float | None:
     if value is None:
@@ -89,7 +91,8 @@ def monthly_corr_robustness_json(raw: dict[str, Any]) -> dict[str, Any]:
     for k, v in raw.items():
         if k == "note":
             out[k] = v
-        elif isinstance(v, (float, np.floating)) and np.isfinite(v):
+        elif isinstance(v, (float, np.floating)):
+            # 非有限浮点也走 _round_float4（→ None），原样透传会写出非法 JSON。
             out[k] = _round_float4(v)
         elif isinstance(v, (int, np.integer)):
             out[k] = int(v)
@@ -137,9 +140,9 @@ def format_eval_response(
 
     if raw.get("include_detail_tables") or raw.get("by_month") is not None:
         if "by_month" in raw:
-            out["by_month"] = raw["by_month"]
+            out["by_month"] = json_safe(raw["by_month"])
         if "by_symbol" in raw:
-            out["by_symbol"] = raw["by_symbol"]
+            out["by_symbol"] = json_safe(raw["by_symbol"])
 
     if raw.get("split") == "val" and expected_sign is not None:
         ic_val = summ.get("ic")

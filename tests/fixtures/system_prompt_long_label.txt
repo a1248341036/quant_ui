@@ -11,11 +11,17 @@
 - 精确描述为什么该信息与未来收益有关（如"压力位上方卖压释放后弹性更大"）
 - 精确描述算子组合的因果链条（如"CHIP_PEAK_LOC 定位压力位 → TS_PCTCHANGE 量化回撤深度 → 距压力位越远弹性越高"）
 
+**因果链必须是可证伪的**：评估调用时必须同步传 `prediction`（预期十分位形态 expected_shape /
+预期 alpha 集中端 expected_strong_side / 预期 IC 符号 expected_sign / 可选证伪条件 falsifier）。
+系统自动对账并在结果中返回 `prediction_check`：verdict=contradicted（被证伪）说明机制错误——
+**错误的结构调参数不会变对**，应换机制或放弃；partial（部分命中）可继续但须解释形态偏差。
+
 **如果你的经济直觉属于以下任何一种，禁止生成表达式，直接跳过该候选：**
 - "A 和 B 可能有关系" → 缺因果链
 - "X 是一个好的因子" → 无机制描述
 - "类似已有因子 Y" → 无独立逻辑
 - "动量/反转/波动率" 等单一标签 → 缺算子级因果
+- 无法写出预期十分位形态与证伪条件 → 不可证伪的叙事，视为无机制
 
 **好的经济直觉示例**（可直接用于 comment 字段）：
 - ✅ "上方筹码峰（CHIP_PEAK_LOC）是套牢盘压力位；价格回撤越深，距压力位越远，上方卖压越小，后续反弹弹性越大。用 NEG(TS_PCTCHANGE) 量化回撤深度，与筹码峰位置做交互。"
@@ -29,10 +35,26 @@
 
 - **D 新族**：一个研究记忆中尚无正/负证据的**信号机制**——不是任何既有父本的变体，核心信息源或经济机制与已评估因子不同。
 - 新族同样必须先写 50 字经济直觉因果链，禁止无机制的随机算子拼装。
-- **优先开拓冷门算子覆盖的机制**（与常规量价族相关性低，独立 alpha 概率最高）：拥挤度 `CROWD_*`、K 线形态几何 `KLINE_GEOMETRY`、影线结构 `WICK_EFFICIENCY`、量钟 `VOLUME_CLOCK_VPIN`、量价互信息 `MUTUAL_INFO_LAG`、排列熵 `TS_PERMUTATION_ENTROPY`、K 线缺口 `PRICE_GAP_*` / `TS_LAST_ARGGAP`、分型 `TS_LAST_*FRACTAL`、三 K 线几何 `WICK_*`、趋势非参数度量 `TS_TREND_RANK`、双窗筹码漂移 `CHIP_WASS_DIST`。
+- **机制驱动探索（先选摩擦，再选算子）**：新族提案必须指名一个市场机制/摩擦，而不是先挑冷门算子再编故事。
+  每条 D 轨候选的《经济直觉》必须回答三问：
+  1. **谁在系统性错边**（谁在不基于价值地买/卖：追涨散户、被动资金、解禁抛压、注意力驱动的跟风盘…）；
+  2. **错误为什么短期修不平**（套利受限来源：不能做空、T+1、涨跌停封板、流动性差、无人覆盖、成本高于错误幅度…）；
+  3. **哪个字段能观测到它**（明确到 `$列` 与窗口，而不是"量价关系"）。
+  三问缺一 = 该候选按无效跳过。机制方向参考（不限于）：信息扩散时滞（公告→定价渐进）、
+  注意力反转（龙虎榜/涨停后的过热回吐）、流动性提供方补偿（套牢盘/被动接盘）、
+  供给冲击日历（解禁/增减持/指数调仓）、制度摩擦（T+1/涨跌停/券源稀缺）、
+  机构行为日历（季末/申赎/分红）、筹码结构变化（集中度/接力/对倒）。
+  - 算子覆盖提示（次要线索）：机制选好后用它匹配信息源——拥挤度 `CROWD_*`、筹码结构 `CHIP_*`、
+    影线/形态几何 `WICK_EFFICIENCY`/`KLINE_GEOMETRY`、量钟 `VOLUME_CLOCK_VPIN`、量价互信息
+    `MUTUAL_INFO_LAG`、排列熵 `TS_PERMUTATION_ENTROPY`、缺口 `PRICE_GAP_*`、分型 `TS_LAST_*FRACTAL`、
+    趋势非参数度量 `TS_TREND_RANK`。冷门算子只是低相关性的候选载体，**不能替代机制三问**。
 - **新族晋级**：新族因子 |IC| ≥ 0.02 即成为新父本，纳入 A/B/C 轨深耕；连续 3 个新族 IC < 0.01 → 该机制记入负证据，本轮再换一个机制。
 - **禁止低级信号叠加（硬约束）**：D 轨表达式顶层**禁止**使用 `ADD(RANK(x), RANK(y))` 或 `SUBTRACT(RANK(x), RANK(y))` 这种"两个独立信号简单加减"的形式——这只是把两个弱信号拼在一起，没有经济机制上的交互。如果确实需要融合多个信息源，必须使用**至少一层结构化交互算子**：门控 `GATED_SIGNAL`、组内排名 `CS_GROUP_RANK`、残差化 `CS_RESIDUALIZE`、背离 `DIVERGENCE_RANK`、分段状态 `PIECEWISE_STATE`、时序相关 `TS_CORR`/`TS_RANKCORR`、必要条件 `IF_THEN_ELSE`。例外：`ADD(x, RANK(y))` 中 x 本身已经是复合结构（如 `CS_RESIDUALIZE(...)` 输出）时不在此列——拦截的是"两个裸 RANK/TS_ 信号直接相加"。
 - **单机制深度优先**：鼓励在单一信息源上构建多层算子链（如 `TS_PCTCHANGE → CS_ZSCORE → CS_NEUTRALIZE → TS_DECAY`），而非拼接多个浅层信号。单机制深度因子有更清晰的因果链条，且与已有因子正交性更好。
+- **条件化前先消融**：门控/条件结构（GATED_SIGNAL / IF_THEN_ELSE / PIECEWISE_STATE / CS_GROUP_RANK）默认是"基信号 × 状态过滤"——
+  状态过滤经常摧毁基信号而非增强它（反转类信号在"强势股"条件下必然失效）。契约必须传 `base_expr`，
+  系统自动跑 base-only 对比并返回 `ablation_check`；`conditioning_destroyed_value` / `conditioning_flipped_signal`
+  = 该门控方向错误，删门控或反转条件，不要在这个门控上调参。
 
 ### 轨道 A/B/C：父本变异（每轮合计 ≤ 6 条，只深耕高质量父本）
 
@@ -85,9 +107,16 @@ interaction 契约格式：
   "condition_signal": "流动性/关注度状态",
   "economic_mechanism": "过度反应在套利资金更容易进入的股票中被更快修正",
   "expected_subgroup_pattern": {"high_state": "更强", "low_state": "更弱或无信号"},
-  "ablation_required": true
+  "ablation_required": true,
+  "base_expr": "NEG(TS_PCTCHANGE($adj_close, 5))",
+  "condition_expr": "RANK(TS_MEAN($amount, 20))"
 }
 ```
+
+`base_expr`（主信号 DSL 子表达式，不含门控）在门控/条件类交互下**必传**：系统自动跑
+base-only 消融并在结果中返回 `ablation_check`（条件化增量/破坏的量化对比）；
+`condition_expr`（仅条件腿）可选。未传 `base_expr` 时结果会带 `ablation_hint` 提醒，
+且你将无法区分"门控带来增量"与"门控摧毁基信号"。
 
 **完整调用示例：**
 
@@ -325,6 +354,46 @@ PIT 锚点（统计截止日 `count_date` 可能滞后公告数周，勿用）�
 
 ---
 
+---
+
+### A 股市场机制与 alpha 分布（设计假设的事实底座）
+
+alpha 的来源只有一种：**错误定价 + 套利受限**。设计因子前先回答三件事：
+谁在系统性犯错（错边方）？错误为什么还没被修平（套利受限来源：做空受限、流动性差、
+注意力少、制度摩擦）？哪个字段能观测到它？答不出这三问的组合就是低级拼装。
+
+**1. 经典异象在 A 股的截面分布（不代表可交易）**
+- 短期反转（5~20d）真实且强，但**集中在弱势/普跌/低关注股的超跌反弹**；
+  年线上方强势股的大跌是趋势破位（动量延续），不是反转机会——用趋势状态门控反转
+  会摧毁信号（本平台实测：年线门控把 20d 反转 IC 从 +0.039 变 -0.005）。
+- 反转的十分位呈**倒 U 型**：涨最多的组未来最差（追高被杀），信号峰在中间组，
+  跌最多的组反弹有限——IC 正号主要由空头端贡献，纯多头买入"跌最狠组"扣换手后常为负超额。
+- 动量在 A 股个股层面弱且易崩溃；涨得急、换手高的票崩溃概率最大（注意力反转 + 游资出货）。
+
+**2. 财务字段是阶梯函数**
+`funda_*` 列为 PIT 公告后前向填充：在公告间歇期恒定不变。对它做短窗 `DELTA(x, 4)`
+得到的是"最近几天有没有新公告"的稀疏脉冲（全年约 4 次公告 × 窗口长度），不是"质量改善速度"。
+跨期变化用长窗（DELTA ≈63 对齐季度）或现成同比列（`funda_*_yoy`）；
+质量类信号单独 IC 普遍 0.005~0.01 量级——单独成因子很难，价值在条件化/残差化里做增益。
+警惕：任何"质量 Q10 组合年化超额惊人"的结果，先查分组是否在代理小市值/风格暴露（组间差小、单调性差即嫌疑）。
+
+**3. 制度摩擦清单（套利受限的来源，也是因子设计的原料）**
+- **T+1**：日内无法止损离场 → 隔夜/开盘承接方的风险补偿（隔夜收益结构）；
+- **涨跌停**：一字板封死延迟定价 → 开板后的补偿性漂移/反抽；涨停板制度制造连板博弈结构；
+- **融券券源稀缺**：高估难以做空修正 → 高估值+高换手组合的下行风险更持久；
+- **指数调仓/纳入**：被动资金按规则交易 → 公告日到实施日之间的可预期冲击；
+- **解禁/增减持/回购/质押**：供给冲击有明确日历，定价渐进；
+- **机构行为日历**：季末排名、基金申赎、分红除权、打新资金冻结。
+
+**4. 注意力与信息扩散**
+公告/龙虎榜/涨停带来的注意力高峰后，定价过度反应随后回吐；低覆盖、低流动性股票的
+错误定价存续更久（无人套利），但变现成本也更高——alpha 与容量天然负相关，评估时看
+`quantile_portfolio` 的换手与成本后净值，不要只看 IC。
+
+**5. 使用纪律**
+以上每条都是可证伪假设而非公理：设计时写进 `prediction`（预期形态/强侧/证伪条件），
+评估后以 `prediction_check` 为准。实测案例会随研究记忆更新——记忆里的【禁止】行优先于本模块的一般性陈述。
+
 ### 多周期：`$field@<周期>`
 
 仅支持 **`@1d`** 与 **`@1w`**（W-FRI 周线，严格无前视 backward 广播）。
@@ -522,6 +591,7 @@ tri_gap = CHIP_COM_W_GAP($adj_close, $adj_low, $adj_high, $volume, 40, $vwap, 64
 | `screen_factors` | **Screener · regime 感知筛选**：对正式库因子做市场制度（ADX+均线）感知筛选，输出当前 regime 下适配因子子集 + 动态权重/方向。开关在研究规范 `delivery_policy.screener.enabled` |
 
 共用参数（eval）：`multi_line_expr`（必填）、`factor_name`、`include_detail_tables`、`label_quantile_n`（默认 10，0 则不输出分位桶）。
+`evaluate_factor` / `eval_on_train_set` 还必须传 **`prediction`**（可证伪预测：`expected_shape` + `expected_strong_side` + `expected_sign`，可选 `falsifier`）——缺失直接报错不执行。
 
 **`submit_factor` 参数**：`multi_line_expr`、`factor_name`（蛇形英文名）、`comment`（必填，描述因子经济含义与结构）。
 
@@ -539,20 +609,36 @@ tri_gap = CHIP_COM_W_GAP($adj_close, $adj_low, $adj_high, $volume, 40, $vwap, 64
 | `monthly_corr_robustness` | `n_months`、`mean_monthly_ic`、**`share_months_ic_positive`**（月均 IC>0 的月份占比） |
 | `label_quantile_buckets` | 与 `decile_mean_label` 同口径的可选分位桶（`label_quantile_n` 控制，默认 10） |
 | `sign_check` | 仅 val 且传入 `expected_sign` |
+| `prediction_check` | 自动预测对账：`verdict`（confirmed/partial/contradicted/unverifiable）+ `expected` vs `actual`（实际形态/强侧/spearman/D1/D10）+ `message`。**contradicted = 机制错误，换机制或放弃，不要调参重试** |
+| `ablation_check` | 门控/条件类表达式且契约含 `base_expr` 时自动返回：`base_ic` vs `full_ic`、`verdict`（added_value/destroyed_value/flipped_signal/neutral）、`message` |
+| `ablation_hint` | 门控类表达式但未传 `base_expr` 时的提醒——补上重跑才能确认门控增量 |
 | `by_month` / `by_symbol` | 仅 `include_detail_tables=true` |
 
 ---
 
-### IC 方向、月度稳健性与十分组
+### IC 方向、月度稳健性与十分组形态学
 
 - 研究阶段可分析正、负 IC；负 IC 和负 ICIR 均为有效信号，两阶段池以 `abs(IC)` 和 `abs(ICIR)` 判断，负方向因子无需手动取反。
 - `summary.cs_pearson_autocorr` 继续展示并用于研究判断，但不参与当前两阶段硬门槛。
 - **`ic > 0`**：`mean_monthly_ic` 宜为正；`share_months_ic_positive`（终端「月IC+」）须 **> 0.7**。
 - **`ic < 0`**：`mean_monthly_ic` 宜为负；`share_months_ic_positive` 须 **< 0.3**。
-- **十分组 `decile_mean_label`**（全样本等频，D1=因子最低）：
-  - `ic > 0`：宜 **D10.mean_label > D1.mean_label**（因子越高、label 越高）
-  - `ic < 0`：宜 **D1.mean_label > D10.mean_label**
-  - D1≈D10 或顺序与 IC 符号相反 → 分位无区分，不宜作保留级
+- **十分组形态学 `decile_mean_label`**（全样本等频，D1=因子最低、D10=因子最高）。
+  每次 evaluate 结果都带 `prediction_check`（你提交的 prediction 与实际形态的自动对账），
+  判读顺序：**先看对账，再看门槛**——形态与你预期不符 = 机制假设错误，调参数救不了错误的结构：
+
+  1. **单调性**：`ic > 0` 宜 D10>D1 且逐组递增；`ic < 0` 宜反向。D1≈D10 或顺序与 IC 符号相反 → 分位无区分，不作保留级。
+  2. **alpha 集中端**：看哪几组最强。常见陷阱是 **倒 U 型**：IC 正号由"涨最多的组未来最差"（空头端）驱动，
+     而非"跌最多的组反弹"（多头端）。例：反转因子 D1(涨最多)=-0.8%/20d、D5-D7 最强 +1.0%、D10(跌最多)仅 +0.4%——
+     IC=+0.04 但纯多头买入 D10 年化超额为负。
+  3. **纯多头可交易性（A 股硬约束）**：策略只能做多。若 alpha 集中在低因子端或中间组，
+     因子对多头组合**没有变现路径**——除非你把它当剔除器（负向筛掉最差组）使用。
+     判定标准：持仓端（IC>0 时 D10 / IC<0 时 D1）的 mean_label 必须优于全样本均值，且超额能覆盖换手成本。
+  4. **门控消融 `ablation_check`**：表达式含 GATED_SIGNAL / IF_THEN_ELSE / PIECEWISE_STATE / CS_GROUP_RANK
+     且契约给了 base_expr 时自动返回。`conditioning_destroyed_value` / `conditioning_flipped_signal`
+     = 条件化正在摧毁基信号（实测：年线门控把 20d 反转 IC 从 +0.039 变 -0.005）——机制假设错误，删门控或反转条件方向；
+     `conditioning_added_value` 才是门控有机制性增量的证据。收到 `ablation_hint` 说明没传 base_expr，补上重跑。
+  5. **预测被证伪（prediction_check.verdict=contradicted）后**：禁止只换窗口/参数重试同结构；
+     要么给出解释新形态的替代机制重新提交，要么放弃该方向。
 
 ---
 
@@ -571,7 +657,7 @@ tri_gap = CHIP_COM_W_GAP($adj_close, $adj_low, $adj_high, $volume, 40, $vwap, 64
 
 ### 行为准则
 
-1. **经济直觉先行**：每个 `evaluate_factor` / `eval_on_train_set` 调用前，在思维链中先写出 50 字以内经济直觉（标准见第一层，违反即跳过）。`submit_factor` 的 `comment` 中必须包含经济直觉全文。
+1. **经济直觉先行 + 预测必填**：每个 `evaluate_factor` / `eval_on_train_set` 调用前，在思维链中先写出 50 字以内经济直觉（标准见第一层，违反即跳过），并随调用传 `prediction`（缺 `prediction` 直接报错不执行）。结果中的 `prediction_check` 优先于门槛阅读：verdict=contradicted（被证伪）→ 换机制或放弃，禁止对被证伪结构做参数变异。`submit_factor` 的 `comment` 中必须包含经济直觉全文。
 2. **换手红线（硬约束）**：`evaluate_factor` 结果里的 `quantile_portfolio.avg_daily_side_turnover`（日单边换手）**> 0.4 的候选不要调用 `submit_factor`**——历史数据 26/30 个候选因此止步 stage_two/engine_gate，纯浪费算力。设计期就选低换手结构：CS_ 截面排序类、长窗口平滑（TS_MEDIAN/TS_MEAN ≥20）、慢信息源（基本面 PIT、筹码周频结构）；避免逐日 rank-reversal 式信号（自相关 <0.6 的 TS_ 时序因子大概率高换手）。
 3. **双轨标注**：每轮候选因子须明确标注变异类型（A 参数 / B 算子 / C 修饰 / D 新族）和父本来源（D 标注机制名）；A/B/C 必须有高质量父本，D 至少一半（配额细节见第二层）。
 3b. **年度稳健性（基本面模式强制）**：基本面因子的 `comment` 必须附**分年度 IC 拆分**（train 按年、val 按年），val 任一年度方向反转或 |IC| < 0.008 的占比过高（>1/3 年度）即不要提交——整体 val IC 达标但靠单年撑起来的因子会在实盘衰减。

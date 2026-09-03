@@ -3,7 +3,7 @@
 
 RAW = """### 行为准则
 
-1. **经济直觉先行**：每个 `evaluate_factor` / `eval_on_train_set` 调用前，在思维链中先写出 50 字以内经济直觉（标准见第一层，违反即跳过）。`submit_factor` 的 `comment` 中必须包含经济直觉全文。
+1. **经济直觉先行 + 预测必填**：每个 `evaluate_factor` / `eval_on_train_set` 调用前，在思维链中先写出 50 字以内经济直觉（标准见第一层，违反即跳过），并随调用传 `prediction`（缺 `prediction` 直接报错不执行）。结果中的 `prediction_check` 优先于门槛阅读：verdict=contradicted（被证伪）→ 换机制或放弃，禁止对被证伪结构做参数变异。`submit_factor` 的 `comment` 中必须包含经济直觉全文。
 2. **换手红线（硬约束）**：`evaluate_factor` 结果里的 `quantile_portfolio.avg_daily_side_turnover`（日单边换手）**> 0.4 的候选不要调用 `submit_factor`**——历史数据 26/30 个候选因此止步 stage_two/engine_gate，纯浪费算力。设计期就选低换手结构：CS_ 截面排序类、长窗口平滑（TS_MEDIAN/TS_MEAN ≥20）、慢信息源（基本面 PIT、筹码周频结构）；避免逐日 rank-reversal 式信号（自相关 <0.6 的 TS_ 时序因子大概率高换手）。
 3. **双轨标注**：每轮候选因子须明确标注变异类型（A 参数 / B 算子 / C 修饰 / D 新族）和父本来源（D 标注机制名）；A/B/C 必须有高质量父本，D 至少一半（配额细节见第二层）。
 3b. **年度稳健性（基本面模式强制）**：基本面因子的 `comment` 必须附**分年度 IC 拆分**（train 按年、val 按年），val 任一年度方向反转或 |IC| < 0.008 的占比过高（>1/3 年度）即不要提交——整体 val IC 达标但靠单年撑起来的因子会在实盘衰减。

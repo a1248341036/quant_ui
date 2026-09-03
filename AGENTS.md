@@ -116,6 +116,38 @@ logs/factor_mining/ui/        # 每次 Web run 的 JSONL 轨迹 + run_meta.json 
 | 第二层 | 父本变异策略 | 从已验证因子选父本，只允许参数/算子/修饰三种变异 |
 | 第三层 | 正交预判 | 与已有因子的截面 Spearman > 0.7 自动拦截 |
 
+### 3b. 认知层升级（2026-09-03，预测-对账 + 机制驱动探索）
+
+针对"经济直觉叙事化、产出低级组合"的结构性问题（叙事门槛只考文笔不证伪、十分位判读
+教学只有一个 bit、D 轨按算子而非机制开拓、门控式正交激励），五件套全链路升级：
+
+- **A 预测-对账闭环**：`evaluate_factor` / `eval_on_train_set` 的 `prediction` 参数
+  **必填**（`expected_shape`/`expected_strong_side`/`expected_sign` + 可选 `falsifier`），
+  缺失直接 `ToolArgumentsError` 不执行。评估成功后自动对账：十分位实际形态
+  （单调/倒U/U型/尖峰/不规则 + 强侧 D1-D3/D4-D7/D8-D10 + spearman）与预期比对，
+  结果注入 `prediction_check`（verdict: confirmed/partial/contradicted/unverifiable）。
+  `contradicted` = 机制错误，规则禁止对被证伪结构做参数变异。共享实现
+  `alphaagent/factor/mining/eval/prediction.py`（纯 Python，含实测倒U用例锁定分类边界）。
+  记忆层：对账摘要入 `memory_observations` 的 metrics（`prediction_check` 键），
+  被证伪时 conclusion 追加"预测对账:"前缀（FTS 可检索）。agent 侧（agentscope_tools）
+  三个 eval 包装器同步透传 prediction。因子实验室（HTTP 直调引擎）不经过 dispatch，不受必填约束。
+- **B 十分位形态学教学**：`ic_robustness` 模块扩写——单调性/倒U判别（反转因子
+  "IC 正但多头端无肉"的实测结构）、alpha 集中端、纯多头可交易性判定（持仓端 mean_label
+  须优于全样本均值且覆盖换手）、`prediction_check`/`ablation_check` 读法、被证伪后的行为规则。
+- **C A股机制知识模块**：新增 `prompt/modules/market_mechanisms.py`（ORDER=55，仅
+  `asset_type=stock` 启用）——"错误定价×套利受限"框架、经典异象在 A 股的截面分布
+  （反转集中弱势股/倒U结构/门控毁信号实测案例）、财务列阶梯函数的 DELTA 语义陷阱、
+  制度摩擦清单（T+1/涨跌停/券源/解禁/指数调仓）、注意力与信息扩散。
+- **D 轨机制驱动重构**：`strategy_tracks` D 轨"冷门算子清单"降级为次要线索，主协议改为
+  **机制三问**（谁在错边 / 为什么修不平 / 哪个字段观测），三问缺一按无效跳过。
+- **E 强制消融**：表达式含门控类算子（`GATED_SIGNAL`/`IF_THEN_ELSE`/`PIECEWISE_STATE`/
+  `CS_GROUP_RANK`）且契约传 `base_expr` 时，dispatch 自动跑 base-only（引擎直调，
+  不污染候选记录）并注入 `ablation_check`（destroyed_value/flipped_signal/added_value/
+  neutral + 数字对比）；未传 `base_expr` 注入 `ablation_hint` 提醒。交互契约新增
+  `base_expr`/`condition_expr` 可选字段。
+- 提示词改动已同步重生成黄金基线 `tests/fixtures/system_prompt_*.txt`；新增测试
+  `tests/test_prediction_reconciliation.py`（形态分类/对账判定/dispatch 必填/消融/记忆入库）。
+
 ### 4. 评估引擎（factor/evaluation/engine.py）
 
 - 冻结的 `EvaluationProfile` 定义 transform → metric → rule 管线。
@@ -182,7 +214,7 @@ label/panel 列加载/engine_gate 频率的语义。迁移脚本
 - 置信度 Eq.7：`c = n/(n+κ)·min(1,|μ|/(σ+ε))`，κ=8；APV 双门 Eq.11/16：`veto = c>τ_c ∧ π⁻>τ_v`（默认 0.35/0.80，`memory_policy.apv_tau_c/apv_tau_v` 可调）；正证据软推荐封顶"优先尝试"档。
 - 注入门控矩阵（`retrieval._edit_prior_block`，阈值经 `memory_policy.edit_prior_*_conf` 可调）：硬推荐(s>0 ∧ c>0.7) / 软推荐(s>0 ∧ c>0.4) / 硬否决(f>0 ∧ c>0.7) / 软否决(f>0 ∧ c>0.3，低于推荐向以放行"一致失败"避坑证据) / 其余不注入；APV 双门(τ_c=0.35, τ_v=0.80)另在评估前 advisory 做 (family, motif) 聚合否决。2026-08-30 修正：旧文档写的"软否决 fail_rate≥0.6"与实现不符，实际口径全部基于 Eq.7 置信度分档。`memory_policy.max_inject_chars`（默认 2400）超限时核心块（经验、编辑先验）始终保留，次级块按 证据 > 饱和度 > 多样性 用剩余预算填充，所有截断在行边界。
 - **v2 模式层已下线（2026-08-30）**：`memory_patterns` 表停止注入（`context_for` 不再调 `_pattern_block`），其规则蒸馏（同族饱和 forbid / 族内 |IC|≥0.02 recommend / 全局 insight）由 `distill_batch_experience` 迁到 v3 `memory_experience`（同 (kind, family) 去重 + occurrence_count 累加，recommend 文本标注 IC 方向）。旧表数据保留只读，UI 不展示。
-- **显式父本协议**：A/B/C 变异轨的 eval/submit 调用必须传 `parent_factor` + `edit_note`（`edit=<motif> <参数变化>`）；工具结果带 `memory_advisory` 硬提醒（指纹死路 attempts≥2 / 意向编辑 APV veto），默认只提示，`memory_policy.hard_block_duplicates=true` 时拦截。
+- **显式父本协议**：A/B/C 变异轨的 eval/submit 调用必须传 `parent_factor` + `edit_note`（`edit=<motif> <参数变化>`）；工具结果带 `memory_advisory` 硬提醒（指纹死路 attempts≥2 / **指纹正向重复 prior_result**（2026-09-03：同结构指纹曾有 promising/入库条目 → 附历史因子名/verdict/IC/未晋升原因，堵"promising 结构换名重测"的重复劳动盲区——实测历史 206 组重复指纹中 33 组含正向 verdict 完全无提醒）/ 意向编辑 APV veto），默认只提示，`memory_policy.hard_block_duplicates=true` 时仅指纹死路升级为拦截（prior_result 永不拦截）。
 - 检索：BM25 + 族亲和 + 算子重叠 + verdict/recency；证据块 40% 正向配额 + (family≤2, 指纹=1) 去重。**正向跨族保底（2026-09-01）**：正向配额约 2/3 无条件取全库最优正向因子（validated/production 优先，按 |IC|，同族轮转保证跨族，`_guaranteed_positives`），BM25 只补剩余——通用 query 打不中 FTS 时正向通道不断供；`dynamic_retrieve_limit` 默认 6→8。
 - 饱和度（2026-09-01 修正）：`min(1, min(n_promising,8)/40 + n_candidate/5 + n_validated/3)`——promising（仅过训练集海选，多数未晋升）只轻度计入（≤0.2），拥挤度以真实幸存者（candidate/validated/production）为主；注入时除拥挤族警告外，同时给出"出过正信号且未拥挤"的族作定向深挖建议，不再只说"去别处"。
 - **数据面聚焦（跨面融合，2026-09-02）**：前端 run 表单多选数据面（价量/量能/筹码/拥挤/基本面/股东/事件/资金，与 `expressions.FACET_DEFS` 对齐）→ StartRequest `focus_facets` → 子进程 `--focus-facets`。选中后：① 用户消息追加融合指令（融合算子模式：MULTIPLY 门控 / DIVERGENCE_RANK 分歧 / CS_RESIDUALIZE 正交残差 / DIVIDE 比值）；② 每轮记忆注入附"数据面聚焦指令"块（含未触面强制提醒——聚焦面未出现在任何尝试中时要求本轮必须给出触及它的表达式）；③ 选中非价量面时自动加载对应列族（不加 --no-fundamentals）。`_diversity_block` 同步启用：近 8 次尝试面覆盖 <3 时注入面覆盖警告 + 融合模式示例（聚焦生效时抑制——用户显式聚焦优先于自动多样性引导）；蒸馏对跨 ≥2 面的成功经验打"跨面融合"标签。**单选一个面时退化为单面聚焦指令**：不要求融合、不要求 _x_ 命名、单面因子正常提交，仅要求表达式触及该面（用户消息块与每轮提醒两处同口径，2026-09-02）。

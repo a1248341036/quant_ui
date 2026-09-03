@@ -8,6 +8,12 @@ from alphaagent.factor.mining.runlog import log_step
 from alphaagent.factor.mining.schemas import EvalProfileRequest, EvalTrainRequest, EvalValRequest
 from alphaagent.factor.mining.service import StockEvalService
 from alphaagent.factor.mining.submit import FactorSubmitService
+from alphaagent.factor.mining.eval.prediction import (
+    GATING_OP_RE,
+    build_ablation_check,
+    build_prediction_check,
+    normalize_prediction,
+)
 
 from ._schemas import (
     _EVAL_PARAMETERS,
@@ -17,6 +23,46 @@ from ._schemas import (
     _VAL_PARAMETERS,
 )
 from ._prefilter import _is_naive_signal_addition
+
+
+def _prediction_argument_error(arguments: dict[str, Any]) -> dict[str, Any] | None:
+    """prediction 必填校验：缺失/缺字段返回 ToolArgumentsError，合法时返回规范化结果。"""
+    pred = normalize_prediction(arguments.get("prediction"))
+    if pred is None:
+        return {
+            "ok": False,
+            "error": (
+                "prediction_required: 评估必须携带可证伪预测 prediction="
+                '{"expected_shape": "monotonic_increasing|monotonic_decreasing|inverted_u|u_shape|spike_at_extreme|irregular", '
+                '"expected_strong_side": "high_factor|low_factor|middle", "expected_sign": 1|-1, "falsifier": "可选"}。'
+                "评估结果会自动对账注入 prediction_check——预期被证伪说明机制错误，"
+                "应放弃该方向而不是调参重试。"
+            ),
+            "error_type": "ToolArgumentsError",
+        }
+    return None
+
+
+def _attach_prediction_check(result: dict[str, Any], prediction: Any, *, ic: Any, decile_rows: Any) -> None:
+    """评估成功后把 prediction_check 注入结果（内部调用，异常全吞）。"""
+    try:
+        check = build_prediction_check(prediction, ic=ic, decile_rows=decile_rows)
+        if check is not None:
+            result["prediction_check"] = check
+    except Exception:  # noqa: BLE001 — 对账是增益信息，绝不阻断评估
+        pass
+
+
+def _engine_decile(result: dict[str, Any]) -> tuple[Any, Any]:
+    """从引擎原生 shape（evaluate_factor 结果）取 (ic, decile_rows)。"""
+    cs = (result.get("metrics") or {}).get("cross_sectional_core") or {}
+    return cs.get("ic"), cs.get("decile_mean_label")
+
+
+def _legacy_decile(result: dict[str, Any]) -> tuple[Any, Any]:
+    """从 legacy shape（eval_on_train/val_set 结果）取 (ic, decile_rows)。"""
+    summ = result.get("summary") or {}
+    return summ.get("ic"), summ.get("decile_mean_label")
 
 
 class _DispatchMixin:
@@ -57,6 +103,54 @@ class _DispatchMixin:
         except Exception:
             pass
         return blocked if blocked is not None else advisory
+
+    def _attach_ablation(self, expr: str, arguments: dict[str, Any], *, profile_id: str, result: dict[str, Any]) -> None:
+        """E) 门控/条件结构自动消融：base-only vs full 对比注入结果。
+
+        - 表达式含门控类算子且契约给了 base_expr → 跑 base-only 并量化条件化增量；
+        - 未给 base_expr → 只附 ablation_hint 提醒（不阻断）。
+        内部异常全吞，绝不影响主评估结果。
+        """
+        try:
+            if not isinstance(result, dict) or not result.get("ok"):
+                return
+            if not GATING_OP_RE.search(expr):
+                return
+            contract = arguments.get("interaction") if isinstance(arguments.get("interaction"), dict) else {}
+            base_expr = str(contract.get("base_expr") or "").strip()
+            if not base_expr:
+                result["ablation_hint"] = (
+                    "门控/条件结构未传 interaction.base_expr，无法自动消融。"
+                    "条件化可能在摧毁基信号（实测案例：年线门控把 20d 反转 IC 从 +0.039 变 -0.005）——"
+                    "请补 base_expr 重跑确认门控增量。"
+                )
+                return
+            session = self.service.sessions.get(self.session_id)
+            base_raw = self.service.evaluation_engine.evaluate(
+                session,
+                profile_id=profile_id,
+                multi_line_expr=base_expr,
+                factor_name=f"{arguments.get('factor_name') or 'expr'}__baseonly",
+                include_charts=False,
+            )
+            if not isinstance(base_raw, dict) or not base_raw.get("ok"):
+                result["ablation_check"] = {
+                    "verdict": "skipped",
+                    "base_expr": base_expr[:200],
+                    "error": str((base_raw or {}).get("error") or "base_only_eval_failed")[:200],
+                }
+                return
+            base_cs = (base_raw.get("metrics") or {}).get("cross_sectional_core") or {}
+            full_cs = (result.get("metrics") or {}).get("cross_sectional_core") or {}
+            if not full_cs:
+                full_summ = result.get("summary") or {}
+                full_cs = {
+                    "ic": full_summ.get("ic"),
+                    "icir": full_summ.get("icir"),
+                }
+            result["ablation_check"] = build_ablation_check(base_cs, full_cs, base_expr=base_expr)
+        except Exception as exc:  # noqa: BLE001
+            result["ablation_check"] = {"verdict": "skipped", "error": f"{type(exc).__name__}: {str(exc)[:120]}"}
 
     def schemas(self) -> list[dict[str, Any]]:
         out = [
@@ -148,6 +242,9 @@ class _DispatchMixin:
                 return {"ok": False, "error": "multi_line_expr_required_non_empty_string", "error_type": "ToolArgumentsError"}
             if not isinstance(profile_id, str) or not profile_id.strip():
                 return {"ok": False, "error": "profile_id_required_non_empty_string", "error_type": "ToolArgumentsError"}
+            pred_error = _prediction_argument_error(arguments)
+            if pred_error is not None:
+                return pred_error
             # 预审：拦截"两个裸 RANK 信号简单加减"的低级因子
             if _is_naive_signal_addition(expr):
                 return {
@@ -168,6 +265,10 @@ class _DispatchMixin:
                     factor_name=str(arguments.get("factor_name") or "expr"),
                 )
             )
+            if isinstance(result, dict) and result.get("ok"):
+                ic, decile_rows = _engine_decile(result)
+                _attach_prediction_check(result, arguments.get("prediction"), ic=ic, decile_rows=decile_rows)
+                self._attach_ablation(expr, arguments, profile_id=profile_id, result=result)
             if isinstance(gate, dict):
                 result["memory_advisory"] = gate
             return result
@@ -193,6 +294,9 @@ class _DispatchMixin:
             label_quantile_n = 10
 
         if name == "eval_on_train_set":
+            pred_error = _prediction_argument_error(arguments)
+            if pred_error is not None:
+                return pred_error
             gate = self._memory_gate(expr, arguments)
             if isinstance(gate, dict) and gate.get("ok") is False:
                 return gate
@@ -205,6 +309,10 @@ class _DispatchMixin:
                     label_quantile_n=int(label_quantile_n),
                 )
             )
+            if isinstance(result, dict) and result.get("ok"):
+                ic, decile_rows = _legacy_decile(result)
+                _attach_prediction_check(result, arguments.get("prediction"), ic=ic, decile_rows=decile_rows)
+                self._attach_ablation(expr, arguments, profile_id="train_screen", result=result)
             if isinstance(gate, dict):
                 result["memory_advisory"] = gate
             return result
@@ -226,6 +334,9 @@ class _DispatchMixin:
                     expected_sign=expected_sign,
                 )
             )
+            if isinstance(result, dict) and result.get("ok") and arguments.get("prediction") is not None:
+                ic, decile_rows = _legacy_decile(result)
+                _attach_prediction_check(result, arguments.get("prediction"), ic=ic, decile_rows=decile_rows)
             if isinstance(gate, dict):
                 result["memory_advisory"] = gate
             return result

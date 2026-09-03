@@ -425,9 +425,13 @@ class FactorSubmitService:
         # 换手是因子结构性属性，与窗口无关），供 stage_one 换手硬门与最终报告复用，
         # 避免高换手因子走完全流程才在 engine_gate 被拒。
         from alphaagent.factor.metrics import quantile_portfolio_metrics
+        # holding_days 对齐 label 名义持有期（label_20d → 20）：避免 20 日收益被
+        # 逐日重叠计入 20 次，组合年化/回撤/夏普全部失真（曾致回撤虚标 99%）。
+        label_digits = "".join(ch for ch in str(ctx.label_col) if ch.isdigit())
+        qp_holding_days = max(1, int(label_digits) if label_digits else 1)
         qp_metrics = quantile_portfolio_metrics(
             pd.Series(cand_values, index=panel.index), panel[ctx.label_col],
-            n_groups=10, cost_bps=0.0,
+            n_groups=10, cost_bps=0.0, holding_days=qp_holding_days,
         )
         metrics_train["quantile_portfolio"] = qp_metrics
 
@@ -538,7 +542,7 @@ class FactorSubmitService:
                 if len(f_val) > 0:
                     dir_sign = 1 if float(metrics_train.get("ic") or 0.0) >= 0 else -1
                     val_metrics["val_long_excess"] = annualized_long_group_excess_return(
-                        f_val, l_val, direction=dir_sign
+                        f_val, l_val, direction=dir_sign, holding_days=qp_holding_days
                     )
 
         similarity_report: dict[str, Any] | None = None

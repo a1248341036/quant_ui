@@ -156,10 +156,16 @@ def compute_ingest_metrics(
         start=policy.eval_start,
         end=policy.eval_end,
     )
-    metrics = evaluate_on_panel(eval_values, eval_panel, label_col=policy.label_col)
+    # label 名义持有期（label_20d → 20）：ICIR 按持有期重采样去重叠、超额年化
+    # 按持有期缩放，避免长持有期因子指标虚高。label_1d 时 hold=1 退化为原行为。
+    label_digits = "".join(ch for ch in str(policy.label_col) if ch.isdigit())
+    holding_days = max(1, int(label_digits) if label_digits else 1)
+    metrics = evaluate_on_panel(
+        eval_values, eval_panel, label_col=policy.label_col, holding_days=holding_days
+    )
     winsorized_values = cross_sectional_winsorize_values(eval_values, eval_panel)
     winsorized_metrics = evaluate_on_panel(
-        winsorized_values, eval_panel, label_col=policy.label_col
+        winsorized_values, eval_panel, label_col=policy.label_col, holding_days=holding_days
     )
     raw_abs_ic = abs(float(metrics["ic"]))
     winsorized_abs_ic = abs(float(winsorized_metrics["ic"]))
@@ -174,6 +180,7 @@ def compute_ingest_metrics(
         factor_series,
         eval_panel[policy.label_col],
         direction=1 if float(metrics["ic"]) >= 0.0 else -1,
+        holding_days=holding_days,
     )
     skew, kurt = factor_skew_kurtosis(eval_values)
     metrics["skew"] = skew

@@ -24,6 +24,7 @@ def render(ctx) -> str:  # noqa: ANN001
 | `screen_factors` | **Screener · regime 感知筛选**：对正式库因子做市场制度（ADX+均线）感知筛选，输出当前 regime 下适配因子子集 + 动态权重/方向。开关在研究规范 `delivery_policy.screener.enabled` |
 
 共用参数（eval）：`multi_line_expr`（必填）、`factor_name`、`include_detail_tables`、`label_quantile_n`（默认 10，0 则不输出分位桶）。
+`evaluate_factor` / `eval_on_train_set` 还必须传 **`prediction`**（可证伪预测：`expected_shape` + `expected_strong_side` + `expected_sign`，可选 `falsifier`）——缺失直接报错不执行。
 
 **`submit_factor` 参数**：`multi_line_expr`、`factor_name`（蛇形英文名）、`comment`（必填，描述因子经济含义与结构）。
 
@@ -41,6 +42,9 @@ def render(ctx) -> str:  # noqa: ANN001
 | `monthly_corr_robustness` | `n_months`、`mean_monthly_ic`、**`share_months_ic_positive`**（月均 IC>0 的月份占比） |
 | `label_quantile_buckets` | 与 `decile_mean_label` 同口径的可选分位桶（`label_quantile_n` 控制，默认 10） |
 | `sign_check` | 仅 val 且传入 `expected_sign` |
+| `prediction_check` | 自动预测对账：`verdict`（confirmed/partial/contradicted/unverifiable）+ `expected` vs `actual`（实际形态/强侧/spearman/D1/D10）+ `message`。**contradicted = 机制错误，换机制或放弃，不要调参重试** |
+| `ablation_check` | 门控/条件类表达式且契约含 `base_expr` 时自动返回：`base_ic` vs `full_ic`、`verdict`（added_value/destroyed_value/flipped_signal/neutral）、`message` |
+| `ablation_hint` | 门控类表达式但未传 `base_expr` 时的提醒——补上重跑才能确认门控增量 |
 | `by_month` / `by_symbol` | 仅 `include_detail_tables=true` |
 """
 

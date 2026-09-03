@@ -264,7 +264,6 @@ export default {
             source: 'lab_backtest_export',
             panel_path: 'label_1d_open_to_open',
             backtest_period: `${btStart} → ${btEnd}`,
-            include_fundamentals: false,
             backtest_config: this.bt.result.config,
             metrics: this.bt.result.metrics,
             bench_metrics: this.bt.result.bench_metrics,

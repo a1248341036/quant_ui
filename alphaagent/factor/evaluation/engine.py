@@ -117,7 +117,12 @@ class EvaluationEngine:
             point = time.perf_counter()
             values = align_series_to_panel(raw, panel)
             factor = pd.Series(values, index=panel.index, name=factor_name, dtype=np.float32)
-            context = EvaluationContext(panel=panel, factor=factor, label=panel[label_col], profile=profile, factor_name=factor_name)
+            # label 名义持有期（label_20d → 20）：供组合回测指标按持有期采样复利
+            label_digits = "".join(ch for ch in str(label_col) if ch.isdigit())
+            context = EvaluationContext(
+                panel=panel, factor=factor, label=panel[label_col], profile=profile, factor_name=factor_name,
+                label_holding_days=max(1, int(label_digits) if label_digits else 1),
+            )
             for item in profile.transforms:
                 get_transform(str(item["plugin"]))(context, dict(item.get("params") or {}))
             timing["transforms_ms"] = (time.perf_counter() - point) * 1000

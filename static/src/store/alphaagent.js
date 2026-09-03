@@ -107,6 +107,10 @@ export const agentStore = reactive({
   summaryPageSize: 50,
   summaryTotal: 0,
   summaryLoading: false,
+  // 盲测报告（单因子的真实 OOS；人看，刻意不进 agent 记忆）
+  blindTest: null,
+  blindTestLoading: false,
+  blindTestError: '',
 
   // 统一时间窗口默认值（后端 window_config 唯一真源，供因子实验室等复用）
   windowDefaults: null,
@@ -451,6 +455,8 @@ export const agentStore = reactive({
       if (result.status === 'queued') {
         this.events.push({ event: 'continuation_queued', ts: new Date().toISOString(), content })
         this.form.user_message = ''
+        // 原地续跑（对已结束会话点继续）：respawn 后流未连接，接上才能实时看到新段事件
+        if (!stream) this.connectAgentEvents(result.run_id)
         return
       }
       this.current = result
@@ -476,6 +482,17 @@ export const agentStore = reactive({
     es.onmessage = (message) => {
       try {
         const event = JSON.parse(message.data)
+        const TERMINAL_STREAM_STATUSES = ['completed', 'failed', 'interrupted', 'stopped']
+        // 心跳带权威状态：已终止的会话（含死于断电/重启的 interrupted）当作流结束，
+        // 避免对死会话的 SSE 重连把 current.status 永久钉在 running（绿点长亮）。
+        if (event.event === 'heartbeat' && TERMINAL_STREAM_STATUSES.includes(event.status)) {
+          this.running = false
+          if (this.current) this.current.status = event.status
+          es.close()
+          stream = null
+          this.loadAgentRuns()
+          return
+        }
         if (event.event === 'heartbeat') return
         if (event.event === 'stream_end') {
           this.running = false
@@ -487,7 +504,9 @@ export const agentStore = reactive({
           return
         }
         if (event.event === 'stream_start') {
-          if (this.current) this.current.status = 'running'
+          if (this.current && !TERMINAL_STREAM_STATUSES.includes(event.status)) {
+            this.current.status = 'running'
+          }
         } else if (event.event === 'usage_total') {
           this.usage = { ...this.usage, ...event }
         } else {
@@ -569,6 +588,19 @@ export const agentStore = reactive({
     }
   },
   // ── 研究总结分页（服务端排序 + verdict 过滤）──
+  async loadBlindTest() {
+    if (this.blindTestLoading) return
+    this.blindTestLoading = true
+    try {
+      this.blindTest = await api('/api/alphaagent/blind-test?limit=3&t=' + Date.now())
+      this.blindTestError = ''
+    } catch (e) {
+      // 专字段记录，面板内提示；不再写全局 error（避免整个页面报错横幅）
+      this.blindTestError = e.message
+    } finally {
+      this.blindTestLoading = false
+    }
+  },
   async loadSummaryPage(page) {
     if (this.summaryLoading) return
     if (Number.isFinite(page) && page >= 1) this.summaryPage = page

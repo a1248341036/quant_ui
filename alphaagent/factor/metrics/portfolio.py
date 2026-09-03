@@ -80,6 +80,7 @@ def quantile_portfolio_metrics(
     cost_bps: float = 15.0,
     annualization_factor: float = 252.0,
     direction: int | None = None,
+    holding_days: int = 1,
     _day_slices=None,
     _fast_equal_freq_codes=None,
 ) -> dict[str, Any]:
@@ -125,6 +126,12 @@ def quantile_portfolio_metrics(
     prev_members: set | None = None
     turnover_sum = 0.0
     n_days = 0
+    daily_prev_members: set | None = None
+    daily_turnover_sum = 0.0
+    nav_prev_members: set | None = None
+    nav_turnover_sum = 0.0
+    nav_n_days = 0
+    _ = prev_members, turnover_sum  # 已由 daily_*/nav_* 双轨累计承担（见下）
 
     f_arr_all = factor.to_numpy(dtype=np.float64, copy=False)
     l_arr_all = label.to_numpy(dtype=np.float64, copy=False)
@@ -164,7 +171,22 @@ def quantile_portfolio_metrics(
             for ts, f_sub in factor.groupby(level=time_level, sort=False)
         )
 
+    # label 名义持有期 > 1 时，组合净值按持有期节奏调仓复利（如 label_20d →
+    # 每 20 个交易日调仓一次）。否则 20 日收益被逐日重叠计入 20 次：年化/回撤/
+    # 夏普全部失真（实测 fundamental 档年化虚高 ~20 倍、回撤虚高至 99%）。
+    # 注意：avg_daily_side_turnover 保持日频口径不变（stage_one 换手门的输入，
+    # 语义与历史一致）；多日 label 的真实调仓成本由 engine_gate 按档位频率裁决。
+    hold = max(1, int(holding_days))
+    nav_annualization = annualization_factor / hold
+    day_index = -1
+    nav_prev_members: set | None = None
+    nav_turnover_sum = 0.0
+    nav_n_days = 0
+    daily_prev_members: set | None = None
+    daily_turnover_sum = 0.0
+
     for ts, xf, yl, inst in grouped_days:
+        day_index += 1
         prepared = _quantile_portfolio_day(xf, yl, inst)
         if prepared is None:
             continue
@@ -179,14 +201,6 @@ def quantile_portfolio_metrics(
             continue
 
         members = set(names[long_mask_arr].tolist())
-        if prev_members is None:
-            side_turnover = 1.0  # 建仓：单边买入
-        else:
-            changed = len(members - prev_members) / max(len(members), 1)
-            side_turnover = 2.0 * changed  # 双边
-        turnover_sum += side_turnover
-        prev_members = members
-        day_cost = cost_bps / 10_000.0 * side_turnover
 
         def _bin_mean(idx: int) -> float:
             sel = b == idx
@@ -197,6 +211,34 @@ def quantile_portfolio_metrics(
         high_ret, low_ret = _bin_mean(k - 1), _bin_mean(0)
         if np.isfinite(high_ret) and np.isfinite(low_ret):
             high_minus_low.append(high_ret - low_ret)
+
+        # 组合净值：仅在调仓日（每 hold 个交易日）复利一次
+        # 日度换手（信息性，口径与历史一致：stage_one 换手门继续按日换手解读）
+        if daily_prev_members is None:
+            daily_side = 1.0
+        else:
+            daily_side = 2.0 * len(members - daily_prev_members) / max(len(members), 1)
+        daily_turnover_sum += daily_side
+        daily_prev_members = members
+
+        if day_index % hold != 0:
+            for g in range(k):
+                sel = b == g
+                if sel.any():
+                    key = g + 1
+                    grp_sum[key] = grp_sum.get(key, 0.0) + float(ret[sel].sum())
+                    grp_cnt[key] = grp_cnt.get(key, 0) + int(sel.sum())
+            n_days += 1
+            continue
+
+        if nav_prev_members is None:
+            nav_side = 1.0  # 建仓：单边买入
+        else:
+            changed = len(members - nav_prev_members) / max(len(members), 1)
+            nav_side = 2.0 * changed  # 双边
+        nav_turnover_sum += nav_side
+        nav_prev_members = members
+        day_cost = cost_bps / 10_000.0 * nav_side
 
         net.append(long_ret - day_cost)
         excess.append((long_ret - universe_ret) - day_cost)
@@ -209,6 +251,7 @@ def quantile_portfolio_metrics(
                 grp_sum[key] = grp_sum.get(key, 0.0) + float(ret[sel].sum())
                 grp_cnt[key] = grp_cnt.get(key, 0) + int(sel.sum())
         n_days += 1
+        nav_n_days += 1
 
     if n_days == 0:
         return {
@@ -229,13 +272,14 @@ def quantile_portfolio_metrics(
         arr = np.asarray(series, dtype=np.float64)
         if np.any(arr <= -1.0):
             return float("nan")
-        return float(np.prod(1.0 + arr) ** (annualization_factor / len(arr)) - 1.0)
+        # nav_annualization 已按持有期缩放（label_20d → 每期 20 个交易日）
+        return float(np.prod(1.0 + arr) ** (nav_annualization / len(arr)) - 1.0)
 
     def _sharpe(series: list[float]) -> float:
         arr = np.asarray(series, dtype=np.float64)
         std = float(arr.std(ddof=1)) if len(arr) > 1 else float("nan")
         if std > 0 and np.isfinite(std):
-            return float(arr.mean() / std * math.sqrt(annualization_factor))
+            return float(arr.mean() / std * math.sqrt(nav_annualization))
         return float("nan")
 
     def _max_drawdown(series: list[float]) -> float:
@@ -252,7 +296,12 @@ def quantile_portfolio_metrics(
         "long_side": f"Q{n_groups}" if direction >= 0 else "Q1",
         "cost_model": "per_rebalance_turnover",
         "cost_bps_per_side": float(cost_bps),
-        "avg_daily_side_turnover": round(turnover_sum / max(n_days, 1), 4),
+        "holding_days": hold,
+        # 日频换手：口径与历史一致（stage_one 换手门的输入）
+        "avg_daily_side_turnover": round(daily_turnover_sum / max(n_days, 1), 4),
+        # 调仓日换手（每 hold 个交易日一次的真实调仓成本）
+        "avg_rebalance_side_turnover": round(nav_turnover_sum / max(nav_n_days, 1), 4),
+        "n_rebalances": int(nav_n_days),
         "n_days": int(n_days),
         "top_group_annualized_return": _compound_ann(net),
         "top_group_annualized_excess_return": _compound_ann(excess),

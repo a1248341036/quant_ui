@@ -186,6 +186,25 @@ def lint_expression_interaction(
     if not has_multiply and not matched_ops:
         return None, None, None
 
+    # 容错 3：契约缺 base_signal/condition_signal 时，从表达式的数据列引用自动补全。
+    #   字段缺失是模型的格式瑕疵，不该让高 IC 因子死在提交拦截上（实测有过
+    #   IC=+0.082 的因子因此被拒）；economic_mechanism（经济机制纪律）仍强制。
+    if isinstance(spec, dict):
+        missing_fields = [f for f in ("base_signal", "condition_signal") if not _text(spec.get(f))]
+        if missing_fields:
+            variables: list[str] = []
+            for var in re.findall(r"\$[a-zA-Z_][a-zA-Z0-9_]*", expr):
+                low = var.lower()
+                if low not in variables:
+                    variables.append(low)
+            if variables:
+                if not _text(spec.get("base_signal")):
+                    spec["base_signal"] = f"主腿（自动识别自表达式）: {variables[0]}"
+                if not _text(spec.get("condition_signal")):
+                    cond = variables[1] if len(variables) >= 2 else variables[0]
+                    suffix = "" if len(variables) >= 2 else "（单变量表达式，无独立辅腿）"
+                    spec["condition_signal"] = f"辅腿（自动识别自表达式）: {cond}{suffix}"
+
     normalized, error = validate_interaction(spec, allowed_types=allowed_types)
     if error is not None:
         return None, None, error

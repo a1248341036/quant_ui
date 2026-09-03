@@ -31,11 +31,71 @@ def test_generic_profile_tool_dispatches_frozen_profile() -> None:
     tools = FactorEvalTools(service, "session")
     result = tools.dispatch(
         "evaluate_factor",
-        {"profile_id": "size_neutral_validation", "factor_name": "candidate", "multi_line_expr": "$adj_close"},
+        {
+            "profile_id": "size_neutral_validation",
+            "factor_name": "candidate",
+            "multi_line_expr": "$adj_close",
+            "prediction": {"expected_shape": "monotonic_increasing", "expected_strong_side": "high_factor", "expected_sign": 1},
+        },
     )
     assert result["ok"]
     assert service.request.profile_id == "size_neutral_validation"
     assert service.request.multi_line_expr == "$adj_close"
+
+
+def test_evaluate_factor_requires_prediction() -> None:
+    """prediction 缺失/缺字段必须被拦截（A 项硬性必填）。"""
+    service = _ProfileService()
+    tools = FactorEvalTools(service, "session")
+    result = tools.dispatch(
+        "evaluate_factor",
+        {"profile_id": "train_screen", "multi_line_expr": "$adj_close"},
+    )
+    assert not result["ok"]
+    assert result["error_type"] == "ToolArgumentsError"
+    assert "prediction_required" in result["error"]
+
+    result_partial = tools.dispatch(
+        "evaluate_factor",
+        {
+            "profile_id": "train_screen",
+            "multi_line_expr": "$adj_close",
+            "prediction": {"expected_shape": "monotonic_increasing"},
+        },
+    )
+    assert not result_partial["ok"]
+    assert "prediction_required" in result_partial["error"]
+
+
+def test_eval_on_train_set_requires_prediction() -> None:
+    class _TrainService:
+        def eval_train(self, request):
+            return {
+                "ok": True,
+                "split": "train",
+                "summary": {
+                    "ic": 0.03,
+                    "icir": 0.4,
+                    "decile_mean_label": [
+                        {"decile": i, "mean_label": 0.001 * i} for i in range(1, 11)
+                    ],
+                },
+            }
+
+    tools = FactorEvalTools(_TrainService(), "session")
+    result = tools.dispatch("eval_on_train_set", {"multi_line_expr": "$adj_close"})
+    assert not result["ok"]
+    assert "prediction_required" in result["error"]
+
+    result_ok = tools.dispatch(
+        "eval_on_train_set",
+        {
+            "multi_line_expr": "$adj_close",
+            "prediction": {"expected_shape": "monotonic_increasing", "expected_strong_side": "high_factor", "expected_sign": 1},
+        },
+    )
+    assert result_ok["ok"]
+    assert result_ok["prediction_check"]["verdict"] == "confirmed"
 
 
 def test_generic_profile_evidence_is_persisted_in_research_memory(tmp_path: Path) -> None:

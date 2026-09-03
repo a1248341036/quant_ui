@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from alphaagent.factor.mining.console import ConsolePrinter
+from alphaagent.factor.mining.infra.jsonutil import json_safe
 from alphaagent.factor.mining.tools import FactorEvalTools
 
 _NUDGE = (
@@ -132,7 +133,7 @@ def run_trajectory(
 
     def _emit(event: str, payload: dict[str, Any]) -> None:
         with log_path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps({"ts": _now(), "event": event, **payload}, ensure_ascii=False, default=str) + "\n")
+            f.write(json.dumps(json_safe({"ts": _now(), "event": event, **payload}), ensure_ascii=False, default=str) + "\n")
 
     _emit("session_start", {"model": model, "max_turns": max_turns})
     tool_call_rows: list[dict[str, Any]] = []
@@ -214,7 +215,7 @@ def run_trajectory(
             printer.session_end("max_turns_reached", sum(1 for r in tool_call_rows if r.get("ok")), len(tool_call_rows))
 
     snapshot = log_path.with_suffix(".messages.json")
-    snapshot.write_text(json.dumps(messages, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    snapshot.write_text(json.dumps(json_safe(messages), ensure_ascii=False, indent=2, default=str), encoding="utf-8")
 
     times = [r["elapsed_seconds"] for r in tool_call_rows if r.get("elapsed_seconds") is not None]
     submitted_factors = [r for r in submit_records if r.get("stored")]
@@ -231,7 +232,7 @@ def run_trajectory(
         "messages_snapshot": str(snapshot),
     }
     log_path.with_suffix(".summary.json").write_text(
-        json.dumps(summary, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
+        json.dumps(json_safe(summary), ensure_ascii=False, indent=2, default=str), encoding="utf-8"
     )
     _emit("run_summary", summary)
     return messages

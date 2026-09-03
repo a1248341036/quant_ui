@@ -27,6 +27,7 @@ from alphaagent.factor.types import (
 from alphaagent.factor.mining.research_spec import build_run_research_spec, default_research_spec, normalize_research_spec
 
 from alphaagent.factor.mining.research_memory import ResearchMemoryStore
+from alphaagent.factor.mining.infra.jsonutil import json_safe
 from backend.logging_decorators import log_function_call
 from backend.logging_config import backtest_logger
 from core import factor_categories, trading_config
@@ -113,6 +114,10 @@ class AgentRun:
         files = sorted(self.log_dir.glob("run_*.jsonl"))
         return files[-1] if files else None
 
+    def _jsonl_all(self) -> list[Path]:
+        """全部轨迹段（原地续跑后同目录有多段，按文件名时间戳即时间序）。"""
+        return sorted(self.log_dir.glob("run_*.jsonl"))
+
     def refresh(self) -> None:
         jsonl = self._jsonl()
 
@@ -168,18 +173,26 @@ class AgentRun:
         try:
             if time.time() - jsonl.stat().st_mtime < 900:
                 self.status = "running"
+            elif self.status == "running":
+                # 轨迹已停更 15 分钟且无终态事件：running 不可能再成立
+                # （进程死于断电/重启等无终态场景）。显式降级，避免
+                # "开机恢复时被标 running、之后永远卡绿"。
+                self.status = "interrupted"
         except OSError:
             pass
 
     def snapshot(self, tail: int = 80) -> dict[str, Any]:
         self.refresh()
-        event_count, recent_events = scan_event_tail(self._jsonl(), tail)
+        # 多段轨迹：原地续跑后事件数/时间线跨全部段归并
+        event_count, recent_events = scan_event_tail_multi(self._jsonl_all(), tail)
         summary_path = self.log_dir / "run_summary.json"
         summary: dict[str, Any] = {}
         if summary_path.exists():
             try:
                 loaded = json.loads(summary_path.read_text(encoding="utf-8"))
-                summary = loaded if isinstance(loaded, dict) else {}
+                # 历史 summary 可能含 NaN（非法 JSON 由 json.loads 容忍读入），
+                # Starlette 响应渲染 allow_nan=False 会直接 500，这里统一清洗。
+                summary = json_safe(loaded) if isinstance(loaded, dict) else {}
             except (OSError, json.JSONDecodeError):
                 summary = {}
         return {
@@ -369,7 +382,7 @@ def read_events(path: Path | None) -> Iterator[dict[str, Any]]:
                 except json.JSONDecodeError:
                     continue
                 if isinstance(row, dict):
-                    yield row
+                    yield json_safe(row)
     except OSError:
         return
 
@@ -402,18 +415,53 @@ def scan_event_tail(path: Path | None, tail: int) -> tuple[int, list[dict[str, A
             total -= 1
             continue
         if isinstance(row, dict):
-            events.append(row)
+            events.append(json_safe(row))
         else:
             total -= 1
     return total, events
 
 
-def start_run(
-    params: dict[str, Any],
-    *,
-    parent_run_id: str | None = None,
-    resume_context_file: Path | None = None,
-) -> AgentRun:
+def scan_event_tail_multi(files: list[Path], tail: int) -> tuple[int, list[dict[str, Any]]]:
+    """多段轨迹版 scan_event_tail：原地续跑后同一 run 目录含多个 run_*.jsonl 段。
+
+    计数 = 各段行数之和（原始行计数，与单文件口径一致）；
+    尾部窗口从最后一段向前回溯，直到凑满 tail 行。
+    """
+    files = [f for f in files if f.exists()]
+    if not files or tail <= 0:
+        return 0, []
+    total = 0
+    collected: list[str] = []
+    for path in reversed(files):
+        try:
+            with path.open("r", encoding="utf-8", errors="replace") as handle:
+                lines = [line for line in handle if line.strip()]
+        except OSError:
+            continue
+        total += len(lines)
+        need = tail - len(collected)
+        if need > 0:
+            collected = lines[-need:] + collected
+    events: list[dict[str, Any]] = []
+    for line in collected:
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            total -= 1
+            continue
+        if isinstance(row, dict):
+            events.append(json_safe(row))
+        else:
+            total -= 1
+    return total, events
+
+
+def _build_run_command(params: dict[str, Any], log_dir: Path, control_file: Path) -> tuple[list[str], dict[str, Any]]:
+    """从运行参数构建挖掘子进程命令行。start_run 与原地续跑共用。
+
+    返回 (command, 处理后的 params)。原地续跑复用同一目录/控制文件，
+    参数口径（spec/label/聚焦面/基本功加载）与全新启动完全一致。
+    """
     params = dict(params)
     raw_spec = params.get("research_spec")
     raw_spec = dict(raw_spec) if isinstance(raw_spec, dict) else {}
@@ -442,9 +490,6 @@ def start_run(
         int(params.get("max_tool_calls_per_round") or 8),
         int(spec["search_policy"]["max_candidates_per_round"]),
     )
-    run_id = uuid.uuid4().hex[:12]
-    log_dir = LOG_ROOT / run_id
-    log_dir.mkdir(parents=True, exist_ok=True)
     spec_path = log_dir / "research_spec.json"
     spec_path.write_text(json.dumps(spec, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     # 因子库路径按 research_mode 路由到对应类别目录
@@ -463,7 +508,7 @@ def start_run(
         "--max-tool-workers", str(params.get("max_tool_workers") or 8),
         "--max-tokens", str(params.get("max_tokens") or 16384),
         "--log-dir", str(log_dir),
-        "--control-file", str(log_dir / "continuations.jsonl"),
+        "--control-file", str(control_file),
         "--research-memory-file", str(RESEARCH_MEMORY_FILE),
         "--research-spec-file", str(spec_path),
         "--user-message", str(params["user_message"]),
@@ -484,6 +529,19 @@ def start_run(
             wants_fundamentals = True
     if not wants_fundamentals or params.get("no_fundamentals"):
         command.append("--no-fundamentals")
+    return command, params
+
+
+def start_run(
+    params: dict[str, Any],
+    *,
+    parent_run_id: str | None = None,
+    resume_context_file: Path | None = None,
+) -> AgentRun:
+    run_id = uuid.uuid4().hex[:12]
+    log_dir = LOG_ROOT / run_id
+    log_dir.mkdir(parents=True, exist_ok=True)
+    command, params = _build_run_command(params, log_dir, log_dir / "continuations.jsonl")
     if resume_context_file is not None:
         command.extend(["--resume-context-file", str(resume_context_file)])
     env = os.environ.copy()
@@ -637,7 +695,11 @@ def delete_archived_runs() -> dict[str, Any]:
 
 
 def _run_resume_context(run: AgentRun) -> str:
-    events = list(read_events(run._jsonl()))
+    # 多段轨迹：原地续跑过一次后，上下文要跨全部段（时间序）拼接
+    events: list[dict[str, Any]] = []
+    for path in (run._jsonl_all() or [run._jsonl()]):
+        if path is not None and path.exists():
+            events.extend(read_events(path))
     lines = [f"# 历史研究轨迹 · {run.run_id}"]
     for event in events:
         kind = event.get("event")
@@ -717,6 +779,63 @@ def _start_from_history(parent: AgentRun, content: str) -> AgentRun:
     return start_run(params, parent_run_id=parent.run_id, resume_context_file=context_path)
 
 
+def _respawn_in_place(parent: AgentRun, content: str) -> AgentRun:
+    """原地续跑：新进程写进父会话同一目录、复用同一 run_id。
+
+    与 fork（_start_from_history/branch）的区别：侧栏仍是同一条会话，
+    时间线在同一 run 下按段追加（每段一个 run_<时间戳>.jsonl）。
+    - 控制文件是 offset 语义（新进程从 0 读）：续跑前必须清空残留，
+      否则上一段未消费的旧消息会被当首轮指令重放；
+    - resume 上下文取父会话全部段（不只最新一段）；
+    - run_meta.json 不重写，created_at/标题保持原会话身份。
+    """
+    control_file = parent.log_dir / "continuations.jsonl"
+    try:
+        if control_file.exists():
+            control_file.unlink()
+    except OSError:
+        pass
+    context_path = parent.log_dir / "resume_context.md"
+    context_path.write_text(_resume_context(parent), encoding="utf-8")
+    params = {
+        **_CONTINUE_DEFAULT_PARAMS,
+        **parent.params,
+        "user_message": content,
+    }
+    command, params = _build_run_command(params, parent.log_dir, control_file)
+    command.extend(["--resume-context-file", str(context_path)])
+    env = os.environ.copy()
+    env.setdefault("ALPHA_LLM_PROVIDER", "codex")
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+    run = AgentRun(
+        run_id=parent.run_id,
+        command=command,
+        log_dir=parent.log_dir,
+        params=dict(parent.params),
+        created_at=parent.created_at,
+        parent_run_id=parent.parent_run_id,
+        title=parent.title,
+        archived=parent.archived,
+        pinned=parent.pinned,
+    )
+    process = subprocess.Popen(
+        command,
+        cwd=ROOT,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
+    )
+    run.process = process
+    threading.Thread(target=_drain_output, args=(run, process.stdout), daemon=True).start()
+    with _LOCK:
+        _RUNS[run.run_id] = run
+    return run
+
+
 def branch_run(run_id: str, content: str) -> AgentRun | None:
     parent = get_run(run_id)
     if parent is None:
@@ -733,7 +852,8 @@ def continue_run(run_id: str, content: str) -> AgentRun | None:
         return parent if queue_message(run_id, content) else None
     if parent.status not in {"completed", "failed", "interrupted"}:
         return None
-    return _start_from_history(parent, content)
+    # 原地续跑：同 run_id/同目录，前端仍是同一条会话；分支（branch）才 fork 新会话
+    return _respawn_in_place(parent, content)
 
 
 async def event_stream(run_id: str):
@@ -743,10 +863,15 @@ async def event_stream(run_id: str):
         return
     offset = 0
     idle_after_exit = 0
+    stream_path: Path | None = None
     yield {"event": "stream_start", "run_id": run_id, "status": run.status}
     while True:
         run.refresh()
         path = run._jsonl()
+        # 原地续跑后写入新的段文件：切换到新段、从零重放（旧段已在时间线里）
+        if path != stream_path:
+            stream_path = path
+            offset = 0
         emitted = False
         if path and path.exists():
             with path.open("r", encoding="utf-8") as handle:
@@ -755,13 +880,16 @@ async def event_stream(run_id: str):
                 offset = handle.tell()
                 for line in lines:
                     try:
-                        row = json.loads(line)
+                        # json.loads 容忍 NaN；SSE 输出前必须清洗，
+                        # 否则 json.dumps 会把 NaN 原样写进事件流，前端 JSON.parse 失败。
+                        row = json_safe(json.loads(line))
                     except json.JSONDecodeError:
                         continue
                     if isinstance(row, dict):
                         emitted = True
                         yield row
-        if run.status in {"completed", "failed"}:
+        # interrupted/stopped 也是流终点：对死会话无限心跳只会把前端状态钉死
+        if run.status in {"completed", "failed", "interrupted", "stopped"}:
             idle_after_exit += 1
             if not emitted and idle_after_exit >= 3:
                 yield {"event": "stream_end", "status": run.status}
@@ -823,12 +951,15 @@ def evaluate_single_factor(
     val_start: str = DEFAULT_VAL_START,
     val_end: str = DEFAULT_VAL_END,
     label_col: str = "label_1d_open_to_open",
-    include_fundamentals: bool = False,
+    include_fundamentals: bool = True,
 ) -> dict[str, Any]:
     """独立评估一个因子表达式。
 
     单次请求使用一次性会话：panel 用后即释放（不缓存），避免多份全量
     panel 常驻内存。批量挖掘走子进程内复用会话，不受影响。
+
+    include_fundamentals 参数已废弃（保留兼容）：数据源插件化后基本面
+    与其他辅助插件地位一致，panel 永远全插件加载。
     """
     from alphaagent.factor.mining.schemas import (
         EvalProfileRequest,
@@ -855,7 +986,6 @@ def evaluate_single_factor(
             profile_id=profile_id,
             multi_line_expr=multi_line_expr,
             factor_name=factor_name,
-            ic_prefilter=False,
         )
         return service.eval_profile(eval_req)
     finally:
@@ -872,11 +1002,12 @@ def evaluate_multi_profile(
     val_start: str = DEFAULT_VAL_START,
     val_end: str = DEFAULT_VAL_END,
     label_col: str = "label_1d_open_to_open",
-    include_fundamentals: bool = False,
+    include_fundamentals: bool = True,
 ) -> dict[str, Any]:
     """一次评估多个 profile（train_screen + validation + size_neutral_validation）。
 
     单次请求使用一次性会话：panel 用后即释放（不缓存）。
+    include_fundamentals 参数已废弃（保留兼容），见 evaluate_single_factor。
     """
     from alphaagent.factor.mining.schemas import (
         EvalProfileRequest,
@@ -905,7 +1036,6 @@ def evaluate_multi_profile(
                 profile_id=profile_id,
                 multi_line_expr=multi_line_expr,
                 factor_name=factor_name,
-                ic_prefilter=False,
             )
             results[profile_id] = service.eval_profile(eval_req)
     finally:
@@ -992,6 +1122,19 @@ def _candidate_factor_view(factor_id: str, entry: dict[str, Any], *, category: s
     ingest_cfg = entry.get("ingest_config") or {}
     label_col = str(ingest_cfg.get("label_col") or "")
 
+    # ── 数据面分类（facets/is_fusion/family）：老条目缺 facets 时按表达式现算兜底 ──
+    from alphaagent.factor.mining.memory.expressions import classify_family_ex, expr_facets
+
+    facets = entry.get("facets") if isinstance(entry.get("facets"), list) else None
+    expr_text = _candidate_expr(entry, factor_id, category=category)
+    if not facets:
+        facets = sorted(expr_facets(str(entry.get("name") or "") + " " + expr_text))
+    is_fusion = entry.get("is_fusion") if isinstance(entry.get("is_fusion"), bool) else len(facets) >= 2
+    family = str(entry.get("family") or "") or classify_family_ex(
+        str(entry.get("name") or ""), expr_text
+    )
+    eval_label = str(entry.get("eval_label") or "") or None
+
     # ── comment 预览 ──
     comment_full = str(entry.get("comment") or "")
     comment_preview = comment_full[:150] + ("…" if len(comment_full) > 150 else "")
@@ -1008,6 +1151,11 @@ def _candidate_factor_view(factor_id: str, entry: dict[str, Any], *, category: s
         "status": str(entry.get("review_status") or "pending_review"),
         "promotion_status": str(entry.get("promotion_status") or "pending"),
         "review_verdict": str(review.get("verdict") or ""),
+        "facets": facets,
+        "facets_label": "×".join(facets) if facets else "—",
+        "is_fusion": is_fusion,
+        "family": family,
+        "eval_label": eval_label,
         "finite_count": finite_count or 0,
         "created_at": str(entry.get("ingested_at") or ""),
         "comment_preview": comment_preview,
@@ -1119,6 +1267,24 @@ def list_factors(*, library: str = "production", category: str = "technical", fa
         qp = metrics.get("quantile_portfolio")
         if isinstance(qp, dict):
             merged["avg_daily_side_turnover"] = qp.get("avg_daily_side_turnover")
+        # 数据面分类：delivered registry 带 facets；缺字段时按表达式现算兜底
+        facets = entry.get("facets") if isinstance(entry.get("facets"), list) else None
+        if not facets:
+            from alphaagent.factor.mining.memory.expressions import classify_family_ex, expr_facets
+
+            expr_for_facets = expr_text or ""
+            facets = sorted(expr_facets(str(entry.get("name") or "") + " " + expr_for_facets))
+        merged["facets"] = facets
+        merged["facets_label"] = "×".join(facets) if facets else "—"
+        merged["is_fusion"] = (
+            entry.get("is_fusion") if isinstance(entry.get("is_fusion"), bool) else len(facets) >= 2
+        )
+        merged["family"] = str(entry.get("family") or "") or (
+            classify_family_ex(str(entry.get("name") or ""), expr_text or "")
+            if expr_text
+            else None
+        )
+        merged["eval_label"] = str(entry.get("eval_label") or "") or None
         return merged
 
     factors = [_merge_production_entry(item) for item in factors]
@@ -1337,12 +1503,13 @@ def save_factor(
     val_start: str = DEFAULT_VAL_START,
     val_end: str = DEFAULT_VAL_END,
     label_col: str = "label_1d_open_to_open",
-    include_fundamentals: bool = False,
+    include_fundamentals: bool = True,
 ) -> dict[str, Any]:
     """将因子表达式保存到因子库（候选池或正式库）。
 
     复用挖掘流程的 ingest_factor + upsert_mining_registry 链路。
     category 按 research_mode 路由到对应类别的目录。
+    include_fundamentals 参数已废弃（保留兼容），见 evaluate_single_factor。
     """
     from alphaagent.factor.mining.submit import slug_factor_id
     from alphaagent.factor.ingest import ingest_factor, prepare_stored_values
@@ -1419,7 +1586,6 @@ def save_factor(
             profile_id="validation",
             multi_line_expr=multi_line_expr.strip(),
             factor_name=factor_id,
-            ic_prefilter=False,
         )
         profile_result = service.eval_profile(profile_req)
         qp = profile_result.get("metrics", {}).get("quantile_portfolio")

@@ -165,10 +165,23 @@ def mls_fmb_summary(
     min_stocks: int = 30,
     annualization_factor: float = 252.0,
     nw_lags: int | None = None,
+    holding_days: int = 1,
     _day_slices=None,
     _fast_equal_freq_codes=None,
 ) -> dict[str, Any]:
-    """MLS-FMB：逐日截面计算十分组单调性 ρ_t 与 Q10−Q1 多空 LS_t，再按 Fama–MacBeth 时序聚合并用 Newey–West t 检验显著性，综合得分 MLS = mean(ρ) × 年化 IR_LS。"""
+    """MLS-FMB：逐日截面计算十分组单调性 ρ_t 与 Q10−Q1 多空 LS_t，再按 Fama–MacBeth 时序聚合并用 Newey–West t 检验显著性，综合得分 MLS = mean(ρ) × 年化 IR_LS。
+
+    ``holding_days`` 对齐 label 名义持有期（label_20d → 20）：label>1 时
+    逐日 LS_t 来自重叠收益，均值无偏但 std 被低估导致 IR 虚高。按持有期
+    节奏重采样去重叠，并把年化因子缩小为 ``annualization_factor / hold``，
+    NW 滞后至少覆盖持有期以吸收残余自相关。label_1d 时 hold=1 完全退化
+    为原行为。
+    """
+    hold = max(1, int(holding_days))
+    eff_annual = annualization_factor / hold
+    # NW 滞后至少覆盖持有期，消解重叠收益自相关（否则 std 被低估、t 虚高）
+    if nw_lags is None:
+        nw_lags = max(1, int(hold))
     eff_deciles, eff_min_stocks = _resolve_mls_params(
         factor,
         n_deciles=n_deciles,
@@ -203,6 +216,11 @@ def mls_fmb_summary(
         _fast_equal_freq_codes=_fast_equal_freq_codes,
     )
 
+    # 持有期 >1 时按节奏重采样，去掉重叠收益的自相关
+    if hold > 1:
+        rho_series = rho_series.iloc[::hold]
+        ls_series = ls_series.iloc[::hold]
+
     rho_nw = newey_west_mean_tstat(rho_series, lags=nw_lags)
     ls_nw = newey_west_mean_tstat(ls_series, lags=nw_lags)
 
@@ -221,7 +239,7 @@ def mls_fmb_summary(
 
     ir_ls = mean_ls / ls_std if ls_std and np.isfinite(ls_std) and ls_std > 0 else float("nan")
     ir_ls_annual = (
-        float(ir_ls * math.sqrt(annualization_factor))
+        float(ir_ls * math.sqrt(eff_annual))
         if np.isfinite(ir_ls)
         else float("nan")
     )
@@ -248,9 +266,11 @@ def mls_fmb_summary(
         "n_deciles_requested": int(n_deciles),
         "min_stocks": int(eff_min_stocks),
         "min_stocks_requested": int(min_stocks),
-        "annualization_factor": float(annualization_factor),
+        "annualization_factor": float(eff_annual),
+        "holding_days": int(hold),
         "note": (
             "MLS+FMB 非参数版：ρ_t=逐日十分组 Spearman 单调性，LS_t=Q10-Q1 多空；"
-            "IR_LS 为日频 LS 均值/标准差，ir_ls_annual=IR_LS×√252；MLS=mean(ρ)×ir_ls_annual。"
+            f"IR_LS 为日频 LS 均值/标准差，ir_ls_annual=IR_LS×√{eff_annual:g}；"
+            "MLS=mean(ρ)×ir_ls_annual。"
         ),
     }

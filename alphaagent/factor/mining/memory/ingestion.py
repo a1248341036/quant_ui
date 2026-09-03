@@ -49,6 +49,13 @@ class IngestionMixin:
         metrics = self._flatten_backtest_metrics(metrics, profile_metrics)
         error = str(result.get("error") or result.get("skipped_reason") or "")
         verdict, conclusion = self._classify(name, result, metrics, error)
+        # A) 预测-对账：被证伪的预测追加进 conclusion（FTS 可检索），
+        #    对账摘要随 observation.metrics 持久化。
+        prediction_check = result.get("prediction_check") if isinstance(result.get("prediction_check"), dict) else None
+        if prediction_check and str(prediction_check.get("verdict")) == "contradicted":
+            reconcile_msg = str(prediction_check.get("message") or "")[:180]
+            if reconcile_msg:
+                conclusion = f"{conclusion}；预测对账:{reconcile_msg}"
         canonical_expression = "\n".join(line.strip() for line in expression.splitlines() if line.strip())
         signature = self.entry_signature(canonical_expression)
         failure_code = _failure_code(name, result, error, verdict)
@@ -89,13 +96,24 @@ class IngestionMixin:
                 _set_edit_note(conn, signature, edit_note)
 
         previous_attempts = int(previous_row["attempts"]) if previous_row else 0
+        metrics_compact = self._compact_metrics(metrics)
+        if prediction_check:
+            # 对账摘要入 observations（verdict + 预期/实际核心字段），全量 check 在评估结果里
+            metrics_compact = {
+                **metrics_compact,
+                "prediction_check": {
+                    "verdict": prediction_check.get("verdict"),
+                    "expected": prediction_check.get("expected") or {},
+                    "actual": prediction_check.get("actual") or {},
+                },
+            }
         observation = {
             "run_id": run_id,
             "at": _now(),
             "stage": result.get("split") or name.removeprefix("eval_on_").removesuffix("_set"),
             "verdict": verdict,
             "failure_code": failure_code,
-            "metrics": self._compact_metrics(metrics),
+            "metrics": metrics_compact,
             "interaction": _parse_args(args.get("interaction")),
         }
         entry = {
@@ -109,7 +127,7 @@ class IngestionMixin:
             "profile_id": result.get("profile", {}).get("profile_id") if isinstance(result.get("profile"), dict) else None,
             "profile_hash": result.get("profile_hash"),
             "candidate_id": result.get("candidate", {}).get("candidate_id") if isinstance(result.get("candidate"), dict) else None,
-            "metrics": self._compact_metrics(metrics),
+            "metrics": metrics_compact,
             "error": error[:500],
             "failure_code": failure_code,
             "fail_detail": _extract_fail_detail(name, result, error),

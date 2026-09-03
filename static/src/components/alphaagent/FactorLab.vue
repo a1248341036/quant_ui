@@ -9,9 +9,6 @@
           <label>训练 <input v-model="lab.trainStart" type="date"> → <input v-model="lab.trainEnd" type="date"></label>
           <label>验证 <input v-model="lab.valStart" type="date"> → <input v-model="lab.valEnd" type="date"></label>
         </div>
-        <label class="lab-funda">
-          <input type="checkbox" v-model="lab.includeFundamentals"> 包含基本面列
-        </label>
       </div>
       <button class="lab-run-btn" :disabled="lab.busy || !lab.expr.trim()" @click="runEval">
         {{ lab.busy ? '评估中…' : '评估因子' }}
@@ -161,7 +158,6 @@ export default {
         trainEnd: '2022-12-31',
         valStart: '2023-01-01',
         valEnd: '2024-12-31',
-        includeFundamentals: false,
         busy: false,
         error: '',
         results: null,
@@ -235,7 +231,6 @@ export default {
             train_end: this.lab.trainEnd,
             val_start: this.lab.valStart,
             val_end: this.lab.valEnd,
-            include_fundamentals: this.lab.includeFundamentals,
             all_profiles: true,
           }),
           signal: ctrl.signal,
@@ -251,7 +246,6 @@ export default {
           train_end: this.lab.trainEnd,
           val_start: this.lab.valStart,
           val_end: this.lab.valEnd,
-          include_fundamentals: this.lab.includeFundamentals,
           results: data.results,
         }, null, 2)
         // 写入评估历史（顶层"历史"tab 可见，可一键恢复到本界面）
@@ -279,7 +273,6 @@ export default {
           trainEnd: this.lab.trainEnd,
           valStart: this.lab.valStart,
           valEnd: this.lab.valEnd,
-          includeFundamentals: this.lab.includeFundamentals,
           createdAt: new Date().toISOString(),
           summary,
           results,
@@ -298,7 +291,6 @@ export default {
       this.lab.trainEnd = h.trainEnd || this.lab.trainEnd
       this.lab.valStart = h.valStart || this.lab.valStart
       this.lab.valEnd = h.valEnd || this.lab.valEnd
-      this.lab.includeFundamentals = !!h.includeFundamentals
       this.lab.results = h.results || null
       this.lab.error = ''
       this.lab.resultsJSON = h.results ? JSON.stringify({
@@ -309,7 +301,6 @@ export default {
         train_end: h.trainEnd,
         val_start: h.valStart,
         val_end: h.valEnd,
-        include_fundamentals: h.includeFundamentals,
         results: h.results,
       }, null, 2) : ''
       this.$nextTick(() => this.renderLabCharts())
@@ -340,7 +331,6 @@ export default {
             train_end: this.lab.trainEnd,
             val_start: this.lab.valStart,
             val_end: this.lab.valEnd,
-            include_fundamentals: this.lab.includeFundamentals,
           }),
         })
         if (!data.ok) {
@@ -420,7 +410,6 @@ export default {
             panel_path: this.lab.labelCol || 'label_1d_open_to_open',
             train_period: `${this.lab.trainStart} → ${this.lab.trainEnd}`,
             val_period: `${this.lab.valStart} → ${this.lab.valEnd}`,
-            include_fundamentals: this.lab.includeFundamentals,
             evaluation_results: this.lab.results,
             metrics: primaryResult.metrics,
             quantile_portfolio: primaryResult.metrics?.quantile_portfolio,

@@ -21,6 +21,9 @@ class EvaluationContext:
     factor_name: str
     cache: dict[str, Any] = field(default_factory=dict)
     transforms_applied: list[str] = field(default_factory=list)
+    # label 名义持有期（label_20d → 20）：组合回测需按此节奏采样复利，
+    # 否则 N 日收益被逐日重叠计入 N 次，年化/回撤/夏普全部失真。
+    label_holding_days: int = 1
 
     def daily_ic(self) -> pd.Series:
         if "daily_ic" not in self.cache:

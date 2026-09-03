@@ -82,6 +82,8 @@ export default {
       btOpen: false,
       btTarget: { expr: '', factorName: 'expr' },
       btDefaults: null,
+      pollTimer: null,
+      pollBusy: false,
     }
   },
   mounted() {
@@ -95,11 +97,52 @@ export default {
       agentStore.running = true
       agentStore.connectAgentEvents(agentStore.current.run_id)
     }
+    this.startPolling()
+    document.addEventListener('visibilitychange', this.onVisibilityChange)
   },
   beforeUnmount() {
+    this.stopPolling()
+    document.removeEventListener('visibilitychange', this.onVisibilityChange)
     agentStore.dispose()
   },
   methods: {
+    // ── 页面内动态刷新：侧栏状态点 + 当前子标签数据，免 F5 ──
+    startPolling() {
+      this.stopPolling()
+      this.pollTimer = setInterval(() => { this.pollOnce() }, 10000)
+    },
+    stopPolling() {
+      if (this.pollTimer) {
+        clearInterval(this.pollTimer)
+        this.pollTimer = null
+      }
+    },
+    onVisibilityChange() {
+      if (document.visibilityState === 'visible') this.pollOnce()
+    },
+    async pollOnce() {
+      if (this.pollBusy || document.visibilityState !== 'visible') return
+      this.pollBusy = true
+      try {
+        const s = agentStore
+        const jobs = [s.loadAgentRuns()]
+        // 当前子标签的数据跟着刷（研究 tab 的时间线由 SSE 实时推送，不靠轮询）
+        if (this.subtab === 'summary') jobs.push(s.loadSummaryPage())
+        else if (this.subtab === 'memory') jobs.push(s.refreshResearchMemory())
+        await Promise.all(jobs)
+        // 当前会话的状态与最新列表对齐（SSE 断开时状态点也能跟上）
+        if (s.current && s.current.status !== 'stopping') {
+          const fresh = (s.runs || []).find(r => r.run_id === s.current.run_id)
+          if (fresh && fresh.status && fresh.status !== s.current.status) {
+            s.current.status = fresh.status
+          }
+        }
+      } catch (e) {
+        // 轮询失败静默，不打扰用户
+      } finally {
+        this.pollBusy = false
+      }
+    },
     // 因子实验室"回测"按钮：默认窗口跟随实验室的验证区间
     openLabBacktest(payload) {
       this.btTarget = { expr: payload.expr, factorName: payload.factorName }

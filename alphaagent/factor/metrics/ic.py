@@ -158,8 +158,20 @@ def cross_sectional_lag1_pearson_autocorr(
 def cs_ic_summary(
     daily_ic: pd.Series,
     daily_rank_ic: pd.Series | None = None,
+    *,
+    holding_days: int = 1,
 ) -> dict[str, float | int]:
-    """由逐日截面 IC / RANKIC 汇总 IC、ICIR、RANKIC。"""
+    """由 IC / RANKIC 汇总 IC、ICIR、RANKIC。
+
+    持有期 >1（如 label_20d → 20）时逐日 IC 来自重叠收益，std 被低估导致
+    ICIR 虚高。此处按持有期节奏重采样去重叠（每 hold 个交易日取一点），与
+    quantile_portfolio 的采样口径一致；label_1d 时 hold=1 无任何变化。
+    """
+    hold = max(1, int(holding_days))
+    if hold > 1 and len(daily_ic) > hold:
+        daily_ic = daily_ic.iloc[::hold]
+        if daily_rank_ic is not None:
+            daily_rank_ic = daily_rank_ic.iloc[::hold]
     ic_vals = daily_ic[np.isfinite(daily_ic.to_numpy(dtype=float, copy=False))]
     n_days = int(len(ic_vals))
     if n_days == 0:
@@ -188,13 +200,14 @@ def evaluate_cs_on_panel(
     *,
     label_col: str = DEFAULT_LABEL_COL,
     min_pairs: int = 5,
+    holding_days: int = 1,
     _day_slices=None,
     _fast_equal_freq_codes=None,
 ) -> dict[str, Any]:
     """在 panel 上计算截面 IC / ICIR / RANKIC 与 coverage。"""
     panel = panel.sort_index()
     if label_col not in panel.columns:
-        raise KeyError(f"panel 缺少标签列: {label_col}")
+        raise ValueError(f"panel 缺少标签列: {label_col}")
     if len(values) != len(panel):
         raise ValueError(f"values 长度 {len(values)} != panel 行数 {len(panel)}")
 
@@ -202,7 +215,7 @@ def evaluate_cs_on_panel(
     label_series = panel[label_col]
     daily_ic = cross_sectional_ic(factor_series, label_series, min_pairs=min_pairs, _day_slices=_day_slices)
     daily_rank_ic = cross_sectional_rank_ic(factor_series, label_series, min_pairs=min_pairs, _day_slices=_day_slices)
-    cs = cs_ic_summary(daily_ic, daily_rank_ic)
+    cs = cs_ic_summary(daily_ic, daily_rank_ic, holding_days=holding_days)
     cs_autocorr_min_pairs = min(30, max(int(panel.index.get_level_values("instrument").nunique()) - 1, min_pairs))
     mls_min_stocks = min(30, max(min_pairs * 6, 10))
     fac = factor_series.to_numpy(dtype=float, copy=False)
@@ -238,6 +251,7 @@ def evaluate_on_panel(
     *,
     label_col: str = DEFAULT_LABEL_COL,
     min_ic_pairs: int = 5,
+    holding_days: int = 1,
     _day_slices=None,
     _fast_equal_freq_codes=None,
 ) -> dict[str, Any]:
@@ -247,6 +261,7 @@ def evaluate_on_panel(
         panel,
         label_col=label_col,
         min_pairs=min_ic_pairs,
+        holding_days=holding_days,
         _day_slices=_day_slices,
         _fast_equal_freq_codes=_fast_equal_freq_codes,
     )
@@ -344,22 +359,35 @@ def annualized_long_group_excess_return(
     n_deciles: int = 10,
     min_stocks: int = 30,
     annualization_factor: float = 252.0,
+    holding_days: int = 1,
 ) -> float:
-    """方向自适应的多头组相对当日全市场等权收益的复利年化超额。"""
+    """方向自适应的多头组相对当日全市场等权收益的复利年化超额。
+
+    ``holding_days`` 对齐 label 名义持有期（label_20d → 20）：label>1 时
+    相邻日超额重叠，按持有期节奏重采样复利，且年化因子同步缩小为
+    ``annualization_factor / hold``（与 quantile_portfolio 口径一致），
+    避免 20 日收益被逐日重叠计入并虚高年化 ~3.6 倍。label_1d 时 hold=1
+    完全退化为原行为。
+    """
+    hold = max(1, int(holding_days))
+    eff_annual = annualization_factor / hold
     excesses: list[float] = []
-    for _, f_sub in factor.groupby(level="datetime", sort=False):
+    for i, (_, f_sub) in enumerate(factor.groupby(level="datetime", sort=False)):
+        # 持有期 >1 时按节奏采样，去掉重叠收益
+        if hold > 1 and i % hold != 0:
+            continue
         y_sub = label.xs(f_sub.index.get_level_values("datetime")[0], level="datetime")
         xf = f_sub.to_numpy(dtype=np.float64, copy=False)
         yl = y_sub.to_numpy(dtype=np.float64, copy=False)
         mask = np.isfinite(xf) & np.isfinite(yl)
         if int(mask.sum()) < max(min_stocks, n_deciles):
             continue
-        fac = pd.Series(xf[mask])
+        xf = xf[mask]
         returns = yl[mask]
         try:
-            bins = pd.qcut(fac, n_deciles, labels=False, duplicates="drop")
+            bins = pd.qcut(pd.Series(xf), n_deciles, labels=False, duplicates="drop")
         except ValueError:
-            bins = pd.qcut(fac.rank(method="first"), n_deciles, labels=False, duplicates="drop")
+            bins = pd.qcut(pd.Series(xf).rank(method="first"), n_deciles, labels=False, duplicates="drop")
         valid_bins = np.asarray(bins, dtype=float)
         if not np.isfinite(valid_bins).any():
             continue
@@ -373,7 +401,7 @@ def annualized_long_group_excess_return(
     arr = np.asarray(excesses, dtype=np.float64)
     if np.any(arr <= -1.0):
         return float("nan")
-    return float(np.prod(1.0 + arr) ** (annualization_factor / len(arr)) - 1.0)
+    return float(np.prod(1.0 + arr) ** (eff_annual / len(arr)) - 1.0)
 
 
 def monthly_detail_rows(

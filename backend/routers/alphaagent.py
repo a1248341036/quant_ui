@@ -368,6 +368,38 @@ def stop(run_id: str) -> dict[str, Any]:
     return {"ok": service.stop_run(run_id)}
 
 
+@router.get("/blind-test")
+def blind_test_reports(limit: int = 6) -> dict[str, Any]:
+    """盲测报告列表（人看：单因子的真实 OOS）。
+
+    盲测段（2025+）对挖掘循环锁死，结果刻意不回流记忆库（防多重检验污染）；
+    这里只做人类查看入口，读 artifacts/alphaagent/blind_test/<ts>/report.json。
+    """
+    import json as _json
+    from pathlib import Path
+
+    # routers 多了一层目录，parents[2] 才是仓库根（backend/routers/ → backend/ → 仓库根）
+    root = Path(__file__).resolve().parents[2] / "artifacts" / "alphaagent" / "blind_test"
+    reports: list[dict[str, Any]] = []
+    if root.is_dir():
+        dirs = sorted((d for d in root.iterdir() if d.is_dir()), reverse=True)[: max(1, limit)]
+        for d in dirs:
+            report_path = d / "report.json"
+            item: dict[str, Any] = {"run_ts": d.name, "report_path": str(report_path)}
+            if report_path.is_file():
+                try:
+                    report = _json.loads(report_path.read_text(encoding="utf-8"))
+                    item["report"] = report
+                    item["status"] = "completed"
+                except (OSError, ValueError) as exc:
+                    item["status"] = "unreadable"
+                    item["error"] = str(exc)
+            else:
+                item["status"] = "missing"
+            reports.append(item)
+    return {"reports": reports}
+
+
 @router.post("/runs/{run_id}/messages")
 def continue_run(run_id: str, req: ContinueRequest) -> dict[str, Any]:
     run = service.get_run(run_id)
@@ -476,7 +508,6 @@ class EvalFactorRequest(BaseModel):
     val_start: str = DEFAULT_VAL_START
     val_end: str = DEFAULT_VAL_END
     label_col: str = "label_1d_open_to_open"
-    include_fundamentals: bool = False
     all_profiles: bool = True
 
 
@@ -493,7 +524,6 @@ def eval_factor(req: EvalFactorRequest) -> dict[str, Any]:
                 val_start=req.val_start,
                 val_end=req.val_end,
                 label_col=req.label_col,
-                include_fundamentals=req.include_fundamentals,
             )
         else:
             result = {
@@ -506,7 +536,6 @@ def eval_factor(req: EvalFactorRequest) -> dict[str, Any]:
                     val_start=req.val_start,
                     val_end=req.val_end,
                     label_col=req.label_col,
-                    include_fundamentals=req.include_fundamentals,
                 )
             }
     except Exception as exc:
@@ -641,7 +670,6 @@ class SaveFactorRequest(BaseModel):
     val_start: str = DEFAULT_VAL_START
     val_end: str = DEFAULT_VAL_END
     label_col: str = "label_1d_open_to_open"
-    include_fundamentals: bool = False
 
 
 @router.post("/factors")
@@ -659,7 +687,6 @@ def save_factor(req: SaveFactorRequest) -> dict[str, Any]:
             val_start=req.val_start,
             val_end=req.val_end,
             label_col=req.label_col,
-            include_fundamentals=req.include_fundamentals,
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

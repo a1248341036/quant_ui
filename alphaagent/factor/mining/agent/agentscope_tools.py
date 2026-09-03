@@ -17,6 +17,7 @@ from agentscope.message import TextBlock
 from agentscope.tool import FunctionTool, Toolkit, ToolChunk
 
 from alphaagent.factor.mining.tools import FactorEvalTools
+from alphaagent.factor.mining.infra.jsonutil import json_safe
 from alphaagent.factor.mining.interactions import lint_expression_interaction
 from alphaagent.factor.mining.population import screen_population
 
@@ -303,8 +304,29 @@ def _orthogonality_check(tools: FactorEvalTools, multi_line_expr: str) -> dict[s
         from alphaagent.factor.metrics import spearman_ic
         from alphaagent.factor.zoo import FactorZoo
 
-        roots = [FACTORZOO_DIR, factor_categories.candidate_dir("technical")]
-        zoos = [FactorZoo.open(root) for root in roots]
+        # 统一大库（2026-09-03）：production_main 两模式共享；FACTORZOO_DIR 指向
+        # 已改名的 production_technical（迁移遗留），仅作兜底保留。
+        # 未初始化的库 = 没有可比较对象，跳过该库；不能让单个库缺失把整个
+        # 正交检查 fail-closed（曾把大库合并后的所有提交全部拒掉）。
+        roots: list = []
+        for root in (
+            factor_categories.production_dir("technical"),
+            factor_categories.production_dir("fundamental"),
+            factor_categories.candidate_dir("technical"),
+            factor_categories.candidate_dir("fundamental"),
+            FACTORZOO_DIR,
+        ):
+            if root not in roots:
+                roots.append(root)
+        zoos = []
+        for root in roots:
+            try:
+                zoo = FactorZoo.open(root)
+            except FileNotFoundError:
+                continue
+            except OSError:
+                continue
+            zoos.append(zoo)
         registry_path = factor_categories.candidate_registry_path("technical")
         registry = json.loads(registry_path.read_text(encoding="utf-8")) if registry_path.is_file() else {}
         if sum(zoo.n_factors for zoo in zoos) == 0 and not registry:
@@ -453,7 +475,7 @@ async def _dispatch_with_timeout(
 
 def _result_tool_chunk(result: dict[str, Any]) -> ToolChunk:
     """Return machine-readable output; the UI observer parses this payload."""
-    return ToolChunk(content=[TextBlock(text=json.dumps(result, ensure_ascii=False, default=str))])
+    return ToolChunk(content=[TextBlock(text=json.dumps(json_safe(result), ensure_ascii=False, default=str))])
 
 
 def _expr_key(expr: str) -> str:
@@ -519,6 +541,7 @@ def build_factor_eval_toolkit(
         include_detail_tables: bool = False,
         label_quantile_n: int = 10,
         interaction: dict[str, Any] | str | None = None,
+        prediction: dict[str, Any] | None = None,
         parent_factor: str | None = None,
         edit_note: str | None = None,
     ) -> ToolChunk:
@@ -534,6 +557,8 @@ def build_factor_eval_toolkit(
             "label_quantile_n": label_quantile_n,
             "interaction": contract,
         }
+        if prediction is not None:
+            args["prediction"] = prediction
         if parent_factor:
             args["parent_factor"] = parent_factor
         if edit_note:
@@ -564,6 +589,7 @@ def build_factor_eval_toolkit(
         profile_id: str,
         factor_name: str = "expr",
         interaction: dict[str, Any] | str | None = None,
+        prediction: dict[str, Any] | None = None,
         parent_factor: str | None = None,
         edit_note: str | None = None,
     ) -> ToolChunk:
@@ -599,6 +625,8 @@ def build_factor_eval_toolkit(
             "factor_name": factor_name,
             "interaction": contract,
         }
+        if prediction is not None:
+            args["prediction"] = prediction
         if parent_factor:
             args["parent_factor"] = parent_factor
         if edit_note:
@@ -735,6 +763,7 @@ def build_factor_eval_toolkit(
         label_quantile_n: int = 10,
         expected_sign: int | None = None,
         interaction: dict[str, Any] | str | None = None,
+        prediction: dict[str, Any] | None = None,
         profile_id: str | None = None,
         parent_factor: str | None = None,
         edit_note: str | None = None,
@@ -762,6 +791,8 @@ def build_factor_eval_toolkit(
         }
         if expected_sign is not None:
             args["expected_sign"] = expected_sign
+        if prediction is not None:
+            args["prediction"] = prediction
         if parent_factor:
             args["parent_factor"] = parent_factor
         if edit_note:

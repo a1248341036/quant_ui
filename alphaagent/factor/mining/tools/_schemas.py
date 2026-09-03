@@ -22,8 +22,49 @@ _INTERACTION_PARAMETER: dict[str, Any] = {
         },
         "expected_subgroup_pattern": {},
         "ablation_required": {"type": "boolean", "default": True},
+        "base_expr": {
+            "type": "string",
+            "description": "主信号的 DSL 子表达式（不含门控）。门控/条件类交互必传：系统会对 base-only 自动消融并在结果中对比门控增量。",
+        },
+        "condition_expr": {
+            "type": "string",
+            "description": "状态/条件信号的 DSL 子表达式（仅条件腿），可选；用于 condition-only 消融。",
+        },
     },
     "required": ["interaction_type", "base_signal", "condition_signal", "economic_mechanism"],
+}
+
+
+_PREDICTION_PARAMETER: dict[str, Any] = {
+    "type": "object",
+    "description": (
+        "评估前的可证伪预测（必填）：预期十分位形态、哪一端最强、IC 符号。"
+        "评估结果会自动对账注入 prediction_check；预期被证伪 = 机制错误，"
+        "不是参数问题——被证伪的方向应放弃而不是调参重试。"
+    ),
+    "properties": {
+        "expected_shape": {
+            "type": "string",
+            "enum": ["monotonic_increasing", "monotonic_decreasing", "inverted_u", "u_shape", "spike_at_extreme", "irregular"],
+            "description": "预期十分位 mean_label 形态。",
+        },
+        "expected_strong_side": {
+            "type": "string",
+            "enum": ["high_factor", "low_factor", "middle"],
+            "description": "预期 alpha 集中端：高因子端(D8-D10)/低因子端(D1-D3)/中间组(D4-D7)。",
+        },
+        "expected_sign": {
+            "type": "integer",
+            "enum": [1, -1],
+            "description": "预期 IC 符号。",
+        },
+        "falsifier": {
+            "type": "string",
+            "description": "什么结果证明机制错误（如：若 alpha 集中在低因子端，则'压力位弹性'假设不成立）。",
+        },
+    },
+    "required": ["expected_shape", "expected_strong_side", "expected_sign"],
+    "additionalProperties": False,
 }
 
 
@@ -46,6 +87,7 @@ _EVAL_PARAMETERS: dict[str, Any] = {
             "default": 10,
         },
         "interaction": _INTERACTION_PARAMETER,
+        "prediction": _PREDICTION_PARAMETER,
         "parent_factor": {
             "type": "string",
             "description": "变异父本的因子逻辑名（A/B/C 变异轨必传；D 新族留空）。研究记忆按此建立父子观测。",
@@ -55,7 +97,7 @@ _EVAL_PARAMETERS: dict[str, Any] = {
             "description": "意向编辑说明，格式：edit=<motif> <参数变化>，如 edit=window_rescale 10→20；motif 取 window_rescale / operator_substitute / normalization_change。",
         },
     },
-    "required": ["multi_line_expr"],
+    "required": ["multi_line_expr", "prediction"],
     "additionalProperties": False,
 }
 
@@ -85,10 +127,11 @@ _PROFILE_EVAL_PARAMETERS: dict[str, Any] = {
             "description": "冻结的 EvaluationProfile ID；决定 split、transform、metrics 与 rule gate。",
         },
         "interaction": _INTERACTION_PARAMETER,
+        "prediction": _PREDICTION_PARAMETER,
         "parent_factor": _EVAL_PARAMETERS["properties"]["parent_factor"],
         "edit_note": _EVAL_PARAMETERS["properties"]["edit_note"],
     },
-    "required": ["multi_line_expr", "profile_id"],
+    "required": ["multi_line_expr", "profile_id", "prediction"],
     "additionalProperties": False,
 }
 

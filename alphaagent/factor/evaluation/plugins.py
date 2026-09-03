@@ -169,7 +169,10 @@ def cross_sectional_core(context: EvaluationContext, params: dict[str, Any]) -> 
     _ = params
     daily_ic = context.daily_ic()
     daily_rank_ic = context.daily_rank_ic()
-    summary = cs_ic_summary(daily_ic, daily_rank_ic)
+    summary = cs_ic_summary(
+        daily_ic, daily_rank_ic,
+        holding_days=getattr(context, "label_holding_days", 1),
+    )
     values = context.factor.to_numpy(dtype=np.float64, copy=False)
     skew, kurt = factor_skew_kurtosis(values)
     n_instruments = int(context.panel.index.get_level_values("instrument").nunique())
@@ -264,6 +267,7 @@ def mls_fmb(context: EvaluationContext, params: dict[str, Any]) -> dict[str, Any
         n_deciles=int(params.get("groups", 10)),
         min_stocks=int(params.get("min_stocks", 30)),
         nw_lags=params.get("nw_lags"),
+        holding_days=getattr(context, "label_holding_days", 1),
     )
 
 
@@ -296,12 +300,18 @@ def long_short_portfolio(context: EvaluationContext, params: dict[str, Any]) -> 
         context.factor, context.label, n_deciles=groups, min_stocks=min_stocks,
         decile_means=_shared_decile_means(context, groups, min_stocks),
     )
+    # 持有期对齐 label 名义持有期（label_20d → 20）：逐日多空收益重叠时
+    # 按持有期节奏采样复利，年化因子同步缩放（与 quantile_portfolio 一致）。
+    hold = max(1, int(getattr(context, "label_holding_days", 1)))
+    if hold > 1:
+        gross = gross.iloc[::hold]
     gross_valid = gross[np.isfinite(gross.to_numpy(dtype=float, copy=False))]
     # This is explicitly a full daily-rebalance cost assumption, not a turnover model.
     net = gross_valid - (2.0 * cost_bps / 10_000.0)
-    nw = newey_west_mean_tstat(net)
+    nw = newey_west_mean_tstat(net, lags=max(1, int(hold)))
     std = float(net.std(ddof=1)) if len(net) > 1 else float("nan")
     ir = float(net.mean() / std) if std > 0 and np.isfinite(std) else float("nan")
+    eff_annual = 252.0 / hold
     return {
         "groups": groups,
         "cost_bps_per_leg": cost_bps,
@@ -309,7 +319,7 @@ def long_short_portfolio(context: EvaluationContext, params: dict[str, Any]) -> 
         "n_days": int(len(net)),
         "gross_daily_mean": float(gross_valid.mean()) if len(gross_valid) else float("nan"),
         "net_daily_mean": float(net.mean()) if len(net) else float("nan"),
-        "net_ir_annual": float(ir * math.sqrt(252)) if np.isfinite(ir) else float("nan"),
+        "net_ir_annual": float(ir * math.sqrt(eff_annual)) if np.isfinite(ir) else float("nan"),
         "nw_t_net": nw["t_nw"],
         "nw_se_net": nw["se_nw"],
         "nw_lags": nw["lags"],
@@ -447,4 +457,5 @@ def quantile_portfolio(context: EvaluationContext, params: dict[str, Any]) -> di
         min_stocks=min_stocks,
         cost_bps=cost_bps,
         direction=direction,
+        holding_days=getattr(context, "label_holding_days", 1),
     )

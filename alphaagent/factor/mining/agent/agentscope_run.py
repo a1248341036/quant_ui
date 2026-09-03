@@ -22,6 +22,7 @@ from agentscope.workspace import LocalWorkspace
 
 from alphaagent.factor.mining.audit import build_manifest, canonical_hash
 from alphaagent.factor.mining.env_settings import resolve_max_parallel_eval
+from alphaagent.factor.mining.infra.jsonutil import json_safe
 from alphaagent.factor.mining.schemas import SessionCreateRequest
 from alphaagent.factor.mining.service import StockEvalService
 from alphaagent.factor.mining.agentscope_tools import build_factor_eval_toolkit, context_to_openai_messages
@@ -269,7 +270,7 @@ async def run_factor_mining_agentscope(
     def _emit(event: str, payload: dict[str, Any]) -> None:
         record = {"ts": _now(), "event": event, **payload}
         if event == "tool_results":
-            raw = json.dumps(record.get("results", []), ensure_ascii=False, default=str)
+            raw = json.dumps(json_safe(record.get("results", [])), ensure_ascii=False, default=str)
             if len(raw.encode("utf-8")) > 12_000:
                 artifact_name = f"tool_results_{record.get('turn', 0)}_{hashlib.sha1(raw.encode()).hexdigest()[:10]}.json.gz"
                 artifact_path = artifact_dir / artifact_name
@@ -284,7 +285,7 @@ async def run_factor_mining_agentscope(
                 } for row in record.get("results", [])]
                 record["results_externalized"] = True
         with log_jsonl.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+            f.write(json.dumps(json_safe(record), ensure_ascii=False, default=str) + "\n")
             f.flush()
 
     # ── Numba JIT 预热：在 Agent 启动前预编译慢算子，避免首次评估超时 ──
@@ -967,7 +968,7 @@ async def run_factor_mining_agentscope(
         "manifest": str(log_dir / "run_manifest.json"),
     }
     summary_path = log_jsonl.with_suffix(".summary.json")
-    summary_text = json.dumps(summary, ensure_ascii=False, indent=2, default=str) + "\n"
+    summary_text = json.dumps(json_safe(summary), ensure_ascii=False, indent=2, default=str) + "\n"
     summary_path.write_text(summary_text, encoding="utf-8")
     (log_dir / "run_summary.json").write_text(summary_text, encoding="utf-8")
     _emit("run_summary", summary)
