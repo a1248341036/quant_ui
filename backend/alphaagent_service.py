@@ -1135,6 +1135,20 @@ def _candidate_factor_view(factor_id: str, entry: dict[str, Any], *, category: s
     )
     eval_label = str(entry.get("eval_label") or "") or None
 
+    # ── 调仓频率/研究档位（2026-09-03 溯源）：新条目入库已记录；
+    #    老条目缺字段时按 label_col 推导兜底（freq_source 区分口径）──
+    from alphaagent.factor.mining.infra.registry_io import derive_freq_from_label_col
+
+    entry_freq = str(entry.get("rebalance_freq") or "") or None
+    entry_mode = str(entry.get("research_mode") or "") or None
+    if entry_freq or entry_mode:
+        rebalance_freq = entry_freq
+        research_mode = entry_mode
+        freq_source = "recorded"
+    else:
+        research_mode, rebalance_freq = derive_freq_from_label_col(label_col)
+        freq_source = "derived" if (research_mode or rebalance_freq) else None
+
     # ── comment 预览 ──
     comment_full = str(entry.get("comment") or "")
     comment_preview = comment_full[:150] + ("…" if len(comment_full) > 150 else "")
@@ -1156,6 +1170,9 @@ def _candidate_factor_view(factor_id: str, entry: dict[str, Any], *, category: s
         "is_fusion": is_fusion,
         "family": family,
         "eval_label": eval_label,
+        "rebalance_freq": rebalance_freq,
+        "research_mode": research_mode,
+        "freq_source": freq_source,
         "finite_count": finite_count or 0,
         "created_at": str(entry.get("ingested_at") or ""),
         "comment_preview": comment_preview,
@@ -1285,6 +1302,25 @@ def list_factors(*, library: str = "production", category: str = "technical", fa
             else None
         )
         merged["eval_label"] = str(entry.get("eval_label") or "") or None
+        # 调仓频率/研究档位溯源：老条目缺字段时按 label_col 推导兜底
+        from alphaagent.factor.mining.infra.registry_io import derive_freq_from_label_col
+
+        prod_freq = str(entry.get("rebalance_freq") or "") or None
+        prod_mode = str(entry.get("research_mode") or "") or None
+        if prod_freq or prod_mode:
+            merged["rebalance_freq"] = prod_freq
+            merged["research_mode"] = prod_mode
+            merged["freq_source"] = "recorded"
+        else:
+            prod_label_col = str(
+                (entry.get("ingest_config") or {}).get("label_col")
+                if isinstance(entry.get("ingest_config"), dict)
+                else ""
+            ) or str(entry.get("eval_label") or "")
+            d_mode, d_freq = derive_freq_from_label_col(prod_label_col)
+            merged["rebalance_freq"] = d_freq
+            merged["research_mode"] = d_mode
+            merged["freq_source"] = "derived" if (d_mode or d_freq) else None
         return merged
 
     factors = [_merge_production_entry(item) for item in factors]

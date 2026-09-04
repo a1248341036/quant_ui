@@ -42,6 +42,18 @@
       <button class="lib-facet-btn fusion" :class="{active: lib.facetFilter === '融合'}"
               title="跨数据面融合因子（触及 ≥2 个数据面）"
               @click="lib.facetFilter = lib.facetFilter === '融合' ? '' : '融合'">融合</button>
+      <span class="lib-toolbar-label" style="margin-left:12px">调仓</span>
+      <button class="lib-facet-btn" :class="{active: !lib.freqFilter}"
+              @click="lib.freqFilter = ''" title="显示全部调仓频率">全部</button>
+      <button class="lib-facet-btn" :class="{active: lib.freqFilter === 'weekly'}"
+              title="周频调仓门禁（短周期档默认）"
+              @click="lib.freqFilter = lib.freqFilter === 'weekly' ? '' : 'weekly'">周频</button>
+      <button class="lib-facet-btn" :class="{active: lib.freqFilter === 'daily'}"
+              title="日频调仓门禁"
+              @click="lib.freqFilter = lib.freqFilter === 'daily' ? '' : 'daily'">日频</button>
+      <button class="lib-facet-btn" :class="{active: lib.freqFilter === 'monthly'}"
+              title="月频调仓门禁（慢信号档默认）"
+              @click="lib.freqFilter = lib.freqFilter === 'monthly' ? '' : 'monthly'">月频</button>
       <span class="lib-toolbar-label" style="margin-left:auto">按加入时间导出</span>
       <input type="date" v-model="lib.exportStart">
       <span class="lib-range-sep">~</span>
@@ -77,6 +89,13 @@
           <td :class="{neg: (f.annualized_return ?? 0) < 0}">{{ formatMetricValue(f.annualized_return ?? '—') }}</td>
           <td>{{ formatMetricValue(f.sharpe ?? '—') }}</td>
           <td class="lib-time" :title="f.created_at">{{ fmtTime(f.created_at) }}</td>
+          <td class="lib-freq">
+            <span v-if="f.rebalance_freq" class="lib-freq-tag"
+                  :class="'freq-' + f.rebalance_freq"
+                  :title="'门禁调仓频率' + (f.freq_source === 'derived' ? '（按评估标签推导）' : '')">
+              {{ freqShort(f.rebalance_freq) }}</span>
+            <span v-else class="lib-freq-missing" title="该条目没有频率记录，也无法从评估标签推导">—</span>
+          </td>
           <td class="lib-label" :title="f.label_col">{{ labelShort(f.label_col) }}</td>
           <td><span class="lib-status" :class="'status-' + f.status">{{ f.status }}</span></td>
           <td class="lib-review" :title="f.review_reasons">{{ f.review_reasons || '—' }}</td>
@@ -135,6 +154,7 @@ export default {
         category: 'technical',
         facet: '',
         facetFilter: '',
+        freqFilter: '',
         data: null,
         loading: false,
         error: '',
@@ -153,6 +173,7 @@ export default {
           { key: 'annualized_return', label: '多头年化', sortable: true },
           { key: 'sharpe', label: '夏普', sortable: true },
           { key: 'created_at', label: '加入时间', sortable: true },
+          { key: 'rebalance_freq', label: '调仓', sortable: true },
           { key: 'label_col', label: 'Label', sortable: true },
           { key: 'status', label: '状态', sortable: true },
           { key: 'review', label: 'Reviewer 意见', sortable: false },
@@ -164,9 +185,13 @@ export default {
   computed: {
     libFactorsFaceted() {
       const facet = this.lib.facetFilter
+      const freq = this.lib.freqFilter
       const fs = this.lib.data?.factors || []
-      if (!facet) return fs
       return fs.filter(f => {
+        if (freq) {
+          if (f.rebalance_freq !== freq) return false
+        }
+        if (!facet) return true
         const facets = f.facets || []
         if (facet === '融合') {
           return typeof f.is_fusion === 'boolean' ? f.is_fusion : facets.length >= 2
@@ -184,6 +209,7 @@ export default {
           case 'name': return String(f.name || '').toLowerCase()
           case 'label_col': return String(f.label_col || '')
           case 'status': return String(f.status || '')
+          case 'rebalance_freq': return String(f.rebalance_freq || '')
           case 'facets': return String(f.facets_label || '')
           case 'created_at': { const t = Date.parse(f.created_at || ''); return Number.isFinite(t) ? t : -Infinity }
           default: {
@@ -229,6 +255,7 @@ export default {
     formatTime,
     fmtTime,
     labelShort,
+    freqShort,
     icClass,
     async loadFactors() {
       this.lib.loading = true
@@ -271,7 +298,7 @@ export default {
         alert('所选时间范围内没有因子')
         return
       }
-      const cols = ['加入时间', 'factor_id', '名称', '数据面', '融合', '准入状态', '审查判定',
+      const cols = ['加入时间', 'factor_id', '名称', '数据面', '融合', '调仓频率', '研究档位', '准入状态', '审查判定',
                     'Train IC', 'Val IC', '全区间 IC', 'ICIR', 'RankIC', 'Coverage',
                     '多头年化', '超额年化', '夏普', 'val保留比', 'val多头超额',
                     'Label', 'Expr']
@@ -285,6 +312,7 @@ export default {
         lines.push([
           this.fmtTime(f.created_at), f.factor_id, f.name,
           (f.facets || []).join('+'), f.is_fusion ? '是' : '',
+          f.rebalance_freq || '', f.research_mode || '',
           f.promotion_status || f.status, f.review_verdict || '',
           num(f.train_ic), num(f.val_ic), num(f.metrics?.ic), num(f.metrics?.icir),
           num(f.metrics?.rank_ic), num(f.metrics?.factor_coverage),

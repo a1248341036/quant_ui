@@ -143,6 +143,10 @@ export function labelShort(col) {
   return map[col] || col.replace('label_', '')
 }
 
+export function freqShort(freq) {
+  return { daily: '日频', weekly: '周频', monthly: '月频' }[freq] || freq || '—'
+}
+
 export function statusLabel(status) {
   return ({ starting: '准备中', running: '运行中', stopping: '停止中', completed: '已完成', failed: '失败', interrupted: '已中断' }[status] || status || '未开始')
 }

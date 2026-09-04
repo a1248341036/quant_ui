@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,21 @@ from typing import Any
 from alphaagent.factor.types import IngestPolicy
 from alphaagent.factor.zoo import FactorZoo
 from alphaagent.factor.zoo.similarity import SimilarityMatrix
+
+_LABEL_HORIZON_RE = re.compile(r"label_(\d+)d")
+
+
+def derive_freq_from_label_col(label_col: str | None) -> tuple[str | None, str | None]:
+    """从 label_col 推导 (research_mode, 档位默认门禁调仓频率)。
+
+    长持有期（≥10d）→ fundamental/monthly；短持有期 → technical/weekly。
+    只作老条目兜底展示：新条目入库时已记录真实 rebalance_freq（含用户覆盖），
+    读取方仅在 entry 缺字段时才调用本函数。
+    """
+    m = _LABEL_HORIZON_RE.search(str(label_col or ""))
+    if not m:
+        return None, None
+    return ("fundamental", "monthly") if int(m.group(1)) >= 10 else ("technical", "weekly")
 
 
 def load_mining_registry(path: Path) -> dict[str, Any]:
@@ -53,6 +69,8 @@ def upsert_mining_registry(
     interaction: dict[str, Any] | None = None,
     facets: list[str] | None = None,
     eval_label: str | None = None,
+    rebalance_freq: str | None = None,
+    research_mode: str | None = None,
 ) -> tuple[str, str]:
     """写入或合并一条 registry 记录；返回 (registry_path, dsl_path)。"""
     registry_path = Path(registry_path).expanduser().resolve()
@@ -88,6 +106,10 @@ def upsert_mining_registry(
     entry["is_fusion"] = len(facet_list) >= 2
     entry["family"] = classify_family_ex(name, expr)[0]
     entry["eval_label"] = eval_label or prev.get("eval_label")
+    # 调仓频率/研究档位溯源（2026-09-03）：submit 路径记录真实 chosen_freq
+    #（用户覆盖 > 档位默认）；zoo_sync/lab 等未传路径沿用旧值或留空由视图层推导。
+    entry["rebalance_freq"] = rebalance_freq or prev.get("rebalance_freq")
+    entry["research_mode"] = research_mode or prev.get("research_mode")
     sim = _trim_similarity(similarity)
     if sim:
         entry["similarity"] = sim
@@ -128,6 +150,8 @@ def write_candidate_registry(
     interaction: dict[str, Any] | None = None,
     facets: list[str] | None = None,
     eval_label: str | None = None,
+    rebalance_freq: str | None = None,
+    research_mode: str | None = None,
 ) -> tuple[str, str]:
     """Registry-only candidate storage: evidence and DSL, never dense values."""
     registry_path = Path(registry_path).expanduser().resolve()
@@ -168,6 +192,8 @@ def write_candidate_registry(
         "is_fusion": len(facet_list) >= 2,
         "family": classify_family_ex(name, expr)[0],
         "eval_label": eval_label or prev.get("eval_label"),
+        "rebalance_freq": rebalance_freq or prev.get("rebalance_freq"),
+        "research_mode": research_mode or prev.get("research_mode"),
     }
     for key in ("source_runs", "mining_metrics", "review", "reviewed_at"):
         if key in prev:

@@ -465,6 +465,12 @@ textarea.lab-input { resize:vertical; font:12px/1.5 var(--font-mono); }
 .lib-table tr:hover td { background:rgb(79 140 255 / .06); }
 .lib-comment, .lib-review { max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--muted); font-size:10px; cursor:default; }
 .lib-label { font:10px var(--font-mono); color:#7ea8ff; white-space:nowrap; }
+.lib-freq { white-space:nowrap; }
+.lib-freq-tag { display:inline-block; padding:2px 7px; border-radius:8px; font-size:9px; font-weight:600; }
+.lib-freq-tag.freq-weekly { border:1px solid rgb(126 168 255 / .5); background:rgb(79 140 255 / .12); color:#7ea8ff; }
+.lib-freq-tag.freq-daily { border:1px solid rgb(94 224 160 / .5); background:rgb(94 224 160 / .1); color:#5ee0a0; }
+.lib-freq-tag.freq-monthly { border:1px solid rgb(255 190 100 / .5); background:rgb(255 190 100 / .12); color:#ffbe64; }
+.lib-freq-missing { color:var(--muted); }
 .lib-fid { color:var(--accent); font:11px var(--font-mono); cursor:pointer; }
 .lib-table td:nth-child(2) { cursor:pointer; }
 .lib-time { color:var(--muted); font:10px var(--font-mono); }

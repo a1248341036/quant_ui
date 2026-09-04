@@ -752,6 +752,8 @@ class FactorSubmitService:
             evaluation_evidence=evaluation_evidence,
             interaction=interaction,
             eval_label=str(ctx.label_col),
+            rebalance_freq=chosen_freq,
+            research_mode=self.research_mode,
             data_fingerprint={
                 "panel_path": str(ctx.panel_path),
                 "index_hash": zoo.manifest.index_hash,
@@ -926,6 +928,8 @@ class FactorSubmitService:
             source="submit_stage_two",
             interaction=interaction,
             eval_label=str(ctx.label_col),
+            rebalance_freq=chosen_freq,
+            research_mode=self.research_mode,
         )
         set_candidate_promotion(
             self.candidate_registry_path,
