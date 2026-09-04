@@ -3,6 +3,9 @@
 时间隔离契约：组合模型的训练/OOS 只允许使用 ``mining_end`` 之后的样本
 （挖掘循环对 train/val 窗口的反复反馈会让入库因子 IC 幸存者偏差），
 ``mining_end`` 之前的窗口仅用于衰减对照表。
+
+groups 子模块：面感知分组与组合（候选因子按数据源组分层合成，N 组泛化，
+不按组名写死行为；N=1/N=2 退化为单组/双组方案）。
 """
 from .dataset import (
     FactorEntry,
@@ -15,6 +18,19 @@ from .dataset import (
     forward_return_label,
     materialize_entries,
     transform_factor_values,
+)
+from .groups import (
+    UNFACETED_GROUP,
+    FacetGroupPolicy,
+    apply_weights,
+    assign_groups,
+    blend_weights,
+    daily_zscore,
+    derive_blend_horizon,
+    derive_group,
+    group_horizon,
+    group_scores,
+    parse_label_days,
 )
 from .model import (
     make_model,
@@ -33,6 +49,17 @@ __all__ = [
     "forward_return_label",
     "materialize_entries",
     "transform_factor_values",
+    "UNFACETED_GROUP",
+    "FacetGroupPolicy",
+    "apply_weights",
+    "assign_groups",
+    "blend_weights",
+    "daily_zscore",
+    "derive_blend_horizon",
+    "derive_group",
+    "group_horizon",
+    "group_scores",
+    "parse_label_days",
     "make_model",
     "fit_predict_walkforward",
     "walk_forward_splits",

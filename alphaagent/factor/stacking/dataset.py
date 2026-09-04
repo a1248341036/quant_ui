@@ -27,6 +27,8 @@ class FactorEntry:
     library: str  # 如 production_technical / candidate_fundamental
     created_at: str | None = None  # 入库时间
     eval_end: str | None = None  # 挖掘循环实际评估右端（时间隔离的真实边界）
+    facets: tuple[str, ...] = ()  # 数据面标签（registry facets / catalog extra / 表达式识别）
+    label_col: str | None = None  # 入库时验证用标签列（面组 horizon 派生依据）
 
 
 def _registry_eval_end(item: dict) -> str | None:
@@ -63,6 +65,13 @@ def _coerce_naive(ts) -> pd.Timestamp:
     if ts.tzinfo is not None:
         ts = ts.tz_localize(None)
     return ts
+
+
+def _expr_facets(expr: str) -> tuple[str, ...]:
+    """表达式 → 数据面集合（延迟导入 expressions，避免给 stacking 加载链路增重）。"""
+    from alphaagent.factor.mining.memory.expressions import expr_facets
+
+    return tuple(sorted(expr_facets(expr)))
 
 
 @dataclass
@@ -118,10 +127,16 @@ def collect_factor_entries(
                 if meta is None:
                     continue
                 created = getattr(meta, "created_at", None)
+                extra = getattr(meta, "extra", None) or {}
+                facets = tuple(str(f) for f in (extra.get("facets") or ()))
+                if not facets:
+                    facets = _expr_facets(meta.expr)
                 _add(FactorEntry(
                     factor_id=meta.factor_id, name=meta.name, expr=meta.expr.strip(),
                     library=lib_name,
                     created_at=str(created) if created is not None else None,
+                    facets=facets,
+                    label_col=(str(extra["label_col"]) if extra.get("label_col") else None),
                 ))
             if include_candidate and lib_name.startswith("candidate_"):
                 registry_path = root / "mining_candidate_registry.json"
@@ -140,10 +155,15 @@ def collect_factor_entries(
                         expr = str(item.get("expr") or "")
                         if not name or not expr:
                             continue
+                        metrics = item.get("metrics") or {}
+                        ingest_cfg = item.get("ingest_config") or {}
+                        label_col = metrics.get("label_col") or ingest_cfg.get("label_col")
                         _add(FactorEntry(
                             factor_id=name, name=name, expr=expr.strip(), library=lib_name,
                             created_at=str(item.get("ingested_at")) if item.get("ingested_at") else None,
                             eval_end=_registry_eval_end(item),
+                            facets=tuple(str(f) for f in (item.get("facets") or ())),
+                            label_col=(str(label_col) if label_col else None),
                         ))
     return entries
 

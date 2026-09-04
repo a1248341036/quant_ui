@@ -117,21 +117,24 @@ def fit_predict_walkforward(
 ) -> tuple[np.ndarray, list[dict]]:
     """逐折训练 + OOS 预测；返回 (拼接的 OOS 预测 [n_rows]（折外为 NaN）, 逐折指标)。
 
-    训练行过滤：日期在折 train_dates 内、label 与特征均有限。预测原样写回
-    对应行，不做截面再标准化（模型输出经 OOS 评估，engine_gate 直接消费）。
+    训练行过滤：日期在折 train_dates 内、label 有限；ridge 另要求特征全有限
+    （无缺失处理），lgbm 原生支持 NaN 特征 → 放行，保住基本面/事件等稀疏面
+    的样本行（原先整行丢弃会造成训练集缩水与宇宙偏化）。预测原样写回对应行，
+    不做截面再标准化（模型输出经 OOS 评估，engine_gate 直接消费）。
     """
     n_rows = feature_matrix.shape[0]
     oos_pred = np.full(n_rows, np.nan, dtype=np.float32)
     date_np = pd.to_datetime(pd.Series(dates)).to_numpy()
     report: list[dict] = []
+    require_finite = kind == "ridge"
     for fold in folds:
         train_mask = np.isin(date_np, fold.train_dates.to_numpy())
         valid = train_mask & np.isfinite(label)
-        if feature_matrix.shape[1]:
+        if require_finite and feature_matrix.shape[1]:
             valid &= np.isfinite(feature_matrix).all(axis=1)
         oos_mask = np.isin(date_np, fold.oos_dates.to_numpy())
         oos_ok = oos_mask & np.isfinite(label)
-        if feature_matrix.shape[1]:
+        if require_finite and feature_matrix.shape[1]:
             oos_ok &= np.isfinite(feature_matrix).all(axis=1)
         if valid.sum() < 100 or oos_ok.sum() == 0:
             report.append({
