@@ -133,6 +133,14 @@ def research_memory(limit: int = 50, offset: int = 0, order: str = "recent",
         order="verdict" if order == "verdict" else "recent",
         verdict=verdict or "", sort=sort or "", dir=int(dir),
     )
+    # 调仓频率/研究档位溯源：memory_entries 无此字段，按 factor_name 关联 registry 补齐
+    freq_map = service.factor_freq_map()
+    for entry in entries:
+        hit = freq_map.get(str(entry.get("factor_name") or ""))
+        if hit:
+            entry["rebalance_freq"] = hit["rebalance_freq"]
+            entry["research_mode"] = hit["research_mode"]
+            entry["freq_source"] = hit["freq_source"]
     return {"path": str(service.RESEARCH_MEMORY_FILE), "statistics": store.statistics(), "entries": entries, "total": total}
 
 

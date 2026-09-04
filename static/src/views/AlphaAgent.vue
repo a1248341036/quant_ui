@@ -42,6 +42,7 @@
       :expr="btTarget.expr"
       :factor-name="btTarget.factorName"
       :defaults="btDefaults"
+      :freq="btTarget.freq || ''"
       @close="btOpen = false"
     />
   </section>
@@ -149,9 +150,13 @@ export default {
       this.btDefaults = { start: payload.valStart, end: payload.valEnd }
       this.btOpen = true
     },
-    // 因子库行内"回测"：载入该因子表达式，窗口走全局默认
+    // 因子库行内"回测"：载入该因子表达式，窗口走全局默认，调仓频率预填因子门禁口径
     openLibraryBacktest(factor) {
-      this.btTarget = { expr: factor.expr || '', factorName: factor.name || factor.factor_id }
+      this.btTarget = {
+        expr: factor.expr || '',
+        factorName: factor.name || factor.factor_id,
+        freq: factor.rebalance_freq || '',
+      }
       this.btDefaults = null
       this.btOpen = true
     },

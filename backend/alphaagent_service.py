@@ -1080,6 +1080,66 @@ def _candidate_registry(category: str = "technical") -> dict[str, Any]:
     return loaded if isinstance(loaded, dict) else {}
 
 
+_FREQ_MAP_CACHE: dict[str, Any] = {"stamp": None, "map": {}}
+
+
+def factor_freq_meta(entry: dict[str, Any]) -> tuple[str | None, str | None, str | None]:
+    """registry 条目 → (rebalance_freq, research_mode, freq_source)；老条目按 label_col 推导。"""
+    from alphaagent.factor.mining.infra.registry_io import derive_freq_from_label_col
+
+    freq = str(entry.get("rebalance_freq") or "") or None
+    mode = str(entry.get("research_mode") or "") or None
+    if freq or mode:
+        return freq, mode, "recorded"
+    cfg = entry.get("ingest_config") if isinstance(entry.get("ingest_config"), dict) else {}
+    label_col = str(cfg.get("label_col") or "") or str(entry.get("eval_label") or "")
+    d_mode, d_freq = derive_freq_from_label_col(label_col)
+    return d_freq, d_mode, "derived" if (d_freq or d_mode) else None
+
+
+def factor_freq_map() -> dict[str, dict[str, Any]]:
+    """factor_id/name → {rebalance_freq, research_mode, freq_source}（候选+正式库）。
+
+    研究记忆条目无频率字段，按 factor_name 关联 registry 补齐；mtime 缓存避免
+    研究总结分页请求反复解析大 JSON。
+    """
+    paths: list[Path] = []
+    for category in ("technical", "fundamental"):
+        paths.append(factor_categories.candidate_registry_path(category))
+        paths.append(factor_categories.production_registry_path(category))
+    stamp = tuple((p, p.stat().st_mtime) if p.exists() else (p, None) for p in paths)
+    if _FREQ_MAP_CACHE["stamp"] == stamp:
+        return _FREQ_MAP_CACHE["map"]
+    out: dict[str, dict[str, Any]] = {}
+    for category in ("technical", "fundamental"):
+        registries = (
+            _candidate_registry(category),
+            _load_json_dict(factor_categories.production_registry_path(category)),
+        )
+        for registry in registries:
+            for fid, entry in registry.items():
+                if not isinstance(entry, dict):
+                    continue
+                meta = factor_freq_meta(entry)
+                if meta[0] is None and meta[1] is None:
+                    continue
+                payload = {"rebalance_freq": meta[0], "research_mode": meta[1], "freq_source": meta[2]}
+                out[str(fid)] = payload
+                name = str(entry.get("name") or "")
+                if name:
+                    out[name] = payload
+    _FREQ_MAP_CACHE["stamp"] = stamp
+    _FREQ_MAP_CACHE["map"] = out
+    return out
+
+
+def _load_json_dict(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    loaded = json.loads(path.read_text(encoding="utf-8"))
+    return loaded if isinstance(loaded, dict) else {}
+
+
 def _candidate_expr(entry: dict[str, Any], factor_id: str, *, category: str = "technical") -> str:
     expr = str(entry.get("expr") or "")
     if expr:

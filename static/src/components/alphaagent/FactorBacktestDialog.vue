@@ -153,6 +153,8 @@ export default {
     factorName: { type: String, default: 'expr' },
     // 打开时的默认回测窗口（因子实验室传验证区间；因子库入口传 null 走全局窗口默认）
     defaults: { type: Object, default: null },
+    // 因子门禁调仓频率（周/月/日）：有值时预填，与入库门槛口径对齐；缺省走 monthly
+    freq: { type: String, default: '' },
   },
   emits: ['close'],
   data() {
@@ -166,7 +168,7 @@ export default {
         universe: '全部股票',
         excludeKeChuang: false,
         topN: 5,
-        freq: 'monthly',
+        freq: ['daily', 'weekly', 'monthly'].includes(this.freq) ? this.freq : 'monthly',
         capital: 100000,
         warmupDays: 400,
         ascending: false,

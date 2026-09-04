@@ -138,6 +138,9 @@
                 评估次数 <span class="sort-ind" v-if="agent.summarySortKey === 'attempts'">{{ agent.summarySortOrder === 1 ? '▲' : '▼' }}</span>
               </th>
               <th>
+                调仓 <span class="summary-facet-hint" title="门禁调仓频率（周/日/月）。入库的新因子为真实记录；老因子按评估标签推导（hover 见口径）。仅入库过的因子有值。">ⓘ</span>
+              </th>
+              <th>
                 数据面 <span class="summary-facet-hint" title="触及的数据面（×连接 = 跨数据源组融合因子）">ⓘ</span>
               </th>
               <th>拒绝原因</th>
@@ -164,6 +167,13 @@
               <td>{{ formatMetricValue(entry.metrics?.daily_overlap ?? '—') }}</td>
               <td>{{ formatMetricValue(entry.metrics?.monotonicity ?? '—') }}</td>
               <td class="summary-attempts">{{ entry.attempts || 1 }}</td>
+              <td class="summary-freq">
+                <span v-if="entry.rebalance_freq" class="lib-freq-tag"
+                      :class="'freq-' + entry.rebalance_freq"
+                      :title="'门禁调仓频率' + (entry.freq_source === 'derived' ? '（按评估标签推导）' : '')">
+                  {{ freqShort(entry.rebalance_freq) }}</span>
+                <span v-else class="summary-freq-missing" title="未入库或无频率记录">—</span>
+              </td>
               <td class="summary-facets" :title="(entry.facets || []).join(' + ')">
                 <span v-if="entry.is_fusion" class="summary-fusion-tag">融合</span>
                 <span class="summary-facet-text">{{ facetText(entry) }}</span>
@@ -212,7 +222,7 @@ import { agentStore, summaryView } from '../../store/alphaagent.js'
 import MemoryDetailModal from './MemoryDetailModal.vue'
 import {
   formatTime, memoryVerdictLabel,
-  formatMetricValue, icClass,
+  formatMetricValue, icClass, freqShort,
 } from '../../utils/alphaagent.js'
 
 export default {
@@ -285,6 +295,7 @@ export default {
     memoryVerdictLabel,
     formatMetricValue,
     icClass,
+    freqShort,
     facetText(entry) {
       const facets = entry.facets || []
       if (!facets.length) return '—'
