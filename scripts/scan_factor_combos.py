@@ -67,6 +67,8 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--decay-months", type=int, default=12, help="质量分窗口长度（月）")
     ap.add_argument("--warmup-days", type=int, default=250, help="panel 起点提前量（因子窗口预热）")
     ap.add_argument("--max-corr", type=float, default=0.6, help="组内去冗余相关阈值")
+    ap.add_argument("--group-keep-max", type=int, default=None,
+                    help="每组去冗余后按 |ICIR| 截断保留的最大成员数（等权稀释防护；默认不截断）")
     ap.add_argument("--min-coverage", type=float, default=0.30, help="组分数最小行覆盖率")
     ap.add_argument("--size-neutral/--no-size-neutral", dest="size_neutral", default=True)
     ap.add_argument("--label-days", type=int, default=5, help="组 horizon 无法派生时的回退标签期")
@@ -108,8 +110,15 @@ def _intra_group_dedup(
     mining_end: pd.Timestamp,
     decay_months: int,
     max_corr: float,
+    keep_max: int | None = None,
 ) -> tuple[list[tuple[FactorEntry, np.ndarray]], list[dict]]:
-    """组内贪心去冗余：质量分（mining 窗口日均|IC| vs 组标签）降序保留。"""
+    """组内贪心去冗余：质量分 = |ICIR|（mining 窗口逐日 IC 的均值/标准差）降序保留。
+
+    ICIR 度量信号一致性，比 mean|IC|（正负日子互相抵消也高分）更贴合"组合
+    成员该不该留"的判断。方向归一：IC 均值为负的成员整体翻转（等权合成
+    前提；ML 路径模型可学符号，不受影响）。只用 mining 窗口，无 OOS 泄漏。
+    ``keep_max``：去冗余后再按质量分截断到前 N 个（组内等权稀释防护）。
+    """
     dts = pd.DatetimeIndex(panel.index.get_level_values("datetime"))
     mining_start = mining_end - pd.DateOffset(months=decay_months)
     m_mask = (dts <= mining_end) & (dts >= mining_start)
@@ -122,7 +131,10 @@ def _intra_group_dedup(
             orientation[entry.name] = 1.0
             continue
         ic = daily_spearman_ic(raw[mask], label_g[mask], dts[mask])
-        quality[entry.name] = float(ic.abs().mean()) if len(ic) else 0.0
+        if len(ic) and ic.std() > 1e-12:
+            quality[entry.name] = abs(float(ic.mean() / ic.std()))
+        else:
+            quality[entry.name] = 0.0
         # 方向归一：mining 窗口 IC 均值为负的因子整体翻转（等权/ICIR 合成
         # 的前提；ML 路径模型可学符号，不受影响）。只用 mining 窗口，无 OOS 泄漏。
         orientation[entry.name] = -1.0 if (len(ic) and ic.mean() < 0) else 1.0
@@ -133,6 +145,10 @@ def _intra_group_dedup(
     for i in order:
         entry, _, transformed = members[i]
         oriented = transformed * orientation[entry.name]
+        if keep_max is not None and len(kept) >= keep_max:
+            dropped.append({"name": entry.name, "reason": f"keep_max<{keep_max}",
+                            "quality": round(quality[entry.name], 5)})
+            continue
         redundant_with = None
         for kept_entry, kept_arr in kept:
             corr = _sampled_corr(oriented, kept_arr, panel)
@@ -289,7 +305,7 @@ def main() -> None:
         label_g = forward_return_label(panel, horizon)
         kept, dropped_g, orientation = _intra_group_dedup(
             [members_by_name[e.name] for e in es], label_g, panel,
-            mining_end, args.decay_months, args.max_corr,
+            mining_end, args.decay_months, args.max_corr, keep_max=args.group_keep_max,
         )
         group_horizons[g] = horizon if horizon_src != f"fallback({args.label_days})" else None
         group_members[g] = kept
