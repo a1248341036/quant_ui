@@ -32,9 +32,17 @@ Start-Sleep -Seconds 1
 $backendArgs = @("-m", "uvicorn", "backend.main:app", "--host", "127.0.0.1", "--port", "17891")
 $backend = Start-Process -FilePath $python -ArgumentList $backendArgs -WorkingDirectory $root -NoNewWindow -PassThru
 
+# --- Load .env for TUSHARE_TOKEN / TUSHARE_URL (no hardcoded secrets) ---
+$EnvFile = Join-Path $root ".env"
+if (Test-Path $EnvFile) {
+    Get-Content $EnvFile | Where-Object { $_ -match '^\s*(TUSHARE_TOKEN|TUSHARE_URL)\s*=' } | ForEach-Object {
+        $kv = $_ -split '=', 2
+        $name = $kv[0].Trim(); $val = $kv[1].Trim().Trim('"').Trim("'")
+        Set-Item -Path "Env:$name" -Value $val
+    }
+}
+
 # CNE dashboard (port 8787)
-$env:TUSHARE_TOKEN = "REDACTED_TUSHARE_TOKEN"
-$env:TUSHARE_URL = "https://t.xiaodefa.top/"
 $cneDir = Join-Path $root "CNEquity"
 $cneArgs = @("-m", "cnequity.cli.main", "serve", "--config", "configs/cnequity.quant_dataset.toml")
 $cne = Start-Process -FilePath $python -ArgumentList $cneArgs -WorkingDirectory $cneDir -NoNewWindow -PassThru

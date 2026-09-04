@@ -12,6 +12,13 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 
+# --- Load .env so QUANT_UI_PASSWORD can be configured there ---
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+except ImportError:
+    pass
+
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 AUTH_FILE = DATA_DIR / "db" / ".auth.json"
 SECRET_FILE = DATA_DIR / "db" / ".secret"
@@ -19,7 +26,11 @@ SECRET_FILE = DATA_DIR / "db" / ".secret"
 COOKIE = "quant_ui_session"
 TTL = 60 * 60 * 24 * 7  # 7 天
 DEFAULT_USER = "root"
-DEFAULT_PASSWORD = os.environ.get("QUANT_UI_PASSWORD", "REDACTED_PASSWORD")
+DEFAULT_PASSWORD = os.environ.get("QUANT_UI_PASSWORD", "")
+if not DEFAULT_PASSWORD:
+    raise RuntimeError(
+        "QUANT_UI_PASSWORD 未设置。请在 .env 中配置 QUANT_UI_PASSWORD=你的密码"
+    )
 
 router = APIRouter()
 
