@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import warnings
 from datetime import datetime
 from pathlib import Path
 
@@ -113,22 +114,28 @@ def _intra_group_dedup(
     mining_start = mining_end - pd.DateOffset(months=decay_months)
     m_mask = (dts <= mining_end) & (dts >= mining_start)
     quality: dict[str, float] = {}
+    orientation: dict[str, float] = {}
     for entry, raw, _ in members:
         mask = m_mask & np.isfinite(raw) & np.isfinite(label_g)
         if mask.sum() < 20:
             quality[entry.name] = 0.0
+            orientation[entry.name] = 1.0
             continue
         ic = daily_spearman_ic(raw[mask], label_g[mask], dts[mask])
         quality[entry.name] = float(ic.abs().mean()) if len(ic) else 0.0
+        # 方向归一：mining 窗口 IC 均值为负的因子整体翻转（等权/ICIR 合成
+        # 的前提；ML 路径模型可学符号，不受影响）。只用 mining 窗口，无 OOS 泄漏。
+        orientation[entry.name] = -1.0 if (len(ic) and ic.mean() < 0) else 1.0
 
     order = sorted(range(len(members)), key=lambda i: quality[members[i][0].name], reverse=True)
     kept: list[tuple[FactorEntry, np.ndarray]] = []
     dropped: list[dict] = []
     for i in order:
         entry, _, transformed = members[i]
+        oriented = transformed * orientation[entry.name]
         redundant_with = None
         for kept_entry, kept_arr in kept:
-            corr = _sampled_corr(transformed, kept_arr, panel)
+            corr = _sampled_corr(oriented, kept_arr, panel)
             if corr is not None and abs(corr) > max_corr:
                 redundant_with = kept_entry.name
                 break
@@ -136,9 +143,9 @@ def _intra_group_dedup(
             dropped.append({"name": entry.name, "reason": f"redundant_with={redundant_with}",
                             "quality": round(quality[entry.name], 5)})
             continue
-        kept.append((entry, transformed))
+        kept.append((entry, oriented))
     kept.sort(key=lambda t: [m[0].name for m in members].index(t[0].name))
-    return kept, dropped
+    return kept, dropped, orientation
 
 
 def _metrics_on_mask(blended: np.ndarray, label: np.ndarray, dts: pd.Series, mask: np.ndarray) -> dict | None:
@@ -163,7 +170,12 @@ def _null_calibration(
     trials: int,
     seed: int,
 ) -> dict:
-    """随机成员子集 + 等权合成的 mining 窗口 ICIR 分布（因子汤对照，不碰 OOS）。"""
+    """随机同规模成员子集 + 等权合成的 mining 窗口 ICIR 分布（因子汤对照，不碰 OOS）。
+
+    抽样规模固定 = 组内保留成员数（与真组合同形状）；候选池为该组全部物化
+    成员（含被去冗余剔除者）。规模随机的 null 会让小子集高方差抬高分布，
+    失去对照意义。
+    """
     rng = np.random.default_rng(seed)
     m_mask = (pd.Series(dts) <= pd.Timestamp(mining_end)).to_numpy()
     icirs: list[float] = []
@@ -171,11 +183,11 @@ def _null_calibration(
         scores: dict[str, np.ndarray] = {}
         for g, kept in group_members.items():
             pool = all_members_by_group.get(g) or kept
-            k = len(kept)
-            size = int(rng.integers(1, k + 1))
-            pick = rng.choice(len(pool), size=min(size, len(pool)), replace=False)
+            k = min(len(kept), len(pool))
+            pick = rng.choice(len(pool), size=k, replace=False)
             arrs = [pool[i][1] for i in pick]
-            with np.errstate(all="ignore"):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)  # 全 NaN 行
                 s = np.nanmean(np.vstack(arrs), axis=0).astype(np.float32)
             s[~np.isfinite(s)] = np.nan
             if np.isfinite(s).mean() < 0.30:
@@ -235,6 +247,10 @@ def main() -> None:
     cache = FactorValueCache()
     materialized, dropped = materialize_entries(panel, entries, cache=cache,
                                                 progress=lambda m: print(" ", m, flush=True))
+    for d in dropped:
+        print(f"  - 物化剔除 {d['name']} ({d['library']}): {d['reason']}")
+    if dropped:
+        print(f"物化剔除共 {len(dropped)} 个（eval_error/覆盖率不足——如数据湖缺对应列族请先补数据）")
     members: list[tuple[FactorEntry, np.ndarray, np.ndarray]] = []
     for entry, raw in materialized:
         transformed = transform_factor_values(raw, panel, size_neutral=args.size_neutral)
@@ -271,7 +287,7 @@ def main() -> None:
         if horizon is None:
             horizon = args.label_days
         label_g = forward_return_label(panel, horizon)
-        kept, dropped_g = _intra_group_dedup(
+        kept, dropped_g, orientation = _intra_group_dedup(
             [members_by_name[e.name] for e in es], label_g, panel,
             mining_end, args.decay_months, args.max_corr,
         )
@@ -283,6 +299,7 @@ def main() -> None:
             "horizon_days": horizon,
             "horizon_source": horizon_src,
             "member_label_days": {e.name: ld for e, ld in zip(es, member_label_days)},
+            "orientation": orientation,
             "kept": [e.name for e, _ in kept],
             "dropped": dropped_g,
         }
@@ -341,9 +358,12 @@ def main() -> None:
     winner = max(sorted(method_results), key=lambda m: _icir(method_results[m]))
     print(f"赢家（预注册：mining ICIR 最高）：{winner}")
 
-    # ⑦ null 校准（随机成员子集 + 等权，mining 窗口内）
+    # ⑦ null 校准（随机同规模成员子集 + 等权，mining 窗口内）
+    # 池成员使用与组内相同的方向归一数组（orientation 按 mining IC 符号）
+    orientation_by_group = {g: group_report[g]["orientation"] for g in grouped}
     all_members_by_group = {
-        g: [(e, tr) for e in es for tr in [members_by_name[e.name][2]]]
+        g: [(e, members_by_name[e.name][2] * orientation_by_group[g].get(e.name, 1.0))
+            for e in es]
         for g, es in grouped.items()
     }
     null_result = _null_calibration(
@@ -396,7 +416,8 @@ def main() -> None:
         "time_isolation": "holdout（权重学习/去重/null 全在 mining 窗口；OOS 每方法各读一次）",
         "args": {k: v for k, v in vars(args).items()},
     }
-    (out_dir / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=1, default=str))
+    (out_dir / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=1, default=str),
+                                         encoding="utf-8")
     print(f"报告已写入 {out_dir / 'report.json'}")
 
     if args.write_pred and first_clean is not None:
