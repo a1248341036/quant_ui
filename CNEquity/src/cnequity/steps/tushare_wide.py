@@ -308,6 +308,15 @@ def _make_incremental_step(
         if watermark:
             start_str = _ts_date(watermark + timedelta(days=1))
             mode = "incremental"
+        elif getattr(config, "_backfill", False) and getattr(config, "_backfill_start", None):
+            # Deep-history rebuild: `cne backfill <ds> --start YYYY-MM-DD` must
+            # reach per-stock incremental steps, whose design assumption
+            # ("history already in curated from the one-time import") is void
+            # when the curated layer itself was rebuilt from scratch. Without
+            # this, a backfill on a fresh lake silently degrades to the 30d
+            # lookback below and reports success with zero rows.
+            start_str = _ts_date(config._backfill_start)
+            mode = f"backfill from {start_str}"
         else:
             # First run: use a lookback window instead of unbounded full
             # history.  Historical data is already in curated from the

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -40,6 +41,21 @@ DEFAULT_CONFIG = USER_CONFIG
 # spans a full A-share cycle plus two annual report seasons, so the lake it
 # builds can answer a real question rather than only prove the pipeline runs.
 QUICK_PROFILE_YEARS = 3
+
+# 2026-09-03 incident: a provisioning-style re-init flow pointed at the
+# production lake wiped curated/derived and `cne config init --force` clobbered
+# the quant_dataset config. Init is a NEW-lake entry point with no guard of its
+# own, so it is disabled unless the operator explicitly opts back in.
+INIT_GUARD_ENV = "CNE_ALLOW_INIT"
+
+
+def _refuse_init(command: str) -> None:
+    raise click.ClickException(
+        f"{command} is disabled by policy (2026-09-03 lake-wipe incident). "
+        "Init is a NEW-lake entry point and must never be pointed at an "
+        "existing lake. To run it for a genuinely fresh lake, set "
+        f"{INIT_GUARD_ENV}=1."
+    )
 
 
 def _init_history_start(profile: str, since_str: str | None, trade_date: date) -> date | None:
@@ -268,6 +284,8 @@ def init(
 
     Or take everything up front with `--profile full`.
     """
+    if os.environ.get(INIT_GUARD_ENV) != "1":
+        _refuse_init("cne init")
     _progress_logging(quiet)
     cfg = _cfg(config_path)
     init_data_layout(cfg)
@@ -331,6 +349,8 @@ def config_cmd(action: str, config_path: str, force: bool, data_root: str | None
     """
     if action == "init":
         out = Path(config_path)
+        if out.exists():
+            _refuse_init(f"cne config init (would overwrite existing config: {out})")
         try:
             write_user_config(out, data_root=data_root, force=force)
         except FileExistsError as exc:
