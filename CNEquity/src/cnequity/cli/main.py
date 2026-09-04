@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -13,8 +14,10 @@ import cnequity.steps  # noqa: F401 — register steps
 from cnequity.config import WaveConfig, load_config, validate_config, write_user_config
 from cnequity.derive.adj_factors import compute_adj_factors
 from cnequity.domain.datasets import (
+    DATASETS,
     fetch_semantics,
     get_dataset,
+    is_dataset_enabled,
 )
 from cnequity.domain.market_time import is_session_final, shanghai_today
 from cnequity.orchestrator.engine import JobEngine
@@ -745,8 +748,31 @@ def run_catchup(
 
 
 @cli.command()
-@click.argument("dataset")
+@click.argument("dataset", nargs=-1, required=False)
 @click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
+@click.option(
+    "--all",
+    "do_all",
+    is_flag=True,
+    help="Backfill every ingestible dataset (skips snapshot-only, retired, and "
+    "disabled ones), grouped by source: sources run in parallel (--jobs), "
+    "datasets within one source run serially so the vendor limiter is shared.",
+)
+@click.option(
+    "--jobs",
+    "jobs",
+    default=2,
+    show_default=True,
+    help="Parallel source groups in multi-dataset mode. Each dataset runs in "
+    "its own subprocess; datasets sharing a source stay serial.",
+)
+@click.option(
+    "--no-resume",
+    "no_resume",
+    is_flag=True,
+    help="Re-run datasets that already have an ok marker from a previous "
+    "multi-dataset backfill (default: skip them).",
+)
 @click.option(
     "--retry-failed",
     is_flag=True,
@@ -789,6 +815,53 @@ def run_catchup(
     "throttled to 1 req/s (aggregate up to N req/s, bypassing the source limiter).",
 )
 def backfill(
+    dataset: tuple[str, ...],
+    config_path: str,
+    do_all: bool,
+    jobs: int,
+    no_resume: bool,
+    retry_failed: bool,
+    force: bool,
+    start_str: str | None,
+    end_str: str | None,
+    symbols_str: str | None,
+    workers: int,
+):
+    """Backfill a dataset, or orchestrate several (--all or multiple DATASETs).
+
+    Multi-dataset mode groups datasets by their primary source and runs source
+    groups in parallel (subprocess per dataset, serial within a source so the
+    vendor limiter is shared). Progress markers under ``meta/state/rebuild``
+    make a re-invocation resume: already-ok datasets are skipped unless
+    ``--no-resume``.
+    """
+    datasets = [d for d in dataset if d] if dataset else []
+    if do_all and datasets:
+        raise click.ClickException("Use either --all or explicit DATASET names, not both.")
+    if not do_all and len(datasets) <= 1:
+        # Single-dataset path -- unchanged behaviour.
+        if not datasets:
+            raise click.ClickException("Provide a DATASET or use --all.")
+        _backfill_single(
+            datasets[0], config_path, retry_failed, force,
+            start_str, end_str, symbols_str, workers,
+        )
+        return
+    _backfill_many(
+        cfg=None,
+        config_path=config_path,
+        datasets=datasets,
+        do_all=do_all,
+        jobs=jobs,
+        resume=not no_resume,
+        start_str=start_str,
+        end_str=end_str,
+        workers=workers,
+        symbols_str=symbols_str,
+    )
+
+
+def _backfill_single(
     dataset: str,
     config_path: str,
     retry_failed: bool,
@@ -1007,6 +1080,145 @@ def _backfill_once(cfg, dataset: str) -> dict:
     # staging that never reached curated (same ordering as delisted CLI).
     result = engine.run_job("backfill", steps=[dataset], backfill=True, finalize_run=False)
     return _finish_backfill_run(engine, result)
+
+
+# Marker directory for multi-dataset backfill orchestration. Lives under
+# meta/state so it travels with the lake and dies with `cne init` on a fresh
+# lake -- a stale ok marker must never survive a lake rebuild.
+def _rebuild_marker_dir(config) -> Path:
+    d = config.meta_root / "state" / "backfill_markers"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _backfill_skippable(spec) -> str | None:
+    """Reason a dataset cannot honestly backfill, or None when it can."""
+    if spec.source_retired_date is not None:
+        return "source retired"
+    if spec.cadence == "skip":
+        return "cadence skip (source unreliable / middleware limitation)"
+    if spec.fetch_semantics == "snapshot" and not spec.backfill_source:
+        return "snapshot semantics (live page, no history)"
+    return None
+
+
+def _backfill_plan(config, datasets: list[str] | None, start: date | None, end: date | None) -> dict:
+    """Group ingestible datasets by primary source for parallel backfill."""
+    skippable: dict[str, str] = {}
+    selected: list[str] = []
+    if datasets:
+        unknown = [d for d in datasets if DATASETS.get(d) is None]
+        if unknown:
+            raise click.ClickException(f"Unknown dataset(s): {', '.join(unknown)}")
+        selected = list(datasets)
+        for d in selected:
+            reason = _backfill_skippable(DATASETS[d])
+            if reason:
+                skippable[d] = reason
+        selected = [d for d in selected if d not in skippable]
+    else:
+        for name, spec in DATASETS.items():
+            if not is_dataset_enabled(name, config):
+                continue
+            reason = _backfill_skippable(spec)
+            if reason:
+                skippable[name] = reason
+                continue
+            selected.append(name)
+        selected.sort()
+
+    by_source: dict[str, list[str]] = {}
+    for d in selected:
+        by_source.setdefault(DATASETS[d].primary_source, []).append(d)
+    # Largest group first so the longest lane starts earliest.
+    groups = sorted(by_source.items(), key=lambda kv: -len(kv[1]))
+    return {"groups": groups, "skippable": skippable}
+
+
+def _backfill_many(
+    *,
+    cfg,
+    config_path: str,
+    datasets: list[str],
+    do_all: bool,
+    jobs: int,
+    resume: bool,
+    start_str: str | None,
+    end_str: str | None,
+    workers: int,
+    symbols_str: str | None,
+) -> None:
+    """Orchestrate multi-dataset backfill: source groups in parallel, serial
+    within a group, one subprocess per dataset, resumable via markers."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    import subprocess as sp
+
+    plan_cfg = _cfg(config_path)
+    plan = _backfill_plan(plan_cfg, datasets or None, None, None)
+    groups, skippable = plan["groups"], plan["skippable"]
+    if not groups:
+        raise click.ClickException("Nothing to backfill: every dataset was skipped.")
+    click.echo(f"backfill plan: {sum(len(g) for _, g in groups)} dataset(s) "
+               f"in {len(groups)} source group(s), jobs={jobs}")
+    for source, members in groups:
+        click.echo(f"  [{source}] {' '.join(members)}")
+    for name, reason in sorted(skippable.items()):
+        click.echo(f"  [skip] {name}: {reason}")
+
+    marker_dir = _rebuild_marker_dir(plan_cfg)
+    started = date.today().isoformat()
+    results: dict[str, dict] = {}
+
+    def _run_group(source: str, members: list[str]) -> None:
+        for name in members:
+            marker = marker_dir / f"{name}.done"
+            if resume and marker.exists():
+                results[name] = {"status": "skipped (marker)"}
+                click.echo(f"[{source}] {name}: skipped (marker)", err=True)
+                continue
+            cmd = [
+                sys.executable, "-m", "cnequity.cli.main", "backfill", name,
+                "--config", config_path, "--workers", str(workers),
+            ]
+            if start_str:
+                cmd += ["--start", start_str]
+            if end_str:
+                cmd += ["--end", end_str]
+            if symbols_str and name in SCOPED_DATASETS:
+                cmd += ["--symbols", symbols_str]
+            click.echo(f"[{source}] {name}: start", err=True)
+            proc = sp.run(cmd, cwd=Path.cwd())
+            ok = proc.returncode == 0
+            if ok:
+                marker.write_text(f"ok {started}", encoding="utf-8")
+            results[name] = {"status": "ok" if ok else f"failed (exit {proc.returncode})"}
+            click.echo(f"[{source}] {name}: {'ok' if ok else f'FAILED exit={proc.returncode}'}", err=True)
+
+    # More source groups than lanes: round-robin assign groups to lanes so
+    # each lane is one serial subprocess chain and the lane count caps the
+    # concurrent-vendor pressure.
+    lane_count = max(1, min(jobs, len(groups)))
+    lane_members: list[list[str]] = [[] for _ in range(lane_count)]
+    for idx, (source, members) in enumerate(groups):
+        lane_members[idx % lane_count].extend(members)
+    lanes = [(f"lane{i+1}", members) for i, members in enumerate(lane_members) if members]
+
+    with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
+        futures = [pool.submit(_run_group, source, members) for source, members in lanes]
+        for fut in futures:
+            fut.result()
+
+    ok_n = sum(1 for r in results.values() if r["status"] == "ok")
+    skip_n = sum(1 for r in results.values() if str(r["status"]).startswith("skipped"))
+    fail_n = len(results) - ok_n - skip_n
+    click.echo(f"backfill done: {ok_n} ok, {skip_n} skipped, {fail_n} failed "
+               f"({len(skippable)} not backfillable)")
+    if fail_n:
+        for name, r in sorted(results.items()):
+            if r["status"] != "ok" and not str(r["status"]).startswith("skipped"):
+                click.echo(f"  FAILED: {name}: {r['status']}")
+        raise SystemExit(1)
 
 
 def _backfill_symbol_chunked(cfg, dataset: str, start: date, end: date, chunk_symbols: int) -> dict:

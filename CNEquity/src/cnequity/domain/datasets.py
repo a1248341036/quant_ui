@@ -13,12 +13,12 @@ a registered step.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from typing import Literal
 
 from cnequity.domain.partitions import Granularity, partition_value
 
-FetchSemantics = Literal["by_date", "snapshot"]
+FetchSemantics = Literal["by_date", "snapshot", "rolling_window"]
 HistoryMode = Literal["by_date", "snapshot_with_backfill", "snapshot_only"]
 Layer = Literal["curated", "derived", "external"]
 
@@ -80,6 +80,12 @@ class DatasetSpec:
         ``by_date`` — source returns values for a requested day (gap catch-up
         allowed). ``snapshot`` — live page stamped with trade_date; historical
         replay would forge rows, so only the run day is ever fetched.
+        ``rolling_window`` — a live page, but the vendor serves a *rolling
+        history window*: requesting past dates within
+        ``history_horizon_days`` returns genuine historical rows, so backfill
+        may walk the reachable window (news_headlines: the 7×24 wire list
+        pages backwards ~2 weeks). Outside the horizon it behaves exactly like
+        ``snapshot`` — never forge rows the source did not serve.
     watermark:
         Maintain a date watermark under ``meta/state`` (False for datasets
         partitioned by non-date keys like report_period).
@@ -741,7 +747,8 @@ _SPECS = [
         tier="L7",
         partition_col="publish_date",
         partition_granularity="month",
-        fetch_semantics="snapshot",
+        fetch_semantics="rolling_window",
+        history_horizon_days=14,
         description="新闻提要",
     ),
     DatasetSpec(
@@ -750,7 +757,8 @@ _SPECS = [
         tier="L7",
         partition_col="publish_date",
         partition_granularity="month",
-        fetch_semantics="snapshot",
+        fetch_semantics="rolling_window",
+        history_horizon_days=14,
         description="东方财富7×24快讯",
     ),
     DatasetSpec(
@@ -1183,6 +1191,29 @@ def intraday_datasets() -> dict[str, str]:
 def fetch_semantics(dataset: str) -> FetchSemantics:
     spec = DATASETS.get(dataset)
     return spec.fetch_semantics if spec else "by_date"
+
+
+def backfill_reachable_floor(dataset: str, start: date | None, today: date) -> date | None:
+    """Earliest date a backfill may honestly request, or None when unbounded.
+
+    ``None`` when the dataset either does not backfill or has no vendor
+    horizon. For a ``rolling_window`` dataset the reachable floor is
+    ``today - history_horizon_days``: requesting older dates would either
+    return nothing or forge a stamp over a live page, and the caller should
+    clip its window (and report the unreachable remainder) rather than run it.
+    """
+    spec = DATASETS.get(dataset)
+    if spec is None:
+        return None
+    if spec.fetch_semantics != "rolling_window":
+        return None
+    horizon = spec.history_horizon_days or 0
+    if horizon <= 0:
+        return None
+    floor = today - timedelta(days=horizon)
+    if start is not None and start > floor:
+        return start
+    return floor
 
 
 def history_mode_for(spec: DatasetSpec) -> HistoryMode:

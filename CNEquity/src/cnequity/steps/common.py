@@ -335,6 +335,40 @@ def fetch_incremental_daily(
                 f"{dataset}: backfill not supported — fetch semantics are snapshot "
                 "(live page stamped with trade_date; historical values unavailable)"
             )
+        if semantics == "rolling_window":
+            # The vendor serves a rolling history window: walk every requested
+            # date in [backfill_start, backfill_end] clipped to the horizon.
+            # Each date is fetched and stamped individually -- a live-page
+            # fetcher that ignores the date fails the trade-date validation
+            # below rather than forging a partition.
+            from cnequity.domain.datasets import backfill_reachable_floor
+
+            start = getattr(config, "_backfill_start", None)
+            end = getattr(config, "_backfill_end", None) or trade_date
+            if start is None:
+                start = end
+            floor = backfill_reachable_floor(dataset, None, date.today())
+            if floor and start < floor:
+                logger.warning(
+                    "%s: backfill start %s predates the vendor's rolling window "
+                    "(reachable from %s); clipping",
+                    dataset, start.isoformat(), floor.isoformat(),
+                )
+                start = floor
+            frames: list[pl.DataFrame] = []
+            cursor = start
+            while cursor <= end:
+                part = fetch_fn(cursor)
+                if not part.is_empty():
+                    _validate_trade_date(part, dataset, cursor, date_col=date_col)
+                    frames.append(part)
+                cursor += timedelta(days=1)
+            frame = pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
+            if frame.is_empty() and not allow_empty:
+                raise RuntimeError(
+                    f"{dataset}: no rows returned for {start.isoformat()}..{end.isoformat()}"
+                )
+            return frame, []
         frame = fetch_fn(trade_date)
         if frame.is_empty() and not allow_empty:
             raise RuntimeError(f"{dataset}: no rows returned for {trade_date.isoformat()}")
@@ -342,11 +376,17 @@ def fetch_incremental_daily(
         return frame, []
 
     spec = DATASETS.get(dataset)
-    if semantics == "snapshot" and spec is not None and not spec.watermark:
+    if (
+        semantics in ("snapshot", "rolling_window")
+        and spec is not None
+        and not spec.watermark
+    ):
         # Rolling live windows (for example share_unlock_schedule) are not
         # incremental histories. Do not use a legacy state file to manufacture
         # gap dates; the current snapshot is the only honest request and its
-        # future event dates must never become a watermark.
+        # future event dates must never become a watermark. rolling_window
+        # datasets likewise fetch only the run day on the daily path -- the
+        # vendor's own window makes historical catch-up a backfill concern.
         dates = [trade_date]
     else:
         dates = incremental_trade_dates(config, dataset, trade_date)
