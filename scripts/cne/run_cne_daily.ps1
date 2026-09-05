@@ -152,7 +152,10 @@ function Invoke-EtfFund {
 
 function Backup-Meta {
     if ($NoBackup) { return }
-    $metaDir = Join-Path $CneRoot "data\cnequity\meta"
+    # Real meta lives under the lake root (configs resolve [data].root to
+    # CNEquity\data\quant_dataset\_cnequity); the old path here never existed,
+    # so every backup silently no-opped.
+    $metaDir = Join-Path $CneRoot "data\quant_dataset\_cnequity\meta"
     if (-not (Test-Path $metaDir)) {
         Write-Log "backup: meta dir not found: $metaDir"
         return
