@@ -13,6 +13,7 @@ from alphaagent.factor.mining.eval.prediction import (
     GATING_OP_RE,
     build_ablation_check,
     build_prediction_check,
+    describe_prediction_issues,
     normalize_prediction,
 )
 
@@ -36,15 +37,21 @@ def _prediction_argument_error(arguments: dict[str, Any]) -> dict[str, Any] | No
     prediction_warning，同工具累计缺失 ≥ ``_PREDICTION_SOFT_LIMIT`` 次才拦截
     ——GLM 系 provider 不稳定遵守 schema required，硬拦截会导致整轮并发
     tool_calls 作废重试（实测一次 run 白烧 ~19 分钟），代价远大于纪律收益。
+
+    2026-09-05 两层改进：①枚举别名归一（"D10"→high_factor 等，语义对但
+    词汇错的输入直接放行——上下文满屏 D1~D10，强求切换词汇是逆 LLM 天性）；
+    ②真正非法时错误信息逐字段回显"收到什么/合法值是什么"，省掉盲猜重试
+    （实测 7 次调用因错误信息不带实际值而连续失败）。
     """
     pred = normalize_prediction(arguments.get("prediction"))
     if arguments.get("prediction") is None:
         return None  # 缺失 → 软门
     if pred is None:
+        issues = describe_prediction_issues(arguments.get("prediction"))
         return {
             "ok": False,
             "error": (
-                "prediction_invalid: prediction 携带但字段非法——"
+                f"prediction_invalid: {issues or '字段非法'}——"
                 '{"expected_shape": "monotonic_increasing|monotonic_decreasing|inverted_u|u_shape|spike_at_extreme|irregular", '
                 '"expected_strong_side": "high_factor|low_factor|middle", "expected_sign": 1|-1, "falsifier": "可选"}。'
                 "评估结果会自动对账注入 prediction_check——预期被证伪说明机制错误，"

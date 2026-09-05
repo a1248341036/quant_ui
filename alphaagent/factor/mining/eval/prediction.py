@@ -156,14 +156,73 @@ def classify_decile_shape(decile_rows: list[dict[str, Any]] | None, *, n_deciles
 
 # ── A: 预测对账 ──
 
+# 别名归一（2026-09-05 实测：GLM 系会传 "D10" 之类分位组词汇而非端位枚举，
+# 一次 run 7 次调用全部被拒——评估上下文满屏 D1~D10，强求切换词汇体系是
+# 逆 LLM 天性的；语义对但词汇错的输入做确定性归一，真正非法的才拒。）
+_SIDE_ALIASES = {
+    "high_factor": "high_factor", "high": "high_factor", "top": "high_factor",
+    "d8": "high_factor", "d9": "high_factor", "d10": "high_factor",
+    "q8": "high_factor", "q9": "high_factor", "q10": "high_factor",
+    "low_factor": "low_factor", "low": "low_factor", "bottom": "low_factor",
+    "d1": "low_factor", "d2": "low_factor", "d3": "low_factor",
+    "q1": "low_factor", "q2": "low_factor", "q3": "low_factor",
+    "middle": "middle", "mid": "middle",
+    "d4": "middle", "d5": "middle", "d6": "middle", "d7": "middle",
+    "q4": "middle", "q5": "middle", "q6": "middle", "q7": "middle",
+}
+
+_SHAPE_SEP_RE = re.compile(r"[\s\-]+")
+
+_SHAPE_EXTRA_ALIASES = {
+    "ushape": "u_shape",
+    "invertedu": "inverted_u",
+    "monotonicincreasing": "monotonic_increasing",
+    "monotonicdecreasing": "monotonic_decreasing",
+    "spike": "spike_at_extreme",
+    "spikeatextreme": "spike_at_extreme",
+}
+
+
+def _canon_shape(value: Any) -> str | None:
+    if value is None:
+        return None
+    key = _SHAPE_SEP_RE.sub("_", str(value).strip().lower())
+    if key in _VALID_SHAPES:
+        return key
+    return _SHAPE_EXTRA_ALIASES.get(key)
+
+
+def _canon_side(value: Any) -> str | None:
+    if value is None:
+        return None
+    return _SIDE_ALIASES.get(str(value).strip().lower())
+
+
+def _canon_sign(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        if value == 1:
+            return 1
+        if value == -1:
+            return -1
+        return None
+    s = str(value).strip().lower()
+    if s in ("1", "+1", "positive", "pos", "+", "long"):
+        return 1
+    if s in ("-1", "negative", "neg", "-", "short"):
+        return -1
+    return None
+
+
 def normalize_prediction(prediction: Any) -> dict[str, Any] | None:
-    """校验并规范化 prediction；不合法返回 None。"""
+    """校验并规范化 prediction（含别名归一）；不合法返回 None。"""
     if not isinstance(prediction, dict):
         return None
-    shape = prediction.get("expected_shape")
-    side = prediction.get("expected_strong_side")
-    sign = prediction.get("expected_sign")
-    if shape not in _VALID_SHAPES or side not in _VALID_SIDES or sign not in (1, -1):
+    shape = _canon_shape(prediction.get("expected_shape"))
+    side = _canon_side(prediction.get("expected_strong_side"))
+    sign = _canon_sign(prediction.get("expected_sign"))
+    if shape is None or side is None or sign is None:
         return None
     return {
         "expected_shape": shape,
@@ -171,6 +230,35 @@ def normalize_prediction(prediction: Any) -> dict[str, Any] | None:
         "expected_sign": int(sign),
         "falsifier": str(prediction.get("falsifier") or "").strip() or None,
     }
+
+
+def describe_prediction_issues(prediction: Any) -> str | None:
+    """逐字段描述 prediction 的非法原因（供工具错误信息回显实际值）。
+
+    normalize 成功（含别名纠正）时不会走到本函数；这里只处理真正非法的输入，
+    告诉 LLM "哪个字段、收到了什么、合法值是什么"——省掉盲猜重试。
+    """
+    if not isinstance(prediction, dict):
+        return f"prediction 必须是对象（收到 {type(prediction).__name__}）"
+    issues: list[str] = []
+    shape_raw = prediction.get("expected_shape")
+    if _canon_shape(shape_raw) is None:
+        issues.append(
+            f"expected_shape 收到 {shape_raw!r}，合法值: "
+            "monotonic_increasing|monotonic_decreasing|inverted_u|u_shape|spike_at_extreme|irregular"
+        )
+    side_raw = prediction.get("expected_strong_side")
+    if _canon_side(side_raw) is None:
+        issues.append(
+            f"expected_strong_side 收到 {side_raw!r}，合法值: high_factor|low_factor|middle"
+            "（分位组别名 D8-D10→high_factor、D1-D3→low_factor、D4-D7→middle 也可）"
+        )
+    sign_raw = prediction.get("expected_sign")
+    if _canon_sign(sign_raw) is None:
+        issues.append(f"expected_sign 收到 {sign_raw!r}，合法值: 1|-1")
+    if not issues:
+        return None
+    return "；".join(issues)
 
 
 def build_prediction_check(

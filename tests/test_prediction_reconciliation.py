@@ -311,3 +311,91 @@ class TestBuildAblationCheck:
     def test_missing_ic(self):
         check = build_ablation_check({}, {"ic": 0.03}, base_expr="x")
         assert check["verdict"] == "unverifiable"
+
+
+class TestPredictionAliasAndErrorDetail:
+    """2026-09-05：别名归一（"D10"→high_factor）+ 错误信息逐字段回显。
+
+    实测一次 run 7 次调用因 expected_strong_side="D10" 全部被拒，错误信息
+    不带实际值导致 LLM 盲猜重试。
+    """
+
+    def test_side_alias_decile(self):
+        from alphaagent.factor.mining.eval.prediction import normalize_prediction
+
+        pred = normalize_prediction({
+            "expected_shape": "monotonic_increasing",
+            "expected_strong_side": "D10",
+            "expected_sign": 1,
+        })
+        assert pred is not None
+        assert pred["expected_strong_side"] == "high_factor"
+        # D1/D4/Q 别名
+        assert normalize_prediction({
+            "expected_shape": "u_shape", "expected_strong_side": "d1", "expected_sign": -1,
+        })["expected_strong_side"] == "low_factor"
+        assert normalize_prediction({
+            "expected_shape": "inverted_u", "expected_strong_side": "Q5", "expected_sign": 1,
+        })["expected_strong_side"] == "middle"
+
+    def test_shape_alias_variants(self):
+        from alphaagent.factor.mining.eval.prediction import normalize_prediction
+
+        for raw in ("u-shape", "u shape", "u_shape"):
+            pred = normalize_prediction({
+                "expected_shape": raw, "expected_strong_side": "high_factor", "expected_sign": 1,
+            })
+            assert pred is not None and pred["expected_shape"] == "u_shape"
+
+    def test_sign_alias(self):
+        from alphaagent.factor.mining.eval.prediction import normalize_prediction
+
+        for raw in ("1", "+1", "positive", 1.0):
+            pred = normalize_prediction({
+                "expected_shape": "irregular", "expected_strong_side": "high", "expected_sign": raw,
+            })
+            assert pred is not None and pred["expected_sign"] == 1
+        # bool 不是合法 sign
+        assert normalize_prediction({
+            "expected_shape": "irregular", "expected_strong_side": "high", "expected_sign": True,
+        }) is None
+
+    def test_truly_invalid_returns_none(self):
+        from alphaagent.factor.mining.eval.prediction import normalize_prediction
+
+        assert normalize_prediction({
+            "expected_shape": "monotonic_increasing",
+            "expected_strong_side": "strongest",  # 无法归一
+            "expected_sign": 1,
+        }) is None
+
+    def test_dispatch_error_echoes_actual_value(self):
+        """真正非法时错误信息必须包含实际收到的值。"""
+        from alphaagent.factor.mining.tools._dispatch import _prediction_argument_error
+
+        err = _prediction_argument_error({
+            "multi_line_expr": "x",
+            "prediction": {
+                "expected_shape": "monotonic_increasing",
+                "expected_strong_side": "strongest",
+                "expected_sign": 1,
+            },
+        })
+        assert err is not None
+        assert "expected_strong_side" in err["error"]
+        assert "'strongest'" in err["error"]
+        assert "D8-D10" in err["error"]
+
+    def test_dispatch_passes_alias(self):
+        """别名纠正后直接放行（此前 "D10" 被拒）。"""
+        from alphaagent.factor.mining.tools._dispatch import _prediction_argument_error
+
+        err = _prediction_argument_error({
+            "multi_line_expr": "x",
+            "prediction": {
+                "expected_shape": "monotonic_increasing",
+                "expected_strong_side": "D10",
+                "expected_sign": 1,
+            },
+        })
+        assert err is None
