@@ -300,9 +300,58 @@ def verify_dataset(
 ) -> list[Gap]:
     """Coverage gaps for one dataset. Read-only."""
     gaps: list[Gap] = []
-    root = _dataset_root(config, spec)
     repairable = _backfillable(spec)
     anchor = _effective_anchor(spec, anchor)
+
+    if spec.layer == "external":
+        # External datasets live in adapter-controlled files (tushare wide,
+        # pg_parquet, local assets), never under curated/.  Scanning the
+        # sentinel root below would misreport every bridged dataset as
+        # "empty, repairable" and offer an API backfill that re-fetches rows
+        # the bridge already serves — the 2026-09 repair loop burned hours
+        # exactly this way.  Judge them by the adapter's own coverage.
+        from cnequity.external.registry import (
+            external_adapter,
+            external_coverage_bounds,
+        )
+
+        adapter = external_adapter(config, spec.name)
+        first, last = external_coverage_bounds(config, spec.name)
+        if adapter is None or last is None:
+            if spec.required:
+                gaps.append(
+                    Gap(
+                        dataset=spec.name,
+                        kind="empty",
+                        detail=(
+                            "no external adapter enabled"
+                            if adapter is None
+                            else "external adapter has no readable data"
+                        ),
+                        repairable=False,
+                    )
+                )
+            return gaps
+        mark = watermark or last
+        if is_stale(spec.name, mark, anchor):
+            # The cure for a stale bridge is its feed (daily sync /
+            # refresh_data), not a curated backfill — do not offer one.
+            gaps.append(
+                Gap(
+                    dataset=spec.name,
+                    kind="stale",
+                    detail=(
+                        f"freshest {mark.isoformat()} vs anchor {anchor.isoformat()} "
+                        f"(tolerance {spec.max_staleness_days}d)"
+                    ),
+                    repairable=False,
+                    start=mark,
+                    end=anchor,
+                )
+            )
+        return gaps
+
+    root = _dataset_root(config, spec)
 
     if not dataset_has_parquet(root):
         # An optional dataset with nothing in it is a configuration choice, not
