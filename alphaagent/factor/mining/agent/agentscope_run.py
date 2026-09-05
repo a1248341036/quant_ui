@@ -547,7 +547,9 @@ async def run_factor_mining_agentscope(
             if hasattr(agent, "_system_prompt"):
                 agent._system_prompt = _new_prompt
                 agent._current_prompt_phase = _phase
-                logger.info("prompt phase switched: turn=%d phase=%s", outer_turn, _phase)
+                # steps.log 统一出口（runlog.log_step 自带异常吞噬；不要裸用 logger 全局，
+                # 本模块未定义 logger——曾经导致 run 第一轮 phase 切换即 NameError 崩溃）
+                log_step("prompt_phase", f"turn={outer_turn} phase={_phase}")
                 _emit("prompt_phase", {"turn": outer_turn, "phase": _phase})
 
         if outer_turn == 0:
