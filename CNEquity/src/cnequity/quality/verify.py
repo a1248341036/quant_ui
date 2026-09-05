@@ -358,6 +358,18 @@ def verify_dataset(
         # a gap — minute bars are off by default and saying otherwise every run
         # is how a report gets ignored.
         if spec.required:
+            adapter = None
+            if spec.layer == "curated":
+                from cnequity.external.registry import external_adapter
+
+                adapter = external_adapter(config, spec.name)
+            if adapter is not None and type(adapter).__name__ == "LocalAssetsAdapter":
+                # Bridge-by-design: the data/etf and data/fund panels are
+                # managed outside the lake and mounted read-only; the adapter
+                # docstring is explicit that no curated copy is expected.
+                # Reporting "empty, repairable" here sends repair off to
+                # re-fetch data the bridge already serves.
+                return gaps
             gaps.append(
                 Gap(
                     dataset=spec.name,
