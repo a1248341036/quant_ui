@@ -350,10 +350,21 @@ def step_financial_statement_items(
 ) -> dict:
     if not config.sources.get("eastmoney", True):
         raise RuntimeError("financial_statement_items: eastmoney source disabled in config")
+    backfill = getattr(config, "_backfill", False)
+    if not backfill:
+        # Quarterly cadence skip for the daily path (see _run_shareholder_step).
+        from cnequity.domain.datasets import should_fetch
+        from cnequity.storage.state import StateStore
+
+        watermark = StateStore(config.meta_root).get_date("financial_statement_items")
+        if not should_fetch("financial_statement_items", watermark, trade_date):
+            StateStore(config.meta_root).set_date(
+                "financial_statement_items", trade_date
+            )
+            return {"rows_read": 0, "rows_written": 0, "status": "success"}
     # Quarterly data: daily runs pick up same-day announcements; backfill walks
     # every report period from 2001 (CLI --start/--end clips the walk;
     # NOTICE_DATE incremental cannot reach history).
-    backfill = getattr(config, "_backfill", False)
     df = fetch_financial_statement_items(trade_date, backfill=backfill, config=config)
     missing_periods: set[str] = set()
     missing_statement_types: dict[str, list[str]] = {}
@@ -493,6 +504,18 @@ def _run_shareholder_step(
         windows = _year_windows(start, end)
         by = CHANGE_DATE
     else:
+        # Quarterly cadence: skip the fetch inside a period the watermark
+        # already covers (the pre-2026-09 skip-step wrapper used to do this
+        # from tushare_wide.py, but re-registering there shadowed the real
+        # step and turned every backfill of these datasets into a 0-row
+        # success — see that module).
+        from cnequity.domain.datasets import should_fetch
+        from cnequity.storage.state import StateStore
+
+        watermark = StateStore(config.meta_root).get_date(dataset)
+        if not should_fetch(dataset, watermark, trade_date):
+            StateStore(config.meta_root).set_date(dataset, trade_date)
+            return {"rows_read": 0, "rows_written": 0, "status": "success"}
         windows = [(trade_date - timedelta(days=daily_lookback_days), trade_date)]
         by = daily_by
 

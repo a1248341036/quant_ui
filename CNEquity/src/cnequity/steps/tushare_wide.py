@@ -424,18 +424,23 @@ _make_incremental_step("income",         api="income",         depends_on=["inst
 _make_incremental_step("cashflow",       api="cashflow",       depends_on=["instruments"], group="fundamentals", max_workers=5)
 _make_incremental_step("fina_indicator", api="fina_indicator", depends_on=["instruments"], group="fundamentals", max_workers=5)
 
-# EastMoney fundamentals — skip (source unreliable, historical data in curated)
-# financial_statement_items, earnings_disclosure_schedule, share_structure,
-# top_holders all fetch from EastMoney on every run (no watermark check).
-# EastMoney frequently times out or returns partial data. Historical data is
-# already in the curated layer (cover to 2026-08-22). These steps advance the
-# watermark without fetching; run `cne backfill` for a full refresh when needed.
+# EastMoney fundamentals — daily-run skip.
+# The real EastMoney steps live in fundamentals.py (financial_statement_items,
+# share_structure, top_holders) and events.py (earnings_disclosure_schedule).
+# This module is imported LAST in cnequity/steps/__init__.py, so a same-name
+# registration here would silently shadow those real steps — and did: every
+# `cne backfill` of the four reported success with 0 rows while the run's wall
+# time went entirely to compact. For the daily path, skip is still the wanted
+# behaviour (EastMoney is throttled/lossy; the historical lake is authoritative),
+# so express that as "do not register here" rather than re-registering:
+# the daily cadence skip lives in the real steps themselves.
+#
 # (shareholder_counts was in this list until it moved to the real Tushare step
 # below — stk_holdernumber ann_date batch probes verified 2026-09.)
-_make_skip_step("financial_statement_items", group="fundamentals", depends_on=["instruments"])
-_make_skip_step("earnings_disclosure_schedule", group="fundamentals", depends_on=["instruments"])
-_make_skip_step("share_structure", group="fundamentals", depends_on=["instruments"])
-_make_skip_step("top_holders", group="fundamentals", depends_on=["instruments"])
+_SKIP_IN_DAILY_BUT_NEVER_REGISTER_HERE = (
+    "financial_statement_items", "earnings_disclosure_schedule",
+    "share_structure", "top_holders",
+)
 
 # L2/L8 corporate events — full-market ann_date batch
 _make_ann_date_step("dividend",            api="dividend",      depends_on=["instruments"], group="events")

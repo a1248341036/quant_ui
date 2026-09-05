@@ -289,9 +289,20 @@ def step_earnings_disclosure_schedule(
 ) -> dict:
     if not config.sources.get("eastmoney", True):
         raise RuntimeError("earnings_disclosure_schedule: eastmoney source disabled in config")
+    backfill = getattr(config, "_backfill", False)
+    if not backfill:
+        # Quarterly cadence skip for the daily path — the skip-step wrapper
+        # that used to do this in tushare_wide.py shadowed the real step and
+        # turned every backfill into a 0-row success (see that module).
+        from cnequity.domain.datasets import should_fetch
+        from cnequity.storage.state import StateStore
+
+        watermark = StateStore(config.meta_root).get_date("earnings_disclosure_schedule")
+        if not should_fetch("earnings_disclosure_schedule", watermark, trade_date):
+            StateStore(config.meta_root).set_date("earnings_disclosure_schedule", trade_date)
+            return {"rows_read": 0, "rows_written": 0, "status": "success"}
     # Period-keyed like financial_statement_items (watermark=False): daily runs
     # refresh the open disclosure windows; backfill walks every period 2016+.
-    backfill = getattr(config, "_backfill", False)
     df = _validate_earnings_schedule_snapshot(
         fetch_earnings_disclosure_schedule(trade_date, backfill=backfill, config=config)
     )
