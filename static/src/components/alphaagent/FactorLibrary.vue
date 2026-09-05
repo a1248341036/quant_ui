@@ -141,7 +141,7 @@
 <script>
 import { api } from '../../utils/api.js'
 import { agentStore } from '../../store/alphaagent.js'
-import { formatMetricValue, formatTime, fmtTime, labelShort, icClass } from '../../utils/alphaagent.js'
+import { formatMetricValue, formatTime, fmtTime, labelShort, icClass, freqShort } from '../../utils/alphaagent.js'
 
 export default {
   name: 'FactorLibrary',
