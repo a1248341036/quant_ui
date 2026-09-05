@@ -133,9 +133,17 @@ def research_memory(limit: int = 50, offset: int = 0, order: str = "recent",
         order="verdict" if order == "verdict" else "recent",
         verdict=verdict or "", sort=sort or "", dir=int(dir),
     )
-    # 调仓频率/研究档位溯源：memory_entries 无此字段，按 factor_name 关联 registry 补齐
+    # 调仓频率/研究档位溯源，优先级：条目自带（run spec 随评估落库）> registry 关联 > 缺省
     freq_map = service.factor_freq_map()
     for entry in entries:
+        own = entry.get("metrics") if isinstance(entry.get("metrics"), dict) else {}
+        own_freq = str(own.get("rebalance_freq") or "") or None
+        own_mode = str(own.get("research_mode") or "") or None
+        if own_freq or own_mode:
+            entry["rebalance_freq"] = own_freq
+            entry["research_mode"] = own_mode
+            entry["freq_source"] = str(own.get("freq_source") or "") or "run_spec"
+            continue
         hit = freq_map.get(str(entry.get("factor_name") or ""))
         if hit:
             entry["rebalance_freq"] = hit["rebalance_freq"]

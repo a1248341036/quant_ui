@@ -29,7 +29,13 @@ class IngestionMixin:
 
     # ── 入库主流程 ──
 
-    def record_tool_result(self, *, run_id: str, row: dict[str, Any]) -> dict[str, Any] | None:
+    def record_tool_result(
+        self,
+        *,
+        run_id: str,
+        row: dict[str, Any],
+        run_freq_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
         name = str(row.get("name") or "")
         if name not in {"evaluate_factor", "eval_on_train_set", "eval_on_val_set", "submit_factor"}:
             return None
@@ -97,6 +103,16 @@ class IngestionMixin:
 
         previous_attempts = int(previous_row["attempts"]) if previous_row else 0
         metrics_compact = self._compact_metrics(metrics)
+        # 调仓频率/研究档位随评估落库（run 启动即确定的门禁口径），使研究总结
+        # 的频率列不依赖入库关联；与 prediction_check 同为 metrics 携带的元数据。
+        if run_freq_context:
+            freq_meta = {
+                key: run_freq_context.get(key)
+                for key in ("rebalance_freq", "research_mode", "freq_source")
+                if run_freq_context.get(key)
+            }
+            if freq_meta:
+                metrics_compact = {**metrics_compact, **freq_meta}
         if prediction_check:
             # 对账摘要入 observations（verdict + 预期/实际核心字段），全量 check 在评估结果里
             metrics_compact = {

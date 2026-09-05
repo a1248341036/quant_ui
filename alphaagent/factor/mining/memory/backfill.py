@@ -66,6 +66,53 @@ class BackfillMixin:
             )
         return count
 
+    # ── 调仓频率回填 ──
+
+    def backfill_freq_from_run_specs(self, log_root: Path) -> dict[str, int]:
+        """按 last_run_id 关联 run 目录的 research_spec.json 快照，回填调仓频率/档位。
+
+        只补 metrics 里没有 rebalance_freq 的条目（幂等，不覆盖真实记录）；
+        写入 freq_source="derived_run_spec" 与 recorded 口径区分。
+        run 目录缺失/无 spec/无 freq 的条目保持不动。
+        """
+        summary = {"scanned": 0, "updated": 0, "skipped_present": 0, "unresolvable": 0}
+        root = Path(log_root)
+        with self._open() as conn:
+            rows = conn.execute("SELECT id, last_run_id, metrics_json FROM memory_entries").fetchall()
+            for row in rows:
+                summary["scanned"] += 1
+                metrics = json.loads(row["metrics_json"] or "{}")
+                # 幂等：已带真实记录（run_spec 落库）或已回填过的条目跳过
+                if metrics.get("rebalance_freq") or metrics.get("freq_source") in {"run_spec", "derived_run_spec"}:
+                    summary["skipped_present"] += 1
+                    continue
+                rid = str(row["last_run_id"] or "")
+                freq: str | None = None
+                mode: str | None = None
+                spec_path = root / rid / "research_spec.json" if rid else None
+                if spec_path and spec_path.is_file():
+                    try:
+                        spec = json.loads(spec_path.read_text(encoding="utf-8"))
+                        gate = ((spec.get("delivery_policy") or {}).get("production") or {}).get("engine_gate") or {}
+                        freq = str(gate.get("freq") or "") or None
+                        mode = str(spec.get("research_mode") or "") or None
+                    except (OSError, json.JSONDecodeError, AttributeError, TypeError):
+                        freq = mode = None
+                if freq is None and mode is None:
+                    summary["unresolvable"] += 1
+                    continue
+                if freq is not None:
+                    metrics["rebalance_freq"] = freq
+                if mode is not None:
+                    metrics["research_mode"] = mode
+                metrics["freq_source"] = "derived_run_spec"
+                conn.execute(
+                    "UPDATE memory_entries SET metrics_json = ? WHERE id = ?",
+                    (json.dumps(metrics, ensure_ascii=False), row["id"]),
+                )
+                summary["updated"] += 1
+        return summary
+
     # ── v1/v2 → v3 幂等迁移 ──
 
     def _backfill_v3_conn(self, conn: sqlite3.Connection) -> None:

@@ -173,6 +173,13 @@ async def run_factor_mining_agentscope(
 
     submit_service: FactorSubmitService | None = None
     research_mode = (config.research_spec or {}).get("research_mode", "technical")
+    # run 启动即确定的门禁调仓频率：随每条记忆落库（研究总结频率列的数据源）
+    _gate_cfg = ((config.research_spec or {}).get("delivery_policy") or {}).get("production", {}).get("engine_gate") or {}
+    run_freq_context = {
+        "rebalance_freq": _gate_cfg.get("freq"),
+        "research_mode": research_mode,
+        "freq_source": "run_spec",
+    }
     lib_path = (config.factorlib_path or factor_categories.production_dir(research_mode)).resolve()
     registry_path = config.registry_path or factor_categories.production_registry_path(research_mode)
     expr_dir = config.expr_dir or factor_categories.production_expr_dir(research_mode)
@@ -606,6 +613,7 @@ async def run_factor_mining_agentscope(
                     memory_entry = memory_store.record_tool_result(
                         run_id=log_dir.name,
                         row=row,
+                        run_freq_context=run_freq_context,
                     )
                 tool_call_rows.append(
                     {
