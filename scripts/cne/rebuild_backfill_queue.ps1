@@ -17,6 +17,8 @@ param(
 )
 
 $ErrorActionPreference = "Continue"
+# Decode native cne output (UTF-8) correctly under scheduled-task pwsh.
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 # --- Load Tushare credentials from .env (no hardcoded secrets) ---
 $EnvFile = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) ".env"
 if (Test-Path $EnvFile) {
