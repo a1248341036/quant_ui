@@ -180,8 +180,11 @@ def test_facet_focus_multi_facet_render_with_exemption():
 
     text = build_system_prompt(focus_facets=["基本面", "价量面"])
     assert "跨面融合" in text
-    assert "MULTIPLY" in text
+    assert "CS_GROUP_RANK" in text
+    assert "链式组合" in text
     assert "_x_" in text
+    # MULTIPLY 降级为禁用警示（默认 spec 拦截 + 历史高拒绝率）
+    assert "禁止 MULTIPLY" in text
     # 白名单豁免句必须存在（ResearchSpec extra_instructions 注入了族白名单）
     assert "信号族白名单对本指令豁免" in text
 

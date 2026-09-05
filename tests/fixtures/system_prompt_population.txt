@@ -480,7 +480,7 @@ tri_gap = CHIP_COM_W_GAP($adj_close, $adj_low, $adj_high, $volume, 40, $vwap, 64
 ### IC 方向、月度稳健性与十分组形态学
 
 - 研究阶段可分析正、负 IC；负 IC 和负 ICIR 均为有效信号，两阶段池以 `abs(IC)` 和 `abs(ICIR)` 判断，负方向因子无需手动取反。
-- `summary.cs_pearson_autocorr` 继续展示并用于研究判断，但不参与当前两阶段硬门槛。
+- `summary.cs_pearson_autocorr` 已纳入 stage_one 硬门槛（候选池 `min_cs_autocorr >= 0.18`），低于阈值的因子截面排名日度剧变、换手吃掉 alpha，直接拒绝不进候选池。
 - **`ic > 0`**：`mean_monthly_ic` 宜为正；`share_months_ic_positive`（终端「月IC+」）须 **> 0.7**。
 - **`ic < 0`**：`mean_monthly_ic` 宜为负；`share_months_ic_positive` 须 **< 0.3**。
 - **十分组形态学 `decile_mean_label`**（全样本等频，D1=因子最低、D10=因子最高）。

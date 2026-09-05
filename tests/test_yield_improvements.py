@@ -163,3 +163,94 @@ class TestYieldBlock:
         assert "信号族产出率" in block
         assert "gap_overnight" in block and "25.0%" in block
         assert "volume" in block and "0 过线" in block
+
+
+class TestStructureStatsBlock:
+    """交互结构命中率块：按结构算子统计过线率，矫正交互模板惯性（2026-09-06）。"""
+
+    def _seed(self, store):
+        with store._open() as conn:
+            rows = []
+            # 基线（无结构交互）：40 条，4 过线 → 10%
+            for i in range(40):
+                v = "promising" if i < 4 else "weak"
+                rows.append((f"fp_base_{i}", f"b_{i}",
+                             f"f = RANK(TS_MEAN($volume, {i + 3}))", v,
+                             "volume", "2026-09-06"))
+            # 分组条件：20 条 6 过线 → 30%（命中率最高，应排最前）
+            for i in range(20):
+                v = "promising" if i < 6 else "weak"
+                rows.append((f"fp_grp_{i}", f"g_{i}",
+                             "f = CS_GROUP_RANK(RANK($volume), CS_BUCKET($float_cap, 5))",
+                             v, "liquidity", "2026-09-06"))
+            # 分歧表达：20 条 2 过线 → 10%
+            for i in range(20):
+                v = "promising" if i < 2 else "weak"
+                rows.append((f"fp_div_{i}", f"d_{i}",
+                             "f = DIVERGENCE_RANK(RANK($volume), RANK($adj_close))",
+                             v, "liquidity", "2026-09-06"))
+            # 乘法：20 条 0 过线，15 条 rejected → 0%，拒 75%
+            for i in range(20):
+                v = "rejected" if i < 15 else "weak"
+                rows.append((f"fp_mul_{i}", f"m_{i}",
+                             "f = MULTIPLY(RANK($volume), RANK($adj_close))",
+                             v, "volume", "2026-09-06"))
+            conn.executemany(
+                "INSERT INTO memory_entries (id, factor_name, expression, verdict, family, "
+                "created_at, updated_at, attempts, structure_fingerprint) VALUES "
+                "(?, ?, ?, ?, ?, ?, ?, 1, ?)",
+                [(r[0], r[1], r[2], r[3], r[4], r[5], r[5], r[0]) for r in rows],
+            )
+            conn.commit()
+
+    def test_rates_sorted_and_baseline(self, tmp_path):
+        from alphaagent.factor.mining.memory.store import ResearchMemoryStore
+
+        store = ResearchMemoryStore(str(tmp_path / "mem.db"))
+        self._seed(store)
+        block = store._structure_stats_block()
+        assert "交互结构命中率" in block
+        assert "无交互基线 10.0%(40)" in block
+        assert "分组条件 30.0%(20)" in block
+        assert "分歧表达 10.0%(20)" in block
+        # 按命中率降序：分组条件在分歧表达之前
+        assert block.index("分组条件") < block.index("分歧表达")
+        # 样本 <20 的算子不出现（分段状态 0 条）
+        assert "分段状态" not in block
+
+    def test_multiply_reject_warning(self, tmp_path):
+        from alphaagent.factor.mining.memory.store import ResearchMemoryStore
+
+        store = ResearchMemoryStore(str(tmp_path / "mem.db"))
+        self._seed(store)
+        block = store._structure_stats_block()
+        assert "乘法(MULTIPLY)" in block
+        assert "75% 被" in block
+        assert "不要提交乘法结构" in block
+
+    def test_fresh_store_returns_empty(self, tmp_path):
+        from alphaagent.factor.mining.memory.store import ResearchMemoryStore
+
+        store = ResearchMemoryStore(str(tmp_path / "mem.db"))
+        assert store._structure_stats_block() == ""
+
+    def test_injected_in_context_for_core(self, tmp_path):
+        """context_for 必须携带命中率块（核心预留，不靠次级预算）。"""
+        from alphaagent.factor.mining.memory.store import ResearchMemoryStore
+
+        store = ResearchMemoryStore(str(tmp_path / "mem.db"))
+        self._seed(store)
+        text = store.context_for("A股挖掘", enable_factor_retrieval=False,
+                                 enable_edit_patterns=False)
+        assert "交互结构命中率" in text
+        assert len(text) <= 2400 + 50
+
+    def test_small_budget_opt_out(self, tmp_path):
+        """预算 <4× 块长时命中率块自动退出，不挤占核心块。"""
+        from alphaagent.factor.mining.memory.store import ResearchMemoryStore
+
+        store = ResearchMemoryStore(str(tmp_path / "mem.db"))
+        self._seed(store)
+        text = store.context_for("A股挖掘", enable_factor_retrieval=False,
+                                 enable_edit_patterns=False, max_inject_chars=600)
+        assert "交互结构命中率" not in text

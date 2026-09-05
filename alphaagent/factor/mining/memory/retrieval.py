@@ -824,6 +824,91 @@ class RetrievalMixin:
             )
         return "\n".join(lines)
 
+    # 交互结构算子 → 中文标签（_structure_stats_block 消费）
+    _STRUCTURE_OPS: tuple[tuple[str, str], ...] = (
+        ("CS_GROUP_RANK", "分组条件"),
+        ("DIVERGENCE_RANK", "分歧表达"),
+        ("CS_RESIDUALIZE", "正交残差"),
+        ("GATED_SIGNAL", "条件门控"),
+        ("PIECEWISE_STATE", "分段状态"),
+        ("MULTIPLY", "乘法"),
+    )
+
+    def _structure_stats_block(self, *, min_attempts: int = 20, min_total: int = 60) -> str:
+        """交互结构命中率块：按结构算子统计历史过线率，矫正交互模式惯性。
+
+        记忆实证（2026-09-06，3027 次评估）：结构化交互过线率 ≈3× 无交互
+        基线（4.6%），CS_GROUP_RANK 14.6% 最高；MULTIPLY 仅 5.7% 且 85% 被
+        正交/审查拒绝（默认 spec 亦已禁用）。候选池融合因子 5/7 是同一
+        DIVERGENCE_RANK 两元素模板——幸存结构塌缩、同模板边际递减，本块把
+        真实命中率喂给 LLM 引导结构轮换与链式组合探索。
+        过线 = verdict ∈ POSITIVE_VERDICTS；单扫描 SQL，统计失效不阻断注入。
+        """
+        try:
+            with self._open() as conn:
+                n_total = int(conn.execute("SELECT COUNT(*) FROM memory_entries").fetchone()[0])
+                if n_total < min_total:
+                    return ""
+                pos_list = ", ".join(f"'{v}'" for v in sorted(POSITIVE_VERDICTS))
+                cols: list[str] = [
+                    "COUNT(*) AS n_all",
+                    f"SUM(CASE WHEN verdict IN ({pos_list}) THEN 1 ELSE 0 END) AS np_all",
+                ]
+                baseline_conds: list[str] = ["expression IS NOT NULL", "expression != ''"]
+                for op, _label in self._STRUCTURE_OPS:
+                    cols.append(
+                        f"SUM(CASE WHEN expression LIKE '%{op}%' THEN 1 ELSE 0 END) AS n_{op}"
+                    )
+                    cols.append(
+                        f"SUM(CASE WHEN expression LIKE '%{op}%' AND verdict IN ({pos_list}) "
+                        f"THEN 1 ELSE 0 END) AS np_{op}"
+                    )
+                    baseline_conds.append(f"expression NOT LIKE '%{op}%'")
+                base_where = " AND ".join(baseline_conds)
+                cols.append(
+                    f"SUM(CASE WHEN {base_where} THEN 1 ELSE 0 END) AS n_base"
+                )
+                cols.append(
+                    f"SUM(CASE WHEN {base_where} AND verdict IN ({pos_list}) "
+                    f"THEN 1 ELSE 0 END) AS np_base"
+                )
+                cols.append(
+                    "SUM(CASE WHEN expression LIKE '%MULTIPLY%' AND verdict = 'rejected' "
+                    "THEN 1 ELSE 0 END) AS rej_MULTIPLY"
+                )
+                row = conn.execute(
+                    f"SELECT {', '.join(cols)} FROM memory_entries"
+                ).fetchone()
+        except Exception:  # noqa: BLE001 — 统计失效不阻断注入
+            return ""
+
+        entries: list[tuple[str, float, int]] = []
+        for op, label in self._STRUCTURE_OPS:
+            n = int(row[f"n_{op}"] or 0)
+            np_ = int(row[f"np_{op}"] or 0)
+            if n >= min_attempts:
+                entries.append((label, np_ / n, n))
+        n_base = int(row["n_base"] or 0)
+        np_base = int(row["np_base"] or 0)
+        if not entries or n_base < min_attempts:
+            return ""
+        entries.sort(key=lambda x: -x[1])
+        rate_txt = " ｜ ".join(f"{label} {rate:.1%}({n})" for label, rate, n in entries)
+        lines = [
+            "### 交互结构命中率（历史过线率，交互模式选择依据）",
+            f"- 无交互基线 {np_base / n_base:.1%}({n_base})｜{rate_txt}",
+            "- 结构化交互整体高于基线，但同模板边际递减：连续提交请轮换交互算子；"
+            "链式组合（分歧→门控/残差→平滑，契约填末位结构算子）历史尝试极少，优先补位。",
+        ]
+        n_mult = int(row["n_MULTIPLY"] or 0)
+        rej_mult = int(row["rej_MULTIPLY"] or 0)
+        if n_mult >= min_attempts and rej_mult / n_mult >= 0.4:
+            lines.append(
+                f"- ⚠ 乘法(MULTIPLY) 过线率垫底且 {rej_mult / n_mult:.0%} 被"
+                "正交/审查拒绝，默认 spec 已禁用（含契约形式）——不要提交乘法结构。"
+            )
+        return "\n".join(lines)
+
     # ── 数据面覆盖（跨面融合引导）：facet 表与识别逻辑在 expressions.expr_facets ──
 
     def _diversity_block(self, recent_batch: list[dict[str, Any]] | None = None) -> str:
@@ -855,10 +940,13 @@ class RetrievalMixin:
             f"最近 {len(exprs)} 次尝试面分布: {dist}。",
             f"未触及的数据面: {untried}。单面因子的信息增量已边际递减，"
             "跨面融合的拥挤度低、IC 增量更高。",
-            "融合模式（任选其一）：① 条件门控 MULTIPLY(基本面信号, 价量门控)；"
+            "融合模式（按历史命中率优先）：① 分组条件 CS_GROUP_RANK(主信号, CS_BUCKET(条件信号,5))；"
             "② 分歧表达 DIVERGENCE_RANK(基本面变化, 量价动量)；"
             "③ 正交残差 CS_RESIDUALIZE(价量因子, CS_BUCKET(LOG($float_cap),10))；"
-            "④ 比值结构 DIVIDE(量能, 基本面规模)。",
+            "④ 条件门控 GATED_SIGNAL(主信号, 条件信号, 0.9)；"
+            "⑤ 比值结构 DIVIDE(量能, 基本面规模)；"
+            "⑥ 链式组合（分歧→门控/残差→平滑，interaction 契约填末位结构算子）——"
+            "历史尝试极少、命中率不低，优先补位。禁止 MULTIPLY（默认 spec 直接拦截）。",
         ]
         return "\n".join(lines)
 
@@ -887,12 +975,18 @@ class RetrievalMixin:
         证据块保底 reserve = min(900, 总预算/3)，核心块用剩余预算。
         """
         max_inject_chars = self.max_inject_chars if max_inject_chars is None else int(max_inject_chars)
-        # 预算分段（2026-09-01）：经验块膨胀（成功模式带模板+示例表达式）后曾把
-        # 证据块整个挤出注入（entry_count=0，"检索 0 条"）。给证据块预留保底
-        # 空间，核心块（经验+编辑先验）用剩余预算——核心再多不能饿死证据。
+        # 预算分段（2026-09-01）：经验块膨胀后曾把证据块整个挤出注入（"检索 0 条"），
+        # 证据块保底 reserve = min(900, 总预算/3)，核心块（经验+编辑先验）用剩余预算。
+        # 交互结构命中率块（2026-09-06）：与证据块同享保底预留——块小但每轮都要
+        # 在场（矫正交互模式惯性），放次级预算会被证据块挤掉而失去意义。
+        # 预算过小时（块 > 25% 预算）自动退出，不挤占核心块。
+        struct_block = self._structure_stats_block()
+        struct_len = (len(struct_block) + 2) if struct_block else 0
+        if struct_len and 0 < max_inject_chars < struct_len * 4:
+            struct_block, struct_len = "", 0
         evidence_reserve = (min(900, max_inject_chars // 3)
                             if max_inject_chars > 0 else 0)
-        core_budget = (max(0, max_inject_chars - evidence_reserve)
+        core_budget = (max(0, max_inject_chars - evidence_reserve - struct_len)
                        if max_inject_chars > 0 else 10 ** 9)
         focus_families: set[str] = set()
         query_ops: set[str] = set()
@@ -926,8 +1020,13 @@ class RetrievalMixin:
         if max_inject_chars > 0:
             header_len = len("# 长期研究记忆\n以下结论必须作为实验先验。\n\n")
             core_text = _clip(core_text, max(0, core_budget - header_len))
+            # 结构命中率块不参与行边界截断（预算已为其预留，见 core_budget）
+            if struct_block:
+                core_text = f"{core_text}\n\n{struct_block}" if core_text else struct_block
             remaining = max_inject_chars - len(core_text) - header_len
         else:
+            if struct_block:
+                core_text = f"{core_text}\n\n{struct_block}" if core_text else struct_block
             remaining = 10 ** 9
 
         # 次级块：按优先级（证据 > 饱和度 > 多样性）填充剩余预算

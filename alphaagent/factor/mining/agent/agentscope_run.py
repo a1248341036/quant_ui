@@ -523,7 +523,9 @@ async def run_factor_mining_agentscope(
             if len(focus) >= 2:
                 lines.append(
                     "- 本轮优先构造同时触及 ≥2 个聚焦面的融合因子"
-                    "（DIVERGENCE_RANK / MULTIPLY 门控 / CS_RESIDUALIZE / DIVIDE）。"
+                    "（CS_GROUP_RANK 分组条件 / DIVERGENCE_RANK 分歧 / GATED_SIGNAL 门控 / "
+                    "CS_RESIDUALIZE 正交残差 / DIVIDE 比值；禁止 MULTIPLY——默认 spec 直接拦截，"
+                    "历史 106 次尝试仅 5.7% 过线、85% 被拒）。"
                 )
                 lines.append(
                     "- ⚠ 融合算子必须随调用传 interaction 契约，缺参即被拒（实测高频错误）：\n"
@@ -532,7 +534,9 @@ async def run_factor_mining_agentscope(
                     "\"economic_mechanism\":\"放量滞涨=出货分歧，看空\"}\n"
                     "  GATED_SIGNAL 示例：interaction={\"interaction_type\":\"gated_signal\","
                     " \"base_expr\":\"<基础信号表达式>\", \"condition_expr\":\"<条件表达式>\", "
-                    "\"expected_subgroup_pattern\":\"高条件组更强\", \"ablation_required\":true}"
+                    "\"expected_subgroup_pattern\":\"高条件组更强\", \"ablation_required\":true}\n"
+                    "  链式结构（分歧→门控→平滑）只需一个契约：interaction_type 填表达式"
+                    "末位结构算子（末位算子定义输出结构），economic_mechanism 描述整条链的机制。"
                 )
             else:
                 lines.append("- 本轮表达式应触及该面的算子或数据列（单面聚焦，不要求跨面融合）。")
