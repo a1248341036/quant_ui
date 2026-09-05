@@ -81,6 +81,14 @@
               <div class="lab-chart-title">月度 IC 热力图</div>
               <div :id="'lab-heat-' + profileId" class="lab-chart-box heatmap-box"></div>
             </div>
+            <div class="lab-chart-block" v-if="result.chart_data.ic_decay">
+              <div class="lab-chart-title">IC 衰减曲线（close→close 口径）</div>
+              <div :id="'lab-decay-' + profileId" class="lab-chart-box"></div>
+            </div>
+            <div class="lab-chart-block" v-if="result.chart_data.ic_histogram?.rank_ic?.counts?.length">
+              <div class="lab-chart-title">RankIC 分布</div>
+              <div :id="'lab-hist-' + profileId" class="lab-chart-box"></div>
+            </div>
           </div>
           <details v-if="result.ok && result.rule_results?.length" class="lab-rules">
             <summary>规则详情 ({{ result.rule_results.filter(r => r.passed).length }}/{{ result.rule_results.length }})</summary>
@@ -499,6 +507,58 @@ export default {
               yAxis: { type: 'category', data: years, inverse: true, axisLabel: { color: '#8494b5', fontSize: 9 } },
               visualMap: { type: 'piecewise', dimension: 2, pieces: [{ gt: 0, color: '#c94b55', label: '正IC' }, { value: 0, color: '#27344d', label: '0' }, { lt: 0, color: '#35b779', label: '负IC' }], orient: 'vertical', right: 0, top: 'middle', textStyle: { color: '#8494b5', fontSize: 9 } },
               series: [{ type: 'heatmap', data: heatData, label: { show: true, color: '#e6ecf7', fontSize: 8, formatter: p => p.value[2] != null ? Number(p.value[2]).toFixed(3) : '—' } }],
+            }, true)
+          }
+        }
+
+        // IC 衰减曲线（close→close 多 horizon：均值 RankIC 柱状 + 去重叠 ICIR 折线）
+        const decay = cd.ic_decay
+        if (decay?.points?.length) {
+          const dChart = chart('lab-decay-' + profileId)
+          if (dChart) {
+            const markIdx = decay.points.findIndex(p => p.horizon === decay.label_horizon)
+            dChart.setOption({
+              tooltip: { trigger: 'axis', valueFormatter: v => (v == null ? '—' : Number(v).toFixed(4)) },
+              legend: { textStyle: { color: '#8494b5' }, top: 0 },
+              grid: { left: 44, right: 48, top: 30, bottom: 28 },
+              xAxis: { type: 'category', data: decay.points.map(p => p.horizon + 'd'), axisLabel: { color: '#8494b5', fontSize: 9 } },
+              yAxis: [
+                { type: 'value', name: 'RankIC', axisLabel: { color: '#8494b5', fontSize: 9 }, nameTextStyle: { color: '#8494b5', fontSize: 9 } },
+                { type: 'value', name: 'ICIR', axisLabel: { color: '#8494b5', fontSize: 9 }, nameTextStyle: { color: '#8494b5', fontSize: 9 }, splitLine: { show: false } },
+              ],
+              series: [
+                {
+                  name: '均值 RankIC', type: 'bar', barWidth: '38%',
+                  data: decay.points.map(p => p.mean_ic),
+                  itemStyle: { color: '#4f8cff' },
+                  markLine: markIdx >= 0 ? {
+                    symbol: 'none', silent: true,
+                    data: [{ xAxis: markIdx, lineStyle: { color: '#c94b55', type: 'dashed' }, label: { formatter: '设计持有期', color: '#c94b55', fontSize: 9 } }],
+                  } : undefined,
+                },
+                {
+                  name: 'ICIR(去重叠)', type: 'line', yAxisIndex: 1,
+                  data: decay.points.map(p => p.ic_ir),
+                  itemStyle: { color: '#e8a33d' }, lineStyle: { width: 2, color: '#e8a33d' },
+                },
+              ],
+            }, true)
+          }
+        }
+
+        // RankIC 分布直方图
+        const hist = cd.ic_histogram?.rank_ic
+        if (hist?.counts?.length) {
+          const hChart = chart('lab-hist-' + profileId)
+          if (hChart) {
+            const edges = hist.edges
+            const mids = edges.slice(0, -1).map((e, i) => (e + edges[i + 1]) / 2)
+            hChart.setOption({
+              tooltip: { trigger: 'axis' },
+              grid: { left: 44, right: 14, top: 14, bottom: 28 },
+              xAxis: { type: 'category', data: mids.map(v => v.toFixed(3)), axisLabel: { color: '#8494b5', fontSize: 9 } },
+              yAxis: { type: 'value', name: '天数', axisLabel: { color: '#8494b5', fontSize: 9 }, nameTextStyle: { color: '#8494b5', fontSize: 9 } },
+              series: [{ type: 'bar', data: hist.counts, barCategoryGap: '0%', itemStyle: { color: '#4f8cff' } }],
             }, true)
           }
         }

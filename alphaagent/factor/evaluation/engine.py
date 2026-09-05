@@ -20,7 +20,19 @@ from alphaagent.factor.metrics import (
     daily_long_short_series,
     monthly_ic_robustness,
 )
+from alphaagent.factor.metrics.decay import (
+    decay_horizons_for,
+    ic_histogram,
+    panel_forward_label,
+    rank_ic_decay_summary,
+)
 from alphaagent.data.panel import slice_panel
+
+
+def _f_or_none(v: float) -> float | None:
+    """图表载荷序列化安全：非有限值 → None（Starlette allow_nan=False）。"""
+    v = float(v)
+    return v if np.isfinite(v) else None
 
 
 def _series_to_points(s: pd.Series) -> list[dict[str, Any]]:
@@ -160,6 +172,12 @@ class EvaluationEngine:
                 "cumulative_long_short": _cumulative_returns(daily_ls),
                 "monthly_ic": _monthly_breakdown(daily_ic_series),
                 "monthly_long_short": _monthly_breakdown(daily_ls),
+                "ic_histogram": {
+                    "rank_ic": ic_histogram(daily_rank_ic_series),
+                    "ic": ic_histogram(daily_ic_series),
+                },
+                # 衰减曲线失败只降级该图表，不影响评估结果本身
+                "ic_decay": self._build_ic_decay_safe(session, panel, context),
             }
 
         out: dict[str, Any] = {
@@ -198,6 +216,76 @@ class EvaluationEngine:
             out["by_symbol"] = by_symbol_ts_ic(context.factor, context.label)
 
         return out
+
+    # ── IC 衰减曲线（因子实验室图表数据，挖掘路径 include_charts=False 不触发）──
+
+    def _build_ic_decay_safe(self, session: Any, panel: pd.DataFrame, context: Any) -> dict[str, Any] | None:
+        try:
+            return self._build_ic_decay(session, panel, context)
+        except Exception:
+            return None
+
+    def _decay_label_series(self, session: Any, panel: pd.DataFrame, horizons: tuple[int, ...]) -> dict[int, pd.Series]:
+        """horizon → 与 profile panel 行对齐的 close→close 前瞻收益。
+
+        优先复用 panel 预置 ``label_{N}d_close_to_close`` 列；缺失的 horizon 在
+        全量 session.panel 上现算一次并挂 session 级缓存（同一 session 跨评估、
+        跨 profile 复用；前瞻收益只依赖 panel，不依赖因子）。
+        """
+        cache = getattr(session, "_ic_decay_label_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            try:
+                session._ic_decay_label_cache = cache
+            except Exception:
+                pass
+        full_panel = getattr(session, "panel", None)
+        out: dict[int, pd.Series] = {}
+        for h in horizons:
+            col = f"label_{h}d_close_to_close"
+            if col in panel.columns:
+                out[h] = panel[col]
+                continue
+            series = cache.get(h)
+            if series is None:
+                if isinstance(full_panel, pd.DataFrame) and "adj_close" in full_panel.columns:
+                    series = panel_forward_label(full_panel, h)
+                    # float32 减半缓存内存（与 panel 标签列 dtype 一致）
+                    series = pd.Series(
+                        series.to_numpy(dtype=np.float32, copy=False), index=full_panel.index
+                    )
+                    cache[h] = series
+                else:
+                    out[h] = panel_forward_label(panel, h)
+                    continue
+            out[h] = series.reindex(panel.index)
+        return out
+
+    def _build_ic_decay(self, session: Any, panel: pd.DataFrame, context: Any) -> dict[str, Any]:
+        from alphaagent.factor.metrics import cross_sectional_rank_ic
+
+        horizons = decay_horizons_for(context.label_holding_days)
+        labels = self._decay_label_series(session, panel, horizons)
+        factor = context.factor
+        points: list[dict[str, Any]] = []
+        for h in horizons:
+            daily = cross_sectional_rank_ic(factor, labels[h], min_pairs=5)
+            summary = rank_ic_decay_summary(daily, holding_days=h)
+            points.append({
+                "horizon": int(h),
+                "mean_ic": _f_or_none(summary["mean_ic"]),
+                "ic_ir": _f_or_none(summary["ic_ir"]),
+                "n_days": int(summary["n_days"]),
+            })
+        base = context.daily_rank_ic()
+        base_vals = base.to_numpy(dtype=float, copy=False)
+        base_vals = base_vals[np.isfinite(base_vals)]
+        return {
+            "label_horizon": int(context.label_holding_days),
+            "base_rank_ic": _f_or_none(float(base_vals.mean()) if base_vals.size else float("nan")),
+            "convention": "close_to_close",
+            "points": points,
+        }
 
     @staticmethod
     def _panel_for_profile(session: Any, profile: EvaluationProfile) -> tuple[pd.DataFrame, dict[str, str]]:
