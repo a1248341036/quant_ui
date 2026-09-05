@@ -113,6 +113,15 @@ export function quantilePortfolioMetrics(result) {
 }
 
 export function formatMetricValue(value) {
+  // 对象/数组（如 prediction_check 的 verdict/expected/actual）JSON 序列化，
+  // 避免 String(object) 渲染成 [object Object]
+  if (typeof value === 'object' && value !== null) {
+    try {
+      return JSON.stringify(value)
+    } catch (e) {
+      return String(value)
+    }
+  }
   const n = Number(value)
   return isNaN(n) ? String(value) : Math.abs(n) < 1 ? n.toFixed(4) : n.toFixed(2)
 }

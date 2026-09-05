@@ -150,7 +150,12 @@ def quantile_portfolio_metrics(
             except ValueError:
                 bins = pd.qcut(pd.Series(fac).rank(method="first"), n_groups, labels=False, duplicates="drop")
         b = np.asarray(bins, dtype=float)
-        return fac, ret, names, b
+        # 实际分出的组数：qcut(duplicates='drop') 在离散值扎堆时丢弃重复边界，
+        # 组数会少于请求的 n_groups——低离散度因子的十分位组合指标会失真
+        # （实测 VPIN 类因子每天截面仅 10~45 个唯一值，10 组被塌缩成 2~5 组，
+        #   annualized_return 虚高到 20 倍、max_drawdown/超额相互矛盾）。
+        k = int(np.nanmax(b)) + 1 if np.isfinite(b).any() else 0
+        return fac, ret, names, b, k
 
     if slices is not None:
         bounds, day_vals = slices
@@ -184,16 +189,25 @@ def quantile_portfolio_metrics(
     nav_n_days = 0
     daily_prev_members: set | None = None
     daily_turnover_sum = 0.0
+    collapse_days = 0
+    processed_days = 0
 
     for ts, xf, yl, inst in grouped_days:
         day_index += 1
         prepared = _quantile_portfolio_day(xf, yl, inst)
         if prepared is None:
             continue
-        fac, ret, names, b = prepared
-        if not np.isfinite(b).any():
+        fac, ret, names, b, k = prepared
+        processed_days += 1
+        if not np.isfinite(b).any() or k <= 0:
+            # qcut 全 NaN（整天同值，drop 后无区间）→ 同属离散度不足
+            collapse_days += 1
             continue
-        k = int(np.nanmax(b)) + 1
+        # 分箱塌缩（实际组数 < 请求组数）的天：十分位边界已失真，跳过该天——
+        # 不进净值/换手/组均值累计，并计数（结尾判定整体是否可用）。
+        if k < n_groups:
+            collapse_days += 1
+            continue
         long_bin = k - 1 if direction >= 0 else 0
         short_bin = 0 if direction >= 0 else k - 1
         long_mask_arr = b == long_bin
@@ -254,11 +268,43 @@ def quantile_portfolio_metrics(
         nav_n_days += 1
 
     if n_days == 0:
+        # 有处理过天数但全部塌缩 → 低离散度因子，分位组合不可用
+        if processed_days > 0:
+            return {
+                "n_groups": int(n_groups),
+                "available": False,
+                "error": "insufficient_distinct_values",
+                "collapse_ratio": round(collapse_days / processed_days, 4),
+                "direction": direction,
+                "long_side": f"Q{n_groups}" if direction >= 0 else "Q1",
+                "message": (
+                    f"因子截面离散度不足：{processed_days} 天中 {collapse_days} 天因分箱塌缩跳过"
+                    f"（每天唯一值少于 {n_groups} 组，等频十分位退化），分位组合指标不可信。"
+                    "请改用 IC/ICIR 口径评估，或先对因子做连续化变换（如截面 rank 后再平滑）。"
+                ),
+            }
         return {
             "n_groups": int(n_groups),
             "available": False,
             "error": "insufficient_data",
             "direction": direction,
+        }
+
+    # 分箱塌缩天数占比过高 → 整体不可用（多数天十分位已失真，top_group_* 会自相矛盾）
+    # 阈值为 50%：过半交易日无法稳定分箱，说明因子离散度结构性地不足。
+    if processed_days > 0 and collapse_days / processed_days > 0.5:
+        return {
+            "n_groups": int(n_groups),
+            "available": False,
+            "error": "insufficient_distinct_values",
+            "collapse_ratio": round(collapse_days / processed_days, 4),
+            "direction": direction,
+            "long_side": f"Q{n_groups}" if direction >= 0 else "Q1",
+            "message": (
+                f"因子截面离散度不足：{collapse_days}/{processed_days} 天因分箱塌缩跳过"
+                f"（每天唯一值少于 {n_groups} 组），等频十分位组合指标不可信。"
+                "请改用 IC/ICIR 口径评估，或先对因子做连续化变换。"
+            ),
         }
 
     grp_keys = sorted(grp_sum)

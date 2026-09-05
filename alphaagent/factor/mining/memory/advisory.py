@@ -138,6 +138,56 @@ class AdvisoryMixin:
             return None
         return {"advisories": findings, "blocked": False}
 
+    def exact_duplicate_prior(self, expression: str | None) -> dict[str, Any] | None:
+        """精确重复检查：同结构指纹且表达式逐字相同的最新**正向**历史条目。
+
+        与 ``advisory_for`` 的 duplicate_prior_result（提醒）不同——本方法供
+        evaluate_factor 在评估执行**前**调用：表达式与历史完全一致时，重跑
+        评估零信息增量，调用方应直接拦截并回放历史结果（变异不受影响——
+        任何变异都会改变指纹或表达式字符串，不落入本方法）。
+
+        返回 None（无精确重复）或 {"factor_name","verdict","ic","icir",
+        "metrics_json","updated_at","entry_id"}。
+        """
+        if not expression or not str(expression).strip():
+            return None
+        fingerprint = _structure_fingerprint(str(expression).strip())
+        if not fingerprint:
+            return None
+        with self._open() as conn:
+            row = conn.execute(
+                f"""
+                SELECT id, factor_name, verdict, metrics_json, updated_at, expression
+                FROM memory_entries
+                WHERE structure_fingerprint = ?
+                  AND verdict IN ({_POSITIVE_PH})
+                ORDER BY updated_at DESC LIMIT 20
+                """,
+                (fingerprint, *_POSITIVE_VERDICTS),
+            ).fetchall()
+        canonical = "\n".join(
+            line.strip() for line in str(expression).strip().splitlines() if line.strip()
+        )
+        for row in row or ():
+            prior_expr = "\n".join(
+                line.strip() for line in str(row["expression"] or "").splitlines() if line.strip()
+            )
+            if prior_expr == canonical:
+                try:
+                    metrics = json.loads(row["metrics_json"] or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    metrics = {}
+                return {
+                    "entry_id": row["id"],
+                    "factor_name": str(row["factor_name"]),
+                    "verdict": str(row["verdict"]),
+                    "ic": metrics.get("ic"),
+                    "icir": metrics.get("icir"),
+                    "updated_at": row["updated_at"],
+                    "metrics_json": row["metrics_json"],
+                }
+        return None
+
     def _edit_veto_findings(
         self,
         conn: sqlite3.Connection,

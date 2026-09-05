@@ -616,6 +616,28 @@ def build_factor_eval_toolkit(
         if blocked is not None:
             return blocked
 
+        # ── 精确重复评估拦截（2026-09-05）：表达式与历史正向条目逐字相同时，
+        # 重跑评估零信息增量——直接回放历史结果，不烧评估轮次。
+        # 仅拦"逐字相同"：任何变异（参数/算子/修饰）都会改变指纹或表达式，不受影响。
+        # （prior_result 提醒在 advisory 层永不拦截是设计；但"原样重测"连提醒里
+        #   建议的显式变异都没做，实测 LLM 会无视软提醒——此处升级为硬拦。）
+        try:
+            dup = tools.memory_store.exact_duplicate_prior(multi_line_expr) if tools.memory_store else None
+        except Exception:  # noqa: BLE001 — 拦截失效不阻断评估
+            dup = None
+        if dup is not None:
+            ic_txt = f"{dup['ic']:+.4f}" if isinstance(dup.get("ic"), (int, float)) else "N/A"
+            content = (
+                f"⛔ 重复评估拦截：该表达式与历史条目 {dup['factor_name']} 逐字相同"
+                f"（{str(dup['updated_at'])[:10]}，verdict={dup['verdict']}，IC={ic_txt}），"
+                "评估结果不会改变，已跳过本次执行。\n"
+                "正确动作：①以其为父本做显式变异（parent_factor="
+                f"{dup['factor_name']} + edit_note 说明改动点）；"
+                "②若要推进，直接对它调用 submit_factor 走入库门槛；"
+                "③若认为历史结论已过时，改用因子实验室人工复核。"
+            )
+            return ToolChunk(content=[TextBlock(text=content)])
+
         # Orthogonality is enforced by ingest similarity; offline re-evaluation
         # is outside the tool timeout and can hang on heavy JIT operators.
         loop = __import__("asyncio").get_running_loop()

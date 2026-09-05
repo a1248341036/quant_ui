@@ -73,7 +73,7 @@ def _mean(values: list[float]) -> float:
     return sum(values) / len(values) if values else 0.0
 
 
-def classify_decile_shape(decile_rows: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+def classify_decile_shape(decile_rows: list[dict[str, Any]] | None, *, n_deciles: int = 10) -> dict[str, Any] | None:
     """从 decile_mean_label 行分类形态。
 
     返回 {"shape","strong_side","spearman","d1","d10","peak_decile","means"}；
@@ -89,6 +89,23 @@ def classify_decile_shape(decile_rows: list[dict[str, Any]] | None) -> dict[str,
     values = [float(v) for _, v in pairs if v is not None]
     if len(values) < 5:
         return None
+    # 分箱完整性：离散值扎堆的因子（如 VPIN 类，每天截面仅 10~45 个唯一值）
+    # 等频十分位会塌缩成 2~9 组，此时 d1/d10 与"高/低端"都不代表真实的
+    # 极端组，形态分类（单调/倒U/U 型）是伪影。有效组数不足请求组数 →
+    # 形态不可信，交上层标 unverifiable。
+    if len(deciles) < n_deciles:
+        return {
+            "shape": "incomplete_binning",
+            "strong_side": None,
+            "spearman": None,
+            "d1": round(values[0], 6),
+            "d10": round(values[-1], 6),
+            "peak_decile": None,
+            "means": [round(v, 6) for v in values],
+            "incomplete": True,
+            "n_bins_used": len(deciles),
+            "n_deciles": n_deciles,
+        }
     rho = _spearman([float(d) for d in deciles], values)
     peak_d = deciles[values.index(max(values))]
     trough_d = deciles[values.index(min(values))]
@@ -175,6 +192,27 @@ def build_prediction_check(
             "expected": pred,
             "actual": None,
             "message": "十分位数据不足，预测无法对账（检查 coverage 或 label 分布）。",
+        }
+    # 分箱塌缩（低离散度因子，如 VPIN：每天截面唯一值 < 组数）→ 形态是伪影，
+    # 强侧/形状/IC 符号对账都不可信，标 unverifiable 而非 partial/contradicted。
+    if actual.get("incomplete"):
+        return {
+            "verdict": "unverifiable",
+            "expected": pred,
+            "actual": {
+                "shape": actual["shape"],
+                "incomplete_binning": True,
+                "n_bins_used": actual["n_bins_used"],
+                "n_deciles": actual["n_deciles"],
+                "d1": actual["d1"],
+                "d10": actual["d10"],
+                "means": actual["means"],
+            },
+            "message": (
+                f"十分位分箱塌缩（仅 {actual['n_bins_used']}/{actual['n_deciles']} 组有效，"
+                f"截面离散度不足）：D1={actual['d1']:.6f} D10={actual['d10']:.6f}，"
+                "形态/强侧判断不可信。请改用 IC/ICIR 口径评估，或对因子做连续化变换。"
+            ),
         }
 
     side_match = actual["strong_side"] == expected_side
