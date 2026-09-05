@@ -2252,8 +2252,11 @@ def CS_NEUTRALIZE(x: pd.DataFrame, group: pd.DataFrame) -> pd.DataFrame:
     gs = _first_series(group).to_numpy(dtype=float, copy=False)
     result = np.full(len(x), np.nan, dtype=np.float32)
 
-    for _, sub in x.groupby(level="datetime", sort=False):
-        pos = x.index.get_indexer(sub.index)
+    # groupby.indices 直接给位置数组：等价于 get_indexer(sub.index)，
+    # 但不经 MultiIndex engine（并发评估下 engine 惰性构建非线程安全，
+    # 实测并行 batch 里误报 "Reindexing only valid with uniquely valued..."）
+    for _, pos in x.groupby(level="datetime", sort=False).indices.items():
+        pos = np.asarray(pos, dtype=np.int64)
         x_day = xs[pos]
         g_day = gs[pos]
         uniq = np.unique(g_day[np.isfinite(g_day)])
@@ -2285,8 +2288,9 @@ def CS_GROUP_RANK(x: pd.DataFrame, group: pd.DataFrame) -> pd.DataFrame:
     xs = _first_series(x).to_numpy(dtype=float, copy=False)
     gs = _first_series(group).to_numpy(dtype=float, copy=False)
     result = np.full(len(x), np.nan, dtype=np.float32)
-    for _, sub in x.groupby(level="datetime", sort=False):
-        pos = x.index.get_indexer(sub.index)
+    # groupby.indices 位置数组：绕开 MultiIndex engine（并发评估线程安全，见 CS_NEUTRALIZE）
+    for _, pos in x.groupby(level="datetime", sort=False).indices.items():
+        pos = np.asarray(pos, dtype=np.int64)
         x_day = xs[pos]
         g_day = gs[pos]
         for g_val in np.unique(g_day[np.isfinite(g_day)]):
@@ -2321,8 +2325,9 @@ def CS_RESIDUALIZE(
         _first_series(item).to_numpy(dtype=float, copy=False) for item in controls
     ])
     result = np.full(len(x), np.nan, dtype=np.float32)
-    for _, sub in x.groupby(level="datetime", sort=False):
-        pos = x.index.get_indexer(sub.index)
+    # groupby.indices 位置数组：绕开 MultiIndex engine（并发评估线程安全，见 CS_NEUTRALIZE）
+    for _, pos in x.groupby(level="datetime", sort=False).indices.items():
+        pos = np.asarray(pos, dtype=np.int64)
         y = ys[pos]
         z = ctrl[pos]
         mask = np.isfinite(y) & np.all(np.isfinite(z), axis=1)
@@ -2357,7 +2362,10 @@ def GATED_SIGNAL(
         raise ValueError("GATED_SIGNAL: signal 与 state 须同索引")
     q = float(threshold)
     if not (0.5 <= q <= 1.0):
-        raise ValueError("GATED_SIGNAL threshold 须在 [0.5, 1.0]")
+        raise ValueError(
+            "GATED_SIGNAL threshold 须在 [0.5, 1.0]；"
+            "启用低状态组请用 high_state=false（如启用秩最低 20% → threshold=0.8, high_state=false）"
+        )
     want_high = bool(high_state)
     ranks = RANK(state).iloc[:, 0].to_numpy(dtype=float, copy=False)
     active = np.isfinite(ranks) & ((ranks >= q) if want_high else (ranks <= 1.0 - q))

@@ -399,3 +399,97 @@ class TestPredictionAliasAndErrorDetail:
             },
         })
         assert err is None
+
+
+class TestProsePrediction:
+    """2026-09-06：散文→枚举归一。
+
+    实测一次 run 并行 batch 11 条评估 8 条 expected_shape 写成整句机制
+    （"供给收缩(D10)最优，供给扩张(D1)最差"）全部被拒——错误反馈要下一轮
+    才到，一轮全灭 25 分钟。确定性关键词推断：梯度词全局计票 + 端点评级词
+    挂靠前方最近端点。
+    """
+
+    # (expected_shape 散文, 期望 shape, 期望 side)——全部取自实测失败样例
+    _PROSE_CASES = [
+        ("D1→D10 递增，行业内集中度越高未来收益越高", "monotonic_increasing", "high_factor"),
+        ("启用组(低换手)内集中度有效，D10最优；未启用组为0导致分布退化", "monotonic_increasing", "high_factor"),
+        ("供给收缩(D10)最优，供给扩张(D1)最差，近似单调", "monotonic_increasing", "high_factor"),
+        ("D1(规模调整后户数最少=机构型筹码)最优，D10(散户拥挤)最差", "monotonic_decreasing", "low_factor"),
+        ("D1→D10递增，顶部集中(顶住供给扩容的吸筹)", "monotonic_increasing", "high_factor"),
+        ("供给收缩桶内集中度秩高的组未来收益最高", "monotonic_increasing", "high_factor"),
+        ("散户基数高的桶内集中度信号更强，组间IC有梯度", "monotonic_increasing", "high_factor"),
+        ("D10(潜伏吸筹)最优，D1(集中已兑现过热)最差", "monotonic_increasing", "high_factor"),
+    ]
+
+    def test_prose_shape_and_side_resolved(self):
+        from alphaagent.factor.mining.eval.prediction import normalize_prediction
+
+        for prose, want_shape, want_side in self._PROSE_CASES:
+            pred = normalize_prediction({
+                "expected_shape": prose,
+                "expected_strong_side": prose,
+                "expected_sign": 1,
+            })
+            assert pred is not None, f"散文应归一成功: {prose}"
+            assert pred["expected_shape"] == want_shape, prose
+            assert pred["expected_strong_side"] == want_side, prose
+
+    def test_prose_u_shape_and_middle(self):
+        from alphaagent.factor.mining.eval.prediction import normalize_prediction
+
+        pred = normalize_prediction({
+            "expected_shape": "倒U型：中间组最强",
+            "expected_strong_side": "中间",
+            "expected_sign": 1,
+        })
+        assert pred is not None
+        assert pred["expected_shape"] == "inverted_u"
+        assert pred["expected_strong_side"] == "middle"
+
+    def test_prose_sign(self):
+        from alphaagent.factor.mining.eval.prediction import normalize_prediction
+
+        assert normalize_prediction({
+            "expected_shape": "irregular", "expected_strong_side": "high_factor",
+            "expected_sign": "看多",
+        })["expected_sign"] == 1
+        assert normalize_prediction({
+            "expected_shape": "irregular", "expected_strong_side": "high_factor",
+            "expected_sign": "看空，预期负向",
+        })["expected_sign"] == -1
+
+    def test_prose_ambiguous_still_rejected(self):
+        """无方向词/两端票数平的散文仍拒绝并回显合法值。"""
+        from alphaagent.factor.mining.eval.prediction import (
+            describe_prediction_issues,
+            normalize_prediction,
+        )
+
+        assert normalize_prediction({
+            "expected_shape": "随机描述没有方向词",
+            "expected_strong_side": "随便",
+            "expected_sign": 1,
+        }) is None
+        # 两端评级矛盾（D10 最优 + D1 最优）→ 平票拒绝
+        assert normalize_prediction({
+            "expected_shape": "D10最优，D1也最优，无法区分",
+            "expected_strong_side": "D10",
+            "expected_sign": 1,
+        }) is None
+        issues = describe_prediction_issues({
+            "expected_shape": "随机描述没有方向词",
+            "expected_strong_side": "随便",
+            "expected_sign": 1,
+        })
+        assert issues and "monotonic_increasing" in issues
+
+    def test_enum_and_alias_unaffected(self):
+        """合法枚举/别名优先于散文推断，行为不变。"""
+        from alphaagent.factor.mining.eval.prediction import normalize_prediction
+
+        pred = normalize_prediction({
+            "expected_shape": "inverted_u", "expected_strong_side": "Q5", "expected_sign": 1,
+        })
+        assert pred["expected_shape"] == "inverted_u"
+        assert pred["expected_strong_side"] == "middle"

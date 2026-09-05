@@ -182,6 +182,107 @@ _SHAPE_EXTRA_ALIASES = {
     "spikeatextreme": "spike_at_extreme",
 }
 
+# ── 散文→枚举归一（2026-09-06 实测：并行 batch 里 8/11 条 expected_shape
+# 写成整句经济机制（"供给收缩(D10)最优，供给扩张(D1)最差"），别名归一救不了
+# 自由文本；并行工具调用错误反馈要下一轮才到，一轮全灭。确定性关键词推断：
+# 梯度词全局计票 + 端点评级词挂靠前方最近端点——把"语义对但格式错"的散文
+# 映射到枚举；歧义（两端票数平/无方向词）仍拒绝并回显合法值。）
+
+_HIGH_SIDE_RE = re.compile(r"D\s*10|D\s*9|D\s*8|高(?:因子)?(?:端|侧)|顶部|高端|最高组", re.IGNORECASE)
+_LOW_SIDE_RE = re.compile(r"D\s*1(?!\d)|D\s*2(?!\d)|D\s*3(?!\d)|低(?:因子)?(?:端|侧)|底部|低端|最低组", re.IGNORECASE)
+_MIDDLE_RE = re.compile(r"中间|中部|中段|居中")
+_INVERTED_U_RE = re.compile(r"倒\s*U|inverted[_\s]*u", re.IGNORECASE)
+_SU_SHAPE_RE = re.compile(r"(?<!倒)\bU\s*型|u[_\s]shape", re.IGNORECASE)
+_SPIKE_RE = re.compile(r"尖峰|极端组|spike", re.IGNORECASE)
+_IRREGULAR_RE = re.compile(r"不规则|无规律|irregular", re.IGNORECASE)
+# 梯度词：描述 D1→D10 轴向（递增=high 端强），全局计票、不与端点配对
+_GRAD_POS_RE = re.compile(r"递增|单调增|越高|越强|越多|更强|越大越好")
+_GRAD_NEG_RE = re.compile(r"递减|单调减|越低|越弱|越少|更差|越小越好")
+# 端点评级词：评级其前方最近的端点（中文语序 "D1(说明)最优"——评级词跟在端点后）
+_RATE_POS_RE = re.compile(r"最优|最强|最高|最好|看多|做多")
+_RATE_NEG_RE = re.compile(r"最差|最弱|最劣|越差|看空|做空")
+
+
+def _prose_direction(text: str) -> tuple[bool, bool]:
+    """散文里哪一端被说成强 → (high_strong, low_strong)。
+
+    梯度词全局计票（"D1→D10 递增" → high 端强）；评级词挂靠前方最近端点
+    （"D10 最差" → 对端 low 强）；两端票数打平视为歧义（返回 False, False，
+    由上层拒绝并回显合法值）。
+    """
+    t = str(text)
+    tokens: list[tuple[int, str]] = []
+    for m in _HIGH_SIDE_RE.finditer(t):
+        tokens.append((m.start(), "high"))
+    for m in _LOW_SIDE_RE.finditer(t):
+        tokens.append((m.start(), "low"))
+    tokens.sort(key=lambda tk: tk[0])  # 按位置排序：评级词挂靠"前方最近"端点依赖此序
+    high = low = 0
+    if _GRAD_POS_RE.search(t):
+        high += 1
+    if _GRAD_NEG_RE.search(t):
+        low += 1
+    for m in _RATE_POS_RE.finditer(t):
+        prev = [tk for tk in tokens if tk[0] < m.start()]
+        if prev:
+            if prev[-1][1] == "high":
+                high += 1
+            else:
+                low += 1
+        else:
+            high += 1  # 无端点可挂：按全局正向处理（如 "收益最高"）
+    for m in _RATE_NEG_RE.finditer(t):
+        prev = [tk for tk in tokens if tk[0] < m.start()]
+        if prev:
+            if prev[-1][1] == "high":
+                low += 1
+            else:
+                high += 1
+        else:
+            low += 1
+    return high > low, low > high
+
+
+def _prose_shape(value: str) -> str | None:
+    t = str(value)
+    if _INVERTED_U_RE.search(t):
+        return "inverted_u"
+    if _SU_SHAPE_RE.search(t):
+        return "u_shape"
+    if _SPIKE_RE.search(t):
+        return "spike_at_extreme"
+    if _IRREGULAR_RE.search(t):
+        return "irregular"
+    high_strong, low_strong = _prose_direction(t)
+    if high_strong and not low_strong:
+        return "monotonic_increasing"
+    if low_strong and not high_strong:
+        return "monotonic_decreasing"
+    return None
+
+
+def _prose_side(value: str) -> str | None:
+    t = str(value)
+    if _MIDDLE_RE.search(t) and not (_HIGH_SIDE_RE.search(t) or _LOW_SIDE_RE.search(t)):
+        return "middle"
+    high_strong, low_strong = _prose_direction(t)
+    if high_strong and not low_strong:
+        return "high_factor"
+    if low_strong and not high_strong:
+        return "low_factor"
+    return None
+
+
+def _prose_sign(value: str) -> int | None:
+    t = str(value)
+    has_pos = any(r.search(t) for r in (_GRAD_POS_RE, _RATE_POS_RE))
+    has_neg = any(r.search(t) for r in (_GRAD_NEG_RE, _RATE_NEG_RE))
+    if has_pos and not has_neg:
+        return 1
+    if has_neg and not has_pos:
+        return -1
+    return None
+
 
 def _canon_shape(value: Any) -> str | None:
     if value is None:
@@ -189,13 +290,20 @@ def _canon_shape(value: Any) -> str | None:
     key = _SHAPE_SEP_RE.sub("_", str(value).strip().lower())
     if key in _VALID_SHAPES:
         return key
-    return _SHAPE_EXTRA_ALIASES.get(key)
+    aliased = _SHAPE_EXTRA_ALIASES.get(key)
+    if aliased:
+        return aliased
+    # 散文回退：只有当原文不是合法枚举/别名时才做关键词推断
+    return _prose_shape(str(value))
 
 
 def _canon_side(value: Any) -> str | None:
     if value is None:
         return None
-    return _SIDE_ALIASES.get(str(value).strip().lower())
+    canon = _SIDE_ALIASES.get(str(value).strip().lower())
+    if canon:
+        return canon
+    return _prose_side(str(value))
 
 
 def _canon_sign(value: Any) -> int | None:
@@ -212,7 +320,7 @@ def _canon_sign(value: Any) -> int | None:
         return 1
     if s in ("-1", "negative", "neg", "-", "short"):
         return -1
-    return None
+    return _prose_sign(str(value))
 
 
 def normalize_prediction(prediction: Any) -> dict[str, Any] | None:
