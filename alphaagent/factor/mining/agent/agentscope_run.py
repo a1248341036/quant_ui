@@ -525,6 +525,15 @@ async def run_factor_mining_agentscope(
                     "- 本轮优先构造同时触及 ≥2 个聚焦面的融合因子"
                     "（DIVERGENCE_RANK / MULTIPLY 门控 / CS_RESIDUALIZE / DIVIDE）。"
                 )
+                lines.append(
+                    "- ⚠ 融合算子必须随调用传 interaction 契约，缺参即被拒（实测高频错误）：\n"
+                    "  DIVERGENCE_RANK 示例：interaction={\"interaction_type\":\"divergence_signal\","
+                    " \"base_signal\":\"量能冲击\", \"condition_signal\":\"价格滞涨\", "
+                    "\"economic_mechanism\":\"放量滞涨=出货分歧，看空\"}\n"
+                    "  GATED_SIGNAL 示例：interaction={\"interaction_type\":\"gated_signal\","
+                    " \"base_expr\":\"<基础信号表达式>\", \"condition_expr\":\"<条件表达式>\", "
+                    "\"expected_subgroup_pattern\":\"高条件组更强\", \"ablation_required\":true}"
+                )
             else:
                 lines.append("- 本轮表达式应触及该面的算子或数据列（单面聚焦，不要求跨面融合）。")
             if off_focus:
@@ -984,6 +993,43 @@ async def run_factor_mining_agentscope(
                 "overfit_suspected": bool(train_ic and abs(train_ic) >= 0.015 and (not val_ic or abs(val_ic) < 0.01 or (train_ic > 0) != (val_ic > 0))),
             })
     overfit_suspected = any(row["overfit_suspected"] for row in matched_audits)
+    # P0-1 收尾审计（2026-09-05）：训练过线（promising）却未提交的因子汇总——
+    # 记忆实证：201 个 promising 中 93 个无 candidate_id，断在 LLM 决策。本汇总
+    # 让 run 结束时这笔产出损失可见（steps.log + outcome 归因）。
+    submitted_expr_keys: set = set()
+    for sr in submit_records:
+        sr_expr = str(sr.get("expression") or "")
+        if sr_expr:
+            submitted_expr_keys.add(canonical_hash(sr_expr))
+    unsubmitted_promising = [
+        r for r in tool_call_rows
+        if r.get("verdict") == "promising"
+        and r.get("expression_sha256")
+        and r.get("expression_sha256") not in submitted_expr_keys
+        and r.get("name") in ("evaluate_factor", "eval_on_train_set")
+    ]
+    # 同表达式多次评估去重（取首次）
+    seen_expr_hashes: set = set()
+    unsubmitted_promising_unique = []
+    for r in unsubmitted_promising:
+        h = r.get("expression_sha256")
+        if h in seen_expr_hashes:
+            continue
+        seen_expr_hashes.add(h)
+        unsubmitted_promising_unique.append(r)
+    if unsubmitted_promising_unique:
+        names = ", ".join(
+            f"{(r.get('factor_name') or 'unnamed')}({r.get('metrics', {}).get('ic', 0):+.4f})"
+            if isinstance(r.get("metrics"), dict) and isinstance(r.get("metrics", {}).get("ic"), (int, float))
+            else str(r.get("factor_name") or "unnamed")
+            for r in unsubmitted_promising_unique[:8]
+        )
+        log_step(
+            "unsubmitted_promising",
+            f"{len(unsubmitted_promising_unique)} 个训练过线因子未提交入库: {names}",
+            count=len(unsubmitted_promising_unique),
+            level=logging.WARNING,
+        )
     if production_stored:
         outcome, success = "production_factor", True
     elif candidate_stored:

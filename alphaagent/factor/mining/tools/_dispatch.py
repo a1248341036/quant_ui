@@ -65,6 +65,90 @@ def _attach_prediction_check(result: dict[str, Any], prediction: Any, *, ic: Any
         pass
 
 
+# near_miss 阈值：IC 达门槛的 80% 即视为"接近海选线"（2026-09-05 记忆分析：
+# technical 档 239 个 near-miss 因子直接进死档，无二次机会）
+_NEAR_MISS_RATIO = 0.8
+# train 段 |IC| 高于此值且属财务/慢标签口径时提示 PIT 伪影嫌疑（实测
+# fundamental 档 train IC 0.06~0.08 的因子几乎全部 val 阵亡——阶梯函数语义陷阱）
+_PIT_SUSPICION_IC = 0.045
+
+
+def _attach_yield_hints(result: dict[str, Any], expr: str, arguments: dict[str, Any]) -> None:
+    """按评估结果注入产出率提示（LLM 可见；内部调用，异常全吞）。
+
+    - P0-1 promising 强制决策：训练过线的因子必须立即 submit 或给出不提交理由
+      （2026-09-05 记忆分析：201 个 promising 中 93 个无 candidate_id，断在 LLM 决策）；
+    - P0-2 near_miss：IC 达门槛 80% 且未过线 → 建议窗口微调或直接推 val；
+    - P1-4 PIT 警戒：train |IC| ≥ 0.045 → 财务阶梯函数/PIT 伪影嫌疑（先核查再谈提交）。
+    """
+    try:
+        cs = (result.get("metrics") or {}).get("cross_sectional_core") or {}
+        ic = cs.get("ic")
+        icir = cs.get("icir")
+        cov = cs.get("factor_coverage", cs.get("coverage"))
+        try:
+            ic_f = abs(float(ic)) if ic is not None else None
+        except (TypeError, ValueError):
+            ic_f = None
+        if not result.get("passed"):
+            if ic_f is not None and ic_f >= _PIT_SUSPICION_IC:
+                result["pit_warning"] = (
+                    f"训练 |IC|={ic_f:.4f} 异常高（≥0.045）——财务/慢标签因子的 train IC 虚高"
+                    "通常来自阶梯函数语义陷阱或 PIT 泄漏（实测该类因子 val 保留率极低）。"
+                    "提交前先核查：①因子是否只用披露日之前的数据；②窗口对齐是否引入未来函数；"
+                    "③建议直接 eval_on_val_set 看真实保留比，勿按 train IC 定预期。"
+                )
+                return
+            # P0-2 near_miss：IC 达两档门槛 80% 线、ICIR/coverage 达标但未过线
+            try:
+                icir_f = float(icir) if icir is not None else None
+                cov_f = float(cov) if cov is not None else None
+            except (TypeError, ValueError):
+                icir_f = cov_f = None
+            if (
+                ic_f is not None and 0.012 <= ic_f < 0.02
+                and icir_f is not None and icir_f > 0.2
+                and cov_f is not None and cov_f > 0.85
+            ):
+                result["near_miss_hint"] = (
+                    f"接近海选线（|IC|={ic_f:.4f}，ICIR={icir_f:.3f}，coverage={cov_f:.2f}）——"
+                    "差临门一脚，不建议放弃。两个低成本动作："
+                    "①窗口微调后重评（如 20→10/40、平滑 3→5，注意传 parent_factor/edit_note）；"
+                    "②若机制置信度高，直接 eval_on_val_set 验证方向保留性。"
+                )
+            return
+        if result.get("split") != "train":
+            return
+        result["submit_decision_required"] = (
+            "训练已过海选线（promising）。两个动作二选一，不得沉默跳过："
+            "①立即调用 submit_factor 走入库门槛（正交检查/审查/精筛会自动裁决）；"
+            "②给出不提交的明确理由（正交顾虑/机制疑点/PIT 疑点），并以此指导下一轮变异方向。"
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _near_miss_verdict(metrics: dict[str, Any]) -> bool:
+    """IC 达门槛 80%、ICIR/coverage 达标但未过线 → near_miss（供 memory._classify 复用）。"""
+    ic = metrics.get("ic")
+    icir = metrics.get("icir")
+    coverage = metrics.get("factor_coverage", metrics.get("coverage"))
+    try:
+        ic_f = abs(float(ic)) if ic is not None else None
+        icir_f = float(icir) if icir is not None else None
+        cov_f = float(coverage) if coverage is not None else None
+    except (TypeError, ValueError):
+        return False
+    if ic_f is None:
+        return False
+    th = 0.015 if str(metrics.get("research_mode")) == "fundamental" else 0.02
+    return bool(
+        _NEAR_MISS_RATIO * th <= ic_f < th
+        and (icir_f is not None and icir_f > 0.2)
+        and (cov_f is not None and cov_f > 0.85)
+    )
+
+
 def _engine_decile(result: dict[str, Any]) -> tuple[Any, Any]:
     """从引擎原生 shape（evaluate_factor 结果）取 (ic, decile_rows)。"""
     cs = (result.get("metrics") or {}).get("cross_sectional_core") or {}
@@ -334,6 +418,7 @@ class _DispatchMixin:
             if isinstance(result, dict) and result.get("ok"):
                 ic, decile_rows = _engine_decile(result)
                 _attach_prediction_check(result, arguments.get("prediction"), ic=ic, decile_rows=decile_rows)
+                _attach_yield_hints(result, expr, arguments)
                 self._attach_ablation(expr, arguments, profile_id=profile_id, result=result)
                 pred_block = self._prediction_gate("evaluate_factor", arguments, result)
                 if pred_block is not None:

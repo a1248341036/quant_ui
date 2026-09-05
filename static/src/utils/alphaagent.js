@@ -69,6 +69,7 @@ export function memoryVerdictLabel(verdict) {
     candidate_approved: '候选保留',
     validated: '验证有效',
     promising: '训练有潜力',
+    near_miss: '接近达标',
     rejected: '明确否定',
     revise_required: '需修订',
     weak: '证据不足',

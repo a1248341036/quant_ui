@@ -772,6 +772,58 @@ class RetrievalMixin:
             block_lines.append("建议切换到饱和度 < 0.3 的未探索族。")
         return "\n".join(block_lines)
 
+    def _yield_block(self, min_attempts: int = 20) -> str:
+        """产出率块（2026-09-05）：按信号族统计"单位尝试过线率"，预算倾斜引导。
+
+        记忆实证（2943 次评估）：volume 族 616 次尝试 0 产出，gap_overnight
+        0.57%、融合族（价量×基本面）1.75%——尝试次数与产出严重错配，而 LLM
+        倾向于在最熟悉的族里内卷。本块把真实产出率喂给 LLM，矫正探索方向。
+        过线 = verdict ∈ {promising, validated, candidate_approved, production_approved}。
+        """
+        try:
+            with self._open() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT COALESCE(NULLIF(family, ''), 'other') AS fam,
+                           COUNT(*) AS n,
+                           SUM(CASE WHEN verdict IN ('promising','validated',
+                                                     'candidate_approved','production_approved')
+                                    THEN 1 ELSE 0 END) AS n_pass
+                    FROM memory_entries
+                    GROUP BY fam HAVING n >= ?
+                    ORDER BY n DESC
+                    """,
+                    (int(min_attempts),),
+                ).fetchall()
+        except Exception:  # noqa: BLE001 — 统计失效不阻断注入
+            return ""
+        if not rows:
+            return ""
+        stats = [(str(r["fam"]), int(r["n"]), int(r["n_pass"] or 0)) for r in rows]
+        total_pass = sum(p for _, _, p in stats)
+        if total_pass == 0:
+            return ""
+        zero = [(f, n) for f, n, p in stats if p == 0 and n >= min_attempts]
+        productive = [(f, n, p) for f, n, p in stats if p > 0]
+        if not zero and not productive:
+            return ""
+        lines: list[str] = []
+        lines.append("")
+        lines.append("### 信号族产出率（历史过线率，预算倾斜依据）")
+        if productive:
+            productive.sort(key=lambda x: -(x[2] / x[1]))
+            prod_txt = ", ".join(
+                f"{f}（{p}/{n}={p / n:.1%}）" for f, n, p in productive[:5]
+            )
+            lines.append(f"- 历史过线率最高的族：{prod_txt}。新尝试优先向这些族的邻近机制倾斜。")
+        if zero:
+            zero_txt = ", ".join(f"{f}（{n} 次 0 过线）" for f, n in zero[:5])
+            lines.append(
+                f"- 零产出族：{zero_txt}——纯同质微调大概率继续 0 产出；"
+                "如仍尝试，必须换机制/换数据列/走跨面融合，不做算子名换皮。"
+            )
+        return "\n".join(lines)
+
     # ── 数据面覆盖（跨面融合引导）：facet 表与识别逻辑在 expressions.expr_facets ──
 
     def _diversity_block(self, recent_batch: list[dict[str, Any]] | None = None) -> str:
@@ -897,9 +949,12 @@ class RetrievalMixin:
         sat_block = self._saturation_block()
         if sat_block:
             secondary.append((1, sat_block))
+        yield_block = self._yield_block()
+        if yield_block:
+            secondary.append((2, yield_block))
         div_block = self._diversity_block(recent_batch)
         if div_block:
-            secondary.append((2, div_block))
+            secondary.append((3, div_block))
 
         kept: list[str] = []
         for _, text in sorted(secondary, key=lambda p: p[0]):

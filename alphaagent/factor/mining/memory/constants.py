@@ -9,8 +9,10 @@ from __future__ import annotations
 DATA_VERSION = "4"
 
 # ── Verdict 分类 ──
+# near_miss（2026-09-05）：IC 达门槛 80%、ICIR/coverage 达标但未过线——
+# 弱负向（不算正向证据，不触发重复提交拦截；但比 weak 多一次二次机会提示）
 POSITIVE_VERDICTS = frozenset({"production_approved", "validated", "candidate_approved", "promising"})
-NEGATIVE_VERDICTS = frozenset({"rejected", "revise_required", "weak"})
+NEGATIVE_VERDICTS = frozenset({"rejected", "revise_required", "weak", "near_miss"})
 
 # Verdict 显示顺序（正值优先，负值在后）
 VERDICT_ORDER = {
@@ -18,9 +20,10 @@ VERDICT_ORDER = {
     "validated": 1,
     "candidate_approved": 2,
     "promising": 3,
-    "revise_required": 4,
-    "rejected": 5,
-    "weak": 6,
+    "near_miss": 4,
+    "revise_required": 5,
+    "rejected": 6,
+    "weak": 7,
 }
 
 # ── AlphaMemo 校准常量 ──
@@ -50,6 +53,7 @@ VERDICT_WEIGHT = {
     "validated": 1.0,
     "candidate_approved": 0.8,
     "promising": 0.6,
+    "near_miss": -0.2,
     "revise_required": -0.3,
     "rejected": -1.0,
     "weak": -0.5,

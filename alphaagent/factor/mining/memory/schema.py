@@ -683,9 +683,19 @@ class SchemaMixin:
         cov_str = f"Coverage={coverage:.2f}" if coverage is not None else ""
         if is_val and (result.get("sign_check", {}).get("matches_expected_sign") is not False) and abs(ic or 0) >= 0.015:
             return "validated", f"训练外验证通过：{ic_str} {icir_str} {cov_str}。方向一致且有可用相关性，可在相邻但不重复的机制上扩展。"
-        # 海选线 2026-09-01 对齐 0.02（与 CandidateCriteria.min_abs_ic 同步）
-        if abs(ic or 0) >= 0.02 and (icir or 0) > 0.2 and (coverage or 0) > 0.85:
+        # 海选线 2026-09-01 对齐 0.02（与 CandidateCriteria.min_abs_ic 同步）；
+        # 阈值按档位区分（2026-09-05）：fundamental 档 0.015。
+        th = 0.015 if str(metrics.get("research_mode")) == "fundamental" else 0.02
+        if abs(ic or 0) >= th and (icir or 0) > 0.2 and (coverage or 0) > 0.85:
             return "promising", f"训练阶段有潜力：{ic_str} {icir_str} {cov_str}。优先进行训练外验证或独立性改造。"
+        # P0-2 near_miss（2026-09-05）：IC 达门槛 80%、ICIR/coverage 达标但未过线——
+        # 不再直接记 weak 死档，给"窗口微调/推 val"的二次机会（记忆分析：technical
+        # 档 239 个 near-miss 无一获得二次评估）。
+        if abs(ic or 0) >= 0.8 * th and (icir or 0) > 0.2 and (coverage or 0) > 0.85:
+            return "near_miss", (
+                f"接近海选线：{ic_str} {icir_str} {cov_str}（IC 距 {th} 门槛 <20%）。"
+                "建议窗口微调后重评（传 parent_factor/edit_note），或机制置信度高时直接 eval_on_val_set。"
+            )
         return "weak", f"指标不足：{ic_str} {icir_str} {cov_str}。除非改变变量、经济机制或处理方式，否则不要机械重试。"
 
     @classmethod
