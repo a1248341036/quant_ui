@@ -297,7 +297,9 @@ def main() -> None:
         "gate": gate_result,
         "oos_ic_blended": _blended_oos_ic(stacked, dataset.label, dts, first_oos),
     }
-    (out_dir / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=1, default=str))
+    (out_dir / "report.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=1, default=str), encoding="utf-8"
+    )
     joblib.dump(
         {
             "kind": kinds,

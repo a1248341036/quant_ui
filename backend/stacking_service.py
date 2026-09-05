@@ -103,6 +103,21 @@ def _proc_status() -> tuple[str, dict[str, Any] | None]:
         return status, cur
 
 
+def _read_report_json(report_path: Path) -> dict[str, Any] | None:
+    """读 stacking report.json，兼容历史 GBK 落盘（train_ml_composite 旧版
+    write_text 未指定 encoding，Windows 默认 GBK——UnicodeDecodeError 曾把
+    trainings 列表接口整个 500）。utf-8 失败回退 gbk，再失败返回 None。"""
+    try:
+        return json.loads(report_path.read_text(encoding="utf-8"))
+    except UnicodeDecodeError:
+        try:
+            return json.loads(report_path.read_text(encoding="gbk"))
+        except (json.JSONDecodeError, OSError):
+            return None
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
 def list_trainings(limit: int = 30) -> list[dict[str, Any]]:
     """列出历史训练：磁盘上所有 stacking 输出目录 + 当前运行状态。"""
     status, cur = _proc_status()
@@ -124,8 +139,8 @@ def list_trainings(limit: int = 30) -> list[dict[str, Any]]:
             elif cur is not None and d.name == cur["train_id"] and status == "failed":
                 item["status"] = "failed"
             if report_path.is_file():
-                try:
-                    report = json.loads(report_path.read_text(encoding="utf-8"))
+                report = _read_report_json(report_path)
+                if report is not None:
                     blended = report.get("oos_ic_blended") or {}
                     gate = report.get("gate") or {}
                     item["oos_ic_mean"] = blended.get("ic_mean")
@@ -134,8 +149,6 @@ def list_trainings(limit: int = 30) -> list[dict[str, Any]]:
                     item["n_features"] = len(report.get("feature_names") or [])
                     item["gate_passed"] = gate.get("passed")
                     item["time_isolation"] = report.get("time_isolation")
-                except (json.JSONDecodeError, OSError):
-                    pass
             out.append(item)
         # running 状态但目录尚未创建（panel 加载阶段）也补一条
         if running_id and not any(x["train_id"] == running_id for x in out):
@@ -161,10 +174,11 @@ def get_training(train_id: str, *, tail_lines: int = 40) -> dict[str, Any]:
     if train_id != running_id:
         out["status"] = "completed" if report_path.is_file() else "unknown"
     if report_path.is_file():
-        try:
-            out["report"] = json.loads(report_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as exc:
-            out["report_error"] = str(exc)
+        report = _read_report_json(report_path)
+        if report is not None:
+            out["report"] = report
+        else:
+            out["report_error"] = "report.json 读取失败（编码/格式损坏）"
     elif train_id == running_id:
         pass
     else:
