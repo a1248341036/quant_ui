@@ -144,7 +144,26 @@ export function labelShort(col) {
 }
 
 export function freqShort(freq) {
-  return { daily: '日频', weekly: '周频', monthly: '月频' }[freq] || freq || '—'
+  // 展示为具体交易日节奏：daily=每 1 个交易日；weekly=每周五（名义 5 天）；
+  // monthly=自然月一次（名义约 20 天，实际随月份 19~23 浮动）——精确口径见 freqCadence
+  return { daily: '1天', weekly: '5天', monthly: '≈20天' }[freq] || freq || '—'
+}
+
+export function freqCadence(freq) {
+  return {
+    daily: '门禁调仓节奏：每日调仓（间隔 1 个交易日）',
+    weekly: '门禁调仓节奏：每周五信号、次日开盘调仓（名义每 5 个交易日，节假日顺延）',
+    monthly: '门禁调仓节奏：每月末信号、次月初调仓（自然月一次，约 20 个交易日，随节假日浮动）',
+  }[freq] || '门禁调仓频率'
+}
+
+export function freqSourceHint(source) {
+  return {
+    recorded: '',
+    run_spec: '',
+    derived_run_spec: '（按所在 run 的门禁配置回填）',
+    derived: '（按评估标签推导）',
+  }[source] ?? '（按所在 run 的门禁配置回填）'
 }
 
 export function statusLabel(status) {

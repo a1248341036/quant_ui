@@ -46,14 +46,14 @@
       <button class="lib-facet-btn" :class="{active: !lib.freqFilter}"
               @click="lib.freqFilter = ''" title="显示全部调仓频率">全部</button>
       <button class="lib-facet-btn" :class="{active: lib.freqFilter === 'weekly'}"
-              title="周频调仓门禁（短周期档默认）"
-              @click="lib.freqFilter = lib.freqFilter === 'weekly' ? '' : 'weekly'">周频</button>
+              title="每周五信号、次日起仓（名义每 5 个交易日；短周期档默认）"
+              @click="lib.freqFilter = lib.freqFilter === 'weekly' ? '' : 'weekly'">5天</button>
       <button class="lib-facet-btn" :class="{active: lib.freqFilter === 'daily'}"
-              title="日频调仓门禁"
-              @click="lib.freqFilter = lib.freqFilter === 'daily' ? '' : 'daily'">日频</button>
+              title="每日调仓（间隔 1 个交易日）"
+              @click="lib.freqFilter = lib.freqFilter === 'daily' ? '' : 'daily'">1天</button>
       <button class="lib-facet-btn" :class="{active: lib.freqFilter === 'monthly'}"
-              title="月频调仓门禁（慢信号档默认）"
-              @click="lib.freqFilter = lib.freqFilter === 'monthly' ? '' : 'monthly'">月频</button>
+              title="每月末调仓一次（自然月，约 20 个交易日；慢信号档默认）"
+              @click="lib.freqFilter = lib.freqFilter === 'monthly' ? '' : 'monthly'">≈20天</button>
       <span class="lib-toolbar-label" style="margin-left:auto">按加入时间导出</span>
       <input type="date" v-model="lib.exportStart">
       <span class="lib-range-sep">~</span>
@@ -92,7 +92,7 @@
           <td class="lib-freq">
             <span v-if="f.rebalance_freq" class="lib-freq-tag"
                   :class="'freq-' + f.rebalance_freq"
-                  :title="'门禁调仓频率' + (f.freq_source === 'derived' ? '（按评估标签推导）' : '')">
+                  :title="freqCadence(f.rebalance_freq) + freqSourceHint(f.freq_source)">
               {{ freqShort(f.rebalance_freq) }}</span>
             <span v-else class="lib-freq-missing" title="该条目没有频率记录，也无法从评估标签推导">—</span>
           </td>
@@ -141,7 +141,7 @@
 <script>
 import { api } from '../../utils/api.js'
 import { agentStore } from '../../store/alphaagent.js'
-import { formatMetricValue, formatTime, fmtTime, labelShort, icClass, freqShort } from '../../utils/alphaagent.js'
+import { formatMetricValue, formatTime, fmtTime, labelShort, icClass, freqShort, freqCadence, freqSourceHint } from '../../utils/alphaagent.js'
 
 export default {
   name: 'FactorLibrary',
@@ -256,6 +256,8 @@ export default {
     fmtTime,
     labelShort,
     freqShort,
+    freqCadence,
+    freqSourceHint,
     icClass,
     async loadFactors() {
       this.lib.loading = true
@@ -312,7 +314,7 @@ export default {
         lines.push([
           this.fmtTime(f.created_at), f.factor_id, f.name,
           (f.facets || []).join('+'), f.is_fusion ? '是' : '',
-          f.rebalance_freq || '', f.research_mode || '',
+          f.rebalance_freq ? (freqShort(f.rebalance_freq) + '/' + f.rebalance_freq) : '', f.research_mode || '',
           f.promotion_status || f.status, f.review_verdict || '',
           num(f.train_ic), num(f.val_ic), num(f.metrics?.ic), num(f.metrics?.icir),
           num(f.metrics?.rank_ic), num(f.metrics?.factor_coverage),

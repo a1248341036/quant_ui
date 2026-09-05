@@ -138,7 +138,7 @@
                 评估次数 <span class="sort-ind" v-if="agent.summarySortKey === 'attempts'">{{ agent.summarySortOrder === 1 ? '▲' : '▼' }}</span>
               </th>
               <th>
-                调仓 <span class="summary-facet-hint" title="门禁调仓频率（周/日/月）。入库新因子/评估记忆为真实记录；老条目按所在 run 的门禁配置或评估标签推导（hover 单元格见口径）。">ⓘ</span>
+                调仓 <span class="summary-facet-hint" title="门禁调仓节奏（具体交易日）：1天=每日；5天=每周五；≈20天=自然月一次（随节假日浮动）。入库新因子/评估记忆为真实记录；老条目按所在 run 的门禁配置或评估标签推导（hover 单元格见口径）。">ⓘ</span>
               </th>
               <th>
                 数据面 <span class="summary-facet-hint" title="触及的数据面（×连接 = 跨数据源组融合因子）">ⓘ</span>
@@ -170,7 +170,7 @@
               <td class="summary-freq">
                 <span v-if="entry.rebalance_freq" class="lib-freq-tag"
                       :class="'freq-' + entry.rebalance_freq"
-                      :title="'门禁调仓频率' + (freqSourceHint(entry.freq_source))">
+                      :title="freqCadence(entry.rebalance_freq) + freqSourceHint(entry.freq_source)">
                   {{ freqShort(entry.rebalance_freq) }}</span>
                 <span v-else class="summary-freq-missing" title="无频率记录（run 目录已清理且未入库）">—</span>
               </td>
@@ -222,7 +222,7 @@ import { agentStore, summaryView } from '../../store/alphaagent.js'
 import MemoryDetailModal from './MemoryDetailModal.vue'
 import {
   formatTime, memoryVerdictLabel,
-  formatMetricValue, icClass, freqShort,
+  formatMetricValue, icClass, freqShort, freqCadence, freqSourceHint,
 } from '../../utils/alphaagent.js'
 
 export default {
@@ -296,14 +296,8 @@ export default {
     formatMetricValue,
     icClass,
     freqShort,
-    freqSourceHint(source) {
-      return {
-        recorded: '',
-        run_spec: '',
-        derived_run_spec: '（按所在 run 的门禁配置回填）',
-        derived: '（按评估标签推导）',
-      }[source] ?? '（按所在 run 的门禁配置回填）'
-    },
+    freqCadence,
+    freqSourceHint,
     facetText(entry) {
       const facets = entry.facets || []
       if (!facets.length) return '—'
