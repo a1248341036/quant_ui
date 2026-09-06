@@ -91,6 +91,9 @@ TITLE = "tool_calls 并行示例"
 ORDER = 125
 REQUIRED = True
 SEP_BEFORE = "\n\n"
+# 探索阶段裁剪（2026-09-06）：调用格式已由 tool_contracts（常驻）+ 报错自愈
+# 覆盖；deepen 起深度迭代时再注入完整示例
+PHASES = frozenset({"deepen", "deliver", "full"})
 
 
 def render(ctx) -> str:  # noqa: ANN001

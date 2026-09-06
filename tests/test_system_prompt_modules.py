@@ -169,13 +169,16 @@ def _phase_report(phase: str) -> tuple[str, list[dict]]:
 
 
 def test_explore_disables_deepen_only_modules():
-    """explore 阶段：multi_period / neutralization_guide / ic_robustness / delivery_submission 不注入。"""
+    """explore 阶段：multi_period / neutralization_guide / ic_robustness / delivery_submission /
+    tool_examples / data_calibration 不注入（2026-09-06 扩裁剪）。"""
     text, report = _phase_report("explore")
     disabled = {r["module"] for r in report if not r["enabled"]}
     assert "multi_period" in disabled
     assert "neutralization_guide" in disabled
     assert "ic_robustness" in disabled
     assert "delivery_submission" in disabled
+    assert "tool_examples" in disabled
+    assert "data_calibration" in disabled
     # 核心模块仍启用
     enabled = {r["module"] for r in report if r["enabled"]}
     for must_on in ("core_identity", "strategy_tracks", "operator_catalog",
@@ -185,6 +188,10 @@ def test_explore_disables_deepen_only_modules():
     assert "轨道 A/B/C" not in text
     assert "正交预判" not in text
     assert "如何阅读每轮注入" not in text
+    # tool_examples 探索版不注入（调用格式由 tool_contracts + 报错自愈覆盖；
+    # 用示例独有锚点——tool_contracts 的工具清单表也含 eval_on_train_set）
+    assert "ma20_dev" not in text
+    assert "funda_roe_growth_neutral" not in text
     # operator_catalog 探索提示
     assert "探索阶段优先使用高频算子" in text
 

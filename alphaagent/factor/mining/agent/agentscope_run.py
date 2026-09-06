@@ -128,7 +128,11 @@ async def create_mining_agent(
             permission_context=PermissionContext(mode=PermissionMode.BYPASS),
         ),
         context_config=ContextConfig(
-            trigger_ratio=0.75,
+            # 2026-09-06 调优：默认 0.75（128K 窗口 → 96K tokens 才触发）来得太晚，
+            # 10 轮 run 的历史 tool 结果把 input 推到 50K+ tokens。0.5 → ~64K 触发，
+            # input 有界；被压段的浓缩信息由研究记忆层每轮注入兜底，决策无损失。
+            # 压缩由 agentscope 内置（LLM 结构化摘要 + 旧段 offload 工作区）。
+            trigger_ratio=0.5,
             reserve_ratio=0.15,
             tool_result_limit=5000,
         ),

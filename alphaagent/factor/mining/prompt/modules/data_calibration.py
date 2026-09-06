@@ -68,6 +68,9 @@ TITLE = "数据与评估口径 + MLS 门槛 + label"
 ORDER = 40
 REQUIRED = True
 SEP_BEFORE = "\n\n---\n\n"
+# 探索阶段裁剪（2026-09-06）：探索期机制优先、少碰口径细节；label 语义
+# 已由 data_fields（常驻）覆盖；deepen 起深度迭代时再注入
+PHASES = frozenset({"deepen", "deliver", "full"})
 
 
 def render(ctx) -> str:  # noqa: ANN001
