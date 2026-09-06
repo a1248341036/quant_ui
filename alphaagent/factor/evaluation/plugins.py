@@ -13,6 +13,7 @@ from alphaagent.factor.evaluation.context import EvaluationContext
 from alphaagent.factor.metrics import (
     _day_slices,
     coverage,
+    label_f64,
     cross_sectional_lag1_pearson_autocorr,
     cs_ic_summary,
     daily_long_short_series,
@@ -186,7 +187,7 @@ def cross_sectional_core(context: EvaluationContext, params: dict[str, Any]) -> 
         "factor_skewness": skew,
         "factor_kurtosis": kurt,
         "cs_pearson_autocorr": cross_sectional_lag1_pearson_autocorr(context.factor, min_pairs=min(30, max(n_instruments - 1, 2))),
-        "decile_mean_label": decile_mean_label(values, context.label.to_numpy(dtype=np.float64, copy=False), n_deciles=10),
+        "decile_mean_label": decile_mean_label(values, label_f64(context.label), n_deciles=10),
     }
 
 

@@ -7,6 +7,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from alphaagent.factor.metrics._label_cache import label_f64
+
 from alphaagent.factor import metrics_fast as _mf
 from alphaagent.factor.types import DEFAULT_LABEL_COL
 
@@ -29,7 +31,7 @@ def cross_sectional_ic(
         raise ValueError(f"索引缺少 level={time_level!r}")
 
     f_arr = factor.to_numpy(dtype=np.float64, copy=False)
-    l_arr = label.to_numpy(dtype=np.float64, copy=False)
+    l_arr = label_f64(label)
     slices = _day_slices(factor.index, time_level)
     if slices is not None:
         bounds, day_vals = slices
@@ -72,7 +74,7 @@ def cross_sectional_rank_ic(
         raise ValueError(f"索引缺少 level={time_level!r}")
 
     f_arr = factor.to_numpy(dtype=np.float64, copy=False)
-    l_arr = label.to_numpy(dtype=np.float64, copy=False)
+    l_arr = label_f64(label)
     slices = _day_slices(factor.index, time_level)
     if slices is not None:
         bounds, day_vals = slices

@@ -33,6 +33,11 @@ _slices_cache_lock = threading.Lock()
 _SLICES_CACHE_MAX = 16
 
 
+# ── label float64 缓存 ──────────────────────────────────────────────
+# 实现见 _label_cache.py；此处 re-export 供 metrics 消费方与测试使用。
+from ._label_cache import label_f64, _label_f64_override  # noqa: E402, F401
+
+
 def _compute_day_slices(
     index: pd.Index, time_level: str = "datetime"
 ) -> tuple[np.ndarray, np.ndarray] | None:

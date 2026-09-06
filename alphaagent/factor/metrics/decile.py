@@ -7,6 +7,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from alphaagent.factor.metrics._label_cache import label_f64
+
 from alphaagent.factor import metrics_fast as _mf
 from ._core import pearson_ic, spearman_ic
 
@@ -133,7 +135,7 @@ def _compute_daily_decile_mean_labels(
 
     dts = factor.index.get_level_values(time_level)
     f_arr = factor.to_numpy(dtype=np.float64, copy=False)
-    l_arr = label.to_numpy(dtype=np.float64, copy=False)
+    l_arr = label_f64(label)
     n = len(f_arr)
     all_means: dict[object, list[float]] = {}
     if n == 0:
@@ -238,7 +240,7 @@ def daily_quantile_group_returns(
     group 1 = 因子值最低组, group N = 因子值最高组。
     """
     f_arr_all = factor.to_numpy(dtype=np.float64, copy=False)
-    l_arr_all = label.to_numpy(dtype=np.float64, copy=False)
+    l_arr_all = label_f64(label)
     rows: list[dict[str, Any]] = []
     slices = _day_slices(factor.index, time_level) if _day_slices else None
     if slices is not None:

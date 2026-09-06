@@ -8,6 +8,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from alphaagent.factor.metrics._label_cache import label_f64
+
 from ._core import spearman_ic
 
 
@@ -134,7 +136,7 @@ def quantile_portfolio_metrics(
     _ = prev_members, turnover_sum  # 已由 daily_*/nav_* 双轨累计承担（见下）
 
     f_arr_all = factor.to_numpy(dtype=np.float64, copy=False)
-    l_arr_all = label.to_numpy(dtype=np.float64, copy=False)
+    l_arr_all = label_f64(label)
     inst_all = np.asarray(factor.index.get_level_values("instrument"))
     slices = _day_slices(factor.index, time_level) if _day_slices else None
 
