@@ -899,6 +899,10 @@ class RetrievalMixin:
             f"- 无交互基线 {np_base / n_base:.1%}({n_base})｜{rate_txt}",
             "- 结构化交互整体高于基线，但同模板边际递减：连续提交请轮换交互算子；"
             "链式组合（分歧→门控/残差→平滑，契约填末位结构算子）历史尝试极少，优先补位。",
+            "- ⚠ 结构算子（CS_GROUP_RANK/DIVERGENCE_RANK/CS_RESIDUALIZE/GATED_SIGNAL/PIECEWISE_STATE）"
+            "必须随调用传 interaction 契约：{interaction_type: divergence_signal|gated_signal|"
+            "conditional_group_rank|residual_signal|piecewise_state, base_signal, condition_signal, "
+            "economic_mechanism(≥20字机制)}——未传会自动补占位并警告，机制描述请显式写。",
         ]
         n_mult = int(row["n_MULTIPLY"] or 0)
         rej_mult = int(row["rej_MULTIPLY"] or 0)

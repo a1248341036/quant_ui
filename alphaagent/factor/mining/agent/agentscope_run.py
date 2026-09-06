@@ -539,7 +539,12 @@ async def run_factor_mining_agentscope(
                     "末位结构算子（末位算子定义输出结构），economic_mechanism 描述整条链的机制。"
                 )
             else:
-                lines.append("- 本轮表达式应触及该面的算子或数据列（单面聚焦，不要求跨面融合）。")
+                lines.append(
+                    "- 本轮表达式应触及该面的算子或数据列（单面聚焦，不要求跨面融合）。"
+                    "使用结构算子（CS_GROUP_RANK/GATED_SIGNAL/CS_RESIDUALIZE/DIVERGENCE_RANK/PIECEWISE_STATE）"
+                    "时必须随调用传 interaction 契约：{interaction_type, base_signal, condition_signal, "
+                    "economic_mechanism(≥20字)}——未传会自动补占位并警告，机制描述请显式写。"
+                )
             if off_focus:
                 lines.append(f"- 聚焦面 {'、'.join(off_focus)} 至今未出现在任何尝试中，本轮必须至少给出 1 条触及它的表达式。")
             block = f"{block}\n{chr(10).join(lines)}" if block else "\n".join(lines).lstrip("\n")

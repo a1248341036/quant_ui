@@ -23,7 +23,18 @@ _SHAPE_CN = {
     "u_shape": "U型（两端强、中间弱）",
     "spike_at_extreme": "极端组尖峰",
     "irregular": "不规则",
+    # 条件式预期（2026-09-06）：组内/门控结构因子的预期作用在子组上，
+    # 全样本十分位形态本就不受其约束——对账返回 unverifiable 并指向
+    # ablation_check，不硬套全样本形态、也不构成证伪。
+    "conditional_subgroup": "条件式（组内/门控）预期",
 }
+
+# 条件式散文识别：X组/组内/门控/分组 等（"高增长组内显著，低增长组内减弱"）
+_CONDITIONAL_RE = re.compile(
+    r"组内|(?:启用|条件|门控|高波|低波|缩量|放量|高增长|低增长|高波动|低波动|牛市|熊市|高换手|低换手)组"
+    r"|子组|分组内|分桶内|regime|subgroup",
+    re.IGNORECASE,
+)
 
 _SIDE_CN = {
     "high_factor": "高因子端(D8-D10)",
@@ -258,6 +269,10 @@ def _prose_shape(value: str) -> str | None:
         return "monotonic_increasing"
     if low_strong and not high_strong:
         return "monotonic_decreasing"
+    # 无方向词的条件式散文（"高增长组内显著，低增长组内减弱"）→ 条件式预期，
+    # 全样本十分位不可对账——归一到 conditional_subgroup 而非拒绝
+    if _CONDITIONAL_RE.search(t):
+        return "conditional_subgroup"
     return None
 
 
@@ -324,13 +339,19 @@ def _canon_sign(value: Any) -> int | None:
 
 
 def normalize_prediction(prediction: Any) -> dict[str, Any] | None:
-    """校验并规范化 prediction（含别名归一）；不合法返回 None。"""
+    """校验并规范化 prediction（含别名/散文归一）；不合法返回 None。
+
+    conditional_subgroup（条件式预期）不强求 expected_strong_side——组内预期
+    本就没有全样本强侧语义。
+    """
     if not isinstance(prediction, dict):
         return None
     shape = _canon_shape(prediction.get("expected_shape"))
     side = _canon_side(prediction.get("expected_strong_side"))
     sign = _canon_sign(prediction.get("expected_sign"))
-    if shape is None or side is None or sign is None:
+    if shape is None or sign is None:
+        return None
+    if shape != "conditional_subgroup" and side is None:
         return None
     return {
         "expected_shape": shape,
@@ -354,12 +375,15 @@ def describe_prediction_issues(prediction: Any) -> str | None:
         issues.append(
             f"expected_shape 收到 {shape_raw!r}，合法值: "
             "monotonic_increasing|monotonic_decreasing|inverted_u|u_shape|spike_at_extreme|irregular"
+            "|conditional_subgroup（组内/门控条件式预期用）"
         )
+    shape_conditional = _canon_shape(shape_raw) == "conditional_subgroup"
     side_raw = prediction.get("expected_strong_side")
-    if _canon_side(side_raw) is None:
+    if not shape_conditional and _canon_side(side_raw) is None:
         issues.append(
             f"expected_strong_side 收到 {side_raw!r}，合法值: high_factor|low_factor|middle"
-            "（分位组别名 D8-D10→high_factor、D1-D3→low_factor、D4-D7→middle 也可）"
+            "（分位组别名 D8-D10→high_factor、D1-D3→low_factor、D4-D7→middle 也可；"
+            "conditional_subgroup 可省略）"
         )
     sign_raw = prediction.get("expected_sign")
     if _canon_sign(sign_raw) is None:
@@ -381,6 +405,26 @@ def build_prediction_check(
         return None
     expected_shape = pred["expected_shape"]
     expected_side = pred["expected_strong_side"]
+    # 条件式预期（组内/门控）：预期作用在子组上，全样本十分位形态本就不受
+    # 其约束——对账必然伪影，早退 unverifiable 并指向正确的验证工具，
+    # 不硬套形态、不误判证伪。
+    if expected_shape == "conditional_subgroup":
+        actual = classify_decile_shape(decile_rows)
+        actual_note = (
+            f"全样本实际形态 {_SHAPE_CN.get(actual['shape'], actual['shape'])}。"
+            if actual and not actual.get("incomplete") else ""
+        )
+        return {
+            "verdict": "unverifiable",
+            "expected": pred,
+            "actual": actual,
+            "message": (
+                "条件式预期（组内/门控/分组）不适用全样本十分位形态对账——"
+                "组条件因子在全样本上的十分位形态本就不受预期约束。"
+                + actual_note
+                + "请改用 ablation_check（门控增量对比）或按条件分组拆分 IC 验证；本轮不构成证伪。"
+            ),
+        }
     actual = classify_decile_shape(decile_rows)
     if actual is None:
         return {

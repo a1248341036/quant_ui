@@ -124,6 +124,42 @@ def _fill_type(spec: dict[str, Any], op: str) -> dict[str, Any]:
     return spec
 
 
+def _last_structural_op_type(expr: str) -> str | None:
+    """表达式里最晚出现的结构算子 → 对应 interaction_type（末位算子定义输出结构）。
+
+    与容错 2 的推断口径一致（每个算子取首次出现位置、取位置最晚者；
+    GATED_SIGNAL 在 INTERACTION_TYPES 中先行映射 gated_signal）。
+    """
+    upper = expr.upper()
+    last_op, last_pos = None, -1
+    for op in _INTERACTION_OPERATORS:
+        pos = upper.find(op)
+        if pos > last_pos:
+            last_op, last_pos = op, pos
+    if last_op is None:
+        return None
+    for itype, ops in INTERACTION_TYPES.items():
+        if last_op in ops:
+            return itype
+    return None
+
+
+def _autofill_signals_from_expr(expr: str, spec: dict[str, Any]) -> dict[str, Any]:
+    """从表达式的数据列引用自动补全 base_signal / condition_signal（容错 3 口径）。"""
+    variables: list[str] = []
+    for var in re.findall(r"\$[a-zA-Z_][a-zA-Z0-9_]*", expr):
+        low = var.lower()
+        if low not in variables:
+            variables.append(low)
+    if variables and not _text(spec.get("base_signal")):
+        spec["base_signal"] = f"主腿（自动识别自表达式）: {variables[0]}"
+    if variables and not _text(spec.get("condition_signal")):
+        cond = variables[1] if len(variables) >= 2 else variables[0]
+        suffix = "" if len(variables) >= 2 else "（单变量表达式，无独立辅腿）"
+        spec["condition_signal"] = f"辅腿（自动识别自表达式）: {cond}{suffix}"
+    return spec
+
+
 def lint_expression_interaction(
     expr: str,
     spec: dict[str, Any] | None,
@@ -192,18 +228,7 @@ def lint_expression_interaction(
     if isinstance(spec, dict):
         missing_fields = [f for f in ("base_signal", "condition_signal") if not _text(spec.get(f))]
         if missing_fields:
-            variables: list[str] = []
-            for var in re.findall(r"\$[a-zA-Z_][a-zA-Z0-9_]*", expr):
-                low = var.lower()
-                if low not in variables:
-                    variables.append(low)
-            if variables:
-                if not _text(spec.get("base_signal")):
-                    spec["base_signal"] = f"主腿（自动识别自表达式）: {variables[0]}"
-                if not _text(spec.get("condition_signal")):
-                    cond = variables[1] if len(variables) >= 2 else variables[0]
-                    suffix = "" if len(variables) >= 2 else "（单变量表达式，无独立辅腿）"
-                    spec["condition_signal"] = f"辅腿（自动识别自表达式）: {cond}{suffix}"
+            spec = _autofill_signals_from_expr(expr, spec)
 
     normalized, error = validate_interaction(spec, allowed_types=allowed_types)
     if error is not None:
@@ -239,6 +264,29 @@ def lint_expression_interaction(
             return normalized, warning, None
 
     if matched_ops and normalized is None and policy.get("require_contract_for_typed_interactions", True):
+        # 容错 4（2026-09-06）：表达式带结构算子但完全没传契约——单面 run 无契约
+        # 教学时的高频格式瑕疵（实测一轮 13 评仅 1 条带契约，其余全部被拦）。
+        # 与容错 3 同哲学：放行 + 自动补全（类型按末位算子、信号按表达式列、
+        # 机制占位标记），warning 压力教 LLM 下次显式传；机制纪律由 Reviewer
+        # 与 prediction_check 把守。policy.auto_fill_missing_contract=False 可关。
+        if policy.get("auto_fill_missing_contract", True):
+            itype = _last_structural_op_type(expr)
+            if itype:
+                filled = _autofill_signals_from_expr(expr, {
+                    "interaction_type": itype,
+                    "economic_mechanism": (
+                        "（自动补全）表达式使用 " + "/".join(sorted(matched_ops))
+                        + " 未声明经济机制——下次调用请显式传 interaction 契约并描述机制"
+                    ),
+                })
+                normalized, error = validate_interaction(filled, allowed_types=allowed_types)
+                if normalized is not None and error is None:
+                    warning = (
+                        f"已自动补全 interaction 契约（interaction_type={itype}，机制为占位标记）——"
+                        "下次调用请显式传 interaction：interaction_type + base_signal + "
+                        "condition_signal + economic_mechanism（≥20 字机制描述）。"
+                    )
+                    return normalized, warning, None
         return None, None, {
             "ok": False,
             "blocked": True,

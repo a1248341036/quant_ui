@@ -493,3 +493,91 @@ class TestProsePrediction:
         })
         assert pred["expected_shape"] == "inverted_u"
         assert pred["expected_strong_side"] == "middle"
+
+
+class TestConditionalSubgroupShape:
+    """2026-09-06：条件式预期（组内/门控）→ conditional_subgroup。
+
+    实测 run ab657f24e796 一轮 3 条评估死于条件式散文被拒——组条件因子
+    （GATED_SIGNAL/CS_GROUP_RANK）的预期作用在子组上，全样本十分位形态
+    本就不受其约束，硬套枚举是语义错误。归一到 conditional_subgroup 后
+    对账返回 unverifiable 并指向 ablation_check，不误判证伪。
+    """
+
+    # 全部取自实测失败样例（散文无方向词，此前被拒）
+    _CONDITIONAL_CASES = [
+        "高增长组内集中信号显著，低增长组内减弱",
+        "缩量组(低state)集中信号显著，放量组内失效",
+        "低波组集中为正贡献，高波组集中反转为负贡献",
+    ]
+
+    def test_conditional_prose_resolved(self):
+        from alphaagent.factor.mining.eval.prediction import normalize_prediction
+
+        for prose in self._CONDITIONAL_CASES:
+            pred = normalize_prediction({
+                "expected_shape": prose,
+                "expected_strong_side": prose,
+                "expected_sign": 1,
+            })
+            assert pred is not None, f"条件式散文应归一成功: {prose}"
+            assert pred["expected_shape"] == "conditional_subgroup", prose
+            # 组内预期无全样本强侧语义——side 允许缺省
+            assert pred["expected_strong_side"] is None, prose
+
+    def test_conditional_side_omitted(self):
+        from alphaagent.factor.mining.eval.prediction import normalize_prediction
+
+        pred = normalize_prediction({
+            "expected_shape": "conditional_subgroup",
+            "expected_sign": -1,
+        })
+        assert pred is not None
+        assert pred["expected_strong_side"] is None
+        assert pred["expected_sign"] == -1
+
+    def test_conditional_side_still_accepted_if_given(self):
+        from alphaagent.factor.mining.eval.prediction import normalize_prediction
+
+        pred = normalize_prediction({
+            "expected_shape": "conditional_subgroup",
+            "expected_strong_side": "high_factor",
+            "expected_sign": 1,
+        })
+        assert pred is not None and pred["expected_strong_side"] == "high_factor"
+
+    def test_conditional_check_unverifiable_with_pointer(self):
+        """条件式预期对账 → unverifiable + 指向 ablation_check，不构成证伪。"""
+        from alphaagent.factor.mining.eval.prediction import build_prediction_check
+
+        check = build_prediction_check(
+            {"expected_shape": "conditional_subgroup", "expected_sign": 1},
+            ic=0.02,
+            decile_rows=_monotonic(),  # 即便全样本恰好单调也不得判 confirmed/contradicted
+        )
+        assert check is not None
+        assert check["verdict"] == "unverifiable"
+        assert "ablation_check" in check["message"]
+        assert "不构成证伪" in check["message"]
+
+    def test_non_conditional_behavior_unchanged(self):
+        """非条件式预期不受影响：monotonic 预期仍正常对账。"""
+        from alphaagent.factor.mining.eval.prediction import build_prediction_check
+
+        check = build_prediction_check(
+            {"expected_shape": "monotonic_increasing", "expected_strong_side": "high_factor",
+             "expected_sign": 1},
+            ic=0.02,
+            decile_rows=_monotonic(),
+        )
+        assert check["verdict"] == "confirmed"
+
+    def test_issues_mention_conditional_value(self):
+        from alphaagent.factor.mining.eval.prediction import describe_prediction_issues
+
+        issues = describe_prediction_issues({
+            "expected_shape": "随机描述没有方向词",
+            "expected_strong_side": "随便",
+            "expected_sign": 1,
+        })
+        assert issues and "conditional_subgroup" in issues

@@ -163,6 +163,10 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
         "allowed_interaction_types": [t for t in INTERACTION_TYPES if t != "multiplication"],
         "block_undeclared_multiply": True,
         "require_contract_for_typed_interactions": True,
+        # 结构算子未传契约时自动补全 + warning（2026-09-06）：单面 run 无契约
+        # 教学时的高频格式瑕疵，硬拦截整轮作废的算力损失大于纪律收益
+        # （与 prediction 缺失软门 7577ca7 同哲学）；机制纪律由 Reviewer 把守。
+        "auto_fill_missing_contract": True,
         "require_ablation_for_multiplication": True,
     },
     "memory_policy": {
@@ -520,7 +524,8 @@ def research_policy_prompt(spec: dict[str, Any]) -> str:
             "交互策略："
             f"允许 interaction_type={', '.join(interaction.get('allowed_interaction_types', []))}；"
             + ("未声明契约的 MULTIPLY 直接拦截。" if interaction.get("block_undeclared_multiply") else "MULTIPLY 仅提示。")
-            + "所有结构化多因子交互都必须传完整 interaction 契约。",
+            + "所有结构化多因子交互必须传完整 interaction 契约"
+            + ("（未传时自动补全占位并警告——机制描述请显式写）。" if interaction.get("auto_fill_missing_contract", True) else "，缺契约直接拦截。"),
             "交付策略："
             "通过 validation 的因子自动进入 candidate 候选池；Reviewer approve 后进入 production 正式库。",
         ]

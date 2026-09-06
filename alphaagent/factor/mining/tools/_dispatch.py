@@ -52,8 +52,10 @@ def _prediction_argument_error(arguments: dict[str, Any]) -> dict[str, Any] | No
             "ok": False,
             "error": (
                 f"prediction_invalid: {issues or '字段非法'}——"
-                '{"expected_shape": "monotonic_increasing|monotonic_decreasing|inverted_u|u_shape|spike_at_extreme|irregular", '
-                '"expected_strong_side": "high_factor|low_factor|middle", "expected_sign": 1|-1, "falsifier": "可选"}。'
+                '{"expected_shape": "monotonic_increasing|monotonic_decreasing|inverted_u|u_shape|spike_at_extreme|irregular|conditional_subgroup", '
+                '"expected_strong_side": "high_factor|low_factor|middle（conditional_subgroup 可省略）", '
+                '"expected_sign": 1|-1, "falsifier": "可选"}。'
+                "组内/门控条件式预期直接传 expected_shape=conditional_subgroup。"
                 "评估结果会自动对账注入 prediction_check——预期被证伪说明机制错误，"
                 "应放弃该方向而不是调参重试。"
             ),

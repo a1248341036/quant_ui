@@ -45,8 +45,12 @@ _PREDICTION_PARAMETER: dict[str, Any] = {
     "properties": {
         "expected_shape": {
             "type": "string",
-            "enum": ["monotonic_increasing", "monotonic_decreasing", "inverted_u", "u_shape", "spike_at_extreme", "irregular"],
-            "description": "预期十分位 mean_label 形态。",
+            "enum": ["monotonic_increasing", "monotonic_decreasing", "inverted_u", "u_shape", "spike_at_extreme", "irregular", "conditional_subgroup"],
+            "description": (
+                "预期十分位 mean_label 形态；条件式预期（组内/门控/分组结构，"
+                "如 GATED_SIGNAL/CS_GROUP_RANK 因子）用 conditional_subgroup——"
+                "此时 expected_strong_side 可省略，对账不适用全样本形态。"
+            ),
         },
         "expected_strong_side": {
             "type": "string",
