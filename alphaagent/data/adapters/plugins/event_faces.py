@@ -67,17 +67,32 @@ def _read_events(name: str) -> pl.DataFrame:
 
 
 def _stock_symbols() -> list[str]:
-    """全量 A 股股票清单（instruments，asset_type=stock），稠密化网格的行域。"""
-    try:
-        inst = pl.read_parquet(_curated_root() / "instruments", hive_partitioning=False)
-        return (
-            inst.filter(pl.col("asset_type") == "stock")["symbol"]
-            .unique()
-            .to_list()
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("event_faces: 读取 instruments 失败，退回事件股票域: %s", exc)
-        return []
+    """全量 A 股股票清单（instruments，asset_type=stock），稠密化网格的行域。
+
+    curated/instruments 缺失时回退到任一每日每股票表（valuation_metrics/
+    trading_status）的 symbol 域——与行情域等价，避免 dt_* 事件列族整体缺失。
+    """
+    root = _curated_root()
+    inst_path = root / "instruments"
+    if inst_path.exists():
+        try:
+            inst = pl.read_parquet(inst_path, hive_partitioning=False)
+            return (
+                inst.filter(pl.col("asset_type") == "stock")["symbol"]
+                .unique()
+                .to_list()
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("event_faces: 读取 instruments 失败，回退每日每股票表: %s", exc)
+    for ds in ("valuation_metrics", "trading_status"):
+        try:
+            syms = _read_events(ds)["symbol"].unique().to_list()
+            if syms:
+                logger.info("event_faces: instruments 缺失，股票域回退 %s（%d 只）", ds, len(syms))
+                return syms
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("event_faces: 股票域回退 %s 失败: %s", ds, exc)
+    return []
 
 
 def _weekday_grid(start: datetime.date, end: datetime.date,
