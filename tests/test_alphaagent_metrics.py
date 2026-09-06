@@ -15,7 +15,7 @@ def _make_run_dir(tmp_path: Path) -> Path:
     events = [
         {"ts": T0, "event": "session_start"},
         {"ts": T0, "event": "research_memory_retrieved"},
-        {"ts": T0, "event": "agent_thinking", "content": "思考" * 100},  # 400 字符
+        {"ts": T0, "event": "agent_thinking", "content": "思考" * 100},  # 200 字符
         {"ts": T0, "event": "assistant_tool_call", "name": "evaluate_factor"},
         {"ts": T0, "event": "tool_results", "results": [
             {"name": "evaluate_factor", "elapsed_seconds": 60, "result": {"ok": True}},
@@ -45,7 +45,7 @@ def test_compute_run_metrics(tmp_path) -> None:
     assert m["input_k_tokens"] == 100.0
     assert m["output_k_tokens"] == 11.0
     assert m["cache_hit_rate"] == 0.2
-    assert m["thinking_k_chars"] == 0.4
+    assert m["thinking_k_chars"] == 0.2
     assert m["tool_minutes"] == 1.5
     assert m["n_eval"] == 1
     assert m["n_submit"] == 1
