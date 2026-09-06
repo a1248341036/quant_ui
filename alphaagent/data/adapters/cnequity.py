@@ -67,6 +67,28 @@ _CACHE_SCHEMA_VERSION = 3  # v3: +forecast/shareholder_counts/event_faces 列族
 # 缓存文件数上限（每个 ~0.9GB，6 个 ≈ 5.4GB；按需调大）
 _CACHE_MAX_FILES = 6
 _CACHE_INDEX_COLS = ["datetime", "instrument"]
+# 基本面开关打开时缓存面板必须包含的列族哨兵（每插件一列）。建缓存当天某个
+# 辅助插件加载失败（如 CNE 同步占用 parquet 文件锁）会把缺列面板固化，之后
+# 每次命中都返回残缺面板 → 下游 funda_*/dt_* 因子集体报"不可用字段"。
+# 命中与写入两侧都校验：残缺面板不允许被缓存，也不允许被命中。
+_FUNDAMENTAL_SENTINEL_COLUMNS = frozenset(
+    {
+        "funda_total_assets",    # balancesheet
+        "funda_net_profit",      # income
+        "funda_ocf",             # cashflow
+        "funda_netprofit_yoy",   # fina_indicator
+        "holder_count_chg_pct",  # shareholder_counts
+        "dt_net_buy_90d",        # event_faces
+    }
+)
+
+
+def _missing_funda_sentinels(panel: pd.DataFrame) -> frozenset[str]:
+    """面板含任一 funda_ 列但缺哨兵列时返回缺失集合；无基本面列（开关关）返回空。"""
+    cols = {str(c) for c in panel.columns}
+    if not any(c.startswith("funda_") for c in cols):
+        return frozenset()
+    return frozenset(_FUNDAMENTAL_SENTINEL_COLUMNS - cols)
 
 
 def _cne_watermark() -> str:
@@ -135,7 +157,17 @@ def _find_cached_panel(start: str | None, end: str | None, include_fundamentals:
             if req_end is not None and req_end > idx_max:
                 continue  # 请求终点晚于缓存覆盖终点
             has_funda = any(str(c).startswith("funda_") for c in df.columns)
-            if has_funda != include_fundamentals:
+            if include_fundamentals:
+                if not has_funda:
+                    continue
+                missing_sentinels = _missing_funda_sentinels(df)
+                if missing_sentinels:
+                    logger.warning(
+                        "CNE panel 缓存 %s 缺基本面列族哨兵 %s，视为未命中（将重建完整面板）",
+                        path.name, sorted(missing_sentinels),
+                    )
+                    continue
+            elif has_funda:
                 continue  # 基本面开关不匹配，跳过
             logger.info("CNE adapter: panel 命中磁盘缓存 %s (%d 行)", path.name, len(df))
             return df
@@ -192,6 +224,15 @@ def _save_cached_panel(path: Path, panel: pd.DataFrame) -> None:
     panel 物理内存不按会话数叠加。arrow 写失败不影响 parquet 主缓存。
     """
     try:
+        missing_sentinels = _missing_funda_sentinels(panel)
+        if missing_sentinels:
+            # 残缺面板不落盘：否则会被后续请求持续命中，缺列问题被固化数周。
+            logger.warning(
+                "CNE panel 构建结果缺基本面列族哨兵 %s，本次不写缓存"
+                "（下次请求将重建；请检查当日对应插件加载日志中的 skip 告警）",
+                sorted(missing_sentinels),
+            )
+            return
         _CACHE_ROOT.mkdir(parents=True, exist_ok=True)
         flat = panel.reset_index()
         fd, tmp = tempfile.mkstemp(dir=str(_CACHE_ROOT), prefix=".panel.", suffix=".parquet.tmp")
