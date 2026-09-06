@@ -121,7 +121,9 @@ def _attach_yield_hints(result: dict[str, Any], expr: str, arguments: dict[str, 
                 return
             # P0-2 near_miss：IC 达两档门槛 80% 线、ICIR/coverage 达标但未过线
             try:
-                icir_f = float(icir) if icir is not None else None
+                # 与海选门槛同口径用 |ICIR|（abs_gte）——负 IC 因子（NEG 变换前）
+                # 原始 icir 为负，此前 >0.2 判断使负向因子永远拿不到 near_miss 提示
+                icir_f = abs(float(icir)) if icir is not None else None
                 cov_f = float(cov) if cov is not None else None
             except (TypeError, ValueError):
                 icir_f = cov_f = None
