@@ -1,10 +1,8 @@
 """AlphaAgent 挖掘 run 量化指标汇总：效率（第一层）+ 漏斗质量（第二层）。
 
-只读既有产物，不新增埋点：
-- logs/factor_mining/ui/<run_id>/run_*.jsonl —— 事件轨迹（usage/thinking/
-  tool_results 时间与结果）；
-- logs/factor_mining/ui/<run_id>/steps.log —— 分步日志（stage_one/two/
-  engine_gate/promoted 判定行）。
+计算逻辑在 alphaagent/factor/mining/run_metrics.py（与挖掘循环内实时
+metrics_snapshot、后端 /runs/{id}/metrics API 共用同一实现），本脚本只是
+CLI 外壳：扫全部 run 出表格 + 汇总。
 
 用法：
   python scripts/alphaagent_metrics.py                 # 全部 run + 汇总
@@ -16,119 +14,15 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
-from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from alphaagent.factor.mining.run_metrics import compute_run_metrics  # noqa: E402,F401
+
 LOG_ROOT = ROOT / "logs" / "factor_mining" / "ui"
-LLM_TOKENS_PER_SECOND = 55.0  # 生成速度估计，用于把输出 tokens 折算成墙钟分钟
-
-
-def _iter_run_events(run_dir: Path) -> list[dict]:
-    events: list[dict] = []
-    for f in sorted(run_dir.glob("run_*.jsonl")):
-        if "messages" in f.name or "summary" in f.name:
-            continue
-        for line in f.read_text(encoding="utf-8", errors="ignore").splitlines():
-            try:
-                events.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-    events.sort(key=lambda e: e.get("ts") or "")
-    return events
-
-
-def _parse_ts(s: str) -> datetime | None:
-    try:
-        return datetime.fromisoformat(s)
-    except (TypeError, ValueError):
-        return None
-
-
-def compute_run_metrics(run_id: str, run_dir: Path) -> dict:
-    ev = _iter_run_events(run_dir)
-    m: dict = {"run_id": run_id}
-    stamps = [_parse_ts(e.get("ts") or "") for e in ev]
-    good = [t for t in stamps if t]
-    m["wall_minutes"] = round((good[-1] - good[0]).total_seconds() / 60, 1) if len(good) >= 2 else 0.0
-
-    # LLM 侧
-    tot = next((e for e in reversed(ev) if e.get("event") == "usage_total"), None) or {}
-    m["llm_calls"] = int(tot.get("calls") or 0)
-    m["input_k_tokens"] = round((tot.get("input_tokens") or 0) / 1000, 1)
-    m["output_k_tokens"] = round((tot.get("output_tokens") or 0) / 1000, 1)
-    cache_in = tot.get("cache_input_tokens") or 0
-    m["cache_hit_rate"] = round(cache_in / (tot.get("input_tokens") or 1), 4)
-    m["llm_gen_minutes_est"] = round((tot.get("output_tokens") or 0) / LLM_TOKENS_PER_SECOND / 60, 1)
-    m["thinking_k_chars"] = round(sum(len(e.get("content") or "") for e in ev
-                                      if e.get("event") == "agent_thinking") / 1000, 1)
-
-    # 工具侧 + 漏斗（tool_results）
-    tool_seconds = 0.0
-    tool_counts: dict[str, int] = {}
-    n_eval = n_eval_val = n_submit = stored = candidate_stored = 0
-    for e in ev:
-        if e.get("event") != "tool_results":
-            continue
-        for r in e.get("results") or []:
-            name = r.get("name") or "?"
-            tool_counts[name] = tool_counts.get(name, 0) + 1
-            tool_seconds += r.get("elapsed_seconds") or 0
-            if name in ("evaluate_factor", "eval_on_train_set"):
-                n_eval += 1
-            if name == "eval_on_val_set":
-                n_eval_val += 1
-            if name == "submit_factor":
-                n_submit += 1
-                res = r.get("result") or {}
-                if res.get("stored"):
-                    stored += 1
-                elif res.get("candidate_stored"):
-                    candidate_stored += 1
-    m["tool_minutes"] = round(tool_seconds / 60, 1)
-    m["n_eval"] = n_eval
-    m["n_eval_val"] = n_eval_val
-    m["n_submit"] = n_submit
-    m["stored_production"] = stored
-    m["stored_candidate"] = candidate_stored
-    m["tool_calls_top"] = dict(sorted(tool_counts.items(), key=lambda kv: -kv[1])[:5])
-
-    # 漏斗细节（steps.log 判定行）
-    gate_fails: dict[str, int] = {}
-    stage = {"stage_one_pass": 0, "stage_one_fail": 0, "stage_two_pass": 0,
-             "stage_two_fail": 0, "gate_pass": 0, "gate_fail": 0, "promoted": 0,
-             "blind_fail": 0}
-    steps = run_dir / "steps.log"
-    if steps.exists():
-        for line in steps.read_text(encoding="utf-8", errors="ignore").splitlines():
-            if "submit.stage_one |" in line:
-                key = "stage_one_pass" if " passed=True" in line else "stage_one_fail"
-                stage[key] += 1
-            elif "submit.stage_two |" in line:
-                key = "stage_two_pass" if " passed=True" in line else "stage_two_fail"
-                stage[key] += 1
-            elif "submit.engine_gate |" in line:
-                key = "gate_pass" if " passed=True" in line else "gate_fail"
-                stage[key] += 1
-                if " passed=False" in line:
-                    fm = re.search(r"fail=\[([^\]]*)\]", line)
-                    for reason in (fm.group(1).split(",") if fm else []):
-                        gate_fails[reason.strip()] = gate_fails.get(reason.strip(), 0) + 1
-            elif "submit.promoted" in line:
-                stage["promoted"] += 1
-            elif "blind_test_failed" in line:
-                stage["blind_fail"] += 1
-    m["funnel"] = stage
-    m["gate_fail_reasons"] = gate_fails
-
-    # 成本效率
-    delivered = stored + candidate_stored
-    m["minutes_per_delivered"] = round(m["wall_minutes"] / delivered, 1) if delivered else None
-    m["output_tokens_per_delivered_k"] = round(m["output_k_tokens"] / delivered, 1) if delivered else None
-    return m
-
 
 _EFF_COLS = [
     ("wall_minutes", "时长min", 8),
@@ -155,7 +49,14 @@ def _print_table(rows: list[dict]) -> None:
         cells = ""
         for key, _, w in _EFF_COLS:
             v = m.get(key)
-            cells += f"{v if v is not None else '-':>{w}}" if not isinstance(v, float) else f"{v:>{w}.2f}" if key == "cache_hit_rate" else f"{v:>{w}.1f}"
+            if v is None:
+                cells += f"{'-':>{w}}"
+            elif key == "cache_hit_rate":
+                cells += f"{v:>{w}.2f}"
+            elif isinstance(v, float):
+                cells += f"{v:>{w}.1f}"
+            else:
+                cells += f"{v:>{w}}"
         print(f"{m['run_id'][:14]:14s}{cells}")
     print()
     print("漏斗（评估→提交→stage1→stage2→gate→晋升 / 盲测失败）与 gate 失败分布：")

@@ -12,7 +12,7 @@
 import { reactive, computed, nextTick } from 'vue'
 import { api, getWindowDefaults } from '../utils/api.js'
 import {
-  addUsage, usageFromEvents, emptyUsage,
+  addUsage, usageFromEvents, emptyUsage, latestMetricsSnapshot,
   buildTimeline, computeCurrentActivity, computeLiveActivity,
   runTitle,
 } from '../utils/alphaagent.js'
@@ -138,6 +138,7 @@ export const agentStore = reactive({
     agentStore.events,
   )),
   liveActivity: computed(() => computeLiveActivity(agentStore.events, agentStore.currentActivity)),
+  liveMetrics: computed(() => latestMetricsSnapshot(agentStore.events)),
   researchSpecCustom: computed(() => {
     const mode = agentStore.form.research_mode
     const overrides = agentStore.specOverridesByMode[mode] || {}

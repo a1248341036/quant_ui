@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
@@ -375,6 +376,17 @@ def run_detail(run_id: str) -> dict[str, Any]:
     if run is None:
         raise HTTPException(status_code=404, detail="run_not_found")
     return run.snapshot(tail=200)
+
+
+@router.get("/runs/{run_id}/metrics")
+def run_metrics(run_id: str) -> dict[str, Any]:
+    """run 量化指标（效率 + 漏斗），与 alphaagent_metrics.py 同源计算。"""
+    run = service.get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="run_not_found")
+    from alphaagent.factor.mining.run_metrics import compute_run_metrics
+
+    return compute_run_metrics(run_id, Path(run.log_dir))
 
 
 @router.post("/runs/{run_id}/stop")

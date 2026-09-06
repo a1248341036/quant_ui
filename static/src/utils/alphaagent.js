@@ -28,6 +28,17 @@ export function usageFromEvents(events) {
   return total
 }
 
+/**
+ * 最近一次 metrics_snapshot 事件（挖掘循环在每个 usage / tool_results 节点
+ * 发射的实时指标：墙钟/评估/提交/入库/晋升/thinking 体量/最近一次提交结果）。
+ */
+export function latestMetricsSnapshot(events) {
+  for (let i = (events || []).length - 1; i >= 0; i--) {
+    if (events[i].event === 'metrics_snapshot') return events[i]
+  }
+  return null
+}
+
 export function parseArgs(raw) {
   if (!raw) return {}
   try { return typeof raw === 'string' ? JSON.parse(raw) : raw } catch (e) { return {} }

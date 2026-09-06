@@ -161,6 +161,8 @@
 .page-info { margin-left:8px; color:var(--muted); font-size:11px; white-space:nowrap; }
 .usage-chip { display:flex; align-items:center; gap:5px; padding:5px 8px; border:1px solid var(--line); border-radius:7px; color:var(--muted); font:10px var(--font-mono); white-space:nowrap; }
 .usage-chip em { color:#91d4ac; font-style:normal; }
+.live-metrics { color:#8ab4d8; max-width:52vw; overflow:hidden; text-overflow:ellipsis; }
+.live-metrics em { color:#e8c491; }
 .activity-line { display:flex; align-items:center; gap:6px; color:#b9a3e8; font-size:11px; white-space:nowrap; }
 .activity-line i, .activity-bar i { display:inline-block; width:6px; height:6px; border-radius:50%; background:#c792ea; box-shadow:0 0 9px rgb(199 146 234 / .85); animation:agentPulse 1.1s infinite; }
 .live-status { display:flex; align-items:center; gap:6px; color:var(--muted); font-size:12px; }

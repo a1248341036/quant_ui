@@ -17,6 +17,16 @@
           <button :class="{active: agent.agentMode==='normal'}" @click="agent.switchAgentMode('normal')">普通</button>
         </div>
         <span v-if="agent.agentBusy" class="activity-line"><i></i>{{ agent.currentActivity }}</span>
+        <span v-if="agent.liveMetrics" class="usage-chip live-metrics"
+              title="实时挖掘指标（每个评估/提交节点刷新）：墙钟 · 评估次数 · 提交次数 · 入候选池 · 晋升正式库 · 思维链体量">
+          ⏱ {{ agent.liveMetrics.wall_minutes }}m
+          · 评估 {{ agent.liveMetrics.n_eval }}<template v-if="agent.liveMetrics.n_eval_val">+{{ agent.liveMetrics.n_eval_val }}val</template>
+          · 提交 {{ agent.liveMetrics.n_submit }}
+          · 入库 {{ agent.liveMetrics.stored_candidate }}
+          · 晋升 {{ agent.liveMetrics.stored_production }}
+          · 思维链 {{ agent.liveMetrics.thinking_k_chars }}K
+          <em v-if="agent.liveMetrics.last_submit">{{ agent.liveMetrics.last_submit.factor }}：{{ agent.liveMetrics.last_submit.verdict || (agent.liveMetrics.last_submit.skipped || '处理中') }}</em>
+        </span>
         <span v-if="agent.usage.calls" class="usage-chip" title="本次 Agent 模型调用累计 usage">
           ↑ {{ formatTokens(agent.usage.input_tokens) }} · ↓ {{ formatTokens(agent.usage.output_tokens) }}
           <em v-if="agent.usage.cache_input_tokens">缓存 {{ formatTokens(agent.usage.cache_input_tokens) }}</em>
