@@ -36,8 +36,11 @@
           </div>
           <div v-if="!experience.length" class="normal-mode-empty">经验蒸馏尚未产出（挖掘过程会自动沉淀）</div>
           <div v-else class="rmb-exp-groups">
-            <div class="rmb-exp-group" v-for="group in experienceGroups" :key="group.kind">
-              <h4>{{ group.label }}</h4>
+            <div class="rmb-exp-group" v-for="group in pagedExperienceGroups" :key="group.kind">
+              <h4>
+                {{ group.label }}
+                <span class="rmb-exp-count">共 {{ group.total }} 条</span>
+              </h4>
               <div v-if="!group.items.length" class="normal-mode-empty">暂无</div>
               <div v-for="item in group.items" :key="item.id" class="rmb-exp-card">
                 <div class="rmb-exp-content">{{ item.content }}</div>
@@ -49,6 +52,11 @@
                   <span v-if="item.typical_correlation != null">典型相关 {{ item.typical_correlation }}</span>
                   <span class="rmb-exp-time">{{ formatTime(item.updated_at) }}</span>
                 </div>
+              </div>
+              <div class="rmb-pager" v-if="group.pageCount > 1">
+                <button class="rmb-pager-btn" :disabled="group.page <= 1" @click="expSetPage(group.kind, group.page - 1)">‹</button>
+                <span class="rmb-pager-info">{{ group.page }} / {{ group.pageCount }}</span>
+                <button class="rmb-pager-btn" :disabled="group.page >= group.pageCount" @click="expSetPage(group.kind, group.page + 1)">›</button>
               </div>
             </div>
           </div>
@@ -200,6 +208,9 @@ export default {
       familyFilter: '',
       sortKey: 'weighted_fail',
       sortOrder: -1,
+      // 经验层分页：每组独立翻页，控制区块高度
+      expPage: { success_pattern: 1, forbidden: 1, insight: 1 },
+      expPageSize: 5,
     }
   },
   computed: {
@@ -227,6 +238,21 @@ export default {
         { kind: 'insight', label: '洞察' },
       ]
       return defs.map(d => ({ ...d, items: this.experience.filter(e => e.kind === d.kind) }))
+    },
+    pagedExperienceGroups() {
+      // 组内按出现次数降序（次数相同按更新时间新在前），再按当前页切片
+      return this.experienceGroups.map((group) => {
+        const total = group.items.length
+        const pageCount = Math.max(1, Math.ceil(total / this.expPageSize))
+        const page = Math.min(this.expPage[group.kind] || 1, pageCount)
+        const sorted = [...group.items].sort((a, b) => {
+          const dn = (b.occurrence_count || 1) - (a.occurrence_count || 1)
+          if (dn) return dn
+          return String(b.updated_at || '').localeCompare(String(a.updated_at || ''))
+        })
+        const start = (page - 1) * this.expPageSize
+        return { ...group, total, pageCount, page, items: sorted.slice(start, start + this.expPageSize) }
+      })
     },
     gateLegend() {
       return ['hard_recommend', 'soft_recommend', 'hard_veto', 'soft_veto', 'apv_hard_veto', 'not_injected']
@@ -303,6 +329,9 @@ export default {
         this.sortOrder = ASC_FIRST_KEYS.has(key) ? 1 : -1
       }
     },
+    expSetPage(kind, page) {
+      if (page >= 1) this.expPage[kind] = page
+    },
     async removeEntry(entry) {
       const name = entry.factor_name || entry.id
       if (!window.confirm(`删除研究记忆「${name}」？Agent 将不再参考该条目，SSPM 单元与观察记录同步清理。`)) return
@@ -322,3 +351,44 @@ export default {
   },
 }
 </script>
+
+<style scoped>
+/* 经验层分页控件：紧凑行内样式，避免区块占满整屏 */
+.rmb-exp-count {
+  font-size: 11px;
+  font-weight: normal;
+  color: var(--text-dim, #888);
+  margin-left: 8px;
+}
+
+.rmb-pager {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.rmb-pager-btn {
+  border: 1px solid var(--border, #333);
+  background: transparent;
+  color: inherit;
+  border-radius: 4px;
+  width: 22px;
+  height: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+
+.rmb-pager-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.rmb-pager-info {
+  font-size: 11px;
+  color: var(--text-dim, #888);
+  min-width: 40px;
+  text-align: center;
+}
+</style>
