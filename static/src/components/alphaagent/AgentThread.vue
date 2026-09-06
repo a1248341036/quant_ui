@@ -25,6 +25,8 @@
           · 入库 {{ agent.liveMetrics.stored_candidate }}
           · 晋升 {{ agent.liveMetrics.stored_production }}
           · 思维链 {{ agent.liveMetrics.thinking_k_chars }}K
+          <template v-if="agent.liveMetrics.n_tool_errors"> · <em class="lm-err">错 {{ agent.liveMetrics.n_tool_errors }}</em></template>
+          <template v-if="agent.liveMetrics.dup_dead_end"> · <em class="lm-err">死路提醒 {{ agent.liveMetrics.dup_dead_end }}</em></template>
           <em v-if="agent.liveMetrics.last_submit">{{ agent.liveMetrics.last_submit.factor }}：{{ agent.liveMetrics.last_submit.verdict || (agent.liveMetrics.last_submit.skipped || '处理中') }}</em>
         </span>
         <span v-if="agent.usage.calls" class="usage-chip" title="本次 Agent 模型调用累计 usage">

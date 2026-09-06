@@ -92,3 +92,56 @@ def test_live_state_accumulator_matches_offline() -> None:
     assert snap["tool_minutes"] == round(110 / 60, 1)
     assert snap["last_submit"]["factor"] == "f1"
     assert snap["wall_minutes"] >= 0
+
+
+def test_tool_error_and_advisory_buckets() -> None:
+    import warnings
+    from datetime import datetime, timezone
+
+    from alphaagent.factor.mining.run_metrics import (
+        build_metrics_snapshot, new_live_state, observe_event)
+
+    state = new_live_state(datetime.now(timezone.utc))
+    observe_event(state, "tool_results", {"results": [
+        {"name": "evaluate_factor", "elapsed_seconds": 5,
+         "result": {"ok": False, "error_type": "ToolArgumentsError"}},
+        {"name": "evaluate_factor", "elapsed_seconds": 5,
+         "result": {"ok": False, "error_type": "MultiLineFactorEvalError"}},
+        {"name": "submit_factor", "elapsed_seconds": 5,
+         "result": {"ok": True, "candidate_stored": True,
+                    "memory_advisory": {"advisories": [
+                        {"kind": "duplicate_known_dead_end"},
+                        {"kind": "edit_veto"}], "blocked": False}}},
+        {"name": "submit_factor", "elapsed_seconds": 5,
+         "result": {"ok": True, "candidate_stored": True,
+                    "memory_advisory": {"advisories": [{"kind": "duplicate_known_dead_end"}]}}},
+    ]})
+    snap = build_metrics_snapshot(state)
+    assert snap["n_tool_errors"] == 2
+    assert snap["tool_error_rate"] == 0.5
+    assert snap["dup_dead_end"] == 2
+    assert state["advisories"] == {"duplicate_known_dead_end": 2, "edit_veto": 1}
+
+
+def test_reviewer_calibration_crosstab(tmp_path) -> None:
+    from alphaagent.factor.mining.run_metrics import reviewer_calibration
+
+    cand = tmp_path / "mining_candidate_registry.json"
+    prod = tmp_path / "mining_delivered_registry.json"
+    cand.write_text(json.dumps({
+        "a_good": {"review_status": "approve", "promotion_status": "candidate"},
+        "b_bad": {"review_status": "approve", "promotion_status": "engine_gate_failed"},
+        "c_bad": {"review_status": "revise", "promotion_status": "stage_two_failed"},
+        "d_good": {"review_status": "revise", "promotion_status": "candidate"},
+        "e_alive": {"review_status": "approve"},
+    }), encoding="utf-8")
+    prod.write_text(json.dumps({
+        "f_promoted": {"review_status": "approve"},
+    }), encoding="utf-8")
+    cal = reviewer_calibration(cand, prod)
+    assert cal["n_total"] == 6
+    # approve：4 个（f_promoted 晋升 + a_good/e_alive 存活 + b_bad gate死）→ 0.75
+    assert cal["crosstab"]["approve"]["alive_rate"] == 0.75
+    # revise：2 个（1 存活 1 s2死）→ 0.5
+    assert cal["crosstab"]["revise"]["alive_rate"] == 0.5
+    assert cal["calibration"]["lift"] == 0.25

@@ -119,6 +119,28 @@ def compute_run_metrics(run_id: str, run_dir: Path) -> dict:
     m["funnel"] = stage
     m["gate_fail_reasons"] = gate_fails
 
+    # 错误率 + 记忆 advisory 命中
+    tool_errors: dict[str, int] = {}
+    advisories: dict[str, int] = {}
+    n_results = 0
+    for e in ev:
+        if e.get("event") != "tool_results":
+            continue
+        for r in e.get("results") or []:
+            n_results += 1
+            res = r.get("result") if isinstance(r.get("result"), dict) else {}
+            err = _bucket_error(res)
+            if err:
+                tool_errors[err] = tool_errors.get(err, 0) + 1
+            for kind in _advisory_kinds(res):
+                advisories[kind] = advisories.get(kind, 0) + 1
+    m["n_tool_results"] = n_results
+    m["tool_error_rate"] = round(sum(tool_errors.values()) / n_results, 3) if n_results else None
+    m["error_breakdown"] = dict(sorted(tool_errors.items(), key=lambda kv: -kv[1]))
+    m["advisory_breakdown"] = dict(sorted(advisories.items(), key=lambda kv: -kv[1]))
+    m["dup_dead_end"] = advisories.get("duplicate_known_dead_end", 0)
+    m["dup_dead_end_rate"] = round(advisories.get("duplicate_known_dead_end", 0) / max(1, n_eval + n_submit), 3)
+
     delivered = stored + candidate_stored
     m["minutes_per_delivered"] = round(m["wall_minutes"] / delivered, 1) if delivered else None
     m["output_tokens_per_delivered_k"] = round(m["output_k_tokens"] / delivered, 1) if delivered else None
@@ -126,6 +148,21 @@ def compute_run_metrics(run_id: str, run_dir: Path) -> dict:
 
 
 # ── 挖掘循环内实时累计器 ────────────────────────────────────────────
+
+def _bucket_error(res: dict) -> str | None:
+    """单条 tool result → 错误桶；成功返回 None。"""
+    if res.get("ok", True):
+        et = res.get("error_type")
+        return str(et) if et else None
+    return str(res.get("error_type") or "no_ok")
+
+
+def _advisory_kinds(res: dict) -> list[str]:
+    ma = res.get("memory_advisory")
+    if not isinstance(ma, dict):
+        return []
+    return [str(a.get("kind")) for a in (ma.get("advisories") or []) if isinstance(a, dict)]
+
 
 def new_live_state(started_at: datetime) -> dict[str, Any]:
     return {
@@ -137,6 +174,9 @@ def new_live_state(started_at: datetime) -> dict[str, Any]:
         "thinking_chars": 0,
         "tool_seconds": 0.0,
         "tool_counts": {},
+        "n_results": 0,
+        "tool_errors": {},
+        "advisories": {},
         "n_eval": 0,
         "n_eval_val": 0,
         "n_submit": 0,
@@ -157,15 +197,21 @@ def observe_event(state: dict[str, Any], event: str, payload: dict[str, Any]) ->
     elif event == "tool_results":
         for row in payload.get("results") or []:
             name = row.get("name") or "?"
+            res = row.get("result") if isinstance(row.get("result"), dict) else {}
             state["tool_counts"][name] = state["tool_counts"].get(name, 0) + 1
+            state["n_results"] += 1
             state["tool_seconds"] += row.get("elapsed_seconds") or 0
+            err = _bucket_error(res)
+            if err:
+                state["tool_errors"][err] = state["tool_errors"].get(err, 0) + 1
+            for kind in _advisory_kinds(res):
+                state["advisories"][kind] = state["advisories"].get(kind, 0) + 1
             if name in ("evaluate_factor", "eval_on_train_set"):
                 state["n_eval"] += 1
             elif name == "eval_on_val_set":
                 state["n_eval_val"] += 1
             elif name == "submit_factor":
                 state["n_submit"] += 1
-                res = row.get("result") if isinstance(row.get("result"), dict) else {}
                 entry = {
                     "factor": res.get("factor_name") or res.get("factor_id") or name,
                     "verdict": res.get("verdict"),
@@ -181,15 +227,13 @@ def observe_event(state: dict[str, Any], event: str, payload: dict[str, Any]) ->
 def build_metrics_snapshot(state: dict[str, Any]) -> dict[str, Any]:
     now = datetime.now(state["started_at"].tzinfo) if state["started_at"].tzinfo else datetime.now()
     wall = (now - state["started_at"]).total_seconds() / 60
+    n_err = sum(state["tool_errors"].values())
     return {
         "wall_minutes": round(wall, 1),
         "llm_calls": state["llm_calls"],
         "input_k_tokens": round(state["input_tokens"] / 1000, 1),
         "output_k_tokens": round(state["output_tokens"] / 1000, 1),
         "cache_input_tokens": state["cache_input_tokens"],
-        "cache_hit_rate": round(state["cache_input_tokens"] / state["input_tokens"], 4)
-        if state["input_tokens"]
-        else 0.0,
         "thinking_k_chars": round(state["thinking_chars"] / 1000, 1),
         "llm_gen_minutes_est": round(state["output_tokens"] / LLM_TOKENS_PER_SECOND / 60, 1),
         "tool_minutes": round(state["tool_seconds"] / 60, 1),
@@ -198,5 +242,60 @@ def build_metrics_snapshot(state: dict[str, Any]) -> dict[str, Any]:
         "n_submit": state["n_submit"],
         "stored_candidate": state["stored_candidate"],
         "stored_production": state["stored_production"],
+        "n_tool_errors": n_err,
+        "tool_error_rate": round(n_err / state["n_results"], 3) if state["n_results"] else None,
+        "dup_dead_end": state["advisories"].get("duplicate_known_dead_end", 0),
         "last_submit": state["last_submit"],
+    }
+
+
+# ── Reviewer 校准（跨 run 全局，扫两个 registry）─────────────────────
+
+def reviewer_calibration(candidate_registry: Path, production_registry: Path) -> dict:
+    """reviewer 意见（review_status）× 因子最终结局（promotion_status/所在库）。
+
+    校准逻辑：approve 的因子后续"存活"（未死在 stage_two/engine_gate）率
+    应显著高于 revise 的——否则 Reviewer 的意见对晋升没有预测力。
+    """
+    def _load(path: Path) -> dict:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    rows: list[dict] = []
+    production = _load(production_registry)
+    for name, e in production.items():
+        rows.append({"name": name, "review": str(e.get("review_status") or "?"), "outcome": "promoted"})
+    for name, e in _load(candidate_registry).items():
+        if name in production:
+            continue  # 已晋升条目以 production 侧为准
+        ps = str(e.get("promotion_status") or "candidate")
+        outcome = {"engine_gate_failed": "gate_failed", "stage_two_failed": "stage_two_failed"}.get(ps, "candidate_alive")
+        rows.append({"name": name, "review": str(e.get("review_status") or "?"), "outcome": outcome})
+
+    crosstab: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        bucket = crosstab.setdefault(r["review"], {"n": 0, "promoted": 0, "candidate_alive": 0,
+                                                   "gate_failed": 0, "stage_two_failed": 0})
+        bucket["n"] += 1
+        if r["outcome"] in bucket:
+            bucket[r["outcome"]] += 1
+    for b in crosstab.values():
+        b["alive_rate"] = round((b["promoted"] + b["candidate_alive"]) / b["n"], 3) if b["n"] else None
+
+    def _rate(verdict: str) -> float | None:
+        b = crosstab.get(verdict)
+        return b["alive_rate"] if b else None
+
+    approve_rate, revise_rate = _rate("approve"), _rate("revise")
+    return {
+        "crosstab": crosstab,
+        "n_total": len(rows),
+        "calibration": {
+            "approve_alive_rate": approve_rate,
+            "revise_alive_rate": revise_rate,
+            "lift": round(approve_rate - revise_rate, 3) if approve_rate is not None and revise_rate is not None else None,
+        },
     }

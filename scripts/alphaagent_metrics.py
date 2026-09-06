@@ -37,6 +37,8 @@ _EFF_COLS = [
     ("n_submit", "提交", 5),
     ("stored_candidate", "入库", 5),
     ("stored_production", "晋升", 5),
+    ("tool_error_rate", "错误率", 6),
+    ("dup_dead_end", "死路提醒", 8),
     ("minutes_per_delivered", "min/产出", 9),
 ]
 
@@ -68,6 +70,18 @@ def _print_table(rows: list[dict]) -> None:
               f"gate={f['gate_pass']}/{f['gate_pass'] + f['gate_fail']} "
               f"晋升={f['promoted']} 盲测拦={f['blind_fail']} "
               f"gate失败项={m['gate_fail_reasons'] or '-'}")
+    print()
+    print("工具错误分布（ToolArgumentsError=参数/契约违规；eval 类=表达式求值失败；"
+          "Stage/Gate/Blind 类=门槛拒绝，属正常流程）：")
+    for m in rows:
+        rate = m.get("tool_error_rate")
+        rate_s = f"{rate:.1%}" if rate is not None else "-"
+        print(f"  {m['run_id'][:14]:14s} 错误率={rate_s} 明细={m['error_breakdown'] or '-'}")
+    print()
+    print("记忆 advisory 命中（duplicate_known_dead_end=重复死路结构提醒；"
+          "edit_veto=意向编辑否决；duplicate_prior_result=正向结构重复）：")
+    for m in rows:
+        print(f"  {m['run_id'][:14]:14s} {m['advisory_breakdown'] or '-'}")
 
 
 def main() -> None:
@@ -105,9 +119,25 @@ def main() -> None:
     }
     print("\n汇总:", json.dumps(summary, ensure_ascii=False))
 
+    # ── Reviewer 校准（跨 run 全局）：approve 的存活率应高于 revise ──
+    from alphaagent.factor.mining.run_metrics import reviewer_calibration
+
+    cal = reviewer_calibration(
+        ROOT / "artifacts" / "alphaagent" / "factorzoo" / "candidate_main" / "mining_candidate_registry.json",
+        ROOT / "artifacts" / "alphaagent" / "factorzoo" / "production_main" / "mining_delivered_registry.json",
+    )
+    print(f"\nReviewer 校准（{cal['n_total']} 个已入库因子，存活=未死在 stage_two/engine_gate）：")
+    for verdict, b in sorted(cal["crosstab"].items()):
+        print(f"  {verdict:14s} n={b['n']:3d} 晋升={b['promoted']} 存活={b['candidate_alive']} "
+              f"gate死={b['gate_failed']} s2死={b['stage_two_failed']} 存活率={b['alive_rate']}")
+    c = cal["calibration"]
+    print(f"  → 校准提升 lift = approve存活率 {c['approve_alive_rate']} − revise存活率 {c['revise_alive_rate']} = {c['lift']}"
+          "（接近 0 或为负 ⇒ Reviewer 意见对晋升无预测力）")
+
     if args.json:
         Path(args.json).write_text(
-            json.dumps({"summary": summary, "runs": rows}, ensure_ascii=False, indent=1),
+            json.dumps({"summary": summary, "runs": rows, "reviewer_calibration": cal},
+                       ensure_ascii=False, indent=1),
             encoding="utf-8")
         print(f"JSON 已写入 {args.json}")
 
