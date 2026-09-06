@@ -144,6 +144,15 @@ class _ProfileServiceWithDeciles:
             },
         }
 
+    def eval_train(self, request):
+        """dispatch 路由 train_screen → eval_train（两段式）；桩内复用 eval_profile。"""
+        return self.eval_profile(type("R", (), {
+            "session_id": request.session_id,
+            "profile_id": "train_screen",
+            "multi_line_expr": request.multi_line_expr,
+            "factor_name": request.factor_name,
+        })())
+
     class _Sessions:
         def get(self, _sid):
             return object()

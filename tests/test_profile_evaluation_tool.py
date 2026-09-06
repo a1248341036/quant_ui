@@ -25,6 +25,15 @@ class _ProfileService:
             "rule_results": [],
         }
 
+    def eval_train(self, request):
+        """dispatch 路由 train_screen → eval_train（两段式）；桩内复用 eval_profile。"""
+        return self.eval_profile(type("R", (), {
+            "session_id": request.session_id,
+            "profile_id": "train_screen",
+            "multi_line_expr": request.multi_line_expr,
+            "factor_name": request.factor_name,
+        })())
+
 
 def test_generic_profile_tool_dispatches_frozen_profile() -> None:
     service = _ProfileService()
@@ -122,6 +131,9 @@ def test_signature_hints_attached_on_arg_error() -> None:
     """传参错误自愈：签名类 TypeError 的失败结果附 operator_signatures。"""
 
     class _FailingService:
+        def eval_train(self, request):
+            return self.eval_profile(request)
+
         def eval_profile(self, request):
             return {
                 "ok": False,
@@ -147,6 +159,9 @@ def test_signature_hints_attached_on_arg_error() -> None:
 
 def test_signature_hints_not_attached_on_other_errors() -> None:
     class _FailingService:
+        def eval_train(self, request):
+            return self.eval_profile(request)
+
         def eval_profile(self, request):
             return {"ok": False, "error": "表达式引用了不可用字段: $nope", "error_type": "MultiLineFactorEvalError"}
 
