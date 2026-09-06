@@ -359,13 +359,12 @@ def _announcement_source(config: Config) -> str:
     Default is ``eastmoney`` (np-anotice-stock): 100 rows/page, deep
     pagination to the last row, 0.5s pacing — the CNINFO walk needed days
     where this needs hours. ``[announcement_index] source = "cninfo"``
-    restores the old default.
+    selects the old source. Either way a disabled source falls back to the
+    other; only both disabled raises.
     """
     source = str(getattr(config, "announcement_index_source", "") or "eastmoney")
-    if source == "eastmoney" and not config.sources.get("eastmoney", True):
-        source = "cninfo"
-    if source == "cninfo" and not config.sources.get("cninfo", True):
-        source = "eastmoney"
+    if not config.sources.get(source, True):
+        source = "cninfo" if source == "eastmoney" else "eastmoney"
     return source
 
 

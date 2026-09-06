@@ -356,20 +356,16 @@ def _backfill_share_unlock_schedule(config: Config, trade_date: date, run_id: st
 
 
 def _regulatory_source(config: Config) -> str:
-    """Primary source for regulatory_events.
+    """Primary source for regulatory_events, with disabled-source fallback.
 
     Default ``eastmoney`` (same notice-stream sweep as cninfo, on the fast
-    100-row/page API), falling back to cninfo while it is only the default
-    that is disabled. An explicitly configured ``[regulatory_events]
-    source`` is honored strictly — a disabled explicit source raises
-    instead of silently rerouting.
+    100-row/page API); ``[regulatory_events] source = "cninfo"`` selects the
+    old source. Either way a disabled source falls back to the other; only
+    both disabled raises.
     """
-    explicit = getattr(config, "regulatory_events_source", None)
-    if explicit:
-        return str(explicit)
-    source = "eastmoney"
+    source = str(getattr(config, "regulatory_events_source", "") or "eastmoney")
     if not config.sources.get(source, True):
-        source = "cninfo"
+        source = "cninfo" if source == "eastmoney" else "eastmoney"
     return source
 
 
