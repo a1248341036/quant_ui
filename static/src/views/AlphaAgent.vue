@@ -7,6 +7,7 @@
       <button :class="{active: subtab==='ml'}" @click="subtab='ml'">ML 组合</button>
       <button :class="{active: subtab==='summary'}" @click="subtab='summary'">研究总结</button>
       <button :class="{active: subtab==='memory'}" @click="subtab='memory'">研究记忆库</button>
+      <button :class="{active: subtab==='metrics'}" @click="subtab='metrics'">整体统计</button>
     </div>
 
     <!-- ═══ 因子实验室 ═══ -->
@@ -20,6 +21,9 @@
 
     <!-- ═══ 研究记忆库 ═══ -->
     <research-memory-bank v-else-if="subtab==='memory'" />
+
+    <!-- ═══ 整体统计 ═══ -->
+    <metrics-panel v-else-if="subtab==='metrics'" ref="metricsPanel" />
 
     <!-- ═══ 因子库管理 ═══ -->
     <factor-library v-else-if="subtab==='library'" @backtest="openLibraryBacktest" />
@@ -62,6 +66,7 @@ import FactorBacktestDialog from '../components/alphaagent/FactorBacktestDialog.
 import MlPanel from '../components/alphaagent/MlPanel.vue'
 import ResearchSummary from '../components/alphaagent/ResearchSummary.vue'
 import ResearchMemoryBank from '../components/alphaagent/ResearchMemoryBank.vue'
+import MetricsPanel from '../components/alphaagent/MetricsPanel.vue'
 
 export default {
   name: 'AlphaAgent',
@@ -76,6 +81,7 @@ export default {
     'ml-panel': MlPanel,
     'research-summary': ResearchSummary,
     'research-memory-bank': ResearchMemoryBank,
+    'metrics-panel': MetricsPanel,
   },
   data() {
     return {
@@ -130,6 +136,7 @@ export default {
         // 当前子标签的数据跟着刷（研究 tab 的时间线由 SSE 实时推送，不靠轮询）
         if (this.subtab === 'summary') jobs.push(s.loadSummaryPage())
         else if (this.subtab === 'memory') jobs.push(s.refreshResearchMemory())
+        else if (this.subtab === 'metrics') this.refreshMetrics?.()
         await Promise.all(jobs)
         // 当前会话的状态与最新列表对齐（SSE 断开时状态点也能跟上）
         if (s.current && s.current.status !== 'stopping') {
@@ -143,6 +150,10 @@ export default {
       } finally {
         this.pollBusy = false
       }
+    },
+    // 整体统计 tab：把轮询转发给面板的刷新（组件自身挂载时也会拉一次）
+    refreshMetrics() {
+      this.$refs.metricsPanel?.refresh?.()
     },
     // 因子实验室"回测"按钮：默认窗口跟随实验室的验证区间
     openLabBacktest(payload) {

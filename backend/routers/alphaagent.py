@@ -389,6 +389,51 @@ def run_metrics(run_id: str) -> dict[str, Any]:
     return compute_run_metrics(run_id, Path(run.log_dir))
 
 
+@router.get("/metrics/overview")
+def metrics_overview(last: int = 20) -> dict[str, Any]:
+    """整体统计：扫描全部 run 的效率/漏斗指标聚合 + Reviewer 校准。"""
+    from alphaagent.factor.mining.run_metrics import compute_run_metrics, reviewer_calibration
+
+    run_dirs = sorted(p for p in service.LOG_ROOT.iterdir() if p.is_dir())
+    if last > 0:
+        run_dirs = run_dirs[-last:]
+    rows = [compute_run_metrics(p.name, p) for p in run_dirs]
+
+    delivered = [m for m in rows if (m["stored_production"] + m["stored_candidate"]) > 0]
+    total_eval = sum(m["n_eval"] + m["n_eval_val"] for m in rows)
+    summary = {
+        "n_runs": len(rows),
+        "total_wall_minutes": round(sum(m["wall_minutes"] for m in rows), 1),
+        "total_input_k_tokens": round(sum(m["input_k_tokens"] for m in rows), 1),
+        "total_output_k_tokens": round(sum(m["output_k_tokens"] for m in rows), 1),
+        "total_thinking_k_chars": round(sum(m["thinking_k_chars"] for m in rows), 1),
+        "total_eval": total_eval,
+        "total_submit": sum(m["n_submit"] for m in rows),
+        "total_stage_one_pass": sum(m["funnel"]["stage_one_pass"] for m in rows),
+        "total_stage_two_pass": sum(m["funnel"]["stage_two_pass"] for m in rows),
+        "total_gate_pass": sum(m["funnel"]["gate_pass"] for m in rows),
+        "total_stored_candidate": sum(m["stored_candidate"] for m in rows),
+        "total_stored_production": sum(m["stored_production"] for m in rows),
+        "mean_minutes_per_delivered": (
+            round(sum(m["wall_minutes"] for m in delivered) /
+                  sum(m["stored_production"] + m["stored_candidate"] for m in delivered), 1)
+            if delivered else None),
+        "error_breakdown": {},
+        "advisory_breakdown": {},
+    }
+    for m in rows:
+        for k, v in (m.get("error_breakdown") or {}).items():
+            summary["error_breakdown"][k] = summary["error_breakdown"].get(k, 0) + v
+        for k, v in (m.get("advisory_breakdown") or {}).items():
+            summary["advisory_breakdown"][k] = summary["advisory_breakdown"].get(k, 0) + v
+
+    cal = reviewer_calibration(
+        service.ROOT / "artifacts" / "alphaagent" / "factorzoo" / "candidate_main" / "mining_candidate_registry.json",
+        service.ROOT / "artifacts" / "alphaagent" / "factorzoo" / "production_main" / "mining_delivered_registry.json",
+    )
+    return {"summary": summary, "runs": list(reversed(rows)), "reviewer_calibration": cal}
+
+
 @router.post("/runs/{run_id}/stop")
 def stop(run_id: str) -> dict[str, Any]:
     if service.get_run(run_id) is None:
