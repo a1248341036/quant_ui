@@ -1322,6 +1322,11 @@ def is_dataset_enabled(dataset: str, config) -> bool:
             getattr(config, "minute_bars_enabled", False)
             and "5m" in getattr(config, "minute_bars_frequencies", ())
         )
+    # Generic per-dataset override: [datasets.<name>] enabled = false in the
+    # config retires a dataset without deleting its curated history.
+    overrides = getattr(config, "dataset_enabled", None) or {}
+    if dataset in overrides:
+        return bool(overrides[dataset])
     return True
 
 

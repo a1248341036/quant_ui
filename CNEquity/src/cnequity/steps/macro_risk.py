@@ -7,6 +7,7 @@ from datetime import date
 import polars as pl
 
 from cnequity.adapters.cninfo.regulatory import fetch_regulatory_events
+from cnequity.adapters.eastmoney.regulatory import fetch_regulatory_events_eastmoney
 from cnequity.adapters.eastmoney.share_unlock import fetch_share_unlock_schedule
 from cnequity.adapters.macro.indicators import fetch_macro_indicators
 from cnequity.config import Config
@@ -354,10 +355,34 @@ def _backfill_share_unlock_schedule(config: Config, trade_date: date, run_id: st
     return {"rows_read": rows_written, "rows_written": rows_written}
 
 
+def _regulatory_source(config: Config) -> str:
+    """Primary source for regulatory_events.
+
+    Default ``eastmoney`` (same notice-stream sweep as cninfo, on the fast
+    100-row/page API), falling back to cninfo while it is only the default
+    that is disabled. An explicitly configured ``[regulatory_events]
+    source`` is honored strictly — a disabled explicit source raises
+    instead of silently rerouting.
+    """
+    explicit = getattr(config, "regulatory_events_source", None)
+    if explicit:
+        return str(explicit)
+    source = "eastmoney"
+    if not config.sources.get(source, True):
+        source = "cninfo"
+    return source
+
+
 @register_step("regulatory_events", group="macro_risk", depends_on=["instruments"])
 def step_regulatory_events(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
-    if not config.sources.get("cninfo", True):
-        raise RuntimeError("regulatory_events: cninfo source disabled in config")
+    source = _regulatory_source(config)
+    if not config.sources.get(source, True):
+        # 回退链绕回后仍禁用（如 eastmoney/cninfo 双禁用）——与单源时代守卫同语义
+        raise RuntimeError(f"regulatory_events: {source} source disabled in config")
+    if source == "eastmoney":
+        fetch = lambda d: fetch_regulatory_events_eastmoney(d, config=config)  # noqa: E731
+    else:
+        fetch = lambda d: fetch_regulatory_events(d, config=config)  # noqa: E731
     if getattr(config, "_backfill", False):
         from cnequity.steps.common import walk_day_backfill
 
@@ -366,8 +391,8 @@ def step_regulatory_events(config: Config, trade_date: date, run_id: str, contex
             trade_date,
             run_id,
             "regulatory_events",
-            lambda d: fetch_regulatory_events(d, config=config),
-            source="cninfo",
+            fetch,
+            source=source,
             date_col="event_date",
             floor=date(2010, 1, 1),
         )
@@ -376,8 +401,8 @@ def step_regulatory_events(config: Config, trade_date: date, run_id: str, contex
         trade_date,
         run_id,
         "regulatory_events",
-        lambda d: fetch_regulatory_events(d, config=config),
-        source="cninfo",
+        fetch,
+        source=source,
         allow_empty=True,
         date_col="event_date",
     )

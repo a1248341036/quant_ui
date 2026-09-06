@@ -84,6 +84,12 @@ class Config:
     external_minute_bars_local_root: Path | None = None
     sources: dict[str, bool] = field(default_factory=dict)
     source_intervals: dict[str, float] = field(default_factory=dict)
+    dataset_enabled: dict[str, bool] = field(default_factory=dict)
+    # Primary sources ("eastmoney" | "cninfo"). None = not configured: the
+    # step uses eastmoney with a disabled-source fallback. An explicit value
+    # is honored strictly — a disabled explicit source raises.
+    announcement_index_source: str | None = None
+    regulatory_events_source: str | None = None
     # Optional HTTP(S) proxy for EastMoneyClient (e.g. mainland egress for push2his).
     # Env HTTPS_PROXY / HTTP_PROXY still work when this is unset.
     eastmoney_proxy: str | None = None
@@ -242,6 +248,26 @@ def load_config(path: str | Path) -> Config:
     external_minute_bars_local = raw.get("external_minute_bars_local", {})
     sources_raw = raw.get("sources", {})
 
+    # Per-dataset enable overrides: [datasets.<name>] enabled = false retires a
+    # dataset (dashboard freshness reads "n/a", the daily step skips it)
+    # without deleting historical curated data — e.g. northbound_flows, whose
+    # feed the exchanges stopped publishing in 2024-08.
+    dataset_enabled: dict[str, bool] = {}
+    for name, val in raw.get("datasets", {}).items():
+        if isinstance(val, dict):
+            dataset_enabled[name] = bool(val.get("enabled", True))
+        else:
+            dataset_enabled[name] = bool(val)
+
+    announcement_raw = raw.get("announcement_index", {})
+    announcement_index_source = (
+        str(announcement_raw["source"]) if announcement_raw.get("source") else None
+    )
+    regulatory_raw = raw.get("regulatory_events", {})
+    regulatory_events_source = (
+        str(regulatory_raw["source"]) if regulatory_raw.get("source") else None
+    )
+
     sources: dict[str, bool] = {}
     source_intervals: dict[str, float] = {}
     eastmoney_proxy: str | None = None
@@ -374,6 +400,9 @@ def load_config(path: str | Path) -> Config:
         ),
         sources=sources,
         source_intervals=source_intervals,
+        dataset_enabled=dataset_enabled,
+        announcement_index_source=announcement_index_source,
+        regulatory_events_source=regulatory_events_source,
         eastmoney_proxy=eastmoney_proxy,
         eastmoney_timeout_sec=eastmoney_timeout_sec,
         baostock_batch_size=baostock_batch_size,

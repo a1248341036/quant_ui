@@ -10,6 +10,7 @@ from datetime import date
 import polars as pl
 
 from cnequity.adapters.cninfo.announcements import fetch_announcement_index
+from cnequity.adapters.eastmoney.announcements import fetch_announcement_index_eastmoney
 from cnequity.adapters.eastmoney.corporate_actions import fetch_corporate_actions_eastmoney
 from cnequity.adapters.eastmoney.earnings_disclosure import (
     _backfill_report_dates,
@@ -352,10 +353,32 @@ def step_earnings_disclosure_schedule(
     return write_fetched(config, run_id, "earnings_disclosure_schedule", df, source="eastmoney")
 
 
+def _announcement_source(config: Config) -> str:
+    """Primary source for announcement_index, with disabled-source fallback.
+
+    Default is ``eastmoney`` (np-anotice-stock): 100 rows/page, deep
+    pagination to the last row, 0.5s pacing — the CNINFO walk needed days
+    where this needs hours. ``[announcement_index] source = "cninfo"``
+    restores the old default.
+    """
+    source = str(getattr(config, "announcement_index_source", "") or "eastmoney")
+    if source == "eastmoney" and not config.sources.get("eastmoney", True):
+        source = "cninfo"
+    if source == "cninfo" and not config.sources.get("cninfo", True):
+        source = "eastmoney"
+    return source
+
+
 @register_step("announcement_index", group="capital", depends_on=["instruments"])
 def step_announcement_index(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
-    if not config.sources.get("cninfo", True):
-        raise RuntimeError("announcement_index: cninfo source disabled in config")
+    source = _announcement_source(config)
+    if not config.sources.get(source, True):
+        # 回退链绕回后仍禁用（如 eastmoney/cninfo 双禁用）——与单源时代守卫同语义
+        raise RuntimeError(f"announcement_index: {source} source disabled in config")
+    if source == "eastmoney":
+        fetch = lambda d: fetch_announcement_index_eastmoney(d, config=config)  # noqa: E731
+    else:
+        fetch = lambda d: fetch_announcement_index(d, config=config)  # noqa: E731
     if getattr(config, "_backfill", False):
         from cnequity.steps.common import walk_day_backfill
 
@@ -364,8 +387,8 @@ def step_announcement_index(config: Config, trade_date: date, run_id: str, conte
             trade_date,
             run_id,
             "announcement_index",
-            lambda d: fetch_announcement_index(d, config=config),
-            source="cninfo",
+            fetch,
+            source=source,
             date_col="announce_date",
             floor=date(2010, 1, 1),
         )
@@ -374,7 +397,7 @@ def step_announcement_index(config: Config, trade_date: date, run_id: str, conte
         trade_date,
         run_id,
         "announcement_index",
-        lambda d: fetch_announcement_index(d, config=config),
-        source="cninfo",
+        fetch,
+        source=source,
         date_col="announce_date",
     )

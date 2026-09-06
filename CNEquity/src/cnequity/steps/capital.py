@@ -227,6 +227,13 @@ def step_northbound_flows(config: Config, trade_date: date, run_id: str, context
     if not config.sources.get("eastmoney", True):
         raise RuntimeError("northbound_flows: eastmoney source disabled in config")
 
+    # Retired via [datasets.northbound_flows] enabled = false: skip entirely,
+    # including the historical-window backfill the clamp below would serve.
+    from cnequity.domain.datasets import is_dataset_enabled
+
+    if not is_dataset_enabled("northbound_flows", config):
+        return {"rows_read": 0, "rows_written": 0, "note": "northbound_flows disabled in config"}
+
     # NOTE: no cadence gate here. The feed's retirement is already enforced
     # structurally below — ``end`` is clamped to NORTHBOUND_LAST_PUBLISHED, so
     # any post-retirement window resolves to start > end and returns without a

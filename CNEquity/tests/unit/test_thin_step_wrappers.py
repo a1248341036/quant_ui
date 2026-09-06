@@ -152,10 +152,11 @@ def test_macro_risk_guards_and_writes(cfg, monkeypatch):
     cfg.sources["eastmoney"] = False
     with pytest.raises(RuntimeError, match="disabled"):
         macro_risk.step_share_unlock_schedule(cfg, date(2024, 6, 28), "r", {})
-    cfg.sources["eastmoney"] = True
+    # regulatory_events：eastmoney/cninfo 双禁用 → 回退链绕回后仍禁用 → 报错
     cfg.sources["cninfo"] = False
     with pytest.raises(RuntimeError, match="disabled"):
         macro_risk.step_regulatory_events(cfg, date(2024, 6, 28), "r", {})
+    cfg.sources["eastmoney"] = True
     cfg.sources["cninfo"] = True
 
     StateStore(cfg.meta_root).set_date("macro_indicators", date(2024, 6, 27))
@@ -187,24 +188,46 @@ def test_macro_risk_guards_and_writes(cfg, monkeypatch):
             }
         ),
     )
+
+    _reg_frame = pl.DataFrame(
+        {
+            "event_id": ["e1"],
+            "symbol": ["600519.SH"],
+            "event_date": [date(2024, 6, 28)],
+            "event_type": ["inquiry"],
+            "title": ["t"],
+        }
+    )
+    used_sources: list[str] = []
+    monkeypatch.setattr(
+        macro_risk,
+        "fetch_regulatory_events_eastmoney",
+        lambda d, config=None: used_sources.append("eastmoney") or _reg_frame,
+    )
     monkeypatch.setattr(
         macro_risk,
         "fetch_regulatory_events",
-        lambda d, config=None: pl.DataFrame(
-            {
-                "event_id": ["e1"],
-                "symbol": ["600519.SH"],
-                "event_date": [d],
-                "event_type": ["inquiry"],
-                "title": ["t"],
-            }
-        ),
+        lambda d, config=None: used_sources.append("cninfo") or _reg_frame,
     )
+
     assert macro_risk.step_macro_indicators(cfg, date(2024, 6, 28), "r", {})["rows_written"] == 1
     assert (
         macro_risk.step_share_unlock_schedule(cfg, date(2024, 6, 28), "r", {})["rows_written"] == 1
     )
+
+    # 主源默认 eastmoney
     assert macro_risk.step_regulatory_events(cfg, date(2024, 6, 28), "r", {})["rows_written"] == 1
+    assert used_sources[-1] == "eastmoney"
+
+    # 显式 cninfo 主源 → 走 cninfo 抓取器
+    cfg.regulatory_events_source = "cninfo"
+    assert macro_risk.step_regulatory_events(cfg, date(2024, 6, 28), "r", {})["rows_written"] == 1
+    assert used_sources[-1] == "cninfo"
+
+    # cninfo 主源禁用 → 回退到可用的 eastmoney，不阻断
+    cfg.sources["cninfo"] = False
+    assert macro_risk.step_regulatory_events(cfg, date(2024, 6, 28), "r", {})["rows_written"] == 1
+    assert used_sources[-1] == "eastmoney"
 
 
 def test_newsboard_and_commodity(cfg, monkeypatch):
