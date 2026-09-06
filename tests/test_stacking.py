@@ -106,6 +106,63 @@ def test_dataset_redundancy_filter(panel: pd.DataFrame, factor_values) -> None:
     assert ds.feature_matrix.shape[1] == len(ds.feature_names)
 
 
+def test_quality_uses_factor_own_horizon(panel: pd.DataFrame) -> None:
+    """P1：质量分按因子自己的 label_col horizon 计，慢因子不再被短标签稀释。"""
+    from alphaagent.factor.stacking import compute_quality_scores
+
+    label20 = forward_return_label(panel, hold_days=20)
+    entries = [
+        FactorEntry(
+            factor_id="slow", name="slow", expr="dummy", library="candidate_fundamental",
+            label_col="label_20d_close_to_close",
+        ),
+        FactorEntry(
+            factor_id="same_no_meta", name="same_no_meta", expr="dummy",
+            library="candidate_fundamental",
+        ),
+    ]
+    mining_end = panel.index.get_level_values("datetime").unique()[200]
+    quality, _ = compute_quality_scores(
+        panel,
+        list(zip(entries, [label20, label20])),
+        mining_end=mining_end,
+        default_label_days=5,
+    )
+    # 同一组值：对齐 20d 自己的 horizon → 接近 1；对齐默认 5d → 被稀释明显更低
+    assert quality["slow"] > 0.5
+    assert quality["slow"] > quality["same_no_meta"] + 0.2
+    assert quality["same_no_meta"] >= 0.0
+
+
+def test_redundancy_scope_within_group(panel: pd.DataFrame, factor_values) -> None:
+    """P2：相关性剔除只在同数据源组内比较；跨组高相关因子双双保留。"""
+    mom, _rev, _noise, _mom_copy = factor_values
+    mom_copy = mom + np.random.default_rng(3).normal(0, 0.001, len(mom))
+    fund_copy = mom + np.random.default_rng(4).normal(0, 0.002, len(mom))
+    entries = [
+        FactorEntry(factor_id="mom", name="mom", expr="dummy", library="candidate_technical",
+                    facets=("价量",)),
+        FactorEntry(factor_id="mom_copy", name="mom_copy", expr="dummy", library="candidate_technical",
+                    facets=("价量",)),
+        FactorEntry(factor_id="fund_copy", name="fund_copy", expr="dummy", library="candidate_fundamental",
+                    facets=("基本面",)),
+    ]
+    quality = {"mom": 0.05, "mom_copy": 0.049, "fund_copy": 0.048}
+    ds = build_dataset_from_values(
+        panel,
+        list(zip(entries, [mom, mom_copy, fund_copy])),
+        label_days=5,
+        mining_end=panel.index.get_level_values("datetime").unique()[200],
+        size_neutral=False,
+        max_corr=0.9,
+        ics_for_quality=quality,
+    )
+    assert "mom_copy" not in ds.feature_names  # 同组冗余照剔
+    assert "mom" in ds.feature_names
+    assert "fund_copy" in ds.feature_names  # 跨组高相关保留（分散化来源）
+    assert any("redundant_with=mom" in d["reason"] for d in ds.dropped)
+
+
 def test_walk_forward_purge_and_isolation(panel: pd.DataFrame) -> None:
     dates = pd.DatetimeIndex(panel.index.get_level_values("datetime").unique())
     mining_end = dates[100]
