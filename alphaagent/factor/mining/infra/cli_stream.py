@@ -136,10 +136,14 @@ class MiningStreamObserver:
         printer: Any | None = None,
         emit: Callable[[str, dict], None] | None = None,
         turn: int = 0,
+        usage_bridge: Any | None = None,
     ) -> None:
         self.printer = printer
         self.emit = emit
         self.turn = turn
+        # ModelCallEndEvent 不携带 cache 字段（agentscope 事件边界丢弃）；
+        # bridge 由 UsageCapturedChatModel 在模型层喂完整 ChatUsage。
+        self.usage_bridge = usage_bridge
         self.had_tool_calls = False
         self.tool_call_count = 0
         self._pending: dict[str, _PendingToolCall] = {}
@@ -254,16 +258,20 @@ class MiningStreamObserver:
         """Persist per-model-call token usage for the UI and run summary."""
         if self.emit is None:
             return
+        cache_input = int(getattr(event, "cache_input_tokens", 0) or 0)
+        cache_creation = int(getattr(event, "cache_creation_input_tokens", 0) or 0)
+        captured = self.usage_bridge.pop_latest() if self.usage_bridge else None
+        if captured is not None:
+            cache_input = int(getattr(captured, "cache_input_tokens", 0) or 0)
+            cache_creation = int(getattr(captured, "cache_creation_input_tokens", 0) or 0)
         self.emit(
             "usage",
             {
                 "turn": self.turn,
                 "input_tokens": int(getattr(event, "input_tokens", 0) or 0),
                 "output_tokens": int(getattr(event, "output_tokens", 0) or 0),
-                "cache_input_tokens": int(getattr(event, "cache_input_tokens", 0) or 0),
-                "cache_creation_input_tokens": int(
-                    getattr(event, "cache_creation_input_tokens", 0) or 0
-                ),
+                "cache_input_tokens": cache_input,
+                "cache_creation_input_tokens": cache_creation,
             },
         )
         # ── 如果本轮 LLM 没有输出任何 thinking 或 text，但有 tool_call，

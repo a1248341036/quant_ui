@@ -10,7 +10,9 @@ from typing import Any, Callable
 from agentscope.agent import Agent, ContextConfig, ReActConfig
 from agentscope.credential import OpenAICredential
 from agentscope.message import UserMsg
-from agentscope.model import OpenAIChatModel
+from agentscope.model import OpenAIChatModel  # noqa: F401  (类型标注用)
+
+from alphaagent.factor.mining.infra.usage_capture import UsageCapturedChatModel
 from agentscope.permission import PermissionContext, PermissionMode
 from agentscope.state import AgentState
 from agentscope.workspace import LocalWorkspace
@@ -83,6 +85,7 @@ class FactorReviewer:
         extra_body: dict[str, Any] | None,
         workspace: LocalWorkspace,
         emit: Callable[[str, dict[str, Any]], None],
+        usage_bridge: Any | None = None,
     ) -> None:
         self.config = config
         self.api_key = api_key
@@ -90,6 +93,7 @@ class FactorReviewer:
         self.extra_body = extra_body
         self.workspace = workspace
         self.emit = emit
+        self.usage_bridge = usage_bridge
         self.evaluations: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(lambda: defaultdict(list))
         self.eval_expr_head: dict[str, str] = {}
         self.reviews: dict[str, dict[str, Any]] = {}
@@ -159,7 +163,8 @@ class FactorReviewer:
         params: dict[str, Any] = {"max_tokens": max_tokens, "parallel_tool_calls": False}
         if self.config.temperature is not None:
             params["temperature"] = self.config.temperature
-        return OpenAIChatModel(
+        return UsageCapturedChatModel(
+            usage_listener=self.usage_bridge.record if self.usage_bridge else None,
             credential=OpenAICredential(api_key=self.api_key, base_url=self.base_url),
             model=self.config.model,
             parameters=OpenAIChatModel.Parameters(**params),
@@ -216,7 +221,7 @@ class FactorReviewer:
             }
             self.emit(mapping.get(event, event), {"turn": turn, "factor_name": factor_name, **payload})
 
-        observer = MiningStreamObserver(emit=review_emit, turn=turn)
+        observer = MiningStreamObserver(emit=review_emit, turn=turn, usage_bridge=self.usage_bridge)
         agent = Agent(
             name="FactorReviewer",
             system_prompt=REVIEW_PROMPT,

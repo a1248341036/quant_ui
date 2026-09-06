@@ -27,6 +27,7 @@ from alphaagent.factor.mining.schemas import SessionCreateRequest
 from alphaagent.factor.mining.service import StockEvalService
 from alphaagent.factor.mining.agentscope_tools import build_factor_eval_toolkit, context_to_openai_messages
 from alphaagent.factor.mining.cli_stream import MiningStreamObserver, stream_to_cli
+from alphaagent.factor.mining.infra.usage_capture import UsageBridge, UsageCapturedChatModel
 from alphaagent.factor.mining.config import MiningConfig
 from alphaagent.factor.mining.console import ConsolePrinter, ensure_utf8_stream
 from alphaagent.factor.mining.loop import _NUDGE, _submit_record
@@ -78,6 +79,7 @@ def _build_model(
     api_key: str,
     base_url: str | None,
     extra_body: dict[str, Any] | None,
+    usage_listener: Callable[[Any], None] | None = None,
 ) -> OpenAIChatModel:
     params: dict[str, Any] = {
         "max_tokens": config.max_tokens,
@@ -85,7 +87,8 @@ def _build_model(
     }
     if config.temperature is not None:
         params["temperature"] = config.temperature
-    return OpenAIChatModel(
+    return UsageCapturedChatModel(
+        usage_listener=usage_listener,
         credential=OpenAICredential(api_key=api_key, base_url=base_url),
         model=config.model,
         parameters=OpenAIChatModel.Parameters(**params),
@@ -108,6 +111,7 @@ async def create_mining_agent(
     extra_body: dict[str, Any] | None,
     reviewer: FactorReviewer | None = None,
     interaction_policy: dict[str, Any] | None = None,
+    usage_bridge: UsageBridge | None = None,
 ) -> Agent:
     toolkit = build_factor_eval_toolkit(
         factor_tools,
@@ -120,7 +124,13 @@ async def create_mining_agent(
     return Agent(
         name="FactorMiner",
         system_prompt=system_prompt,
-        model=_build_model(config, api_key=api_key, base_url=base_url, extra_body=extra_body),
+        model=_build_model(
+            config,
+            api_key=api_key,
+            base_url=base_url,
+            extra_body=extra_body,
+            usage_listener=usage_bridge.record if usage_bridge else None,
+        ),
         toolkit=toolkit,
         offloader=workspace,
         react_config=ReActConfig(max_iters=react_iters),
@@ -428,6 +438,7 @@ async def run_factor_mining_agentscope(
         usage_total["calls"] += 1
         _emit("usage_total", {"turn": payload.get("turn", 0), **usage_total})
 
+    usage_bridge = UsageBridge()
     reviewer = (
         FactorReviewer(
             config=config,
@@ -436,6 +447,7 @@ async def run_factor_mining_agentscope(
             extra_body=extra_body,
             workspace=workspace,
             emit=_review_emit,
+            usage_bridge=usage_bridge,
         )
         if config.enable_reviewer
         else None
@@ -451,6 +463,7 @@ async def run_factor_mining_agentscope(
         extra_body=extra_body,
         reviewer=reviewer,
         interaction_policy=(config.research_spec or {}).get("interaction_policy"),
+        usage_bridge=usage_bridge,
     )
 
     def _take_control_messages() -> list[str]:
@@ -589,7 +602,7 @@ async def run_factor_mining_agentscope(
         if printer is not None:
             printer.turn(outer_turn)
 
-        observer = MiningStreamObserver(printer=printer, emit=_emit, turn=outer_turn)
+        observer = MiningStreamObserver(printer=printer, emit=_emit, turn=outer_turn, usage_bridge=usage_bridge)
         set_turn(outer_turn)
         log_step("turn_start", "")
 
