@@ -251,6 +251,7 @@ class StockEvalService:
                 profile_id=req.profile_id,
                 multi_line_expr=req.multi_line_expr,
                 factor_name=req.factor_name,
+                include_charts=req.include_charts,
             )
             if result.get("ok"):
                 record = session.candidates.record_evaluation(result)

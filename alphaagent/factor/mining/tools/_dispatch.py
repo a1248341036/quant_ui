@@ -416,14 +416,30 @@ class _DispatchMixin:
             gate = self._memory_gate(expr, arguments)
             if isinstance(gate, dict) and gate.get("ok") is False:
                 return gate
-            result = self.service.eval_profile(
-                EvalProfileRequest(
-                    session_id=self.session_id,
-                    profile_id=profile_id,
-                    multi_line_expr=expr,
-                    factor_name=str(arguments.get("factor_name") or "expr"),
+            if profile_id == "train_screen":
+                # 挖掘海选统一走两段式（lite 先筛）：LLM 无论选 evaluate_factor
+                # 还是 eval_on_train_set，train 评估都享受同一吞吐改造
+                # （2026-09-06：run2 实测 LLM 选 evaluate_factor 时走 eval_profile
+                # 全量+图表，单次 60-78s，两段式被完全绕过）。
+                result = self.service.eval_train(
+                    EvalTrainRequest(
+                        session_id=self.session_id,
+                        multi_line_expr=expr,
+                        factor_name=str(arguments.get("factor_name") or "expr"),
+                        include_detail_tables=False,
+                        label_quantile_n=10,
+                    )
                 )
-            )
+            else:
+                result = self.service.eval_profile(
+                    EvalProfileRequest(
+                        session_id=self.session_id,
+                        profile_id=profile_id,
+                        multi_line_expr=expr,
+                        factor_name=str(arguments.get("factor_name") or "expr"),
+                        include_charts=False,
+                    )
+                )
             if isinstance(result, dict) and result.get("ok"):
                 ic, decile_rows = _engine_decile(result)
                 _attach_prediction_check(result, arguments.get("prediction"), ic=ic, decile_rows=decile_rows)

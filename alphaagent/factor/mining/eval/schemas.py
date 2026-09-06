@@ -77,3 +77,6 @@ class EvalProfileRequest:
     profile_id: str
     multi_line_expr: str
     factor_name: str = "expr"
+    include_charts: bool = True
+    """图表数据生成开关：因子实验室 True；挖掘 dispatch 传 False（800 万行上
+    逐日 IC/多空/月度分解纯为前端可视化服务，挖掘不需要）。"""
