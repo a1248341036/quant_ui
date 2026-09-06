@@ -91,7 +91,13 @@ def _attach_yield_hints(result: dict[str, Any], expr: str, arguments: dict[str, 
     - P1-4 PIT 警戒：train |IC| ≥ 0.045 → 财务阶梯函数/PIT 伪影嫌疑（先核查再谈提交）。
     """
     try:
-        cs = (result.get("metrics") or {}).get("cross_sectional_core") or {}
+        # 兼容两种响应 shape：引擎原生（eval_profile，metrics 在顶层）与
+        # eval_train/两段式的格式化响应（metrics 在 summary 下）。
+        # 2026-09-06 修复：此前只读引擎 shape，eval_on_train_set 与两段式
+        # 路径的 near_miss/pit 提示拿不到数据而静默失效。
+        cs = ((result.get("metrics") or {}).get("cross_sectional_core")
+              or {k: v for k, v in (result.get("summary") or {}).items()
+                  if k in ("ic", "icir", "rank_ic", "factor_coverage")})
         ic = cs.get("ic")
         icir = cs.get("icir")
         cov = cs.get("factor_coverage", cs.get("coverage"))
@@ -99,7 +105,12 @@ def _attach_yield_hints(result: dict[str, Any], expr: str, arguments: dict[str, 
             ic_f = abs(float(ic)) if ic is not None else None
         except (TypeError, ValueError):
             ic_f = None
-        if not result.get("passed"):
+        passed = result.get("passed")
+        if passed is None:
+            rules = result.get("screen_rules")
+            if isinstance(rules, list) and rules:
+                passed = all(bool(r.get("passed")) for r in rules)
+        if not passed:
             if ic_f is not None and ic_f >= _PIT_SUSPICION_IC:
                 result["pit_warning"] = (
                     f"训练 |IC|={ic_f:.4f} 异常高（≥0.045）——财务/慢标签因子的 train IC 虚高"
@@ -494,6 +505,7 @@ class _DispatchMixin:
                 ic, decile_rows = _legacy_decile(result)
                 _attach_prediction_check(result, arguments.get("prediction"), ic=ic, decile_rows=decile_rows)
                 self._attach_ablation(expr, arguments, profile_id="train_screen", result=result)
+                _attach_yield_hints(result, expr, arguments)
                 pred_block = self._prediction_gate("eval_on_train_set", arguments, result)
                 if pred_block is not None:
                     return pred_block
