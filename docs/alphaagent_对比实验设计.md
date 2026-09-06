@@ -72,4 +72,4 @@ run 结束后用 `scripts/alphaagent_metrics.py` 口径对比：
 
 ## 7. 结果
 
-（run 完成后回填：`artifacts/alphaagent/comparison/report.md`）
+→ 见 `docs/alphaagent_对比结果_run1.md`（2026-09-06 run1 已完成）
