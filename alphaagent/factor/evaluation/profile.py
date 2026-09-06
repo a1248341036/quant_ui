@@ -64,6 +64,16 @@ def default_evaluation_profiles() -> dict[str, EvaluationProfile]:
             "train_screen", "train",
             transforms=_BASE_TRANSFORMS, metrics=_BASE_METRICS,
         ),
+        # 海选轻筛 profile：只跑 cross_sectional_core（门槛规则唯一数据源），
+        # 供挖掘 eval_train 两段式第一段使用——没过线的因子跳过 fmb/组合回测/
+        # 月度稳健性等纯诊断件（实测占单次评估 GIL 时间的 ~2/3，是并发吞吐
+        # 瓶颈）。规则与 train_screen 完全同源；decile_mean_label 仍在 core 内，
+        # 预测对账不受影响。诊断数据由第二段全量评估补齐。
+        "train_screen_lite": EvaluationProfile(
+            "train_screen_lite", "train",
+            transforms=_BASE_TRANSFORMS,
+            metrics=({"plugin": "cross_sectional_core"},),
+        ),
         "validation": EvaluationProfile(
             "validation", "val",
             transforms=_BASE_TRANSFORMS, metrics=_BASE_METRICS,
@@ -137,6 +147,8 @@ def resolve_profiles(spec: dict[str, Any] | None = None) -> dict[str, Evaluation
         {"metric": "cross_sectional_core.ic", "op": "abs_gte", "value": evaluation.get("min_val_abs_ic", canonical_evaluation["min_val_abs_ic"])},
     ]
     raw_defaults["train_screen"]["rules"] = train_rules
+    # lite 与 train_screen 同一套规则（规则只依赖 cross_sectional_core）
+    raw_defaults["train_screen_lite"]["rules"] = train_rules
     raw_defaults["validation"]["rules"] = val_rules
     raw_defaults["size_neutral_validation"]["rules"] = val_rules
     delivery = (spec or {}).get("delivery_policy", {})

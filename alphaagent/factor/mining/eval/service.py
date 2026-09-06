@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import threading
 from pathlib import Path
 from typing import Any
 
+from alphaagent.factor.evaluation.rules import evaluate_rules
 from alphaagent.factor.mining.context import StockEvalContext
 from alphaagent.factor.mining.env_settings import resolve_max_parallel_eval
 from alphaagent.factor.mining.response import format_eval_response
@@ -19,6 +21,11 @@ from alphaagent.factor.mining.schemas import (
 from alphaagent.factor.evaluation.engine import EvaluationEngine
 from alphaagent.factor.evaluation.profile import EvaluationProfile, default_evaluation_profiles
 from alphaagent.factor.mining.session import SessionStore
+
+
+def _eval_lite_enabled() -> bool:
+    """两段式海选开关（默认开）；``ALPHA_EVAL_LITE=0`` 退回单段全量。"""
+    return (os.environ.get("ALPHA_EVAL_LITE") or "").strip() != "0"
 
 
 def _engine_result_to_legacy(raw: dict[str, Any]) -> dict[str, Any]:
@@ -118,11 +125,13 @@ class StockEvalService:
         include_detail_tables: bool,
         label_quantile_n: int,
         expected_sign: int | None = None,
+        profile_id: str | None = None,
     ) -> dict[str, Any]:
         session = self.sessions.get(session_id)
         # 收敛：train/val 评估与因子实验室共用同一 EvaluationEngine + profile
         # （train_screen / validation），保持同一预处理与指标管线。
-        profile_id = "train_screen" if split == "train" else "validation"
+        if profile_id is None:
+            profile_id = "train_screen" if split == "train" else "validation"
         # 挖掘批量评估跳过图表生成（逐日 IC/多空/月度分解纯为前端可视化服务，
         # 在 800 万行面板上每次评估额外耗数秒；图表仅因子实验室 eval_profile 需要）
         raw = self.evaluation_engine.evaluate(
@@ -141,7 +150,77 @@ class StockEvalService:
             legacy["include_detail_tables"] = True
         return format_eval_response(legacy, expected_sign=expected_sign)
 
+    def _eval_train_two_stage(
+        self,
+        req: EvalTrainRequest,
+    ) -> dict[str, Any]:
+        """两段式海选（2026-09-06，docs/alphaagent_对比结果_run1.md）：
+
+        第一段跑 ``train_screen_lite``（仅 cross_sectional_core，门槛规则唯一
+        数据源），过线才跑全量 ``train_screen`` 补齐 fmb/组合回测/月度稳健性
+        等诊断件。并发基准实测：全量 profile 因诊断件的 GIL 段，4 路并发吞吐
+        卡死 0.42 eval/s；core-only 1.99 eval/s。未过线因子占绝大多数，
+        这笔诊断开销基本是白付的。引擎零改动；``ALPHA_EVAL_LITE=0`` 退回全量。
+        """
+        try:
+            lite_profile = self.evaluation_engine.profile("train_screen_lite")
+        except (KeyError, ValueError):
+            lite_profile = None
+        if lite_profile is None or lite_profile.rules == ():
+            return self._run_one(
+                req.session_id,
+                split="train",
+                multi_line_expr=req.multi_line_expr,
+                factor_name=req.factor_name,
+                include_detail_tables=req.include_detail_tables,
+                label_quantile_n=req.label_quantile_n,
+            )
+        session = self.sessions.get(req.session_id)
+        with self._eval_semaphore:
+            raw_lite = self.evaluation_engine.evaluate(
+                session,
+                profile_id="train_screen_lite",
+                multi_line_expr=req.multi_line_expr,
+                factor_name=req.factor_name,
+                label_quantile_n=req.label_quantile_n,
+                include_detail_tables=req.include_detail_tables,
+                include_charts=False,
+            )
+        if not raw_lite.get("ok"):
+            return raw_lite
+        rule_results = evaluate_rules(raw_lite.get("metrics") or {}, lite_profile.rules)
+        if not all(r.get("passed") for r in rule_results):
+            legacy = _engine_result_to_legacy(raw_lite)
+            resp = format_eval_response(legacy, expected_sign=None)
+            # format_eval_response 重建 dict，筛选标记在格式化之后附加
+            resp["screen_stage"] = "lite"
+            resp["screen_rules"] = rule_results
+            resp["skipped_diagnostics"] = [
+                m["plugin"] for m in self.evaluation_engine.profile("train_screen").metrics
+                if m["plugin"] != "cross_sectional_core"
+            ]
+            return resp
+        raw_full = self.evaluation_engine.evaluate(
+            session,
+            profile_id="train_screen",
+            multi_line_expr=req.multi_line_expr,
+            factor_name=req.factor_name,
+            label_quantile_n=req.label_quantile_n,
+            include_detail_tables=req.include_detail_tables,
+            include_charts=False,
+        )
+        if not raw_full.get("ok"):
+            return raw_full
+        legacy = _engine_result_to_legacy(raw_full)
+        if req.include_detail_tables:
+            legacy["include_detail_tables"] = True
+        resp = format_eval_response(legacy, expected_sign=None)
+        resp["screen_stage"] = "full"
+        return resp
+
     def eval_train(self, req: EvalTrainRequest) -> dict[str, Any]:
+        if _eval_lite_enabled():
+            return self._eval_train_two_stage(req)
         with self._eval_semaphore:
             return self._run_one(
                 req.session_id,

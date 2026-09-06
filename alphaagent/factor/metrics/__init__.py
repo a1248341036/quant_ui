@@ -10,6 +10,10 @@
 
 from __future__ import annotations
 
+import threading
+import weakref
+from collections import OrderedDict
+
 import numpy as np
 import pandas as pd
 
@@ -17,6 +21,38 @@ import pandas as pd
 # 非 None 时替换/禁用快路径（设为返回 None 的函数即强制回落旧路径）
 _day_slices_override = None
 _fast_equal_freq_codes_override = None
+
+
+# ── _day_slices 结果缓存 ────────────────────────────────────────────
+# 每次评估有 ~15 处调用 _day_slices，每次都对全面板索引做 O(n) 单调扫描 +
+# 变点定位（3M 行 ≈ 数十 ms，纯 GIL 内）。同一 panel 的结果是恒定的，按
+# 索引对象身份（weakref 弱引用 + is 校验，防 id 复用误命中）做小 LRU。
+# 并发评估共享只读数组；写出前置 write=False 防意外原地修改。
+_slices_cache: "OrderedDict[tuple[int, str], tuple[weakref.ref, object]]" = OrderedDict()
+_slices_cache_lock = threading.Lock()
+_SLICES_CACHE_MAX = 16
+
+
+def _compute_day_slices(
+    index: pd.Index, time_level: str = "datetime"
+) -> tuple[np.ndarray, np.ndarray] | None:
+    dts = index.get_level_values(time_level)
+    n = len(dts)
+    if n == 0:
+        return None
+    dt_np = dts._values
+    if len(dt_np) > 1 and not (dt_np[1:] >= dt_np[:-1]).all():
+        return None
+    change = np.flatnonzero(dt_np[1:] != dt_np[:-1]) + 1
+    bounds = np.concatenate(([0], change, [n])).astype(np.int64)
+    # 统一转 ndarray（MultiIndex 层的 _values 可能是 DatetimeArray）
+    day_vals = np.asarray(dt_np[bounds[:-1]])
+    for arr in (bounds, day_vals):
+        try:
+            arr.setflags(write=False)
+        except (ValueError, AttributeError):
+            pass
+    return bounds, day_vals
 
 
 def _day_slices(
@@ -29,19 +65,27 @@ def _day_slices(
     ``bounds`` 形如 ``[起0, 起1, ..., 末]``（长度 = 天数 + 1）。panel 按
     (datetime, instrument) 排序时逐日切片是零拷贝连续视图，供各 metric 把
     ``groupby + xs``（每天 O(n log n) 全表查找 × 数千天）替换为 O(1) 切片。
+    结果按索引对象身份缓存（弱引用，不延长面板生命周期）。
     """
     if not isinstance(index, pd.MultiIndex) or time_level not in index.names:
         return None
-    dts = index.get_level_values(time_level)
-    n = len(dts)
-    if n == 0:
-        return None
-    dt_np = dts._values
-    if len(dt_np) > 1 and not (dt_np[1:] >= dt_np[:-1]).all():
-        return None
-    change = np.flatnonzero(dt_np[1:] != dt_np[:-1]) + 1
-    bounds = np.concatenate(([0], change, [n])).astype(np.int64)
-    return bounds, dt_np[bounds[:-1]]
+    key = (id(index), time_level)
+    with _slices_cache_lock:
+        hit = _slices_cache.get(key)
+        if hit is not None:
+            ref, result = hit
+            if ref() is index:
+                _slices_cache.move_to_end(key)
+                return result
+            _slices_cache.pop(key, None)
+    result = _compute_day_slices(index, time_level)
+    if result is not None:
+        with _slices_cache_lock:
+            _slices_cache[key] = (weakref.ref(index), result)
+            _slices_cache.move_to_end(key)
+            while len(_slices_cache) > _SLICES_CACHE_MAX:
+                _slices_cache.popitem(last=False)
+    return result
 
 
 def _fast_equal_freq_codes(xf: np.ndarray, n_groups: int) -> np.ndarray | None:

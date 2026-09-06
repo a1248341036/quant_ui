@@ -94,7 +94,7 @@ def _parse_args() -> argparse.Namespace:
         ),
     )
     p.add_argument("--max-tool-calls-per-round", type=int, default=8)
-    p.add_argument("--max-tool-workers", type=int, default=4)
+    p.add_argument("--max-tool-workers", type=int, default=8)
     p.add_argument(
         "--population-max",
         type=int,
@@ -105,7 +105,7 @@ def _parse_args() -> argparse.Namespace:
         "--max-parallel-eval",
         type=int,
         default=None,
-        help="同时进行的 train/val 评估上限；不传则读环境变量 MAX_PARALLEL_EVAL（默认 1）。建议与 --max-tool-workers 匹配",
+        help="同时进行的 train/val 评估上限；不传则读环境变量 MAX_PARALLEL_EVAL（默认 6）。建议与 --max-tool-workers 匹配",
     )
     p.add_argument("--min-tool-call-rounds", type=int, default=3)
     p.add_argument("--log-dir", default="logs/factor_mining")
