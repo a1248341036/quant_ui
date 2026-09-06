@@ -264,14 +264,17 @@ class MiningStreamObserver:
         if captured is not None:
             cache_input = int(getattr(captured, "cache_input_tokens", 0) or 0)
             cache_creation = int(getattr(captured, "cache_creation_input_tokens", 0) or 0)
+        input_tokens = int(getattr(event, "input_tokens", 0) or 0)
         self.emit(
             "usage",
             {
                 "turn": self.turn,
-                "input_tokens": int(getattr(event, "input_tokens", 0) or 0),
+                "input_tokens": input_tokens,
                 "output_tokens": int(getattr(event, "output_tokens", 0) or 0),
                 "cache_input_tokens": cache_input,
                 "cache_creation_input_tokens": cache_creation,
+                # OpenAI 口径 prompt_tokens 已含 cached_tokens，命中率 = 命中 / 总 input
+                "cache_hit_rate": round(cache_input / input_tokens, 4) if input_tokens > 0 else 0.0,
             },
         )
         # ── 如果本轮 LLM 没有输出任何 thinking 或 text，但有 tool_call，

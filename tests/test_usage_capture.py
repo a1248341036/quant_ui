@@ -46,6 +46,7 @@ def test_observer_fills_cache_fields_from_bridge():
     assert payload["output_tokens"] == 8
     assert payload["cache_input_tokens"] == 11968
     assert payload["cache_creation_input_tokens"] == 7
+    assert payload["cache_hit_rate"] == round(11968 / 12028, 4)
     assert bridge.pop_latest() is None, "observer 消费后 bridge 应已清空"
 
 
@@ -64,6 +65,7 @@ def test_observer_without_bridge_keeps_event_values():
     payload = events[0][1]
     assert payload["cache_input_tokens"] == 55
     assert payload["cache_creation_input_tokens"] == 3
+    assert payload["cache_hit_rate"] == 0.55
 
 
 def test_observer_zero_when_no_bridge_and_no_event_fields():
@@ -76,3 +78,13 @@ def test_observer_zero_when_no_bridge_and_no_event_fields():
     payload = events[0][1]
     assert payload["cache_input_tokens"] == 0
     assert payload["cache_creation_input_tokens"] == 0
+    assert payload["cache_hit_rate"] == 0.0
+
+
+def test_cache_hit_rate_guard_zero_input():
+    """input=0 时不除零，命中率回落 0.0。"""
+    from alphaagent.factor.mining.agent.agentscope_run import _cache_hit_rate
+
+    assert _cache_hit_rate({"input_tokens": 0, "cache_input_tokens": 0}) == 0.0
+    assert _cache_hit_rate({}) == 0.0
+    assert _cache_hit_rate({"input_tokens": 900, "cache_input_tokens": 300}) == round(300 / 900, 4)

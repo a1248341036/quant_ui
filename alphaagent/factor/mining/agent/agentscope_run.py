@@ -50,6 +50,14 @@ from core import factor_categories
 _NUDGE_MSG = _NUDGE
 
 
+def _cache_hit_rate(totals: dict[str, Any]) -> float:
+    """缓存命中率 = 命中 tokens / 总 input tokens（OpenAI 口径 prompt 含 cached）。"""
+    inp = int(totals.get("input_tokens") or 0)
+    if inp <= 0:
+        return 0.0
+    return round(int(totals.get("cache_input_tokens") or 0) / inp, 4)
+
+
 def _client_kwargs() -> dict[str, Any]:
     """Return extra kwargs for the OpenAI AsyncClient.
 
@@ -399,6 +407,22 @@ async def run_factor_mining_agentscope(
         "cache_creation_input_tokens": 0,
         "calls": 0,
     }
+    # 实时指标累计器：每个 usage / tool_results 节点发 metrics_snapshot 事件
+    # （JSONL → SSE 直达前端实时面板），口径与 alphaagent.factor.mining.
+    # run_metrics 的离线解析一致（脚本 alphaagent_metrics.py、API 同源）。
+    from alphaagent.factor.mining.run_metrics import (
+        build_metrics_snapshot,
+        new_live_state,
+        observe_event,
+    )
+
+    live_metrics = new_live_state(datetime.fromisoformat(started_at))
+
+    def _emit_metrics_snapshot(turn: int) -> None:
+        try:
+            _emit("metrics_snapshot", {"turn": turn, **build_metrics_snapshot(live_metrics)})
+        except Exception:  # 指标异常绝不阻断挖掘
+            pass
     end_reason = "no_tool_calls"
     pending = user_message
     turn_limit = config.max_turns
@@ -436,7 +460,11 @@ async def run_factor_mining_agentscope(
         ):
             usage_total[key] += int(payload.get(key, 0) or 0)
         usage_total["calls"] += 1
-        _emit("usage_total", {"turn": payload.get("turn", 0), **usage_total})
+        _emit("usage_total", {"turn": payload.get("turn", 0), **usage_total, "cache_hit_rate": _cache_hit_rate(usage_total)})
+        observe_event(live_metrics, "usage", {"input_tokens": payload.get("input_tokens", 0) or 0,
+                                              "output_tokens": payload.get("output_tokens", 0) or 0,
+                                              "cache_input_tokens": payload.get("cache_input_tokens", 0) or 0})
+        _emit_metrics_snapshot(payload.get("turn", 0))
 
     usage_bridge = UsageBridge()
     reviewer = (
@@ -608,6 +636,8 @@ async def run_factor_mining_agentscope(
 
         def _on_stream_emit(event: str, payload: dict[str, Any]) -> None:
             _emit(event, payload)
+            if event in ("agent_thinking", "usage"):
+                observe_event(live_metrics, event, payload)
             if event == "usage":
                 for key in (
                     "input_tokens",
@@ -617,9 +647,11 @@ async def run_factor_mining_agentscope(
                 ):
                     usage_total[key] += int(payload.get(key, 0) or 0)
                 usage_total["calls"] += 1
-                _emit("usage_total", {"turn": outer_turn, **usage_total})
+                _emit("usage_total", {"turn": outer_turn, **usage_total, "cache_hit_rate": _cache_hit_rate(usage_total)})
+                _emit_metrics_snapshot(outer_turn)
             if event != "tool_results":
                 return
+            observe_event(live_metrics, "tool_results", payload)
             for row in payload.get("results") or []:
                 res = row.get("result") if isinstance(row.get("result"), dict) else {}
                 args_raw = row.get("arguments_raw")
@@ -748,8 +780,10 @@ async def run_factor_mining_agentscope(
                                 "conclusion": memory_entry["conclusion"],
                             },
                         )
+                _emit_metrics_snapshot(outer_turn)
 
         observer.emit = _on_stream_emit
+        _emit_metrics_snapshot(outer_turn)
 
         if outer_turn > 0 or pending != user_message:
             _emit("user_message", {"turn": outer_turn, "content": pending})
@@ -1106,7 +1140,7 @@ async def run_factor_mining_agentscope(
             "matched_candidates": matched_audits,
             "overfit_suspected": overfit_suspected,
         },
-        "usage": usage_total,
+        "usage": {**usage_total, "cache_hit_rate": _cache_hit_rate(usage_total)},
         "submitted_factors": submitted_factors,
         "submit_failures": submit_failures,
         "messages_snapshot": str(snapshot),
@@ -1117,6 +1151,7 @@ async def run_factor_mining_agentscope(
     summary_path.write_text(summary_text, encoding="utf-8")
     (log_dir / "run_summary.json").write_text(summary_text, encoding="utf-8")
     _emit("run_summary", summary)
+    _emit("metrics_snapshot", {"turn": outer_turn, **build_metrics_snapshot(live_metrics)})
     _emit("session_end", {"turn": outer_turn, "reason": end_reason})
     log_step(
         "run_end",
