@@ -110,7 +110,9 @@ def test_facets_json_persisted(tmp_path):
 
 
 def test_facets_column_migration_idempotent(tmp_path):
-    """打开库即补 facets_json 列 + data_version=v4，重复打开幂等。"""
+    """打开库即补 facets_json 列 + data_version 升级到当前版，重复打开幂等。"""
+    from alphaagent.factor.mining.memory.constants import DATA_VERSION
+
     db = tmp_path / "m.db"
     for _ in range(2):
         store = ResearchMemoryStore(db)
@@ -118,7 +120,7 @@ def test_facets_column_migration_idempotent(tmp_path):
             cols = {r[1] for r in conn.execute("PRAGMA table_info(memory_entries)").fetchall()}
             ver = conn.execute("SELECT v FROM store_meta WHERE k='data_version'").fetchone()[0]
         assert "facets_json" in cols
-        assert ver == "4"
+        assert ver == DATA_VERSION
 
 
 def test_legacy_row_facets_fallback_and_recall(tmp_path):

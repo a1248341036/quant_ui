@@ -6,7 +6,9 @@ from __future__ import annotations
 # ── 数据版本 ──
 # v3：cells 键升级为 (family, motif, parent_bucket)，显式/隐式父本分列 + 同桶残差基线
 # v4：memory_entries 加 facets_json（数据面标签）；family 允许面对组合键（跨组融合）
-DATA_VERSION = "4"
+# v5：因子中台 ID——memory_factors 维表（uid 主键）+ memory_entries.factor_uid；
+#     uid = identity.factor_uid(factor_name) 确定性派生，回填按 factor_name 聚类
+DATA_VERSION = "5"
 
 # ── Verdict 分类 ──
 # near_miss（2026-09-05）：IC 达门槛 80%、ICIR/coverage 达标但未过线——

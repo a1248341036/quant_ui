@@ -394,18 +394,31 @@ class AdvisoryMixin:
         *,
         factor_names: list[str] | tuple[str, ...] = (),
         expressions: list[str] | tuple[str, ...] = (),
+        factor_uids: list[str] | tuple[str, ...] = (),
     ) -> int:
-        """删除与指定因子相关的全部记忆条目（含 FTS 与观察记录，经级联/触发器）。"""
+        """删除与指定因子相关的全部记忆条目（含 FTS 与观察记录，经级联/触发器）。
+
+        factor_uids 是首选口径（中台 ID，精确无歧义）；factor_names/expressions
+        为兼容路径（存量未回填行兜底）。结束后清理 memory_factors 中的孤儿维表行。
+        """
         ids = {self.entry_signature(e) for e in expressions if e}
         names = [n for n in factor_names if n]
-        if not ids and not names:
+        uids = [u for u in factor_uids if u]
+        if not ids and not names and not uids:
             return 0
         deleted = 0
         with self._open() as conn:
+            for uid in uids:
+                cursor = conn.execute("DELETE FROM memory_entries WHERE factor_uid = ?", (uid,))
+                deleted += cursor.rowcount
             for eid in ids:
                 cursor = conn.execute("DELETE FROM memory_entries WHERE id = ?", (eid,))
                 deleted += cursor.rowcount
             for name in names:
                 cursor = conn.execute("DELETE FROM memory_entries WHERE factor_name = ?", (name,))
                 deleted += cursor.rowcount
+            conn.execute(
+                "DELETE FROM memory_factors WHERE uid NOT IN "
+                "(SELECT DISTINCT factor_uid FROM memory_entries WHERE factor_uid IS NOT NULL)"
+            )
         return deleted

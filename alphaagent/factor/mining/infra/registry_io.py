@@ -8,11 +8,22 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from alphaagent.factor.identity import factor_uid
 from alphaagent.factor.types import IngestPolicy
 from alphaagent.factor.zoo import FactorZoo
 from alphaagent.factor.zoo.similarity import SimilarityMatrix
 
 _LABEL_HORIZON_RE = re.compile(r"label_(\d+)d")
+
+
+def _index_upsert(**kwargs: Any) -> None:
+    """双写因子中台索引（派生物，失败不阻断入库主流程；rebuild 可自愈）。"""
+    try:
+        from alphaagent.factor.index import get_factor_index
+
+        get_factor_index().upsert_factor(**kwargs)
+    except Exception:
+        pass
 
 
 def derive_freq_from_label_col(label_col: str | None) -> tuple[str | None, str | None]:
@@ -126,9 +137,15 @@ def upsert_mining_registry(
         entry["comment"] = prev.get("comment") or entry["comment"]
         if "source" in prev:
             entry["source"] = prev["source"]
+    entry["factor_uid"] = prev.get("factor_uid") or factor_uid(name)
 
     registry[factor_id] = entry
     save_mining_registry(registry_path, registry)
+    _index_upsert(
+        uid=entry["factor_uid"], name=name, expr=expr, family=entry.get("family"),
+        facets=facet_list, status="production", promotion_status=entry.get("promotion_status"),
+        production_registry=str(registry_path), dsl_path=str(dsl_path),
+    )
     return str(registry_path), str(dsl_path)
 
 
@@ -198,8 +215,14 @@ def write_candidate_registry(
     for key in ("source_runs", "mining_metrics", "review", "reviewed_at"):
         if key in prev:
             entry[key] = prev[key]
+    entry["factor_uid"] = prev.get("factor_uid") or factor_uid(name)
     registry[factor_id] = entry
     save_mining_registry(registry_path, registry)
+    _index_upsert(
+        uid=entry["factor_uid"], name=name, expr=expr, family=entry.get("family"),
+        facets=facet_list, status="candidate", promotion_status=entry.get("promotion_status"),
+        candidate_registry=str(registry_path), dsl_path=str(dsl_path),
+    )
     return str(registry_path), str(dsl_path)
 
 
@@ -239,6 +262,12 @@ def set_candidate_promotion(
     if promotion_status == "promoted":
         entry["promoted_at"] = datetime.now(timezone.utc).isoformat()
     save_mining_registry(registry_path, registry)
+    _index_upsert(
+        uid=entry.get("factor_uid") or factor_uid(str(entry.get("name") or factor_id)),
+        name=str(entry.get("name") or factor_id),
+        status="candidate",
+        promotion_status=promotion_status,
+    )
     return entry
 
 

@@ -1458,8 +1458,11 @@ def get_factor_detail(factor_id: str, *, library: str = "production", category: 
 def delete_factor(factor_id: str, *, library: str = "production", category: str = "technical") -> dict[str, Any]:
     """删除一个因子，并同步清除研究记忆/RAG 中的相关条目。
 
-    进程还活着时拒绝删除——先 stop 再删，避免边写边删。
+    删除口径以 factor_uid（中台 ID，identity.factor_uid 确定性派生）为主，
+    name/expression 文本匹配仅作存量未回填行的兜底；同时从 factor_index.db 移除。
     """
+    from alphaagent.factor.identity import factor_uid
+    from alphaagent.factor.index import get_factor_index
     from alphaagent.factor.mining.research_memory import ResearchMemoryStore
     from core import trading_config
     from alphaagent.factor.zoo import FactorZoo
@@ -1470,6 +1473,7 @@ def delete_factor(factor_id: str, *, library: str = "production", category: str 
     root = prod_root if library == "production" else cand_root
     factor_names: list[str] = []
     expressions: list[str] = []
+    factor_uid_value: str | None = None
 
     if library == "candidate":
         registry = _candidate_registry(category)
@@ -1480,6 +1484,7 @@ def delete_factor(factor_id: str, *, library: str = "production", category: str 
             factor_names.append(str(entry["name"]).strip())
         if str(entry.get("expr") or "").strip():
             expressions.append(str(entry["expr"]))
+        factor_uid_value = str(entry.get("factor_uid") or "") or factor_uid(factor_names[0] if factor_names else factor_id)
         registry_path = root / "mining_candidate_registry.json"
         registry_path.write_text(json.dumps(registry, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         rel = str(entry.get("expression_file") or "")
@@ -1513,13 +1518,27 @@ def delete_factor(factor_id: str, *, library: str = "production", category: str 
                     factor_names.append(str(removed["name"]).strip())
                 if str(removed.get("expr") or "").strip():
                     expressions.append(str(removed["expr"]))
+                factor_uid_value = str(removed.get("factor_uid") or "") or None
             registry_path.write_text(json.dumps(registry, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        if not factor_uid_value:
+            factor_uid_value = factor_uid(factor_names[0] if factor_names else factor_id)
 
     purged = ResearchMemoryStore(RESEARCH_MEMORY_FILE).purge_factor(
+        factor_uids=[factor_uid_value],
         factor_names=factor_names,
         expressions=expressions,
     )
-    return {"ok": True, "factor_id": factor_id, "deleted": True, "memory_purged": purged}
+    try:
+        get_factor_index().delete_factor(factor_uid_value)
+    except Exception:
+        pass
+    return {
+        "ok": True,
+        "factor_id": factor_id,
+        "deleted": True,
+        "factor_uid": factor_uid_value,
+        "memory_purged": purged,
+    }
 
 
 def _safe_float(v: Any) -> float | None:

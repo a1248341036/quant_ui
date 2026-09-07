@@ -77,6 +77,13 @@ class SchemaMixin:
         v TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS memory_factors (
+        uid TEXT PRIMARY KEY,
+        factor_name TEXT NOT NULL,
+        created_at TEXT,
+        updated_at TEXT
+    );
+
     CREATE TABLE IF NOT EXISTS memory_observations (
         entry_id TEXT NOT NULL,
         run_id TEXT,
@@ -161,6 +168,8 @@ class SchemaMixin:
     BEGIN
         DELETE FROM memory_fts WHERE entry_id = old.id;
     END;
+
+    CREATE INDEX IF NOT EXISTS idx_memory_entries_factor_uid ON memory_entries(factor_uid);
     """
 
     def __init__(
@@ -240,6 +249,7 @@ class SchemaMixin:
             "intended_motif": "TEXT",
             "edit_note": "TEXT",
             "facets_json": "TEXT",
+            "factor_uid": "TEXT",
         }
         for col, ddl in _ENTRY_COLUMNS.items():
             if col not in entry_columns:
@@ -373,11 +383,14 @@ class SchemaMixin:
 
         v3→v4 仅加列（facets_json，见 _ensure_schema 的逐列补齐），无需重放
         cells：family 新口径只影响新写入，存量行由读取侧现算兜底。
+        v5：因子中台 ID——memory_factors 维表 + memory_entries.factor_uid 回填
+        （uid 由 factor_name 确定性派生，见 identity.factor_uid；幂等可重跑）。
         """
         row = conn.execute("SELECT v FROM store_meta WHERE k='data_version'").fetchone()
         if row is None:
             # v1 存量库（无 store_meta 行）：同样重放 cells 并补 parent_origin
             self._backfill_v3_conn(conn)
+            self._backfill_factor_uid(conn)
             conn.execute("INSERT OR REPLACE INTO store_meta(k, v) VALUES ('data_version', ?)", (DATA_VERSION,))
             return
         if str(row["v"]) == DATA_VERSION:
@@ -385,7 +398,32 @@ class SchemaMixin:
         # v2/v3 → 当前版：重放 cells 并补 parent_origin（v4 的 facets_json
         # 已在 _ensure_schema 逐列补齐，这里不重复处理）
         self._backfill_v3_conn(conn)
+        self._backfill_factor_uid(conn)
         conn.execute("INSERT OR REPLACE INTO store_meta(k, v) VALUES ('data_version', ?)", (DATA_VERSION,))
+
+    def _backfill_factor_uid(self, conn: sqlite3.Connection) -> None:
+        """v5 回填：按 factor_name 聚类签发 uid，填 memory_factors + entries.factor_uid。
+
+        幂等：uid = identity.factor_uid(factor_name)，重跑结果一致；
+        已有 factor_uid 的条目不覆盖（新写入路径同源派生，值必然相同）。
+        """
+        from alphaagent.factor.identity import factor_uid
+
+        rows = conn.execute(
+            "SELECT factor_name, MIN(created_at) AS c, MAX(updated_at) AS u "
+            "FROM memory_entries GROUP BY factor_name"
+        ).fetchall()
+        for name, created, updated in rows:
+            conn.execute(
+                "INSERT OR IGNORE INTO memory_factors (uid, factor_name, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?)",
+                (factor_uid(name), name, created, updated),
+            )
+        conn.execute(
+            "UPDATE memory_entries SET factor_uid = "
+            "(SELECT uid FROM memory_factors WHERE memory_factors.factor_name = memory_entries.factor_name) "
+            "WHERE factor_uid IS NULL"
+        )
 
     def _migrate_legacy_json(self, conn: sqlite3.Connection) -> None:
         """One-time import from the original JSON store when switching to SQLite."""
@@ -424,6 +462,9 @@ class SchemaMixin:
         return json.dumps(metrics, ensure_ascii=False, separators=(",", ":"))
 
     def _write_entry(self, conn: sqlite3.Connection, entry: dict[str, Any]) -> None:
+        from alphaagent.factor.identity import factor_uid
+
+        entry_uid = entry.get("factor_uid") or factor_uid(str(entry.get("factor_name") or ""))
         conn.execute(
             """
             INSERT INTO memory_entries (
@@ -433,8 +474,8 @@ class SchemaMixin:
                 last_run_id, attempts, tokens_json,
                 created_at, updated_at,
                 structure_fingerprint, operator_list_json, window_params_json, parent_id,
-                parent_origin, intended_motif, edit_note, facets_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                parent_origin, intended_motif, edit_note, facets_json, factor_uid
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 factor_name=excluded.factor_name,
                 expression=excluded.expression,
@@ -464,7 +505,8 @@ class SchemaMixin:
                 parent_origin=excluded.parent_origin,
                 intended_motif=excluded.intended_motif,
                 edit_note=excluded.edit_note,
-                facets_json=excluded.facets_json
+                facets_json=excluded.facets_json,
+                factor_uid=excluded.factor_uid
             """,
             (
                 entry["id"], entry.get("factor_name"), entry.get("expression"),
@@ -486,7 +528,13 @@ class SchemaMixin:
                 entry.get("intended_motif"),
                 entry.get("edit_note"),
                 entry.get("facets_json"),
+                entry_uid,
             ),
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO memory_factors (uid, factor_name, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?)",
+            (entry_uid, entry.get("factor_name"), entry.get("created_at"), entry.get("updated_at")),
         )
         conn.execute("DELETE FROM memory_observations WHERE entry_id = ?", (entry["id"],))
         conn.executemany(

@@ -190,6 +190,26 @@ logs/factor_mining/ui/        # 每次 Web run 的 JSONL 轨迹 + run_meta.json 
 - `scripts/dedup_candidate_factors.py`：一次性去重脚本，两两截面 Pearson 相关 ≥ 阈值的因子对删除冗余项
 - 候选因子 registry 的 `similarity` 字段记录与已有因子的截面 Pearson 相关
 
+### 6b. 因子中台 ID 与 factor_index.db（2026-09-07）
+
+- **factor_uid**（`alphaagent/factor/identity.py`）：`"f" + sha256("factor:"+factor_name)[:16]`
+  确定性派生——registry JSON、研究记忆库、索引库三方独立计算即一致，无需协调签发；
+  代价是 factor_name 即身份根（改名 = 新身份，与 registry 以名为键的现状一致）。
+- **记忆库 v5**（`memory_factors` 维表 + `memory_entries.factor_uid` 列，data_version=5
+  幂等迁移按名回填）：写路径 `_write_entry` 自动盖 uid 并维护维表；
+  `purge_factor(factor_uids=...)` 首选按 uid 删除（精确无歧义），name/expression 文本
+  匹配仅为存量兜底，结束后自动清理维表孤儿行。
+- **factor_index.db**（`alphaagent/factor/index.py`，`artifacts/alphaagent/factor_index.db`）：
+  因子中台索引，单表 factors（uid 主键 + status candidate/production/memory_only + 各存储
+  位置）。**派生物非事实源**：registry_io 两条入库路径与删除链路双写（失败静默不阻断
+  挖掘），`FactorIndex.rebuild()` 全量重建自愈。
+- **删除链路**（`backend delete_factor`）：registry pop → dsl unlink → 记忆 purge（uid 优先）
+  → 索引删行，返回体带 `factor_uid`。
+- `scripts/backfill_factor_uid.py`：一次性回填（备份记忆库 → registry 盖章 → v5 迁移 →
+  索引重建），幂等可重跑。
+- 已知取舍：SQLite `ALTER TABLE` 不能给存量表补外键，故 `memory_entries.factor_uid` 为
+  普通列（删除由同事务双语句保证）；DB 级 FK CASCADE 留给索引库未来子表。
+
 ### 7. 因子类别注册表（`core/factor_categories.py`）
 
 候选库 + 正式库路径由 `RESEARCH_MODES[mode].candidate_dir/production_dir` 派生。
@@ -205,8 +225,8 @@ label/panel 列加载/engine_gate 频率的语义。迁移脚本
 
 ### 9. 研究记忆（research_memory.py，v3-lite）
 
-三层结构（SQLite WAL + FTS5，单文件 `artifacts/alphaagent/research_memory.db`，`store_meta.data_version="4"` 幂等迁移）：
-- **原始证据层** `memory_entries`：每次评估/提交一条，verdict 7 级 + 数据化结论 + 失败码/失效项 + 结构指纹 + 父子关系（`parent_origin`=explicit/implicit、`secondary_parent_id` crossover 双父、`intended_motif` 意向编辑）+ `facets_json` 数据面标签（v4 新增；老行读取时按表达式现算兜底）。
+三层结构（SQLite WAL + FTS5，单文件 `artifacts/alphaagent/research_memory.db`，`store_meta.data_version="5"` 幂等迁移）：
+- **原始证据层** `memory_entries`：每次评估/提交一条，verdict 7 级 + 数据化结论 + 失败码/失效项 + 结构指纹 + 父子关系（`parent_origin`=explicit/implicit、`secondary_parent_id` crossover 双父、`intended_motif` 意向编辑）+ `facets_json` 数据面标签（v4 新增；老行读取时按表达式现算兜底）+ `factor_uid` 因子中台 ID（v5 新增，`memory_factors` 维表按名聚类回填，见 §6b）。
 - **编辑统计层（SSPM）** `memory_cells`：键 = (family × motif × 父本质量桶)；残差 = 子代 IC − 同桶时间衰减基线（half-life 90d，无历史回退父本 IC，AlphaMemo Eq.4）；成败按 explicit（±1.0）/implicit（±0.5）加权分列；**无效尝试（报错）入账失败观测（权重 0.5）**。
 - **经验层** `memory_experience`：成功模式（签名 + 模板 + 实例）/ 禁忌方向（典型相关 + 失效项）/ 洞察（入库率）。
 
