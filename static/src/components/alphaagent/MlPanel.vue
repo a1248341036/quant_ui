@@ -12,7 +12,7 @@
       <div class="mlv-actions">
         <button class="mlv-ghost" @click="showConfig = !showConfig">{{ showConfig ? '收起配置 ▴' : '训练配置 ▾' }}</button>
         <button v-if="anyRunning" class="mlv-stop" @click="stopMl(runningTrain.train_id)">停止</button>
-        <button class="send-btn" :disabled="ml.starting || anyRunning" @click="startMl">{{ anyRunning ? '训练中…' : (latest ? '再次训练' : '开始训练') }}</button>
+        <button class="mlv-primary" :disabled="ml.starting || anyRunning" @click="startMl">{{ anyRunning ? '训练中…' : (latest ? '再次训练' : '开始训练') }}</button>
       </div>
     </div>
 
@@ -52,7 +52,7 @@
     <div v-if="!ml.list.length && !ml.loadingList" class="mlv-empty">
       <p>还没有训练记录。ML 组合会用因子库中的全部因子做 walk-forward 时间隔离训练，</p>
       <p>产出混合 OOS 分数并通过 engine_gate 可交易性裁决——这是检验"因子库整体是否有真 alpha"的最终考场。</p>
-      <button class="send-btn" @click="showConfig = true; $nextTick(() => startMl())">开始第一次训练</button>
+      <button class="mlv-primary" @click="showConfig = true; $nextTick(() => startMl())">开始第一次训练</button>
     </div>
 
     <template v-if="ml.list.length">
@@ -518,10 +518,12 @@ export default {
 .mlv-actions { display: flex; gap: 8px; align-items: center; flex: none; }
 .mlv-ghost { padding: 6px 12px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--muted); font-size: 12px; cursor: pointer; }
 .mlv-ghost:hover { color: var(--text); border-color: var(--accent, #5b9dff); }
+.mlv-primary { padding: 7px 16px; border: 0; border-radius: 8px; background: var(--accent, #4f8cff); color: #fff; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.mlv-primary:disabled { background: var(--line-strong, #3a465e); cursor: default; }
 .mlv-stop { padding: 6px 12px; border: 1px solid #ef6b7355; border-radius: 8px; background: transparent; color: #ef6b73; font-size: 12px; cursor: pointer; }
 .mlv-empty { padding: 32px 20px; text-align: center; color: var(--muted); border: 1px dashed var(--line); border-radius: 10px; margin: 10px 0; }
 .mlv-empty p { margin: 4px 0; font-size: 12px; }
-.mlv-empty .send-btn { margin-top: 12px; }
+.mlv-empty .mlv-primary { margin-top: 12px; }
 .mlv-block { margin-top: 14px; }
 .mlv-block-head { display: flex; align-items: center; gap: 8px; margin: 6px 0 8px; }
 .mlv-block-head h4, .mlv-block-head h5 { margin: 0; }
