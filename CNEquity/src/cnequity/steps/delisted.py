@@ -717,7 +717,6 @@ def _bar_spans(
             pl.col("trade_date").min().alias("first"),
             pl.col("trade_date").max().alias("last"),
         )
-        .collect()
     )
     loaded = {r["symbol"]: (r["first"], r["last"]) for r in frame.iter_rows(named=True)}
     loaded.update(spans if root.exists() else {})
