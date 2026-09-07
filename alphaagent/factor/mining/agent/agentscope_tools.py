@@ -470,7 +470,7 @@ async def _dispatch_with_timeout(
         )
         return result, elapsed
     except asyncio.TimeoutError:
-        return {"ok": False, "error": f"评估超时（>{timeout:.0f}s），算子可能首次 JIT 编译或计算量过大，已自动跳过"}, timeout
+        return {"ok": False, "error": f"评估超时（>{timeout:.0f}s），算子可能首次 JIT 编译或计算量过大，已自动跳过", "error_type": "EvalTimeout"}, timeout
 
 
 def _result_tool_chunk(result: dict[str, Any]) -> ToolChunk:
@@ -744,7 +744,7 @@ def build_factor_eval_toolkit(
                 parsed = json.loads(skeletons)
                 skeletons = parsed if isinstance(parsed, list) else [parsed]
             except json.JSONDecodeError:
-                return _result_tool_chunk({"ok": False, "error": "skeletons_must_be_valid_json_array"})
+                return _result_tool_chunk({"ok": False, "error": "skeletons_must_be_valid_json_array", "error_type": "ToolArgumentsError"})
         elif isinstance(skeletons, dict):
             skeletons = [skeletons]
         skeletons = [s for s in (skeletons or []) if isinstance(s, dict)]
@@ -772,7 +772,7 @@ def build_factor_eval_toolkit(
                 loop.run_in_executor(_executor(max_workers), _run), timeout=1800.0
             )
         except asyncio.TimeoutError:
-            result = {"ok": False, "error": f"population_timeout:>1800s (n={max_population})"}
+            result = {"ok": False, "error": f"population_timeout:>1800s (n={max_population})", "error_type": "EvalTimeout"}
         except Exception as exc:  # noqa: BLE001
             result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:400]}
         result["elapsed_seconds"] = round(time.perf_counter() - t0, 1)

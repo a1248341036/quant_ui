@@ -30,6 +30,25 @@ def _strip_ansi(text: str) -> str:
     return _ANSI_RE.sub("", text)
 
 
+# 纯文本工具输出（拒绝类 ToolChunk / 框架校验失败）→ error_type 前缀分类表。
+# 顺序敏感：更具体的前缀在前。未命中的保持无 error_type（归入 no_ok 兜底桶，暴露新形态）。
+_ERROR_TEXT_PATTERNS: list[tuple[str, str]] = [
+    ("⛔ 交互契约拦截", "InteractionContractRejected"),
+    ("⛔ 预审拦截", "PreflightRejected"),
+    ("⛔ 重复评估拦截", "DuplicateExactEval"),
+    ("⛔ 纯市值因子", "PreflightRejected"),
+    ("Input validation failed", "ToolArgumentsError"),
+    ("评估超时", "EvalTimeout"),
+]
+
+
+def _classify_error_text(text: str) -> str | None:
+    for prefix, error_type in _ERROR_TEXT_PATTERNS:
+        if text.lstrip().startswith(prefix) or prefix in text[:80]:
+            return error_type
+    return None
+
+
 class CliRunLogger:
     """将 CLI 输出写入 run 目录的 cli.log。"""
 
@@ -227,7 +246,9 @@ class MiningStreamObserver:
         try:
             result = json.loads(raw) if raw.strip() else {}
         except json.JSONDecodeError:
-            result = {"ok": False, "error": raw[:500]}
+            # 纯文本输出（拒绝类 ToolChunk / 框架参数校验失败）：包装为失败并按消息前缀分类，
+            # 否则 run_metrics 的错误分布里全挤进 no_ok 兜底桶，真错误与门槛拒绝无法区分。
+            result = {"ok": False, "error": raw[:500], "error_type": _classify_error_text(raw)}
 
         if self.printer is not None:
             self.printer.tool_result(
