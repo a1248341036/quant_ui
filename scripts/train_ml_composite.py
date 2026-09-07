@@ -222,13 +222,19 @@ def main() -> None:
     )
     model_outputs: dict[str, np.ndarray] = {}
     fold_reports: dict[str, list] = {}
+    feature_weights: dict[str, list] = {}
     for kind in kinds:
         print(f"训练 {kind} …")
-        pred, report = fit_predict_walkforward(
-            dataset.feature_matrix, dataset.label, date_series, folds, kind=kind
+        pred, report, feat_w = fit_predict_walkforward(
+            dataset.feature_matrix, dataset.label, date_series, folds, kind=kind,
+            feature_names=dataset.feature_names,
         )
         model_outputs[kind] = pred
         fold_reports[kind] = report
+        if feat_w:
+            feature_weights[kind] = feat_w
+            top = "、".join(f"{x['name']}({x['weight']:.1%})" for x in feat_w[:5])
+            print(f"  权重 Top5: {top}")
         for r in report:
             ic = r.get("ic_mean")
             print(f"  OOS {r['oos_start']}~{r['oos_end']}: n_train={r['n_train']} "
@@ -293,6 +299,7 @@ def main() -> None:
         "feature_names": dataset.feature_names,
         "dropped": dataset.dropped,
         "fold_metrics": fold_reports,
+        "feature_weights": feature_weights,
         "decay_table": decay,
         "gate": gate_result,
         "oos_ic_blended": _blended_oos_ic(stacked, dataset.label, dts, first_oos),

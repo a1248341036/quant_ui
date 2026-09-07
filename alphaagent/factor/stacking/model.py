@@ -114,19 +114,25 @@ def fit_predict_walkforward(
     folds: Sequence[WalkForwardFold],
     *,
     kind: ModelKind,
-) -> tuple[np.ndarray, list[dict]]:
-    """逐折训练 + OOS 预测；返回 (拼接的 OOS 预测 [n_rows]（折外为 NaN）, 逐折指标)。
+    feature_names: Sequence[str] | None = None,
+) -> tuple[np.ndarray, list[dict], list[dict] | None]:
+    """逐折训练 + OOS 预测；返回 (拼接 OOS 预测 [n_rows]（折外 NaN）, 逐折指标, 特征权重)。
 
     训练行过滤：日期在折 train_dates 内、label 有限；ridge 另要求特征全有限
     （无缺失处理），lgbm 原生支持 NaN 特征 → 放行，保住基本面/事件等稀疏面
     的样本行（原先整行丢弃会造成训练集缩水与宇宙偏化）。预测原样写回对应行，
     不做截面再标准化（模型输出经 OOS 评估，engine_gate 直接消费）。
+
+    特征权重：每折提取重要性并归一为份额后跨折平均——ridge 取 |coef|（特征
+    已截面 zscore，系数可比），lgbm 取 gain 重要性；返回按权重降序的
+    [{name, weight}]（weight 合计 1），feature_names 缺失时为 None。
     """
     n_rows = feature_matrix.shape[0]
     oos_pred = np.full(n_rows, np.nan, dtype=np.float32)
     date_np = pd.to_datetime(pd.Series(dates)).to_numpy()
     report: list[dict] = []
     require_finite = kind == "ridge"
+    weight_acc: list[np.ndarray] = []
     for fold in folds:
         train_mask = np.isin(date_np, fold.train_dates.to_numpy())
         valid = train_mask & np.isfinite(label)
@@ -146,6 +152,19 @@ def fit_predict_walkforward(
             continue
         model = make_model(kind)
         model.fit(feature_matrix[valid], label[valid])
+        if feature_names and feature_matrix.shape[1]:
+            try:
+                if kind == "ridge":
+                    raw_w = np.abs(np.asarray(model.coef_, dtype=np.float64))
+                else:
+                    raw_w = np.asarray(
+                        model.booster_.feature_importance(importance_type="gain"), dtype=np.float64
+                    )
+                total = float(raw_w.sum())
+                if total > 0:
+                    weight_acc.append(raw_w / total)
+            except Exception:  # noqa: BLE001 — 权重采集失败不影响训练主流程
+                pass
         pred = np.asarray(model.predict(feature_matrix[oos_ok]), dtype=np.float32)
         oos_pred[oos_ok] = pred
         metrics = _fold_metrics(
@@ -158,4 +177,12 @@ def fit_predict_walkforward(
             "n_oos": int(oos_ok.sum()),
             **metrics,
         })
-    return oos_pred, report
+
+    feature_weights: list[dict] | None = None
+    if feature_names and weight_acc:
+        mean_w = np.mean(np.asarray(weight_acc, dtype=np.float64), axis=0)
+        feature_weights = sorted(
+            ({"name": str(n), "weight": round(float(w), 6)} for n, w in zip(feature_names, mean_w)),
+            key=lambda x: -x["weight"],
+        )
+    return oos_pred, report, feature_weights

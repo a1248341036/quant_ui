@@ -34,6 +34,7 @@
     </div>
     <div class="ml-list">
       <h4>训练历史</h4>
+      <div v-if="trendRows.length >= 2" id="ml-trend-chart" class="metrics-chart" style="height: 220px"></div>
       <table class="lib-table">
         <thead><tr><th>训练</th><th>状态</th><th>OOS IC</th><th>OOS ICIR</th><th>折数</th><th>特征</th><th>gate</th><th>时间隔离</th><th></th></tr></thead>
         <tbody>
@@ -62,9 +63,22 @@
           <span>gate: <b>{{ (ml.detail.report.gate||{}).passed ? '通过' : '未过' }}</b>
             <span v-if="!(ml.detail.report.gate||{}).passed">（{{ ((ml.detail.report.gate||{}).fail_reasons||[]).join('、') }}）</span></span>
         </div>
+        <!-- gate 指标卡 -->
+        <div v-if="gateCards.length" class="metrics-cards" style="margin:10px 0">
+          <div v-for="c in gateCards" :key="c.label" class="metrics-card" :title="c.title"><b>{{ c.value }}</b><span>{{ c.label }}</span></div>
+        </div>
+        <!-- 特征权重：每模型 Top15 横向条形（谁在驱动组合分数） -->
+        <template v-if="weightKinds.length">
+          <h5>特征权重 Top15（跨折归一平均）</h5>
+          <div v-for="kind in weightKinds" :key="'w-' + kind">
+            <strong>{{ kind.toUpperCase() }}</strong>
+            <div :id="'ml-weights-' + kind" class="metrics-chart" :style="{ height: Math.max(140, weightRows(kind).length * 24 + 40) + 'px' }"></div>
+          </div>
+        </template>
         <h5>折级 OOS 表现</h5>
         <div v-for="(rows, model) in ml.detail.report.fold_metrics" :key="model" class="ml-fold">
           <strong>{{ model }}</strong>
+          <div :id="'ml-folds-' + model" class="metrics-chart" :style="{ height: 180 + 'px' }"></div>
           <table class="lib-table">
             <thead><tr><th>OOS 起</th><th>OOS 止</th><th>IC 均值</th><th>ICIR</th><th>天数</th><th>多空日差</th></tr></thead>
             <tbody>
@@ -79,11 +93,12 @@
         <h5>特征（{{ (ml.detail.report.feature_names||[]).length }}）与剔除（{{ (ml.detail.report.dropped||[]).length }}）</h5>
         <div class="ml-features">{{ (ml.detail.report.feature_names||[]).join(' · ') }}</div>
         <div v-for="d in ml.detail.report.dropped" :key="d.name" class="ml-drop">− {{ d.name }}（{{ d.library }}）：{{ d.reason }}</div>
-        <h5>衰减对照（挖掘期 IC vs OOS IC）</h5>
+        <h5>衰减对照（挖掘期 IC vs OOS IC，按 |OOS IC| Top20）</h5>
+        <div v-if="decayRows.length" id="ml-decay-chart" class="metrics-chart" :style="{ height: Math.max(160, decayRows.length * 26 + 50) + 'px' }"></div>
         <table class="lib-table">
           <thead><tr><th>因子</th><th>挖掘 IC</th><th>OOS IC</th><th>衰减比</th></tr></thead>
           <tbody>
-            <tr v-for="row in ml.detail.report.decay_table" :key="row.name">
+            <tr v-for="row in decayRows" :key="row.name">
               <td>{{ row.name }}</td><td>{{ fmtNum(row.ic_mining) }}</td>
               <td>{{ fmtNum(row.ic_oos) }}</td><td>{{ fmtNum(row.decay_ratio) }}</td>
             </tr>
@@ -96,6 +111,9 @@
 
 <script>
 import { api } from '../../utils/api.js'
+import { chart } from '../../utils/charts.js'
+
+const AXIS_LABEL = { color: '#8494b5', fontSize: 10 }
 
 export default {
   name: 'MlPanel',
@@ -110,6 +128,34 @@ export default {
         error: '',
       },
     }
+  },
+  computed: {
+    /** 历史训练 OOS 趋势（train_id = YYYYMMDD_HHMMSS，字典序即时间序） */
+    trendRows() {
+      return (this.ml.list || [])
+        .filter(t => t.status === 'completed' && Number.isFinite(Number(t.oos_ic_mean)))
+        .slice()
+        .sort((a, b) => (a.train_id < b.train_id ? -1 : 1))
+    },
+    weightKinds() {
+      return Object.keys(this.ml.detail?.report?.feature_weights || {})
+    },
+    gateCards() {
+      const g = this.ml.detail?.report?.gate || {}
+      const gm = g.metrics || {}
+      const dg = g.diagnostics || {}
+      const pct = v => (v == null ? '—' : (Number(v) * 100).toFixed(1) + '%')
+      return [
+        { label: '超额年化', value: pct(gm.excess_annual), title: 'engine_gate OOS 段净超额年化' },
+        { label: '超额夏普', value: gm.excess_sharpe == null ? '—' : Number(gm.excess_sharpe).toFixed(2), title: 'engine_gate 超额夏普' },
+        { label: '最大回撤', value: pct(gm.max_drawdown ?? dg.max_drawdown), title: 'OOS 段最大回撤' },
+        { label: '日换手', value: pct(dg.avg_daily_turnover), title: '组合日均单边换手' },
+      ]
+    },
+    decayRows() {
+      const rows = this.ml.detail?.report?.decay_table || []
+      return rows.slice().sort((a, b) => Math.abs(b.ic_oos || 0) - Math.abs(a.ic_oos || 0)).slice(0, 20)
+    },
   },
   mounted() {
     this.loadMl()
@@ -126,10 +172,98 @@ export default {
       if (v === null || v === undefined || Number.isNaN(Number(v))) return '—'
       return Number(v).toFixed(4)
     },
+    weightRows(kind) {
+      return (this.ml.detail?.report?.feature_weights?.[kind] || []).slice(0, 15)
+    },
+    renderTrend() {
+      const rows = this.trendRows
+      if (rows.length < 2) return
+      const names = rows.map(t => {
+        const s = String(t.train_id)
+        return `${s.slice(4, 6)}-${s.slice(6, 8)}`
+      })
+      const c = chart('ml-trend-chart')
+      if (!c) return
+      c.setOption({
+        tooltip: { trigger: 'axis' },
+        legend: { textStyle: { color: '#8494b5', fontSize: 10 }, top: 0 },
+        grid: { left: 44, right: 14, top: 26, bottom: 24 },
+        xAxis: { type: 'category', data: names, axisLabel: { ...AXIS_LABEL, rotate: 30 } },
+        yAxis: { type: 'value', axisLabel: { ...AXIS_LABEL } },
+        series: [
+          { name: 'OOS IC', type: 'line', data: rows.map(t => t.oos_ic_mean), showSymbol: true, lineStyle: { width: 2 }, itemStyle: { color: '#4f8cff' } },
+          { name: 'OOS ICIR', type: 'line', data: rows.map(t => t.oos_ic_ir), showSymbol: true, lineStyle: { width: 2, type: 'dashed' }, itemStyle: { color: '#4fc3a1' } },
+        ],
+      }, true)
+    },
+    renderWeights(kind) {
+      const rows = this.weightRows(kind)
+      if (!rows.length) return
+      const sorted = [...rows].reverse() // 横向条形自下而上
+      const c = chart('ml-weights-' + kind)
+      if (!c) return
+      c.setOption({
+        tooltip: { trigger: 'item', formatter: p => `${p.name}：<b>${(p.value * 100).toFixed(1)}%</b>` },
+        grid: { left: 190, right: 60, top: 6, bottom: 6 },
+        xAxis: { type: 'value', axisLabel: { ...AXIS_LABEL, formatter: v => (v * 100).toFixed(0) + '%' }, splitLine: { lineStyle: { color: '#1c2536' } } },
+        yAxis: { type: 'category', data: sorted.map(r => r.name), axisLabel: { ...AXIS_LABEL, width: 180, overflow: 'truncate' } },
+        series: [{
+          type: 'bar', data: sorted.map(r => r.weight), barMaxWidth: 14,
+          label: { show: true, position: 'right', color: '#c6d2e8', fontSize: 10, formatter: p => (p.value * 100).toFixed(1) + '%' },
+          itemStyle: { borderRadius: [0, 3, 3, 0], color: '#4f8cff' },
+        }],
+      }, true)
+    },
+    renderFolds(model) {
+      const rows = (this.ml.detail?.report?.fold_metrics?.[model] || []).filter(r => !r.skipped)
+      if (!rows.length) return
+      const c = chart('ml-folds-' + model)
+      if (!c) return
+      const positive = rows.every(r => (r.ic_mean ?? 0) >= 0)
+      c.setOption({
+        tooltip: { trigger: 'item', formatter: p => `${p.name}：<b>${Number(p.value).toFixed(4)}</b>` },
+        grid: { left: 44, right: 14, top: 20, bottom: 26 },
+        xAxis: { type: 'category', data: rows.map(r => String(r.oos_start).slice(2)) , axisLabel: { ...AXIS_LABEL, rotate: 30 } },
+        yAxis: { type: 'value', axisLabel: { ...AXIS_LABEL } },
+        series: [{
+          type: 'bar', data: rows.map(r => r.ic_mean), barMaxWidth: 26,
+          label: { show: true, position: 'top', color: '#c6d2e8', fontSize: 10, formatter: p => Number(p.value).toFixed(3) },
+          itemStyle: { borderRadius: [3, 3, 0, 0], color: positive ? '#4fc3a1' : '#e8c491' },
+        }],
+      }, true)
+    },
+    renderDecay() {
+      const rows = this.decayRows
+      if (!rows.length) return
+      const sorted = [...rows].reverse()
+      const c = chart('ml-decay-chart')
+      if (!c) return
+      c.setOption({
+        tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+        legend: { textStyle: { color: '#8494b5', fontSize: 10 }, top: 0 },
+        grid: { left: 190, right: 30, top: 24, bottom: 6 },
+        xAxis: { type: 'value', axisLabel: { ...AXIS_LABEL } },
+        yAxis: { type: 'category', data: sorted.map(r => r.name), axisLabel: { ...AXIS_LABEL, width: 180, overflow: 'truncate' } },
+        series: [
+          { name: '挖掘 IC', type: 'bar', data: sorted.map(r => r.ic_mining), barMaxWidth: 8, itemStyle: { color: '#5aa2e8' } },
+          { name: 'OOS IC', type: 'bar', data: sorted.map(r => r.ic_oos), barMaxWidth: 8, itemStyle: { color: '#4fc3a1' } },
+        ],
+      }, true)
+    },
+    renderAll() {
+      if (!window.echarts) return
+      this.$nextTick(() => {
+        this.renderTrend()
+        for (const kind of this.weightKinds) this.renderWeights(kind)
+        for (const model of Object.keys(this.ml.detail?.report?.fold_metrics || {})) this.renderFolds(model)
+        this.renderDecay()
+      })
+    },
     async loadMl() {
       try {
         this.ml.list = await api('/api/alphaagent/stacking/trainings')
         if (this.ml.list.some(t => t.status === 'running')) this.scheduleMlPoll()
+        this.renderAll()
       } catch (e) {
         this.ml.error = e.message
       }
@@ -154,6 +288,7 @@ export default {
         if (!silent || this.ml.selected === trainId) {
           this.ml.selected = trainId
           this.ml.detail = d
+          this.renderAll()
         }
         if (d.status === 'running') this.scheduleMlPoll()
       } catch (e) {
