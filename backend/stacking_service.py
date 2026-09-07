@@ -70,6 +70,12 @@ def start_training(params: dict[str, Any]) -> dict[str, Any]:
         if params.get("size_neutral") is False:
             command += ["--no-size-neutral"]
 
+        # 参数快照落盘：历史列表/详情页展示训练配置用
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "params.json").write_text(
+            json.dumps(params, ensure_ascii=False, indent=1), encoding="utf-8"
+        )
+
         log_handle = log_path.open("w", encoding="utf-8")
         try:
             proc = subprocess.Popen(
@@ -149,6 +155,16 @@ def list_trainings(limit: int = 30) -> list[dict[str, Any]]:
                     item["n_features"] = len(report.get("feature_names") or [])
                     item["gate_passed"] = gate.get("passed")
                     item["time_isolation"] = report.get("time_isolation")
+                    item["label_days"] = report.get("label_days")
+                    item["mining_end"] = report.get("mining_end")
+                    item["model"] = "/".join((report.get("fold_metrics") or {}).keys()) or None
+            # 参数快照（start_training 落盘）：历史行展示完整训练配置
+            params_path = d / "params.json"
+            if params_path.is_file():
+                try:
+                    item["params"] = json.loads(params_path.read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, OSError):
+                    pass
             out.append(item)
         # running 状态但目录尚未创建（panel 加载阶段）也补一条
         if running_id and not any(x["train_id"] == running_id for x in out):

@@ -1,7 +1,23 @@
 <template>
   <div class="ml-panel">
-    <div class="ml-config">
-      <h3>ML 组合训练（walk-forward 时间隔离）</h3>
+    <!-- ── 状态条：当前训练状态 + 主行动 ── -->
+    <div class="mlv-status">
+      <span class="mlv-dot" :class="{ running: anyRunning, ok: !anyRunning && latest }"></span>
+      <div class="mlv-status-text">
+        <b>{{ anyRunning ? '训练中 · ' + runningTrain.train_id : latest ? '空闲 · 最新 ' + latest.train_id : '尚未训练' }}</b>
+        <span v-if="anyRunning && runningTail" class="mlv-sub">{{ runningTail }}</span>
+        <span v-else-if="latest" class="mlv-sub">{{ paramSummary(latest) }}</span>
+        <span v-else class="mlv-sub">配置参数后开始第一次 walk-forward 组合训练</span>
+      </div>
+      <div class="mlv-actions">
+        <button class="mlv-ghost" @click="showConfig = !showConfig">{{ showConfig ? '收起配置 ▴' : '训练配置 ▾' }}</button>
+        <button v-if="anyRunning" class="mlv-stop" @click="stopMl(runningTrain.train_id)">停止</button>
+        <button class="send-btn" :disabled="ml.starting || anyRunning" @click="startMl">{{ anyRunning ? '训练中…' : (latest ? '再次训练' : '开始训练') }}</button>
+      </div>
+    </div>
+
+    <!-- ── 训练配置（折叠） ── -->
+    <div v-show="showConfig" class="ml-config">
       <div class="ml-form">
         <label>模式
           <select v-model="ml.form.modes" multiple class="ml-input" size="2">
@@ -28,84 +44,120 @@
         </label>
         <label class="ml-check"><input type="checkbox" v-model="ml.form.no_candidate"> 只用正式库</label>
         <label class="ml-check"><input type="checkbox" v-model="ml.form.no_gate"> 跳过 engine_gate</label>
-        <button class="send-btn" :disabled="ml.starting || ml.anyRunning" @click="startMl">{{ ml.anyRunning ? '训练中…' : '开始训练' }}</button>
       </div>
       <div v-if="ml.error" class="ml-error">{{ ml.error }}</div>
     </div>
-    <div class="ml-list">
-      <h4>训练历史</h4>
-      <div v-if="trendRows.length >= 2" id="ml-trend-chart" class="metrics-chart" style="height: 220px"></div>
-      <table class="lib-table">
-        <thead><tr><th>训练</th><th>状态</th><th>OOS IC</th><th>OOS ICIR</th><th>折数</th><th>特征</th><th>gate</th><th>时间隔离</th><th></th></tr></thead>
-        <tbody>
-          <tr v-for="t in ml.list" :key="t.train_id" :class="{active: ml.selected===t.train_id}" @click="viewMl(t.train_id)">
-            <td>{{ t.train_id }}</td>
-            <td>{{ t.status }}</td>
-            <td>{{ fmtNum(t.oos_ic_mean) }}</td>
-            <td>{{ fmtNum(t.oos_ic_ir) }}</td>
-            <td>{{ t.n_folds ?? '—' }}</td>
-            <td>{{ t.n_features ?? '—' }}</td>
-            <td>{{ t.gate_passed === true ? '通过' : (t.gate_passed === false ? '未过' : '—') }}</td>
-            <td>{{ t.time_isolation || '—' }}</td>
-            <td><button v-if="t.status==='running'" class="ml-stop" @click.stop="stopMl(t.train_id)">停止</button></td>
-          </tr>
-        </tbody>
-      </table>
+
+    <!-- ── 空状态引导 ── -->
+    <div v-if="!ml.list.length && !ml.loadingList" class="mlv-empty">
+      <p>还没有训练记录。ML 组合会用因子库中的全部因子做 walk-forward 时间隔离训练，</p>
+      <p>产出混合 OOS 分数并通过 engine_gate 可交易性裁决——这是检验"因子库整体是否有真 alpha"的最终考场。</p>
+      <button class="send-btn" @click="showConfig = true; $nextTick(() => startMl())">开始第一次训练</button>
     </div>
-    <div v-if="ml.detail" class="ml-detail">
-      <h4>训练详情 · {{ ml.selected }} · {{ ml.detail.status }}</h4>
-      <pre v-if="ml.detail.status==='running'" class="ml-log">{{ (ml.detail.progress_tail || []).slice(-12).join('\n') || '（等待输出…）' }}</pre>
-      <template v-if="ml.detail.report">
-        <div class="ml-summary">
-          <span>时间隔离: <b>{{ ml.detail.report.time_isolation }}</b></span>
-          <span>OOS IC(混合): <b>{{ fmtNum((ml.detail.report.oos_ic_blended||{}).ic_mean) }}</b></span>
-          <span>ICIR: <b>{{ fmtNum((ml.detail.report.oos_ic_blended||{}).ic_ir) }}</b></span>
-          <span>gate: <b>{{ (ml.detail.report.gate||{}).passed ? '通过' : '未过' }}</b>
-            <span v-if="!(ml.detail.report.gate||{}).passed">（{{ ((ml.detail.report.gate||{}).fail_reasons||[]).join('、') }}）</span></span>
+
+    <template v-if="ml.list.length">
+      <!-- ── 最新一次成功训练的核心指标 ── -->
+      <div v-if="latest" class="metrics-cards">
+        <div class="metrics-card" title="混合模型 OOS IC 均值（时间隔离，挖掘期外）">
+          <b :class="latest.oos_ic_mean >= 0 ? 'ic-pos' : 'ic-neg'">{{ fmtNum(latest.oos_ic_mean) }}</b><span>最新 OOS IC</span>
         </div>
-        <!-- gate 指标卡 -->
-        <div v-if="gateCards.length" class="metrics-cards" style="margin:10px 0">
-          <div v-for="c in gateCards" :key="c.label" class="metrics-card" :title="c.title"><b>{{ c.value }}</b><span>{{ c.label }}</span></div>
+        <div class="metrics-card" title="混合模型 OOS ICIR">
+          <b>{{ fmtNum(latest.oos_ic_ir) }}</b><span>OOS ICIR</span>
         </div>
-        <!-- 特征权重：每模型 Top15 横向条形（谁在驱动组合分数） -->
-        <template v-if="weightKinds.length">
-          <h5>特征权重 Top15（跨折归一平均）</h5>
-          <div v-for="kind in weightKinds" :key="'w-' + kind">
-            <strong>{{ kind.toUpperCase() }}</strong>
-            <div :id="'ml-weights-' + kind" class="metrics-chart" :style="{ height: Math.max(140, weightRows(kind).length * 24 + 40) + 'px' }"></div>
-          </div>
-        </template>
-        <h5>折级 OOS 表现</h5>
-        <div v-for="(rows, model) in ml.detail.report.fold_metrics" :key="model" class="ml-fold">
-          <strong>{{ model }}</strong>
-          <div :id="'ml-folds-' + model" class="metrics-chart" :style="{ height: 180 + 'px' }"></div>
-          <table class="lib-table">
-            <thead><tr><th>OOS 起</th><th>OOS 止</th><th>IC 均值</th><th>ICIR</th><th>天数</th><th>多空日差</th></tr></thead>
-            <tbody>
-              <tr v-for="(row, i) in rows" :key="i">
-                <td>{{ row.oos_start }}</td><td>{{ row.oos_end }}</td>
-                <td>{{ fmtNum(row.ic_mean) }}</td><td>{{ fmtNum(row.ic_ir) }}</td>
-                <td>{{ row.n_days }}</td><td>{{ fmtNum(row.long_short_daily_spread) }}</td>
-              </tr>
-            </tbody>
-          </table>
+        <div class="metrics-card" title="engine_gate 可交易性裁决（OOS 段周调仓）">
+          <b :class="latest.gate_passed ? 'ic-pos' : 'ic-neg'">{{ latest.gate_passed == null ? '—' : (latest.gate_passed ? '通过' : '未过') }}</b><span>engine_gate</span>
         </div>
-        <h5>特征（{{ (ml.detail.report.feature_names||[]).length }}）与剔除（{{ (ml.detail.report.dropped||[]).length }}）</h5>
-        <div class="ml-features">{{ (ml.detail.report.feature_names||[]).join(' · ') }}</div>
-        <div v-for="d in ml.detail.report.dropped" :key="d.name" class="ml-drop">− {{ d.name }}（{{ d.library }}）：{{ d.reason }}</div>
-        <h5>衰减对照（挖掘期 IC vs OOS IC，按 |OOS IC| Top20）</h5>
-        <div v-if="decayRows.length" id="ml-decay-chart" class="metrics-chart" :style="{ height: Math.max(160, decayRows.length * 26 + 50) + 'px' }"></div>
+        <div class="metrics-card" title="gate 超额年化">
+          <b>{{ gateOf(latest, 'excess_annual', true) }}</b><span>gate 超额年化</span>
+        </div>
+        <div class="metrics-card" title="进入模型的特征数 / walk-forward 折数">
+          <b>{{ latest.n_features ?? '—' }}<i>/</i>{{ latest.n_folds ?? '—' }}</b><span>特征 / 折数</span>
+        </div>
+      </div>
+
+      <!-- ── 跨训练趋势 ── -->
+      <div v-if="trendRows.length >= 2" class="mlv-block">
+        <div class="mlv-block-head">
+          <h4>训练趋势</h4>
+          <span class="summary-facet-hint" title="每次训练的 OOS IC / ICIR。看组合 alpha 随因子库扩大是在增强还是衰减。">ⓘ</span>
+        </div>
+        <div id="ml-trend-chart" class="metrics-chart" style="height: 210px"></div>
+      </div>
+
+      <!-- ── 历史训练（点击行展开详情） ── -->
+      <div class="mlv-block">
+        <div class="mlv-block-head"><h4>训练历史</h4><span class="mlv-sub">点击行展开权重 / 折级 / 衰减详情</span></div>
         <table class="lib-table">
-          <thead><tr><th>因子</th><th>挖掘 IC</th><th>OOS IC</th><th>衰减比</th></tr></thead>
+          <thead><tr><th>训练</th><th>OOS IC</th><th>ICIR</th><th>折数</th><th>特征</th><th>模型</th><th>持有</th><th>gate</th><th>隔离</th></tr></thead>
           <tbody>
-            <tr v-for="row in decayRows" :key="row.name">
-              <td>{{ row.name }}</td><td>{{ fmtNum(row.ic_mining) }}</td>
-              <td>{{ fmtNum(row.ic_oos) }}</td><td>{{ fmtNum(row.decay_ratio) }}</td>
-            </tr>
+            <template v-for="t in ml.list" :key="t.train_id">
+              <tr :class="{active: ml.selected===t.train_id}" @click="toggleDetail(t.train_id)">
+                <td class="lib-fid">{{ fmtTrainId(t.train_id) }}</td>
+                <td :class="icClass(t.oos_ic_mean)"><strong>{{ fmtNum(t.oos_ic_mean) }}</strong></td>
+                <td>{{ fmtNum(t.oos_ic_ir) }}</td>
+                <td>{{ t.n_folds ?? '—' }}</td>
+                <td>{{ t.n_features ?? '—' }}</td>
+                <td>{{ (t.model || '—').toUpperCase() }}</td>
+                <td>{{ t.label_days ? t.label_days + 'd' : '—' }}</td>
+                <td><span class="lib-status" :class="t.gate_passed === true ? 'status-completed' : (t.gate_passed === false ? 'mlv-bad' : '')">{{ gateText(t) }}</span></td>
+                <td><span class="mlv-sub">{{ isolationShort(t) }}</span></td>
+              </tr>
+              <tr v-if="ml.selected === t.train_id && ml.detail && ml.detail.train_id === t.train_id" class="mlv-expand-row">
+                <td colspan="9">
+                  <div class="mlv-expand">
+                    <pre v-if="ml.detail.status==='running'" class="ml-log">{{ (ml.detail.progress_tail || []).slice(-8).join('\n') || '（等待输出…）' }}</pre>
+                    <template v-if="ml.detail.report">
+                      <div class="mlv-expand-head">
+                        <span class="mlv-sub">{{ ml.detail.report.time_isolation }}</span>
+                        <span class="mlv-sub">训练窗口终点（mining_end）: {{ ml.detail.report.mining_end || '—' }}</span>
+                        <span v-if="(ml.detail.report.gate||{}).passed === false" class="mlv-bad">
+                          未过原因：{{ ((ml.detail.report.gate||{}).fail_reasons||[]).join('、') }}
+                        </span>
+                      </div>
+                      <div v-if="gateCards.length" class="metrics-cards">
+                        <div v-for="c in gateCards" :key="c.label" class="metrics-card" :title="c.title"><b>{{ c.value }}</b><span>{{ c.label }}</span></div>
+                      </div>
+                      <template v-if="weightKinds.length">
+                        <div class="mlv-block-head"><h5>特征权重 Top15（跨折归一平均，谁在驱动组合分数）</h5></div>
+                        <div class="mlv-grid2">
+                          <div v-for="kind in weightKinds" :key="'w-' + kind">
+                            <strong>{{ kind.toUpperCase() }}</strong>
+                            <div :id="'ml-weights-' + kind" class="metrics-chart" :style="{ height: Math.max(160, weightRows(kind).length * 24 + 40) + 'px' }"></div>
+                          </div>
+                        </div>
+                      </template>
+                      <div class="mlv-block-head"><h5>折级 OOS IC</h5></div>
+                      <div class="mlv-grid2">
+                        <div v-for="(rows, model) in ml.detail.report.fold_metrics" :key="'f-' + model">
+                          <strong>{{ model.toUpperCase() }}</strong>
+                          <div :id="'ml-folds-' + model" class="metrics-chart" style="height: 170px"></div>
+                        </div>
+                      </div>
+                      <div class="mlv-block-head"><h5>衰减对照（挖掘期 IC vs OOS IC，按 |OOS IC| Top20）</h5></div>
+                      <div v-if="decayRows.length" id="ml-decay-chart" class="metrics-chart" :style="{ height: Math.max(160, decayRows.length * 26 + 50) + 'px' }"></div>
+                      <details class="mlv-details">
+                        <summary>特征清单（{{ (ml.detail.report.feature_names||[]).length }}）/ 剔除（{{ (ml.detail.report.dropped||[]).length }}）/ 衰减明细表</summary>
+                        <div class="ml-features">{{ (ml.detail.report.feature_names||[]).join(' · ') }}</div>
+                        <div v-for="d in ml.detail.report.dropped" :key="d.name" class="ml-drop">− {{ d.name }}（{{ d.library }}）：{{ d.reason }}</div>
+                        <table class="lib-table">
+                          <thead><tr><th>因子</th><th>挖掘 IC</th><th>OOS IC</th><th>衰减比</th></tr></thead>
+                          <tbody>
+                            <tr v-for="row in ml.detail.report.decay_table" :key="row.name">
+                              <td>{{ row.name }}</td><td>{{ fmtNum(row.ic_mining) }}</td>
+                              <td>{{ fmtNum(row.ic_oos) }}</td><td>{{ fmtNum(row.decay_ratio) }}</td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </details>
+                    </template>
+                  </div>
+                </td>
+              </tr>
+            </template>
           </tbody>
         </table>
-      </template>
-    </div>
+      </div>
+    </template>
   </div>
 </template>
 
@@ -127,10 +179,25 @@ export default {
         starting: false,
         error: '',
       },
+      loadingList: false,
+      showConfig: false,
+      exporting: false,
     }
   },
   computed: {
-    /** 历史训练 OOS 趋势（train_id = YYYYMMDD_HHMMSS，字典序即时间序） */
+    anyRunning() {
+      return (this.ml.list || []).some(t => t.status === 'running')
+    },
+    runningTrain() {
+      return (this.ml.list || []).find(t => t.status === 'running') || null
+    },
+    latest() {
+      return (this.ml.list || []).find(t => t.status === 'completed' && Number.isFinite(Number(t.oos_ic_mean))) || null
+    },
+    runningTail() {
+      const tail = this.ml.detail?.progress_tail || []
+      return tail.length ? tail[tail.length - 1] : ''
+    },
     trendRows() {
       return (this.ml.list || [])
         .filter(t => t.status === 'completed' && Number.isFinite(Number(t.oos_ic_mean)))
@@ -161,7 +228,6 @@ export default {
     this.loadMl()
   },
   beforeUnmount() {
-    // 组件随子 tab 切换卸载时停止轮询；再次进入时 mounted 会重启
     if (this._mlTimer) {
       clearInterval(this._mlTimer)
       this._mlTimer = null
@@ -171,6 +237,42 @@ export default {
     fmtNum(v) {
       if (v === null || v === undefined || Number.isNaN(Number(v))) return '—'
       return Number(v).toFixed(4)
+    },
+    icClass(v) {
+      const n = Number(v)
+      if (!Number.isFinite(n)) return ''
+      return n >= 0 ? 'ic-pos' : 'ic-neg'
+    },
+    fmtTrainId(id) {
+      const s = String(id || '')
+      return s.length >= 8 ? `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)} ${s.slice(9, 11) || ''}:${s.slice(11, 13) || ''}`.trim() : s
+    },
+    gateText(t) {
+      if (t.gate_passed === true) return '通过'
+      if (t.gate_passed === false) return '未过'
+      return '—'
+    },
+    isolationShort(t) {
+      const s = String(t.time_isolation || '')
+      if (s.startsWith('holdout')) return '留出'
+      if (s.startsWith('strict')) return '严格'
+      return s.slice(0, 4) || '—'
+    },
+    paramSummary(t) {
+      const p = t.params || {}
+      const parts = []
+      parts.push((p.modes && p.modes.join('/')) || 'technical')
+      parts.push((t.model || p.model || 'both').toUpperCase())
+      parts.push(`持有${t.label_days ?? p.label_days ?? 5}d`)
+      parts.push(`${t.n_folds ?? '—'}折`)
+      return parts.join(' · ')
+    },
+    gateOf(t, key, asPct) {
+      const gm = (this.ml.detail?.report?.gate?.metrics) || {}
+      void t
+      const v = gm[key]
+      if (v == null) return '—'
+      return asPct ? (Number(v) * 100).toFixed(1) + '%' : Number(v).toFixed(2)
     },
     weightRows(kind) {
       return (this.ml.detail?.report?.feature_weights?.[kind] || []).slice(0, 15)
@@ -199,7 +301,7 @@ export default {
     renderWeights(kind) {
       const rows = this.weightRows(kind)
       if (!rows.length) return
-      const sorted = [...rows].reverse() // 横向条形自下而上
+      const sorted = [...rows].reverse()
       const c = chart('ml-weights-' + kind)
       if (!c) return
       c.setOption({
@@ -223,7 +325,7 @@ export default {
       c.setOption({
         tooltip: { trigger: 'item', formatter: p => `${p.name}：<b>${Number(p.value).toFixed(4)}</b>` },
         grid: { left: 44, right: 14, top: 20, bottom: 26 },
-        xAxis: { type: 'category', data: rows.map(r => String(r.oos_start).slice(2)) , axisLabel: { ...AXIS_LABEL, rotate: 30 } },
+        xAxis: { type: 'category', data: rows.map(r => String(r.oos_start).slice(2)), axisLabel: { ...AXIS_LABEL, rotate: 30 } },
         yAxis: { type: 'value', axisLabel: { ...AXIS_LABEL } },
         series: [{
           type: 'bar', data: rows.map(r => r.ic_mean), barMaxWidth: 26,
@@ -260,19 +362,26 @@ export default {
       })
     },
     async loadMl() {
+      this.loadingList = true
       try {
         this.ml.list = await api('/api/alphaagent/stacking/trainings')
-        if (this.ml.list.some(t => t.status === 'running')) this.scheduleMlPoll()
+        if (this.ml.list.some(t => t.status === 'running')) {
+          this.scheduleMlPoll()
+          if (!this.ml.selected) await this.viewMl(this.runningTrain?.train_id, true)
+        }
         this.renderAll()
       } catch (e) {
         this.ml.error = e.message
+      } finally {
+        this.loadingList = false
       }
     },
     async startMl() {
       this.ml.starting = true
       this.ml.error = ''
       try {
-        const res = await api('/api/alphaagent/stacking/train', { method: 'POST', body: JSON.stringify(this.ml.form) })
+        const res = await api('/api/alphaagent/stacking/train', { method: 'POST', body: this.ml.form })
+        this.showConfig = false
         this.ml.selected = res.train_id
         await this.loadMl()
         await this.viewMl(res.train_id)
@@ -281,6 +390,14 @@ export default {
       } finally {
         this.ml.starting = false
       }
+    },
+    async toggleDetail(trainId) {
+      if (this.ml.selected === trainId && this.ml.detail?.train_id === trainId) {
+        this.ml.selected = null
+        this.ml.detail = null
+        return
+      }
+      await this.viewMl(trainId)
     },
     async viewMl(trainId, silent) {
       try {
@@ -317,3 +434,32 @@ export default {
   },
 }
 </script>
+
+<style scoped>
+.mlv-status { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg-soft); margin-bottom: 12px; }
+.mlv-dot { width: 9px; height: 9px; border-radius: 50%; background: #5b6b8c; flex: none; }
+.mlv-dot.ok { background: #4fc3a1; }
+.mlv-dot.running { background: #e8c491; animation: mlv-pulse 1.2s ease-in-out infinite; }
+@keyframes mlv-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+.mlv-status-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.mlv-status-text b { font-size: 13px; color: var(--text); }
+.mlv-sub { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mlv-actions { display: flex; gap: 8px; align-items: center; flex: none; }
+.mlv-ghost { padding: 6px 12px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--muted); font-size: 12px; cursor: pointer; }
+.mlv-ghost:hover { color: var(--text); border-color: var(--accent, #5b9dff); }
+.mlv-stop { padding: 6px 12px; border: 1px solid #ef6b7355; border-radius: 8px; background: transparent; color: #ef6b73; font-size: 12px; cursor: pointer; }
+.mlv-empty { padding: 32px 20px; text-align: center; color: var(--muted); border: 1px dashed var(--line); border-radius: 10px; margin: 10px 0; }
+.mlv-empty p { margin: 4px 0; font-size: 12px; }
+.mlv-empty .send-btn { margin-top: 12px; }
+.mlv-block { margin-top: 14px; }
+.mlv-block-head { display: flex; align-items: center; gap: 8px; margin: 6px 0 8px; }
+.mlv-block-head h4, .mlv-block-head h5 { margin: 0; }
+.mlv-expand-row > td { background: rgb(79 140 255 / 0.04); }
+.mlv-expand { padding: 8px 6px; display: flex; flex-direction: column; gap: 12px; }
+.mlv-expand-head { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; }
+.mlv-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 1100px) { .mlv-grid2 { grid-template-columns: 1fr; } }
+.mlv-details summary { cursor: pointer; color: var(--muted); font-size: 12px; margin: 6px 0; }
+.mlv-details summary:hover { color: var(--text); }
+.mlv-bad { color: #ef6b73; }
+</style>
