@@ -60,6 +60,9 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--size-neutral/--no-size-neutral", dest="size_neutral", default=True)
     ap.add_argument("--no-gate", action="store_true", help="跳过 engine_gate 回测裁决")
     ap.add_argument("--no-write-pred", action="store_true", help="不写 pred 通道文件")
+    ap.add_argument("--subset-curve", action="store_true",
+                    help="贡献排序累积子集曲线：按置换贡献降序取 Top-k 逐级重训（成本 ≈ 2n 次拟合），"
+                         "输出'子集规模 vs OOS IC'曲线，定位边际收益归零的最优规模")
     ap.add_argument("--out-dir", default=None, help="输出目录（默认 artifacts/alphaagent/stacking/<时间戳>）；后端托管时传确定性路径")
     ap.add_argument("--isolation", default="strict", choices=["strict", "holdout"],
                     help="strict：walk-forward 仅用挖掘期后干净段（fold 少但指标可信）；"
@@ -290,6 +293,28 @@ def main() -> None:
             f"daily_overlap={gm.get('daily_overlap')} turnover={gate_result.get('diagnostics', {}).get('avg_daily_turnover')}"
         )
 
+    # ⑦b 累积子集曲线（可选）：按置换贡献降序 Top-k 逐级重训，
+    #     回答"加到第几个因子后边际收益归零、最优小组合是多少个"
+    subset_curve = None
+    if args.subset_curve and feature_contribution:
+        from alphaagent.factor.stacking.model import cumulative_subset_curve
+
+        ranked_names = [x["name"] for x in feature_contribution.get(kinds[0]) or []]
+        if ranked_names:
+            print(f"累积子集曲线（{len(ranked_names)} 个特征按置换贡献排序，2×{len(ranked_names)} 次拟合）…")
+            subset_curve = cumulative_subset_curve(
+                dataset.feature_matrix, dataset.label, date_series, folds,
+                ranked_names=ranked_names, feature_names=dataset.feature_names,
+                kinds=kinds, first_oos=first_oos,
+                progress=lambda msg: print(" ", msg, flush=True),
+            )
+            valid = [r for r in subset_curve if r.get("blended") is not None]
+            if valid:
+                best = max(valid, key=lambda r: r["blended"])
+                full = valid[-1]["blended"]
+                print(f"最优规模 k={best['k']}：blended OOS IC={best['blended']}（全量 {full}，"
+                      f"精简 {len(best['names'])} 个因子：{'、'.join(best['names'])}）")
+
     # ⑧ 落盘：report + model + pred 通道
     import joblib
 
@@ -306,6 +331,7 @@ def main() -> None:
         "fold_metrics": fold_reports,
         "feature_weights": feature_weights,
         "feature_contribution": feature_contribution,
+        "subset_curve": subset_curve,
         "decay_table": decay,
         "gate": gate_result,
         "oos_ic_blended": _blended_oos_ic(stacked, dataset.label, dts, first_oos),

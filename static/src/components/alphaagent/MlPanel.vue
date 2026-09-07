@@ -44,6 +44,7 @@
         </label>
         <label class="ml-check"><input type="checkbox" v-model="ml.form.no_candidate"> 只用正式库</label>
         <label class="ml-check"><input type="checkbox" v-model="ml.form.no_gate"> 跳过 engine_gate</label>
+        <label class="ml-check" title="按置换贡献降序取 Top-k 逐级重训（成本 ≈ 2n 次拟合，训练时间明显变长）。输出'子集规模 vs OOS IC'曲线，定位边际收益归零的最优因子数。"><input type="checkbox" v-model="ml.form.subset_curve"> 累积子集曲线</label>
       </div>
       <div v-if="ml.error" class="ml-error">{{ ml.error }}</div>
     </div>
@@ -171,6 +172,16 @@
                           </div>
                         </div>
                       </template>
+                      <template v-if="(ml.detail.report.subset_curve || []).length">
+                        <div class="mlv-block-head">
+                          <h5>累积子集曲线（子集规模 vs OOS IC）</h5>
+                          <span v-if="bestSubset" class="mlv-sub">
+                            最优规模 <b>k={{ bestSubset.k }}</b>：blended OOS IC <b>{{ fmtNum(bestSubset.blended) }}</b>
+                            （因子：{{ bestSubset.names.join('、') }}）
+                          </span>
+                        </div>
+                        <div id="ml-subset-curve" class="metrics-chart" style="height: 240px"></div>
+                      </template>
                       <div class="mlv-block-head"><h5>折级 OOS IC</h5></div>
                       <div class="mlv-grid2">
                         <div v-for="(rows, model) in ml.detail.report.fold_metrics" :key="'f-' + model">
@@ -217,7 +228,7 @@ export default {
   data() {
     return {
       ml: {
-        form: { modes: ['technical'], model: 'both', label_days: 5, train_months: 18, step_months: 6, max_corr: 0.6, isolation: 'holdout', no_candidate: false, no_gate: false },
+        form: { modes: ['technical'], model: 'both', label_days: 5, train_months: 18, step_months: 6, max_corr: 0.6, isolation: 'holdout', no_candidate: false, no_gate: false, subset_curve: false },
         list: [],
         selected: null,
         detail: null,
@@ -269,6 +280,12 @@ export default {
     },
     contribKinds() {
       return Object.keys(this.ml.detail?.report?.feature_contribution || {})
+    },
+    bestSubset() {
+      const curve = this.ml.detail?.report?.subset_curve || []
+      const valid = curve.filter(r => r.blended != null)
+      if (!valid.length) return null
+      return valid.reduce((a, b) => (b.blended > a.blended ? b : a))
     },
     blendedIc() {
       return this.ml.detail?.report?.oos_ic_blended?.ic_mean ?? null
@@ -462,6 +479,28 @@ export default {
         }],
       }, true)
     },
+    renderSubsetCurve() {
+      const curve = this.ml.detail?.report?.subset_curve || []
+      if (!curve.length) return
+      const c = chart('ml-subset-curve')
+      if (!c) return
+      const series = []
+      for (const kind of this.contribKinds) {
+        const data = curve.map(r => r[kind])
+        if (data.some(v => v != null)) series.push({ name: kind.toUpperCase() + ' IC', type: 'line', data, showSymbol: true, lineStyle: { width: 1.5, type: 'dashed' } })
+      }
+      series.push({ name: 'Blended IC', type: 'line', data: curve.map(r => r.blended), showSymbol: true, lineStyle: { width: 2.5 }, itemStyle: { color: '#4f8cff' },
+        markPoint: this.bestSubset ? { data: [{ coord: [this.bestSubset.k - 1, this.bestSubset.blended], value: '最优 k=' + this.bestSubset.k }] } : undefined,
+      })
+      c.setOption({
+        tooltip: { trigger: 'axis' },
+        legend: { textStyle: { color: '#8494b5', fontSize: 10 }, top: 0 },
+        grid: { left: 44, right: 20, top: 28, bottom: 24 },
+        xAxis: { type: 'category', data: curve.map(r => 'k=' + r.k), axisLabel: { ...AXIS_LABEL, rotate: 45 } },
+        yAxis: { type: 'value', axisLabel: { ...AXIS_LABEL }, scale: true },
+        series,
+      }, true)
+    },
     renderDecay() {
       const rows = this.decayRows
       if (!rows.length) return
@@ -486,6 +525,7 @@ export default {
         this.renderTrend()
         for (const kind of this.weightKinds) this.renderWeights(kind)
         for (const kind of this.contribKinds) this.renderContribution(kind)
+        this.renderSubsetCurve()
         for (const model of Object.keys(this.ml.detail?.report?.fold_metrics || {})) this.renderFolds(model)
         this.renderDecay()
       })

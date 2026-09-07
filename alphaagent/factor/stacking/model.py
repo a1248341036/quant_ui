@@ -7,7 +7,7 @@ OOS 之间留 ``purge_days`` 个交易日的 purge gap（≥ 标签期），消�
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, Sequence
+from typing import Callable, Literal, Sequence
 
 import numpy as np
 import pandas as pd
@@ -115,6 +115,7 @@ def fit_predict_walkforward(
     *,
     kind: ModelKind,
     feature_names: Sequence[str] | None = None,
+    collect_diagnostics: bool = True,
 ) -> tuple[np.ndarray, list[dict], list[dict] | None, list[dict] | None]:
     """逐折训练 + OOS 预测；返回 (拼接 OOS 预测 [n_rows]（折外 NaN）, 逐折指标, 特征权重, 置换贡献)。
 
@@ -132,6 +133,9 @@ def fit_predict_walkforward(
     [{name, ic_drop, ic_drop_rel}] 按 ic_drop 降序；ic_drop_rel =
     ic_drop / 组合平均 IC（≈ 该因子驱动的组合 IC 份额）；负值 = 打乱后
     反而更好（该因子在拖后腿）。lgbm 侧该值近似线性化贡献，ridge 侧精确。
+
+    collect_diagnostics=False（累积曲线等批量重训场景）时跳过权重与置换
+    采集——置换是 O(n_features) 次重预测，批量场景下是平方级浪费。
     """
     n_rows = feature_matrix.shape[0]
     oos_pred = np.full(n_rows, np.nan, dtype=np.float32)
@@ -159,7 +163,7 @@ def fit_predict_walkforward(
             continue
         model = make_model(kind)
         model.fit(feature_matrix[valid], label[valid])
-        if feature_names and feature_matrix.shape[1]:
+        if collect_diagnostics and feature_names and feature_matrix.shape[1]:
             try:
                 if kind == "ridge":
                     raw_w = np.abs(np.asarray(model.coef_, dtype=np.float64))
@@ -186,7 +190,7 @@ def fit_predict_walkforward(
         })
 
         # ── 置换贡献：逐特征打乱 OOS 行后重预测，IC 下降量（模型无关的贡献度量）──
-        if feature_names and feature_matrix.shape[1] and metrics.get("ic_mean") is not None:
+        if collect_diagnostics and feature_names and feature_matrix.shape[1] and metrics.get("ic_mean") is not None:
             rng = np.random.default_rng(20260907)
             Xo = feature_matrix[oos_ok]
             yo = label[oos_ok]
@@ -229,3 +233,63 @@ def fit_predict_walkforward(
             key=lambda x: -x["ic_drop"],
         )
     return oos_pred, report, feature_weights, feature_contribution
+
+
+def cumulative_subset_curve(
+    feature_matrix: np.ndarray,
+    label: np.ndarray,
+    dates: pd.Series,
+    folds: Sequence[WalkForwardFold],
+    *,
+    ranked_names: Sequence[str],
+    feature_names: Sequence[str],
+    kinds: Sequence[ModelKind],
+    first_oos=None,
+    progress: Callable[[str], None] | None = None,
+) -> list[dict]:
+    """贡献排序累积子集曲线：按贡献降序取 Top-k 特征逐级重训，返回每 k 的 OOS IC。
+
+    ranked_names：完整特征名按置换贡献降序排列（来自 fit_predict_walkforward
+    的第 4 返回值）。每 k 对每个 kind 重训一遍（collect_diagnostics=False，
+    避免 O(n²) 次置换重预测）。IC 统一口径 = 主训练 _blended_oos_ic：date ≥
+    first_oos（给了 first_oos 时）且 pred/label 有限值的行。
+    返回 [{"k", per-kind IC..., "blended"}]。
+    """
+    name_to_idx = {str(n): i for i, n in enumerate(feature_names)}
+    order = [name_to_idx[str(n)] for n in ranked_names if str(n) in name_to_idx]
+    date_np = pd.to_datetime(pd.Series(dates)).to_numpy()
+
+    def _ic(pred: np.ndarray) -> float | None:
+        mask = np.isfinite(pred) & np.isfinite(label)
+        if first_oos is not None:
+            mask &= date_np >= pd.Timestamp(first_oos)
+        if mask.sum() < 20:
+            return None
+        ic = daily_spearman_ic(pred[mask], label[mask], pd.Series(date_np[mask]))
+        return round(float(ic.mean()), 5) if len(ic) else None
+
+    curve: list[dict] = []
+    for k in range(1, len(order) + 1):
+        idx = order[:k]
+        row: dict = {"k": k, "names": [str(feature_names[i]) for i in idx]}
+        preds: list[np.ndarray] = []
+        for kind in kinds:
+            p, _rep, _w, _c = fit_predict_walkforward(
+                feature_matrix[:, idx], label, dates, folds, kind=kind, collect_diagnostics=False
+            )
+            row[kind] = _ic(p)
+            preds.append(p)
+        usable = [p for p in preds if np.isfinite(p).any()]
+        if usable:
+            import warnings
+
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=RuntimeWarning)
+                blended = np.nanmean(np.column_stack(usable), axis=1).astype(np.float32)
+            row["blended"] = _ic(blended)
+        else:
+            row["blended"] = None
+        curve.append(row)
+        if progress:
+            progress(f"[{k}/{len(order)}] Top{k} 子集 blended OOS IC = {row['blended']}")
+    return curve

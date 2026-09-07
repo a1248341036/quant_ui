@@ -92,3 +92,26 @@ def test_lgbm_permutation_contribution():
     )
     assert contrib is not None
     assert contrib[0]["name"] == "alpha_signal"
+
+
+def test_cumulative_subset_curve():
+    """累积曲线：长度=特征数、k=1 即最强单因子、每级 blended IC 有值。"""
+    from alphaagent.factor.stacking.model import cumulative_subset_curve
+
+    feats, label, dts = _synthetic()
+    folds = walk_forward_splits(pd.DatetimeIndex(dts.unique()), train_start=dts.min(),
+                                train_months=4, step_months=3, purge_days=5)
+    names = ["alpha_signal", "noise_a", "noise_b", "noise_c"]
+    _, _, _, contrib = fit_predict_walkforward(
+        feats, label, dts, folds, kind="ridge", feature_names=names
+    )
+    ranked = [c["name"] for c in contrib]
+    curve = cumulative_subset_curve(
+        feats, label, dts, folds, ranked_names=ranked, feature_names=names, kinds=("ridge",)
+    )
+    assert len(curve) == 4
+    assert curve[0]["k"] == 1 and curve[0]["names"] == ["alpha_signal"]
+    assert curve[-1]["k"] == 4
+    for row in curve:
+        assert row["ridge"] is not None
+        assert row["blended"] is not None

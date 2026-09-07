@@ -667,6 +667,7 @@ class StackingTrainRequest(BaseModel):
     no_gate: bool = False                         # 跳过 engine_gate
     isolation: str = Field(default="holdout")     # strict | holdout
     size_neutral: bool = True
+    subset_curve: bool = Field(default=False)     # 贡献排序累积子集曲线（成本 ≈ 2n 次拟合）
 
 
 @router.post("/stacking/train")

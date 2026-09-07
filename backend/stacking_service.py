@@ -69,6 +69,8 @@ def start_training(params: dict[str, Any]) -> dict[str, Any]:
         command += ["--isolation", str(params.get("isolation") or "holdout")]
         if params.get("size_neutral") is False:
             command += ["--no-size-neutral"]
+        if params.get("subset_curve"):
+            command += ["--subset-curve"]
 
         # 参数快照落盘：历史列表/详情页展示训练配置用
         out_dir.mkdir(parents=True, exist_ok=True)
