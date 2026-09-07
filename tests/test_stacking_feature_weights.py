@@ -24,7 +24,7 @@ def test_ridge_feature_weights_captured():
     folds = walk_forward_splits(pd.DatetimeIndex(dts.unique()), train_start=dts.min(),
                                 train_months=4, step_months=3, purge_days=5)
     names = ["alpha_signal", "noise_a", "noise_b", "noise_c"]
-    pred, report, weights = fit_predict_walkforward(
+    pred, report, weights, _contrib = fit_predict_walkforward(
         feats, label, dts, folds, kind="ridge", feature_names=names
     )
     assert weights is not None and len(weights) == 4
@@ -44,7 +44,7 @@ def test_lgbm_feature_weights_captured():
     folds = walk_forward_splits(pd.DatetimeIndex(dts.unique()), train_start=dts.min(),
                                 train_months=4, step_months=3, purge_days=5)
     names = ["alpha_signal", "noise_a", "noise_b", "noise_c"]
-    pred, report, weights = fit_predict_walkforward(
+    pred, report, weights, _contrib = fit_predict_walkforward(
         feats, label, dts, folds, kind="lgbm", feature_names=names
     )
     assert weights is not None
@@ -57,5 +57,38 @@ def test_no_feature_names_returns_none():
     feats, label, dts = _synthetic()
     folds = walk_forward_splits(pd.DatetimeIndex(dts.unique()), train_start=dts.min(),
                                 train_months=4, step_months=3, purge_days=5)
-    _, _, weights = fit_predict_walkforward(feats, label, dts, folds, kind="ridge")
+    _, _, weights, contrib = fit_predict_walkforward(feats, label, dts, folds, kind="ridge")
     assert weights is None
+    assert contrib is None
+
+
+def test_ridge_permutation_contribution():
+    """置换贡献：真信号因子打乱后 IC 损失最大；噪声因子贡献≈0 或负。"""
+    feats, label, dts = _synthetic()
+    folds = walk_forward_splits(pd.DatetimeIndex(dts.unique()), train_start=dts.min(),
+                                train_months=4, step_months=3, purge_days=5)
+    names = ["alpha_signal", "noise_a", "noise_b", "noise_c"]
+    _, _, _, contrib = fit_predict_walkforward(
+        feats, label, dts, folds, kind="ridge", feature_names=names
+    )
+    assert contrib is not None and len(contrib) == 4
+    # 降序排列
+    drops = [c["ic_drop"] for c in contrib]
+    assert drops == sorted(drops, reverse=True)
+    # 真信号排第一且贡献为正（打乱后 IC 明显下降）
+    assert contrib[0]["name"] == "alpha_signal"
+    assert contrib[0]["ic_drop"] > 0.005
+    # ic_drop_rel 存在且首项显著
+    assert contrib[0]["ic_drop_rel"] is not None and contrib[0]["ic_drop_rel"] > 0.3
+
+
+def test_lgbm_permutation_contribution():
+    feats, label, dts = _synthetic()
+    folds = walk_forward_splits(pd.DatetimeIndex(dts.unique()), train_start=dts.min(),
+                                train_months=4, step_months=3, purge_days=5)
+    names = ["alpha_signal", "noise_a", "noise_b", "noise_c"]
+    _, _, _, contrib = fit_predict_walkforward(
+        feats, label, dts, folds, kind="lgbm", feature_names=names
+    )
+    assert contrib is not None
+    assert contrib[0]["name"] == "alpha_signal"

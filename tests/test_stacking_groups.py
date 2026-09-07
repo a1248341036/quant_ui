@@ -305,7 +305,7 @@ def _simple_folds(dts_full: pd.Series):
 def test_ridge_keeps_all_finite_feature_filter() -> None:
     feats, label, dts_full, nan_mask = _nan_feature_panel()
     folds = _simple_folds(dts_full)
-    pred, report, _feat_w = fit_predict_walkforward(feats, label, dts_full, folds, kind="ridge")
+    pred, report, _feat_w, _feat_c = fit_predict_walkforward(feats, label, dts_full, folds, kind="ridge")
     assert any(not r.get("skipped") for r in report)
     oos_mask = np.isin(pd.to_datetime(dts_full).to_numpy(), folds[0].oos_dates.to_numpy())
     # ridge：OOS 中 NaN 特征行不产预测
@@ -315,7 +315,7 @@ def test_ridge_keeps_all_finite_feature_filter() -> None:
 def test_lgbm_tolerates_nan_features() -> None:
     feats, label, dts_full, nan_mask = _nan_feature_panel()
     folds = _simple_folds(dts_full)
-    pred, report, _feat_w = fit_predict_walkforward(feats, label, dts_full, folds, kind="lgbm")
+    pred, report, _feat_w, _feat_c = fit_predict_walkforward(feats, label, dts_full, folds, kind="lgbm")
     assert any(not r.get("skipped") for r in report)
     oos_mask = np.isin(pd.to_datetime(dts_full).to_numpy(), folds[0].oos_dates.to_numpy())
     target = oos_mask & nan_mask & np.isfinite(label)

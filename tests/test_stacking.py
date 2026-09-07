@@ -139,7 +139,7 @@ def test_ridge_recovers_positive_signal(panel: pd.DataFrame, factor_values) -> N
     dts = pd.Series(panel.index.get_level_values("datetime"))
     dates = pd.DatetimeIndex(panel.index.get_level_values("datetime").unique())
     folds = walk_forward_splits(dates, train_start=mining_end, train_months=2, step_months=3, purge_days=5)
-    pred, report, _feat_w = fit_predict_walkforward(ds.feature_matrix, label, dts, folds, kind="ridge")
+    pred, report, _feat_w, _feat_c = fit_predict_walkforward(ds.feature_matrix, label, dts, folds, kind="ridge")
     assert any(not r.get("skipped") for r in report)
     # 好因子 OOS 方向为正
     ic = daily_spearman_ic(pred, label, dts)

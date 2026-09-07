@@ -146,11 +146,28 @@
                         <div v-for="c in gateCards" :key="c.label" class="metrics-card" :title="c.title"><b>{{ c.value }}</b><span>{{ c.label }}</span></div>
                       </div>
                       <template v-if="weightKinds.length">
-                        <div class="mlv-block-head"><h5>特征权重 Top15（跨折归一平均，谁在驱动组合分数）</h5></div>
+                        <div class="mlv-block-head">
+                          <h5>特征权重 Top15（跨折归一平均）</h5>
+                          <span class="mlv-sub">组合 OOS IC {{ fmtNum(blendedIc) }} vs 最强单因子 {{ fmtNum(bestSingleIc) }}
+                            <b :class="diversificationGain >= 0 ? 'ic-pos' : 'ic-neg'">{{ diversificationGain == null ? '' : (diversificationGain >= 0 ? '+' : '') + fmtNum(diversificationGain) }}</b>
+                            （多样性增益 = 组合 − 最强单因子）</span>
+                        </div>
                         <div class="mlv-grid2">
                           <div v-for="kind in weightKinds" :key="'w-' + kind">
                             <strong>{{ kind.toUpperCase() }}</strong>
                             <div :id="'ml-weights-' + kind" class="metrics-chart" :style="{ height: Math.max(160, weightRows(kind).length * 24 + 40) + 'px' }"></div>
+                          </div>
+                        </div>
+                      </template>
+                      <template v-if="contribKinds.length">
+                        <div class="mlv-block-head">
+                          <h5>置换贡献（打乱该因子后组合 OOS IC 掉多少）</h5>
+                          <span class="summary-facet-hint" title="逐折在 OOS 段把单因子行内打乱后重预测，IC 下降量跨折平均。正值 = 真贡献（掉得越多越重要）；负值（红）= 打乱反而更好，该因子在拖后腿，是剔除候选。">ⓘ</span>
+                        </div>
+                        <div class="mlv-grid2">
+                          <div v-for="kind in contribKinds" :key="'c-' + kind">
+                            <strong>{{ kind.toUpperCase() }}</strong>
+                            <div :id="'ml-contrib-' + kind" class="metrics-chart" :style="{ height: Math.max(160, contribRows(kind).length * 24 + 40) + 'px' }"></div>
                           </div>
                         </div>
                       </template>
@@ -250,6 +267,21 @@ export default {
     weightKinds() {
       return Object.keys(this.ml.detail?.report?.feature_weights || {})
     },
+    contribKinds() {
+      return Object.keys(this.ml.detail?.report?.feature_contribution || {})
+    },
+    blendedIc() {
+      return this.ml.detail?.report?.oos_ic_blended?.ic_mean ?? null
+    },
+    bestSingleIc() {
+      const rows = this.ml.detail?.report?.decay_table || []
+      const ics = rows.map(r => r.ic_oos).filter(v => Number.isFinite(Number(v)))
+      return ics.length ? Math.max(...ics.map(Number)) : null
+    },
+    diversificationGain() {
+      if (this.blendedIc == null || this.bestSingleIc == null) return null
+      return this.blendedIc - this.bestSingleIc
+    },
     gateCards() {
       const g = this.ml.detail?.report?.gate || {}
       const gm = g.metrics || {}
@@ -348,6 +380,9 @@ export default {
     weightRows(kind) {
       return (this.ml.detail?.report?.feature_weights?.[kind] || []).slice(0, 15)
     },
+    contribRows(kind) {
+      return (this.ml.detail?.report?.feature_contribution?.[kind] || []).slice(0, 15)
+    },
     renderTrend() {
       const rows = this.trendRows
       if (rows.length < 2) return
@@ -405,6 +440,28 @@ export default {
         }],
       }, true)
     },
+    renderContribution(kind) {
+      const rows = this.contribRows(kind)
+      if (!rows.length) return
+      const sorted = [...rows].reverse()
+      const c = chart('ml-contrib-' + kind)
+      if (!c) return
+      c.setOption({
+        tooltip: { trigger: 'item', formatter: p => {
+          const row = sorted[p.dataIndex]
+          const rel = row && row.ic_drop_rel != null ? `（占组合 IC ${(row.ic_drop_rel * 100).toFixed(0)}%）` : ''
+          return `${p.name}：<b>${Number(p.value).toFixed(4)}</b> ${rel}`
+        } },
+        grid: { left: 190, right: 70, top: 6, bottom: 6 },
+        xAxis: { type: 'value', axisLabel: { ...AXIS_LABEL }, splitLine: { lineStyle: { color: '#1c2536' } } },
+        yAxis: { type: 'category', data: sorted.map(r => r.name), axisLabel: { ...AXIS_LABEL, width: 180, overflow: 'truncate' } },
+        series: [{
+          type: 'bar', data: sorted.map(r => r.ic_drop), barMaxWidth: 14,
+          label: { show: true, position: 'right', color: '#c6d2e8', fontSize: 10, formatter: p => Number(p.value).toFixed(4) },
+          itemStyle: { borderRadius: [0, 3, 3, 0], color: p => (p.value >= 0 ? '#4fc3a1' : '#ef6b73') },
+        }],
+      }, true)
+    },
     renderDecay() {
       const rows = this.decayRows
       if (!rows.length) return
@@ -428,6 +485,7 @@ export default {
       this.$nextTick(() => {
         this.renderTrend()
         for (const kind of this.weightKinds) this.renderWeights(kind)
+        for (const kind of this.contribKinds) this.renderContribution(kind)
         for (const model of Object.keys(this.ml.detail?.report?.fold_metrics || {})) this.renderFolds(model)
         this.renderDecay()
       })

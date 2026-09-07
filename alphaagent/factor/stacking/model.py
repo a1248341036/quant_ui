@@ -115,8 +115,8 @@ def fit_predict_walkforward(
     *,
     kind: ModelKind,
     feature_names: Sequence[str] | None = None,
-) -> tuple[np.ndarray, list[dict], list[dict] | None]:
-    """逐折训练 + OOS 预测；返回 (拼接 OOS 预测 [n_rows]（折外 NaN）, 逐折指标, 特征权重)。
+) -> tuple[np.ndarray, list[dict], list[dict] | None, list[dict] | None]:
+    """逐折训练 + OOS 预测；返回 (拼接 OOS 预测 [n_rows]（折外 NaN）, 逐折指标, 特征权重, 置换贡献)。
 
     训练行过滤：日期在折 train_dates 内、label 有限；ridge 另要求特征全有限
     （无缺失处理），lgbm 原生支持 NaN 特征 → 放行，保住基本面/事件等稀疏面
@@ -126,6 +126,12 @@ def fit_predict_walkforward(
     特征权重：每折提取重要性并归一为份额后跨折平均——ridge 取 |coef|（特征
     已截面 zscore，系数可比），lgbm 取 gain 重要性；返回按权重降序的
     [{name, weight}]（weight 合计 1），feature_names 缺失时为 None。
+
+    置换贡献：逐折在 OOS 段把单个特征行内打乱后重预测，IC 相对未打乱的
+    下降量跨折平均——"没有这个因子组合损失多少 IC"。返回
+    [{name, ic_drop, ic_drop_rel}] 按 ic_drop 降序；ic_drop_rel =
+    ic_drop / 组合平均 IC（≈ 该因子驱动的组合 IC 份额）；负值 = 打乱后
+    反而更好（该因子在拖后腿）。lgbm 侧该值近似线性化贡献，ridge 侧精确。
     """
     n_rows = feature_matrix.shape[0]
     oos_pred = np.full(n_rows, np.nan, dtype=np.float32)
@@ -133,6 +139,7 @@ def fit_predict_walkforward(
     report: list[dict] = []
     require_finite = kind == "ridge"
     weight_acc: list[np.ndarray] = []
+    contrib_acc: list[dict] = []
     for fold in folds:
         train_mask = np.isin(date_np, fold.train_dates.to_numpy())
         valid = train_mask & np.isfinite(label)
@@ -178,6 +185,23 @@ def fit_predict_walkforward(
             **metrics,
         })
 
+        # ── 置换贡献：逐特征打乱 OOS 行后重预测，IC 下降量（模型无关的贡献度量）──
+        if feature_names and feature_matrix.shape[1] and metrics.get("ic_mean") is not None:
+            rng = np.random.default_rng(20260907)
+            Xo = feature_matrix[oos_ok]
+            yo = label[oos_ok]
+            do = pd.Series(date_np[oos_ok])
+            base_ic = float(metrics["ic_mean"])
+            drops: dict[str, float] = {}
+            for j, name in enumerate(feature_names):
+                Xp = Xo.copy()
+                rng.shuffle(Xp[:, j])
+                ic_p = daily_spearman_ic(
+                    np.asarray(model.predict(Xp), dtype=np.float32), yo, do
+                )
+                drops[str(name)] = base_ic - (float(ic_p.mean()) if len(ic_p) else 0.0)
+            contrib_acc.append({"base_ic": base_ic, "drops": drops})
+
     feature_weights: list[dict] | None = None
     if feature_names and weight_acc:
         mean_w = np.mean(np.asarray(weight_acc, dtype=np.float64), axis=0)
@@ -185,4 +209,23 @@ def fit_predict_walkforward(
             ({"name": str(n), "weight": round(float(w), 6)} for n, w in zip(feature_names, mean_w)),
             key=lambda x: -x["weight"],
         )
-    return oos_pred, report, feature_weights
+
+    feature_contribution: list[dict] | None = None
+    if feature_names and contrib_acc:
+        base_ic = float(np.mean([c["base_ic"] for c in contrib_acc]))
+        mean_drop = {
+            str(n): float(np.mean([c["drops"][str(n)] for c in contrib_acc]))
+            for n in feature_names
+        }
+        feature_contribution = sorted(
+            (
+                {
+                    "name": n,
+                    "ic_drop": round(v, 6),
+                    "ic_drop_rel": round(v / base_ic, 4) if abs(base_ic) > 1e-12 else None,
+                }
+                for n, v in mean_drop.items()
+            ),
+            key=lambda x: -x["ic_drop"],
+        )
+    return oos_pred, report, feature_weights, feature_contribution
