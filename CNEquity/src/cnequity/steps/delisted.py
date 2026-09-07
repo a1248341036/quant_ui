@@ -659,20 +659,58 @@ def _bar_spans(
     *,
     positive_volume_only: bool = True,
 ) -> dict[str, tuple[date, date]]:
-    """``symbol -> (first/last traded date)`` for existing daily bars."""
+    """``symbol -> (first/last traded date)`` for existing daily bars.
+
+    Reads the curated hive first, then falls back to the standard loader so
+    the external archive (tushare-wide yearly files, where the lake's bars
+    actually live — the curated hive may be empty for externally-compactable
+    datasets) counts too. A curated-only scan never sees externally-stored
+    bars and permanently blocks receipt publication for delisted recovery.
+    """
     if not symbols:
         return {}
-    root = config.curated_root / "daily_bars"
-    if not root.exists() or not any(root.rglob("*.parquet")):
-        return {}
-    from cnequity.query.parquet_scan import scan_parquet_root
 
-    bars = scan_parquet_root(
-        root,
-        partition_col="trade_date",
-        hive=False,
-        traded_only=positive_volume_only,
-    ).filter(pl.col("symbol").is_in(symbols))
+    def _spans_from(lf: pl.LazyFrame) -> dict[str, tuple[date, date]]:
+        bars = lf.filter(pl.col("symbol").is_in(symbols))
+        if positive_volume_only:
+            bars = bars.filter(pl.col("volume") > 0)
+        frame = (
+            bars.group_by("symbol")
+            .agg(
+                pl.col("trade_date").min().alias("first"),
+                pl.col("trade_date").max().alias("last"),
+            )
+            .collect()
+        )
+        return {r["symbol"]: (r["first"], r["last"]) for r in frame.iter_rows(named=True)}
+
+    root = config.curated_root / "daily_bars"
+    if root.exists() and any(root.rglob("*.parquet")):
+        from cnequity.query.parquet_scan import scan_parquet_root
+
+        spans = _spans_from(
+            scan_parquet_root(root, partition_col="trade_date", hive=False)
+        )
+        missing = [s for s in symbols if s not in spans]
+        if not missing:
+            return spans
+        # Curated rows exist but not for every requested symbol: the rest may
+        # live only in the external archive — fall through to the loader.
+        symbols = missing
+
+    from cnequity.query.reader import load
+
+    try:
+        bars = load("daily_bars", config=config).filter(pl.col("symbol").is_in(symbols))
+    except Exception:
+        # No storage shape holds the remaining symbols (fresh lake) — keep
+        # whatever the curated hive already provided instead of raising
+        # through the gate or discarding its spans.
+        return spans if root.exists() else {}
+    if positive_volume_only:
+        bars = bars.filter(pl.col("volume") > 0)
+    if bars.is_empty():
+        return {}
     frame = (
         bars.group_by("symbol")
         .agg(
@@ -681,7 +719,9 @@ def _bar_spans(
         )
         .collect()
     )
-    return {r["symbol"]: (r["first"], r["last"]) for r in frame.iter_rows(named=True)}
+    loaded = {r["symbol"]: (r["first"], r["last"]) for r in frame.iter_rows(named=True)}
+    loaded.update(spans if root.exists() else {})
+    return loaded
 
 
 def delisted_coverage_report(
