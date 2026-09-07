@@ -149,6 +149,8 @@ def list_trainings(limit: int = 30) -> list[dict[str, Any]]:
                 if report is not None:
                     blended = report.get("oos_ic_blended") or {}
                     gate = report.get("gate") or {}
+                    gm = gate.get("metrics") or {}
+                    gd = gate.get("diagnostics") or {}
                     item["oos_ic_mean"] = blended.get("ic_mean")
                     item["oos_ic_ir"] = blended.get("ic_ir")
                     item["n_folds"] = report.get("folds")
@@ -158,6 +160,27 @@ def list_trainings(limit: int = 30) -> list[dict[str, Any]]:
                     item["label_days"] = report.get("label_days")
                     item["mining_end"] = report.get("mining_end")
                     item["model"] = "/".join((report.get("fold_metrics") or {}).keys()) or None
+                    # ── 详细历史指标（跨训练对比）：gate 四项 + 分模型 IC + 最差折 + 衰减保留 ──
+                    item["gate_excess_annual"] = gm.get("excess_annual")
+                    item["gate_excess_sharpe"] = gm.get("excess_sharpe")
+                    item["gate_max_drawdown"] = gm.get("max_drawdown")
+                    item["gate_daily_overlap"] = gm.get("daily_overlap")
+                    item["gate_daily_turnover"] = gd.get("avg_daily_turnover")
+                    model_ics: dict[str, float] = {}
+                    worst: float | None = None
+                    for kind, rows in (report.get("fold_metrics") or {}).items():
+                        ics = [float(r["ic_mean"]) for r in rows if isinstance(r.get("ic_mean"), (int, float))]
+                        if ics:
+                            model_ics[kind] = round(sum(ics) / len(ics), 5)
+                            worst = min(ics) if worst is None else min(worst, min(ics))
+                    item["model_ic"] = model_ics
+                    item["worst_fold_ic"] = worst
+                    ratios = [
+                        float(r["decay_ratio"]) for r in (report.get("decay_table") or [])
+                        if isinstance(r.get("decay_ratio"), (int, float))
+                    ]
+                    item["decay_retention"] = round(sum(ratios) / len(ratios), 4) if ratios else None
+                    item["n_dropped"] = len(report.get("dropped") or [])
             # 参数快照（start_training 落盘）：历史行展示完整训练配置
             params_path = d / "params.json"
             if params_path.is_file():

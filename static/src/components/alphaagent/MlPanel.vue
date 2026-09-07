@@ -84,26 +84,54 @@
         <div id="ml-trend-chart" class="metrics-chart" style="height: 210px"></div>
       </div>
 
-      <!-- ── 历史训练（点击行展开详情） ── -->
+      <!-- ── 历史训练（点击行展开详情；数值列点击排序） ── -->
       <div class="mlv-block">
-        <div class="mlv-block-head"><h4>训练历史</h4><span class="mlv-sub">点击行展开权重 / 折级 / 衰减详情</span></div>
+        <div class="mlv-block-head">
+          <h4>训练历史</h4>
+          <span class="mlv-sub">点击行展开权重 / 折级 / 衰减详情 · 点击表头按该列排序</span>
+        </div>
         <table class="lib-table">
-          <thead><tr><th>训练</th><th>OOS IC</th><th>ICIR</th><th>折数</th><th>特征</th><th>模型</th><th>持有</th><th>gate</th><th>隔离</th></tr></thead>
+          <thead>
+            <tr>
+              <th>训练</th>
+              <th v-for="col in historyColumns" :key="col.key" :class="{ sortable: true, active: historySortKey === col.key }"
+                  @click="toggleHistorySort(col.key)" :title="col.title || ''">
+                {{ col.label }}<span v-if="historySortKey === col.key">{{ historySortDir > 0 ? ' ▲' : ' ▼' }}</span>
+              </th>
+              <th>gate</th>
+              <th title="衰减保留比：decay_table 各因子 OOS IC / 挖掘 IC 的均值（跨训练可比）">衰减保留</th>
+              <th title="全部折中最差的 OOS IC（稳定性下界）">最差折</th>
+              <th title="分模型折均 OOS IC">R/L IC</th>
+              <th title="被相关性去重剔除的因子数">剔除</th>
+            </tr>
+          </thead>
           <tbody>
-            <template v-for="t in ml.list" :key="t.train_id">
+            <template v-for="t in historySorted" :key="t.train_id">
               <tr :class="{active: ml.selected===t.train_id}" @click="toggleDetail(t.train_id)">
                 <td class="lib-fid">{{ fmtTrainId(t.train_id) }}</td>
                 <td :class="icClass(t.oos_ic_mean)"><strong>{{ fmtNum(t.oos_ic_mean) }}</strong></td>
                 <td>{{ fmtNum(t.oos_ic_ir) }}</td>
+                <td :class="{ neg: (t.gate_excess_annual ?? 0) < 0 }">{{ pct(t.gate_excess_annual) }}</td>
+                <td>{{ num2(t.gate_excess_sharpe) }}</td>
+                <td :class="{ neg: (t.gate_max_drawdown ?? 0) > 0.4 }">{{ pct(t.gate_max_drawdown) }}</td>
+                <td>{{ pct(t.gate_daily_overlap) }}</td>
+                <td>{{ pct(t.gate_daily_turnover) }}</td>
                 <td>{{ t.n_folds ?? '—' }}</td>
-                <td>{{ t.n_features ?? '—' }}</td>
+                <td>{{ t.n_features ?? '—' }}<span v-if="t.n_dropped" class="mlv-sub">−{{ t.n_dropped }}</span></td>
                 <td>{{ (t.model || '—').toUpperCase() }}</td>
                 <td>{{ t.label_days ? t.label_days + 'd' : '—' }}</td>
                 <td><span class="lib-status" :class="t.gate_passed === true ? 'status-completed' : (t.gate_passed === false ? 'mlv-bad' : '')">{{ gateText(t) }}</span></td>
                 <td><span class="mlv-sub">{{ isolationShort(t) }}</span></td>
+                <td>
+                  <span v-if="t.model_ic && t.model_ic.ridge != null" class="mlv-sub">{{ fmtNum(t.model_ic.ridge) }}</span>
+                  <span v-else class="mlv-sub">—</span>
+                  <span class="mlv-sub"> / </span>
+                  <span v-if="t.model_ic && t.model_ic.lgbm != null" class="mlv-sub">{{ fmtNum(t.model_ic.lgbm) }}</span>
+                  <span v-else class="mlv-sub">—</span>
+                </td>
               </tr>
               <tr v-if="ml.selected === t.train_id && ml.detail && ml.detail.train_id === t.train_id" class="mlv-expand-row">
-                <td colspan="9">
+                <td colspan="15">
                   <div class="mlv-expand">
                     <pre v-if="ml.detail.status==='running'" class="ml-log">{{ (ml.detail.progress_tail || []).slice(-8).join('\n') || '（等待输出…）' }}</pre>
                     <template v-if="ml.detail.report">
@@ -182,9 +210,24 @@ export default {
       loadingList: false,
       showConfig: false,
       exporting: false,
+      historySortKey: '',
+      historySortDir: -1,
     }
   },
   computed: {
+    historyColumns: () => [
+      { key: 'oos_ic_mean', label: 'OOS IC' },
+      { key: 'oos_ic_ir', label: 'ICIR' },
+      { key: 'gate_excess_annual', label: '超额年化' },
+      { key: 'gate_excess_sharpe', label: '超额夏普' },
+      { key: 'gate_max_drawdown', label: '回撤' },
+      { key: 'gate_daily_overlap', label: '日重叠' },
+      { key: 'gate_daily_turnover', label: '日换手' },
+      { key: 'n_folds', label: '折数' },
+      { key: 'n_features', label: '特征' },
+      { key: 'worst_fold_ic', label: '最差折 IC' },
+      { key: 'decay_retention', label: '衰减保留' },
+    ],
     anyRunning() {
       return (this.ml.list || []).some(t => t.status === 'running')
     },
@@ -223,6 +266,18 @@ export default {
       const rows = this.ml.detail?.report?.decay_table || []
       return rows.slice().sort((a, b) => Math.abs(b.ic_oos || 0) - Math.abs(a.ic_oos || 0)).slice(0, 20)
     },
+    /** 历史表排序：默认时间倒序（train_id 字典序），点击数值列切换 */
+    historySorted() {
+      const key = this.historySortKey
+      const rows = (this.ml.list || []).slice()
+      if (!key) return rows.sort((a, b) => (a.train_id < b.train_id ? 1 : -1))
+      const dir = this.historySortDir
+      return rows.sort((a, b) => {
+        const va = a[key] == null ? -Infinity : Number(a[key])
+        const vb = b[key] == null ? -Infinity : Number(b[key])
+        return (va - vb) * dir
+      })
+    },
   },
   mounted() {
     this.loadMl()
@@ -237,6 +292,22 @@ export default {
     fmtNum(v) {
       if (v === null || v === undefined || Number.isNaN(Number(v))) return '—'
       return Number(v).toFixed(4)
+    },
+    num2(v) {
+      if (v === null || v === undefined || Number.isNaN(Number(v))) return '—'
+      return Number(v).toFixed(2)
+    },
+    pct(v) {
+      if (v === null || v === undefined || Number.isNaN(Number(v))) return '—'
+      return (Number(v) * 100).toFixed(1) + '%'
+    },
+    toggleHistorySort(key) {
+      if (this.historySortKey === key) {
+        this.historySortDir = -this.historySortDir
+      } else {
+        this.historySortKey = key
+        this.historySortDir = -1  // 指标默认降序（最好在前）
+      }
     },
     icClass(v) {
       const n = Number(v)
