@@ -273,6 +273,10 @@ export default {
     summaryVerdictCounts() {
       return summaryView.counts.value
     },
+    /** verdict → 一句话语义（Options API methods 只收函数，对象必须走 computed） */
+    verdictSemantics() {
+      return VERDICT_SEMANTICS
+    },
     summaryFiltered() {
       return summaryView.filtered.value
     },
@@ -317,7 +321,6 @@ export default {
   methods: {
     formatTime,
     memoryVerdictLabel,
-    verdictSemantics: VERDICT_SEMANTICS,
     formatMetricValue,
     icClass,
     freqShort,
