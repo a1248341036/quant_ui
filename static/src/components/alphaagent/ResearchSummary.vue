@@ -18,53 +18,6 @@
     </header>
 
     <div class="agent-thread">
-      <!-- 盲测结果（单因子的真实 OOS）：人看的样本外检验，刻意不进 agent 记忆 -->
-      <div class="summary-panel">
-        <div class="summary-panel-head">
-          <h3>盲测结果（2025+ 真实样本外）</h3>
-          <span class="summary-facet-hint" title="盲测段对挖掘循环锁死，结果不回流 agent 记忆（防多重检验）。保留比 = 盲测 IC / 参考段 IC。">
-            ⓘ
-          </span>
-        </div>
-        <div v-if="agent.blindTestLoading" class="normal-mode-empty">加载盲测报告中…</div>
-        <div v-else-if="agent.blindTestError" class="normal-mode-empty">
-          盲测面板不可用：{{ agent.blindTestError }}（重启后端后刷新本页可修复）
-        </div>
-        <template v-else>
-          <div v-for="bt in blindReports" :key="bt.run_ts" class="blind-test-block">
-            <div class="blind-test-head">
-              {{ bt.run_ts }} · 窗口 {{ bt.report?.test_window?.start }} ~ {{ bt.report?.test_window?.end }}
-              （{{ bt.report?.test_window?.trading_days }} 个交易日）
-            </div>
-            <table class="summary-table blind-test-table">
-              <thead>
-                <tr>
-                  <th>因子</th><th>库</th><th>参考 IC</th><th>盲测 IC</th><th>保留比</th><th>盲测 ICIR</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="f in bt.factors" :key="bt.run_ts + f.factor_id">
-                  <td class="summary-name">{{ f.name }}</td>
-                  <td>{{ (f.library || '').replace('candidate_', '').replace('production_', '') }}</td>
-                  <td :class="icClass(f.ref_ic)">{{ formatMetricValue(f.ref_ic ?? '—') }}</td>
-                  <td :class="icClass(f.test_ic)">{{ formatMetricValue(f.test_ic ?? '—') }}</td>
-                  <td :class="{ neg: (f.ic_retention_vs_ref ?? 1) < 0.3 }">
-                    {{ f.ic_retention_vs_ref != null ? (f.ic_retention_vs_ref * 100).toFixed(0) + '%' : '—' }}
-                  </td>
-                  <td>{{ formatMetricValue(f.test_icir ?? '—') }}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-          <div v-if="blindPendingCount" class="blind-test-head">
-            另有 {{ blindPendingCount }} 次盲测运行未产出报告（进行中或已失败，完成后刷新可见）
-          </div>
-          <div v-if="!blindReports.length" class="normal-mode-empty">
-            还没有已完成的盲测报告（跑 scripts/blind_test_factors.py 生成）
-          </div>
-        </template>
-      </div>
-
       <div class="summary-panel">
         <div class="summary-panel-head">
           <h3>研究记忆因子一览</h3>
@@ -213,8 +166,66 @@
             :disabled="agent.summaryPage >= agent.summaryTotalPages || agent.summaryLoading"
             @click="agent.setSummaryPage(agent.summaryPage + 1)"
           >›</button>
+          <input
+            class="page-jump-input"
+            v-model="pageJump"
+            type="number"
+            min="1"
+            :max="agent.summaryTotalPages"
+            :disabled="agent.summaryLoading"
+            title="输入页码后回车跳转"
+            @keyup.enter="jumpToPage"
+            @blur="pageJump = ''"
+          />
           <span class="page-info">共 {{ agent.summaryTotal }} 条 · 第 {{ agent.summaryPage }} / {{ agent.summaryTotalPages }} 页</span>
         </div>
+      </div>
+
+      <!-- 盲测结果（单因子的真实 OOS）：人看的样本外检验，刻意不进 agent 记忆 -->
+      <div class="summary-panel">
+        <div class="summary-panel-head">
+          <h3>盲测结果（2025+ 真实样本外）</h3>
+          <span class="summary-facet-hint" title="盲测段对挖掘循环锁死，结果不回流 agent 记忆（防多重检验）。保留比 = 盲测 IC / 参考段 IC。">
+            ⓘ
+          </span>
+        </div>
+        <div v-if="agent.blindTestLoading" class="normal-mode-empty">加载盲测报告中…</div>
+        <div v-else-if="agent.blindTestError" class="normal-mode-empty">
+          盲测面板不可用：{{ agent.blindTestError }}（重启后端后刷新本页可修复）
+        </div>
+        <template v-else>
+          <div v-for="bt in blindReports" :key="bt.run_ts" class="blind-test-block">
+            <div class="blind-test-head">
+              {{ bt.run_ts }} · 窗口 {{ bt.report?.test_window?.start }} ~ {{ bt.report?.test_window?.end }}
+              （{{ bt.report?.test_window?.trading_days }} 个交易日）
+            </div>
+            <table class="summary-table blind-test-table">
+              <thead>
+                <tr>
+                  <th>因子</th><th>库</th><th>参考 IC</th><th>盲测 IC</th><th>保留比</th><th>盲测 ICIR</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="f in bt.factors" :key="bt.run_ts + f.factor_id">
+                  <td class="summary-name">{{ f.name }}</td>
+                  <td>{{ (f.library || '').replace('candidate_', '').replace('production_', '') }}</td>
+                  <td :class="icClass(f.ref_ic)">{{ formatMetricValue(f.ref_ic ?? '—') }}</td>
+                  <td :class="icClass(f.test_ic)">{{ formatMetricValue(f.test_ic ?? '—') }}</td>
+                  <td :class="{ neg: (f.ic_retention_vs_ref ?? 1) < 0.3 }">
+                    {{ f.ic_retention_vs_ref != null ? (f.ic_retention_vs_ref * 100).toFixed(0) + '%' : '—' }}
+                  </td>
+                  <td>{{ formatMetricValue(f.test_icir ?? '—') }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div v-if="blindPendingCount" class="blind-test-head">
+            另有 {{ blindPendingCount }} 次盲测运行未产出报告（进行中或已失败，完成后刷新可见）
+          </div>
+          <div v-if="!blindReports.length" class="normal-mode-empty">
+            还没有已完成的盲测报告（跑 scripts/blind_test_factors.py 生成）
+          </div>
+        </template>
       </div>
     </div>
 
@@ -244,6 +255,7 @@ export default {
       agent: agentStore,
       loading: false,
       exporting: false,
+      pageJump: '',
       verdictOrder: [
         'production_approved',
         'validated',
@@ -305,6 +317,7 @@ export default {
   methods: {
     formatTime,
     memoryVerdictLabel,
+    verdictSemantics: VERDICT_SEMANTICS,
     formatMetricValue,
     icClass,
     freqShort,
@@ -381,6 +394,14 @@ export default {
       } finally {
         this.exporting = false
       }
+    },
+    /** 手动输入页码跳转：钳制到 1..totalPages，非法输入忽略 */
+    async jumpToPage() {
+      const p = parseInt(this.pageJump, 10)
+      this.pageJump = ''
+      if (!Number.isFinite(p)) return
+      const target = Math.min(Math.max(p, 1), this.agent.summaryTotalPages || 1)
+      await this.agent.setSummaryPage(target)
     },
   },
 }

@@ -77,7 +77,7 @@
 .agent-orb { width:31px; height:31px; }
 .agent-title h1 { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:15px; }
 .agent-subtitle { margin-top:3px; color:var(--muted); font-size:11px; }
-.header-actions { display:flex; align-items:center; gap:10px; }
+.header-actions { display:flex; align-items:center; gap:10px; flex-wrap:wrap; min-width:0; justify-content:flex-end; }
 .mode-toggle { display:flex; border:1px solid var(--line); border-radius:7px; overflow:hidden; }
 .mode-toggle button { padding:3px 10px; border:0; background:transparent; color:var(--muted); font-size:11px; cursor:pointer; }
 .mode-toggle button.active { background:rgb(79 140 255 / .16); color:#a8c4ff; font-weight:600; }
@@ -171,9 +171,13 @@
 .page-btn:disabled { opacity:.45; cursor:default; }
 .page-ellipsis { color:var(--muted); font-size:12px; padding:0 2px; }
 .page-info { margin-left:8px; color:var(--muted); font-size:11px; white-space:nowrap; }
+.page-jump-input { width:52px; height:28px; margin-left:8px; padding:0 6px; border:1px solid var(--line); border-radius:6px; background:transparent; color:var(--text); font:12px var(--font-mono); text-align:center; }
+.page-jump-input::-webkit-outer-spin-button, .page-jump-input::-webkit-inner-spin-button { -webkit-appearance:none; margin:0; }
+.page-jump-input:focus { outline:none; border-color:var(--accent, #5b9dff); }
+.page-jump-input:disabled { opacity:.45; cursor:default; }
 .usage-chip { display:flex; align-items:center; gap:5px; padding:5px 8px; border:1px solid var(--line); border-radius:7px; color:var(--muted); font:10px var(--font-mono); white-space:nowrap; }
 .usage-chip em { color:#91d4ac; font-style:normal; }
-.live-metrics { color:#8ab4d8; max-width:52vw; overflow:hidden; text-overflow:ellipsis; }
+.live-metrics { display:block; flex:0 1 auto; min-width:0; color:#8ab4d8; max-width:min(38vw, 560px); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .live-metrics em { color:#e8c491; }
 .live-metrics .lm-err { color:#ef6b73; }
 .activity-line { display:flex; align-items:center; gap:6px; color:#b9a3e8; font-size:11px; white-space:nowrap; }
