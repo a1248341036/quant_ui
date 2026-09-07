@@ -330,6 +330,30 @@ class Manifest:
             )
             return {row["dataset"]: row["cnt"] for row in cur.fetchall()}
 
+    def blocking_batch_counts_by_dataset(self, run_id: str) -> dict[str, int]:
+        """Count batches whose staged data is unsafe to compact yet.
+
+        Only live workers (``running``) and presumed-dead ones awaiting
+        reconciliation (``stale``) block: their staging may still grow.
+        Terminal ``warning``/``failed`` batches hold complete staging files —
+        staging writes are atomic and walk backfills flush on error — and
+        compaction dedupes by PK, so compacting them early is an idempotent
+        union, and the next retry simply adds the missing scope. Blocking on
+        those kept valid subsets out of curated forever and forced every
+        re-run to re-fetch days already staged.
+        """
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                SELECT dataset, COUNT(*) AS cnt
+                FROM ingestion_batches
+                WHERE run_id = ? AND status IN ('running', 'stale')
+                GROUP BY dataset
+                """,
+                (run_id,),
+            )
+            return {row["dataset"]: row["cnt"] for row in cur.fetchall()}
+
     def incomplete_batch_count(self, run_id: str) -> int:
         with self._connect() as conn:
             cur = conn.execute(

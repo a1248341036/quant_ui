@@ -4,7 +4,7 @@ import polars as pl
 
 import cnequity.steps  # noqa: F401
 from cnequity.config import Config
-from cnequity.orchestrator.compact_gate import compact_allowed, datasets_with_incomplete_batches
+from cnequity.orchestrator.compact_gate import compact_allowed, datasets_with_blocking_batches
 from cnequity.orchestrator.manifest import Manifest
 from cnequity.steps.finalize import step_audit, step_compact
 from cnequity.storage import StagingWriter
@@ -27,35 +27,80 @@ def _daily_bar_row(symbol: str, trade_date: date) -> dict:
     }
 
 
-def test_compact_skips_dataset_with_failed_batches(tmp_path):
+def _fund_flow_frame(trade_date: date) -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "symbol": ["600519.SH"],
+            "trade_date": [trade_date],
+            "main_net_inflow": [1.0],
+            "super_large_net_inflow": [0.0],
+            "large_net_inflow": [0.0],
+            "medium_net_inflow": [0.0],
+            "small_net_inflow": [0.0],
+            "source": ["eastmoney"],
+            "data_version": ["v1"],
+            "fetched_at": ["2024-06-28T00:00:00+00:00"],
+        }
+    )
+
+
+def test_compact_lands_staging_despite_failed_batches(tmp_path):
+    """Terminal failed batches hold complete staging files: compact proceeds."""
     root = tmp_path / "data"
     cfg = Config(data_root=root)
     run_id = "run-gate"
     trade_date = date(2024, 6, 28)
     manifest = Manifest(cfg.manifest_path)
 
-    manifest.start_batch(run_id, "batch-ok", "daily_bars", "daily_bars", symbols=["000001.SZ"])
+    manifest.start_batch(run_id, "batch-ok", "fund_flow", "fund_flow")
     manifest.finish_batch(run_id, "batch-ok", "success", rows_written=1)
-    manifest.start_batch(run_id, "batch-fail", "daily_bars", "daily_bars", symbols=["600519.SH"])
+    manifest.start_batch(run_id, "batch-fail", "fund_flow", "fund_flow")
     manifest.finish_batch(run_id, "batch-fail", "failed", error_message="simulated")
 
     writer = StagingWriter(cfg.staging_root)
     writer.write_batch(
-        "daily_bars",
+        "fund_flow",
         run_id,
         "batch-ok",
-        pl.DataFrame([_daily_bar_row("000001.SZ", trade_date)]),
+        _fund_flow_frame(trade_date),
     )
 
     state = StateStore(cfg.meta_root)
-    state.set_date("daily_bars", date(2024, 6, 27))
+    state.set_date("fund_flow", date(2024, 6, 27))
 
     result = step_compact(cfg, trade_date, run_id, {})
-    assert result["status"] == "warning"
-    skipped = result.get("context_updates", {}).get("compact_skipped_datasets", [])
-    assert skipped == [{"dataset": "daily_bars", "incomplete_batches": 1}]
-    assert state.get_date("daily_bars") == date(2024, 6, 27)
-    assert not (cfg.curated_root / "daily_bars" / "trade_date=2024-06-28").exists()
+    assert result["rows_written"] == 1
+    assert "compact_skipped_datasets" not in result.get("context_updates", {})
+    assert state.get_date("fund_flow") == trade_date
+    assert (cfg.curated_root / "fund_flow" / "trade_date=2024-06-28" / "part-merged.parquet").exists()
+
+
+def test_compact_lands_staging_despite_warning_batches(tmp_path):
+    """Warning batches (empty days, missing quarters) do not strand staging."""
+    root = tmp_path / "data"
+    cfg = Config(data_root=root)
+    run_id = "run-warn"
+    trade_date = date(2024, 6, 28)
+    manifest = Manifest(cfg.manifest_path)
+
+    manifest.start_batch(run_id, "batch-warn", "fund_flow", "fund_flow")
+    manifest.finish_batch(run_id, "batch-warn", "warning", error_message="step completed with status=warning")
+
+    writer = StagingWriter(cfg.staging_root)
+    writer.write_batch(
+        "fund_flow",
+        run_id,
+        "batch-warn",
+        _fund_flow_frame(trade_date),
+    )
+
+    state = StateStore(cfg.meta_root)
+    state.set_date("fund_flow", date(2024, 6, 25))
+
+    result = step_compact(cfg, trade_date, run_id, {})
+    assert result["rows_written"] == 1
+    assert state.get_date("fund_flow") == trade_date
+    assert (cfg.curated_root / "fund_flow" / "trade_date=2024-06-28" / "part-merged.parquet").exists()
 
 
 def test_compact_skips_dataset_with_running_batches(tmp_path):
@@ -65,53 +110,57 @@ def test_compact_skips_dataset_with_running_batches(tmp_path):
     trade_date = date(2024, 6, 28)
     manifest = Manifest(cfg.manifest_path)
 
-    manifest.start_batch(run_id, "batch-ok", "daily_bars", "daily_bars", symbols=["000001.SZ"])
+    manifest.start_batch(run_id, "batch-ok", "fund_flow", "fund_flow")
     manifest.finish_batch(run_id, "batch-ok", "success", rows_written=1)
-    manifest.start_batch(run_id, "batch-stuck", "daily_bars", "daily_bars", symbols=["600519.SH"])
+    manifest.start_batch(run_id, "batch-stuck", "fund_flow", "fund_flow")
 
     writer = StagingWriter(cfg.staging_root)
     writer.write_batch(
-        "daily_bars",
+        "fund_flow",
         run_id,
         "batch-ok",
-        pl.DataFrame([_daily_bar_row("000001.SZ", trade_date)]),
+        _fund_flow_frame(trade_date),
     )
 
     state = StateStore(cfg.meta_root)
-    state.set_date("daily_bars", date(2024, 6, 27))
+    state.set_date("fund_flow", date(2024, 6, 27))
 
     result = step_compact(cfg, trade_date, run_id, {})
     skipped = result.get("context_updates", {}).get("compact_skipped_datasets", [])
-    assert skipped == [{"dataset": "daily_bars", "incomplete_batches": 1}]
-    assert state.get_date("daily_bars") == date(2024, 6, 27)
-    assert not (cfg.curated_root / "daily_bars" / "trade_date=2024-06-28").exists()
+    assert skipped == [{"dataset": "fund_flow", "incomplete_batches": 1}]
+    assert state.get_date("fund_flow") == date(2024, 6, 27)
+    assert not (cfg.curated_root / "fund_flow" / "trade_date=2024-06-28").exists()
 
 
 def test_compact_advances_watermark_when_all_batches_succeed(tmp_path):
+    """All batches terminal-success + staging present -> compacted and the
+    dataset watermark advances. Uses fund_flow (partitioned curated path);
+    daily_bars takes the external-compact path, which needs a real adapter
+    that a unit-test config cannot provide."""
     root = tmp_path / "data"
     cfg = Config(data_root=root)
     run_id = "run-ok"
     trade_date = date(2024, 6, 28)
     manifest = Manifest(cfg.manifest_path)
 
-    manifest.start_batch(run_id, "batch-0", "daily_bars", "daily_bars", symbols=["000001.SZ"])
+    manifest.start_batch(run_id, "batch-0", "fund_flow", "fund_flow")
     manifest.finish_batch(run_id, "batch-0", "success", rows_written=1)
 
     writer = StagingWriter(cfg.staging_root)
     writer.write_batch(
-        "daily_bars",
+        "fund_flow",
         run_id,
         "batch-0",
-        pl.DataFrame([_daily_bar_row("000001.SZ", trade_date)]),
+        _fund_flow_frame(trade_date),
     )
 
     state = StateStore(cfg.meta_root)
-    state.set_date("daily_bars", date(2024, 6, 27))
+    state.set_date("fund_flow", date(2024, 6, 27))
 
     step_compact(cfg, trade_date, run_id, {})
-    assert state.get_date("daily_bars") == trade_date
+    assert state.get_date("fund_flow") == trade_date
     assert (
-        cfg.curated_root / "daily_bars" / "trade_date=2024-06-28" / "part-merged.parquet"
+        cfg.curated_root / "fund_flow" / "trade_date=2024-06-28" / "part-merged.parquet"
     ).exists()
 
 
@@ -172,26 +221,32 @@ def test_audit_emits_compact_skipped_warning(tmp_path):
     assert warnings[0]["incomplete_batches"] == 2
 
 
-def test_datasets_with_incomplete_batches_and_compact_allowed_without_liveness_refresh(tmp_path):
+def test_datasets_with_blocking_batches_and_compact_allowed_without_liveness_refresh(tmp_path):
     cfg = Config(data_root=tmp_path / "data")
     manifest = Manifest(cfg.manifest_path)
     run_id = "run-gate-2"
+    # Terminal failed/warning batches do not block; running does.
     manifest.start_batch(run_id, "batch-fail", "daily_bars", "daily_bars")
     manifest.finish_batch(run_id, "batch-fail", "failed", error_message="boom")
-    manifest.start_batch(run_id, "batch-ok", "index_bars", "index_bars")
-    manifest.finish_batch(run_id, "batch-ok", "success", rows_written=1)
+    manifest.start_batch(run_id, "batch-warn", "fund_flow", "fund_flow")
+    manifest.finish_batch(run_id, "batch-warn", "warning", error_message="warned")
+    manifest.start_batch(run_id, "batch-live", "index_bars", "index_bars")
 
-    incomplete = datasets_with_incomplete_batches(manifest, run_id)
-    assert incomplete == frozenset({"daily_bars"})
+    blocking = datasets_with_blocking_batches(manifest, run_id)
+    assert blocking == frozenset({"index_bars"})
 
     # stale_after_seconds=None skips the liveness refresh branch entirely.
-    allowed, count = compact_allowed(manifest, run_id, "daily_bars")
-    assert allowed is False
-    assert count == 1
+    allowed_failed, count_failed = compact_allowed(manifest, run_id, "daily_bars")
+    assert allowed_failed is True
+    assert count_failed == 0
 
-    allowed_ok, count_ok = compact_allowed(manifest, run_id, "index_bars")
-    assert allowed_ok is True
-    assert count_ok == 0
+    allowed_warning, count_warning = compact_allowed(manifest, run_id, "fund_flow")
+    assert allowed_warning is True
+    assert count_warning == 0
+
+    allowed_live, count_live = compact_allowed(manifest, run_id, "index_bars")
+    assert allowed_live is False
+    assert count_live == 1
 
 
 def test_mark_stale_running_batches_failed(tmp_path):
