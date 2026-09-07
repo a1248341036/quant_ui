@@ -227,6 +227,24 @@ def compact_dataset_external(
     if not pk:
         pk = PRIMARY_KEYS.get(dataset, [])
 
+    # Staging written by CNE-normalized fetchers (e.g. delisted daily_bars via
+    # write_fetched) carries the narrow CNE schema, not the vendor schema the
+    # adapter's files use. Convert it to the vendor layout before merging —
+    # otherwise the adapter PK (ts_code) does not exist and the yearly files
+    # would receive Franken-rows of mismatched schemas. The conversion is the
+    # exact inverse of the adapter's read-path mapping (unit scales included:
+    # CNE volume = vendor vol * 100, CNE amount = vendor amount * 1000).
+    combined_columns = set(combined.columns)
+    if pk and not all(col in combined_columns for col in pk):
+        cne_pk = [col for col in PRIMARY_KEYS.get(dataset, []) if col in combined_columns]
+        if not cne_pk:
+            raise ValueError(
+                f"compact_dataset_external: neither vendor PK {pk} nor CNE PK"
+                f" {PRIMARY_KEYS.get(dataset, [])} found in staging columns"
+                f" {sorted(combined_columns)}"
+            )
+        combined = _cne_to_vendor_frame(combined, dataset, adapter)
+        pk = adapter.compact_pk(dataset) or []
     if pk:
         # Dedup staging batches.  Cannot sort by ``fetched_at`` — external
         # staging may not carry that column (Tushare wide format doesn't).
@@ -240,6 +258,23 @@ def compact_dataset_external(
         raise NotImplementedError("hive layout not yet implemented for external compact")
     else:
         raise ValueError(f"unknown compact layout: {layout!r}")
+
+
+def _cne_to_vendor_frame(combined: pl.DataFrame, dataset: str, adapter) -> pl.DataFrame:
+    """Convert CNE-normalized staging rows to the adapter's vendor schema.
+
+    Delegates to the adapter's ``cne_to_vendor()`` mapping — each external
+    adapter owns the inverse of its own read-path normalization. Refuse to
+    guess: merging mismatched schemas silently would corrupt the archive.
+    """
+    convert = getattr(adapter, "cne_to_vendor", None)
+    if convert is None:
+        raise ValueError(
+            f"compact_dataset_external: staging for {dataset!r} uses the CNE schema"
+            f" but adapter {type(adapter).__name__} does not implement cne_to_vendor;"
+            " refusing a schema-blind merge"
+        )
+    return convert(combined)
 
 
 def _compact_yearly_file(

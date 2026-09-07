@@ -186,6 +186,33 @@ class TushareWideAdapter:
     def compact_pk(self, dataset: str) -> list[str]:
         return ["ts_code", "trade_date"]
 
+    def cne_to_vendor(self, df: pl.DataFrame) -> pl.DataFrame:
+        """Map CNE-normalized daily-bars rows into the wide archive's schema.
+
+        Exact inverse of the read-path mapping in :meth:`scan`: volume = vol*100
+        and amount = vendor amount*1000, prices pass through untouched. Wide
+        columns this fetch does not observe (adj_factor, ...) are written as
+        null — the read path only requires the OHLCV core. Round-trip check:
+        scan(cne_to_vendor(df)) == df on the shared columns.
+        """
+        return df.with_columns(
+            pl.col("symbol").cast(pl.Utf8).alias("ts_code"),
+            pl.col("trade_date").cast(pl.Date).alias("trade_date"),
+            (pl.col("volume").cast(pl.Float64) / 100.0).alias("vol"),
+            (pl.col("amount").cast(pl.Float64) / 1000.0).alias("amount"),
+        ).select(
+            [
+                "ts_code",
+                "trade_date",
+                "open",
+                "high",
+                "low",
+                "close",
+                "vol",
+                "amount",
+            ]
+        )
+
     def compact_target(self, config: Config, dataset: str, trade_date: date) -> Path:
         root = self._root(config)
         if root is None:
