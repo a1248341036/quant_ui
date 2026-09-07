@@ -127,3 +127,96 @@ def test_zero_volume_placeholder_rows_filtered(tmp_path):
     bars = load("daily_bars", start="2025-01-02", end="2025-01-03", config=cfg)
     assert bars.height == 1
     assert bars["trade_date"][0] == date(2025, 1, 2)
+
+
+def test_cne_to_vendor_round_trips_through_scan(tmp_path):
+    """cne_to_vendor is the exact inverse of the read-path mapping."""
+    adapter = tushare_wide.ADAPTER
+    cne = pl.DataFrame(
+        {
+            "symbol": ["600000.SH"],
+            "trade_date": [date(2018, 5, 14)],
+            "open": [10.0],
+            "high": [11.0],
+            "low": [9.0],
+            "close": [10.5],
+            "volume": [20_000],
+            "amount": [25_000.0],
+        }
+    )
+    vendor = adapter.cne_to_vendor(cne)
+    assert vendor["ts_code"][0] == "600000.SH"
+    assert vendor["vol"][0] == 200.0
+    assert vendor["amount"][0] == 25.0
+
+    # scan() applies the same mapping forward: shared columns must round-trip.
+    archive = tmp_path / "quant_dataset"
+    root = archive / "2018" / "2018" / "day"
+    root.mkdir(parents=True)
+    vendor.write_parquet(root / "stock_daily.parquet")
+    cfg = _make_config(tmp_path, archive)
+    bars = load("daily_bars", start="2018-05-14", end="2018-05-14", config=cfg)
+    assert bars.height == 1
+    assert bars["symbol"][0] == "600000.SH"
+    assert bars["volume"][0] == 20_000
+    assert bars["amount"][0] == 25_000.0
+    assert bars["close"][0] == 10.5
+
+
+def test_compact_lands_cne_schema_staging_into_yearly_archive(tmp_path):
+    """Delisted-recovery staging (CNE 11-col) merges into the wide archive."""
+    archive = tmp_path / "quant_dataset"
+    _write_year(
+        archive,
+        2018,
+        {
+            "ts_code": ["600000.SH"],
+            "trade_date": [date(2018, 1, 2)],
+            "open": [10.0],
+            "high": [11.0],
+            "low": [9.0],
+            "close": [10.5],
+            "vol": [100.0],
+            "amount": [12.0],
+        },
+    )
+    cfg = _make_config(tmp_path, archive)
+
+    from cnequity.external.registry import external_adapter
+    from cnequity.storage.parquet import StagingWriter, compact_dataset_external
+
+    run_id = "run-delisted"
+    cne_rows = pl.DataFrame(
+        {
+            "symbol": ["600000.SH", "000004.SZ"],
+            "trade_date": [date(2018, 1, 2), date(2018, 1, 2)],
+            "open": [10.0, 5.0],
+            "high": [11.0, 5.5],
+            "low": [9.0, 4.5],
+            "close": [10.5, 5.2],
+            "volume": [20_000, 30_000],
+            "amount": [25_000.0, 15_000.0],
+            "source": ["sina", "sina"],
+            "data_version": ["v1", "v1"],
+            "fetched_at": [
+                "2018-01-02T00:00:00+00:00",
+                "2018-01-02T00:00:00+00:00",
+            ],
+        }
+    )
+    StagingWriter(cfg.staging_root).write_batch("daily_bars", run_id, "batch-0", cne_rows)
+
+    adapter = external_adapter(cfg, "daily_bars")
+    rows = compact_dataset_external(cfg.staging_root, "daily_bars", run_id, adapter, cfg)
+    # 600000.SH's tushare row is evicted by the same-PK Sina row, leaving
+    # one row per staged (symbol, day).
+    assert rows == 2
+
+    bars = load("daily_bars", start="2018-01-02", end="2018-01-02", config=cfg)
+    # The Sina row evicts the tushare row for the same (symbol, day)…
+    assert bars.filter(pl.col("symbol") == "600000.SH")["amount"][0] == 25_000.0
+    # …and the delisted-only symbol lands with null-filled wide columns.
+    delisted = bars.filter(pl.col("symbol") == "000004.SZ")
+    assert delisted.height == 1
+    assert delisted["volume"][0] == 30_000
+    assert delisted["close"][0] == 5.2
