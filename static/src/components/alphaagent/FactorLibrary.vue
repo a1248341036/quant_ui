@@ -143,6 +143,7 @@
 <script>
 import { api } from '../../utils/api.js'
 import { agentStore } from '../../store/alphaagent.js'
+import { downloadCsv } from '../../utils/export.js'
 import { formatMetricValue, formatTime, fmtTime, labelShort, icClass, freqShort, freqCadence, freqSourceHint } from '../../utils/alphaagent.js'
 
 export default {
@@ -307,35 +308,23 @@ export default {
                     'Train IC', 'Val IC', '全区间 IC', 'ICIR', 'RankIC', 'Coverage',
                     '多头年化', '超额年化', '夏普', 'val保留比', 'val多头超额',
                     'Label', 'Expr']
-      const esc = v => {
-        const s = v === null || v === undefined ? '' : String(v)
-        return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s
-      }
       const num = v => (v === null || v === undefined || Number.isNaN(Number(v))) ? '' : Number(v)
-      const lines = [cols.join(',')]
-      for (const f of rows) {
-        lines.push([
-          this.fmtTime(f.created_at), f.factor_id, f.factor_uid || '', f.name,
-          (f.facets || []).join('+'), f.is_fusion ? '是' : '',
-          f.rebalance_freq ? (freqShort(f.rebalance_freq) + '/' + f.rebalance_freq) : '', f.research_mode || '',
-          f.promotion_status || f.status, f.review_verdict || '',
-          num(f.train_ic), num(f.val_ic), num(f.metrics?.ic), num(f.metrics?.icir),
-          num(f.metrics?.rank_ic), num(f.metrics?.factor_coverage),
-          num(f.annualized_return), num(f.annualized_excess_return), num(f.sharpe),
-          num(f.val_ic_retention), num(f.val_long_excess),
-          f.label_col || '', f.expr || '',
-        ].map(esc).join(','))
-      }
-      const blob = new Blob(['\ufeff' + lines.join('\r\n')],
-                            { type: 'text/csv;charset=utf-8' })
-      const a = document.createElement('a')
-      a.href = URL.createObjectURL(blob)
-      a.download = 'factors_' + this.lib.library + '_' +
-                   (this.lib.exportStart || 'all') + '_' + (this.lib.exportEnd || 'all') + '.csv'
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-      URL.revokeObjectURL(a.href)
+      const data = rows.map(f => [
+        this.fmtTime(f.created_at), f.factor_id, f.factor_uid || '', f.name,
+        (f.facets || []).join('+'), f.is_fusion ? '是' : '',
+        f.rebalance_freq ? (freqShort(f.rebalance_freq) + '/' + f.rebalance_freq) : '', f.research_mode || '',
+        f.promotion_status || f.status, f.review_verdict || '',
+        num(f.train_ic), num(f.val_ic), num(f.metrics?.ic), num(f.metrics?.icir),
+        num(f.metrics?.rank_ic), num(f.metrics?.factor_coverage),
+        num(f.annualized_return), num(f.annualized_excess_return), num(f.sharpe),
+        num(f.val_ic_retention), num(f.val_long_excess),
+        f.label_col || '', f.expr || '',
+      ])
+      downloadCsv(
+        'factors_' + this.lib.library + '_' +
+        (this.lib.exportStart || 'all') + '_' + (this.lib.exportEnd || 'all') + '.csv',
+        cols, data,
+      )
     },
     exportAllJSON() {
       const data = this.lib.data

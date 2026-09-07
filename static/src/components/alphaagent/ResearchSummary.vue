@@ -9,6 +9,10 @@
         </div>
       </div>
       <div class="header-actions">
+        <button class="summary-refresh-btn" :disabled="exporting" @click="exportSummary"
+                title="导出当前筛选（状态）下的全部条目，按当前列排序（跨页全量）">
+          {{ exporting ? '导出中…' : '导出 CSV' }}
+        </button>
         <button class="summary-refresh-btn" :disabled="loading" @click="refresh">刷新</button>
       </div>
     </header>
@@ -221,6 +225,8 @@
 <script>
 import '../../styles/alphaagent.css'
 import { agentStore, summaryView } from '../../store/alphaagent.js'
+import { api } from '../../utils/api.js'
+import { downloadCsv } from '../../utils/export.js'
 import MemoryDetailModal from './MemoryDetailModal.vue'
 import {
   formatTime, memoryVerdictLabel,
@@ -236,6 +242,7 @@ export default {
     return {
       agent: agentStore,
       loading: false,
+      exporting: false,
       verdictOrder: [
         'production_approved',
         'validated',
@@ -316,6 +323,60 @@ export default {
         await agentStore.loadSummaryPage()
       } finally {
         this.loading = false
+      }
+    },
+    /** 导出当前筛选（状态）/排序下的全部条目：后端单次 limit 上限 500，循环取全量 */
+    async exportSummary() {
+      if (this.exporting) return
+      this.exporting = true
+      try {
+        const pageSize = 500
+        const out = []
+        let offset = 0
+        for (;;) {
+          const params = new URLSearchParams({
+            limit: String(pageSize),
+            offset: String(offset),
+            sort: this.agent.summarySortKey,
+            dir: String(this.agent.summarySortOrder),
+            t: String(Date.now()),
+          })
+          if (this.agent.summaryVerdictFilter) params.set('verdict', this.agent.summaryVerdictFilter)
+          const payload = await api('/api/alphaagent/research-memory?' + params.toString())
+          const entries = payload.entries || []
+          out.push(...entries)
+          const total = payload.total || out.length
+          offset += entries.length
+          if (!entries.length || out.length >= total) break
+        }
+        if (!out.length) {
+          alert('当前筛选下没有可导出的条目')
+          return
+        }
+        const num = v => (v === null || v === undefined || Number.isNaN(Number(v))) ? '' : Number(v)
+        const cols = ['更新时间', '因子名称', '中台ID', '状态', '阶段', 'IC', 'ICIR', '覆盖率', '换手(截面自相关)',
+                      '年化超额', '夏普', '超额夏普', '年化收益', '最大回撤', '组合年换手', '日重叠', '单调性',
+                      '评估次数', '调仓', '研究档位', '数据面', '结论/拒绝原因', 'run_id']
+        const data = out.map(e => [
+          formatTime(e.updated_at), e.factor_name || '', e.factor_uid || '',
+          memoryVerdictLabel(e.verdict), this.stageLabel(e.stage),
+          num(e.metrics?.ic), num(e.metrics?.icir),
+          num(e.metrics?.coverage ?? e.metrics?.factor_coverage),
+          num(e.metrics?.cs_pearson_autocorr),
+          num(e.metrics?.annualized_excess_return ?? e.metrics?.long_group_annual_excess_return),
+          num(e.metrics?.sharpe), num(e.metrics?.excess_sharpe), num(e.metrics?.annualized_return),
+          num(e.metrics?.max_drawdown), num(e.metrics?.annual_turnover), num(e.metrics?.daily_overlap),
+          num(e.metrics?.monotonicity), e.attempts || 1,
+          e.rebalance_freq || '', e.research_mode || '',
+          this.facetText(e), e.conclusion || e.error || '', e.last_run_id || '',
+        ])
+        const suffix = this.agent.summaryVerdictFilter ? '_' + this.agent.summaryVerdictFilter : ''
+        const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '')
+        downloadCsv(`research_summary${suffix}_${ts}.csv`, cols, data)
+      } catch (e) {
+        alert('导出失败: ' + (e.message || e))
+      } finally {
+        this.exporting = false
       }
     },
   },
