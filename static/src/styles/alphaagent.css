@@ -645,3 +645,10 @@ textarea.lab-input { resize:vertical; font:12px/1.5 var(--font-mono); }
 .metrics-cal-line b { color:#91d4ac; }
 .metrics-run-table td { font-family:var(--font-mono); font-size:11px; }
 .metrics-run-id { color:#8ab4d8; }
+.metrics-chart { width:100%; }
+.metrics-rate-row { display:flex; align-items:center; gap:6px; }
+.metrics-rate-bar { flex:1; height:8px; min-width:80px; border-radius:4px; background:rgb(255 255 255 / .06); overflow:hidden; }
+.metrics-rate-bar i { display:block; height:100%; border-radius:4px; }
+.metrics-rate-bar i.rate-good { background:#4fc3a1; }
+.metrics-rate-bar i.rate-mid { background:#e8c491; }
+.metrics-rate-bar i.rate-bad { background:#ef6b73; }

@@ -25,61 +25,39 @@
       <template v-else-if="data">
         <!-- ── 汇总卡片 ── -->
         <div class="summary-panel">
-          <div class="summary-panel-head"><h3>汇总（{{ data.summary.n_runs }} 个 run）</h3></div>
+          <div class="summary-panel-head"><h3>汇总（{{ data.summary.n_runs ?? 0 }} 个 run）</h3></div>
           <div class="metrics-cards">
-            <div class="metrics-card"><b>{{ fmt(data.summary.total_wall_minutes) }}<i>min</i></b><span>总时长</span></div>
-            <div class="metrics-card"><b>{{ fmt(data.summary.total_input_k_tokens) }}<i>K</i></b><span>输入 tokens</span></div>
-            <div class="metrics-card"><b>{{ fmt(data.summary.total_output_k_tokens) }}<i>K</i></b><span>输出 tokens</span></div>
-            <div class="metrics-card"><b>{{ fmt(data.summary.total_thinking_k_chars) }}<i>K</i></b><span>思维链字符</span></div>
-            <div class="metrics-card"><b>{{ fmt(data.summary.total_eval) }}</b><span>因子评估</span></div>
-            <div class="metrics-card"><b>{{ data.summary.total_stored_candidate }}</b><span>入候选池</span></div>
-            <div class="metrics-card"><b>{{ data.summary.total_stored_production }}</b><span>晋升正式库</span></div>
-            <div class="metrics-card"><b>{{ data.summary.mean_minutes_per_delivered ?? '-' }}</b><span>min/产出</span></div>
+            <div class="metrics-card"><b>{{ fmt(data.summary.total_wall_minutes ?? 0) }}<i>min</i></b><span>总时长</span></div>
+            <div class="metrics-card"><b>{{ fmt(data.summary.total_input_k_tokens ?? 0) }}<i>K</i></b><span>输入 tokens</span></div>
+            <div class="metrics-card"><b>{{ fmt(data.summary.total_output_k_tokens ?? 0) }}<i>K</i></b><span>输出 tokens</span></div>
+            <div class="metrics-card"><b>{{ fmt(data.summary.total_thinking_k_chars ?? 0) }}<i>K</i></b><span>思维链字符</span></div>
+            <div class="metrics-card"><b>{{ data.summary.total_eval ?? 0 }}</b><span>因子评估</span></div>
+            <div class="metrics-card"><b>{{ data.summary.total_submit ?? 0 }}</b><span>提交</span></div>
+            <div class="metrics-card"><b>{{ data.summary.total_stored_candidate ?? 0 }}</b><span>入候选池</span></div>
+            <div class="metrics-card"><b>{{ data.summary.total_stored_production ?? 0 }}</b><span>晋升正式库</span></div>
+            <div class="metrics-card"><b>{{ data.summary.mean_minutes_per_delivered == null ? '-' : fmt(data.summary.mean_minutes_per_delivered) }}</b><span>min/产出</span></div>
           </div>
         </div>
 
-        <!-- ── 漏斗 ── -->
+        <!-- ── 漏斗转化（echarts 漏斗图） ── -->
         <div class="summary-panel">
-          <div class="summary-panel-head"><h3>漏斗转化</h3></div>
-          <div class="metrics-funnel">
-            <div class="metrics-funnel-step"><b>{{ data.summary.total_eval }}</b><span>评估</span></div>
-            <i>→</i>
-            <div class="metrics-funnel-step"><b>{{ data.summary.total_submit }}</b><span>提交</span></div>
-            <i>→</i>
-            <div class="metrics-funnel-step"><b>{{ data.summary.total_stage_one_pass }}</b><span>stage_one</span></div>
-            <i>→</i>
-            <div class="metrics-funnel-step"><b>{{ data.summary.total_stage_two_pass }}</b><span>stage_two</span></div>
-            <i>→</i>
-            <div class="metrics-funnel-step"><b>{{ data.summary.total_gate_pass }}</b><span>engine_gate</span></div>
-            <i>→</i>
-            <div class="metrics-funnel-step" :class="{'metrics-funnel-hot': data.summary.total_stored_production > 0}">
-              <b>{{ data.summary.total_stored_production }}</b><span>晋升</span>
-            </div>
+          <div class="summary-panel-head">
+            <h3>漏斗转化</h3>
+            <span class="summary-facet-hint" title="每层标注相对上一层的转化率；stage_one/stage_two/engine_gate 为提交后各门槛的通过数。">ⓘ</span>
           </div>
+          <div id="metrics-funnel-chart" class="metrics-chart" :style="{ height: funnelHeight + 'px' }"></div>
         </div>
 
-        <!-- ── 错误与记忆命中 ── -->
+        <!-- ── 错误与记忆命中（横向条形图，次数标在条上） ── -->
         <div class="summary-panel">
-          <div class="summary-panel-head"><h3>工具错误分布（跨全部 run 聚合）</h3></div>
-          <table v-if="errorRows.length" class="summary-table">
-            <thead><tr><th>错误类型</th><th>次数</th></tr></thead>
-            <tbody>
-              <tr v-for="row in errorRows" :key="row[0]">
-                <td><span class="metrics-err-tag" :class="{'metrics-err-real': isRealError(row[0])}">{{ row[0] }}</span></td>
-                <td>{{ row[1] }}</td>
-              </tr>
-            </tbody>
-          </table>
+          <div class="summary-panel-head">
+            <h3>工具错误分布（跨全部 run 聚合）</h3>
+            <span class="summary-facet-hint" title="红色 = 真错误（参数/求值失败）；灰色 = 门槛拒绝（正常流程）。条上数字为次数。">ⓘ</span>
+          </div>
+          <div v-if="errorRows.length" id="metrics-error-chart" class="metrics-chart" :style="{ height: Math.max(120, errorRows.length * 30 + 40) + 'px' }"></div>
           <div v-else class="normal-mode-empty">无错误记录</div>
           <div class="summary-panel-head" style="margin-top:14px"><h3>记忆 advisory 命中</h3></div>
-          <table v-if="advisoryRows.length" class="summary-table">
-            <thead><tr><th>类型</th><th>次数</th></tr></thead>
-            <tbody>
-              <tr v-for="row in advisoryRows" :key="row[0]">
-                <td>{{ advisoryLabel(row[0]) }}</td><td>{{ row[1] }}</td>
-              </tr>
-            </tbody>
-          </table>
+          <div v-if="advisoryRows.length" id="metrics-advisory-chart" class="metrics-chart" :style="{ height: Math.max(100, advisoryRows.length * 30 + 40) + 'px' }"></div>
           <div v-else class="normal-mode-empty">无 advisory 记录</div>
         </div>
 
@@ -90,12 +68,17 @@
             <span class="summary-facet-hint" title="lift = approve 存活率 − revise 存活率。接近 0 或为负 ⇒ Reviewer 意见对晋升没有预测力。">ⓘ</span>
           </div>
           <table class="summary-table">
-            <thead><tr><th>review 意见</th><th>n</th><th>晋升</th><th>存活</th><th>gate 死</th><th>s2 死</th><th>存活率</th></tr></thead>
+            <thead><tr><th>review 意见</th><th>n</th><th>晋升</th><th>存活</th><th>gate 死</th><th>s2 死</th><th style="min-width:140px">存活率</th></tr></thead>
             <tbody>
               <tr v-for="(b, verdict) in data.reviewer_calibration.crosstab" :key="verdict">
                 <td>{{ verdict }}</td><td>{{ b.n }}</td><td>{{ b.promoted }}</td><td>{{ b.candidate_alive }}</td>
                 <td>{{ b.gate_failed }}</td><td>{{ b.stage_two_failed }}</td>
-                <td>{{ b.alive_rate == null ? '-' : (b.alive_rate * 100).toFixed(0) + '%' }}</td>
+                <td>
+                  <div class="metrics-rate-row">
+                    <div class="metrics-rate-bar"><i :style="{ width: rateBarWidth(b.alive_rate) }" :class="rateBarClass(b.alive_rate)"></i></div>
+                    <span>{{ b.alive_rate == null ? '-' : (b.alive_rate * 100).toFixed(0) + '%' }}</span>
+                  </div>
+                </td>
               </tr>
               <tr v-if="!Object.keys(data.reviewer_calibration.crosstab).length">
                 <td colspan="7" class="normal-mode-empty">尚无入库因子</td>
@@ -103,8 +86,8 @@
             </tbody>
           </table>
           <p class="metrics-cal-line">
-            lift = {{ fmt(data.reviewer_calibration.calibration.approve_alive_rate) }} −
-            {{ fmt(data.reviewer_calibration.calibration.revise_alive_rate) }} =
+            lift = {{ fmt(data.reviewer_calibration.calibration.approve_alive_rate ?? 0) }} −
+            {{ fmt(data.reviewer_calibration.calibration.revise_alive_rate ?? 0) }} =
             <b>{{ data.reviewer_calibration.calibration.lift ?? '-' }}</b>
           </p>
         </div>
@@ -112,7 +95,8 @@
         <!-- ── 每 run 明细 ── -->
         <div class="summary-panel">
           <div class="summary-panel-head"><h3>Run 明细（新 → 旧）</h3></div>
-          <table class="summary-table metrics-run-table">
+          <div id="metrics-runs-chart" class="metrics-chart" :style="{ height: Math.max(180, (data.runs || []).length * 26 + 60) + 'px' }"></div>
+          <table class="summary-table metrics-run-table" style="margin-top:14px">
             <thead>
               <tr><th>run</th><th>时长min</th><th>LLM次</th><th>输入K</th><th>输出K</th><th>缓存率</th>
                   <th>思维链K</th><th>评估</th><th>提交</th><th>入库</th><th>晋升</th><th>错误率</th><th>min/产出</th></tr>
@@ -120,16 +104,16 @@
             <tbody>
               <tr v-for="r in data.runs" :key="r.run_id">
                 <td class="metrics-run-id" :title="r.run_id">{{ r.run_id.slice(0, 8) }}</td>
-                <td>{{ fmt(r.wall_minutes) }}</td>
-                <td>{{ r.llm_calls }}</td>
-                <td>{{ fmt(r.input_k_tokens) }}</td>
-                <td>{{ fmt(r.output_k_tokens) }}</td>
+                <td>{{ fmt(r.wall_minutes ?? 0) }}</td>
+                <td>{{ r.llm_calls ?? 0 }}</td>
+                <td>{{ fmt(r.input_k_tokens ?? 0) }}</td>
+                <td>{{ fmt(r.output_k_tokens ?? 0) }}</td>
                 <td>{{ r.cache_hit_rate ? (r.cache_hit_rate * 100).toFixed(0) + '%' : '-' }}</td>
-                <td>{{ fmt(r.thinking_k_chars) }}</td>
-                <td>{{ r.n_eval + r.n_eval_val }}</td>
-                <td>{{ r.n_submit }}</td>
-                <td>{{ r.stored_candidate }}</td>
-                <td>{{ r.stored_production }}</td>
+                <td>{{ fmt(r.thinking_k_chars ?? 0) }}</td>
+                <td>{{ (r.n_eval ?? 0) + (r.n_eval_val ?? 0) }}</td>
+                <td>{{ r.n_submit ?? 0 }}</td>
+                <td>{{ r.stored_candidate ?? 0 }}</td>
+                <td>{{ r.stored_production ?? 0 }}</td>
                 <td>{{ r.tool_error_rate == null ? '-' : (r.tool_error_rate * 100).toFixed(0) + '%' }}</td>
                 <td>{{ r.minutes_per_delivered ?? '-' }}</td>
               </tr>
@@ -143,6 +127,9 @@
 
 <script>
 import { api } from '../../utils/api.js'
+import { chart } from '../../utils/charts.js'
+
+const AXIS_LABEL = { color: '#8494b5', fontSize: 10 }
 
 export default {
   name: 'MetricsPanel',
@@ -152,6 +139,9 @@ export default {
   computed: {
     errorRows() { return Object.entries(this.data?.summary?.error_breakdown || {}) },
     advisoryRows() { return Object.entries(this.data?.summary?.advisory_breakdown || {}) },
+    funnelHeight() {
+      return 60 + 6 * 46
+    },
   },
   mounted() { this.refresh() },
   methods: {
@@ -162,6 +152,103 @@ export default {
     isRealError(kind) {
       // 参数/契约违规与求值失败是真问题；Stage/Gate/Blind 类是门槛拒绝（正常流程）
       return /ToolArguments|Eval|Value/.test(kind)
+    },
+    rateBarWidth(rate) {
+      return rate == null ? '0%' : Math.min(100, Math.max(0, rate * 100)).toFixed(0) + '%'
+    },
+    rateBarClass(rate) {
+      if (rate == null) return ''
+      return rate >= 0.5 ? 'rate-good' : rate >= 0.25 ? 'rate-mid' : 'rate-bad'
+    },
+    renderCharts() {
+      if (!window.echarts || !this.data) return
+      this.renderFunnel()
+      this.renderErrorChart('metrics-error-chart', this.errorRows, true)
+      this.renderErrorChart('metrics-advisory-chart', this.advisoryRows, false)
+      this.renderRunsChart()
+    },
+    renderFunnel() {
+      const s = this.data.summary || {}
+      const stages = [
+        { name: '评估', value: s.total_eval ?? 0 },
+        { name: '提交', value: s.total_submit ?? 0 },
+        { name: 'stage_one', value: s.total_stage_one_pass ?? 0 },
+        { name: 'stage_two', value: s.total_stage_two_pass ?? 0 },
+        { name: 'engine_gate', value: s.total_gate_pass ?? 0 },
+        { name: '晋升', value: s.total_stored_production ?? 0 },
+      ]
+      const c = chart('metrics-funnel-chart')
+      if (!c) return
+      c.setOption({
+        tooltip: {
+          trigger: 'item',
+          formatter: p => `${p.name}：<b>${p.value}</b>（占评估 ${(s.total_eval ? (p.value / s.total_eval * 100).toFixed(1) : 0)}%）`,
+        },
+        series: [{
+          type: 'funnel',
+          left: '8%', right: '18%', top: 8, bottom: 8,
+          minSize: '6%',
+          sort: 'descending',
+          gap: 3,
+          label: {
+            show: true, position: 'inside', color: '#e6ecf7', fontSize: 11,
+            formatter: p => {
+              const idx = stages.findIndex(x => x.name === p.name)
+              const prev = idx > 0 ? stages[idx - 1].value : null
+              const rate = (prev != null && prev > 0) ? ` · ${(p.value / prev * 100).toFixed(0)}%` : ''
+              return `${p.name} ${p.value}${rate}`
+            },
+          },
+          itemStyle: { borderColor: '#1c2536', borderWidth: 1 },
+          data: stages.map((st, i) => ({
+            name: st.name, value: st.value,
+            itemStyle: { color: ['#4f8cff', '#5aa2e8', '#4fc3a1', '#a3d977', '#e8c491', '#ef6b73'][i] },
+          })),
+        }],
+      }, true)
+    },
+    renderErrorChart(id, rows, isError) {
+      if (!rows.length) return
+      const sorted = [...rows].sort((a, b) => a[1] - b[1])
+        .map(([k, v]) => [isError ? k : this.advisoryLabel(k), v])
+      const c = chart(id)
+      if (!c) return
+      c.setOption({
+        tooltip: { trigger: 'item', formatter: p => `${p.name}：<b>${p.value}</b> 次` },
+        grid: { left: 170, right: 48, top: 6, bottom: 6 },
+        xAxis: { type: 'value', axisLabel: { ...AXIS_LABEL }, splitLine: { lineStyle: { color: '#1c2536' } } },
+        yAxis: { type: 'category', data: sorted.map(r => r[0]), axisLabel: { ...AXIS_LABEL, width: 160, overflow: 'truncate' } },
+        series: [{
+          type: 'bar', data: sorted.map(r => r[1]),
+          barMaxWidth: 16,
+          label: { show: true, position: 'right', color: '#c6d2e8', fontSize: 10 },
+          itemStyle: {
+            borderRadius: [0, 3, 3, 0],
+            color: isError
+              ? p => (this.isRealError(p.name) ? '#ef6b73' : '#4a5a78')
+              : '#4fc3a1',
+          },
+        }],
+      }, true)
+    },
+    renderRunsChart() {
+      const runs = this.data.runs || []
+      if (!runs.length) return
+      const names = runs.map(r => r.run_id.slice(0, 6))
+      const c = chart('metrics-runs-chart')
+      if (!c) return
+      c.setOption({
+        tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+        legend: { textStyle: { color: '#8494b5', fontSize: 10 }, top: 0 },
+        grid: { left: 44, right: 14, top: 26, bottom: 28 },
+        xAxis: { type: 'category', data: names, axisLabel: { ...AXIS_LABEL, rotate: 40 } },
+        yAxis: { type: 'value', axisLabel: { ...AXIS_LABEL } },
+        series: [
+          { name: '评估', type: 'bar', stack: 'm', data: runs.map(r => (r.n_eval ?? 0) + (r.n_eval_val ?? 0)), itemStyle: { color: '#4f8cff' }, barMaxWidth: 18 },
+          { name: '提交', type: 'bar', stack: 'm', data: runs.map(r => r.n_submit ?? 0), itemStyle: { color: '#e8c491' }, barMaxWidth: 18 },
+          { name: '入库', type: 'bar', stack: 'm', data: runs.map(r => (r.stored_candidate ?? 0) + (r.stored_production ?? 0)), itemStyle: { color: '#4fc3a1' }, barMaxWidth: 18 },
+        ],
+      }, true)
     },
     advisoryLabel(kind) {
       return ({
@@ -175,6 +262,7 @@ export default {
       this.error = ''
       try {
         this.data = await api(`/api/alphaagent/metrics/overview?last=${this.lastN}`)
+        this.$nextTick(() => this.renderCharts())
       } catch (e) {
         this.error = String(e.message || e)
       } finally {
