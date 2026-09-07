@@ -263,7 +263,16 @@ def _compact_locked(config: Config, trade_date: date, run_id: str, context: dict
 
     manifest = Manifest(config.manifest_path)
     writer = StagingWriter(config.staging_root)
-    staged = [ds for ds in PARTITION_COLS if writer.list_run_files(ds, run_id)]
+    # Merge-style curated datasets (partition_col=None, e.g. instruments) are
+    # not in PARTITION_COLS but still compact through compact_instruments; a
+    # PARTITION_COLS-only scan silently skipped them (rows stayed in staging
+    # forever while the compact step reported success).
+    staged = [
+        ds
+        for ds, spec in DATASETS.items()
+        if (spec.layer == "curated" or spec.compactable)
+        and writer.list_run_files(ds, run_id)
+    ]
     total = 0
     compacted: set[str] = set()
     skipped: list[dict] = []
@@ -285,7 +294,7 @@ def _compact_locked(config: Config, trade_date: date, run_id: str, context: dict
             )
             continue
 
-        pcol = PARTITION_COLS[ds]
+        pcol = PARTITION_COLS.get(ds)
         spec = DATASETS.get(ds)
         if spec is not None and spec.compactable and spec.layer == "external":
             # External compactable: merge staging into the adapter's own files,
