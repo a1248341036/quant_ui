@@ -107,6 +107,42 @@ def _fold_metrics(
     }
 
 
+def _portfolio_risk_metrics(
+    pred_oos: np.ndarray,
+    label_oos: np.ndarray,
+    dates_oos: pd.Series,
+    *,
+    horizon_days: int = 5,
+    top_frac: float = 0.2,
+    min_samples: int = 8,
+) -> dict:
+    """轻量组合风险口径（相对比较用，非 engine_gate 净超额口径）。
+
+    OOS 段逐日按预测取前 ``top_frac`` 等权多头，组合收益 = 该层前向标签收益；
+    label 为 ``horizon_days`` 个交易日的前向收益，逐日序列相互重叠会高估
+    Sharpe，故每 ``horizon_days`` 个交易日取一个非重叠样本再计算年化 Sharpe
+    与最大回撤。样本不足（< min_samples 个非重叠期）返回 None 字段。
+    """
+    empty = {"oos_sharpe": None, "oos_max_drawdown": None}
+    df = pd.DataFrame({"p": pred_oos, "y": label_oos, "d": pd.Series(dates_oos).to_numpy()}).dropna()
+    if df.empty:
+        return empty
+    rank_pct = df.groupby("d")["p"].rank(pct=True)
+    day_ret = df[rank_pct >= 1 - top_frac].groupby("d")["y"].mean().sort_index()
+    if len(day_ret) < horizon_days * min_samples:
+        return empty
+    r = day_ret.to_numpy()[::horizon_days]
+    std = float(np.std(r, ddof=1)) if len(r) > 1 else 0.0
+    sharpe = float(np.mean(r) / std * np.sqrt(252.0 / horizon_days)) if std > 1e-12 else None
+    equity = np.cumprod(1.0 + r)
+    peak = np.maximum.accumulate(equity)
+    mdd = float(np.min(equity / peak - 1.0))  # ≤0，与 engine_gate 回撤同号
+    return {
+        "oos_sharpe": None if sharpe is None else round(sharpe, 4),
+        "oos_max_drawdown": round(mdd, 5),
+    }
+
+
 def fit_predict_walkforward(
     feature_matrix: np.ndarray,
     label: np.ndarray,
@@ -116,6 +152,7 @@ def fit_predict_walkforward(
     kind: ModelKind,
     feature_names: Sequence[str] | None = None,
     collect_diagnostics: bool = True,
+    label_horizon: int = 5,
 ) -> tuple[np.ndarray, list[dict], list[dict] | None, list[dict] | None]:
     """逐折训练 + OOS 预测；返回 (拼接 OOS 预测 [n_rows]（折外 NaN）, 逐折指标, 特征权重, 置换贡献)。
 
@@ -129,10 +166,15 @@ def fit_predict_walkforward(
     [{name, weight}]（weight 合计 1），feature_names 缺失时为 None。
 
     置换贡献：逐折在 OOS 段把单个特征行内打乱后重预测，IC 相对未打乱的
-    下降量跨折平均——"没有这个因子组合损失多少 IC"。返回
-    [{name, ic_drop, ic_drop_rel}] 按 ic_drop 降序；ic_drop_rel =
-    ic_drop / 组合平均 IC（≈ 该因子驱动的组合 IC 份额）；负值 = 打乱后
-    反而更好（该因子在拖后腿）。lgbm 侧该值近似线性化贡献，ridge 侧精确。
+    下降量跨折平均——"没有这个因子组合损失多少 IC"。同一份打乱预测上顺便
+    计算组合风险口径（_portfolio_risk_metrics）：sharpe_drop = 基线 Sharpe −
+    打乱后 Sharpe（正 = 该因子在贡献收益稳定性）；dd_impact = 打乱后回撤
+    幅度 − 基线回撤幅度（正 = 打乱后回撤更深 ⇒ 该因子在压回撤；负 = 该
+    因子在放大回撤）。返回
+    [{name, ic_drop, ic_drop_rel, sharpe_drop, dd_impact}] 按 ic_drop 降序；
+    ic_drop_rel = ic_drop / 组合平均 IC（≈ 该因子驱动的组合 IC 份额）；负值
+    = 打乱后反而更好（该因子在拖后腿）。lgbm 侧该值近似线性化贡献，ridge
+    侧精确。
 
     collect_diagnostics=False（累积曲线等批量重训场景）时跳过权重与置换
     采集——置换是 O(n_features) 次重预测，批量场景下是平方级浪费。
@@ -189,22 +231,42 @@ def fit_predict_walkforward(
             **metrics,
         })
 
-        # ── 置换贡献：逐特征打乱 OOS 行后重预测，IC 下降量（模型无关的贡献度量）──
+        # ── 置换贡献：逐特征打乱 OOS 行后重预测，IC / Sharpe / 回撤 三口径下降量 ──
         if collect_diagnostics and feature_names and feature_matrix.shape[1] and metrics.get("ic_mean") is not None:
             rng = np.random.default_rng(20260907)
             Xo = feature_matrix[oos_ok]
             yo = label[oos_ok]
             do = pd.Series(date_np[oos_ok])
             base_ic = float(metrics["ic_mean"])
+            base_risk = _portfolio_risk_metrics(pred, yo, do, horizon_days=label_horizon)
+            base_sharpe = base_risk["oos_sharpe"]
+            base_mdd = abs(base_risk["oos_max_drawdown"]) if base_risk["oos_max_drawdown"] is not None else None
             drops: dict[str, float] = {}
+            sharpe_drops: dict[str, float | None] = {}
+            dd_impacts: dict[str, float | None] = {}
             for j, name in enumerate(feature_names):
                 Xp = Xo.copy()
                 rng.shuffle(Xp[:, j])
-                ic_p = daily_spearman_ic(
-                    np.asarray(model.predict(Xp), dtype=np.float32), yo, do
-                )
+                pred_p = np.asarray(model.predict(Xp), dtype=np.float32)
+                ic_p = daily_spearman_ic(pred_p, yo, do)
                 drops[str(name)] = base_ic - (float(ic_p.mean()) if len(ic_p) else 0.0)
-            contrib_acc.append({"base_ic": base_ic, "drops": drops})
+                risk_p = _portfolio_risk_metrics(pred_p, yo, do, horizon_days=label_horizon)
+                sharpe_drops[str(name)] = (
+                    base_sharpe - risk_p["oos_sharpe"]
+                    if base_sharpe is not None and risk_p["oos_sharpe"] is not None
+                    else None
+                )
+                dd_impacts[str(name)] = (
+                    abs(risk_p["oos_max_drawdown"]) - base_mdd
+                    if base_mdd is not None and risk_p["oos_max_drawdown"] is not None
+                    else None
+                )
+            contrib_acc.append({
+                "base_ic": base_ic,
+                "drops": drops,
+                "sharpe_drops": sharpe_drops,
+                "dd_impacts": dd_impacts,
+            })
 
     feature_weights: list[dict] | None = None
     if feature_names and weight_acc:
@@ -217,18 +279,21 @@ def fit_predict_walkforward(
     feature_contribution: list[dict] | None = None
     if feature_names and contrib_acc:
         base_ic = float(np.mean([c["base_ic"] for c in contrib_acc]))
-        mean_drop = {
-            str(n): float(np.mean([c["drops"][str(n)] for c in contrib_acc]))
-            for n in feature_names
-        }
+
+        def _mean_nonull(key: str, name: str) -> float | None:
+            vals = [c[key][str(name)] for c in contrib_acc if c[key].get(str(name)) is not None]
+            return float(np.mean(vals)) if vals else None
+
         feature_contribution = sorted(
             (
                 {
                     "name": n,
-                    "ic_drop": round(v, 6),
-                    "ic_drop_rel": round(v / base_ic, 4) if abs(base_ic) > 1e-12 else None,
+                    "ic_drop": round(ic_drop, 6) if (ic_drop := _mean_nonull("drops", n)) is not None else 0.0,
+                    "ic_drop_rel": round(ic_drop / base_ic, 4) if (ic_drop is not None and abs(base_ic) > 1e-12) else None,
+                    "sharpe_drop": round(v, 4) if (v := _mean_nonull("sharpe_drops", n)) is not None else None,
+                    "dd_impact": round(v, 5) if (v := _mean_nonull("dd_impacts", n)) is not None else None,
                 }
-                for n, v in mean_drop.items()
+                for n in feature_names
             ),
             key=lambda x: -x["ic_drop"],
         )
@@ -245,6 +310,7 @@ def cumulative_subset_curve(
     feature_names: Sequence[str],
     kinds: Sequence[ModelKind],
     first_oos=None,
+    label_horizon: int = 5,
     progress: Callable[[str], None] | None = None,
 ) -> list[dict]:
     """贡献排序累积子集曲线：按贡献降序取 Top-k 特征逐级重训，返回每 k 的 OOS IC。
@@ -252,21 +318,34 @@ def cumulative_subset_curve(
     ranked_names：完整特征名按置换贡献降序排列（来自 fit_predict_walkforward
     的第 4 返回值）。每 k 对每个 kind 重训一遍（collect_diagnostics=False，
     避免 O(n²) 次置换重预测）。IC 统一口径 = 主训练 _blended_oos_ic：date ≥
-    first_oos（给了 first_oos 时）且 pred/label 有限值的行。
-    返回 [{"k", per-kind IC..., "blended"}]。
+    first_oos（给了 first_oos 时）且 pred/label 有限值的行。blended 预测上
+    顺便计算组合 OOS Sharpe 与最大回撤（_portfolio_risk_metrics，轻量口径）。
+    返回 [{"k", per-kind IC..., "blended", "oos_sharpe", "oos_max_drawdown"}]。
     """
     name_to_idx = {str(n): i for i, n in enumerate(feature_names)}
     order = [name_to_idx[str(n)] for n in ranked_names if str(n) in name_to_idx]
     date_np = pd.to_datetime(pd.Series(dates)).to_numpy()
 
-    def _ic(pred: np.ndarray) -> float | None:
+    def _mask(pred: np.ndarray) -> np.ndarray:
         mask = np.isfinite(pred) & np.isfinite(label)
         if first_oos is not None:
             mask &= date_np >= pd.Timestamp(first_oos)
+        return mask
+
+    def _ic(pred: np.ndarray) -> float | None:
+        mask = _mask(pred)
         if mask.sum() < 20:
             return None
         ic = daily_spearman_ic(pred[mask], label[mask], pd.Series(date_np[mask]))
         return round(float(ic.mean()), 5) if len(ic) else None
+
+    def _risk(pred: np.ndarray) -> dict:
+        mask = _mask(pred)
+        if mask.sum() < 20:
+            return {"oos_sharpe": None, "oos_max_drawdown": None}
+        return _portfolio_risk_metrics(
+            pred[mask], label[mask], pd.Series(date_np[mask]), horizon_days=label_horizon
+        )
 
     curve: list[dict] = []
     for k in range(1, len(order) + 1):
@@ -287,9 +366,15 @@ def cumulative_subset_curve(
                 warnings.simplefilter("ignore", category=RuntimeWarning)
                 blended = np.nanmean(np.column_stack(usable), axis=1).astype(np.float32)
             row["blended"] = _ic(blended)
+            row.update(_risk(blended))
         else:
             row["blended"] = None
+            row["oos_sharpe"] = None
+            row["oos_max_drawdown"] = None
         curve.append(row)
         if progress:
-            progress(f"[{k}/{len(order)}] Top{k} 子集 blended OOS IC = {row['blended']}")
+            risk_txt = ""
+            if row.get("oos_sharpe") is not None:
+                risk_txt = f"，Sharpe={row['oos_sharpe']}，回撤={row['oos_max_drawdown']}"
+            progress(f"[{k}/{len(order)}] Top{k} 子集 blended OOS IC = {row['blended']}{risk_txt}")
     return curve

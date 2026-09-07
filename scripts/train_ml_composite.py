@@ -231,7 +231,7 @@ def main() -> None:
         print(f"训练 {kind} …")
         pred, report, feat_w, feat_c = fit_predict_walkforward(
             dataset.feature_matrix, dataset.label, date_series, folds, kind=kind,
-            feature_names=dataset.feature_names,
+            feature_names=dataset.feature_names, label_horizon=args.label_days,
         )
         model_outputs[kind] = pred
         fold_reports[kind] = report
@@ -243,6 +243,12 @@ def main() -> None:
             feature_contribution[kind] = feat_c
             top_c = "、".join(f"{x['name']}({x['ic_drop']:+.4f})" for x in feat_c[:5])
             print(f"  置换贡献 Top5: {top_c}")
+            dd_drags = [x for x in feat_c if x.get("dd_impact") is not None]
+            if dd_drags:
+                worst = min(dd_drags, key=lambda x: x["dd_impact"])
+                if worst["dd_impact"] < 0:
+                    print(f"  回撤拖累最重: {worst['name']}（打乱后回撤收窄 "
+                          f"{abs(worst['dd_impact']) * 100:.1f}%，剔除候选）")
         for r in report:
             ic = r.get("ic_mean")
             print(f"  OOS {r['oos_start']}~{r['oos_end']}: n_train={r['n_train']} "
@@ -305,7 +311,7 @@ def main() -> None:
             subset_curve = cumulative_subset_curve(
                 dataset.feature_matrix, dataset.label, date_series, folds,
                 ranked_names=ranked_names, feature_names=dataset.feature_names,
-                kinds=kinds, first_oos=first_oos,
+                kinds=kinds, first_oos=first_oos, label_horizon=args.label_days,
                 progress=lambda msg: print(" ", msg, flush=True),
             )
             valid = [r for r in subset_curve if r.get("blended") is not None]
@@ -314,6 +320,12 @@ def main() -> None:
                 full = valid[-1]["blended"]
                 print(f"最优规模 k={best['k']}：blended OOS IC={best['blended']}（全量 {full}，"
                       f"精简 {len(best['names'])} 个因子：{'、'.join(best['names'])}）")
+            risk_valid = [r for r in subset_curve if r.get("oos_sharpe") is not None]
+            if risk_valid:
+                best_r = max(risk_valid, key=lambda r: r["oos_sharpe"])
+                print(f"Sharpe 峰值 k={best_r['k']}：OOS Sharpe={best_r['oos_sharpe']} "
+                      f"回撤={best_r['oos_max_drawdown']}（IC 峰值 k={best['k']}，"
+                      f"两口径不一致时优先看风险口径——IC 高不等于可交易）")
 
     # ⑧ 落盘：report + model + pred 通道
     import joblib

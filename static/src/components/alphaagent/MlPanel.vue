@@ -162,13 +162,19 @@
                       </template>
                       <template v-if="contribKinds.length">
                         <div class="mlv-block-head">
-                          <h5>置换贡献（打乱该因子后组合 OOS IC 掉多少）</h5>
-                          <span class="summary-facet-hint" title="逐折在 OOS 段把单因子行内打乱后重预测，IC 下降量跨折平均。正值 = 真贡献（掉得越多越重要）；负值（红）= 打乱反而更好，该因子在拖后腿，是剔除候选。">ⓘ</span>
+                          <h5>置换贡献（打乱该因子后组合损失多少）</h5>
+                          <span class="mlv-metric-toggle">
+                            <button v-for="m in contribMetrics" :key="m.key" type="button"
+                                    :class="{ active: contribMetric === m.key }"
+                                    @click="setContribMetric(m.key)">{{ m.label }}</button>
+                          </span>
+                          <span class="summary-facet-hint" :title="contribHint">ⓘ</span>
                         </div>
                         <div class="mlv-grid2">
                           <div v-for="kind in contribKinds" :key="'c-' + kind">
                             <strong>{{ kind.toUpperCase() }}</strong>
-                            <div :id="'ml-contrib-' + kind" class="metrics-chart" :style="{ height: Math.max(160, contribRows(kind).length * 24 + 40) + 'px' }"></div>
+                            <div :id="'ml-contrib-' + kind" class="metrics-chart"
+                                 :style="{ height: Math.max(160, Math.min(15, contribRows(kind).length) * 24 + 40) + 'px' }"></div>
                           </div>
                         </div>
                       </template>
@@ -176,11 +182,20 @@
                         <div class="mlv-block-head">
                           <h5>累积子集曲线（子集规模 vs OOS IC）</h5>
                           <span v-if="bestSubset" class="mlv-sub">
-                            最优规模 <b>k={{ bestSubset.k }}</b>：blended OOS IC <b>{{ fmtNum(bestSubset.blended) }}</b>
-                            （因子：{{ bestSubset.names.join('、') }}）
+                            IC 峰值 <b>k={{ bestSubset.k }}</b>：blended OOS IC <b>{{ fmtNum(bestSubset.blended) }}</b>
+                          </span>
+                          <span v-if="bestSubsetRisk" class="mlv-sub">
+                            Sharpe 峰值 <b>k={{ bestSubsetRisk.k }}</b>：Sharpe <b>{{ fmtNum(bestSubsetRisk.oos_sharpe) }}</b> · 回撤 {{ pct(bestSubsetRisk.oos_max_drawdown) }}
                           </span>
                         </div>
                         <div id="ml-subset-curve" class="metrics-chart" style="height: 240px"></div>
+                        <template v-if="hasSubsetRisk">
+                          <div class="mlv-block-head">
+                            <h5>子集风险曲线（Top-k 重训组合的 OOS Sharpe / 最大回撤）</h5>
+                            <span class="summary-facet-hint" title="每级重训的组合在 OOS 段按预测取前 20% 等权多头、按持有期去重叠后的年化 Sharpe 与最大回撤（轻量口径，不含换手成本，供相对比较）。IC 峰值与 Sharpe 峰值不一致时，以 Sharpe/回撤侧为准——IC 高不等于可交易。">ⓘ</span>
+                          </div>
+                          <div id="ml-subset-risk" class="metrics-chart" style="height: 220px"></div>
+                        </template>
                       </template>
                       <div class="mlv-block-head"><h5>折级 OOS IC</h5></div>
                       <div class="mlv-grid2">
@@ -238,6 +253,7 @@ export default {
       loadingList: false,
       showConfig: false,
       exporting: false,
+      contribMetric: 'ic_drop',
       historySortKey: '',
       historySortDir: -1,
     }
@@ -286,6 +302,27 @@ export default {
       const valid = curve.filter(r => r.blended != null)
       if (!valid.length) return null
       return valid.reduce((a, b) => (b.blended > a.blended ? b : a))
+    },
+    bestSubsetRisk() {
+      const curve = this.ml.detail?.report?.subset_curve || []
+      const valid = curve.filter(r => r.oos_sharpe != null)
+      if (!valid.length) return null
+      return valid.reduce((a, b) => (b.oos_sharpe > a.oos_sharpe ? b : a))
+    },
+    hasSubsetRisk() {
+      return (this.ml.detail?.report?.subset_curve || []).some(r => r.oos_sharpe != null)
+    },
+    contribMetrics: () => [
+      { key: 'ic_drop', label: 'IC 口径' },
+      { key: 'sharpe_drop', label: 'Sharpe 口径' },
+      { key: 'dd_impact', label: '回撤口径' },
+    ],
+    contribHint() {
+      return ({
+        ic_drop: '逐折在 OOS 段把单因子行内打乱后重预测，组合 OOS IC 下降量跨折平均。正值 = 真贡献（掉得越多越重要）；负值（红）= 打乱反而更好，该因子在拖后腿，是剔除候选。',
+        sharpe_drop: '同一份打乱预测上重算组合 OOS Sharpe 的下降量。正 = 该因子在贡献收益稳定性；负（红）= 打乱后 Sharpe 反而更高，该因子在拖累风险调整收益。轻量口径：OOS 段前 20% 等权多头、按持有期去重叠年化，不含成本。',
+        dd_impact: '打乱该因子后组合最大回撤的变化（幅度差）。正 = 打乱后回撤更深 ⇒ 该因子在压回撤；负（红）= 打乱后回撤反而收窄 ⇒ 该因子在放大回撤，是回撤剔除候选。',
+      })[this.contribMetric]
     },
     blendedIc() {
       return this.ml.detail?.report?.oos_ic_blended?.ic_mean ?? null
@@ -458,26 +495,42 @@ export default {
       }, true)
     },
     renderContribution(kind) {
-      const rows = this.contribRows(kind)
-      if (!rows.length) return
+      const field = this.contribMetric
+      const rows = (this.ml.detail?.report?.feature_contribution?.[kind] || [])
+        .filter(r => r[field] != null)
+        .sort((a, b) => b[field] - a[field])
+        .slice(0, 15)
       const sorted = [...rows].reverse()
       const c = chart('ml-contrib-' + kind)
       if (!c) return
+      if (!rows.length) {
+        // 旧训练未采集该口径
+        c.setOption({
+          title: { text: '该训练未采集此口径（需重新训练）', left: 'center', top: 'middle', textStyle: { color: '#8494b5', fontSize: 12, fontWeight: 'normal' } },
+          xAxis: { show: false }, yAxis: { show: false }, series: [],
+        }, true)
+        return
+      }
+      const relTxt = row => (field === 'ic_drop' && row.ic_drop_rel != null
+        ? `（占组合 IC ${(row.ic_drop_rel * 100).toFixed(0)}%）` : '')
       c.setOption({
         tooltip: { trigger: 'item', formatter: p => {
           const row = sorted[p.dataIndex]
-          const rel = row && row.ic_drop_rel != null ? `（占组合 IC ${(row.ic_drop_rel * 100).toFixed(0)}%）` : ''
-          return `${p.name}：<b>${Number(p.value).toFixed(4)}</b> ${rel}`
+          return `${p.name}：<b>${Number(p.value).toFixed(4)}</b> ${relTxt(row || {})}`
         } },
         grid: { left: 190, right: 70, top: 6, bottom: 6 },
         xAxis: { type: 'value', axisLabel: { ...AXIS_LABEL }, splitLine: { lineStyle: { color: '#1c2536' } } },
         yAxis: { type: 'category', data: sorted.map(r => r.name), axisLabel: { ...AXIS_LABEL, width: 180, overflow: 'truncate' } },
         series: [{
-          type: 'bar', data: sorted.map(r => r.ic_drop), barMaxWidth: 14,
+          type: 'bar', data: sorted.map(r => r[field]), barMaxWidth: 14,
           label: { show: true, position: 'right', color: '#c6d2e8', fontSize: 10, formatter: p => Number(p.value).toFixed(4) },
           itemStyle: { borderRadius: [0, 3, 3, 0], color: p => (p.value >= 0 ? '#4fc3a1' : '#ef6b73') },
         }],
       }, true)
+    },
+    setContribMetric(key) {
+      this.contribMetric = key
+      for (const kind of this.contribKinds) this.renderContribution(kind)
     },
     renderSubsetCurve() {
       const curve = this.ml.detail?.report?.subset_curve || []
@@ -499,6 +552,30 @@ export default {
         xAxis: { type: 'category', data: curve.map(r => 'k=' + r.k), axisLabel: { ...AXIS_LABEL, rotate: 45 } },
         yAxis: { type: 'value', axisLabel: { ...AXIS_LABEL }, scale: true },
         series,
+      }, true)
+    },
+    renderSubsetRisk() {
+      const curve = (this.ml.detail?.report?.subset_curve || []).filter(r => r.oos_sharpe != null)
+      if (!curve.length) return
+      const c = chart('ml-subset-risk')
+      if (!c) return
+      c.setOption({
+        tooltip: { trigger: 'axis' },
+        legend: { textStyle: { color: '#8494b5', fontSize: 10 }, top: 0 },
+        grid: { left: 44, right: 48, top: 28, bottom: 24 },
+        xAxis: { type: 'category', data: curve.map(r => 'k=' + r.k), axisLabel: { ...AXIS_LABEL, rotate: 45 } },
+        yAxis: [
+          { type: 'value', name: 'Sharpe', nameTextStyle: AXIS_LABEL, axisLabel: { ...AXIS_LABEL }, scale: true, splitLine: { lineStyle: { color: '#1c2536' } } },
+          { type: 'value', name: '回撤', nameTextStyle: AXIS_LABEL, axisLabel: { ...AXIS_LABEL, formatter: v => (v * 100).toFixed(0) + '%' }, scale: true, splitLine: { show: false } },
+        ],
+        series: [
+          {
+            name: 'OOS Sharpe', type: 'line', data: curve.map(r => r.oos_sharpe), yAxisIndex: 0,
+            showSymbol: true, lineStyle: { width: 2 }, itemStyle: { color: '#4f8cff' },
+            markPoint: this.bestSubsetRisk ? { data: [{ coord: [curve.indexOf(this.bestSubsetRisk), this.bestSubsetRisk.oos_sharpe], value: '峰值 k=' + this.bestSubsetRisk.k }] } : undefined,
+          },
+          { name: '最大回撤', type: 'line', data: curve.map(r => r.oos_max_drawdown), yAxisIndex: 1, showSymbol: true, lineStyle: { width: 2, type: 'dashed' }, itemStyle: { color: '#ef6b73' } },
+        ],
       }, true)
     },
     renderDecay() {
@@ -526,6 +603,7 @@ export default {
         for (const kind of this.weightKinds) this.renderWeights(kind)
         for (const kind of this.contribKinds) this.renderContribution(kind)
         this.renderSubsetCurve()
+        this.renderSubsetRisk()
         for (const model of Object.keys(this.ml.detail?.report?.fold_metrics || {})) this.renderFolds(model)
         this.renderDecay()
       })
@@ -633,4 +711,8 @@ export default {
 .mlv-details summary { cursor: pointer; color: var(--muted); font-size: 12px; margin: 6px 0; }
 .mlv-details summary:hover { color: var(--text); }
 .mlv-bad { color: #ef6b73; }
+.mlv-metric-toggle { display: inline-flex; gap: 0; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+.mlv-metric-toggle button { border: 0; background: transparent; color: var(--muted); font-size: 11px; padding: 3px 10px; cursor: pointer; }
+.mlv-metric-toggle button + button { border-left: 1px solid var(--line); }
+.mlv-metric-toggle button.active { background: rgb(79 140 255 / 0.18); color: var(--text); }
 </style>

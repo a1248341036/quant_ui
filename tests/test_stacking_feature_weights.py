@@ -115,3 +115,63 @@ def test_cumulative_subset_curve():
     for row in curve:
         assert row["ridge"] is not None
         assert row["blended"] is not None
+
+
+def test_portfolio_risk_metrics_directional():
+    """风险口径方向性：好预测 Sharpe 显著为正，反向预测为负；样本不足返回 None。"""
+    from alphaagent.factor.stacking.model import _portfolio_risk_metrics
+
+    rng = np.random.default_rng(11)
+    n_days, n_stocks = 120, 50
+    days = pd.bdate_range("2024-01-01", periods=n_days)
+    sig = rng.normal(0, 1, n_days * n_stocks).astype(np.float32)
+    label = (sig * 0.01 + rng.normal(0, 0.01, n_days * n_stocks)).astype(np.float32)
+    dts = pd.Series(np.repeat(days, n_stocks))
+    good = _portfolio_risk_metrics(sig, label, dts, horizon_days=5)
+    bad = _portfolio_risk_metrics(-sig, label, dts, horizon_days=5)
+    assert good["oos_sharpe"] is not None and good["oos_sharpe"] > 0.5
+    assert bad["oos_sharpe"] is not None and bad["oos_sharpe"] < -0.5
+    assert good["oos_max_drawdown"] is not None and good["oos_max_drawdown"] <= 0
+    # 200 行 = 4 个交易日 < horizon×min_samples → 不足以做非重叠年化
+    short = _portfolio_risk_metrics(sig[:200], label[:200], dts[:200], horizon_days=5)
+    assert short["oos_sharpe"] is None and short["oos_max_drawdown"] is None
+
+
+def test_permutation_contribution_risk_fields():
+    """置换贡献扩展口径：sharpe_drop / dd_impact 存在，真信号因子 Sharpe 贡献为正。"""
+    feats, label, dts = _synthetic()
+    folds = walk_forward_splits(pd.DatetimeIndex(dts.unique()), train_start=dts.min(),
+                                train_months=4, step_months=3, purge_days=5)
+    names = ["alpha_signal", "noise_a", "noise_b", "noise_c"]
+    _, _, _, contrib = fit_predict_walkforward(
+        feats, label, dts, folds, kind="ridge", feature_names=names, label_horizon=5
+    )
+    assert contrib is not None and len(contrib) == 4
+    for c in contrib:
+        assert "sharpe_drop" in c and "dd_impact" in c
+        assert c["sharpe_drop"] is not None
+        assert c["dd_impact"] is not None
+    top = contrib[0]
+    assert top["name"] == "alpha_signal"
+    assert top["sharpe_drop"] > 0.5
+
+
+def test_cumulative_subset_curve_risk_fields():
+    """子集曲线行携带 oos_sharpe / oos_max_drawdown。"""
+    from alphaagent.factor.stacking.model import cumulative_subset_curve
+
+    feats, label, dts = _synthetic()
+    folds = walk_forward_splits(pd.DatetimeIndex(dts.unique()), train_start=dts.min(),
+                                train_months=4, step_months=3, purge_days=5)
+    names = ["alpha_signal", "noise_a", "noise_b", "noise_c"]
+    _, _, _, contrib = fit_predict_walkforward(
+        feats, label, dts, folds, kind="ridge", feature_names=names, label_horizon=5
+    )
+    ranked = [c["name"] for c in contrib]
+    curve = cumulative_subset_curve(
+        feats, label, dts, folds, ranked_names=ranked, feature_names=names,
+        kinds=("ridge",), label_horizon=5,
+    )
+    for row in curve:
+        assert row["oos_sharpe"] is not None
+        assert row["oos_max_drawdown"] is not None and row["oos_max_drawdown"] <= 0
