@@ -82,9 +82,23 @@ export function memoryVerdictLabel(verdict) {
     promising: '训练有潜力',
     near_miss: '接近达标',
     rejected: '明确否定',
-    revise_required: '需修订',
+    revise_required: '评审需修订',
     weak: '证据不足',
+    eval_error: '评估失败',
   }[verdict] || '待评估')
+}
+
+// 每个 verdict 的一句话语义（筛选栏 tooltip / 详情解释共用）
+export const VERDICT_SEMANTICS = {
+  production_approved: '已通过精筛并正式入库（最终产物）',
+  validated: '验证集评估通过，方向一致',
+  candidate_approved: '已进入候选池，待精筛/回测门禁',
+  promising: '训练段通过海选线（|IC|≥0.02 且 ICIR>0.2）',
+  near_miss: 'IC 距海选线不足 20%，可微调窗口后重评',
+  revise_required: 'Reviewer 建议结构性改造后再评估（建议，非否决）',
+  rejected: '被明确否定：Reviewer 硬拒或提交门槛全败',
+  weak: '证据不足：指标全线低于海选线（最常见的日常失败）',
+  eval_error: '评估未产出：面板缺列/超时/参数错（没算出来 ≠ 被否定）',
 }
 
 export function metricLabel(key) {

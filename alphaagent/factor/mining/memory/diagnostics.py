@@ -48,8 +48,10 @@ def _neg_str(s: Any) -> str:
 # ── 失败码 ──
 
 def _failure_code(name: str, result: dict[str, Any], error: str, verdict: str) -> str | None:
-    if not error and verdict not in {"weak", "rejected", "revise_required"}:
+    if not error and verdict not in {"weak", "rejected", "revise_required", "eval_error"}:
         return None
+    if verdict == "eval_error":
+        return "eval_failed"
     text = error.lower()
     if "timeout" in text:
         return "model_timeout" if "model" in text else "eval_timeout"
@@ -77,6 +79,7 @@ def _rebuild_conclusion(name: str, result: dict[str, Any], metrics: dict[str, An
     入库事实优先于 Reviewer 意见：revise 不阻断提交，已入库的 submit 即使
     携带 revise/gate 错误码也按 candidate_approved/production_approved 记账
     （与 schema._classify 同序，gate 失败的 error 文本不得掩盖入库事实）。
+    评估未产出（error 非空）记 eval_error 而非 rejected——"没算出来 ≠ 被否定"。
     """
     review = result.get("factor_review") if isinstance(result.get("factor_review"), dict) else {}
     if not review and isinstance(result.get("review"), dict):
@@ -100,7 +103,7 @@ def _rebuild_conclusion(name: str, result: dict[str, Any], metrics: dict[str, An
         return "revise_required", f"{canonical}：Reviewer 要求结构性改造后再评估。"
     if error:
         snippet = error if len(error) <= 500 else error[:497] + "..."
-        return "rejected", f"{name} 被否定：{snippet}"
+        return "eval_error", f"{name} 评估未产出：{snippet}"
     if name == "submit_factor":
         return "rejected", "提交未通过，避免在未改变机制或拒绝原因的情况下重复提交。"
     ic = _safe_float(metrics.get("ic"))

@@ -87,10 +87,12 @@ def test_memory_v5_migration_and_purge_by_uid(tmp_path: Path):
     raw.close()
 
     store = ResearchMemoryStore(db)
+    from alphaagent.factor.mining.memory.constants import DATA_VERSION
+
     with store._open() as conn:
-        # 迁移触发：data_version=5，uid 回填完成
+        # 迁移触发：data_version 升到当前版，uid 回填完成
         version = conn.execute("SELECT v FROM store_meta WHERE k='data_version'").fetchone()[0]
-        assert version == "5"
+        assert version == DATA_VERSION
         n_dim = conn.execute("SELECT COUNT(*) FROM memory_factors").fetchone()[0]
         assert n_dim == 2  # fac_x / fac_y
         n_missing = conn.execute(

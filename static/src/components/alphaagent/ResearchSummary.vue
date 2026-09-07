@@ -80,6 +80,7 @@
             :key="verdict"
             class="verdict-filter-btn"
             :class="['memv-' + verdict, { active: agent.summaryVerdictFilter === verdict }]"
+            :title="verdictSemantics[verdict] || ''"
             @click="agent.setSummaryVerdictFilter(verdict)"
           >
             <span class="summary-verdict-dot" :class="'memv-' + verdict"></span>
@@ -229,7 +230,7 @@ import { api } from '../../utils/api.js'
 import { downloadCsv } from '../../utils/export.js'
 import MemoryDetailModal from './MemoryDetailModal.vue'
 import {
-  formatTime, memoryVerdictLabel,
+  formatTime, memoryVerdictLabel, VERDICT_SEMANTICS,
   formatMetricValue, icClass, freqShort, freqCadence, freqSourceHint,
 } from '../../utils/alphaagent.js'
 
@@ -248,9 +249,11 @@ export default {
         'validated',
         'candidate_approved',
         'promising',
+        'near_miss',
         'revise_required',
         'rejected',
         'weak',
+        'eval_error',
       ],
     }
   },

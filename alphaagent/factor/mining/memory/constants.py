@@ -8,13 +8,17 @@ from __future__ import annotations
 # v4：memory_entries 加 facets_json（数据面标签）；family 允许面对组合键（跨组融合）
 # v5：因子中台 ID——memory_factors 维表（uid 主键）+ memory_entries.factor_uid；
 #     uid = identity.factor_uid(factor_name) 确定性派生，回填按 factor_name 聚类
-DATA_VERSION = "5"
+# v6：verdict 语义修正——评估未产出（面板缺列/超时/参数错）从 rejected 分离为
+#     eval_error（"没算出来 ≠ 被否定"）；存量迁移把 rejected 中带 error 的条目重分类
+DATA_VERSION = "6"
 
 # ── Verdict 分类 ──
 # near_miss（2026-09-05）：IC 达门槛 80%、ICIR/coverage 达标但未过线——
 # 弱负向（不算正向证据，不触发重复提交拦截；但比 weak 多一次二次机会提示）
+# eval_error（2026-09-07）：评估未产出结果（面板缺列/超时/参数错）——
+# "没算出来 ≠ 被否定"，与机制性 reject 分离；负向权重最弱（-0.2）
 POSITIVE_VERDICTS = frozenset({"production_approved", "validated", "candidate_approved", "promising"})
-NEGATIVE_VERDICTS = frozenset({"rejected", "revise_required", "weak", "near_miss"})
+NEGATIVE_VERDICTS = frozenset({"rejected", "revise_required", "weak", "near_miss", "eval_error"})
 
 # Verdict 显示顺序（正值优先，负值在后）
 VERDICT_ORDER = {
@@ -26,6 +30,7 @@ VERDICT_ORDER = {
     "revise_required": 5,
     "rejected": 6,
     "weak": 7,
+    "eval_error": 8,
 }
 
 # ── AlphaMemo 校准常量 ──
@@ -59,4 +64,5 @@ VERDICT_WEIGHT = {
     "revise_required": -0.3,
     "rejected": -1.0,
     "weak": -0.5,
+    "eval_error": -0.2,
 }

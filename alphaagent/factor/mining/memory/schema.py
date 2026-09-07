@@ -385,12 +385,15 @@ class SchemaMixin:
         cells：family 新口径只影响新写入，存量行由读取侧现算兜底。
         v5：因子中台 ID——memory_factors 维表 + memory_entries.factor_uid 回填
         （uid 由 factor_name 确定性派生，见 identity.factor_uid；幂等可重跑）。
+        v6：verdict 语义修正——rejected 中带 error 的条目（评估未产出：面板缺列/
+        超时/参数错）重分类为 eval_error，"没算出来 ≠ 被否定"；幂等可重跑。
         """
         row = conn.execute("SELECT v FROM store_meta WHERE k='data_version'").fetchone()
         if row is None:
             # v1 存量库（无 store_meta 行）：同样重放 cells 并补 parent_origin
             self._backfill_v3_conn(conn)
             self._backfill_factor_uid(conn)
+            self._backfill_eval_error(conn)
             conn.execute("INSERT OR REPLACE INTO store_meta(k, v) VALUES ('data_version', ?)", (DATA_VERSION,))
             return
         if str(row["v"]) == DATA_VERSION:
@@ -399,7 +402,20 @@ class SchemaMixin:
         # 已在 _ensure_schema 逐列补齐，这里不重复处理）
         self._backfill_v3_conn(conn)
         self._backfill_factor_uid(conn)
+        self._backfill_eval_error(conn)
         conn.execute("INSERT OR REPLACE INTO store_meta(k, v) VALUES ('data_version', ?)", (DATA_VERSION,))
+
+    def _backfill_eval_error(self, conn: sqlite3.Connection) -> None:
+        """v6 回填：rejected 且带 error 的条目重分类为 eval_error（评估未产出）。
+
+        判据 = _classify 的旧 error 分支产物：error 非空即"没算出来"；
+        Reviewer 硬拒 / 提交门槛全败（无 error 文本）保持 rejected 不动。
+        幂等：eval_error 行再次执行不匹配 WHERE 条件。
+        """
+        conn.execute(
+            "UPDATE memory_entries SET verdict = 'eval_error' "
+            "WHERE verdict = 'rejected' AND error IS NOT NULL AND error != ''"
+        )
 
     def _backfill_factor_uid(self, conn: sqlite3.Connection) -> None:
         """v5 回填：按 factor_name 聚类签发 uid，填 memory_factors + entries.factor_uid。
@@ -719,8 +735,10 @@ class SchemaMixin:
         if review_verdict == "revise":
             return "revise_required", f"{canonical}：Reviewer 要求结构性改造后再评估。"
         if error:
+            # 评估未产出（面板缺列/超时/参数错）≠ 被否定：独立 eval_error，
+            # 不与机制性 reject 混记（2026-09-07 语义修正）
             snippet = error if len(error) <= 500 else error[:497] + "..."
-            return "rejected", f"{name} 被否定：{snippet}"
+            return "eval_error", f"{name} 评估未产出：{snippet}"
         if name == "submit_factor":
             return "rejected", "提交未通过，避免在未改变机制或拒绝原因的情况下重复提交。"
         ic = _safe_float(metrics.get("ic"))
