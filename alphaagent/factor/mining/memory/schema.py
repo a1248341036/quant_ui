@@ -599,6 +599,7 @@ class SchemaMixin:
             item = {
                 "id": row["id"],
                 "factor_name": row["factor_name"],
+                "factor_uid": row["factor_uid"] if "factor_uid" in row.keys() else None,
                 "expression": row["expression"],
                 "conclusion": row["conclusion"],
                 "verdict": row["verdict"],

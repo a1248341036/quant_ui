@@ -1220,6 +1220,7 @@ def _candidate_factor_view(factor_id: str, entry: dict[str, Any], *, category: s
     return {
         "factor_id": factor_id,
         "name": str(entry.get("name") or factor_id),
+        "factor_uid": str(entry.get("factor_uid") or "") or None,
         "expr": _candidate_expr(entry, factor_id),
         "col_idx": None,
         "status": str(entry.get("review_status") or "pending_review"),
@@ -1306,13 +1307,19 @@ def list_factors(*, library: str = "production", category: str = "technical", fa
         registry = json.loads(registry_path.read_text(encoding="utf-8"))
 
     def _merge_production_entry(item: dict[str, Any]) -> dict[str, Any]:
+        from alphaagent.factor.identity import factor_uid
+
         entry = (
             registry.get(str(item.get("factor_id")))
             or registry.get(str(item.get("name")))
             or {}
         )
         if not isinstance(entry, dict) or not entry:
-            return item
+            # 无 registry 条目的正式库因子：uid 由名称确定性派生，始终可展示
+            return {
+                **item,
+                "factor_uid": factor_uid(str(item.get("name") or item.get("factor_id") or "")),
+            }
         metrics = entry.get("ingest_metrics") if isinstance(entry.get("ingest_metrics"), dict) else {}
         if not metrics:
             metrics = entry.get("metrics") if isinstance(entry.get("metrics"), dict) else {}
@@ -1362,6 +1369,9 @@ def list_factors(*, library: str = "production", category: str = "technical", fa
             else None
         )
         merged["eval_label"] = str(entry.get("eval_label") or "") or None
+        merged["factor_uid"] = str(entry.get("factor_uid") or "") or factor_uid(
+            str(entry.get("name") or item.get("name") or "")
+        )
         # 调仓频率/研究档位溯源：老条目缺字段时按 label_col 推导兜底
         from alphaagent.factor.mining.infra.registry_io import derive_freq_from_label_col
 

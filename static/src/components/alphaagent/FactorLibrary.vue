@@ -99,6 +99,7 @@
           <td class="lib-label" :title="f.label_col">{{ labelShort(f.label_col) }}</td>
           <td><span class="lib-status" :class="'status-' + f.status">{{ f.status }}</span></td>
           <td class="lib-review" :title="f.review_reasons">{{ f.review_reasons || '—' }}</td>
+          <td class="lib-uid" :title="f.factor_uid || '无 uid（正式库条目未带 registry 记录且名称为空）'">{{ f.factor_uid || '—' }}</td>
           <td class="lib-actions">
             <button class="lib-export" @click.stop="exportOne(f)" title="复制该因子的完整 registry JSON">{{ lib.exportCopied === f.factor_id ? '✓' : '导出' }}</button>
             <button class="lib-backtest" @click.stop="$emit('backtest', f)">回测</button>
@@ -115,6 +116,7 @@
           <div class="factor-modal-head">
             <strong>{{ factorDetail.name }}</strong>
             <code>{{ factorDetail.factor_id }}</code>
+            <code v-if="factorDetail.factor_uid" class="factor-modal-uid">{{ factorDetail.factor_uid }}</code>
             <button class="factor-modal-close" @click="factorDetail = null">×</button>
           </div>
           <div class="factor-modal-body">
@@ -177,6 +179,7 @@ export default {
           { key: 'label_col', label: 'Label', sortable: true },
           { key: 'status', label: '状态', sortable: true },
           { key: 'review', label: 'Reviewer 意见', sortable: false },
+          { key: 'factor_uid', label: '中台 ID', sortable: false },
         ],
       },
       factorDetail: null,
@@ -300,7 +303,7 @@ export default {
         alert('所选时间范围内没有因子')
         return
       }
-      const cols = ['加入时间', 'factor_id', '名称', '数据面', '融合', '调仓频率', '研究档位', '准入状态', '审查判定',
+      const cols = ['加入时间', 'factor_id', '中台ID', '名称', '数据面', '融合', '调仓频率', '研究档位', '准入状态', '审查判定',
                     'Train IC', 'Val IC', '全区间 IC', 'ICIR', 'RankIC', 'Coverage',
                     '多头年化', '超额年化', '夏普', 'val保留比', 'val多头超额',
                     'Label', 'Expr']
@@ -312,7 +315,7 @@ export default {
       const lines = [cols.join(',')]
       for (const f of rows) {
         lines.push([
-          this.fmtTime(f.created_at), f.factor_id, f.name,
+          this.fmtTime(f.created_at), f.factor_id, f.factor_uid || '', f.name,
           (f.facets || []).join('+'), f.is_fusion ? '是' : '',
           f.rebalance_freq ? (freqShort(f.rebalance_freq) + '/' + f.rebalance_freq) : '', f.research_mode || '',
           f.promotion_status || f.status, f.review_verdict || '',

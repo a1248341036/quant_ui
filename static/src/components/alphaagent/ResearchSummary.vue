@@ -147,6 +147,7 @@
               <th @click="agent.setSummarySort('updated_at')" :class="{ sortable: true, 'sort-active': agent.summarySortKey === 'updated_at' }">
                 更新时间 <span class="sort-ind" v-if="agent.summarySortKey === 'updated_at'">{{ agent.summarySortOrder === 1 ? '▲' : '▼' }}</span>
               </th>
+              <th title="因子中台 ID：跨候选库/正式库/研究记忆的唯一标识（由因子名确定性派生）">中台 ID</th>
             </tr>
           </thead>
           <tbody>
@@ -180,6 +181,7 @@
               </td>
               <td class="summary-reason" :title="entry.conclusion">{{ entry.conclusion || entry.error || '—' }}</td>
               <td class="summary-time">{{ formatTime(entry.updated_at) }}</td>
+              <td class="summary-uid" :title="entry.factor_uid || '存量条目无 uid（迁移前已删除）'">{{ entry.factor_uid || '—' }}</td>
             </tr>
           </tbody>
         </table>

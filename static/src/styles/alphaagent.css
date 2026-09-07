@@ -144,6 +144,9 @@
 .summary-verdict-tag { display:inline-block; padding:1px 6px; border-radius:4px; font-size:10px; white-space:nowrap; }
 .summary-reason { max-width:260px; overflow:hidden; text-overflow:ellipsis; color:var(--muted); }
 .summary-time { color:var(--muted); font-size:10px; }
+.summary-uid { color:var(--muted); font:10px var(--font-mono); white-space:nowrap; }
+.lib-uid { color:var(--muted); font:10px var(--font-mono); white-space:nowrap; }
+.factor-modal-head .factor-modal-uid { color:var(--accent); margin-left:6px; }
 .summary-attempts { text-align:center; color:var(--muted); font-size:10px; }
 .summary-row td.ic-pos { color:#5ee0a0; }
 .summary-row td.ic-neg { color:#ef8b92; }
