@@ -3,8 +3,15 @@
  */
 const apiBase = window.location.port === '43120' ? 'http://127.0.0.1:17891' : '';
 
-export async function api(path, opts) {
-  const res = await fetch(apiBase + path, { ...opts, credentials: apiBase ? 'omit' : 'include' });
+export async function api(path, opts = {}) {
+  // 统一 JSON 语义：带 body 的请求自动补 Content-Type 并序列化对象，
+  // 防止漏写 header 时后端把 JSON 字符串当标量（Pydantic 422 model_attributes_type）。
+  const headers = { ...opts.headers }
+  if (opts.body != null && !Object.keys(headers).some(h => h.toLowerCase() === 'content-type')) {
+    headers['Content-Type'] = 'application/json'
+    if (typeof opts.body !== 'string') opts.body = JSON.stringify(opts.body)
+  }
+  const res = await fetch(apiBase + path, { ...opts, headers, credentials: apiBase ? 'omit' : 'include' });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
