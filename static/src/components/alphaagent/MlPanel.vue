@@ -41,6 +41,22 @@
         <label class="ml-check" title="按置换贡献降序取 Top-k 逐级重训（成本 ≈ 2n 次拟合，训练时间明显变长）。输出'子集规模 vs OOS IC'曲线，定位边际收益归零的最优因子数。"><input type="checkbox" v-model="ml.form.subset_curve"> 累积子集曲线</label>
         <span class="ml-gate-mode" title="因子池已是统一大库（不分技术/基本面）；engine_gate 档位自动跟随持有天数：≤7 天→技术档（周调仓·严门槛），>7 天→基本面档（月调仓·松门槛）。">gate 档位：{{ gateModeLabel }}（自动）</span>
       </div>
+      <!-- ── 训练因子自选（白名单；不选=全部） ── -->
+      <div class="ml-factor-picker">
+        <div class="mlv-block-head" style="margin:0 0 6px">
+          <h5>训练因子</h5>
+          <span class="mlv-sub">不选 = 全部 {{ ml.factorPool.length }} 个（统一大库）</span>
+          <span v-if="ml.form.include_factors.length" class="mlv-sub">已选 {{ ml.form.include_factors.length }}</span>
+          <button class="mlv-ghost" type="button" @click="setAllFactors(true)">全选</button>
+          <button class="mlv-ghost" type="button" @click="setAllFactors(false)">清空</button>
+        </div>
+        <div v-if="ml.factorPoolLoading" class="mlv-sub" style="padding:6px 2px">加载因子列表…</div>
+        <div v-else-if="ml.factorPool.length" class="ml-factor-list">
+          <label v-for="f in ml.factorPool" :key="f.name" class="ml-check" :title="f.name">
+            <input type="checkbox" :value="f.name" v-model="ml.form.include_factors"> {{ f.name }} <i class="ml-factor-lib">{{ f.library }}</i>
+          </label>
+        </div>
+      </div>
       <div v-if="ml.error" class="ml-error">{{ ml.error }}</div>
     </div>
 
@@ -238,7 +254,9 @@ export default {
   data() {
     return {
       ml: {
-        form: { model: 'both', label_days: 5, train_months: 18, step_months: 6, max_corr: 0.6, isolation: 'holdout', no_candidate: false, no_gate: false, subset_curve: false },
+        form: { model: 'both', label_days: 5, train_months: 18, step_months: 6, max_corr: 0.6, isolation: 'holdout', no_candidate: false, no_gate: false, subset_curve: false, include_factors: [] },
+        factorPool: [],
+        factorPoolLoading: false,
         list: [],
         selected: null,
         detail: null,
@@ -370,6 +388,7 @@ export default {
   },
   mounted() {
     this.loadMl()
+    this.loadFactorPool()
   },
   beforeUnmount() {
     if (this._mlTimer) {
@@ -378,6 +397,36 @@ export default {
     }
   },
   methods: {
+    async loadFactorPool() {
+      if (this.ml.factorPool.length || this.ml.factorPoolLoading) return
+      this.ml.factorPoolLoading = true
+      try {
+        const t = Date.now()
+        const [prod, cand] = await Promise.all([
+          api('/api/alphaagent/factors?library=production&category=technical&t=' + t),
+          api('/api/alphaagent/factors?library=candidate&category=technical&t=' + t),
+        ])
+        const seen = new Set()
+        const pool = []
+        for (const batch of [prod, cand]) {
+          for (const f of (batch?.factors || [])) {
+            const name = f.name || f.factor_id
+            if (!name || seen.has(name)) continue
+            seen.add(name)
+            pool.push({ name, library: batch.library === 'production' ? '正式' : '候选' })
+          }
+        }
+        pool.sort((a, b) => a.name.localeCompare(b.name))
+        this.ml.factorPool = pool
+      } catch (e) {
+        // 因子池加载失败不阻塞训练（不选=全部）
+      } finally {
+        this.ml.factorPoolLoading = false
+      }
+    },
+    setAllFactors(on) {
+      this.ml.form.include_factors = on ? this.ml.factorPool.map(f => f.name) : []
+    },
     fmtNum(v) {
       if (v === null || v === undefined || Number.isNaN(Number(v))) return '—'
       return Number(v).toFixed(4)
@@ -720,4 +769,7 @@ export default {
 .mlv-metric-toggle button + button { border-left: 1px solid var(--line); }
 .mlv-metric-toggle button.active { background: rgb(79 140 255 / 0.18); color: var(--text); }
 .ml-gate-mode { align-self: center; color: var(--muted); font-size: 11px; border: 1px dashed var(--line); border-radius: 7px; padding: 4px 10px; cursor: help; }
+.ml-factor-picker { margin-top: 10px; }
+.ml-factor-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 2px 14px; max-height: 180px; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; }
+.ml-factor-lib { color: var(--muted); font-style: normal; font-size: 10px; }
 </style>
