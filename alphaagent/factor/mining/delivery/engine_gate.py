@@ -156,7 +156,9 @@ def run_engine_gate(
     min_overlap = float(policy.get("min_daily_overlap") or 0)
     thresholds["min_daily_overlap"] = min_overlap
     if min_overlap and (not np.isfinite(overlap) or overlap < min_overlap):
-        reasons.append("tail_stability")
+        # 命名纠偏：该检查实为持仓重叠率（选股稳定性），与尾部风险无关——
+        # 旧名 tail_stability 曾让使用者误判为回撤/尾部问题
+        reasons.append("hold_overlap")
 
     # ── 现金拖累 / 执行诊断（2026-08 审计新增）──
     # 利用 run_backtest 现成的 cash_history/rejections/trades 输出定位
