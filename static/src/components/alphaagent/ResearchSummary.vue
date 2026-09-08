@@ -56,8 +56,17 @@
               <th @click="agent.setSummarySort('stage')" :class="{ sortable: true, 'sort-active': agent.summarySortKey === 'stage' }">
                 阶段 <span class="sort-ind" v-if="agent.summarySortKey === 'stage'">{{ agent.summarySortOrder === 1 ? '▲' : '▼' }}</span>
               </th>
-              <th @click="agent.setSummarySort('ic')" :class="{ sortable: true, 'sort-active': agent.summarySortKey === 'ic' }">
-                IC <span class="sort-ind" v-if="agent.summarySortKey === 'ic'">{{ agent.summarySortOrder === 1 ? '▲' : '▼' }}</span>
+              <th @click="agent.setSummarySort('train_ic')" :class="{ sortable: true, 'sort-active': agent.summarySortKey === 'train_ic' }"
+                  title="train 窗口 IC（海选/门槛判定口径）；老条目无分窗口记录时回退显示原 IC">
+                训练IC <span class="sort-ind" v-if="agent.summarySortKey === 'train_ic'">{{ agent.summarySortOrder === 1 ? '▲' : '▼' }}</span>
+              </th>
+              <th @click="agent.setSummarySort('val_ic')" :class="{ sortable: true, 'sort-active': agent.summarySortKey === 'val_ic' }"
+                  title="val 窗口（2023~2024）IC；盲测前置拦截的因子未算 val，显示 —">
+                验证IC <span class="sort-ind" v-if="agent.summarySortKey === 'val_ic'">{{ agent.summarySortOrder === 1 ? '▲' : '▼' }}</span>
+              </th>
+              <th @click="agent.setSummarySort('test_ic')" :class="{ sortable: true, 'sort-active': agent.summarySortKey === 'test_ic' }"
+                  title="盲测段（2025+）IC，提交时现算；未走过提交的因子显示 —。悬停单元格看保留比">
+                盲测IC <span class="sort-ind" v-if="agent.summarySortKey === 'test_ic'">{{ agent.summarySortOrder === 1 ? '▲' : '▼' }}</span>
               </th>
               <th @click="agent.setSummarySort('icir')" :class="{ sortable: true, 'sort-active': agent.summarySortKey === 'icir' }">
                 ICIR <span class="sort-ind" v-if="agent.summarySortKey === 'icir'">{{ agent.summarySortOrder === 1 ? '▲' : '▼' }}</span>
@@ -113,7 +122,9 @@
               <td class="summary-name" :title="entry.factor_name">{{ entry.factor_name || 'unnamed' }}</td>
               <td><span class="summary-verdict-tag" :class="'memv-' + entry.verdict">{{ memoryVerdictLabel(entry.verdict) }}</span></td>
               <td class="summary-stage" :title="'指标来自该评估阶段（单因子无 OOS：盲测段对挖掘循环锁死，防多重检验污染）'">{{ stageLabel(entry.stage) }}</td>
-              <td :class="icClass(entry.metrics?.ic)">{{ formatMetricValue(entry.metrics?.ic ?? '—') }}</td>
+              <td :class="icClass(trainIc(entry))" :title="icWindowHint(entry, 'train')">{{ formatMetricValue(trainIc(entry) ?? '—') }}</td>
+              <td :class="icClass(valIc(entry))" :title="icWindowHint(entry, 'val')">{{ formatMetricValue(valIc(entry) ?? '—') }}</td>
+              <td :class="icClass(entry.metrics?.test_ic)" :title="blindIcHint(entry)">{{ formatMetricValue(entry.metrics?.test_ic ?? '—') }}</td>
               <td>{{ formatMetricValue(entry.metrics?.icir ?? '—') }}</td>
               <td>{{ formatMetricValue(entry.metrics?.coverage ?? entry.metrics?.factor_coverage ?? '—') }}</td>
               <td :class="{ neg: (entry.metrics?.cs_pearson_autocorr ?? 1) < 0.18 }">{{ formatMetricValue(entry.metrics?.cs_pearson_autocorr ?? '—') }}</td>
@@ -332,6 +343,32 @@ export default {
       // 与记忆 family 口径一致：跨数据源组融合用 × 连接，单面/同组用 +
       return entry.is_fusion ? facets.join('×') : facets.join('+')
     },
+    /** train 窗口 IC：新条目走 train_ic；老条目回退原 IC（非 val/submit 记录的 ic 即评估窗口 IC） */
+    trainIc(entry) {
+      const m = entry.metrics || {}
+      if (m.train_ic != null) return m.train_ic
+      return (entry.stage !== 'val' && entry.stage !== 'submit_factor') ? (m.ic ?? null) : null
+    },
+    /** val 窗口 IC：submit 上报的 val_ic，或 val 段评估记录的原 IC */
+    valIc(entry) {
+      const m = entry.metrics || {}
+      if (m.val_ic != null) return m.val_ic
+      return entry.stage === 'val' ? (m.ic ?? null) : null
+    },
+    icWindowHint(entry, which) {
+      const v = which === 'train' ? this.trainIc(entry) : this.valIc(entry)
+      if (v == null) return '无该窗口 IC 记录'
+      const m = entry.metrics || {}
+      return m[which === 'train' ? 'train_ic' : 'val_ic'] != null
+        ? (which === 'train' ? 'train 窗口 IC' : 'val 窗口 IC')
+        : '回退自该评估记录的窗口 IC'
+    },
+    blindIcHint(entry) {
+      const m = entry.metrics || {}
+      if (m.test_ic == null) return '未走过提交（盲测段对挖掘循环锁死，提交时才现算）'
+      const ret = m.test_ic_retention
+      return ret != null ? `盲测保留比 ${(ret * 100).toFixed(0)}%（vs train IC）` : '盲测段 IC（2025+）'
+    },
     stageLabel(stage) {
       // 指标来自挖掘循环内的评估段；盲测段（真正的 OOS）刻意不回流记忆，防止多重检验污染
       return { train: '训练段', val: '验证段', test: '盲测段' }[stage] || stage || '—'
@@ -373,13 +410,14 @@ export default {
           return
         }
         const num = v => (v === null || v === undefined || Number.isNaN(Number(v))) ? '' : Number(v)
-        const cols = ['更新时间', '因子名称', '中台ID', '状态', '阶段', 'IC', 'ICIR', '覆盖率', '换手(截面自相关)',
+        const cols = ['更新时间', '因子名称', '中台ID', '状态', '阶段', '训练IC', '验证IC', '盲测IC', 'ICIR', '覆盖率', '换手(截面自相关)',
                       '年化超额', '夏普', '超额夏普', '年化收益', '最大回撤', '组合年换手', '日重叠', '单调性',
                       '评估次数', '调仓', '研究档位', '数据面', '结论/拒绝原因', 'run_id']
         const data = out.map(e => [
           formatTime(e.updated_at), e.factor_name || '', e.factor_uid || '',
           memoryVerdictLabel(e.verdict), this.stageLabel(e.stage),
-          num(e.metrics?.ic), num(e.metrics?.icir),
+          num(this.trainIc(e)), num(this.valIc(e)), num(e.metrics?.test_ic),
+          num(e.metrics?.icir),
           num(e.metrics?.coverage ?? e.metrics?.factor_coverage),
           num(e.metrics?.cs_pearson_autocorr),
           num(e.metrics?.annualized_excess_return ?? e.metrics?.long_group_annual_excess_return),
