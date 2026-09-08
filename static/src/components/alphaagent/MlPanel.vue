@@ -62,6 +62,30 @@
             <i class="ml-factor-lib">{{ f.library }}</i>
           </div>
         </div>
+        <div class="ml-reco-bar">
+          <button class="mlv-ghost" type="button"
+                  :disabled="ml.recommending || anyRunning"
+                  title="物化因子面板后按'自己强 + 与已选互补'贪心排序（mRMR）。约 1-3 分钟：首次含面板加载，因子值会进磁盘缓存，随后直接点训练可复用。"
+                  @click="recommendFactors">
+            {{ ml.recommending ? '推荐计算中（可关掉面板等结果）…' : '帮我推荐 Top-8' }}
+          </button>
+          <span class="mlv-sub">质量 = mining 窗口日均 |IC|；冗余 = 与已选最大相关；自动填入勾选</span>
+        </div>
+        <div v-if="ml.recommend" class="ml-reco">
+          <div class="mlv-block-head" style="margin:8px 0 4px">
+            <h5>mRMR 推荐清单（已填入上方勾选）</h5>
+            <button class="mlv-ghost" type="button" title="清空推荐并取消勾选" @click="clearRecommend">清空推荐</button>
+          </div>
+          <div class="ml-reco-list">
+            <div v-for="r in ml.recommend.ranking" :key="r.name" class="ml-reco-row">
+              <b>#{{ r.rank }}</b>
+              <span class="ml-reco-name" title="点击查看因子数据与机制说明"
+                    @click.stop.prevent="toggleFactorCard(poolFactor(r.name), $event)">{{ r.name }}</span>
+              <i class="ml-factor-lib">{{ r.library }}</i>
+              <i class="mlv-sub">|IC| {{ fmtNum(r.ic_mean) }} · 冗余 {{ num2(r.redundancy) }}</i>
+            </div>
+          </div>
+        </div>
       </div>
       <div v-if="ml.error" class="ml-error">{{ ml.error }}</div>
     </div>
@@ -391,6 +415,8 @@ export default {
         detail: null,
         starting: false,
         error: '',
+        recommending: false,  // mRMR 推荐计算中
+        recommend: null,      // {ranking:[...], k, ...}（POST /stacking/recommend 结果）
       },
       loadingList: false,
       showConfig: false,
@@ -612,6 +638,42 @@ export default {
     },
     setAllFactors(on) {
       this.ml.form.include_factors = on ? this.ml.factorPool.map(f => f.name) : []
+    },
+    poolFactor(name) {
+      return (this.ml.factorPool || []).find(f => f.name === name) || null
+    },
+    /** mRMR 推荐：物化因子面板算精确两两相关（约 1-3 分钟），成功后自动填入勾选 */
+    async recommendFactors() {
+      if (this.anyRunning || this.ml.recommending) return
+      this.ml.recommending = true
+      this.ml.error = ''
+      try {
+        const res = await api('/api/alphaagent/stacking/recommend', {
+          method: 'POST',
+          body: {
+            label_days: this.ml.form.label_days,
+            max_corr: this.ml.form.max_corr,
+            no_candidate: this.ml.form.no_candidate,
+            include_factors: this.ml.form.include_factors.length ? [...this.ml.form.include_factors] : null,
+            k: 8,
+          },
+        })
+        if (!res.ok) throw new Error((res.error) || '推荐失败')
+        this.ml.recommend = res
+        const names = (res.ranking || []).map(r => r.name).filter(Boolean)
+        if (names.length) this.ml.form.include_factors = names
+      } catch (e) {
+        let msg = String(e && e.message ? e.message : e)
+        // FastAPI 409 的 detail 是 JSON 字符串时解出来
+        try { msg = JSON.parse(msg).detail || msg } catch (_) { /* keep raw */ }
+        this.ml.error = '推荐失败：' + msg
+      } finally {
+        this.ml.recommending = false
+      }
+    },
+    clearRecommend() {
+      this.ml.recommend = null
+      this.ml.form.include_factors = []
     },
     fmtNum(v) {
       if (v === null || v === undefined || Number.isNaN(Number(v))) return '—'
@@ -979,4 +1041,12 @@ export default {
 .mlfc-seg-text { display: block; font-size: 11px; line-height: 1.7; color: #c6d2e8; white-space: pre-wrap; word-break: break-all; }
 .mlfc-seg-text.mlfc-muted { color: var(--muted, #8494b5); }
 .mlfc-review { margin-top: 7px; font-size: 10px; line-height: 1.5; color: #e8c491; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.ml-reco-bar { display: flex; align-items: center; gap: 10px; margin-top: 8px; flex-wrap: wrap; }
+.ml-reco-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 2px 16px; max-height: 170px; overflow-y: auto; border: 1px dashed var(--line); border-radius: 8px; padding: 6px 10px; margin-top: 2px; }
+.ml-reco-row { display: flex; align-items: center; gap: 7px; min-width: 0; font-size: 12px; }
+.ml-reco-row b { color: #7fb0ff; font-family: var(--font-mono, monospace); }
+.ml-reco-name { cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ml-reco-name:hover { color: #7fb0ff; text-decoration: underline dotted; }
+.ml-reco-row .mlv-sub { font-size: 10px; }
+.ml-reco-row .ml-factor-lib { flex: none; }
 </style>

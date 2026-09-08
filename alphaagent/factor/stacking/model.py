@@ -597,3 +597,115 @@ def scheme_compare_report(
     return {"note": "同一 OOS 行集对照（date ≥ 首个 OOS 折起点，且当前组合/方案/标签均有效）；"
                     "三种方案都不做因子挑选，权重只由 train 折估计——用于回答'拟合加权 vs 不挑全上简单投票'。",
             "schemes": schemes_out}
+
+
+# ── B 族推荐：mRMR 贪心因子排序（精确两两相关，mining 窗口口径）─────────────
+
+def _window_corr_matrix(
+    feature_matrix: np.ndarray,
+    dates_np: np.ndarray,
+    window_start,
+    window_end,
+    *,
+    stride: int = 5,
+    min_day_stocks: int = 5,
+) -> np.ndarray:
+    """mining 窗口内成员两两截面 Pearson 相关（按日抽样跨日拼接口径）。
+
+    与 dataset._sampled_corr 同口径（逐日抽取截面相关对的拼接样本），返回
+    [K,K] 对称阵，对角 1；样本不足的对为 0（视为不相关）。dates_np 为逐行日期。
+    """
+    start = np.datetime64(pd.Timestamp(window_start))
+    end = np.datetime64(pd.Timestamp(window_end))
+    in_win = (dates_np >= start) & (dates_np < end)
+    days = np.unique(dates_np[in_win])
+    day_arrays: list[np.ndarray] = []
+    for day in days[::stride]:
+        m = (dates_np == day) & in_win
+        if int(m.sum()) >= min_day_stocks:
+            day_arrays.append(feature_matrix[m])
+    k = feature_matrix.shape[1]
+    out = np.eye(k, dtype=np.float64)
+    for i in range(k):
+        for j in range(i + 1, k):
+            a_all: list[np.ndarray] = []
+            b_all: list[np.ndarray] = []
+            for arr in day_arrays:
+                ai, bj = arr[:, i], arr[:, j]
+                ok = np.isfinite(ai) & np.isfinite(bj)
+                if int(ok.sum()) >= 5:
+                    a_all.append(ai[ok])
+                    b_all.append(bj[ok])
+            if len(a_all) >= 3:
+                A = np.concatenate(a_all)
+                B = np.concatenate(b_all)
+                if A.std() > 1e-12 and B.std() > 1e-12:
+                    c = float(np.corrcoef(A, B)[0, 1])
+                    if np.isfinite(c):
+                        out[i, j] = out[j, i] = c
+    return out
+
+
+def mrmr_rank_features(
+    feature_matrix: np.ndarray,
+    label: np.ndarray,
+    dates: pd.Series,
+    feature_names: Sequence[str],
+    *,
+    window_start,
+    window_end,
+    k: int = 8,
+    beta: float = 0.7,
+) -> list[dict]:
+    """mRMR 贪心因子排序（B 族推荐）：先选 |mining IC| 最强，之后每一步取
+    "自己强 + 与已选越不像越好"的下一个。
+
+    质量 q_j = mining 窗口（[window_start, window_end)）内日均 |Spearman IC|；
+    冗余 r_j = 与已选因子 |Pearson corr| 的最大值（逐日抽样拼接口径）；
+    得分 score = q_j · (1 − beta · r_j)（beta=0.7：与已选相关 0.6 的因子
+    只保留 ~58% 质量分，完全同源 ~1 只保留 30%）。输出按得分降序的推荐清单，
+    用于"照单勾选"而非硬性裁决（是否入选仍由 OOS 检验说话）。
+    """
+    names = [str(n) for n in feature_names]
+    k = max(1, min(int(k), feature_matrix.shape[1]))
+    date_np = pd.to_datetime(pd.Series(dates)).to_numpy()
+    start = np.datetime64(pd.Timestamp(window_start))
+    end = np.datetime64(pd.Timestamp(window_end))
+    win = (date_np >= start) & (date_np < end) & np.isfinite(label)
+    n_members = feature_matrix.shape[1]
+
+    # 质量：窗口内日均 |IC|
+    ic_mean = np.zeros(n_members, dtype=np.float64)
+    for j in range(n_members):
+        ic = daily_spearman_ic(feature_matrix[win, j], label[win], pd.Series(date_np[win]))
+        ic_mean[j] = float(ic.abs().mean()) if len(ic) else 0.0
+    corr = _window_corr_matrix(feature_matrix, date_np, window_start, window_end)
+
+    selected: list[int] = []
+    remaining = list(range(n_members))
+    ranking: list[dict] = []
+    for _ in range(k):
+        if not remaining:
+            break
+        best_j, best_score = -1, -1.0
+        for j in remaining:
+            q = ic_mean[j]
+            if q <= 1e-12:
+                continue
+            red = max((abs(corr[j, s]) for s in selected), default=0.0)
+            score = q * (1.0 - beta * min(red, 1.0))
+            if score > best_score:
+                best_j, best_score = j, score
+        if best_j < 0:  # 剩余成员都没有可用质量分
+            break
+        selected.append(best_j)
+        remaining.remove(best_j)
+        red = max((abs(corr[best_j, s]) for s in selected if s != best_j), default=0.0)
+        ranking.append({
+            "rank": len(ranking) + 1,
+            "name": names[best_j],
+            "ic_mean": round(float(ic_mean[best_j]), 6),
+            "redundancy": round(float(red), 4),
+            "score": round(float(best_score), 6),
+        })
+    return ranking

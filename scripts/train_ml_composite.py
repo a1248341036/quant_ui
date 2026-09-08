@@ -69,6 +69,9 @@ def _parse_args() -> argparse.Namespace:
                          "（ovdiv：WMA20 后 1.07→0.50）；1=关闭平滑")
     ap.add_argument("--include-factors", nargs="*", default=None,
                     help="因子白名单（按 factor_name 精确匹配）：只训练名单内的因子；缺省=全部")
+    ap.add_argument("--recommend-k", type=int, default=0,
+                    help=">0 时进入 mRMR 推荐模式：构建数据集后按 '强+互补' 输出 Top-k 推荐清单"
+                         "（不训练模型），写 recommend.json 并退出。因子值已进磁盘缓存，随后的完整训练可复用")
     ap.add_argument("--out-dir", default=None, help="输出目录（默认 artifacts/alphaagent/stacking/<时间戳>）；后端托管时传确定性路径")
     ap.add_argument("--isolation", default="strict", choices=["strict", "holdout"],
                     help="strict：walk-forward 仅用挖掘期后干净段（fold 少但指标可信）；"
@@ -157,6 +160,46 @@ def main() -> None:
     print(f"有效特征 {len(dataset.feature_names)} 个；剔除 {len(dataset.dropped)} 个")
     for d in dataset.dropped:
         print(f"  - drop {d['name']} ({d['library']}): {d['reason']}")
+
+    # ④b mRMR 推荐模式（B 族）：不训练，只输出"强+互补"推荐清单供前端一键勾选
+    if args.recommend_k > 0:
+        from alphaagent.factor.stacking.model import mrmr_rank_features
+
+        if len(dataset.feature_names) < 2:
+            print("有效因子不足（<2），无法推荐组合。")
+            sys.exit(1)
+        dts = pd.DatetimeIndex(panel.index.get_level_values("datetime"))
+        date_series = pd.Series(dts)
+        rec_start = mining_end - pd.DateOffset(months=args.decay_months)
+        print(f"mRMR 推荐（mining 窗口 [{rec_start.date()} ~ {mining_end.date()}]，Top-{args.recommend_k}）…")
+        ranking = mrmr_rank_features(
+            dataset.feature_matrix, dataset.label, date_series, dataset.feature_names,
+            window_start=rec_start, window_end=mining_end, k=args.recommend_k, beta=0.7,
+        )
+        meta_by_name = {e.name: e for e in dataset.entries}
+        rows = []
+        for r in ranking:
+            entry = meta_by_name.get(r["name"])
+            rows.append({**r, "facets": list(entry.facets) if entry else [],
+                         "library": entry.library if entry else ""})
+        for r in rows:
+            print(f"  #{r['rank']} {r['name']}: |IC|={r['ic_mean']} 与已选冗余={r['redundancy']} "
+                  f"score={r['score']}")
+        rec = {
+            "k": args.recommend_k,
+            "beta": 0.7,
+            "window": f"[{rec_start.date()} ~ {mining_end.date()}]",
+            "n_features": len(dataset.feature_names),
+            "ranking": rows,
+            "note": "mRMR 贪心：质量 = mining 窗口日均 |IC|；冗余 = 与已选因子最大 |corr|；"
+                    "得分 = 质量 × (1 − 0.7 × 冗余)。照单勾选只是起点，是否入选仍由训练后的 "
+                    "OOS 与置换贡献说话。",
+        }
+        (out_dir / "recommend.json").write_text(
+            json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8"
+        )
+        print(f"推荐已写入 {out_dir / 'recommend.json'}（因子值已进磁盘缓存，直接点训练会命中缓存）")
+        sys.exit(0)
 
     # ⑤ walk-forward 训练
     #   strict：train 从 mining_end 起步（只用挖掘期后干净段，fold 少）；
