@@ -53,7 +53,8 @@
         </div>
         <div v-if="ml.factorPoolLoading" class="mlv-sub" style="padding:6px 2px">加载因子列表…</div>
         <div v-else-if="ml.factorPool.length" class="ml-factor-list">
-          <label v-for="f in ml.factorPool" :key="f.name" class="ml-check" :title="f.name">
+          <label v-for="f in ml.factorPool" :key="f.name" class="ml-check ml-factor-row"
+                 @mouseenter="factorHoverShow(f, $event)" @mousemove="factorHoverMove($event)" @mouseleave="factorHoverShow(null)">
             <input type="checkbox" :value="f.name" v-model="ml.form.include_factors"> {{ f.name }} <i class="ml-factor-lib">{{ f.library }}</i>
           </label>
         </div>
@@ -241,6 +242,29 @@
         </table>
       </div>
     </template>
+
+    <!-- ── 因子悬停卡片：数据 + 机制解释 ── -->
+    <teleport to="body">
+      <div v-if="factorHover" class="ml-factor-card" :style="{ left: factorHoverPos.x + 'px', top: factorHoverPos.y + 'px' }">
+        <div class="mlfc-head">
+          <b>{{ factorHover.name }}</b>
+          <span class="mlfc-tag" :class="factorHover.library === '正式' ? 'tag-prod' : 'tag-cand'">{{ factorHover.library }}</span>
+        </div>
+        <div class="mlfc-metrics">
+          <span title="训练段 IC"><i>train IC</i>{{ fmtNum(factorHover.data.train_ic) }}</span>
+          <span title="训练段 ICIR"><i>ICIR</i>{{ fmtNum(factorHover.data.train_icir ?? (factorHover.data.metrics||{}).icir) }}</span>
+          <span title="验证段 IC"><i>val IC</i>{{ fmtNum(factorHover.data.val_ic) }}</span>
+          <span title="验证 IC / 训练 IC 保留比"><i>保留</i>{{ factorHover.data.val_ic_retention != null ? (factorHover.data.val_ic_retention * 100).toFixed(0) + '%' : '—' }}</span>
+          <span title="截面秩自相关（换手代理，越低换手越高）"><i>autocorr</i>{{ fmtNum((factorHover.data.metrics||{}).cs_pearson_autocorr ?? factorHover.data.cs_pearson_autocorr) }}</span>
+          <span title="分位组合年化超额"><i>年超额</i>{{ factorHover.data.annualized_excess_return != null ? (factorHover.data.annualized_excess_return * 100).toFixed(1) + '%' : '—' }}</span>
+          <span title="调仓频率 / 研究档位"><i>频率</i>{{ factorHover.data.rebalance_freq || '—' }}/{{ factorHover.data.research_mode === 'fundamental' ? '基本面' : '技术' }}</span>
+          <span title="库内状态"><i>状态</i>{{ factorHover.data.promotion_status || factorHover.data.status || '—' }}</span>
+        </div>
+        <div class="mlfc-comment" v-if="hoverComment">{{ hoverComment }}</div>
+        <div class="mlfc-comment mlfc-muted" v-else>该因子无文字说明（comment 为空）</div>
+        <div class="mlfc-review" v-if="factorHover.data.review_reasons" :title="factorHover.data.review_reasons">Reviewer：{{ factorHover.data.review_reasons }}</div>
+      </div>
+    </teleport>
   </div>
 </template>
 
@@ -268,6 +292,8 @@ export default {
       showConfig: false,
       exporting: false,
       contribMetric: 'ic_drop',
+      factorHover: null,
+      factorHoverPos: { x: 0, y: 0 },
       historySortKey: '',
       historySortDir: -1,
     }
@@ -338,6 +364,11 @@ export default {
     },
     gateModeLabel() {
       return this.gateMode === 'fundamental' ? '基本面档 · 月调仓松门槛' : '技术档 · 周调仓严门槛'
+    },
+    /** 悬停卡片正文：完整机制说明（候选库 comment_full / 正式库 comment 截断版） */
+    hoverComment() {
+      const d = this.factorHover?.data || {}
+      return d.comment_full || d.comment || ''
     },
     contribHint() {
       return ({
@@ -418,7 +449,7 @@ export default {
             const name = f.name || f.factor_id
             if (!name || seen.has(name)) continue
             seen.add(name)
-            pool.push({ name, library: batch.library === 'production' ? '正式' : '候选' })
+            pool.push({ name, library: batch.library === 'production' ? '正式' : '候选', data: f })
           }
         }
         pool.sort((a, b) => a.name.localeCompare(b.name))
@@ -428,6 +459,17 @@ export default {
       } finally {
         this.ml.factorPoolLoading = false
       }
+    },
+    factorHoverShow(f, evt) {
+      this.factorHover = f
+      if (f && evt) this.factorHoverMove(evt)
+    },
+    factorHoverMove(evt) {
+      if (!this.factorHover) return
+      const W = 380
+      const x = Math.min(evt.clientX + 16, window.innerWidth - W - 12)
+      const y = Math.min(evt.clientY + 14, window.innerHeight - 200)
+      this.factorHoverPos = { x: Math.max(8, x), y: Math.max(8, y) }
     },
     setAllFactors(on) {
       this.ml.form.include_factors = on ? this.ml.factorPool.map(f => f.name) : []
@@ -777,4 +819,17 @@ export default {
 .ml-factor-picker { margin-top: 10px; }
 .ml-factor-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 2px 14px; max-height: 180px; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; }
 .ml-factor-lib { color: var(--muted); font-style: normal; font-size: 10px; }
+.ml-factor-row { cursor: help; }
+.ml-factor-card { position: fixed; z-index: 9999; width: 380px; max-height: 60vh; overflow-y: auto; background: var(--bg-soft, #10192a); border: 1px solid var(--line, #2a3650); border-radius: 10px; padding: 10px 12px; box-shadow: 0 8px 28px rgb(0 0 0 / 0.45); pointer-events: none; }
+.mlfc-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.mlfc-head b { color: var(--text, #e6ecf7); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mlfc-tag { flex: none; font-size: 10px; padding: 1px 7px; border-radius: 6px; }
+.mlfc-tag.tag-prod { background: rgb(79 195 161 / 0.16); color: #4fc3a1; }
+.mlfc-tag.tag-cand { background: rgb(232 196 145 / 0.16); color: #e8c491; }
+.mlfc-metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px 8px; margin-bottom: 8px; }
+.mlfc-metrics span { display: flex; flex-direction: column; gap: 1px; font-size: 11px; color: var(--text, #e6ecf7); font-family: var(--font-mono, monospace); }
+.mlfc-metrics span i { font-style: normal; font-size: 9px; color: var(--muted, #8494b5); }
+.mlfc-comment { font-size: 11px; line-height: 1.6; color: #c6d2e8; white-space: pre-wrap; word-break: break-all; border-top: 1px solid var(--line, #2a3650); padding-top: 7px; }
+.mlfc-comment.mlfc-muted { color: var(--muted, #8494b5); }
+.mlfc-review { margin-top: 7px; font-size: 10px; line-height: 1.5; color: #e8c491; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 </style>
