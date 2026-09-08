@@ -19,12 +19,6 @@
     <!-- ── 训练配置（折叠） ── -->
     <div v-show="showConfig" class="ml-config">
       <div class="ml-form">
-        <label>模式
-          <select v-model="ml.form.modes" multiple class="ml-input" size="2">
-            <option value="technical">日线技术</option>
-            <option value="fundamental">基本面</option>
-          </select>
-        </label>
         <label>模型
           <select v-model="ml.form.model" class="ml-input">
             <option value="both">Ridge + LGBM</option>
@@ -45,6 +39,7 @@
         <label class="ml-check"><input type="checkbox" v-model="ml.form.no_candidate"> 只用正式库</label>
         <label class="ml-check"><input type="checkbox" v-model="ml.form.no_gate"> 跳过 engine_gate</label>
         <label class="ml-check" title="按置换贡献降序取 Top-k 逐级重训（成本 ≈ 2n 次拟合，训练时间明显变长）。输出'子集规模 vs OOS IC'曲线，定位边际收益归零的最优因子数。"><input type="checkbox" v-model="ml.form.subset_curve"> 累积子集曲线</label>
+        <span class="ml-gate-mode" title="因子池已是统一大库（不分技术/基本面）；engine_gate 档位自动跟随持有天数：≤7 天→技术档（周调仓·严门槛），>7 天→基本面档（月调仓·松门槛）。">gate 档位：{{ gateModeLabel }}（自动）</span>
       </div>
       <div v-if="ml.error" class="ml-error">{{ ml.error }}</div>
     </div>
@@ -243,7 +238,7 @@ export default {
   data() {
     return {
       ml: {
-        form: { modes: ['technical'], model: 'both', label_days: 5, train_months: 18, step_months: 6, max_corr: 0.6, isolation: 'holdout', no_candidate: false, no_gate: false, subset_curve: false },
+        form: { model: 'both', label_days: 5, train_months: 18, step_months: 6, max_corr: 0.6, isolation: 'holdout', no_candidate: false, no_gate: false, subset_curve: false },
         list: [],
         selected: null,
         detail: null,
@@ -317,6 +312,14 @@ export default {
       { key: 'sharpe_drop', label: 'Sharpe 口径' },
       { key: 'dd_impact', label: '回撤口径' },
     ],
+    /** gate 档位自动跟随持有天数：≤7 天→技术档（周调仓严门槛），>7 天→基本面档（月调仓松门槛）。
+     *  因子池 09-03 统一大库后 modes 已无筛选作用，仅 modes[0] 决定 engine_gate 政策。 */
+    gateMode() {
+      return Number(this.ml.form.label_days) > 7 ? 'fundamental' : 'technical'
+    },
+    gateModeLabel() {
+      return this.gateMode === 'fundamental' ? '基本面档 · 月调仓松门槛' : '技术档 · 周调仓严门槛'
+    },
     contribHint() {
       return ({
         ic_drop: '逐折在 OOS 段把单因子行内打乱后重预测，组合 OOS IC 下降量跨折平均。正值 = 真贡献（掉得越多越重要）；负值（红）= 打乱反而更好，该因子在拖后腿，是剔除候选。',
@@ -422,6 +425,7 @@ export default {
       parts.push((t.model || p.model || 'both').toUpperCase())
       parts.push(`持有${t.label_days ?? p.label_days ?? 5}d`)
       parts.push(`${t.n_folds ?? '—'}折`)
+      parts.push(`gate=${(p.modes && p.modes[0]) === 'fundamental' ? '基本面档' : '技术档'}`)
       return parts.join(' · ')
     },
     gateOf(t, key, asPct) {
@@ -627,7 +631,7 @@ export default {
       this.ml.starting = true
       this.ml.error = ''
       try {
-        const res = await api('/api/alphaagent/stacking/train', { method: 'POST', body: this.ml.form })
+        const res = await api('/api/alphaagent/stacking/train', { method: 'POST', body: { ...this.ml.form, modes: [this.gateMode] } })
         this.showConfig = false
         this.ml.selected = res.train_id
         await this.loadMl()
@@ -715,4 +719,5 @@ export default {
 .mlv-metric-toggle button { border: 0; background: transparent; color: var(--muted); font-size: 11px; padding: 3px 10px; cursor: pointer; }
 .mlv-metric-toggle button + button { border-left: 1px solid var(--line); }
 .mlv-metric-toggle button.active { background: rgb(79 140 255 / 0.18); color: var(--text); }
+.ml-gate-mode { align-self: center; color: var(--muted); font-size: 11px; border: 1px dashed var(--line); border-radius: 7px; padding: 4px 10px; cursor: help; }
 </style>
