@@ -269,16 +269,17 @@ def template_from_expression(expression: str) -> str:
 # ── 数据面识别（跨面融合引导用）────────────────────────────────
 # 面板实际接入的数据列族（与 data/adapters/plugins 一致）：
 # 价量(stock_daily_wide) / 筹码(CHIP_*) / 拥挤(CROWD_*) / 基本面(funda_*) /
-# 股东(holder_*) / 业绩预告(forecast) / 事件(event_faces: 龙虎榜+大宗) / 资金流(fund_flow)
+# 股东(holder_*/th_*/inst_*) / 业绩披露(forecast/express/disclosure: pred_/exp_/ds_) /
+# 事件(event_faces: dt_/bt_、dividend: div_) / 资金流(fund_flow: ff_、margin: mgn_)
 FACET_DEFS: list[tuple[str, tuple[str, ...]]] = [
     ("价量面", ("$adj_", "$close", "$open", "$high", "$low", "$ret", "$vwap")),
     ("量能面", ("$volume", "$amount", "$turnover")),
     ("筹码面", ("chip_",)),
     ("拥挤面", ("crowd_",)),
     ("基本面", ("funda_",)),
-    ("股东面", ("holder_",)),
-    ("事件面", ("forecast", "dragon", "event_", "$event")),
-    ("资金面", ("fund_flow", "$inflow", "$outflow")),
+    ("股东面", ("holder_", "$inst_", "$th_")),
+    ("事件面", ("$pred", "$exp", "$ds_", "$dt_", "$bt_", "$div_", "$event")),
+    ("资金面", ("$ff_", "$mgn_", "$inflow", "$outflow")),
 ]
 
 # 数据源分组：融合（family 用面对组合键）只在跨组时成立。
