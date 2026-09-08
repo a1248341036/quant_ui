@@ -281,6 +281,31 @@ def main() -> None:
         print("组合分数平滑：关闭（--score-smooth 1）")
     score_smooth_used = smooth_n
 
+    # ⑤c 不挑全上对照（D 族）：等权/ICIR/HRP 简单投票 vs 学习加权
+    #     权重只由各折 train 段估计（与模型拟合同等信息量）；方案分数同样平滑
+    #     后在同一 OOS 行集上与 stacked 对照。
+    from alphaagent.factor.stacking.model import fit_scheme_compare_scores, scheme_compare_report
+
+    print("不挑全上对照（等权 / ICIR / HRP 简单投票）…")
+    first_oos = folds[0].oos_dates.min()
+    scheme_scores = fit_scheme_compare_scores(dataset.feature_matrix, dataset.label, date_series, folds)
+    if smooth_n > 1:
+        for _sn in scheme_scores:
+            scheme_scores[_sn] = _wma_smooth_scores(scheme_scores[_sn], panel, smooth_n)
+    scheme_compare = scheme_compare_report(
+        scheme_scores, stacked, dataset.label, date_series,
+        first_oos=first_oos, label_horizon=args.label_days,
+    )
+    for _sc in scheme_compare["schemes"]:
+        if _sc["scheme"] == "stacked":
+            print(f"  [当前组合] OOS IC={_fmt(_sc.get('ic_mean'))} ICIR={_fmt(_sc.get('ic_ir'))} "
+                  f"Sharpe={_sc.get('oos_sharpe')} 回撤={_sc.get('oos_max_drawdown')}")
+        else:
+            gap = _sc.get("ic_gap")
+            print(f"  [{_sc['label']}] OOS IC={_fmt(_sc.get('ic_mean'))} ICIR={_fmt(_sc.get('ic_ir'))} "
+                  f"Sharpe={_sc.get('oos_sharpe')} 回撤={_sc.get('oos_max_drawdown')} "
+                  f"IC−组合={_fmt(gap) if gap is not None else 'None'}")
+
     # ⑥ 衰减对照表（幸存者偏差量化）
     print("衰减对照表（mining 窗口 IC vs OOS IC）…")
     materialized_for_decay = []
@@ -368,6 +393,7 @@ def main() -> None:
         "decay_table": decay,
         "gate": gate_result,
         "oos_ic_blended": _blended_oos_ic(stacked, dataset.label, dts, first_oos),
+        "scheme_compare": scheme_compare,
     }
     (out_dir / "report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=1, default=str), encoding="utf-8"

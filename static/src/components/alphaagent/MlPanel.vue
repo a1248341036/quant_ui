@@ -214,6 +214,44 @@
                           <div id="ml-subset-risk" class="metrics-chart" style="height: 220px"></div>
                         </template>
                       </template>
+                      <template v-if="schemeRows.length">
+                        <div class="mlv-block-head">
+                          <h5>不挑全上对照（简单投票 vs 学习加权）</h5>
+                          <span class="summary-facet-hint" :title="(ml.detail.report.scheme_compare||{}).note || ''">ⓘ</span>
+                          <span v-if="schemeWinner" class="mlv-sub">
+                            跑赢当前组合：<b class="ic-pos">{{ schemeWinner.label }}</b>
+                            （IC <b class="ic-pos">{{ schemeWinner.ic_gap >= 0 ? '+' : '' }}{{ fmtNum(schemeWinner.ic_gap) }}</b>）
+                          </span>
+                          <span v-else class="mlv-sub">
+                            简单投票未能跑赢当前学习加权——拟合权重暂时"值得"
+                          </span>
+                        </div>
+                        <table class="lib-table">
+                          <thead>
+                            <tr>
+                              <th>方案</th><th>OOS IC</th><th>ICIR</th><th>OOS Sharpe</th>
+                              <th>最大回撤</th><th>样本日</th><th>IC − 当前组合</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <tr v-for="row in schemeRows" :key="row.scheme">
+                              <td :title="row.note">
+                                <strong v-if="row.scheme === 'stacked'">{{ row.label }}</strong>
+                                <template v-else>{{ row.label }}</template>
+                              </td>
+                              <td :class="icClass(row.ic_mean)"><strong>{{ fmtNum(row.ic_mean) }}</strong></td>
+                              <td>{{ fmtNum(row.ic_ir) }}</td>
+                              <td>{{ row.oos_sharpe == null ? '—' : num2(row.oos_sharpe) }}</td>
+                              <td>{{ row.oos_max_drawdown == null ? '—' : pct(row.oos_max_drawdown) }}</td>
+                              <td>{{ row.n_days }}</td>
+                              <td v-if="row.scheme === 'stacked'">—</td>
+                              <td v-else :class="icClass(row.ic_gap)">
+                                {{ row.ic_gap == null ? '—' : (row.ic_gap >= 0 ? '+' : '') + fmtNum(row.ic_gap) }}
+                              </td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </template>
                       <div class="mlv-block-head"><h5>折级 OOS IC</h5></div>
                       <div class="mlv-grid2">
                         <div v-for="(rows, model) in ml.detail.report.fold_metrics" :key="'f-' + model">
@@ -417,6 +455,18 @@ export default {
     },
     hasSubsetRisk() {
       return (this.ml.detail?.report?.subset_curve || []).some(r => r.oos_sharpe != null)
+    },
+    /** D 族"不挑全上"对照行（服务端同一 OOS 行集算好，前端直接渲染） */
+    schemeRows() {
+      return this.ml.detail?.report?.scheme_compare?.schemes || []
+    },
+    /** 跑赢当前组合的简单投票方案（按 IC 差最大者）；无则 null */
+    schemeWinner() {
+      const rows = this.schemeRows.filter(
+        r => r.scheme !== 'stacked' && Number.isFinite(Number(r.ic_gap)) && Number(r.ic_gap) > 0,
+      )
+      if (!rows.length) return null
+      return rows.reduce((a, b) => (Number(b.ic_gap) > Number(a.ic_gap) ? b : a))
     },
     contribMetrics: () => [
       { key: 'ic_drop', label: 'IC 口径' },
