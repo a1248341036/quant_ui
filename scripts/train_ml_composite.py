@@ -72,6 +72,10 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--recommend-k", type=int, default=0,
                     help=">0 时进入 mRMR 推荐模式：构建数据集后按 '强+互补' 输出 Top-k 推荐清单"
                          "（不训练模型），写 recommend.json 并退出。因子值已进磁盘缓存，随后的完整训练可复用")
+    ap.add_argument("--multi-path-shifts", default="",
+                    help="多路径对照：逗号分隔的折边界平移月数（如 0,2,4 → 额外 2、4 两条路径）。"
+                         "每条平移独立重训一遍同模型，输出 OOS IC/ICIR/Sharpe/回撤 的路径分布——"
+                         "单条切法上的表现可能只是那条边界的运气。成本 ≈ 额外路径数 × 一次完整拟合")
     ap.add_argument("--out-dir", default=None, help="输出目录（默认 artifacts/alphaagent/stacking/<时间戳>）；后端托管时传确定性路径")
     ap.add_argument("--isolation", default="strict", choices=["strict", "holdout"],
                     help="strict：walk-forward 仅用挖掘期后干净段（fold 少但指标可信）；"
@@ -414,6 +418,116 @@ def main() -> None:
                       f"回撤={best_r['oos_max_drawdown']}（IC 峰值 k={best['k']}，"
                       f"两口径不一致时优先看风险口径——IC 高不等于可交易）")
 
+    # ⑦c 多路径对照（可选）：折边界平移后整条路径重训，报告 OOS 指标分布
+    multi_path = None
+    extra_shifts = [int(s.strip()) for s in args.multi_path_shifts.split(",") if s.strip()]
+    extra_shifts = [s for s in extra_shifts if s]
+    if extra_shifts:
+        from alphaagent.factor.stacking.model import _portfolio_risk_metrics
+
+        def _path_metrics(score: np.ndarray, p0):
+            m = (pd.Series(dts) >= pd.Timestamp(p0)) & np.isfinite(score) & np.isfinite(dataset.label)
+            m = m.to_numpy()
+            if m.sum() < 20:
+                return None
+            ic = daily_spearman_ic(score[m], dataset.label[m], pd.Series(dts[m]))
+            risk = _portfolio_risk_metrics(
+                score[m], dataset.label[m], pd.Series(dts[m]), horizon_days=args.label_days
+            )
+            if not len(ic):
+                return None
+            sd = float(ic.std(ddof=1))
+            return {
+                "ic_mean": round(float(ic.mean()), 6),
+                "ic_ir": round(float(ic.mean() / sd), 4) if len(ic) > 2 and sd > 1e-12 else None,
+                "oos_sharpe": risk.get("oos_sharpe"),
+                "oos_max_drawdown": risk.get("oos_max_drawdown"),
+                "n_days": int(len(ic)),
+            }
+
+        print(f"多路径对照（额外平移 {extra_shifts} 个月，{len(extra_shifts)} 条路径，各重训 {kinds}）…")
+        path_rows: list[dict] = []
+        for shift in extra_shifts:
+            if holdout_mode:
+                pfolds: list = []
+                for bump in (0, 1, 2, 3):
+                    pfolds = walk_forward_splits(
+                        dts, train_start=wf_train_start, train_months=base_months + bump,
+                        step_months=args.step_months, purge_days=max(args.purge_days, args.label_days),
+                        shift_months=shift,
+                    )
+                    p0 = pd.Timestamp(pfolds[0].oos_dates.min()) if pfolds else None
+                    if p0 is not None and p0 >= mining_end:
+                        break
+                if pfolds and pd.Timestamp(pfolds[0].oos_dates.min()) >= mining_end:
+                    pfolds = [f for f in pfolds if pd.Timestamp(f.oos_dates.min()) >= mining_end]
+            else:
+                pfolds = walk_forward_splits(
+                    dts, train_start=mining_end, train_months=args.train_months,
+                    step_months=args.step_months, purge_days=max(args.purge_days, args.label_days),
+                    shift_months=shift,
+                )
+            if not pfolds:
+                print(f"  平移 {shift} 个月：无可用折（干净段不足），跳过")
+                continue
+            p_outs: dict[str, np.ndarray] = {}
+            for kind in kinds:
+                p, _rep, _w, _c = fit_predict_walkforward(
+                    dataset.feature_matrix, dataset.label, date_series, pfolds, kind=kind,
+                    feature_names=dataset.feature_names, label_horizon=args.label_days,
+                )
+                p_outs[kind] = p
+            usable = [p_outs[k] for k in kinds if np.isfinite(p_outs[k]).any()]
+            if not usable:
+                continue
+            import warnings as _warnings
+
+            with _warnings.catch_warnings():
+                _warnings.simplefilter("ignore", category=RuntimeWarning)
+                ps = np.nanmean(np.column_stack(usable), axis=1).astype(np.float32)
+            if smooth_n > 1:
+                ps = _wma_smooth_scores(ps, panel, smooth_n)
+            p0 = pfolds[0].oos_dates.min()
+            mm_p = _path_metrics(ps, p0)
+            mm_base = _path_metrics(stacked, p0)  # 同一窗口上的主路径口径，保证可比
+            if mm_p is None:
+                continue
+            gap = (mm_p["ic_mean"] - mm_base["ic_mean"]) if mm_base else None
+            row = {
+                "shift_months": shift,
+                "folds": len(pfolds),
+                "oos_start": str(p0.date()),
+                "oos_end": str(pfolds[-1].oos_dates.max().date()),
+                **mm_p,
+                "ic_gap_vs_main": round(gap, 6) if gap is not None else None,
+            }
+            path_rows.append(row)
+            print(f"  平移 {shift} 个月 [{row['oos_start']} ~ {row['oos_end']}] {len(pfolds)} 折："
+                  f"IC={_fmt(mm_p['ic_mean'])} ICIR={_fmt(mm_p['ic_ir'])} "
+                  f"Sharpe={mm_p['oos_sharpe']} 回撤={mm_p['oos_max_drawdown']} "
+                  f"IC−主路径={_fmt(gap) if gap is not None else 'None'}")
+        if path_rows:
+            ics = [r["ic_mean"] for r in path_rows if r.get("ic_mean") is not None]
+            shp = [r["oos_sharpe"] for r in path_rows if r.get("oos_sharpe") is not None]
+            multi_path = {
+                "shifts": extra_shifts,
+                "paths": path_rows,
+                "aggregate": {
+                    "ic_min": round(min(ics), 6) if ics else None,
+                    "ic_median": round(float(np.median(ics)), 6) if ics else None,
+                    "ic_max": round(max(ics), 6) if ics else None,
+                    "sharpe_min": round(min(shp), 4) if shp else None,
+                    "n_negative_ic": sum(1 for v in ics if v < 0),
+                    "n_paths": len(path_rows),
+                },
+                "note": "同一干净历史换一种折边界切法重训的 OOS 结果。单条路径好不算稳："
+                        "若有多条平移路径 IC≤0 或显著低于主路径，说明组合对数据切法敏感，"
+                        "结论的可交易性存疑。",
+            }
+            agg = multi_path["aggregate"]
+            print(f"  路径分布：IC [{agg['ic_min']} ~ {agg['ic_max']}] 中位 {agg['ic_median']}，"
+                  f"负 IC 路径 {agg['n_negative_ic']}/{agg['n_paths']}")
+
     # ⑧ 落盘：report + model + pred 通道
     import joblib
 
@@ -437,6 +551,7 @@ def main() -> None:
         "gate": gate_result,
         "oos_ic_blended": _blended_oos_ic(stacked, dataset.label, dts, first_oos),
         "scheme_compare": scheme_compare,
+        "multi_path": multi_path,
     }
     (out_dir / "report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=1, default=str), encoding="utf-8"
