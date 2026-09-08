@@ -242,3 +242,77 @@ def stop_training(train_id: str) -> dict[str, Any]:
         if cur["proc"].poll() is None:
             cur["proc"].kill()
         return {"ok": True, "train_id": train_id}
+
+
+# ── B 族：mRMR 因子推荐（同步子进程：物化因子面板 + 两两相关 → 推荐清单）──
+
+RECOMMEND_ROOT = ROOT / "artifacts" / "alphaagent" / "recommend"
+_recommend_busy = threading.Lock()
+
+
+def start_recommend(params: dict[str, Any]) -> dict[str, Any]:
+    """同步跑一次 mRMR 推荐：构建数据集（复用因子值磁盘缓存）→ recommend.json。
+
+    与训练互斥（panel 全量物化内存重）；训练中或已有推荐在跑时直接返回 error。
+    """
+    with _lock:
+        if _current is not None and _current["proc"].poll() is None:
+            return {"error": "training_already_running"}
+    if not _recommend_busy.acquire(blocking=False):
+        return {"error": "recommend_already_running"}
+
+    train_id = _now_id()
+    out_dir = RECOMMEND_ROOT / train_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    log_path = out_dir / "progress.log"
+    try:
+        modes = params.get("modes") or ["technical", "fundamental"]
+        if isinstance(modes, str):
+            modes = [modes]
+        command = [
+            str(PYTHON_EXECUTABLE), str(ROOT / "scripts" / "train_ml_composite.py"),
+            "--modes", *[str(m) for m in modes],
+            "--label-days", str(int(params.get("label_days") or 5)),
+            "--max-corr", str(float(params.get("max_corr") or 0.6)),
+            "--out-dir", str(out_dir),
+            "--recommend-k", str(max(1, min(int(params.get("k") or 8), 30))),
+            "--no-write-pred",
+        ]
+        if params.get("mining_end"):
+            command += ["--mining-end", str(params["mining_end"])]
+        if params.get("no_candidate"):
+            command += ["--no-candidate"]
+        if params.get("size_neutral") is False:
+            command += ["--no-size-neutral"]
+        include = params.get("include_factors") or None
+        if include:
+            command += ["--include-factors", *[str(n) for n in include]]
+        log_handle = log_path.open("w", encoding="utf-8")
+        try:
+            proc = subprocess.Popen(
+                command, cwd=ROOT, stdout=log_handle, stderr=subprocess.STDOUT,
+            )
+        finally:
+            log_handle.close()
+        exit_code = proc.wait()
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"spawn_failed: {exc}"}
+    finally:
+        _recommend_busy.release()
+
+    rec_path = out_dir / "recommend.json"
+    if exit_code != 0 or not rec_path.is_file():
+        tail: list[str] = []
+        if log_path.is_file():
+            tail = log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-15:]
+        return {"error": f"recommend_failed(exit={exit_code})", "progress_tail": tail}
+    try:
+        rec = json.loads(rec_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        try:
+            rec = json.loads(rec_path.read_text(encoding="gbk"))
+        except (json.JSONDecodeError, OSError):
+            return {"error": "recommend.json 读取失败"}
+    rec["train_id"] = train_id
+    rec["progress_log"] = str(log_path)
+    return {"ok": True, **rec}
