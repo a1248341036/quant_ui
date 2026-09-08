@@ -21,6 +21,13 @@ _RECENT_SORT_EXPRS: dict[str, str] = {
     "attempts": "CAST(attempts AS REAL)",
     "ic": "CAST(json_extract(metrics_json, '$.ic') AS REAL)",
     "icir": "CAST(json_extract(metrics_json, '$.icir') AS REAL)",
+    # 分窗口 IC：训练 IC 回退旧条目的 ic（历史记录 ic 即评估窗口 IC）
+    "train_ic": (
+        "COALESCE(CAST(json_extract(metrics_json, '$.train_ic') AS REAL), "
+        "CAST(json_extract(metrics_json, '$.ic') AS REAL))"
+    ),
+    "val_ic": "CAST(json_extract(metrics_json, '$.val_ic') AS REAL)",
+    "test_ic": "CAST(json_extract(metrics_json, '$.test_ic') AS REAL)",
     "coverage": (
         "COALESCE(CAST(json_extract(metrics_json, '$.coverage') AS REAL), "
         "CAST(json_extract(metrics_json, '$.factor_coverage') AS REAL))"

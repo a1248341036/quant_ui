@@ -53,6 +53,26 @@ class IngestionMixin:
             metrics = summary
         # 提取嵌套回测指标到扁平 metrics，供 _compact_metrics 捕获
         metrics = self._flatten_backtest_metrics(metrics, profile_metrics)
+        # 分窗口 IC 限定（研究总结按阶段展示）：评估类的 summary.ic 即该 split
+        # 的窗口 IC；submit 盲测失败 payload 的 test IC 在嵌套 test_holdout 里、
+        # 其 metrics.ic 即 train 窗口 IC（stage_one 之后的 payload ic 是全窗口，
+        # 但 train_ic/val_ic/test_ic 已显式存在，setdefault 不会覆盖）。
+        split = str(result.get("split") or "")
+        if name == "eval_on_val_set" or split == "val":
+            metrics.setdefault("val_ic", metrics.get("ic"))
+            metrics.setdefault("val_icir", metrics.get("icir"))
+        elif name in ("evaluate_factor", "eval_on_train_set") or split == "train":
+            metrics.setdefault("train_ic", metrics.get("ic"))
+            metrics.setdefault("train_icir", metrics.get("icir"))
+        elif name == "submit_factor":
+            holdout = result.get("test_holdout") if isinstance(result.get("test_holdout"), dict) else {}
+            if "test_ic" not in metrics:
+                metrics.setdefault("test_ic", holdout.get("ic"))
+                metrics.setdefault("test_icir", holdout.get("icir"))
+                metrics.setdefault("test_rank_ic", holdout.get("rank_ic"))
+                metrics.setdefault("test_ic_retention", holdout.get("ic_retention"))
+            metrics.setdefault("train_ic", metrics.get("ic"))
+            metrics.setdefault("train_icir", metrics.get("icir"))
         error = str(result.get("error") or result.get("skipped_reason") or "")
         verdict, conclusion = self._classify(name, result, metrics, error)
         # A) 预测-对账：被证伪的预测追加进 conclusion（FTS 可检索），

@@ -664,6 +664,10 @@ class SchemaMixin:
             "annualized_return", "annualized_excess_return", "sharpe",
             "max_drawdown", "annual_turnover", "daily_overlap",
             "excess_sharpe", "monotonicity",
+            # 分窗口 IC（submit reported 指标）：供研究总结按阶段展示
+            "train_ic", "train_icir", "train_rank_ic",
+            "val_ic", "val_icir", "val_rank_ic", "val_ic_retention",
+            "test_ic", "test_icir", "test_rank_ic", "test_ic_retention",
         )
         return {key: value for key in keys if (value := _safe_float(metrics.get(key))) is not None}
 
