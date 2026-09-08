@@ -63,7 +63,7 @@ _CNE_STATE_FILE = (
     / "CNEquity" / "data" / "quant_dataset" / "_cnequity" / "meta" / "state" / "daily_bars.json"
 )
 # 缓存格式/构建逻辑版本：代码变更影响 panel 内容时 +1 强制全部重建
-_CACHE_SCHEMA_VERSION = 3  # v3: +forecast/shareholder_counts/event_faces 列族
+_CACHE_SCHEMA_VERSION = 4  # v4: +margin/institutional/top_holders/express/disclosure/dividend 列族
 # 缓存文件数上限（每个 ~0.9GB，6 个 ≈ 5.4GB；按需调大）
 _CACHE_MAX_FILES = 6
 _CACHE_INDEX_COLS = ["datetime", "instrument"]
@@ -79,6 +79,12 @@ _FUNDAMENTAL_SENTINEL_COLUMNS = frozenset(
         "funda_netprofit_yoy",   # fina_indicator
         "holder_count_chg_pct",  # shareholder_counts
         "dt_net_buy_90d",        # event_faces
+        "mgn_balance",           # margin
+        "inst_count",            # institutional
+        "th_top10_pct",          # top_holders
+        "exp_net_profit",        # express
+        "ds_days_since_actual",  # disclosure
+        "div_cash_div",          # dividend
     }
 )
 
