@@ -10,7 +10,7 @@
         <span v-else class="mlv-sub">配置参数后开始第一次 walk-forward 组合训练</span>
       </div>
       <div class="mlv-actions">
-        <button class="mlv-ghost" @click="showConfig = !showConfig">{{ showConfig ? '收起配置 ▴' : '训练配置 ▾' }}</button>
+        <button class="mlv-ghost" @click="toggleConfig">{{ showConfig ? '收起配置 ▴' : '训练配置 ▾' }}</button>
         <button v-if="anyRunning" class="mlv-stop" @click="stopMl(runningTrain.train_id)">停止</button>
         <button class="mlv-primary" :disabled="ml.starting || anyRunning" @click="startMl">{{ anyRunning ? '训练中…' : (latest ? '再次训练' : '开始训练') }}</button>
       </div>
@@ -45,10 +45,11 @@
       <div class="ml-factor-picker">
         <div class="mlv-block-head" style="margin:0 0 6px">
           <h5>训练因子</h5>
-          <span class="mlv-sub">不选 = 全部 {{ ml.factorPool.length }} 个（统一大库）</span>
+          <span class="mlv-sub">不选 = 全部（统一大库）</span>
           <span v-if="ml.form.include_factors.length" class="mlv-sub">已选 {{ ml.form.include_factors.length }}</span>
           <button class="mlv-ghost" type="button" @click="setAllFactors(true)">全选</button>
           <button class="mlv-ghost" type="button" @click="setAllFactors(false)">清空</button>
+          <button class="mlv-ghost" type="button" title="重新拉取因子库列表（挖掘新入库的因子也会出现）" @click="loadFactorPool(true)">刷新</button>
         </div>
         <div v-if="ml.factorPoolLoading" class="mlv-sub" style="padding:6px 2px">加载因子列表…</div>
         <div v-else-if="ml.factorPool.length" class="ml-factor-list">
@@ -397,8 +398,12 @@ export default {
     }
   },
   methods: {
-    async loadFactorPool() {
-      if (this.ml.factorPool.length || this.ml.factorPoolLoading) return
+    toggleConfig() {
+      this.showConfig = !this.showConfig
+      if (this.showConfig) this.loadFactorPool(true)
+    },
+    async loadFactorPool(force = false) {
+      if (!force && (this.ml.factorPool.length || this.ml.factorPoolLoading)) return
       this.ml.factorPoolLoading = true
       try {
         const t = Date.now()
