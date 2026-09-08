@@ -17,7 +17,18 @@ def _make_panel(*, complete: bool, with_funda: bool = True) -> pd.DataFrame:
         [pd.to_datetime(["2024-01-02", "2024-01-03"]), ["000001.SZ", "000002.SZ", "000003.SZ"]],
         names=["datetime", "instrument"],
     )
-    cols = {"close": 1.0, "holder_count_chg_pct": 0.1, "dt_net_buy_90d": 2.0}
+    cols = {
+        "close": 1.0,
+        "holder_count_chg_pct": 0.1,
+        "dt_net_buy_90d": 2.0,
+        # v4 新增插件哨兵列（fundamental 家族开关关闭时同样存在）
+        "mgn_balance": 1.0,
+        "inst_count": 1.0,
+        "th_top10_pct": 1.0,
+        "exp_net_profit": 1.0,
+        "ds_days_since_actual": 1.0,
+        "div_cash_div": 1.0,
+    }
     if with_funda:
         base = {
             "funda_total_assets": 1.0,
@@ -60,16 +71,16 @@ def _write_cache(root, name: str, panel: pd.DataFrame) -> None:
 
 
 def test_find_skips_deficient_cache(cache_root) -> None:
-    _write_cache(cache_root, "panel_v3_deficient.parquet", _make_panel(complete=False))
+    _write_cache(cache_root, "panel_v4_deficient.parquet", _make_panel(complete=False))
     assert cnequity._find_cached_panel("2024-01-02", "2024-01-03", include_fundamentals=True) is None
 
 
 def test_find_hits_complete_cache(cache_root) -> None:
-    _write_cache(cache_root, "panel_v3_complete.parquet", _make_panel(complete=True))
+    _write_cache(cache_root, "panel_v4_complete.parquet", _make_panel(complete=True))
     hit = cnequity._find_cached_panel("2024-01-02", "2024-01-03", include_fundamentals=True)
     assert hit is not None and len(hit) == 6
 
 
 def test_find_no_funda_cache_never_serves_funda_request(cache_root) -> None:
-    _write_cache(cache_root, "panel_v3_nofunda.parquet", _make_panel(complete=False, with_funda=False))
+    _write_cache(cache_root, "panel_v4_nofunda.parquet", _make_panel(complete=False, with_funda=False))
     assert cnequity._find_cached_panel("2024-01-02", "2024-01-03", include_fundamentals=True) is None

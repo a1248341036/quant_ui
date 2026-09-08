@@ -44,17 +44,63 @@ from core import factor_categories  # noqa: E402
 MEMORY_DB = ROOT / "artifacts" / "alphaagent" / "research_memory.db"
 
 
-def _load_promising(run_id: str) -> list[dict]:
-    """取指定 run 的 promising 条目（verdict 在 submit 被拒后会更新，天然排除已试过的）。"""
+def _load_entries(
+    run_id: str | None,
+    *,
+    rejected_patterns: list[str] | None = None,
+    min_ic: float = 0.0,
+    rejected_only: bool = False,
+) -> list[dict]:
+    """取待重放条目：verdict='promising'，及可选的 rejected 误杀捞回。
+
+    ``rejected_patterns``：结论里的失败指纹（SQL LIKE，可多个，命中任一即捞）。
+    用于事故型误杀的重放——如大库合并当天正交检查的
+    ``offline_orthogonality_failed:FileNotFoundError``（已在 a350e8c 修复），
+    该错误串本身就是精确事故指纹，不会误捞真正该拒的因子。
+    ``min_ic``：捞回的 rejected 条目 |IC| 下限（promising 不受此限）。
+    同表达式同时存在 promising/rejected 时优先 promising（重放链路一致，
+    避免同一因子双份提交）。
+    """
     db = sqlite3.connect(f"file:{MEMORY_DB}?mode=ro", uri=True)
     db.row_factory = sqlite3.Row
-    rows = db.execute(
-        "SELECT factor_name, expression, verdict, metrics_json FROM memory_entries "
-        "WHERE last_run_id = ? AND verdict = 'promising' ORDER BY factor_name",
-        (run_id,),
-    ).fetchall()
+    sql = ("SELECT factor_name, expression, verdict, metrics_json, conclusion "
+           "FROM memory_entries WHERE ")
+    conds, params = [], []
+    if run_id:
+        conds.append("last_run_id = ?")
+        params.append(run_id)
+    if rejected_patterns:
+        ors = " OR ".join(["conclusion LIKE ?"] * len(rejected_patterns))
+        if rejected_only:
+            conds.append(f"(verdict = 'rejected' AND ({ors}))")
+        else:
+            conds.append(f"((verdict = 'promising') OR (verdict = 'rejected' AND ({ors})))")
+        params.extend(rejected_patterns)
+    elif not rejected_only:
+        conds.append("verdict = 'promising'")
+    sql += " AND ".join(conds) + " ORDER BY factor_name"
+    rows = [dict(r) for r in db.execute(sql, params).fetchall()]
     db.close()
-    return [dict(r) for r in rows]
+
+    by_expr: dict[str, dict] = {}
+    for r in rows:
+        try:
+            m = json.loads(r.get("metrics_json") or "{}")
+        except json.JSONDecodeError:
+            m = {}
+        summary = m.get("summary") if isinstance(m.get("summary"), dict) else m
+        try:
+            r["train_ic"] = abs(float(summary.get("ic")))
+        except (TypeError, ValueError):
+            r["train_ic"] = None
+        if r["verdict"] == "rejected" and (r["train_ic"] is None or r["train_ic"] < min_ic):
+            continue
+        norm = " ".join(str(r.get("expression") or "").split())
+        prev = by_expr.get(norm)
+        # 同表达式去重：promising 优先于 rejected
+        if prev is None or (prev["verdict"] != "promising" and r["verdict"] == "promising"):
+            by_expr[norm] = r
+    return list(by_expr.values())
 
 
 def _known_factors(mode: str) -> tuple[set[str], set[str]]:
@@ -74,16 +120,29 @@ def _known_factors(mode: str) -> tuple[set[str], set[str]]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Replay promising memory factors through delivery chain")
-    ap.add_argument("--run-id", required=True, help="研究记忆的 last_run_id")
+    ap.add_argument("--run-id", default=None,
+                    help="研究记忆的 last_run_id；缺省 = 跨全部 run")
     ap.add_argument("--mode", choices=list(factor_categories.all_categories()), default="fundamental")
     ap.add_argument("--dry-run", action="store_true", help="只列出将提交的因子，不执行")
     ap.add_argument("--include-ablation", action="store_true",
                     help="纳入消融基线腿（*_ablation_*，默认跳过）")
+    ap.add_argument("--include-rejected-pattern", action="append", default=None, metavar="LIKE",
+                    help="捞回 rejected 条目：conclusion 命中该 SQL LIKE 指纹即纳入"
+                         "（事故误杀重放，如 '%%offline_orthogonality_failed%%'）；可传多次")
+    ap.add_argument("--min-ic", type=float, default=0.0,
+                    help="捞回的 rejected 条目 |IC| 下限（promising 不受限）")
+    ap.add_argument("--rejected-only", action="store_true",
+                    help="只重放 rejected 捞回条目，不带 promising（配合 --include-rejected-pattern 用）")
     args = ap.parse_args()
 
     spec = effective_research_spec(args.mode)
     label_col = str(spec.get("recommended_label_col") or "label_1d_open_to_open")
-    entries = _load_promising(args.run_id)
+    entries = _load_entries(
+        args.run_id,
+        rejected_patterns=args.include_rejected_pattern,
+        min_ic=args.min_ic,
+        rejected_only=args.rejected_only,
+    )
     known_names, known_exprs = _known_factors(args.mode)
 
     pending: list[dict] = []
@@ -103,13 +162,13 @@ def main() -> int:
             continue
         pending.append(r)
 
-    print(f"run={args.run_id} mode={args.mode} label={label_col}")
-    print(f"promising {len(entries)} 条 → 待提交 {len(pending)}，跳过 {len(skipped)}")
+    print(f"run={args.run_id or '<全部>'} mode={args.mode} label={label_col} "
+          f"rejected指纹={args.include_rejected_pattern or '无'} min_ic={args.min_ic}")
+    print(f"捞回 {len(entries)} 条 → 待提交 {len(pending)}，跳过 {len(skipped)}")
     for name, why in skipped:
         print(f"  [跳过] {name}: {why}")
     for r in pending:
-        m = json.loads(r["metrics_json"] or "{}")
-        print(f"  [待提交] {r['factor_name']}  train_ic={m.get('ic')}")
+        print(f"  [待提交] {r['factor_name']}  verdict={r['verdict']}  |train_ic|={r.get('train_ic')}")
 
     if args.dry_run or not pending:
         return 0

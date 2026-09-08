@@ -80,10 +80,10 @@ export const agentStore = reactive({
     { key: '量能面', label: '量能', hint: '成交量/成交额/换手' },
     { key: '筹码面', label: '筹码', hint: 'CHIP_* 筹码分布算子' },
     { key: '拥挤面', label: '拥挤', hint: 'CROWD_* 拥挤度算子' },
-    { key: '基本面', label: '基本面', hint: 'funda_* 财务列族（30+ 列）' },
-    { key: '股东面', label: '股东', hint: 'holder_* 股东户数/持股集中度' },
-    { key: '事件面', label: '事件', hint: '业绩预告/龙虎榜/大宗交易' },
-    { key: '资金面', label: '资金流', hint: 'fund_flow 资金流入流出' },
+    { key: '基本面', label: '基本面', hint: 'funda_* 财务列族 + exp_* 业绩快报（30+ 列）' },
+    { key: '股东面', label: '股东', hint: 'holder_* 股东户数 / th_* 十大流通股东 / inst_* 机构持仓' },
+    { key: '事件面', label: '事件', hint: '业绩预告/快报/披露日历/龙虎榜/大宗交易/分红' },
+    { key: '资金面', label: '资金流', hint: 'ff_* 主力资金流 / mgn_* 融资融券' },
   ],
 
   // ── 研究模式 / 记忆 / 总结 ──
@@ -306,6 +306,14 @@ export const agentStore = reactive({
     this.error = ''
     this.running = false
     this.form.user_message = ''
+    // 全新会话 = 干净初始态：清掉残留数据面/调仓选择，档位回 technical 默认，
+    // 研究规范跟随回当前档位生效值（避免"上会话的 mode/消息"泄漏到新会话）。
+    this.form.focus_facets = []
+    this.form.rebalance_freq = ''
+    this.form.label_col = 'label_1d_open_to_open'
+    if (this.researchSpecText) this.researchSpecText = ''
+    this.form.research_mode = 'technical'
+    this.switchResearchMode('technical', true, false).catch(() => {})
   },
   async selectAgentRun(run) {
     if (stream) stream.close()
@@ -372,6 +380,11 @@ export const agentStore = reactive({
   async startAgent() {
     if (this.agentBusy || !this.form.user_message.trim()) return
     this.error = ''
+    // 档位一致性：实际发送的是 inferredMode（数据面推断），确保 research_mode /
+    // 研究规范文本与其对齐，杜绝"基本面档位 + 价量默认消息/技术门槛"错配。
+    if (this.form.research_mode !== this.inferredMode) {
+      await this.switchResearchMode(this.inferredMode, true)
+    }
     let researchSpec
     try {
       researchSpec = this.parseResearchSpec()
@@ -409,9 +422,15 @@ export const agentStore = reactive({
     }
   },
   async startDefaultResearch() {
-    const mode = this.researchModes.find(m => m.value === this.form.research_mode)
-    if (mode && mode.default_user_message) {
-      this.form.user_message = mode.default_user_message
+    // 与 startAgent 同口径：按数据面推断的档位（而非可能残留的 form.research_mode）
+    // 决定规范与默认消息，保证"选什么面 → 提示词跟什么档"。
+    const mode = this.inferredMode
+    if (this.form.research_mode !== mode) {
+      await this.switchResearchMode(mode, true)
+    }
+    const spec = this.researchModes.find(m => m.value === mode)
+    if (spec && spec.default_user_message) {
+      this.form.user_message = spec.default_user_message
     } else {
       this.form.user_message = '请自主挖掘A股因子，先训练集评估，再验证集检验；只有通过验证和去重门槛的因子才提交。'
     }
@@ -746,12 +765,16 @@ export const agentStore = reactive({
       throw e
     }
   },
-  async switchResearchMode(mode) {
-    if (this.agentBusy || this.form.research_mode === mode) return
+  async switchResearchMode(mode, force = false, followMessage = true) {
+    if (this.agentBusy || (!force && this.form.research_mode === mode)) return
     if (!this.researchModes.some(item => item.value === mode)) return
     const previousMode = this.form.research_mode
     const previousText = this.researchSpecText
     const previousDefault = this.defaultResearchSpecText
+    const defaultByMode = Object.fromEntries(
+      this.researchModes.map(m => [m.value, m.default_user_message])
+    )
+    const prevMessage = this.form.user_message
     this.form.research_mode = mode
     let payload = null
     try {
@@ -773,6 +796,12 @@ export const agentStore = reactive({
       this.specError = ''
     }
     if (spec?.recommended_label_col) this.form.label_col = spec.recommended_label_col
+    // 默认提示词跟随档位：消息为空或仍等于上一档位默认（用户未手写）时自动切换，
+    // 手写过的自定义消息保留不动；newRun 清场场景传 followMessage=false 保持空白。
+    const newDefault = defaultByMode[mode]
+    if (followMessage && newDefault && (!prevMessage || prevMessage === defaultByMode[previousMode])) {
+      this.form.user_message = newDefault
+    }
     // 门槛弹窗打开时同步切换 draft
     if (this.showThresholdModal) this.syncThresholdDraft()
   },

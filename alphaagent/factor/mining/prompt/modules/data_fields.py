@@ -128,6 +128,108 @@ _EVENT_FACES_SECTION_MD = """### 龙虎榜 / 大宗交易（日频稠密化，`d
 > 计数列使用（计数已含 0 语义）。
 """
 
+# 融资融券（margin 插件，mgn_*）
+_MARGIN_SECTION_MD = """### 融资融券（日频直给，`mgn_*`）
+
+T 日盘后披露，两融余额 = 杠杆资金的多空方向/拥挤度；**非两融标的为 NaN**。
+
+| 字段 | 说明 |
+|------|------|
+| `$mgn_balance` | 融资余额（元，多头杠杆存量） |
+| `$mgn_buy` | 融资买入额（元，当日杠杆加仓流量） |
+| `$mgn_short_balance` | 融券余额（元，券源受限、量级小，单独解读勿与融资混算） |
+| `$mgn_short_sell_vol` | 融券卖出量（股） |
+
+> 使用建议：绝对额右偏，先用 `DIVIDE($mgn_buy, $amount)` 或
+> `CS_ZSCORE(CS_WINSORIZE(...))` 再进算子；`$mgn_buy/$amount` 抬升是
+> "杠杆情绪过热"信号（结合涨幅看反转），融资余额相对流通市值可做拥挤度。
+"""
+
+# 机构持仓（institutional 插件，inst_*）
+_INSTITUTIONAL_SECTION_MD = """### 机构持仓（季频 PIT 阶跃，`inst_*`）
+
+按定期报告**实际披露日**（披露日历对齐）PIT 展开：披露日次日起引用最近一期。
+未披露/无机构数据为 NaN（勿填 0——0 会被当"无机构持股"信号）。
+
+| 字段 | 说明 |
+|------|------|
+| `$inst_count` | 机构家数（基金/QFII/社保/保险/券商/信托等合计） |
+| `$inst_ratio` | 机构持股比例合计（%，如 37.0 = 37%） |
+| `$inst_mv` | 机构持股市值合计（元） |
+| `$inst_days_since` | 距最近一期披露的自然日天数 |
+
+> 使用建议：机构加仓/抱团是慢变量，配 `DELTA(..., ~63)` 或跨期变化看方向；
+> `$inst_ratio` 抬升 + 股价滞涨 = 筹码沉淀，反之高比例 + 减持窗口警惕踩踏。
+"""
+
+# 十大流通股东（top_holders 插件，th_*）
+_TOP_HOLDERS_SECTION_MD = """### 十大流通股东（季频 PIT 阶跃，`th_*`）
+
+**流通股口径**（占总股本口径分母不同、不可混算），按公告日 PIT 展开。
+
+| 字段 | 说明 |
+|------|------|
+| `$th_top1_pct` | 第一大流通股东占比（%） |
+| `$th_top10_pct` | 前十大流通股东占比合计（%，数值越高筹码越集中） |
+| `$th_inst_pct` | 流通股东中机构占比合计（%） |
+| `$th_inst_count` | 流通股东中机构家数 |
+| `$th_days_since` | 距最近一次股东披露的自然日天数 |
+
+> 使用建议：筹码集中度变化配价量背离用——集中度升 + 缩量阴跌 = 有资金
+> 悄悄收筹；集中度降 + 放量 = 出货。披露是季频，勿做短窗差分。
+"""
+
+# 业绩快报（express 插件，exp_*）
+_EXPRESS_SECTION_MD = """### 业绩快报（PIT 日频阶跃，`exp_*`）
+
+快报在定期报告前主动披露初步财务数，以公告日为 PIT 锚点。
+
+| 字段 | 说明 |
+|------|------|
+| `$exp_revenue` | 营业收入（元，绝对额先规模标准化） |
+| `$exp_operate_profit` | 营业利润（元） |
+| `$exp_net_profit` | 归母净利润（元） |
+| `$exp_eps` | 每股收益（元） |
+| `$exp_roe` | ROE（%） |
+| `$exp_netprofit_yoy` | 快报隐含归母净利同比（%，基准期亏损/为零时 NaN） |
+| `$exp_days_since` | 距最近一次快报公告的自然日天数 |
+
+> 使用建议：快报/预告间的差异（`$exp_netprofit_yoy` vs `$pred_surprise`、
+> 与 `$funda_netprofit_yoy` 上次定期报告对比）比单看快报更有信息量。
+"""
+
+# 披露日历（disclosure 插件，ds_*）
+_DISCLOSURE_SECTION_MD = """### 披露日历（实际披露后安全特征，`ds_*`）
+
+预约披露表是"现值语义"（改约覆盖、无发布时间戳），因此**不提供**"距预约
+还有 N 天"类事前信号；以下均为实际披露后成立的特征。
+
+| 字段 | 说明 |
+|------|------|
+| `$ds_delay_days` | 最近一次实际披露相对**最终预约日**推迟天数（正=推迟、负=提前） |
+| `$ds_delay_vs_first` | 相对**首次预约日**推迟天数（含中途改约信息） |
+| `$ds_days_since_actual` | 距最近一次实际披露的自然日（披露节奏/是否"掉队"代理） |
+
+> 使用建议：与定期报告季频节奏对齐，`$ds_days_since_actual` 明显大于季度
+> 常规间隔可作"该披露未披露/异常"风险代理；`$ds_delay_*` 作状态标签而非
+> 连续变量做动量。
+"""
+
+# 现金分红（dividend 插件，div_*）
+_DIVIDEND_SECTION_MD = """### 现金分红（实施公告口径，`div_*`）
+
+只取"已实施"公告（金额与除息日确定）为 PIT 锚点；预案/取消不计入。
+
+| 字段 | 说明 |
+|------|------|
+| `$div_cash_div` | 最新公告实施的每股现金股利（税前，元/股），公告后保持到下一份 |
+| `$div_days_to_ex` | 距最近已公告未实施分红的除息日自然日倒数（除息后为空） |
+| `$div_days_since_ann` | 距最近一次实施公告的自然日天数 |
+
+> 使用建议：股息率 = `DIVIDE($div_cash_div, $close)`；`$div_days_to_ex` 非空
+> 即"即将除息"，可做抢权/填权事件因子（注意除息日价格自然回落）。
+"""
+
 EVENT_FACE_PANEL_COLUMNS = (
     "dt_cnt_90d", "dt_net_buy_90d", "dt_days_since",
     "bt_cnt_90d", "bt_amt_90d", "bt_premium_last", "bt_days_since",
@@ -139,6 +241,19 @@ HOLDER_PANEL_COLUMNS = (
     "holder_count", "holder_count_chg_pct", "holder_avg_float_shares",
     "holder_avg_value", "holder_days_since",
 )
+MARGIN_PANEL_COLUMNS = (
+    "mgn_balance", "mgn_buy", "mgn_short_balance", "mgn_short_sell_vol",
+)
+INST_PANEL_COLUMNS = ("inst_count", "inst_ratio", "inst_mv")
+TH_PANEL_COLUMNS = (
+    "th_top1_pct", "th_top10_pct", "th_inst_pct", "th_inst_count",
+)
+EXPRESS_PANEL_COLUMNS = (
+    "exp_revenue", "exp_operate_profit", "exp_net_profit", "exp_eps",
+    "exp_roe", "exp_netprofit_yoy",
+)
+DISCLOSURE_PANEL_COLUMNS = ("ds_delay_days", "ds_delay_vs_first", "ds_days_since_actual")
+DIVIDEND_PANEL_COLUMNS = ("div_cash_div", "div_days_to_ex", "div_days_since_ann")
 
 NAME = "data_fields"
 TITLE = "行情变量与字段族（资金流/基本面/事件披露）"
@@ -187,6 +302,18 @@ def render(ctx) -> str:  # noqa: ANN001
         event_blocks.append(_HOLDER_SECTION_MD)
     if cols is None or any(c in cols for c in EVENT_FACE_PANEL_COLUMNS):
         event_blocks.append(_EVENT_FACES_SECTION_MD)
+    if cols is None or any(c in cols for c in MARGIN_PANEL_COLUMNS):
+        event_blocks.append(_MARGIN_SECTION_MD)
+    if cols is None or any(c in cols for c in INST_PANEL_COLUMNS):
+        event_blocks.append(_INSTITUTIONAL_SECTION_MD)
+    if cols is None or any(c in cols for c in TH_PANEL_COLUMNS):
+        event_blocks.append(_TOP_HOLDERS_SECTION_MD)
+    if cols is None or any(c in cols for c in EXPRESS_PANEL_COLUMNS):
+        event_blocks.append(_EXPRESS_SECTION_MD)
+    if cols is None or any(c in cols for c in DISCLOSURE_PANEL_COLUMNS):
+        event_blocks.append(_DISCLOSURE_SECTION_MD)
+    if cols is None or any(c in cols for c in DIVIDEND_PANEL_COLUMNS):
+        event_blocks.append(_DIVIDEND_SECTION_MD)
     event_disclosure_block = "\n\n---\n\n".join(event_blocks) if event_blocks else ""
 
     # 与旧装配逐字节一致：

@@ -39,6 +39,7 @@
         <label class="ml-check"><input type="checkbox" v-model="ml.form.no_candidate"> 只用正式库</label>
         <label class="ml-check"><input type="checkbox" v-model="ml.form.no_gate"> 跳过 engine_gate</label>
         <label class="ml-check" title="按置换贡献降序取 Top-k 逐级重训（成本 ≈ 2n 次拟合，训练时间明显变长）。输出'子集规模 vs OOS IC'曲线，定位边际收益归零的最优因子数。"><input type="checkbox" v-model="ml.form.subset_curve"> 累积子集曲线</label>
+        <label class="ml-check" title="同一段干净历史换两种折边界（整体平移 2/4 个月）各重训一遍，输出 OOS IC/ICIR/Sharpe/回撤 的路径分布——单条切法上的好成绩可能只是那条边界的运气。成本 ≈ 2 次完整训练。"><input type="checkbox" v-model="ml.form.multi_path"> 多路径对照</label>
         <span class="ml-gate-mode" title="因子池已是统一大库（不分技术/基本面）；engine_gate 档位自动跟随持有天数：≤7 天→技术档（周调仓·严门槛），>7 天→基本面档（月调仓·松门槛）。">gate 档位：{{ gateModeLabel }}（自动）</span>
       </div>
       <!-- ── 训练因子自选（白名单；不选=全部） ── -->
@@ -60,6 +61,30 @@
                   title="点击查看因子数据与机制说明"
                   @click.stop.prevent="toggleFactorCard(f, $event)">{{ f.name }}</span>
             <i class="ml-factor-lib">{{ f.library }}</i>
+          </div>
+        </div>
+        <div class="ml-reco-bar">
+          <button class="mlv-ghost" type="button"
+                  :disabled="ml.recommending || anyRunning"
+                  title="物化因子面板后按'自己强 + 与已选互补'贪心排序（mRMR）。约 1-3 分钟：首次含面板加载，因子值会进磁盘缓存，随后直接点训练可复用。"
+                  @click="recommendFactors">
+            {{ ml.recommending ? '推荐计算中（可关掉面板等结果）…' : '帮我推荐 Top-8' }}
+          </button>
+          <span class="mlv-sub">质量 = mining 窗口日均 |IC|；冗余 = 与已选最大相关；自动填入勾选</span>
+        </div>
+        <div v-if="ml.recommend" class="ml-reco">
+          <div class="mlv-block-head" style="margin:8px 0 4px">
+            <h5>mRMR 推荐清单（已填入上方勾选）</h5>
+            <button class="mlv-ghost" type="button" title="清空推荐并取消勾选" @click="clearRecommend">清空推荐</button>
+          </div>
+          <div class="ml-reco-list">
+            <div v-for="r in ml.recommend.ranking" :key="r.name" class="ml-reco-row">
+              <b>#{{ r.rank }}</b>
+              <span class="ml-reco-name" title="点击查看因子数据与机制说明"
+                    @click.stop.prevent="toggleFactorCard(poolFactor(r.name), $event)">{{ r.name }}</span>
+              <i class="ml-factor-lib">{{ r.library }}</i>
+              <i class="mlv-sub">|IC| {{ fmtNum(r.ic_mean) }} · 冗余 {{ num2(r.redundancy) }}</i>
+            </div>
           </div>
         </div>
       </div>
@@ -252,6 +277,41 @@
                           </tbody>
                         </table>
                       </template>
+                      <template v-if="multiPathRows.length">
+                        <div class="mlv-block-head">
+                          <h5>多路径 OOS 对照（折边界平移重训）</h5>
+                          <span class="summary-facet-hint" :title="(ml.detail.report.multi_path||{}).note || ''">ⓘ</span>
+                          <span v-if="multiPathWarning" class="mlv-bad">
+                            ⚠ 有 {{ multiPathAgg.n_negative_ic }}/{{ multiPathAgg.n_paths }} 条平移路径 IC ≤ 0——组合对数据切法敏感，结论可交易性存疑
+                          </span>
+                          <span v-else-if="multiPathAgg" class="mlv-sub">
+                            平移路径 IC [{{ fmtNum(multiPathAgg.ic_min) }} ~ {{ fmtNum(multiPathAgg.ic_max) }}]
+                            中位 {{ fmtNum(multiPathAgg.ic_median) }} · 最差 Sharpe {{ num2(multiPathAgg.sharpe_min) }}
+                          </span>
+                        </div>
+                        <table class="lib-table">
+                          <thead>
+                            <tr>
+                              <th>平移</th><th>折数</th><th>OOS 区间</th><th>OOS IC</th><th>ICIR</th>
+                              <th>OOS Sharpe</th><th>最大回撤</th><th>IC − 主路径</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <tr v-for="row in multiPathRows" :key="row.shift_months">
+                              <td>{{ row.shift_months }} 月</td>
+                              <td>{{ row.folds }}</td>
+                              <td>{{ row.oos_start }} ~ {{ row.oos_end }}</td>
+                              <td :class="icClass(row.ic_mean)"><strong>{{ fmtNum(row.ic_mean) }}</strong></td>
+                              <td>{{ fmtNum(row.ic_ir) }}</td>
+                              <td>{{ row.oos_sharpe == null ? '—' : num2(row.oos_sharpe) }}</td>
+                              <td>{{ row.oos_max_drawdown == null ? '—' : pct(row.oos_max_drawdown) }}</td>
+                              <td :class="icClass(row.ic_gap_vs_main)">
+                                {{ row.ic_gap_vs_main == null ? '—' : (row.ic_gap_vs_main >= 0 ? '+' : '') + fmtNum(row.ic_gap_vs_main) }}
+                              </td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </template>
                       <div class="mlv-block-head"><h5>折级 OOS IC</h5></div>
                       <div class="mlv-grid2">
                         <div v-for="(rows, model) in ml.detail.report.fold_metrics" :key="'f-' + model">
@@ -383,7 +443,7 @@ export default {
   data() {
     return {
       ml: {
-        form: { model: 'both', label_days: 5, train_months: 18, step_months: 6, max_corr: 0.6, isolation: 'holdout', no_candidate: false, no_gate: false, subset_curve: false, include_factors: [] },
+        form: { model: 'both', label_days: 5, train_months: 18, step_months: 6, max_corr: 0.6, isolation: 'holdout', no_candidate: false, no_gate: false, subset_curve: false, multi_path: false, include_factors: [] },
         factorPool: [],
         factorPoolLoading: false,
         list: [],
@@ -391,6 +451,8 @@ export default {
         detail: null,
         starting: false,
         error: '',
+        recommending: false,  // mRMR 推荐计算中
+        recommend: null,      // {ranking:[...], k, ...}（POST /stacking/recommend 结果）
       },
       loadingList: false,
       showConfig: false,
@@ -467,6 +529,17 @@ export default {
       )
       if (!rows.length) return null
       return rows.reduce((a, b) => (Number(b.ic_gap) > Number(a.ic_gap) ? b : a))
+    },
+    /** A 族多路径对照行（折边界平移重训的路径分布） */
+    multiPathRows() {
+      return this.ml.detail?.report?.multi_path?.paths || []
+    },
+    multiPathAgg() {
+      return this.ml.detail?.report?.multi_path?.aggregate || null
+    },
+    multiPathWarning() {
+      const a = this.multiPathAgg
+      return !!(a && a.n_negative_ic > 0)
     },
     contribMetrics: () => [
       { key: 'ic_drop', label: 'IC 口径' },
@@ -612,6 +685,42 @@ export default {
     },
     setAllFactors(on) {
       this.ml.form.include_factors = on ? this.ml.factorPool.map(f => f.name) : []
+    },
+    poolFactor(name) {
+      return (this.ml.factorPool || []).find(f => f.name === name) || null
+    },
+    /** mRMR 推荐：物化因子面板算精确两两相关（约 1-3 分钟），成功后自动填入勾选 */
+    async recommendFactors() {
+      if (this.anyRunning || this.ml.recommending) return
+      this.ml.recommending = true
+      this.ml.error = ''
+      try {
+        const res = await api('/api/alphaagent/stacking/recommend', {
+          method: 'POST',
+          body: {
+            label_days: this.ml.form.label_days,
+            max_corr: this.ml.form.max_corr,
+            no_candidate: this.ml.form.no_candidate,
+            include_factors: this.ml.form.include_factors.length ? [...this.ml.form.include_factors] : null,
+            k: 8,
+          },
+        })
+        if (!res.ok) throw new Error((res.error) || '推荐失败')
+        this.ml.recommend = res
+        const names = (res.ranking || []).map(r => r.name).filter(Boolean)
+        if (names.length) this.ml.form.include_factors = names
+      } catch (e) {
+        let msg = String(e && e.message ? e.message : e)
+        // FastAPI 409 的 detail 是 JSON 字符串时解出来
+        try { msg = JSON.parse(msg).detail || msg } catch (_) { /* keep raw */ }
+        this.ml.error = '推荐失败：' + msg
+      } finally {
+        this.ml.recommending = false
+      }
+    },
+    clearRecommend() {
+      this.ml.recommend = null
+      this.ml.form.include_factors = []
     },
     fmtNum(v) {
       if (v === null || v === undefined || Number.isNaN(Number(v))) return '—'
@@ -979,4 +1088,12 @@ export default {
 .mlfc-seg-text { display: block; font-size: 11px; line-height: 1.7; color: #c6d2e8; white-space: pre-wrap; word-break: break-all; }
 .mlfc-seg-text.mlfc-muted { color: var(--muted, #8494b5); }
 .mlfc-review { margin-top: 7px; font-size: 10px; line-height: 1.5; color: #e8c491; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.ml-reco-bar { display: flex; align-items: center; gap: 10px; margin-top: 8px; flex-wrap: wrap; }
+.ml-reco-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 2px 16px; max-height: 170px; overflow-y: auto; border: 1px dashed var(--line); border-radius: 8px; padding: 6px 10px; margin-top: 2px; }
+.ml-reco-row { display: flex; align-items: center; gap: 7px; min-width: 0; font-size: 12px; }
+.ml-reco-row b { color: #7fb0ff; font-family: var(--font-mono, monospace); }
+.ml-reco-name { cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ml-reco-name:hover { color: #7fb0ff; text-decoration: underline dotted; }
+.ml-reco-row .mlv-sub { font-size: 10px; }
+.ml-reco-row .ml-factor-lib { flex: none; }
 </style>

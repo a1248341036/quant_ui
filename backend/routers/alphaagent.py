@@ -670,6 +670,7 @@ class StackingTrainRequest(BaseModel):
     subset_curve: bool = Field(default=False)     # 贡献排序累积子集曲线（成本 ≈ 2n 次拟合）
     include_factors: list[str] | None = None      # 因子白名单（factor_name 精确匹配）；空/None=全部
     score_smooth: int = Field(default=0, ge=0, le=60)  # 组合分数 WMA 平滑窗；0=自动取 label_days
+    multi_path: bool = Field(default=False)       # 多路径对照：折边界平移 2/4 个月重训，输出路径分布
 
 
 @router.post("/stacking/train")
@@ -678,6 +679,28 @@ def stacking_train(req: StackingTrainRequest) -> dict[str, Any]:
     from backend import stacking_service
 
     result = stacking_service.start_training(req.model_dump())
+    if "error" in result:
+        raise HTTPException(status_code=409, detail=result["error"])
+    return result
+
+
+class StackingRecommendRequest(BaseModel):
+    modes: list[str] = Field(default=["technical", "fundamental"])
+    label_days: int = Field(default=5, ge=1, le=60)
+    max_corr: float = Field(default=0.6, ge=0.1, le=1.0)
+    mining_end: str | None = None
+    no_candidate: bool = False
+    size_neutral: bool = True
+    include_factors: list[str] | None = None  # 白名单：只在此名单内推荐
+    k: int = Field(default=8, ge=1, le=30)
+
+
+@router.post("/stacking/recommend")
+def stacking_recommend(req: StackingRecommendRequest) -> dict[str, Any]:
+    """mRMR 因子推荐（同步；物化因子面板算精确两两相关，约 1-3 分钟）。"""
+    from backend import stacking_service
+
+    result = stacking_service.start_recommend(req.model_dump())
     if "error" in result:
         raise HTTPException(status_code=409, detail=result["error"])
     return result

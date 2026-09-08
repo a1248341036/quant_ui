@@ -13,7 +13,7 @@ from typing import Any
 
 from .calibration import _parent_bucket
 from .constants import BASELINE_HALF_LIFE_DAYS, POSITIVE_VERDICTS
-from .diagnostics import _SUCCESS_SIGNATURES, _extract_fail_detail, _match_signature, _now, _rebuild_conclusion, _safe_float
+from .diagnostics import _SUCCESS_SIGNATURES, _extract_fail_detail, _match_signature, _now, _parse_args, _rebuild_conclusion, _safe_float
 from .expressions import (
     _structure_fingerprint,
     _tokens,
@@ -112,6 +112,115 @@ class BackfillMixin:
                 )
                 summary["updated"] += 1
         return summary
+
+    # ── 分窗口 IC 回填 ──
+
+    def backfill_stage_ics_from_logs(self, log_root: Path) -> dict[str, int]:
+        """从 last_run_id 对应 run 的 JSONL 轨迹回填分窗口 IC（train/val/test）。
+
+        - signature 精确匹配表达式（与 record_tool_result 同源）；同 run 内后发生的
+          工具结果覆盖先发生的，与 entry.metrics 取最新记录的语义一致
+        - setdefault 只补 metrics_json 缺失的键，幂等可重跑；新代码入库时已由
+          ingestion 的分窗口限定携带，本回填只服务存量条目
+        - 按 run 目录分组解析（每目录一次），避免逐条目重复读同一批文件
+        """
+        summary = {"scanned": 0, "updated": 0, "run_missing": 0, "no_evidence": 0}
+        root = Path(log_root)
+        with self._open() as conn:
+            rows = conn.execute(
+                "SELECT id, expression, metrics_json, last_run_id FROM memory_entries"
+            ).fetchall()
+            summary["scanned"] = len(rows)
+            by_run: dict[str, list[tuple[str, str, dict[str, Any]]]] = {}
+            for row in rows:
+                rid = str(row["last_run_id"] or "")
+                sig = self.entry_signature(str(row["expression"] or ""))
+                if not rid or not sig or not (root / rid).is_dir():
+                    summary["run_missing"] += 1
+                    continue
+                metrics = json.loads(row["metrics_json"] or "{}")
+                by_run.setdefault(rid, []).append((row["id"], sig, metrics))
+            updates: list[tuple[str, str]] = []
+            for rid, items in by_run.items():
+                sig_set = {sig for _, sig, _ in items}
+                evidence_by_sig: dict[str, dict[str, Any]] = {}
+                for log_path in sorted((root / rid).glob("run_*.jsonl")):
+                    try:
+                        lines = log_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+                    except OSError:
+                        continue
+                    for line in lines:
+                        try:
+                            event = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if not isinstance(event, dict) or event.get("event") != "tool_results":
+                            continue
+                        for row in event.get("results") or []:
+                            if not isinstance(row, dict):
+                                continue
+                            name = str(row.get("name") or "")
+                            if name not in ("evaluate_factor", "eval_on_train_set", "eval_on_val_set", "submit_factor"):
+                                continue
+                            args = _parse_args(row.get("arguments_raw"))
+                            expr = str(args.get("multi_line_expr") or "").strip()
+                            if not expr:
+                                continue
+                            sig = self.entry_signature(expr)
+                            if sig not in sig_set:
+                                continue
+                            result = row.get("result") if isinstance(row.get("result"), dict) else {}
+                            found = self._stage_ic_from_result(name, result)
+                            if found:
+                                evidence_by_sig.setdefault(sig, {}).update(found)
+                for eid, sig, metrics in items:
+                    evidence = evidence_by_sig.get(sig)
+                    if not evidence:
+                        summary["no_evidence"] += 1
+                        continue
+                    changed = False
+                    for key, value in evidence.items():
+                        if _safe_float(metrics.get(key)) is None:
+                            metrics[key] = value
+                            changed = True
+                    if changed:
+                        updates.append((json.dumps(metrics, ensure_ascii=False), eid))
+                        summary["updated"] += 1
+            if updates:
+                conn.executemany(
+                    "UPDATE memory_entries SET metrics_json = ? WHERE id = ?",
+                    updates,
+                )
+        return summary
+
+    @staticmethod
+    def _stage_ic_from_result(name: str, result: dict[str, Any]) -> dict[str, Any]:
+        """单条工具结果 → 分窗口 IC（口径与 ingestion.record_tool_result 一致）。"""
+        summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
+        metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
+        out: dict[str, Any] = {}
+        split = str(result.get("split") or "")
+        if name == "eval_on_val_set" or split == "val":
+            out["val_ic"] = summary.get("ic")
+            out["val_icir"] = summary.get("icir")
+        elif name in ("evaluate_factor", "eval_on_train_set") or split == "train":
+            out["train_ic"] = summary.get("ic")
+            out["train_icir"] = summary.get("icir")
+        elif name == "submit_factor":
+            for key in ("train_ic", "train_icir", "train_rank_ic", "val_ic", "val_icir",
+                        "val_rank_ic", "val_ic_retention", "val_long_excess",
+                        "test_ic", "test_icir", "test_rank_ic", "test_ic_retention"):
+                out[key] = metrics.get(key)
+            holdout = result.get("test_holdout") if isinstance(result.get("test_holdout"), dict) else {}
+            if _safe_float(out.get("test_ic")) is None:
+                out["test_ic"] = holdout.get("ic")
+                out["test_icir"] = holdout.get("icir")
+                out["test_rank_ic"] = holdout.get("rank_ic")
+                out["test_ic_retention"] = holdout.get("ic_retention")
+            if _safe_float(out.get("train_ic")) is None:
+                out["train_ic"] = metrics.get("ic")
+                out["train_icir"] = metrics.get("icir")
+        return {k: v for k, v in out.items() if _safe_float(v) is not None}
 
     # ── v1/v2 → v3 幂等迁移 ──
 

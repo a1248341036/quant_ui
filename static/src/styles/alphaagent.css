@@ -251,7 +251,7 @@
 .typing i { width:5px; height:5px; border-radius:50%; background:var(--accent); animation:agentPulse 1.2s infinite; }
 .typing i:nth-child(2) { animation-delay:.15s; }.typing i:nth-child(3) { animation-delay:.3s; }
 @keyframes agentPulse { 0%,80%,100%{opacity:.25;transform:translateY(0)}40%{opacity:1;transform:translateY(-3px)} }
-.composer-wrap { max-width:860px; width:calc(100% - 48px); margin:auto auto 0; flex:none; }
+.composer-wrap { max-width:940px; width:calc(100% - 48px); margin:auto auto 0; flex:none; }
 .composer-collapse-btn { display:grid; place-items:center; width:24px; height:24px; padding:0; border:1px solid var(--line); border-radius:6px; background:transparent; color:var(--muted); font-size:11px; cursor:pointer; }
 .composer-collapse-btn:hover { color:var(--text); background:rgb(79 140 255 / .1); }
 .composer-expand-bar { display:flex; align-items:center; justify-content:space-between; width:100%; padding:8px 14px; border:1px solid var(--line-strong); border-radius:13px; background:var(--bg-soft); color:var(--muted); font-size:12px; cursor:pointer; box-shadow:0 4px 18px rgb(0 0 0 / .12); }
@@ -259,8 +259,13 @@
 .composer-expand-arrow { font-size:10px; opacity:.7; }
 .composer { border:1px solid var(--line-strong); border-radius:13px; background:var(--bg-soft); box-shadow:0 8px 28px rgb(0 0 0 / .15); }
 .composer textarea { display:block; width:100%; resize:none; border:0; outline:0; background:transparent; color:var(--text); padding:13px 14px 7px; line-height:1.55; font-size:13px; }
-.composer-bottom { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; padding:6px 8px 8px 14px; }
-.composer-options { display:flex; align-items:center; gap:12px; flex-wrap:wrap; row-gap:5px; min-width:0; flex:1 1 auto; color:var(--muted); font-size:10px; }
+.composer-bottom { display:flex; flex-direction:column; align-items:stretch; justify-content:space-between; gap:8px; padding:4px 10px 10px 14px; }
+.composer-options { display:flex; align-items:center; gap:10px; flex-wrap:wrap; row-gap:7px; min-width:0; flex:1 1 auto; color:var(--muted); font-size:10px; }
+.cfg-opt-divider { flex:none; width:1px; align-self:stretch; margin:2px 2px; background:var(--line); }
+.cfg-adv-toggle { display:inline-flex; flex:none; align-items:center; gap:4px; padding:3px 9px; border:1px dashed var(--line-strong); border-radius:6px; background:transparent; color:var(--muted); font-size:10px; cursor:pointer; white-space:nowrap; transition:all .12s; }
+.cfg-adv-toggle:hover, .cfg-adv-toggle.open { color:var(--text); border-color:var(--accent); background:rgb(79 140 255 / .08); }
+.cfg-adv-arrow { font-size:8px; opacity:.75; }
+.composer-options-adv { display:flex; align-items:center; gap:16px; flex-wrap:wrap; row-gap:8px; padding:8px 10px; margin:0 2px 2px; border:1px dashed var(--line); border-radius:8px; background:rgb(255 255 255 / .015); }
 .mode-switch { display:inline-flex; flex:none; align-items:center; gap:4px; padding:2px; border:1px solid var(--line); border-radius:7px; background:rgb(255 255 255 / .02); }
 .mode-btn { padding:3px 9px; border:0; border-radius:5px; background:transparent; color:var(--muted); font-size:10px; cursor:pointer; white-space:nowrap; }
 .mode-btn:hover:not(:disabled) { color:var(--text); }
@@ -301,7 +306,7 @@
 .threshold-btn-save:disabled { opacity:.5; cursor:not-allowed; }
 .composer-label-hint { font:10px var(--font-mono); opacity:.75; white-space:nowrap; min-width:0; max-width:180px; overflow:hidden; text-overflow:ellipsis; }
 .composer-date { display:inline-flex; flex-direction:row; align-items:center; gap:3px; white-space:nowrap; }
-.composer-actions { display:flex; align-items:center; gap:8px; flex:none; margin-left:auto; }
+.composer-actions { display:flex; align-items:center; justify-content:flex-end; gap:8px; flex:none; width:100%; }
 .composer-date-input { width:auto; min-width:0; max-width:110px; padding:1px 4px; border:1px solid var(--line); border-radius:4px; background:var(--bg); color:var(--text); font-size:10px; line-height:1.4; }
 .composer-date-input:disabled { opacity:.5; }
 .submit-toggle { display:flex; flex-direction:row; align-items:center; gap:4px; font-size:10px; }
@@ -586,9 +591,13 @@ textarea.lab-input { resize:vertical; font:12px/1.5 var(--font-mono); }
 .facet-row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   flex-wrap: wrap;
-  padding: 2px 0 0;
+  margin: 2px 2px 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgb(255 255 255 / .015);
 }
 .facet-label {
   font-size: 11px;
