@@ -9,8 +9,10 @@
 param()
 
 $ErrorActionPreference = "Continue"
-$CneRoot = "D:\Quant\quant_ui\CNEquity"
-$Cne = "D:\Quant\quant_ui\CNEquity\.venv\Scripts\cne.exe"
+$RepoRoot = "D:\Quant\quant_ui"
+$CneRoot  = Join-Path $RepoRoot "CNEquity"
+$Cne      = Join-Path $RepoRoot ".venv\Scripts\cne.exe"
+$Py       = Join-Path $RepoRoot ".venv\Scripts\python.exe"
 $Config = Join-Path $CneRoot "configs\cnequity.quant_dataset.toml"
 $LogDir = Join-Path $CneRoot "data\cnequity\logs"
 $Stamp = Get-Date -Format "yyyyMMdd"
@@ -28,6 +30,12 @@ function Write-Log([string]$Msg) {
 Write-Log "==== stale retry start ===="
 & $Cne run daily --stale-only --config $Config 2>&1 | ForEach-Object { Write-Log $_.ToString() }
 Write-Log "stale-only exit=$LASTEXITCODE"
+
+# fund_nav 补抓成功后重建基金面板（fund_bars 数据源），否则 fund_bars 会
+# 持续显示 STALE 直到次日 16:30 refresh_data 才重建。
+Write-Log "rebuild fund panel"
+& $Py -c 'import sys; sys.path.insert(0, "D:/Quant/quant_ui"); from core.updater import rebuild_fund_panel; rebuild_fund_panel()' 2>&1 | ForEach-Object { Write-Log $_.ToString() }
+Write-Log "rebuild fund panel exit=$LASTEXITCODE"
 
 # 顺带清理 staging（保留最近 2 天外的）
 & $Cne clean --config $Config 2>&1 | ForEach-Object { Write-Log $_.ToString() }
