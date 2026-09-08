@@ -191,14 +191,23 @@
                 <button class="threshold-btn" :class="{ active: agent.showThresholdModal }" :disabled="agent.agentBusy" title="编辑当前档位的挖掘/入库/回测门槛（保存后全链路生效）" @click="agent.openThresholdModal">{{ agent.researchSpecCustom ? '门槛·已改' : '门槛' }}</button>
               </div>
               <span class="composer-label-hint" :title="'本次评估使用的 label 列，随数据面组合自动切换'">{{ agent.form.label_col }}</span>
+              <span class="cfg-opt-divider" aria-hidden="true"></span>
+              <label class="composer-date">训练 <input v-model="agent.form.train_start" type="date" :disabled="agent.agentBusy" class="composer-date-input"> → <input v-model="agent.form.train_end" type="date" :disabled="agent.agentBusy" class="composer-date-input"></label>
+              <label class="composer-date">验证 <input v-model="agent.form.val_start" type="date" :disabled="agent.agentBusy" class="composer-date-input"> → <input v-model="agent.form.val_end" type="date" :disabled="agent.agentBusy" class="composer-date-input"></label>
+              <button
+                class="cfg-adv-toggle"
+                :class="{ open: showAdvanced }"
+                title="调仓频率 / 并行评估数 / 种群批量筛选等高级参数"
+                @click="showAdvanced = !showAdvanced"
+              >⚙ 高级<span class="cfg-adv-arrow">{{ showAdvanced ? '▴' : '▾' }}</span></button>
+            </div>
+            <div v-if="agent.agentMode==='research' && showAdvanced" class="composer-options composer-options-adv">
               <label class="composer-date" title="交付门禁的调仓频率：影响 engine_gate 回测与实盘可交易性判定；默认随档位（短周期=weekly，慢信号=monthly）">调仓 <select v-model="agent.form.rebalance_freq" :disabled="agent.agentBusy" class="composer-date-input">
                 <option value="">自动</option>
                 <option value="daily">日</option>
                 <option value="weekly">周</option>
                 <option value="monthly">月</option>
               </select></label>
-              <label class="composer-date">训练 <input v-model="agent.form.train_start" type="date" :disabled="agent.agentBusy" class="composer-date-input"> → <input v-model="agent.form.train_end" type="date" :disabled="agent.agentBusy" class="composer-date-input"></label>
-              <label class="composer-date">验证 <input v-model="agent.form.val_start" type="date" :disabled="agent.agentBusy" class="composer-date-input"> → <input v-model="agent.form.val_end" type="date" :disabled="agent.agentBusy" class="composer-date-input"></label>
               <label class="composer-date" title="每轮并行评估数（train/val 同时算多少个因子）；上限受机器 CPU/内存约束。每轮候选总数在「门槛」弹窗的搜索策略里配置">并发 <select v-model.number="agent.form.max_parallel_eval" :disabled="agent.agentBusy" class="composer-date-input">
                 <option :value="6">×6</option>
                 <option :value="12">×12</option>
@@ -276,6 +285,7 @@ export default {
   data() {
     return {
       agent: agentStore,
+      showAdvanced: false,
     }
   },
   computed: {
