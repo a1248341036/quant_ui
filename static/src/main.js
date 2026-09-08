@@ -3,6 +3,7 @@ import * as echarts from 'echarts'
 
 import App from './App.vue'
 import './style.css'
+import { startVersionWatch } from './versionWatch'
 
 // 把 echarts 挂到 window 上，使 utils/charts.js 可以直接使用
 window.echarts = echarts
@@ -15,3 +16,5 @@ const app = createApp(App)
 app.component('strategy-select', StrategySelect)
 app.component('code-editor', CodeEditor)
 app.mount('#app')
+
+startVersionWatch()
