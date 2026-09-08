@@ -378,3 +378,222 @@ def cumulative_subset_curve(
                 risk_txt = f"，Sharpe={row['oos_sharpe']}，回撤={row['oos_max_drawdown']}"
             progress(f"[{k}/{len(order)}] Top{k} 子集 blended OOS IC = {row['blended']}{risk_txt}")
     return curve
+
+
+# ── D 族对照：不挑因子——全因子简单投票合成 OOS 分数 ─────────────────────
+# 与 ridge/lgbm（在 train 折上"学习"权重）相对：三种方案都在 train 折上做
+# 同等级的信息使用（符号/ICIR/相关结构），但权重形式是显式规则而非回归——
+# 回答"挑选/拟合权重 vs 不挑全上的简单投票，OOS 差多少"。
+
+_SCHEME_META = [
+    ("equal", "等权 1/N", "符号对齐后可用因子每人一票（谁在场谁投票，行内按在场数归一）"),
+    ("icir", "ICIR 加权", "因子权重 = train 折日均 IC / 日 IC 标准差（带符号，历史越稳权重越大）"),
+    ("hrp", "HRP 风险平价", "按因子日 IC 序列相关性层次聚类 + 递归二分逆方差配权（同类抱团、团间按风险分摊）"),
+]
+
+
+def _daily_ic_frame(values: np.ndarray, label: np.ndarray, dates_np: np.ndarray) -> pd.DataFrame:
+    """成员值矩阵 → 逐日 Spearman IC 表 [交易日 × 成员列索引]。"""
+    sub = pd.DataFrame({"y": label, "d": pd.Series(dates_np)})
+    out: dict[int, pd.Series] = {}
+    for j in range(values.shape[1]):
+        v = pd.Series(values[:, j], name="v")
+        s = pd.concat([v, sub["d"], sub["y"]], axis=1).dropna(subset=["v", "y"])
+        if len(s) >= 5:
+            ic = daily_spearman_ic(s["v"].to_numpy(), s["y"].to_numpy(), s["d"].to_numpy())
+            if len(ic):
+                out[j] = ic
+    frame = pd.DataFrame(out)
+    if not frame.empty:
+        frame.index = pd.to_datetime(frame.index)
+    return frame
+
+
+def _hrp_weights_from_ic(frame: pd.DataFrame) -> np.ndarray | None:
+    """日 IC 序列 → 层次聚类风险平价权重（López de Prado HRP 简化递归二分版）。
+
+    相关矩阵 → 平均连接层次聚类（leaves 拟对角序）→ 按序递归二分，每层两侧
+    按"团内逆方差组合方差"的风险平价分配 alpha；scipy 缺失时退化为自然序。
+    """
+    n = frame.shape[1]
+    if frame.shape[0] < 10 or n < 2:
+        return None
+    cov = frame.cov(min_periods=8).to_numpy(dtype=np.float64)
+    if cov.shape != (n, n):
+        return None
+    corr = frame.corr(min_periods=8).to_numpy(dtype=np.float64)
+    # NaN 兜底：对角保正，非对角按 0 处理（缺重叠样本 = 假设不相关）
+    diag = np.nan_to_num(np.diag(cov), nan=1.0)
+    diag = np.maximum(diag, 1e-9)
+    cov = np.where(np.isnan(cov), 0.0, cov)
+    np.fill_diagonal(cov, diag)
+    corr = np.where(np.isnan(corr), 0.0, corr)
+    np.fill_diagonal(corr, 1.0)
+    dist = np.sqrt(np.clip((1.0 - corr) / 2.0, 0.0, 1.0))
+    np.fill_diagonal(dist, 0.0)
+    order: np.ndarray | None = None
+    try:
+        from scipy.cluster.hierarchy import leaves_list, linkage
+        from scipy.spatial.distance import squareform
+
+        Z = linkage(squareform(dist, checks=False), method="average")
+        order = np.asarray(leaves_list(Z), dtype=int)
+    except Exception:  # noqa: BLE001 — scipy 缺失/异常时用自然序，结果仍可用
+        order = None
+    if order is None or len(order) != n:
+        order = np.arange(n)
+
+    def _ivp_var(idx: np.ndarray) -> float:
+        sub = cov[np.ix_(idx, idx)]
+        iv = 1.0 / np.maximum(np.diag(sub), 1e-12)
+        wv = iv / iv.sum()
+        return float(wv @ sub @ wv)
+
+    w = np.ones(n)
+
+    def _alloc(sli: np.ndarray, weight: float) -> None:
+        if len(sli) == 1:
+            w[sli[0]] = weight
+            return
+        mid = len(sli) // 2
+        left, right = sli[:mid], sli[mid:]
+        vl, vr = _ivp_var(left), _ivp_var(right)
+        if vl + vr <= 1e-12:
+            vl = vr = 1.0
+        alpha = 1.0 - vl / (vl + vr)  # 方差小（更稳）的一侧分更多
+        _alloc(left, weight * alpha)
+        _alloc(right, weight * (1.0 - alpha))
+
+    _alloc(order, 1.0)
+    total = float(w.sum())
+    return w / total if total > 1e-12 else None
+
+
+def fit_scheme_compare_scores(
+    feature_matrix: np.ndarray,
+    label: np.ndarray,
+    dates: pd.Series,
+    folds: Sequence[WalkForwardFold],
+) -> dict[str, np.ndarray]:
+    """D 族三种"不挑"方案的全长 OOS 合成分数（与 panel 行序对齐，NaN 保持）。
+
+    每折：train 段估计符号/ICIR/聚类结构（与模型拟合同段，无未来信息）→
+    应用到该折 OOS；行内只对在场成员做加权平均（分母按在场权重重归一）。
+    """
+    n_rows = feature_matrix.shape[0]
+    date_np = pd.to_datetime(pd.Series(dates)).to_numpy()
+    fin = np.isfinite(feature_matrix)
+    out = {name: np.full(n_rows, np.nan, dtype=np.float32) for name, _, _ in _SCHEME_META}
+    for fold in folds:
+        train_rows = np.isin(date_np, fold.train_dates.to_numpy()) & np.isfinite(label)
+        oos_rows = np.isin(date_np, fold.oos_dates.to_numpy()) & np.isfinite(label)
+        if int(train_rows.sum()) < 100 or not oos_rows.any():
+            continue
+        icf = _daily_ic_frame(feature_matrix[train_rows], label[train_rows], date_np[train_rows])
+        voting: list[int] = []
+        mean_ic: dict[int, float] = {}
+        icir: dict[int, float] = {}
+        for j in range(feature_matrix.shape[1]):
+            s = icf.get(j)
+            if s is None:
+                continue
+            s = s.dropna()
+            if len(s) < 5:
+                continue
+            m = float(s.mean())
+            sd = float(s.std(ddof=1))
+            if abs(m) < 1e-9:
+                continue
+            voting.append(j)
+            mean_ic[j] = m
+            icir[j] = (m / sd) if sd > 1e-12 else 0.0
+        if not voting:
+            continue
+        oos_fin = fin[oos_rows][:, voting]
+        avail_any = oos_fin.any(axis=1)
+        if not avail_any.any():
+            continue
+        oos_idx = np.where(oos_rows)[0][avail_any]
+        Xo = feature_matrix[oos_rows][:, voting]
+        signs = np.asarray([1.0 if mean_ic[j] > 0 else -1.0 for j in voting], dtype=np.float64)
+        aligned = Xo * signs[None, :]  # 符号对齐：谁在投票谁带方向
+        with np.errstate(invalid="ignore", divide="ignore"):
+            # equal：在场者等权
+            cnt = oos_fin.sum(axis=1, dtype=np.float64)
+            num = np.where(oos_fin, aligned, 0.0).sum(axis=1)
+            eq = np.where(avail_any, num / np.maximum(cnt, 1e-12), np.nan)
+        out["equal"][oos_idx] = eq[avail_any].astype(np.float32)
+
+        w_icir = np.asarray([icir[j] for j in voting], dtype=np.float64)
+        total_abs = np.abs(w_icir).sum()
+        if total_abs > 1e-12:
+            w_icir = w_icir / total_abs
+        w_hrp = _hrp_weights_from_ic(icf[voting])
+        if w_hrp is None:
+            w_hrp = np.ones(len(voting), dtype=np.float64) / len(voting)
+        for name, wv in (("icir", w_icir), ("hrp", w_hrp)):
+            denom = np.where(oos_fin, wv[None, :], 0.0).sum(axis=1)
+            numer = np.where(oos_fin, aligned * wv[None, :], 0.0).sum(axis=1)
+            ok = avail_any & (denom > 1e-12)
+            vals = np.where(ok, numer / np.maximum(denom, 1e-12), np.nan)
+            out[name][oos_idx[ok]] = vals[ok].astype(np.float32)
+    return out
+
+
+def scheme_compare_report(
+    scheme_scores: dict[str, np.ndarray],
+    stacked: np.ndarray,
+    label: np.ndarray,
+    dates: pd.Series,
+    *,
+    first_oos,
+    label_horizon: int = 5,
+) -> dict:
+    """把三种投票方案与当前组合（stacked）放在同一行集上做 OOS 对照。
+
+    对齐行集 = date ≥ first_oos 且 stacked/方案/label 全有限的交。stacked 也
+    用同一行集重算（保证 IC 差口径一致），避免与 report.oos_ic_blended
+    （全有效行）口径打架。
+    """
+    date_np = pd.to_datetime(pd.Series(dates)).to_numpy()
+    ts0 = pd.Timestamp(first_oos)
+    rows = {}
+    for name in list(scheme_scores) + ["stacked"]:
+        arr = stacked if name == "stacked" else scheme_scores[name]
+        rows[name] = (
+            (date_np >= ts0) & np.isfinite(arr) & np.isfinite(stacked) & np.isfinite(label)
+        )
+
+    def _metrics(score: np.ndarray, mask: np.ndarray) -> dict | None:
+        if mask.sum() < 20:
+            return None
+        m = np.asarray(mask, dtype=bool)
+        ic = daily_spearman_ic(score[m], label[m], pd.Series(date_np[m]))
+        risk = _portfolio_risk_metrics(score[m], label[m], pd.Series(date_np[m]), horizon_days=label_horizon)
+        if not len(ic):
+            return None
+        sd = float(ic.std(ddof=1))
+        return {
+            "ic_mean": round(float(ic.mean()), 6),
+            "ic_ir": round(float(ic.mean() / sd), 4) if len(ic) > 2 and sd > 1e-12 else None,
+            "oos_sharpe": risk.get("oos_sharpe"),
+            "oos_max_drawdown": risk.get("oos_max_drawdown"),
+            "n_days": int(len(ic)),
+        }
+
+    ref = _metrics(stacked, rows["stacked"])
+    stacked_ic = float(ref["ic_mean"]) if ref else None
+    schemes_out: list[dict] = []
+    if ref:
+        schemes_out.append({"scheme": "stacked", "label": "当前组合（ridge+LGBM 加权）", "note": "报告其余各处口径",
+                            **ref, "ic_gap": 0.0})
+    for name, label_txt, note in _SCHEME_META:
+        mm = _metrics(scheme_scores[name], rows[name])
+        if mm is None:
+            continue
+        mm = dict(mm)
+        mm["ic_gap"] = round(float(mm["ic_mean"]) - stacked_ic, 6) if stacked_ic is not None else None
+        schemes_out.append({"scheme": name, "label": label_txt, "note": note, **mm})
+    return {"note": "同一 OOS 行集对照（date ≥ 首个 OOS 折起点，且当前组合/方案/标签均有效）；"
+                    "三种方案都不做因子挑选，权重只由 train 折估计——用于回答'拟合加权 vs 不挑全上简单投票'。",
+            "schemes": schemes_out}
