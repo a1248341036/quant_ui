@@ -134,7 +134,7 @@ const AXIS_LABEL = { color: '#8494b5', fontSize: 10 }
 export default {
   name: 'MetricsPanel',
   data() {
-    return { data: null, loading: false, error: '', lastN: 20 }
+    return { data: null, loading: false, error: '', lastN: 0 }
   },
   computed: {
     errorRows() { return Object.entries(this.data?.summary?.error_breakdown || {}) },
