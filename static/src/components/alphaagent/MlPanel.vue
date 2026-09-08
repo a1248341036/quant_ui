@@ -284,6 +284,62 @@ import { chart } from '../../utils/charts.js'
 
 const AXIS_LABEL = { color: '#8494b5', fontSize: 10 }
 
+/** comment 分段标签白名单（长词在前防"预测对账"被"对账"截断） */
+const SEG_LABELS = [
+  '经济直觉', '机制', '结构', '统计', '消融佐证', '单腿消融', '消融', '预测对账', '对账',
+  '设计目的', '变异类型', 'Reviewer备注', 'IC方向', 'train指标', '盲测', '验证', '风险', '注意',
+].sort((a, b) => b.length - a.length).join('|')
+
+/**
+ * comment 分段：识别两种主流写法——
+ * 1.【标记】式（挖掘 agent 常用）；
+ * 2. 行内"标签：/标签="式（句号/分号后接 2-4 字标签词 + 冒号/等号），
+ *    全文一行无换行时也能切出独立段；
+ * 都没有则整段 plain。返回 [{title, body}]。
+ */
+function parseCommentSegments(text) {
+  if (!text) return []
+  const trimmed = String(text).trim()
+  // ①【标记】式
+  if (/【[^】]+】/.test(trimmed)) {
+    const parts = trimmed.split(/(【[^】]*】)/).filter(s => s && s.trim())
+    const segs = []
+    let cur = null
+    for (const p of parts) {
+      const m = p.match(/^【([^】]*)】\s*([\s\S]*)$/)
+      if (m) {
+        cur = { title: m[1], body: m[2].trim() }
+        segs.push(cur)
+      } else if (cur) {
+        cur.body += (cur.body ? '\n' : '') + p.trim()
+      } else {
+        segs.push({ title: '', body: p.trim() })
+      }
+    }
+    return segs
+  }
+  // ② 行内"标签：/标签="式：句边界后接白名单标签词
+  const re = new RegExp('(?:^|[。；;！!])\\s*(' + SEG_LABELS + ')[：:=]', 'g')
+  const marks = []
+  let m
+  while ((m = re.exec(trimmed)) !== null) {
+    marks.push({
+      title: m[1],
+      start: m.index + m[0].indexOf(m[1]),
+      bodyStart: m.index + m[0].length,
+    })
+    re.lastIndex = m.index + m[0].length
+  }
+  if (!marks.length) return [{ title: '', body: trimmed }]
+  const segs = []
+  if (marks[0].start > 0) segs.push({ title: '', body: trimmed.slice(0, marks[0].start).trim() })
+  for (let i = 0; i < marks.length; i++) {
+    const end = i + 1 < marks.length ? marks[i + 1].start : trimmed.length
+    segs.push({ title: marks[i].title, body: trimmed.slice(marks[i].bodyStart, end).trim() })
+  }
+  return segs.filter(s => s.body || s.title)
+}
+
 export default {
   name: 'MlPanel',
   data() {
@@ -380,26 +436,9 @@ export default {
       const d = this.factorCard?.data || {}
       return d.comment_full || d.comment || ''
     },
-    /** comment 按【段落标记】切分渲染：{title, body} 列表；无标记则整段返回 */
+    /** comment 分段渲染：{title, body} 列表；无标记则整段返回 */
     hoverSegments() {
-      const text = this.hoverComment
-      if (!text) return []
-      const parts = text.split(/(【[^】]*】)/).filter(s => s && s.trim())
-      if (parts.length <= 1) return [{ title: '', body: text.trim() }]
-      const segs = []
-      let cur = null
-      for (const p of parts) {
-        const m = p.match(/^【([^】]*)】\s*([\s\S]*)$/)
-        if (m) {
-          cur = { title: m[1], body: m[2].trim() }
-          segs.push(cur)
-        } else if (cur) {
-          cur.body += (cur.body ? '\n' : '') + p.trim()
-        } else {
-          segs.push({ title: '', body: p.trim() })
-        }
-      }
-      return segs
+      return parseCommentSegments(this.hoverComment)
     },
     contribHint() {
       return ({
