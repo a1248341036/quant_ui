@@ -63,6 +63,12 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--subset-curve", action="store_true",
                     help="贡献排序累积子集曲线：按置换贡献降序取 Top-k 逐级重训（成本 ≈ 2n 次拟合），"
                          "输出'子集规模 vs OOS IC'曲线，定位边际收益归零的最优规模")
+    ap.add_argument("--score-smooth", type=int, default=0,
+                    help="组合分数尾随线性 WMA 平滑窗（按股票、按交易日）。0=自动取 label_days。"
+                         "组合分数此前是全链路唯一未平滑的分数——挖掘侧单因子靠 WMA 把日换手压半才过 gate"
+                         "（ovdiv：WMA20 后 1.07→0.50）；1=关闭平滑")
+    ap.add_argument("--include-factors", nargs="*", default=None,
+                    help="因子白名单（按 factor_name 精确匹配）：只训练名单内的因子；缺省=全部")
     ap.add_argument("--out-dir", default=None, help="输出目录（默认 artifacts/alphaagent/stacking/<时间戳>）；后端托管时传确定性路径")
     ap.add_argument("--isolation", default="strict", choices=["strict", "holdout"],
                     help="strict：walk-forward 仅用挖掘期后干净段（fold 少但指标可信）；"
@@ -81,9 +87,13 @@ def main() -> None:
     entries = collect_factor_entries(
         modes=tuple(args.modes), include_candidate=not args.no_candidate, include_production=True
     )
+    if args.include_factors:
+        wanted = {str(n).strip() for n in args.include_factors if str(n).strip()}
+        entries = [e for e in entries if e.name in wanted]
+        print(f"因子白名单：请求 {len(wanted)} 个，命中 {len(entries)} 个")
     print(f"因子枚举：{len(entries)} 个（去重后）")
     if len(entries) < 2:
-        print("因子数不足（<2），无法组合。请先挖掘入库更多因子。")
+        print("因子数不足（<2），无法组合。请先挖掘入库更多因子（或核对白名单拼写）。")
         sys.exit(1)
 
     # ② 时间隔离边界：挖掘循环实际评估的右端（registry 的 eval_end），
@@ -262,6 +272,15 @@ def main() -> None:
         sys.exit(1)
     stacked = np.nanmean(np.column_stack(usable), axis=1).astype(np.float32)
 
+    # ⑤b 组合分数平滑：尾随 WMA（gate/报告/pred 全部消费平滑后分数）
+    smooth_n = args.score_smooth if args.score_smooth > 0 else args.label_days
+    if smooth_n > 1:
+        stacked = _wma_smooth_scores(stacked, panel, smooth_n)
+        print(f"组合分数平滑：尾随线性 WMA-{smooth_n}（0=自动取持有天数）")
+    else:
+        print("组合分数平滑：关闭（--score-smooth 1）")
+    score_smooth_used = smooth_n
+
     # ⑥ 衰减对照表（幸存者偏差量化）
     print("衰减对照表（mining 窗口 IC vs OOS IC）…")
     materialized_for_decay = []
@@ -337,6 +356,8 @@ def main() -> None:
         "panel_start": str(panel_start.date()),
         "panel_end": str(end.date()),
         "label_days": args.label_days,
+        "score_smooth": int(score_smooth_used),
+        "include_factors": list(args.include_factors) if args.include_factors else None,
         "folds": len(folds),
         "feature_names": dataset.feature_names,
         "dropped": dataset.dropped,
@@ -371,6 +392,41 @@ def main() -> None:
         pred_path.parent.mkdir(parents=True, exist_ok=True)
         write_pred_parquet(stacked, panel, pred_path)
         print(f"组合分数已写入 pred 通道：{pred_path}")
+
+
+def _wma_smooth_scores(values: np.ndarray, panel: pd.DataFrame, window: int) -> np.ndarray:
+    """组合分数尾随线性 WMA（按股票、按交易日），治换手/持仓重叠。
+
+    挖掘侧单因子靠表达式内 WMA 平滑过换手门（ovdiv：WMA20 日换手 1.07→0.50），
+    组合分数此前是全链路唯一未平滑的分数。卷积实现（快）：最近一日权重最大；
+    窗口内非有限值不参与加权（den 归一）；原始 NaN 行保持 NaN。
+    """
+    ser = pd.Series(np.asarray(values, dtype=np.float64), index=panel.index)
+    wide = ser.unstack("instrument")
+    # 截尾核（降序）：当前日权重最大、往前线性衰减；convolve(a, w)[t] = Σ_j a[t-j]·w[j]
+    wd = np.arange(window, 0, -1, dtype=np.float64)
+    wd /= wd.sum()
+    out: dict[object, np.ndarray] = {}
+    for col in wide.columns:
+        v = wide[col].to_numpy(dtype=np.float64)
+        m = np.isfinite(v)
+        if not m.any():
+            out[col] = v
+            continue
+        v0 = np.where(m, v, 0.0)
+        num = np.convolve(v0, wd, mode="full")[: len(v)]
+        den = np.convolve(m.astype(np.float64), wd, mode="full")[: len(v)]
+        sm = np.where(den > 1e-12, num / np.maximum(den, 1e-12), np.nan)
+        sm[~m] = np.nan
+        out[col] = sm
+    sm_wide = pd.DataFrame(out, index=wide.index, columns=wide.columns)
+    long = (
+        sm_wide.rename_axis("datetime")
+        .reset_index()
+        .melt(id_vars="datetime", var_name="instrument", value_name="score")
+        .set_index(["datetime", "instrument"])["score"]
+    )
+    return long.reindex(panel.index).to_numpy(dtype=np.float32)
 
 
 def write_pred_parquet(values: np.ndarray, panel: pd.DataFrame, path: Path) -> None:

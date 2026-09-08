@@ -668,6 +668,8 @@ class StackingTrainRequest(BaseModel):
     isolation: str = Field(default="holdout")     # strict | holdout
     size_neutral: bool = True
     subset_curve: bool = Field(default=False)     # 贡献排序累积子集曲线（成本 ≈ 2n 次拟合）
+    include_factors: list[str] | None = None      # 因子白名单（factor_name 精确匹配）；空/None=全部
+    score_smooth: int = Field(default=0, ge=0, le=60)  # 组合分数 WMA 平滑窗；0=自动取 label_days
 
 
 @router.post("/stacking/train")
