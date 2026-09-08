@@ -39,6 +39,7 @@
         <label class="ml-check"><input type="checkbox" v-model="ml.form.no_candidate"> 只用正式库</label>
         <label class="ml-check"><input type="checkbox" v-model="ml.form.no_gate"> 跳过 engine_gate</label>
         <label class="ml-check" title="按置换贡献降序取 Top-k 逐级重训（成本 ≈ 2n 次拟合，训练时间明显变长）。输出'子集规模 vs OOS IC'曲线，定位边际收益归零的最优因子数。"><input type="checkbox" v-model="ml.form.subset_curve"> 累积子集曲线</label>
+        <label class="ml-check" title="同一段干净历史换两种折边界（整体平移 2/4 个月）各重训一遍，输出 OOS IC/ICIR/Sharpe/回撤 的路径分布——单条切法上的好成绩可能只是那条边界的运气。成本 ≈ 2 次完整训练。"><input type="checkbox" v-model="ml.form.multi_path"> 多路径对照</label>
         <span class="ml-gate-mode" title="因子池已是统一大库（不分技术/基本面）；engine_gate 档位自动跟随持有天数：≤7 天→技术档（周调仓·严门槛），>7 天→基本面档（月调仓·松门槛）。">gate 档位：{{ gateModeLabel }}（自动）</span>
       </div>
       <!-- ── 训练因子自选（白名单；不选=全部） ── -->
@@ -276,6 +277,41 @@
                           </tbody>
                         </table>
                       </template>
+                      <template v-if="multiPathRows.length">
+                        <div class="mlv-block-head">
+                          <h5>多路径 OOS 对照（折边界平移重训）</h5>
+                          <span class="summary-facet-hint" :title="(ml.detail.report.multi_path||{}).note || ''">ⓘ</span>
+                          <span v-if="multiPathWarning" class="mlv-bad">
+                            ⚠ 有 {{ multiPathAgg.n_negative_ic }}/{{ multiPathAgg.n_paths }} 条平移路径 IC ≤ 0——组合对数据切法敏感，结论可交易性存疑
+                          </span>
+                          <span v-else-if="multiPathAgg" class="mlv-sub">
+                            平移路径 IC [{{ fmtNum(multiPathAgg.ic_min) }} ~ {{ fmtNum(multiPathAgg.ic_max) }}]
+                            中位 {{ fmtNum(multiPathAgg.ic_median) }} · 最差 Sharpe {{ num2(multiPathAgg.sharpe_min) }}
+                          </span>
+                        </div>
+                        <table class="lib-table">
+                          <thead>
+                            <tr>
+                              <th>平移</th><th>折数</th><th>OOS 区间</th><th>OOS IC</th><th>ICIR</th>
+                              <th>OOS Sharpe</th><th>最大回撤</th><th>IC − 主路径</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <tr v-for="row in multiPathRows" :key="row.shift_months">
+                              <td>{{ row.shift_months }} 月</td>
+                              <td>{{ row.folds }}</td>
+                              <td>{{ row.oos_start }} ~ {{ row.oos_end }}</td>
+                              <td :class="icClass(row.ic_mean)"><strong>{{ fmtNum(row.ic_mean) }}</strong></td>
+                              <td>{{ fmtNum(row.ic_ir) }}</td>
+                              <td>{{ row.oos_sharpe == null ? '—' : num2(row.oos_sharpe) }}</td>
+                              <td>{{ row.oos_max_drawdown == null ? '—' : pct(row.oos_max_drawdown) }}</td>
+                              <td :class="icClass(row.ic_gap_vs_main)">
+                                {{ row.ic_gap_vs_main == null ? '—' : (row.ic_gap_vs_main >= 0 ? '+' : '') + fmtNum(row.ic_gap_vs_main) }}
+                              </td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </template>
                       <div class="mlv-block-head"><h5>折级 OOS IC</h5></div>
                       <div class="mlv-grid2">
                         <div v-for="(rows, model) in ml.detail.report.fold_metrics" :key="'f-' + model">
@@ -407,7 +443,7 @@ export default {
   data() {
     return {
       ml: {
-        form: { model: 'both', label_days: 5, train_months: 18, step_months: 6, max_corr: 0.6, isolation: 'holdout', no_candidate: false, no_gate: false, subset_curve: false, include_factors: [] },
+        form: { model: 'both', label_days: 5, train_months: 18, step_months: 6, max_corr: 0.6, isolation: 'holdout', no_candidate: false, no_gate: false, subset_curve: false, multi_path: false, include_factors: [] },
         factorPool: [],
         factorPoolLoading: false,
         list: [],
@@ -493,6 +529,17 @@ export default {
       )
       if (!rows.length) return null
       return rows.reduce((a, b) => (Number(b.ic_gap) > Number(a.ic_gap) ? b : a))
+    },
+    /** A 族多路径对照行（折边界平移重训的路径分布） */
+    multiPathRows() {
+      return this.ml.detail?.report?.multi_path?.paths || []
+    },
+    multiPathAgg() {
+      return this.ml.detail?.report?.multi_path?.aggregate || null
+    },
+    multiPathWarning() {
+      const a = this.multiPathAgg
+      return !!(a && a.n_negative_ic > 0)
     },
     contribMetrics: () => [
       { key: 'ic_drop', label: 'IC 口径' },

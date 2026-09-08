@@ -57,20 +57,24 @@ def walk_forward_splits(
     train_months: int = 18,
     step_months: int = 6,
     purge_days: int = 5,
+    shift_months: int = 0,
 ) -> list[WalkForwardFold]:
     """expanding 窗口 walk-forward 折。
 
     训练样本仅取 ``>= train_start``（时间隔离边界）；第 i 折 OOS 为
-    ``[train_start + (train_months + i*step_months), +step_months)``，
+    ``[train_start + (train_months + i*step_months + shift_months), +step_months)``，
     train 侧剔除 OOS 前最后 ``purge_days`` 个交易日（前向标签跨折泄漏）。
     OOS 不足一个交易日的不成折。
+
+    ``shift_months``：把整条折边界后移（多路径评估用）——同一段干净历史可
+    切出边界不同的多条 OOS 路径，单条路径的表现可能只是该切法的运气。
     """
     trading_days = dates.unique().sort_values()
     start = pd.Timestamp(train_start)
     folds: list[WalkForwardFold] = []
     i = 0
     while True:
-        oos_start = start + pd.DateOffset(months=train_months + i * step_months)
+        oos_start = start + pd.DateOffset(months=train_months + i * step_months + shift_months)
         oos_end = oos_start + pd.DateOffset(months=step_months)
         oos = trading_days[(trading_days >= oos_start) & (trading_days < oos_end)]
         if oos.empty:
