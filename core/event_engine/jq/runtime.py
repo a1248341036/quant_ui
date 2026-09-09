@@ -591,9 +591,10 @@ class JQRuntime:
     def get_factor(self, expr, date=None):
         """AlphaAgent DSL 因子表达式 -> 截面 Series(index=code)。
 
-        语法与因子实验室一致: $close/$open/$amount... 引用列, TS_*/CS_* 算子,
-        多行表达式(中间变量赋值)最后一行为输出。date 缺省= 信号日。
-        面板口径: 前复权 OHLC + amount(千元) + turnover_rate(%) + volume(手)。
+        语法与因子实验室一致: $close/$pe_ttm/$funda_net_profit... 引用列,
+        TS_*/CS_* 算子, 多行表达式(中间变量赋值)最后一行为输出。
+        date 缺省= 信号日。数据接入 AlphaAgent 的 CNE 面板(与因子实验室同源,
+        行情/估值/财务/资金流等全列可用; 详见 factor_bridge 模块说明)。
         """
         from core.event_engine.jq import factor_bridge
         ser = factor_bridge.factor_series(self.ctx, expr)
