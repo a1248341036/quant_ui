@@ -218,7 +218,12 @@ async def run_factor_mining_agentscope(
         overwrite=config.ingest_overwrite,
     )
 
-    factor_tools = FactorEvalTools(service, session_resp.session_id, submit_service=submit_service)
+    factor_tools = FactorEvalTools(
+        service,
+        session_resp.session_id,
+        submit_service=submit_service,
+        focus_facets=getattr(config, "focus_facets", None),
+    )
     system_prompt = build_system_prompt(
         include_operator_catalog=include_operator_catalog,
         extra_instructions=extra_instructions,
@@ -276,6 +281,7 @@ async def run_factor_mining_agentscope(
 
     factor_tools = FactorEvalTools(
         service, session_resp.session_id, submit_service=submit_service, memory_store=memory_store,
+        focus_facets=getattr(config, "focus_facets", None),
     )
     system_prompt = build_system_prompt(
         include_operator_catalog=include_operator_catalog,
@@ -590,6 +596,10 @@ async def run_factor_mining_agentscope(
                     "时必须随调用传 interaction 契约：{interaction_type, base_signal, condition_signal, "
                     "economic_mechanism(≥20字)}——未传会自动补占位并警告，机制描述请显式写。"
                 )
+            lines.append(
+                "- 硬性锁定：表达式只允许使用聚焦面列族/算子；触达未选面列/算子或完全未触及"
+                "聚焦面 = 越界，evaluate/submit 会直接 facet_lock_violation 拦截（不执行），按报错重写即可。"
+            )
             if off_focus:
                 lines.append(f"- 聚焦面 {'、'.join(off_focus)} 至今未出现在任何尝试中，本轮必须至少给出 1 条触及它的表达式。")
             block = f"{block}\n{chr(10).join(lines)}" if block else "\n".join(lines).lstrip("\n")
