@@ -63,7 +63,7 @@
           <li><code>get_snapshot(date=None)</code> → DataFrame（index=code）：<code>close/close_raw/open_raw/market_cap(亿)/turnover/st/paused/listed_ok/hl(收盘涨停)/high_limit/low_limit/fin_三正</code></li>
           <li><code>get_fundamentals(query(valuation.code, income.net_profit).filter(...).order_by(valuation.market_cap.asc()).limit(20), date=)</code> — 支持 ==/!=/</<=/>/>=/in_()/between()/&amp;/|</li>
           <li><code>get_price(security, end_date=, count=, fields=['close','open','high','low','pre_close','high_limit','low_limit','volume','money'], panel=False)</code> — 真实价；单标的返回 DataFrame(time×fields)，多标的返回 long 表；指数代码(399101.XSHE/000300.XSHG 等)走本地指数日线</li>
-          <li><code>get_factor('TS_MEAN($close, 20)')</code> — AlphaAgent DSL 因子表达式 → 信号日截面 Series(index=code)；<code>$close/$open/$high/$low/$amount/$volume/$turnover_rate/$mv</code> 引用列，TS_*/CS_* 算子，多行表达式末行为输出（与因子实验室同语法）</li>
+          <li><code>get_factor('TS_MEAN($close, 20)')</code> — AlphaAgent DSL 因子表达式 → 信号日截面 Series(index=code)；数据接入 AlphaAgent 的 CNE 面板（与因子实验室同源），<code>$close/$open/$amount/$volume/$turnover_rate</code> 等行情列、<code>$pe_ttm/$pb/$float_cap/$tot_cap</code> 等估值市值列、<code>$funda_*</code> 等财务列全量可用，TS_*/CS_* 算子，多行表达式末行为输出。首次调用懒加载 CNE 面板（磁盘缓存命中秒级；区间未覆盖会触发一次 30-70s 重建）</li>
           <li><code>history(count, unit='1d', field='close', security_list=[...])</code> → {code: list}（'1m' 按日线近似）</li>
           <li><code>get_current_data()[code].paused / .is_st / .name / .high_limit / .low_limit</code></li>
           <li><code>get_index_stocks('000300')</code> — 统一返回全量池（域内全部股票）；<code>get_security_info(code).start_date / .display_name</code></li>
