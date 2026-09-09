@@ -91,6 +91,7 @@ def collect_factor_entries(
     *,
     include_candidate: bool = True,
     include_production: bool = True,
+    include_dropped: bool = False,
 ) -> list[FactorEntry]:
     """枚举因子库（candidate/production × modes）的全部因子。
 
@@ -99,9 +100,16 @@ def collect_factor_entries(
     双数据源合并：catalog（meta/factors.parquet）+ candidate registry
     （mining_candidate_registry.json，挖掘中尚未写 catalog 的候选也在内）。
     同一表达式只保留首个（production 优先于 candidate，modes 顺序优先）。
+
+    soft-drop（2026-09-09）：条目带 ``dropped_from_ml`` 标记时默认跳过——该因子
+    经样本外衰减审计后不再进入组合训练（数据与历史保留，仅训练集合剔除）；
+    ``include_dropped=True`` 可恢复收录。
     """
     entries: list[FactorEntry] = []
     seen_exprs: set[str] = set()
+
+    def _dropped(payload: dict) -> bool:
+        return (not include_dropped) and bool(payload.get("dropped_from_ml"))
 
     def _add(entry: FactorEntry) -> None:
         expr = entry.expr.strip()
@@ -128,6 +136,8 @@ def collect_factor_entries(
                     continue
                 created = getattr(meta, "created_at", None)
                 extra = getattr(meta, "extra", None) or {}
+                if _dropped(extra):
+                    continue
                 facets = tuple(str(f) for f in (extra.get("facets") or ()))
                 if not facets:
                     facets = _expr_facets(meta.expr)
@@ -150,6 +160,8 @@ def collect_factor_entries(
                     items = registry.values() if isinstance(registry, dict) else registry
                     for item in items:
                         if not isinstance(item, dict):
+                            continue
+                        if _dropped(item):
                             continue
                         name = str(item.get("name") or "")
                         expr = str(item.get("expr") or "")
