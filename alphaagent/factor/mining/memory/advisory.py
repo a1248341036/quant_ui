@@ -60,8 +60,9 @@ class AdvisoryMixin:
         """评估前硬提醒通道（v3：指纹负证据 / 指纹正证据 / 意向编辑 APV 双门）。默认只提醒不拦截。
 
         返回 None（无提醒）或 {"advisories": [...], "blocked": False}。
-        - duplicate_known_dead_end：同结构指纹负证据（同表达式 ≥2 次尝试）→ 已知死路，
-          `hard_block_duplicates=True` 时由调用方（tools.dispatch）升级为拦截；
+        - duplicate_known_dead_end：同结构指纹负证据累计 ≥2 次尝试（同表达式重试，
+          或同骨架换窗口/参数的多个变体）→ 已知死路，`hard_block_duplicates=True`
+          时由调用方（tools.dispatch）升级为拦截；
         - duplicate_prior_result：同结构指纹曾有正向结果（promising/入库）→ 重复劳动
           提醒（历史条目名/verdict/IC/未晋升原因），仅提醒、永不拦截——正向重复说明
           结构出过信号，正确动作是变异或核查晋升卡点，而非机械重测；
@@ -76,23 +77,42 @@ class AdvisoryMixin:
         fingerprint = _structure_fingerprint(expression)
         family = classify_family("", expression)
         with self._open() as conn:
-            # ① 指纹负证据：同一结构指纹的已否定条目 ≥2 次尝试 → 已知死路
+            # ① 指纹负证据：同一结构指纹的已否定条目累计 ≥2 次尝试 → 已知死路。
+            #    跨变体聚合：同骨架换窗口/参数刷出的 weak/revise_required 变体各自
+            #    attempts=1，但同构已多轮失败、再测同构无新增信息，一并计入死路。
             if fingerprint:
-                row = conn.execute(
+                agg = conn.execute(
                     """
-                    SELECT factor_name, verdict, fail_detail, attempts FROM memory_entries
+                    SELECT COUNT(*) AS n_entries, COALESCE(SUM(attempts), 0) AS n_tries
+                    FROM memory_entries
                     WHERE structure_fingerprint = ?
                       AND verdict IN ('rejected', 'revise_required', 'weak')
-                    ORDER BY updated_at DESC LIMIT 1
                     """,
                     (fingerprint,),
                 ).fetchone()
-                if row and int(row["attempts"]) >= 2:
-                    verdict = str(row["verdict"] or "")
-                    reason = str(row["fail_detail"] or "") if row["fail_detail"] else f"已 {int(row['attempts'])} 次评估为 {verdict}"
+                if agg and (int(agg["n_entries"]) >= 2 or int(agg["n_tries"]) >= 2):
+                    row = conn.execute(
+                        """
+                        SELECT factor_name, verdict, fail_detail, attempts FROM memory_entries
+                        WHERE structure_fingerprint = ?
+                          AND verdict IN ('rejected', 'revise_required', 'weak')
+                        ORDER BY updated_at DESC LIMIT 1
+                        """,
+                        (fingerprint,),
+                    ).fetchone()
+                    verdict = str(row["verdict"] or "") if row else ""
+                    if row and row["fail_detail"]:
+                        reason = str(row["fail_detail"])
+                    else:
+                        reason = f"已累计 {int(agg['n_tries'])} 次评估未通过（最新 {verdict}）"
+                    scope = f"，{int(agg['n_entries'])} 个变体" if int(agg["n_entries"]) > 1 else ""
+                    latest = f"，最新 {row['factor_name']}" if row else ""
                     findings.append({
                         "kind": "duplicate_known_dead_end",
-                        "message": f"该表达式结构与历史死路相同（{row['factor_name']}，{reason}），不建议重复评估。",
+                        "message": (
+                            f"该表达式结构与历史死路相同：同构已评估 {int(agg['n_tries'])} 次"
+                            f"{scope}{latest}（{reason}），不建议继续同构重复评估。"
+                        ),
                     })
 
             # ①b 指纹正证据：同结构曾有正向 verdict（promising/入库）→ 重复劳动提醒。
