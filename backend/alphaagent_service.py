@@ -63,6 +63,23 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _pid_is_alive(pid: int | None) -> bool | None:
+    """进程是否存活。返回 None = 无法探测（无 pid / CLI run / psutil 缺失）。
+
+    pid 判定用于后端重启后的孤儿进程恢复：run_meta 里记了 spawn 时的 pid，
+    若 pid 已不存在即可立即断定子进程死于强制重启/断电，不必等日志静默 15 分钟。
+    """
+    if pid is None or int(pid) <= 0:
+        return None
+    try:
+        import psutil  # 懒加载：启动路径不引入额外依赖成本
+
+        return bool(psutil.pid_exists(int(pid)))
+    except Exception:  # noqa: BLE001
+        logger.warning("pid 存活探测失败 pid=%s，按未知处理", pid)
+        return None
+
+
 def bootstrap_research_memory() -> int:
     """Recover historical evaluation evidence only when the memory store is empty."""
     return ResearchMemoryStore(RESEARCH_MEMORY_FILE).backfill_from_logs(LOG_ROOT)
@@ -76,6 +93,7 @@ class AgentRun:
     params: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=_now)
     process: subprocess.Popen[str] | None = None
+    pid: int | None = None  # spawn 时持久化到 run_meta，供后端重启后探测存活
     status: str = "starting"
     error: str | None = None
     console_log: Path | None = None
@@ -103,6 +121,8 @@ class AgentRun:
                     "title": self.title,
                     "archived": self.archived,
                     "pinned": self.pinned,
+                    "status": self.status,
+                    "pid": self.process.pid if self.process is not None else self.pid,
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -169,6 +189,11 @@ class AgentRun:
             self.status = terminal
             return
         if jsonl is None or not jsonl.exists():
+            return
+        # run_meta 里 spawn 的 pid 已死（后端/机器重启、断电等把子进程带走了）：
+        # 立即降级为 interrupted——不用等 15 分钟日志静默，前端可马上「继续」原地续跑。
+        if self.pid is not None and _pid_is_alive(self.pid) is False:
+            self.status = "interrupted"
             return
         try:
             if time.time() - jsonl.stat().st_mtime < 900:
@@ -316,9 +341,10 @@ def _load_run_from_disk(run_dir: Path) -> AgentRun | None:
     params = metadata.get("params") if isinstance(metadata.get("params"), dict) else {}
     params.setdefault("user_message", str(first_user or ""))
     status = _status_from_events(events)
+    restored_pid = metadata.get("pid")
     # 外部启动（CLI/脚本）的 run 没有进程句柄：轨迹仍在推进时视为运行中，
     # 而不是误标 interrupted。15 分钟无新事件才回落到事件推导状态。
-    if status == "interrupted":
+    if status == "interrupted" and _pid_is_alive(restored_pid) is not False:
         try:
             if time.time() - jsonl_files[-1].stat().st_mtime < 900:
                 status = "running"
@@ -331,6 +357,7 @@ def _load_run_from_disk(run_dir: Path) -> AgentRun | None:
         params=params,
         created_at=created,
         status=status,
+        pid=int(restored_pid) if restored_pid else None,
         parent_run_id=metadata.get("parent_run_id"),
         title=str(metadata.get("title") or ""),
         archived=bool(metadata.get("archived", False)),
@@ -568,6 +595,8 @@ def start_run(
         bufsize=1,
     )
     run.process = process
+    run.pid = process.pid
+    run.save_meta()  # spawn 后持久化 pid，供后端重启后探测孤儿进程存活
     threading.Thread(target=_drain_output, args=(run, process.stdout), daemon=True).start()
     with _LOCK:
         _RUNS[run_id] = run
@@ -830,6 +859,10 @@ def _respawn_in_place(parent: AgentRun, content: str) -> AgentRun:
         bufsize=1,
     )
     run.process = process
+    run.pid = process.pid
+    # 原地续跑覆盖旧 pid：崩溃/重启后旧 pid 已死，meta 必须指向新进程，
+    # 否则恢复态会误判上一段孤儿进程已死。created_at/title 等身份字段保持原值。
+    run.save_meta()
     threading.Thread(target=_drain_output, args=(run, process.stdout), daemon=True).start()
     with _LOCK:
         _RUNS[run.run_id] = run
