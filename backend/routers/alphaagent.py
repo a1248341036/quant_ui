@@ -655,7 +655,8 @@ def get_session_cache_stats() -> dict[str, Any]:
 
 class StackingTrainRequest(BaseModel):
     modes: list[str] = Field(default=["technical", "fundamental"])
-    model: str = Field(default="both")            # ridge | lgbm | both
+    scheme: str = Field(default="ml")             # ml | equal | icir | hrp（equal/icir/hrp 不拟合模型）
+    model: str = Field(default="both")            # ridge | lgbm | both（仅 scheme=ml）
     label_days: int = Field(default=5, ge=1, le=60)
     train_months: int = Field(default=18, ge=3, le=60)
     step_months: int = Field(default=6, ge=1, le=24)

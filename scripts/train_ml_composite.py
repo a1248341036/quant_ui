@@ -13,6 +13,7 @@
 
 用法：
   python scripts/train_ml_composite.py --model both --train-months 18 --step-months 6
+  python scripts/train_ml_composite.py --scheme hrp --no-gate --no-write-pred  # 简单加权：不拟合模型
 """
 from __future__ import annotations
 
@@ -41,6 +42,13 @@ from alphaagent.factor.stacking import (  # noqa: E402
 from alphaagent.factor.mining.research_spec import default_research_spec  # noqa: E402
 from alphaagent.factor.stacking.dataset import _to_utc_naive  # noqa: E402
 
+SCHEME_LABELS = {
+    "ml": "ML 学习加权（Ridge+LGBM）",
+    "equal": "等权 1/N",
+    "icir": "ICIR 加权",
+    "hrp": "HRP 加权",
+}
+
 
 def _parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -48,7 +56,13 @@ def _parse_args() -> argparse.Namespace:
                     choices=["technical", "fundamental"], help="纳入哪些因子库模式")
     ap.add_argument("--no-candidate", action="store_true", help="只用正式库因子")
     ap.add_argument("--label-days", type=int, default=5, help="前向收益持有天数（对齐调仓频率）")
-    ap.add_argument("--model", default="both", choices=["ridge", "lgbm", "both"])
+    ap.add_argument("--model", default="both", choices=["ridge", "lgbm", "both"],
+                    help="仅 --scheme ml 生效：拟合的 ML 模型")
+    ap.add_argument("--scheme", default="ml", choices=["ml", "equal", "icir", "hrp"],
+                    help="组合方法：ml=学习加权（Ridge/LGBM，默认）；equal=等权 1/N；"
+                         "icir=ICIR 加权；hrp=HRP 加权。后三者不拟合任何模型，"
+                         "符号/权重只由各折 train 段按规则滚动估计，其余链路"
+                         "（OOS 报告/smooth/decay/gate/pred）与 ML 模式一致")
     ap.add_argument("--mining-end", default="auto", help="时间隔离边界（YYYY-MM-DD 或 auto=因子库最晚 created_at）")
     ap.add_argument("--end", default=None, help="数据截止日（默认取数据源最新交易日）")
     ap.add_argument("--decay-months", type=int, default=12, help="衰减对照表的 mining 窗口长度")
@@ -267,7 +281,8 @@ def main() -> None:
             )
         sys.exit(1)
 
-    kinds = ["ridge", "lgbm"] if args.model == "both" else [args.model]
+    is_simple_scheme = args.scheme != "ml"
+    kinds = [] if is_simple_scheme else (["ridge", "lgbm"] if args.model == "both" else [args.model])
     explicit_mining_end = args.mining_end != "auto"
     # 隔离有效性的真实判据：mining_end 是否 ≥ 挖掘循环实际评估右端（eval_end）
     latest_eval_end = max(
@@ -313,11 +328,26 @@ def main() -> None:
                   f"{'SKIP' if r.get('skipped') else ''}")
 
     # 组合分数：多模型 OOS 预测取平均（折内无 in-sample 污染）
-    usable = [model_outputs[k] for k in kinds if np.isfinite(model_outputs[k]).any()]
-    if not usable:
-        print("所有模型折均被跳过（样本不足），无组合分数可产出。")
-        sys.exit(1)
-    stacked = np.nanmean(np.column_stack(usable), axis=1).astype(np.float32)
+    if not is_simple_scheme:
+        usable = [model_outputs[k] for k in kinds if np.isfinite(model_outputs[k]).any()]
+        if not usable:
+            print("所有模型折均被跳过（样本不足），无组合分数可产出。")
+            sys.exit(1)
+        stacked = np.nanmean(np.column_stack(usable), axis=1).astype(np.float32)
+    else:
+        # 简单加权组合：不拟合模型。三种方案的符号/权重由各折 train 段按规则
+        # 滚动估计（fit_scheme_compare_scores），此处直接取用户选定的方案分数。
+        from alphaagent.factor.stacking.model import fit_scheme_compare_scores
+
+        print(f"简单加权组合（{SCHEME_LABELS[args.scheme]}）："
+              f"权重由各折 train 段滚动估计，无模型拟合 …")
+        _scheme_all = fit_scheme_compare_scores(
+            dataset.feature_matrix, dataset.label, date_series, folds
+        )
+        stacked = _scheme_all[args.scheme].copy()
+        fold_reports = {}
+        feature_weights = {}
+        feature_contribution = {}
 
     # ⑤b 组合分数平滑：尾随 WMA（gate/报告/pred 全部消费平滑后分数）
     smooth_n = args.score_smooth if args.score_smooth > 0 else args.label_days
@@ -328,22 +358,23 @@ def main() -> None:
         print("组合分数平滑：关闭（--score-smooth 1）")
     score_smooth_used = smooth_n
 
-    # ⑤c 不挑全上对照（D 族）：等权/ICIR/HRP 简单投票 vs 学习加权
+    # ⑤c 不挑全上对照（D 族，仅 ML 模式）：等权/ICIR/HRP 简单投票 vs 学习加权
     #     权重只由各折 train 段估计（与模型拟合同等信息量）；方案分数同样平滑
     #     后在同一 OOS 行集上与 stacked 对照。
-    from alphaagent.factor.stacking.model import fit_scheme_compare_scores, scheme_compare_report
+    scheme_compare = None
+    if not is_simple_scheme:
+        from alphaagent.factor.stacking.model import fit_scheme_compare_scores, scheme_compare_report
 
-    print("不挑全上对照（等权 / ICIR / HRP 简单投票）…")
-    first_oos = folds[0].oos_dates.min()
-    scheme_scores = fit_scheme_compare_scores(dataset.feature_matrix, dataset.label, date_series, folds)
-    if smooth_n > 1:
-        for _sn in scheme_scores:
-            scheme_scores[_sn] = _wma_smooth_scores(scheme_scores[_sn], panel, smooth_n)
-    scheme_compare = scheme_compare_report(
-        scheme_scores, stacked, dataset.label, date_series,
-        first_oos=first_oos, label_horizon=args.label_days,
-    )
-    for _sc in scheme_compare["schemes"]:
+        print("不挑全上对照（等权 / ICIR / HRP 简单投票）…")
+        scheme_scores = fit_scheme_compare_scores(dataset.feature_matrix, dataset.label, date_series, folds)
+        if smooth_n > 1:
+            for _sn in scheme_scores:
+                scheme_scores[_sn] = _wma_smooth_scores(scheme_scores[_sn], panel, smooth_n)
+        scheme_compare = scheme_compare_report(
+            scheme_scores, stacked, dataset.label, date_series,
+            first_oos=first_oos, label_horizon=args.label_days,
+        )
+    for _sc in (scheme_compare or {}).get("schemes", []):
         if _sc["scheme"] == "stacked":
             print(f"  [当前组合] OOS IC={_fmt(_sc.get('ic_mean'))} ICIR={_fmt(_sc.get('ic_ir'))} "
                   f"Sharpe={_sc.get('oos_sharpe')} 回撤={_sc.get('oos_max_drawdown')}")
@@ -422,7 +453,7 @@ def main() -> None:
     multi_path = None
     extra_shifts = [int(s.strip()) for s in args.multi_path_shifts.split(",") if s.strip()]
     extra_shifts = [s for s in extra_shifts if s]
-    if extra_shifts:
+    if extra_shifts and not is_simple_scheme:
         from alphaagent.factor.stacking.model import _portfolio_risk_metrics
 
         def _path_metrics(score: np.ndarray, p0):
@@ -541,6 +572,8 @@ def main() -> None:
         "score_smooth": int(score_smooth_used),
         "include_factors": list(args.include_factors) if args.include_factors else None,
         "folds": len(folds),
+        "scheme": args.scheme,
+        "scheme_label": SCHEME_LABELS[args.scheme],
         "feature_names": dataset.feature_names,
         "dropped": dataset.dropped,
         "fold_metrics": fold_reports,
