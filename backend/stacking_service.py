@@ -33,12 +33,20 @@ def _progress_log(train_id: str) -> Path:
 
 
 def start_training(params: dict[str, Any]) -> dict[str, Any]:
-    """启动一次 ML 组合训练。返回 {train_id, status} 或 {error}。"""
+    """启动一次 ML/简单加权组合运行。返回 {train_id, status} 或 {error}。
+
+    scheme：ml=学习加权（现状）；equal/icir/hrp=不拟合模型，按选定规则
+    滚动加权（--scheme 传给脚本，其余报告/gate/pred 链路一致）。
+    """
     global _current
     with _lock:
         if _current is not None and _current["proc"].poll() is None:
             return {"error": "training_already_running",
                     "train_id": _current["train_id"]}
+
+        scheme = str(params.get("scheme") or "ml")
+        if scheme not in ("ml", "equal", "icir", "hrp"):
+            return {"error": f"invalid_scheme（支持 ml/equal/icir/hrp，收到 {scheme!r}）"}
 
         train_id = _now_id()
         modes = params.get("modes") or ["technical", "fundamental"]
@@ -51,6 +59,7 @@ def start_training(params: dict[str, Any]) -> dict[str, Any]:
         command = [
             str(PYTHON_EXECUTABLE), str(ROOT / "scripts" / "train_ml_composite.py"),
             "--modes", *modes,
+            "--scheme", scheme,
             "--model", str(params.get("model") or "both"),
             "--label-days", str(int(params.get("label_days") or 5)),
             "--train-months", str(int(params.get("train_months") or 18)),
@@ -191,6 +200,8 @@ def list_trainings(limit: int = 30) -> list[dict[str, Any]]:
                     ]
                     item["decay_retention"] = round(sum(ratios) / len(ratios), 4) if ratios else None
                     item["n_dropped"] = len(report.get("dropped") or [])
+                    item["scheme"] = report.get("scheme") or "ml"
+                    item["scheme_label"] = report.get("scheme_label")
             # 参数快照（start_training 落盘）：历史行展示完整训练配置
             params_path = d / "params.json"
             if params_path.is_file():

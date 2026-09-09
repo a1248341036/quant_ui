@@ -4,28 +4,37 @@
     <div class="mlv-status">
       <span class="mlv-dot" :class="{ running: anyRunning, ok: !anyRunning && latest }"></span>
       <div class="mlv-status-text">
-        <b>{{ anyRunning ? '训练中 · ' + runningTrain.train_id : latest ? '空闲 · 最新 ' + latest.train_id : '尚未训练' }}</b>
+        <b>{{ anyRunning ? '运行中 · ' + runningTrain.train_id : latest ? '空闲 · 最新 ' + latest.train_id : '尚未运行' }}</b>
         <span v-if="anyRunning && runningTail" class="mlv-sub">{{ runningTail }}</span>
         <span v-else-if="latest" class="mlv-sub">{{ paramSummary(latest) }}</span>
-        <span v-else class="mlv-sub">配置参数后开始第一次 walk-forward 组合训练</span>
+        <span v-else class="mlv-sub">选一个组合方法（ML 学习加权或简单加权），配置后开始 walk-forward 运行</span>
       </div>
       <div class="mlv-actions">
-        <button class="mlv-ghost" @click="toggleConfig">{{ showConfig ? '收起配置 ▴' : '训练配置 ▾' }}</button>
+        <button class="mlv-ghost" @click="toggleConfig">{{ showConfig ? '收起配置 ▴' : '运行配置 ▾' }}</button>
         <button v-if="anyRunning" class="mlv-stop" @click="stopMl(runningTrain.train_id)">停止</button>
-        <button class="mlv-primary" :disabled="ml.starting || anyRunning" @click="startMl">{{ anyRunning ? '训练中…' : (latest ? '再次训练' : '开始训练') }}</button>
+        <button class="mlv-primary" :disabled="ml.starting || anyRunning" @click="startMl">{{ anyRunning ? '运行中…' : (latest ? '再次运行' : '开始运行') }}</button>
       </div>
     </div>
 
     <!-- ── 训练配置（折叠） ── -->
     <div v-show="showConfig" class="ml-config">
       <div class="ml-form">
-        <label>模型
+        <label title="组合方法决定组合分数怎么合成：ML 用 Ridge/LGBM 学习加权（默认，最慢）；等权/ICIR/HRP 不拟合任何模型，符号/权重只由各折训练段按规则滚动估计，产出同款 OOS 报告 + engine_gate + pred 通道。">组合方法
+          <select v-model="ml.form.scheme" class="ml-input">
+            <option value="ml">ML 学习加权（Ridge + LGBM）</option>
+            <option value="equal">等权 1/N</option>
+            <option value="icir">ICIR 加权</option>
+            <option value="hrp">HRP 加权</option>
+          </select>
+        </label>
+        <label v-if="ml.form.scheme === 'ml'">模型
           <select v-model="ml.form.model" class="ml-input">
             <option value="both">Ridge + LGBM</option>
             <option value="ridge">Ridge</option>
             <option value="lgbm">LightGBM</option>
           </select>
         </label>
+        <span v-else class="ml-scheme-hint">简单加权：不挑因子、不拟合模型，权重按规则滚动合成后照常跑报告与 gate</span>
         <label>持有天数 <input type="number" v-model.number="ml.form.label_days" class="ml-input ml-num"></label>
         <label>训练月数 <input type="number" v-model.number="ml.form.train_months" class="ml-input ml-num"></label>
         <label>折长(月) <input type="number" v-model.number="ml.form.step_months" class="ml-input ml-num"></label>
@@ -38,8 +47,8 @@
         </label>
         <label class="ml-check"><input type="checkbox" v-model="ml.form.no_candidate"> 只用正式库</label>
         <label class="ml-check"><input type="checkbox" v-model="ml.form.no_gate"> 跳过 engine_gate</label>
-        <label class="ml-check" title="按置换贡献降序取 Top-k 逐级重训（成本 ≈ 2n 次拟合，训练时间明显变长）。输出'子集规模 vs OOS IC'曲线，定位边际收益归零的最优因子数。"><input type="checkbox" v-model="ml.form.subset_curve"> 累积子集曲线</label>
-        <label class="ml-check" title="同一段干净历史换两种折边界（整体平移 2/4 个月）各重训一遍，输出 OOS IC/ICIR/Sharpe/回撤 的路径分布——单条切法上的好成绩可能只是那条边界的运气。成本 ≈ 2 次完整训练。"><input type="checkbox" v-model="ml.form.multi_path"> 多路径对照</label>
+        <label v-if="ml.form.scheme === 'ml'" class="ml-check" title="按置换贡献降序取 Top-k 逐级重训（成本 ≈ 2n 次拟合，训练时间明显变长）。输出'子集规模 vs OOS IC'曲线，定位边际收益归零的最优因子数。"><input type="checkbox" v-model="ml.form.subset_curve"> 累积子集曲线</label>
+        <label v-if="ml.form.scheme === 'ml'" class="ml-check" title="同一段干净历史换两种折边界（整体平移 2/4 个月）各重训一遍，输出 OOS IC/ICIR/Sharpe/回撤 的路径分布——单条切法上的好成绩可能只是那条边界的运气。成本 ≈ 2 次完整训练。"><input type="checkbox" v-model="ml.form.multi_path"> 多路径对照</label>
         <span class="ml-gate-mode" title="因子池已是统一大库（不分技术/基本面）；engine_gate 档位自动跟随持有天数：≤7 天→技术档（周调仓·严门槛），>7 天→基本面档（月调仓·松门槛）。">gate 档位：{{ gateModeLabel }}（自动）</span>
       </div>
       <!-- ── 训练因子自选（白名单；不选=全部） ── -->
@@ -93,18 +102,18 @@
 
     <!-- ── 空状态引导 ── -->
     <div v-if="!ml.list.length && !ml.loadingList" class="mlv-empty">
-      <p>还没有训练记录。ML 组合会用因子库中的全部因子做 walk-forward 时间隔离训练，</p>
-      <p>产出混合 OOS 分数并通过 engine_gate 可交易性裁决——这是检验"因子库整体是否有真 alpha"的最终考场。</p>
-      <button class="mlv-primary" @click="showConfig = true; $nextTick(() => startMl())">开始第一次训练</button>
+      <p>还没有组合运行记录。组合会用因子库中的全部因子做 walk-forward 时间隔离评估：</p>
+      <p>ML 学习加权（Ridge/LGBM）或等权 1/N、ICIR、HRP 简单加权，产出 OOS 分数与 engine_gate 可交易性裁决。</p>
+      <button class="mlv-primary" @click="showConfig = true; $nextTick(() => startMl())">开始第一次运行</button>
     </div>
 
     <template v-if="ml.list.length">
       <!-- ── 最新一次成功训练的核心指标 ── -->
       <div v-if="latest" class="metrics-cards">
-        <div class="metrics-card" title="混合模型 OOS IC 均值（时间隔离，挖掘期外）">
+        <div class="metrics-card" title="组合分数 OOS IC 均值（时间隔离，挖掘期外）">
           <b :class="latest.oos_ic_mean >= 0 ? 'ic-pos' : 'ic-neg'">{{ fmtNum(latest.oos_ic_mean) }}</b><span>最新 OOS IC</span>
         </div>
-        <div class="metrics-card" title="混合模型 OOS ICIR">
+        <div class="metrics-card" title="组合分数 OOS ICIR">
           <b>{{ fmtNum(latest.oos_ic_ir) }}</b><span>OOS ICIR</span>
         </div>
         <div class="metrics-card" title="engine_gate 可交易性裁决（OOS 段周调仓）">
@@ -113,7 +122,7 @@
         <div class="metrics-card" title="gate 超额年化">
           <b>{{ gateOf(latest, 'excess_annual', true) }}</b><span>gate 超额年化</span>
         </div>
-        <div class="metrics-card" title="进入模型的特征数 / walk-forward 折数">
+        <div class="metrics-card" title="组合特征数 / walk-forward 折数">
           <b>{{ latest.n_features ?? '—' }}<i>/</i>{{ latest.n_folds ?? '—' }}</b><span>特征 / 折数</span>
         </div>
       </div>
@@ -179,6 +188,7 @@
                     <pre v-if="ml.detail.status==='running'" class="ml-log">{{ (ml.detail.progress_tail || []).slice(-8).join('\n') || '（等待输出…）' }}</pre>
                     <template v-if="ml.detail.report">
                       <div class="mlv-expand-head">
+                        <span class="mlv-sub">组合方法：{{ ml.detail.report.scheme_label || 'ML 学习加权（Ridge+LGBM）' }}</span>
                         <span class="mlv-sub">{{ ml.detail.report.time_isolation }}</span>
                         <span class="mlv-sub">训练窗口终点（mining_end）: {{ ml.detail.report.mining_end || '—' }}</span>
                         <span v-if="(ml.detail.report.gate||{}).passed === false" class="mlv-bad">
@@ -312,7 +322,7 @@
                           </tbody>
                         </table>
                       </template>
-                      <div class="mlv-block-head"><h5>折级 OOS IC</h5></div>
+                      <div v-if="Object.keys(ml.detail.report.fold_metrics || {}).length" class="mlv-block-head"><h5>折级 OOS IC</h5></div>
                       <div class="mlv-grid2">
                         <div v-for="(rows, model) in ml.detail.report.fold_metrics" :key="'f-' + model">
                           <strong>{{ model.toUpperCase() }}</strong>
@@ -443,7 +453,7 @@ export default {
   data() {
     return {
       ml: {
-        form: { model: 'both', label_days: 5, train_months: 18, step_months: 6, max_corr: 0.6, isolation: 'holdout', no_candidate: false, no_gate: false, subset_curve: false, multi_path: false, include_factors: [] },
+        form: { scheme: 'ml', model: 'both', label_days: 5, train_months: 18, step_months: 6, max_corr: 0.6, isolation: 'holdout', no_candidate: false, no_gate: false, subset_curve: false, multi_path: false, include_factors: [] },
         factorPool: [],
         factorPoolLoading: false,
         list: [],
@@ -765,8 +775,11 @@ export default {
     paramSummary(t) {
       const p = t.params || {}
       const parts = []
+      const scheme = t.scheme || p.scheme || 'ml'
+      const schemeShort = ({ ml: 'ML', equal: '等权1/N', icir: 'ICIR', hrp: 'HRP' })[scheme] || scheme.toUpperCase()
+      parts.push(schemeShort)
+      if (scheme === 'ml') parts.push((t.model || p.model || 'both').toUpperCase())
       parts.push((p.modes && p.modes.join('/')) || 'technical')
-      parts.push((t.model || p.model || 'both').toUpperCase())
       parts.push(`持有${t.label_days ?? p.label_days ?? 5}d`)
       parts.push(`${t.n_folds ?? '—'}折`)
       parts.push(`gate=${(p.modes && p.modes[0]) === 'fundamental' ? '基本面档' : '技术档'}`)
@@ -1096,4 +1109,5 @@ export default {
 .ml-reco-name:hover { color: #7fb0ff; text-decoration: underline dotted; }
 .ml-reco-row .mlv-sub { font-size: 10px; }
 .ml-reco-row .ml-factor-lib { flex: none; }
+.ml-scheme-hint { align-self: center; color: #7fb0ff; font-size: 11px; background: rgb(79 140 255 / 0.12); border-radius: 7px; padding: 5px 10px; }
 </style>
