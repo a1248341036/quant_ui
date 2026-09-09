@@ -30,6 +30,7 @@ class FactorEvalTools(_DispatchMixin, _AnalysisMixin):
         submit_service: FactorSubmitService | None = None,
         screener_config: dict[str, Any] | None = None,
         memory_store: Any | None = None,
+        focus_facets: tuple[str, ...] | list[str] | None = None,
     ) -> None:
         self.service = service
         self.session_id = session_id
@@ -37,6 +38,8 @@ class FactorEvalTools(_DispatchMixin, _AnalysisMixin):
         self._screener_config_dict = screener_config or {}
         # v3-lite：研究记忆硬提醒通道（None = 关闭）；hard_block_duplicates=True 时指纹死路直接拦截
         self.memory_store = memory_store
+        # 数据面聚焦硬锁定（用户勾选；空 = 未启用，dispatch 不拦截）
+        self.focus_facets = tuple(focus_facets or ())
 
 
 __all__ = [

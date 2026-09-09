@@ -132,10 +132,11 @@ def _parse_args() -> argparse.Namespace:
         "--focus-facets",
         default="",
         help=(
-            "数据面聚焦（跨面融合）：逗号分隔的面名，如 '基本面,价量面'。"
+            "数据面聚焦（硬锁定）：逗号分隔的面名，如 '基本面,价量面'。"
             "合法面名来自 FACET_DEFS（价量/量能/筹码/拥挤/基本面/股东/机构/"
             "股东集中/资金/两融/事件/业绩/披露/分红，各带「面」后缀）。"
-            "设置后用户消息追加融合指令，且每轮记忆注入附带聚焦提醒。"
+            "设置后用户消息追加融合指令，每轮记忆注入附带聚焦提醒；"
+            "越界表达式（使用未选面列/算子）在评估/提交层直接拦截。"
         ),
     )
     p.add_argument("--user-file", type=Path, help="从文件读取 user 消息（覆盖 --user-message）")
@@ -208,20 +209,27 @@ def main() -> int:
     if focus_facets:
         if len(focus_facets) >= 2:
             focus_block = (
-                "## 数据面聚焦指令（用户指定，优先级最高）\n"
-                f"本轮挖掘聚焦以下数据面的因子与跨面融合：{'、'.join(focus_facets)}。\n"
-                "- 优先构造同时触及 ≥2 个所选面的融合因子，融合模式：\n"
-                "  ① 条件门控 MULTIPLY(面A信号, 面B门控)；② 分歧表达 DIVERGENCE_RANK(面A, 面B)；\n"
-                "  ③ 正交残差 CS_RESIDUALIZE(主信号, CS_BUCKET(面B控制变量,10))；④ 比值 DIVIDE(面A, 面B 规模)。\n"
+                "## 数据面聚焦指令（用户指定，优先级最高，硬锁定）\n"
+                f"本轮挖掘锁定以下数据面：{'、'.join(focus_facets)}。\n"
+                "- 优先构造同时触及 ≥2 个所选面的融合因子，融合模式（按历史命中率优先）：\n"
+                "  ① 分组条件 CS_GROUP_RANK(面A信号, CS_BUCKET(面B门控,5))；② 分歧表达 DIVERGENCE_RANK(面A, 面B)；\n"
+                "  ③ 正交残差 CS_RESIDUALIZE(主信号, CS_BUCKET(面B控制变量,10))；④ 条件门控 GATED_SIGNAL(主信号, 面B门控, 阈值)；\n"
+                "  ⑤ 比值 DIVIDE(面A, 面B 规模)；⑥ 链式组合（分歧→门控/残差→平滑）——"
+                "只传末位结构算子的 interaction 契约。禁止 MULTIPLY：默认 spec 直接拦截。\n"
+                "- 同一交互算子不要连续使用超过 2 次——同模板边际递减，结构轮换优先。\n"
                 "- 单面因子只有在融合尝试失败后才能提交，且 eval 调用须在 edit_note 里说明失败原因。\n"
-                "- 因子名用 _x_ 连接面名（如 funda_mom_x_price），便于辨识融合因子。"
+                "- 因子名用 _x_ 连接面名（如 funda_mom_x_price），便于辨识融合因子。\n"
+                "- 硬性锁定：只允许引用上述聚焦面的列族/算子（$float_cap 等非面中性列不受限）；"
+                "引用未选面列/算子或完全未触及聚焦面 = 越界，evaluate/submit 会被直接拦截。"
             )
         else:
             focus_block = (
-                "## 数据面聚焦指令（用户指定，优先级最高）\n"
-                f"本轮挖掘聚焦【{focus_facets[0]}】：表达式应触及该面的算子或数据列，"
+                "## 数据面聚焦指令（用户指定，优先级最高，硬锁定）\n"
+                f"本轮挖掘聚焦【{focus_facets[0]}】：表达式只能使用该面的数据列/算子，"
                 "不要漂移到其他数据面。\n"
-                "- 单面聚焦不要求跨面融合，正常按该面思路构造并提交因子即可。"
+                "- 单面聚焦不要求跨面融合，正常按该面思路构造并提交因子即可。\n"
+                "- 硬性锁定：引用未选面列/算子或完全未触及聚焦面 = 越界，"
+                "evaluate/submit 会被直接拦截。"
             )
         user_message = f"{user_message}\n\n{focus_block}"
     try:

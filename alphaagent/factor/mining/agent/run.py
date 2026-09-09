@@ -76,7 +76,12 @@ def run_factor_mining(
         auto_realign_panel=config.auto_realign_panel,
     )
 
-    tools = FactorEvalTools(service, session_resp.session_id, submit_service=submit_service)
+    tools = FactorEvalTools(
+        service,
+        session_resp.session_id,
+        submit_service=submit_service,
+        focus_facets=getattr(config, "focus_facets", None),
+    )
     system_prompt = build_system_prompt(
         include_operator_catalog=include_operator_catalog,
         extra_instructions=extra_instructions,
