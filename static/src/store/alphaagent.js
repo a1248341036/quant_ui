@@ -80,10 +80,16 @@ export const agentStore = reactive({
     { key: '量能面', label: '量能', hint: '成交量/成交额/换手' },
     { key: '筹码面', label: '筹码', hint: 'CHIP_* 筹码分布算子' },
     { key: '拥挤面', label: '拥挤', hint: 'CROWD_* 拥挤度算子' },
-    { key: '基本面', label: '基本面', hint: 'funda_* 财务列族 + exp_* 业绩快报（30+ 列）' },
-    { key: '股东面', label: '股东', hint: 'holder_* 股东户数 / th_* 十大流通股东 / inst_* 机构持仓' },
-    { key: '事件面', label: '事件', hint: '业绩预告/快报/披露日历/龙虎榜/大宗交易/分红' },
-    { key: '资金面', label: '资金流', hint: 'ff_* 主力资金流 / mgn_* 融资融券' },
+    { key: '基本面', label: '基本面', hint: 'funda_* 财务列族（30+ 列）' },
+    { key: '股东面', label: '股东', hint: 'holder_* 股东户数/户均持股' },
+    { key: '机构面', label: '机构', hint: 'inst_* 机构持仓家数/比例/市值（季频 PIT）' },
+    { key: '股东集中面', label: '股东集中', hint: 'th_* 十大流通股东集中度（季频 PIT）' },
+    { key: '资金面', label: '资金流', hint: 'ff_* 主力/大中小单资金流' },
+    { key: '两融面', label: '两融', hint: 'mgn_* 融资余额/买入额/融券（杠杆情绪）' },
+    { key: '事件面', label: '事件', hint: '龙虎榜 dt_* / 大宗交易 bt_*' },
+    { key: '业绩面', label: '业绩', hint: '业绩预告 pred_* / 快报 exp_*' },
+    { key: '披露面', label: '披露', hint: 'ds_* 披露日历（推迟/节奏）' },
+    { key: '分红面', label: '分红', hint: 'div_* 现金分红/除息倒计时' },
   ],
 
   // ── 研究模式 / 记忆 / 总结 ──
@@ -146,7 +152,7 @@ export const agentStore = reactive({
   }),
   // 方案 B：档位由数据面组合推断（与后端 core.research_modes.infer_research_mode 同口径）
   inferredMode: computed(() => {
-    const slow = ['基本面', '股东面']
+    const slow = ['基本面', '股东面', '机构面', '股东集中面']
     return slow.some(f => (agentStore.form.focus_facets || []).includes(f)) ? 'fundamental' : 'technical'
   }),
   inferredModeLabel: computed(() => {

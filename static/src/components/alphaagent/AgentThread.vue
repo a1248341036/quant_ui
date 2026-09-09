@@ -185,7 +185,7 @@
           <div class="composer-bottom">
             <div v-if="agent.agentMode==='research'" class="composer-options">
               <div class="mode-switch" role="tablist" aria-label="评估档位">
-                <span class="mode-auto-badge" title="档位由数据面自动推断：勾选基本面/股东面 → 慢信号档（label_20d+松门槛+月调仓）；否则短周期档（label_1d+严门槛+周调仓）">
+                <span class="mode-auto-badge" title="档位由数据面自动推断：勾选基本面/股东/机构/股东集中面 → 慢信号档（label_20d+松门槛+月调仓）；其余 → 短周期档（label_1d+严门槛+周调仓）">
                   {{ agent.inferredModeLabel }}
                 </span>
                 <button class="threshold-btn" :class="{ active: agent.showThresholdModal }" :disabled="agent.agentBusy" title="编辑当前档位的挖掘/入库/回测门槛（保存后全链路生效）" @click="agent.openThresholdModal">{{ agent.researchSpecCustom ? '门槛·已改' : '门槛' }}</button>
@@ -221,19 +221,25 @@
                 <option :value="36">×36</option>
               </select></label>
             </div>
-            <div v-if="agent.agentMode==='research'" class="facet-row" title="数据面聚焦：多选后 Agent 优先探索所选面的因子与跨面融合（选中非价量面会自动载入对应列族）">
-              <span class="facet-label">数据面</span>
-              <button
-                v-for="f in agent.focusFacetOptions"
-                :key="f.key"
-                class="facet-chip"
-                :class="{ active: (agent.form.focus_facets || []).includes(f.key) }"
-                :disabled="agent.agentBusy"
-                :title="f.hint"
-                @click="agent.toggleFocusFacet(f.key)"
-              >{{ f.label }}</button>
-              <span v-if="!(agent.form.focus_facets || []).length" class="facet-hint">未选 = 不限（Agent 自主探索）</span>
-              <span v-else-if="(agent.form.focus_facets || []).length >= 2" class="facet-hint fusion">融合 {{ (agent.form.focus_facets || []).length }} 面</span>
+            <div v-if="agent.agentMode==='research'" class="facet-panel" title="数据面聚焦：多选后 Agent 优先探索所选面的因子与跨面融合（选中非价量面会自动载入对应列族）">
+              <div class="facet-panel-head">
+                <span class="facet-label">数据面</span>
+                <span v-if="!(agent.form.focus_facets || []).length" class="facet-hint">未选 = 不限（Agent 自主探索）</span>
+                <span v-else-if="(agent.form.focus_facets || []).length >= 2" class="facet-hint fusion">已聚焦 {{ (agent.form.focus_facets || []).length }} 面，可跨面融合</span>
+                <span v-else class="facet-hint">单面聚焦：表达式应触及该面列族</span>
+                <button v-if="(agent.form.focus_facets || []).length" class="facet-clear" :disabled="agent.agentBusy" @click="agent.form.focus_facets = []">清除</button>
+              </div>
+              <div class="facet-chips">
+                <button
+                  v-for="f in agent.focusFacetOptions"
+                  :key="f.key"
+                  class="facet-chip"
+                  :class="{ active: (agent.form.focus_facets || []).includes(f.key) }"
+                  :disabled="agent.agentBusy"
+                  :title="f.hint"
+                  @click="agent.toggleFocusFacet(f.key)"
+                >{{ f.label }}</button>
+              </div>
             </div>
             <div class="composer-actions">
               <button v-if="agent.agentMode==='research'" class="spec-toggle" :class="{ active: agent.showResearchSpec }" :disabled="agent.agentBusy" @click="agent.showResearchSpec = !agent.showResearchSpec">研究规范</button>
