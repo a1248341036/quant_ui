@@ -267,19 +267,29 @@ def template_from_expression(expression: str) -> str:
 
 
 # ── 数据面识别（跨面融合引导用）────────────────────────────────
-# 面板实际接入的数据列族（与 data/adapters/plugins 一致）：
-# 价量(stock_daily_wide) / 筹码(CHIP_*) / 拥挤(CROWD_*) / 基本面(funda_*) /
-# 股东(holder_*/th_*/inst_*) / 业绩披露(forecast/express/disclosure: pred_/exp_/ds_) /
-# 事件(event_faces: dt_/bt_、dividend: div_) / 资金流(fund_flow: ff_、margin: mgn_)
+# 面板实际接入的数据列族（与 data/adapters/plugins 一致）。每个可独立聚焦的
+# 数据源/列族对应一个面，前端 chips 与 run 表单直接读取本表：
+# - 价量/量能/筹码/拥挤（stock_daily_wide + CHIP_*/CROWD_* 派生）
+# - 基本面(funda_*) / 股东面(holder_* 股东户数) / 机构面(inst_* 机构持仓) /
+#   股东集中面(th_* 十大流通股东)
+# - 资金面(ff_* 主力资金流) / 两融面(mgn_* 融资融券)
+# - 事件面(dt_*/bt_* 龙虎榜/大宗) / 业绩面(pred_*/exp_* 业绩预告/快报) /
+#   披露面(ds_* 披露日历) / 分红面(div_* 现金分红)
 FACET_DEFS: list[tuple[str, tuple[str, ...]]] = [
     ("价量面", ("$adj_", "$close", "$open", "$high", "$low", "$ret", "$vwap")),
     ("量能面", ("$volume", "$amount", "$turnover")),
     ("筹码面", ("chip_",)),
     ("拥挤面", ("crowd_",)),
     ("基本面", ("funda_",)),
-    ("股东面", ("holder_", "$inst_", "$th_")),
-    ("事件面", ("$pred", "$exp", "$ds_", "$dt_", "$bt_", "$div_", "$event")),
-    ("资金面", ("$ff_", "$mgn_", "$inflow", "$outflow")),
+    ("股东面", ("holder_",)),
+    ("机构面", ("$inst_",)),
+    ("股东集中面", ("$th_",)),
+    ("资金面", ("$ff_", "$inflow", "$outflow")),
+    ("两融面", ("$mgn_",)),
+    ("事件面", ("$dt_", "$bt_")),
+    ("业绩面", ("$pred", "$exp")),
+    ("披露面", ("$ds_",)),
+    ("分红面", ("$div_",)),
 ]
 
 # 数据源分组：融合（family 用面对组合键）只在跨组时成立。
@@ -288,8 +298,8 @@ FACET_DEFS: list[tuple[str, tuple[str, ...]]] = [
 # $float_cap 是行情面板列，已从股东面识别键移出，不参与面判定。
 FACET_GROUPS: dict[str, tuple[str, ...]] = {
     "行情组": ("价量面", "量能面", "筹码面", "拥挤面"),
-    "基本面组": ("基本面", "股东面"),
-    "事件资金组": ("事件面", "资金面"),
+    "基本面组": ("基本面", "股东面", "机构面", "股东集中面"),
+    "事件资金组": ("资金面", "两融面", "事件面", "业绩面", "披露面", "分红面"),
 }
 
 _FACET_ORDER: dict[str, int] = {name: i for i, (name, _) in enumerate(FACET_DEFS)}
