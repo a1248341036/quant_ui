@@ -755,6 +755,24 @@ def build_factor_eval_toolkit(
                 "hint": '每个骨架形如 {"name": str, "template": "DSL含{param}占位符", "grid": {"param": [值...]}}',
             })
 
+        # 数据面聚焦硬锁定：种群骨架同样只允许聚焦面列族（越界模板不展开、不评估）
+        focus = tuple(getattr(tools, "focus_facets", None) or ())
+        if focus:
+            from alphaagent.factor.mining.memory.expressions import facet_scope_violation
+
+            for sk in skeletons:
+                template = str(sk.get("template") or "")
+                vio = facet_scope_violation(template, focus) if template.strip() else None
+                if vio is not None:
+                    sk_name = str(sk.get("name") or "?")[:40]
+                    detail = str(vio["message"]).split(": ", 1)[-1]
+                    return _result_tool_chunk({
+                        "ok": False,
+                        "error": f"facet_lock_violation: 种群骨架「{sk_name}」越界——{detail}",
+                        "error_type": "ToolArgumentsError",
+                        "facet_lock": {k: v for k, v in vio.items() if k != "message"},
+                    })
+
         loop = __import__("asyncio").get_running_loop()
 
         def _run() -> dict[str, Any]:

@@ -318,6 +318,72 @@ def expr_facets(expression: str) -> set[str]:
     return out
 
 
+def facet_column_hint(facet_name: str) -> str:
+    """给 LLM/人看的列族速记：价量面 → '$close/$open/…'，两融面 → '$mgn_*'。"""
+    for name, keys in FACET_DEFS:
+        if name == facet_name:
+            parts = [(k + "*" if k.endswith("_") else k) for k in keys]
+            return "、".join(parts) if parts else ""
+    return ""
+
+
+def facet_scope_violation(
+    expression: str,
+    focus_facets: tuple[str, ...] | list[str] | None,
+) -> dict[str, Any] | None:
+    """聚焦硬锁定校验（纯函数，供工具 dispatch 层拦截越界表达式）。
+
+    用户勾选的数据面 = 本 run 唯一允许的数据宇宙：
+    - ``focus_facets`` 为空 → 恒放行；
+    - 表达式必须至少触及 1 个聚焦面（裸算子与 ``$float_cap`` 等非面中性列不算触面）；
+    - 表达式不得触达任何未选面（未选面列族/算子 = 越界）。
+
+    返回 None = 放行；否则返回含 reason / 越界明细 / 命中键 / 完整拦截文案的 dict。
+    """
+    focus = [f for f in (focus_facets or ()) if f]
+    if not focus:
+        return None
+    low = str(expression or "").lower()
+    touched = expr_facets(low)
+    allowed = set(focus)
+    outside = sorted(touched - allowed)
+    if touched and not outside:
+        return None
+    matched: dict[str, list[str]] = {}
+    for name, keys in FACET_DEFS:
+        hits = [k for k in keys if k.lower() in low]
+        if hits:
+            matched[name] = hits
+    focus_label = "、".join(focus)
+    focus_hints = "；".join(f"{f} 可用列: {facet_column_hint(f) or '—'}" for f in focus)
+    if not touched:
+        reason = "no_touch"
+        message = (
+            "facet_lock_violation: 本轮数据面已硬锁定为【" + focus_label + "】——当前表达式未触及任何"
+            "聚焦面的数据列/算子（裸算子与 $float_cap 等通用中性列不算触面）。"
+            "请至少引用一个聚焦面列族重写: " + focus_hints + "。本次调用未执行。"
+        )
+    else:
+        reason = "outside"
+        hit_label = "；".join(
+            f"{f} 命中: {('、'.join(matched.get(f) or [facet_column_hint(f)]))}" for f in outside
+        )
+        message = (
+            "facet_lock_violation: 本轮数据面已硬锁定为【" + focus_label + "】——表达式触达未选面: "
+            + "、".join(outside) + "（" + hit_label + "）。未选面 = 越界，本 run 一律拦截。"
+            "锁定列族: " + focus_hints + "。若确需未选面数据（如价量/量能），请在启动 run 时把它们"
+            "一并勾选。本次调用未执行。"
+        )
+    return {
+        "reason": reason,
+        "focus_facets": focus,
+        "touched_facets": sorted(touched),
+        "outside_facets": outside,
+        "matched_keys": matched,
+        "message": message,
+    }
+
+
 def facet_groups(facets: set[str]) -> set[str]:
     """一个面集合覆盖的数据源组。"""
     return {_FACET_TO_GROUP[f] for f in facets if f in _FACET_TO_GROUP}

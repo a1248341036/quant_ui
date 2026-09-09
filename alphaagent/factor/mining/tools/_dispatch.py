@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from alphaagent.factor.mining.runlog import log_step
+from alphaagent.factor.mining.memory.expressions import facet_scope_violation
 from alphaagent.factor.mining.schemas import EvalProfileRequest, EvalTrainRequest, EvalValRequest
 from alphaagent.factor.mining.service import StockEvalService
 from alphaagent.factor.mining.submit import FactorSubmitService
@@ -28,6 +29,14 @@ from ._prefilter import _is_naive_signal_addition
 
 
 _PREDICTION_SOFT_LIMIT = 3
+
+# 数据面聚焦硬锁定作用的工具：三个评估入口 + 提交入口（都带 multi_line_expr）。
+_FACET_LOCK_TOOLS = frozenset({
+    "evaluate_factor",
+    "eval_on_train_set",
+    "eval_on_val_set",
+    "submit_factor",
+})
 
 
 def _prediction_argument_error(arguments: dict[str, Any]) -> dict[str, Any] | None:
@@ -191,7 +200,30 @@ class _DispatchMixin:
     submit_service: FactorSubmitService | None
     _screener_config_dict: dict[str, Any]
     memory_store: Any
+    focus_facets: tuple[str, ...] = ()
     _missing_prediction_counts: dict[str, int]
+
+    def _facet_lock_block(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any] | None:
+        """数据面聚焦硬锁定：勾选聚焦面后，越界/未触面表达式在执行前直接拦截。
+
+        只作用于表达式类工具（三个 eval + submit_factor）；聚焦未启用时恒放行。
+        拦截结果带 facet_lock 结构化字段，供日志与前端定位越界面。
+        """
+        focus = tuple(getattr(self, "focus_facets", None) or ())
+        if not focus or tool_name not in _FACET_LOCK_TOOLS:
+            return None
+        expr = arguments.get("multi_line_expr") if isinstance(arguments, dict) else None
+        if not isinstance(expr, str) or not expr.strip():
+            return None
+        vio = facet_scope_violation(expr, focus)
+        if vio is None:
+            return None
+        return {
+            "ok": False,
+            "error": vio["message"],
+            "error_type": "ToolArgumentsError",
+            "facet_lock": {k: v for k, v in vio.items() if k != "message"},
+        }
 
     def _prediction_gate(self, tool_name: str, arguments: dict[str, Any], result: dict[str, Any]) -> dict[str, Any] | None:
         """prediction 软门：缺失放行但记账 + 附 prediction_warning；累计缺失
@@ -402,6 +434,12 @@ class _DispatchMixin:
 
         if not isinstance(arguments, dict):
             return {"ok": False, "error": "tool_arguments_must_be_object", "error_type": "ToolArgumentsError"}
+
+        # 数据面聚焦硬锁定：勾选聚焦面后，越界/未触面表达式在评估与提交前一律拦截
+        if name in _FACET_LOCK_TOOLS and isinstance(arguments.get("multi_line_expr"), str):
+            facet_block = self._facet_lock_block(name, arguments)
+            if facet_block is not None:
+                return facet_block
 
         if name == "submit_factor":
             return self._dispatch_submit(arguments)
