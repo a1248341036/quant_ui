@@ -300,6 +300,23 @@ def test_advisory_duplicate_known_dead_end(tmp_path):
     assert store2.advisory_for(expr) is None
 
 
+def test_advisory_dead_end_aggregates_window_variants(tmp_path):
+    """同骨架换窗口的两个 weak 变体（各自 attempts=1）也聚合为指纹死路。"""
+    store = ResearchMemoryStore(tmp_path / "m.db")
+    store.record_tool_result(
+        run_id="r1", row=_eval_row("eval_on_train_set", "TS_MEAN($adj_close, 5) + 0.5", "weak_a", ic=0.005)
+    )
+    store.record_tool_result(
+        run_id="r2", row=_eval_row("eval_on_train_set", "TS_MEAN($adj_close, 9) + 0.5", "weak_b", ic=0.006)
+    )
+    advisory = store.advisory_for("TS_MEAN($adj_close, 20) + 0.5")
+    assert advisory is not None
+    kinds = [a["kind"] for a in advisory["advisories"]]
+    assert "duplicate_known_dead_end" in kinds
+    item = next(a for a in advisory["advisories"] if a["kind"] == "duplicate_known_dead_end")
+    assert "2 个变体" in item["message"] and "2 次" in item["message"]
+
+
 def test_advisory_duplicate_prior_result(tmp_path):
     store = ResearchMemoryStore(tmp_path / "m.db")
     # 同指纹的历史正向条目（窗口参数不同 → 同结构指纹：数字归一化为 N）

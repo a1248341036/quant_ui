@@ -179,7 +179,9 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
         "enable_factor_retrieval": True,    # v2 混合检索（BM25+族亲和+多样性去重），结论已数据化
         "enable_edit_patterns": True,       # v2 (family×motif) 残差单元 + APV 否决，含统计门控
         # v3-lite：AlphaMemo 校准 + 硬提醒通道
-        "hard_block_duplicates": False,     # True 时指纹死路（负证据 attempts>=2）直接拦截评估
+        # 重复探索硬闸（2026-09-09 开启）：指纹死路（同结构负证据累计 ≥2 次尝试，
+        # 含同骨架换窗口/参数的多个变体）由 tools.dispatch 直接拦截评估，不再只提醒。
+        "hard_block_duplicates": True,
         "max_inject_chars": 2400,           # 注入块总预算，超限按 编辑先验>经验>多样性>证据 截断
         "apv_tau_c": 0.35,                  # APV 双门 1：置信阈值（Eq.7 置信）
         "apv_tau_v": 0.80,                  # APV 双门 2：失败 Beta 后验阈值
