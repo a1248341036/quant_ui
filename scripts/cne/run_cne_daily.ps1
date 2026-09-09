@@ -73,9 +73,12 @@ $env:PYTHONIOENCODING = "utf-8"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 # ── 配置 ──────────────────────────────────────────────────────────────
-# wave 依赖顺序（core 先跑提供 instruments，后续 wave 依赖它）
-$WaveList      = @("core", "fundamentals", "events", "capital", "macro_risk", "signals", "research", "finalize")
-$GateWaves     = @("core", "finalize")
+# wave 依赖顺序（core 先跑提供 instruments，后续 wave 依赖它）。
+# 仅列本 config（cnequity.quant_dataset.toml）实际注册的 schedule group：
+# events/finalize 不在其中，跑 --group events/finalize 只会得到
+# "Unknown group"，让 gate 每天误报失败并跳过流水线内 stale 补抓。
+$WaveList      = @("core", "fundamentals", "capital", "macro_risk", "signals", "research")
+$GateWaves     = @("core")
 $SoftFailOk    = $true   # gate OK 时 soft wave 失败只告警
 $StaleRetry    = -not $NoStaleRetry
 $StaleDelaySec = 1800    # stale 补抓前等待秒数
