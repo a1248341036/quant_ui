@@ -93,54 +93,54 @@ def _available_mb(samples: int = 5) -> float:
     return vals[samples // 2]
 
 
-def test_two_process_physical_sharing(tmp_path: Path):
-    """物理页共享验收：子进程 A attach并触碰全部页后，进程 B attach 触碰时
-    系统可用内存下降应远小于文件体积（独立拷贝则 ≈ 文件体积）。"""
-    # ~170MB 文件：独立拷贝 drop≈170MB vs 共享 drop≈<30MB，远超系统噪声
+def test_two_process_zero_copy_contract(tmp_path: Path):
+    """零拷贝契约验收（两个独立进程各映射同一文件）。
+
+    判定依据：``to_numpy(zero_copy_only=True)`` 成功 → numpy 数组是 arrow
+    mmap buffer 的**只读别名**（pyarrow 契约：一旦发生拷贝结果可写，此断言即失败）。
+    任一进程出现私有拷贝（如旧版 NaN→null 导致 ArrowInvalid 回落
+    ``zero_copy_only=False``）都会让 ``writeable`` 变 True → 测试失败。
+
+    旧版测试曾用「系统 available 内存下降量」判定共享——在 Windows 上不可靠：
+    A 退出/工作集被修剪后其页进入 standby（仍计为 available），B 重新激活时
+    available 照样下降 ≈ 文件体积，与是否共享无关，存在周期性误报。
+    """
     flat = _sample_flat(n_days=2000, n_insts=3000)
-    arrow = tmp_path / "panel_v3_share.arrow"
+    arrow = tmp_path / "panel_v5_share.arrow"
     assert write_panel_arrow(arrow, flat)
     file_mb = arrow.stat().st_size / 1e6
     assert file_mb > 100, f"test fixture too small: {file_mb:.0f}MB"
 
     child = r"""
 import sys
-import psutil
 from pathlib import Path
 from alphaagent.data.adapters.panel_mmap import read_panel_arrow_mmap
 
-path = Path(sys.argv[1])
-before = psutil.virtual_memory().available
-panel = read_panel_arrow_mmap(path)
+panel = read_panel_arrow_mmap(Path(sys.argv[1]))
 assert panel is not None
-# 触碰全部数值页（强制换入物理内存）
+bad = [c for c in panel.columns if panel[c].to_numpy(copy=False).flags.writeable]
+assert not bad, f"non-zero-copy columns: {bad}"
 total = 0.0
 for col in panel.columns:
     total += float(panel[col].sum())
-after = psutil.virtual_memory().available
-drop_mb = (before - after) / 1e6
-print(f"CHILD_OK {drop_mb:.1f} {total:.3f}")
+print(f"CHILD_OK {total:.3f}", flush=True)
 """
-    # 子进程 A：首次 attach + 触碰（建立共享物理页）
-    env_proc = subprocess.run(
+    proc = subprocess.run(
         [sys.executable, "-c", child, str(arrow)],
         capture_output=True, text=True, timeout=300,
         cwd=str(Path(__file__).resolve().parents[1]),
     )
-    assert env_proc.returncode == 0, env_proc.stderr[-500:]
-    assert "CHILD_OK" in env_proc.stdout
+    assert proc.returncode == 0, proc.stderr[-500:]
+    assert "CHILD_OK" in proc.stdout
 
-    # 本测试进程（B）：attach + 触碰，量测 available 下降（中位数降噪）
-    before = _available_mb()
+    # 本测试进程（B）：独立进程再次映射，同样必须全部零拷贝
     panel = read_panel_arrow_mmap(arrow)
     assert panel is not None
-    for col in panel.columns:
-        _ = float(panel[col].sum())
-    after = _available_mb()
-    drop_mb = before - after
-
-    # 共享生效：B 触碰全部页后系统可用内存下降应远小于文件体积的 1/2
-    # （若独立拷贝，drop ≈ file_mb；共享时只有 index/结构开销 ≪ file_mb/2）
-    assert drop_mb < file_mb / 2, (
-        f"physical sharing failed: drop={drop_mb:.1f}MB file={file_mb:.1f}MB"
+    non_zero_copy = [
+        c for c in panel.columns if panel[c].to_numpy(copy=False).flags.writeable
+    ]
+    assert not non_zero_copy, f"non-zero-copy columns: {non_zero_copy}"
+    src = flat.set_index(["datetime", "instrument"])
+    np.testing.assert_allclose(
+        panel["adj_close"].to_numpy(), src["adj_close"].to_numpy(), rtol=1e-6
     )

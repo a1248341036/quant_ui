@@ -52,6 +52,7 @@ def run_factor_mining(
             label_col=ctx.label_col,
             include_fundamentals=ctx.include_fundamentals,
             asset_type=ctx.asset_type,
+            focus_facets=tuple(getattr(config, "focus_facets", None) or ()),
         )
     )
 

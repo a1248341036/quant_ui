@@ -56,6 +56,7 @@ class SessionStore:
                 start=cov_start, end=cov_end, universe_mask=False,
                 include_fundamentals=ctx.include_fundamentals,
                 asset_type=ctx.asset_type,
+                focus_facets=getattr(ctx, "focus_facets", ()) or None,
             )
         else:
             panel = load_panel(ctx.panel_path)
