@@ -113,6 +113,9 @@ def start(req: StartRequest) -> dict[str, Any]:
     payload["research_spec"] = spec
     try:
         run = service.start_run(payload)
+    except service.RunAdmissionError as exc:
+        # 并发上限/可用内存不足：429 + 明确原因（前端直接展示，避免静默 OOM）
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return run.snapshot()
@@ -485,7 +488,10 @@ def continue_run(run_id: str, req: ContinueRequest) -> dict[str, Any]:
 
 @router.post("/runs/{run_id}/continue")
 def resume_run(run_id: str, req: ContinueRequest) -> dict[str, Any]:
-    run = service.continue_run(run_id, req.content)
+    try:
+        run = service.continue_run(run_id, req.content)
+    except service.RunAdmissionError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
     if run is None:
         raise HTTPException(status_code=409, detail="run_not_resumable")
     if run.run_id == run_id:
@@ -493,9 +499,18 @@ def resume_run(run_id: str, req: ContinueRequest) -> dict[str, Any]:
     return run.snapshot()
 
 
+@router.get("/admission")
+def admission() -> dict[str, Any]:
+    """挖掘准入余量（并发上限 / 可用内存），前端启动 run 前可先查。"""
+    return service.admission_status()
+
+
 @router.post("/runs/{run_id}/branch")
 def branch_run(run_id: str, req: ContinueRequest) -> dict[str, Any]:
-    run = service.branch_run(run_id, req.content)
+    try:
+        run = service.branch_run(run_id, req.content)
+    except service.RunAdmissionError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
     if run is None:
         raise HTTPException(status_code=404, detail="run_not_found")
     return run.snapshot()
