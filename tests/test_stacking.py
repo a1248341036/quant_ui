@@ -163,7 +163,7 @@ def test_pred_parquet_roundtrip(panel: pd.DataFrame, tmp_path: Path, monkeypatch
     import core.data.panel as core_panel
 
     monkeypatch.setattr(core_panel, "PRED_FILE", out)
-    mat = core_data.load_pred_scores()
+    mat = core_panel.load_pred_scores()
     assert mat is not None
     assert mat.shape[0] > 0 and mat.shape[1] == 8
     # 分数对齐回读：抽一个 (date, code) 校验（code 规范与 write_pred_parquet 同口径）
