@@ -1,6 +1,7 @@
 """Stacking 组合框架单元测试：合成面板上验证对齐、无前视、折隔离、模型方向与 pred 落盘。"""
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -165,9 +166,13 @@ def test_pred_parquet_roundtrip(panel: pd.DataFrame, tmp_path: Path, monkeypatch
     mat = core_data.load_pred_scores()
     assert mat is not None
     assert mat.shape[0] > 0 and mat.shape[1] == 8
-    # 分数对齐回读：抽一个 (date, code) 校验
+    # 分数对齐回读：抽一个 (date, code) 校验（code 规范与 write_pred_parquet 同口径）
+    def _norm(c: object) -> str:
+        m = re.search(r"(\d{6})", str(c))
+        return (m.group(1) if m else str(c)).zfill(6)
+
     wide = pd.Series(values, index=panel.index).unstack("instrument")
-    wide.columns = [str(c).zfill(6) for c in wide.columns]
+    wide.columns = [_norm(c) for c in wide.columns]
     d, c = mat.index[0], mat.columns[0]
     assert mat.loc[d, c] == pytest.approx(wide.loc[d, c], rel=1e-5, nan_ok=True)
 

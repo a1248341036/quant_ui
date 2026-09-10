@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -647,11 +648,19 @@ def _wma_smooth_scores(values: np.ndarray, panel: pd.DataFrame, window: int) -> 
 
 
 def write_pred_parquet(values: np.ndarray, panel: pd.DataFrame, path: Path) -> None:
-    """组合分数 → date,code,score 长表（core.data.load_pred_scores 的读取格式）。"""
+    """组合分数 → date,code,score 长表（core.data.load_pred_scores 的读取格式）。
+
+    code 统一为 6 位数字：CNE panel 的 instrument 带交易所后缀（000001.SZ），
+    回测引擎面板用 6 位裸码——此前只 zfill 不去后缀，引擎侧 merge 不上会静默全 0 持仓。
+    """
+    def _norm_code(c: object) -> str:
+        m = re.search(r"(\d{6})", str(c))
+        return (m.group(1) if m else str(c)).zfill(6)
+
     valid = np.isfinite(values)
     ser = pd.Series(values[valid].astype(np.float64), index=panel.index[valid])
     wide = ser.unstack("instrument")
-    wide.columns = [str(c).zfill(6) for c in wide.columns]
+    wide.columns = [_norm_code(c) for c in wide.columns]
     long = (
         wide.rename_axis("date")
         .reset_index()
