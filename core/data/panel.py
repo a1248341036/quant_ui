@@ -490,7 +490,9 @@ def load_pred_scores(codes: list[str] | None = None,
         return None
     df = df.copy()
     df["date"] = pd.to_datetime(df["date"])
-    df["code"] = df["code"].astype(str).str.zfill(6)
+    # code 规范为 6 位数字：容忍 '000001.SZ' 后缀格式（与 write_pred_parquet 同口径）
+    extracted = df["code"].astype(str).str.extract(r"(\d{6})", expand=False)
+    df["code"] = extracted.fillna(df["code"].astype(str)).str.zfill(6)
     mat = df.pivot_table(index="date", columns="code", values="score",
                          aggfunc="last").sort_index()
     if cal is not None:
