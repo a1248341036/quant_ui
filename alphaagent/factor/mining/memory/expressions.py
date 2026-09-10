@@ -327,28 +327,52 @@ def facet_column_hint(facet_name: str) -> str:
     return ""
 
 
+# 面 → 该面专属算子在实现上必然消费的输入列族。
+# 依据算子签名（2026-09 核对）：CHIP_*(close, low, high, volume, …) 需要行情组的
+# 价量+量能列；VOLUME_CLOCK_VPIN(price, volume)/MUTUAL_INFO_LAG(close, volume) 需要
+# 价格序列；CROWD_* 的 dimension/attribute 是任意输入序列，常见为量价。
+# 这些输入列在聚焦时一并放行，但表达式仍必须触及勾选的聚焦面本身
+# （见 facet_scope_violation 的"必须触及"规则）——否则纯价量因子会借着
+# "输入列放行"混进筹码/拥挤 run。
+FACET_IMPLIED_INPUTS: dict[str, tuple[str, ...]] = {
+    "筹码面": ("价量面", "量能面"),
+    "拥挤面": ("价量面", "量能面"),
+    "量能面": ("价量面",),
+}
+
+
+def facet_allowed_scope(focus_facets) -> set[str]:
+    """聚焦 run 的可用面范围 = 勾选面 ∪ 这些面的算子隐含输入面。"""
+    focus = {str(f) for f in (focus_facets or ()) if f}
+    extra: set[str] = set()
+    for facet in focus:
+        extra |= set(FACET_IMPLIED_INPUTS.get(facet, ()))
+    return focus | extra
+
+
 def facet_scope_violation(
     expression: str,
     focus_facets: tuple[str, ...] | list[str] | None,
 ) -> dict[str, Any] | None:
     """聚焦硬锁定校验（纯函数，供工具 dispatch 层拦截越界表达式）。
 
-    用户勾选的数据面 = 本 run 唯一允许的数据宇宙：
+    用户勾选的数据面 = 本 run 的研究目标；未勾选面原则上不可用：
     - ``focus_facets`` 为空 → 恒放行；
-    - 表达式必须至少触及 1 个聚焦面（裸算子与 ``$float_cap`` 等非面中性列不算触面）；
-    - 表达式不得触达任何未选面（未选面列族/算子 = 越界）。
+    - 表达式必须至少触及 1 个勾选面（否则视为漂移，即便只用了隐含输入列）；
+    - 表达式不得触达勾选面及其隐含输入面之外的任何面。
 
     返回 None = 放行；否则返回含 reason / 越界明细 / 命中键 / 完整拦截文案的 dict。
     """
     focus = [f for f in (focus_facets or ()) if f]
     if not focus:
         return None
+    focus_set = set(focus)
+    allowed = facet_allowed_scope(focus)
     low = str(expression or "").lower()
     touched = expr_facets(low)
-    allowed = set(focus)
-    outside = sorted(touched - allowed)
-    if touched and not outside:
+    if touched and touched <= allowed and (touched & focus_set):
         return None
+    outside = sorted(touched - allowed)
     matched: dict[str, list[str]] = {}
     for name, keys in FACET_DEFS:
         hits = [k for k in keys if k.lower() in low]
@@ -356,12 +380,26 @@ def facet_scope_violation(
             matched[name] = hits
     focus_label = "、".join(focus)
     focus_hints = "；".join(f"{f} 可用列: {facet_column_hint(f) or '—'}" for f in focus)
-    if not touched:
+    input_faces = sorted(allowed - focus_set)
+    input_hint = ""
+    if input_faces:
+        input_hint = (
+            "（" + "、".join(input_faces) + " 的列只作为聚焦面算子的输入，"
+            "单独用它们构成因子同样会被拦截）"
+        )
+    if not touched or not (touched & focus_set):
         reason = "no_touch"
+        touched_label = "、".join(sorted(touched)) if touched else "无"
+        hit_label = "；".join(
+            f"{f} 命中: {('、'.join(matched.get(f) or [facet_column_hint(f)]))}"
+            for f in sorted(touched)
+        )
+        hit_part = f"；{hit_label}" if hit_label else ""
         message = (
-            "facet_lock_violation: 本轮数据面已硬锁定为【" + focus_label + "】——当前表达式未触及任何"
-            "聚焦面的数据列/算子（裸算子与 $float_cap 等通用中性列不算触面）。"
-            "请至少引用一个聚焦面列族重写: " + focus_hints + "。本次调用未执行。"
+            "facet_lock_violation: 本轮数据面已硬锁定为【" + focus_label + "】——当前表达式未触及"
+            "任何勾选面（触达面: " + touched_label + hit_part + "；裸算子与 $float_cap 等通用中性列"
+            "不算触面）" + input_hint + "。请至少引用一个勾选面的列族/算子重写: " + focus_hints
+            + "。本次调用未执行。"
         )
     else:
         reason = "outside"
@@ -377,6 +415,7 @@ def facet_scope_violation(
     return {
         "reason": reason,
         "focus_facets": focus,
+        "allowed_facets": sorted(allowed),
         "touched_facets": sorted(touched),
         "outside_facets": outside,
         "matched_keys": matched,
