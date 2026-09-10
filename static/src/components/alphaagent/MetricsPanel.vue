@@ -53,7 +53,7 @@
           <div class="summary-panel-head">
             <h3>数据面 / 算子 成功率</h3>
             <div class="metrics-split-controls">
-              <select v-model="facetMetric" class="metrics-last-select" @change="renderFacetOperatorCharts">
+              <select v-model="facetMetric" class="metrics-last-select">
                 <option value="rate">过线率</option>
                 <option value="stored_rate">入库率</option>
                 <option value="mean_abs_ic">平均 |IC|</option>
@@ -223,6 +223,10 @@ export default {
     },
   },
   mounted() { this.refresh() },
+  watch: {
+    // 口径切换后重画（等 v-model 落值再渲染，避免用旧口径画图）
+    facetMetric() { this.$nextTick(() => this.renderFacetOperatorCharts()) },
+  },
   methods: {
     fmt(v) {
       const n = Number(v)
