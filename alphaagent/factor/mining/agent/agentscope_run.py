@@ -50,6 +50,21 @@ from core import factor_categories
 
 _NUDGE_MSG = _NUDGE
 
+# 传输类异常类型名（字符串匹配：兼容 httpx2/httpx/httpcore 的命名差异与异常包装）
+_TRANSPORT_ERROR_NAMES = frozenset({"RemoteProtocolError", "ReadError", "ConnectError", "ReadTimeout"})
+
+
+def _is_transport_error(exc: BaseException) -> bool:
+    """判断异常（沿 __cause__ 链）是否为网络传输类错误，可安全重发本轮调用。"""
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if type(cur).__name__ in _TRANSPORT_ERROR_NAMES:
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
 
 def _cache_hit_rate(totals: dict[str, Any]) -> float:
     """缓存命中率 = 命中 tokens / 总 input tokens（OpenAI 口径 prompt 含 cached）。"""
@@ -826,27 +841,52 @@ async def run_factor_mining_agentscope(
             log_step("memory_retrieve", f"entries={retrieved_count} chars={len(turn_memory)}")
 
         user_msg = UserMsg(name="user", content=agent_prompt)
-        try:
-            had_tools = await stream_to_cli(
-                agent,
-                user_msg,
-                show_thinking=True,
-                auto_confirm=True,
-                observer=observer,
-                quiet=not verbose,
-            )
-        except Exception as exc:
-            end_reason = "error"
-            _emit(
-                "session_error",
-                {
-                    "turn": outer_turn,
-                    "error_type": type(exc).__name__,
-                    "error": str(exc),
-                    "traceback": traceback.format_exc(limit=20),
-                },
-            )
-            break
+        # 传输错误重试（2026-09-10）：agentscope 的重试只包 _call_api 发起阶段，
+        # 流式响应消费中途的断连（CC Switch 链路 RemoteProtocolError/incomplete
+        # chunked read）直达 run 循环终结整个挖掘。此处兜底：传输类异常重发同
+        # 一轮调用（最多 3 次）；半截响应未完成工具链，最坏情况是上下文多一条
+        # 截断 assistant 消息，远好于 run 直接报废。
+        transport_attempts = 0
+        while True:
+            try:
+                had_tools = await stream_to_cli(
+                    agent,
+                    user_msg,
+                    show_thinking=True,
+                    auto_confirm=True,
+                    observer=observer,
+                    quiet=not verbose,
+                )
+                break
+            except Exception as exc:
+                if transport_attempts < 3 and _is_transport_error(exc):
+                    transport_attempts += 1
+                    _emit(
+                        "transport_retry",
+                        {
+                            "turn": outer_turn,
+                            "attempt": transport_attempts,
+                            "error_type": type(exc).__name__,
+                            "error": str(exc)[:300],
+                        },
+                    )
+                    log_step(
+                        "transport_retry",
+                        f"turn={outer_turn} attempt={transport_attempts} err={type(exc).__name__}",
+                    )
+                    await asyncio.sleep(min(30, 5 * transport_attempts))
+                    continue
+                end_reason = "error"
+                _emit(
+                    "session_error",
+                    {
+                        "turn": outer_turn,
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                        "traceback": traceback.format_exc(limit=20),
+                    },
+                )
+                break
 
         queued_messages = _take_control_messages()
         if queued_messages:

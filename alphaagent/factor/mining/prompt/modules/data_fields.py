@@ -307,30 +307,18 @@ _SCOPED_VAR_NEUTRAL_ROWS_MD = """| `$float_cap` / `$tot_cap` | 流通 / 总市�
 """
 
 
-def _scoped_variables_table(scope: set[str], focus: set[str] | None = None) -> str:
+def _scoped_variables_table(scope: set[str]) -> str:
     """按聚焦面（含算子隐含输入面）裁剪行情变量表。
 
     例：只勾筹码面时仍列出 OHLC/volume —— CHIP_* 需要它们作输入；
     但只勾基本面时不列任何行情列（基本面因子不需要价量输入）。
-    ``focus`` 给出时，隐含输入面（scope - focus）的行组之后附"仅作输入"提示，
-    防止 LLM 把它们当聚焦列直接拼纯价量因子（2026-09-10 run 51e02d47a3f3 教训）。
     """
-    from alphaagent.factor.mining.memory.expressions import facet_column_hint
-
     rows = _SCOPED_VAR_TABLE_HEAD
     if "价量面" in scope:
         rows += _SCOPED_VAR_PRICE_ROWS_MD
     if "量能面" in scope:
         rows += _SCOPED_VAR_VOLUME_ROWS_MD
     rows += _SCOPED_VAR_NEUTRAL_ROWS_MD
-    input_only = sorted(set(scope) - set(focus or ()))
-    if input_only:
-        hints = "；".join(f"{f}（{facet_column_hint(f) or '—'}）" for f in input_only)
-        rows += (
-            "\n> **输入列提示**：" + hints + " 的列本轮**仅作输入**——只能与聚焦面列"
-            "组合使用（比值/相关/门控等）或作为聚焦面专属算子的输入；单独用它们构成"
-            "因子会被 facet_lock_violation 拦截。\n"
-        )
     return rows
 
 
@@ -379,11 +367,7 @@ def render(ctx) -> str:  # noqa: ANN001
     if (cols is None or any(c in cols for c in DIVIDEND_PANEL_COLUMNS)) and _want("分红面"):
         event_blocks.append(_DIVIDEND_SECTION_MD)
 
-    variables = (
-        _VARIABLES_TABLE_HEAD
-        if not scope
-        else _scoped_variables_table(input_scope, set(focus))
-    )
+    variables = _VARIABLES_TABLE_HEAD if not scope else _scoped_variables_table(input_scope)
     parts = [variables + ff_rows + _INDUSTRY_NOTE]
     parts.append(ff_advice + "\n\n---\n\n" if ff_advice else "---\n\n")
     tail_blocks = ([funda_block] if include_funda_block else []) + event_blocks
