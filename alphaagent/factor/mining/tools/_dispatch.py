@@ -38,6 +38,15 @@ _FACET_LOCK_TOOLS = frozenset({
     "submit_factor",
 })
 
+# LLM 可用的评估 profile 白名单（dispatch 层硬性收口）。
+# production_delivery / 其它 split=full 口径含盲测段（2025+），只允许 submit
+# 链路内部使用——LLM 探索期直接评估 = 按盲测数据选因子，盲测门禁即被架空。
+_MINING_ALLOWED_PROFILES = frozenset({
+    "train_screen",
+    "validation",
+    "size_neutral_validation",
+})
+
 
 def _prediction_argument_error(arguments: dict[str, Any]) -> dict[str, Any] | None:
     """prediction 参数校验：携带但字段非法时返回 ToolArgumentsError。
@@ -455,6 +464,20 @@ class _DispatchMixin:
             pred_error = _prediction_argument_error(arguments)
             if pred_error is not None:
                 return pred_error
+            # profile 白名单（2026-09-10）：production_delivery 等"全区间/交付复检"
+            # 口径的 split=full 含盲测段（2025+），LLM 在探索期直接调用会按盲测数据
+            # 筛选迭代（多重检验烧盲测段）。全区间复检只属于 submit_factor 内部链路；
+            # deepseek 实测一轮就摸到并使用了 19 次，必须硬性收口。
+            if profile_id not in _MINING_ALLOWED_PROFILES:
+                return {
+                    "ok": False,
+                    "error": (
+                        f"profile_not_allowed_for_mining: {profile_id} —— 全区间/交付复检口径"
+                        "（split=full，含盲测段）由 submit_factor 内部自动执行，挖掘期不得直接评估。"
+                        "训练集海选用 profile_id='train_screen'，样本外验证用 eval_on_val_set。"
+                    ),
+                    "error_type": "ToolArgumentsError",
+                }
             # 预审：拦截"两个裸 RANK 信号简单加减"的低级因子
             if _is_naive_signal_addition(expr):
                 return {
