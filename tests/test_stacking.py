@@ -160,9 +160,9 @@ def test_pred_parquet_roundtrip(panel: pd.DataFrame, tmp_path: Path, monkeypatch
     out = tmp_path / "pred.parquet"
     write_pred_parquet(values, panel, out)
 
-    import core.data as core_data
+    import core.data.panel as core_panel
 
-    monkeypatch.setattr(core_data, "PRED_FILE", out)
+    monkeypatch.setattr(core_panel, "PRED_FILE", out)
     mat = core_data.load_pred_scores()
     assert mat is not None
     assert mat.shape[0] > 0 and mat.shape[1] == 8
