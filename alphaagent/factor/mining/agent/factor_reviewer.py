@@ -52,27 +52,6 @@ def _expr_key(expr: str) -> str:
     return re.sub(r"\s+", "", expr or "")
 
 
-def _classic_precheck(expr: str) -> dict[str, Any] | None:
-    """Cheap hard stop for one-field size transforms before spending an LLM call."""
-    refs = set(re.findall(r"\$[A-Za-z_][A-Za-z0-9_]*", expr or ""))
-    time_or_cross_signal = re.search(r"\b(?:TS_|DELTA|SLOPE|CORR|COV|CHIP_)\w*\s*\(", expr or "", re.I)
-    if refs == {"$float_cap"} and not time_or_cross_signal:
-        return {
-            "verdict": "reject",
-            "novelty": "low",
-            "canonical_form": "经典小市值 / 流通市值暴露",
-            "reasons": [
-                "表达式只使用 $float_cap，未引入独立信息源或时序结构。",
-                "LOG、NEG、CS_WINSORIZE 与 CS_ZSCORE 只改变单调尺度或截面标准化，不改变小市值排序。",
-            ],
-            "required_changes": [
-                "以市值只作为中性化或分组变量，并引入独立的量价、波动、筹码或基本面机制。",
-            ],
-            "source": "deterministic_precheck",
-        }
-    return None
-
-
 class FactorReviewer:
     """A separate AgentScope agent with its own prompt and per-expression evidence."""
 
@@ -185,13 +164,6 @@ class FactorReviewer:
         if key in self.reviews:
             return self.reviews[key]
         review_policy = self.policy.get("review_policy", {})
-        precheck = _classic_precheck(expr) if review_policy.get("block_classic_transforms", True) else None
-        if precheck is not None:
-            self.emit("factor_review", {"turn": turn, "factor_name": factor_name, "multi_line_expr": expr, **precheck})
-            log_step("review", f"{factor_name} classic_precheck verdict={precheck['verdict']}")
-            if has_comment:
-                self.reviews[key] = precheck
-            return precheck
 
         metric_precheck = self._metric_precheck(expr, stage=stage)
         if metric_precheck is not None:
