@@ -28,30 +28,51 @@
           <span class="summary-stat" v-if="stats.production_rate != null">入库率 <b>{{ pct(stats.production_rate) }}</b></span>
         </div>
 
-        <!-- ═══ 经验层 ═══ -->
+        <!-- ═══ 经验层（分页） ═══ -->
         <div class="rmb-section">
           <div class="summary-panel-head">
             <h3>经验层</h3>
-            <span class="rmb-section-sub">跨因子蒸馏：成功模式 / 禁忌方向 / 洞察</span>
+            <span class="rmb-section-sub">
+              跨因子蒸馏：成功模式 / 禁忌方向 / 洞察 · 共 {{ experience.length }} 条<template v-if="expFiltered.length !== experience.length">，命中 {{ expFiltered.length }} 条</template>
+            </span>
           </div>
           <div v-if="!experience.length" class="normal-mode-empty">经验蒸馏尚未产出（挖掘过程会自动沉淀）</div>
-          <div v-else class="rmb-exp-groups">
-            <div class="rmb-exp-group" v-for="group in experienceGroups" :key="group.kind">
-              <h4>{{ group.label }}</h4>
-              <div v-if="!group.items.length" class="normal-mode-empty">暂无</div>
-              <div v-for="item in group.items" :key="item.id" class="rmb-exp-card">
+          <template v-else>
+            <div class="rmbx-toolbar">
+              <div class="rmbx-chips">
+                <button class="rmbx-chip" :class="{ active: expKindFilter === '' }" @click="setExpKind('')">
+                  全部 {{ experience.length }}
+                </button>
+                <button
+                  v-for="g in EXP_KINDS" :key="g.kind"
+                  class="rmbx-chip" :class="{ active: expKindFilter === g.kind }"
+                  @click="setExpKind(g.kind)"
+                >{{ g.label }} {{ expCount(g.kind) }}</button>
+              </div>
+              <input class="rmb-search rmbx-search" v-model="expSearch" placeholder="搜索内容 / 模板 / 实例因子" />
+            </div>
+            <div class="rmbx-list">
+              <div v-for="item in pagedExperience" :key="item.id" class="rmb-exp-card">
+                <div class="rmbx-card-head">
+                  <span class="rmbx-kind" :class="'rmbx-kind-' + item.kind">{{ expKindLabel(item.kind) }}</span>
+                  <span class="rmbx-time" v-if="item.occurrence_count > 1">出现 {{ item.occurrence_count }} 次 · </span>
+                  <span class="rmbx-time">{{ formatTime(item.updated_at) }}</span>
+                </div>
                 <div class="rmb-exp-content">{{ item.content }}</div>
                 <div class="rmb-exp-meta">
                   <span v-if="item.template">模板：{{ item.template }}</span>
-                  <span v-if="item.occurrence_count > 1">出现 {{ item.occurrence_count }} 次</span>
                   <span v-if="item.example_factors && item.example_factors.length">实例：{{ item.example_factors.join('、') }}</span>
                   <span v-if="item.correlated && item.correlated.length">关联：{{ item.correlated.join('、') }}</span>
                   <span v-if="item.typical_correlation != null">典型相关 {{ item.typical_correlation }}</span>
-                  <span class="rmb-exp-time">{{ formatTime(item.updated_at) }}</span>
                 </div>
               </div>
             </div>
-          </div>
+            <div class="rmbx-pager" v-if="expPageCount > 1 || expPage > 1">
+              <button :disabled="expPage <= 1" @click="expPage--">← 上一页</button>
+              <span>第 {{ expPage }} / {{ expPageCount }} 页 · 每页 {{ EXP_PAGE_SIZE }} 条</span>
+              <button :disabled="expPage >= expPageCount" @click="expPage++">下一页 →</button>
+            </div>
+          </template>
         </div>
 
         <!-- ═══ SSPM 编辑统计层 ═══ -->
@@ -186,6 +207,14 @@ const GATE_META = {
 }
 const ASC_FIRST_KEYS = new Set(['family', 'motif', 'parent_bucket'])
 
+// 经验层分页：每页条数（经验条目含模板/实例，整页铺开会把 SSPM/证据层顶出视野）
+const EXP_PAGE_SIZE = 8
+const EXP_KINDS = [
+  { kind: 'success_pattern', label: '成功模式' },
+  { kind: 'forbidden', label: '禁忌方向' },
+  { kind: 'insight', label: '洞察' },
+]
+
 export default {
   name: 'ResearchMemoryBank',
   components: {
@@ -200,6 +229,12 @@ export default {
       familyFilter: '',
       sortKey: 'weighted_fail',
       sortOrder: -1,
+      // 经验层分页状态
+      expKindFilter: '',
+      expSearch: '',
+      expPage: 1,
+      EXP_PAGE_SIZE,
+      EXP_KINDS,
     }
   },
   computed: {
@@ -220,13 +255,22 @@ export default {
         veto_conf: t.veto_conf ?? 0.3,
       }
     },
-    experienceGroups() {
-      const defs = [
-        { kind: 'success_pattern', label: '成功模式' },
-        { kind: 'forbidden', label: '禁忌方向' },
-        { kind: 'insight', label: '洞察' },
-      ]
-      return defs.map(d => ({ ...d, items: this.experience.filter(e => e.kind === d.kind) }))
+    expFiltered() {
+      const q = this.expSearch.trim().toLowerCase()
+      return this.experience
+        .filter((e) => !this.expKindFilter || e.kind === this.expKindFilter)
+        .filter((e) => {
+          if (!q) return true
+          return [e.content, e.template, ...(e.example_factors || []), ...(e.correlated || [])]
+            .join('\n').toLowerCase().includes(q)
+        })
+    },
+    expPageCount() {
+      return Math.max(1, Math.ceil(this.expFiltered.length / EXP_PAGE_SIZE))
+    },
+    pagedExperience() {
+      const start = (this.expPage - 1) * EXP_PAGE_SIZE
+      return this.expFiltered.slice(start, start + EXP_PAGE_SIZE)
     },
     gateLegend() {
       return ['hard_recommend', 'soft_recommend', 'hard_veto', 'soft_veto', 'apv_hard_veto', 'not_injected']
@@ -267,6 +311,11 @@ export default {
       return this.sortOrder === 1 ? '▲' : '▼'
     },
   },
+  watch: {
+    expKindFilter() { this.expPage = 1 },
+    expSearch() { this.expPage = 1 },
+    expPageCount(v) { if (this.expPage > v) this.expPage = v },
+  },
   mounted() {
     this.refresh()
   },
@@ -281,6 +330,15 @@ export default {
     fmtW(v) {
       const n = Number(v || 0)
       return Number.isInteger(n) ? String(n) : n.toFixed(1)
+    },
+    expKindLabel(kind) {
+      return EXP_KINDS.find((k) => k.kind === kind)?.label || kind
+    },
+    expCount(kind) {
+      return this.experience.filter((e) => e.kind === kind).length
+    },
+    setExpKind(kind) {
+      this.expKindFilter = kind
     },
     gateLabel(key) {
       return GATE_META[key]?.label || key
@@ -322,3 +380,99 @@ export default {
   },
 }
 </script>
+
+<style scoped>
+/* 经验层分页工具条与卡片头（复用全局 rmb-exp-card 骨架，新增 rmbx-* 局部样式） */
+.rmbx-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.rmbx-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.rmbx-chip {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.rmbx-chip:hover {
+  color: var(--text);
+}
+.rmbx-chip.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.rmbx-search {
+  flex: none;
+  width: 220px;
+}
+.rmbx-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.rmbx-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.rmbx-kind {
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 9px;
+  border-radius: 999px;
+}
+.rmbx-kind-success_pattern {
+  background: rgba(74, 222, 128, 0.14);
+  color: #4ade80;
+}
+.rmbx-kind-forbidden {
+  background: rgba(248, 113, 113, 0.14);
+  color: #f87171;
+}
+.rmbx-kind-insight {
+  background: rgba(129, 140, 248, 0.16);
+  color: #a5b4fc;
+}
+.rmbx-time {
+  font-size: 11px;
+  color: var(--muted);
+}
+.rmbx-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.rmbx-pager button {
+  border: 1px solid var(--line);
+  background: var(--bg-soft);
+  color: var(--text);
+  border-radius: 7px;
+  padding: 4px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.rmbx-pager button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.rmbx-pager button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+</style>
