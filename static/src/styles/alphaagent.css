@@ -683,6 +683,12 @@ textarea.lab-input { resize:vertical; font:12px/1.5 var(--font-mono); }
 .metrics-run-table td { font-family:var(--font-mono); font-size:11px; }
 .metrics-run-id { color:#8ab4d8; }
 .metrics-chart { width:100%; }
+/* 数据面 / 算子 成功率：双列并排（窄屏自动堆叠） */
+.metrics-split { display:grid; grid-template-columns:repeat(auto-fit, minmax(340px, 1fr)); gap:16px; }
+.metrics-split-col { min-width:0; }
+.metrics-split-title { font-size:11px; color:var(--muted); margin-bottom:4px; }
+.metrics-split-title span { color:var(--muted); font-size:10px; }
+.metrics-split-controls { display:flex; align-items:center; gap:6px; }
 /* Run 明细紧凑化：图表固定 180px（组件内联）；表格内部滚动，不按 run 数撑高页面。
    总结页的 .summary-table-wrap 规则是 max-height:none，故此处同权重后置覆盖。 */
 .metrics-run-wrap { max-height:300px; }

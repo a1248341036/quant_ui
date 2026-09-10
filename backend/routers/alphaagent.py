@@ -391,8 +391,9 @@ def run_metrics(run_id: str) -> dict[str, Any]:
 
 @router.get("/metrics/overview")
 def metrics_overview(last: int = 20) -> dict[str, Any]:
-    """整体统计：扫描全部 run 的效率/漏斗指标聚合 + Reviewer 校准。"""
+    """整体统计：扫描全部 run 的效率/漏斗指标聚合 + Reviewer 校准 + 数据面/算子成功率。"""
     from alphaagent.factor.mining.run_metrics import compute_run_metrics, reviewer_calibration
+    from alphaagent.factor.mining.memory.analytics import facet_operator_breakdown
 
     run_dirs = sorted(p for p in service.LOG_ROOT.iterdir() if p.is_dir())
     if last > 0:
@@ -431,7 +432,13 @@ def metrics_overview(last: int = 20) -> dict[str, Any]:
         service.ROOT / "artifacts" / "alphaagent" / "factorzoo" / "candidate_main" / "mining_candidate_registry.json",
         service.ROOT / "artifacts" / "alphaagent" / "factorzoo" / "production_main" / "mining_delivered_registry.json",
     )
-    return {"summary": summary, "runs": list(reversed(rows)), "reviewer_calibration": cal}
+    # 数据面 / 算子成功率：研究记忆库聚合；last>0 时与页面的 run 窗口对齐（按 last_run_id 过滤）
+    facet_ops = facet_operator_breakdown(
+        service.RESEARCH_MEMORY_FILE,
+        run_ids=[p.name for p in run_dirs] if last > 0 else None,
+    )
+    return {"summary": summary, "runs": list(reversed(rows)),
+            "reviewer_calibration": cal, "facet_operator": facet_ops}
 
 
 @router.post("/runs/{run_id}/stop")

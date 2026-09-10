@@ -48,6 +48,42 @@
           <div id="metrics-funnel-chart" class="metrics-chart" :style="{ height: funnelHeight + 'px' }"></div>
         </div>
 
+        <!-- ── 数据面 / 算子 成功率（研究记忆库聚合） ── -->
+        <div class="summary-panel">
+          <div class="summary-panel-head">
+            <h3>数据面 / 算子 成功率</h3>
+            <div class="metrics-split-controls">
+              <select v-model="facetMetric" class="metrics-last-select" @change="renderFacetOperatorCharts">
+                <option value="rate">过线率</option>
+                <option value="stored_rate">入库率</option>
+                <option value="mean_abs_ic">平均 |IC|</option>
+              </select>
+              <span class="summary-facet-hint" :title="facetHint">ⓘ</span>
+            </div>
+          </div>
+          <div v-if="facetStatsError" class="normal-mode-empty">统计不可用：{{ facetStatsError }}</div>
+          <div v-else-if="!facetStats" class="normal-mode-empty">
+            统计未就绪——后端需重启以加载新的 /metrics/overview 字段
+          </div>
+          <template v-else>
+            <div class="metrics-split">
+              <div class="metrics-split-col">
+                <div class="metrics-split-title">按数据面<span>{{ facetScopeText }}</span></div>
+                <div id="metrics-facet-chart" class="metrics-chart" :style="{ height: facetChartHeight + 'px' }"></div>
+              </div>
+              <div class="metrics-split-col">
+                <div class="metrics-split-title">按算子<span>{{ opScopeText }}</span></div>
+                <div id="metrics-op-chart" class="metrics-chart" :style="{ height: opChartHeight + 'px' }"></div>
+              </div>
+            </div>
+            <p class="metrics-cal-line">
+              {{ facetMetricLabel }} 口径：过线 = promising/validated/candidate_approved/production_approved；
+              分母为有效尝试（已剔除评估未产出的 eval_error {{ facetStats?.scope?.n_eval_error ?? 0 }} 次）；
+              虚线 = 整体基线 {{ fmtMetric(facetStats?.baseline?.[facetMetric]) }}；样本 &lt; {{ minAttempts }} 次的桶不列入。
+            </p>
+          </template>
+        </div>
+
         <!-- ── 错误与记忆命中（横向条形图，次数标在条上） ── -->
         <div class="summary-panel">
           <div class="summary-panel-head">
@@ -141,11 +177,40 @@ const AXIS_LABEL = { color: '#8494b5', fontSize: 10 }
 export default {
   name: 'MetricsPanel',
   data() {
-    return { data: null, loading: false, error: '', lastN: 0 }
+    return { data: null, loading: false, error: '', lastN: 0, facetMetric: 'rate' }
   },
   computed: {
     errorRows() { return Object.entries(this.data?.summary?.error_breakdown || {}) },
     advisoryRows() { return Object.entries(this.data?.summary?.advisory_breakdown || {}) },
+    facetStats() { return this.data?.facet_operator || null },
+    facetStatsError() { return this.facetStats?.error || '' },
+    facetRows() { return this.facetStats?.facets || [] },
+    opRows() { return this.facetStats?.operators || [] },
+    minAttempts() { return this.facetStats?.min_attempts ?? 8 },
+    facetChartHeight() { return Math.max(150, this.facetRows.length * 22 + 46) },
+    opChartHeight() { return Math.max(150, this.opRows.length * 22 + 46) },
+    facetMetricLabel() {
+      return ({ rate: '过线率', stored_rate: '入库率', mean_abs_ic: '平均 |IC|' })[this.facetMetric]
+    },
+    facetScopeText() {
+      const s = this.facetStats?.scope
+      if (!s) return ''
+      const scope = s.filtered_runs ? `最近 ${s.filtered_runs} 个 run` : '全部 run'
+      return ` · ${scope} · 有效尝试 ${s.n_valid}`
+    },
+    opScopeText() {
+      const s = this.facetStats?.scope
+      if (!s) return ''
+      const shown = this.opRows.length
+      const total = s.n_buckets_operators || shown
+      return total > shown ? ` · 尝试数前 ${shown}/${total} 个算子` : ` · ${shown} 个算子`
+    },
+    facetHint() {
+      return '数据面来自因子表达式的列族标签（跨面因子在每个触及面下各计一次，'
+        + '另有「跨面融合」聚合桶）；算子按表达式实际调用去重计数。'
+        + '过线率分母剔除 eval_error（面板缺列/超时等"没算出来"的尝试）。'
+        + '切换页面上方 run 窗口会同步改变统计范围。'
+    },
     funnelHeight() {
       return 60 + 6 * 46
     },
@@ -177,9 +242,95 @@ export default {
     renderCharts() {
       if (!window.echarts || !this.data) return
       this.renderFunnel()
+      this.renderFacetOperatorCharts()
       this.renderErrorChart('metrics-error-chart', this.errorRows, true)
       this.renderErrorChart('metrics-advisory-chart', this.advisoryRows, false)
       this.renderRunsChart()
+    },
+    fmtMetric(v) {
+      if (v == null) return '-'
+      return this.facetMetric === 'mean_abs_ic'
+        ? Number(v).toFixed(4)
+        : (Number(v) * 100).toFixed(1) + '%'
+    },
+    // ── 数据面 / 算子 成功率（横向条形，虚线 = 整体基线）──
+    renderFacetOperatorCharts() {
+      if (!window.echarts || !this.data) return
+      const stats = this.facetStats
+      if (!stats || stats.error) return
+      this.renderBreakdownChart('metrics-facet-chart', this.facetRows)
+      this.renderBreakdownChart('metrics-op-chart', this.opRows)
+    },
+    renderBreakdownChart(id, rows) {
+      if (!rows.length) return
+      const metric = this.facetMetric
+      const isPct = metric !== 'mean_abs_ic'
+      const val = r => {
+        const v = r[metric]
+        if (v == null) return 0
+        return isPct ? Number(v) * 100 : Number(v)
+      }
+      const sorted = [...rows].sort((a, b) => val(a) - val(b))
+      const c = chart(id)
+      if (!c) return
+      const baseRaw = this.facetStats?.baseline?.[metric]
+      const baseVal = baseRaw == null ? null : (isPct ? Number(baseRaw) * 100 : Number(baseRaw))
+      const maxV = Math.max(...sorted.map(val), baseVal || 0, isPct ? 1 : 0.0001)
+      const pct = v => (v == null ? '-' : (Number(v) * 100).toFixed(1) + '%')
+      c.setOption({
+        tooltip: {
+          trigger: 'item',
+          formatter: p => {
+            const r = sorted[p.dataIndex]
+            return `${r.name}<br/>过线率 <b>${pct(r.rate)}</b>（${r.positive}/${r.n_valid}）`
+              + `<br/>入库率 ${pct(r.stored_rate)}（${r.stored} 个）`
+              + `<br/>平均 |IC| ${r.mean_abs_ic == null ? '-' : Number(r.mean_abs_ic).toFixed(4)}`
+              + `<br/>尝试 ${r.n} 次（eval_error ${r.n_eval_error}）`
+          },
+        },
+        grid: { left: 100, right: 78, top: 8, bottom: 6 },
+        xAxis: {
+          type: 'value', max: maxV * 1.18,
+          axisLabel: { ...AXIS_LABEL, formatter: v => (isPct ? v.toFixed(0) + '%' : v) },
+          splitLine: { lineStyle: { color: '#1c2536' } },
+        },
+        yAxis: {
+          type: 'category', data: sorted.map(r => r.name),
+          axisLabel: { ...AXIS_LABEL, width: 94, overflow: 'truncate' },
+        },
+        series: [{
+          type: 'bar', data: sorted.map(val), barMaxWidth: 14,
+          itemStyle: {
+            borderRadius: [0, 3, 3, 0],
+            color: p => this.breakdownColor(val(sorted[p.dataIndex]), maxV, baseVal),
+          },
+          label: {
+            show: true, position: 'right', color: '#c6d2e8', fontSize: 10,
+            formatter: p => {
+              const r = sorted[p.dataIndex]
+              const shown = isPct ? val(r).toFixed(1) + '%' : val(r).toFixed(4)
+              return `${shown} (n=${r.n_valid})`
+            },
+          },
+          markLine: baseVal == null ? undefined : {
+            silent: true, symbol: 'none',
+            lineStyle: { color: '#8ab4d8', type: 'dashed', width: 1 },
+            label: {
+              formatter: `基线 ${isPct ? baseVal.toFixed(1) + '%' : baseVal.toFixed(4)}`,
+              color: '#8ab4d8', fontSize: 9, position: 'insideEndTop',
+            },
+            data: [{ xAxis: baseVal }],
+          },
+        }],
+      }, true)
+    },
+    breakdownColor(v, maxV, baseVal) {
+      if (!(v > 0)) return '#5a6478'
+      const ref = baseVal && baseVal > 0 ? baseVal : maxV
+      const ratio = ref > 0 ? v / ref : 1
+      if (ratio >= 1.3) return '#4fc3a1'
+      if (ratio >= 0.85) return '#4f8cff'
+      return '#7d8bab'
     },
     renderFunnel() {
       const s = this.data.summary || {}
