@@ -201,6 +201,7 @@ class PluginRegistry:
         universe_mask: bool = False,
         include_fundamentals: bool = True,
         asset_type: str = "stock",
+        include_columns: set[str] | None = None,
     ) -> pd.DataFrame:
         """从所有已注册插件加载数据，合并为统一 Panel。
 
@@ -210,6 +211,9 @@ class PluginRegistry:
 
         include_fundamentals=False 时跳过 fundamental 插件（PIT 展开是全链路
         最重的 join_asof 广播），避免无谓耗时。
+
+        include_columns 非空时，只加载**能提供其中任一列**的辅助插件（核心插件
+        始终加载）——数据面聚焦的内存优化：不相关的插件连 join_asof 都不跑。
 
         asset_type='etf' 时只加载 etf_bars 插件（跳过股票行情与全部辅助插件）：
         ETF 域没有基本面/市值/行业/资金流等辅助列，评估 profile 会跳过这些指标。
@@ -238,6 +242,14 @@ class PluginRegistry:
             if skipped:
                 logger.info("include_fundamentals=False，跳过辅助插件: %s", skipped)
             aux_plugins = [p for p in aux_plugins if p.name != "fundamental"]
+        if include_columns is not None:
+            wanted = {str(c) for c in include_columns}
+            skipped = [
+                p.name for p in aux_plugins if not (set(p.panel_columns()) & wanted)
+            ]
+            if skipped:
+                logger.info("include_columns 过滤：跳过无相关列的辅助插件 %s", skipped)
+            aux_plugins = [p for p in aux_plugins if set(p.panel_columns()) & wanted]
 
         if not core_plugins:
             raise RuntimeError("无核心插件（priority=0），无法确定 Panel 行索引")

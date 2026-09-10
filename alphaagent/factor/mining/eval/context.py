@@ -46,6 +46,8 @@ class StockEvalContext:
     """是否载入基本面列（``funda_*``）。挖价量因子时可关闭以省内存。"""
     asset_type: str = "stock"
     """资产类型：'stock'（默认）/ 'etf'。决定数据源、单位换算与评估 profile。"""
+    focus_facets: tuple[str, ...] = ()
+    """数据面聚焦（用户勾选）：非空时 panel 只加载/保留聚焦面列族（省内存）。"""
 
     def resolved_test_end(self) -> str:
         """解析后的测试段右端（None → 数据源最新交易日）。"""

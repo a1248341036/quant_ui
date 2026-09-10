@@ -284,6 +284,79 @@ def evict_all_sessions() -> dict[str, Any]:
 _RUNS: dict[str, AgentRun] = {}
 _LOCK = threading.Lock()
 
+# ── 挖掘 run 准入控制（内存保护）────────────────────────────────────
+# 每个挖掘 run 是一个独立子进程，各自持有一份 panel 视图 + 评估工作集；
+# 实测（2026-09-10，8.2M×124 列全量面板）：单进程私有内存 4.9GB（零拷贝修复前
+# 甚至 8.5GB），起 3 个 run 就能打爆 16GB 机器。此前 start_run 无任何并发闸，
+# 前端连点几次就 OOM。这里做两道准入：
+#   1) 活跃 run 数上限（ALPHA_MAX_ACTIVE_RUNS，默认 2，0 = 不限）
+#   2) 系统可用内存下限（ALPHA_MIN_FREE_GB，默认 2.0，0 = 不检查）
+# 被拒时抛 RunAdmissionError，由 router 映射为 HTTP 429（前端可直接展示原因）。
+_MAX_ACTIVE_RUNS = int(os.environ.get("ALPHA_MAX_ACTIVE_RUNS", "2") or 0)
+_MIN_FREE_GB = float(os.environ.get("ALPHA_MIN_FREE_GB", "2.0") or 0)
+
+
+class RunAdmissionError(RuntimeError):
+    """挖掘 run 准入被拒（并发上限/可用内存不足）。"""
+
+
+def _active_run_count() -> int:
+    hydrate_runs()
+    with _LOCK:
+        runs = list(_RUNS.values())
+    active = 0
+    for run in runs:
+        try:
+            if run.process is not None:
+                active += 1
+        except Exception:  # noqa: BLE001
+            continue
+    return active
+
+
+def _admission_check() -> None:
+    """准入校验：超限/内存不足时抛 RunAdmissionError（附可执行建议）。"""
+    if _MAX_ACTIVE_RUNS > 0:
+        active = _active_run_count()
+        if active >= _MAX_ACTIVE_RUNS:
+            raise RunAdmissionError(
+                f"已有 {active} 个挖掘 run 在运行（上限 {_MAX_ACTIVE_RUNS}）。"
+                "每个挖掘进程独立占用一份 panel 与评估内存，超并发会 OOM——"
+                "请等待其中一个结束，或调大环境变量 ALPHA_MAX_ACTIVE_RUNS。"
+            )
+    if _MIN_FREE_GB > 0:
+        try:
+            import psutil
+
+            free_gb = psutil.virtual_memory().available / 2**30
+        except Exception:  # noqa: BLE001 — 探测失败不拦截
+            return
+        if free_gb < _MIN_FREE_GB:
+            raise RunAdmissionError(
+                f"系统可用内存仅 {free_gb:.1f}GB（下限 {_MIN_FREE_GB:.1f}GB），"
+                "启动挖掘大概率 OOM。请先释放内存，或用「数据面聚焦」缩小 panel 列族"
+                "（聚焦面板 0.4~1.2GB vs 全量 3.9GB），也可调小 ALPHA_MIN_FREE_GB。"
+            )
+
+
+def admission_status() -> dict[str, Any]:
+    """当前准入配置与余量（供前端展示/排查）。"""
+    try:
+        import psutil
+
+        free_gb = round(psutil.virtual_memory().available / 2**30, 2)
+    except Exception:  # noqa: BLE001
+        free_gb = None
+    active = _active_run_count()
+    return {
+        "max_active_runs": _MAX_ACTIVE_RUNS,
+        "active_runs": active,
+        "min_free_gb": _MIN_FREE_GB,
+        "free_gb": free_gb,
+        "accepting": (_MAX_ACTIVE_RUNS <= 0 or active < _MAX_ACTIVE_RUNS)
+        and (free_gb is None or _MIN_FREE_GB <= 0 or free_gb >= _MIN_FREE_GB),
+    }
+
 
 def _status_from_events(events: list[dict[str, Any]]) -> str:
     names = {str(event.get("event", "")) for event in events}
@@ -565,6 +638,8 @@ def start_run(
     parent_run_id: str | None = None,
     resume_context_file: Path | None = None,
 ) -> AgentRun:
+    # 准入控制：并发上限 + 可用内存下限（超限抛 RunAdmissionError → HTTP 429）
+    _admission_check()
     run_id = uuid.uuid4().hex[:12]
     log_dir = LOG_ROOT / run_id
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -818,6 +893,9 @@ def _respawn_in_place(parent: AgentRun, content: str) -> AgentRun:
     - resume 上下文取父会话全部段（不只最新一段）；
     - run_meta.json 不重写，created_at/标题保持原会话身份。
     """
+    # 续跑同样是拉起一个新挖掘进程：与新建 run 共用准入控制（父 run 进程已死，
+    # 但其它 run 可能仍在跑，超并发照样 OOM）。
+    _admission_check()
     control_file = parent.log_dir / "continuations.jsonl"
     try:
         if control_file.exists():

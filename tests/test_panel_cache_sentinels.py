@@ -66,21 +66,56 @@ def cache_root(tmp_path, monkeypatch):
     return root
 
 
-def _write_cache(root, name: str, panel: pd.DataFrame) -> None:
-    panel.reset_index().to_parquet(root / name, index=False)
+def _write_cache(root, name: str, panel: pd.DataFrame, *, focus=None, include_fundamentals: bool = True) -> None:
+    """写 v5 缓存（parquet + 旁注 meta，v5 起命中判定依赖 meta 签名）。"""
+    path = root / name
+    panel.reset_index().to_parquet(path, index=False)
+    import json
+
+    meta = {
+        "schema": cnequity._CACHE_SCHEMA_VERSION,
+        "signature": cnequity._facet_signature(focus),
+        "focus_facets": sorted(focus) if focus else [],
+        "include_fundamentals": include_fundamentals,
+        "rows": int(len(panel)),
+        "columns": int(panel.shape[1]),
+    }
+    cnequity._meta_path(path).write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
 
 
 def test_find_skips_deficient_cache(cache_root) -> None:
-    _write_cache(cache_root, "panel_v4_deficient.parquet", _make_panel(complete=False))
+    _write_cache(cache_root, "panel_v5_deficient.parquet", _make_panel(complete=False))
     assert cnequity._find_cached_panel("2024-01-02", "2024-01-03", include_fundamentals=True) is None
 
 
 def test_find_hits_complete_cache(cache_root) -> None:
-    _write_cache(cache_root, "panel_v4_complete.parquet", _make_panel(complete=True))
+    _write_cache(cache_root, "panel_v5_complete.parquet", _make_panel(complete=True))
     hit = cnequity._find_cached_panel("2024-01-02", "2024-01-03", include_fundamentals=True)
     assert hit is not None and len(hit) == 6
 
 
 def test_find_no_funda_cache_never_serves_funda_request(cache_root) -> None:
-    _write_cache(cache_root, "panel_v4_nofunda.parquet", _make_panel(complete=False, with_funda=False))
+    _write_cache(
+        cache_root, "panel_v5_nofunda.parquet",
+        _make_panel(complete=False, with_funda=False), include_fundamentals=False,
+    )
+    assert cnequity._find_cached_panel("2024-01-02", "2024-01-03", include_fundamentals=True) is None
+
+
+def test_find_requires_matching_facet_signature(cache_root) -> None:
+    """v5：不同数据面签名的缓存互不服务（聚焦 run 不吃全量缓存，避免 mmap
+    fault 全量列页）。"""
+    _write_cache(cache_root, "panel_v5_x.parquet", _make_panel(complete=True), focus=["基本面"])
+    hit = cnequity._find_cached_panel("2024-01-02", "2024-01-03", include_fundamentals=True)
+    assert hit is None  # 请求全量（sig=all）≠ 缓存（sig=f-...）
+    hit2 = cnequity._find_cached_panel(
+        "2024-01-02", "2024-01-03", include_fundamentals=True, focus_facets=["基本面"]
+    )
+    assert hit2 is not None and len(hit2) == 6
+
+
+def test_find_without_meta_is_ignored(cache_root) -> None:
+    """无旁注 meta 的缓存不可命中（保守：无法判定签名/覆盖来源）。"""
+    root = cache_root
+    _make_panel(complete=True).reset_index().to_parquet(root / "panel_v5_nometa.parquet", index=False)
     assert cnequity._find_cached_panel("2024-01-02", "2024-01-03", include_fundamentals=True) is None

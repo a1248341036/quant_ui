@@ -104,6 +104,7 @@ class StockEvalService:
             label_col=req.label_col,
             include_fundamentals=req.include_fundamentals,
             asset_type=req.asset_type,
+            focus_facets=tuple(getattr(req, "focus_facets", ()) or ()),
         )
         session = self.sessions.create(ctx)
         cols = list(session.panel.columns[:12])
