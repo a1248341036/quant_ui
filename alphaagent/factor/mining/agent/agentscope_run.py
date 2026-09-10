@@ -81,9 +81,21 @@ def _client_kwargs() -> dict[str, Any]:
     Some third-party relay providers (e.g. okmcode behind Cloudflare) block
     requests whose ``User-Agent`` contains "OpenAI/Python".  Override it
     with a neutral value so the request goes through CC Switch unmodified.
+
+    timeout（2026-09-11）：CC Switch 半开连接会永久挂起流式读取（无数据、
+    无异常、无超时）——过夜实测单 run 两次挂死各 28/20 分钟且 openai 默认
+    timeout 未生效。显式收紧：块间 read 300s / connect 30s，挂起 5 分钟必抛
+    ReadTimeout，由 ProviderSafeChatModel 的可重试集合兜底重发。
     """
+    try:
+        import httpx2  # noqa: PLC0415
+
+        timeout: Any = httpx2.Timeout(300.0, connect=30.0)
+    except Exception:  # noqa: BLE001 — httpx2 不可导入时退回裸秒数
+        timeout = 300.0
     return {
         "default_headers": {"User-Agent": "quant-ui/1.0"},
+        "timeout": timeout,
     }
 
 
