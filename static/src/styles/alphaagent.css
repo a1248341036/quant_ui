@@ -683,6 +683,10 @@ textarea.lab-input { resize:vertical; font:12px/1.5 var(--font-mono); }
 .metrics-run-table td { font-family:var(--font-mono); font-size:11px; }
 .metrics-run-id { color:#8ab4d8; }
 .metrics-chart { width:100%; }
+/* Run 明细紧凑化：图表固定 180px（组件内联）；表格内部滚动，不按 run 数撑高页面。
+   总结页的 .summary-table-wrap 规则是 max-height:none，故此处同权重后置覆盖。 */
+.metrics-run-wrap { max-height:300px; }
+.research-summary-page .metrics-run-wrap { max-height:300px; }
 .metrics-rate-row { display:flex; align-items:center; gap:6px; }
 .metrics-rate-bar { flex:1; height:8px; min-width:80px; border-radius:4px; background:rgb(255 255 255 / .06); overflow:hidden; }
 .metrics-rate-bar i { display:block; height:100%; border-radius:4px; }

@@ -92,11 +92,17 @@
           </p>
         </div>
 
-        <!-- ── 每 run 明细 ── -->
+        <!-- ── 每 run 明细（图表固定紧凑高度 + 表格内部滚动，避免按 run 数线性撑高页面） ── -->
         <div class="summary-panel">
-          <div class="summary-panel-head"><h3>Run 明细（新 → 旧）</h3></div>
-          <div id="metrics-runs-chart" class="metrics-chart" :style="{ height: Math.max(180, (data.runs || []).length * 26 + 60) + 'px' }"></div>
-          <table class="summary-table metrics-run-table" style="margin-top:14px">
+          <div class="summary-panel-head">
+            <h3>Run 明细（新 → 旧）</h3>
+            <span v-if="(data.runs || []).length > runsChartCap" class="summary-facet-hint">
+              图表仅显示最近 {{ runsChartCap }} 个 run，完整明细见下表
+            </span>
+          </div>
+          <div id="metrics-runs-chart" class="metrics-chart" :style="{ height: runsChartHeight + 'px' }"></div>
+          <div class="summary-table-wrap metrics-run-wrap" style="margin-top:14px">
+          <table class="summary-table metrics-run-table">
             <thead>
               <tr><th>run</th><th>时长min</th><th>LLM次</th><th>输入K</th><th>输出K</th><th>缓存率</th>
                   <th>思维链K</th><th>评估</th><th>提交</th><th>入库</th><th>晋升</th><th>错误率</th><th>min/产出</th></tr>
@@ -119,6 +125,7 @@
               </tr>
             </tbody>
           </table>
+          </div>
         </div>
       </template>
     </div>
@@ -141,6 +148,13 @@ export default {
     advisoryRows() { return Object.entries(this.data?.summary?.advisory_breakdown || {}) },
     funnelHeight() {
       return 60 + 6 * 46
+    },
+    // Run 明细图固定紧凑高度：不再按 run 数线性增长(50 个 run 曾撑到 1360px)
+    runsChartHeight() {
+      return 180
+    },
+    runsChartCap() {
+      return 24
     },
   },
   mounted() { this.refresh() },
@@ -232,8 +246,10 @@ export default {
       }, true)
     },
     renderRunsChart() {
-      const runs = this.data.runs || []
-      if (!runs.length) return
+      const runsAll = this.data.runs || []
+      if (!runsAll.length) return
+      // 图表只画最近 runsChartCap 个（柱宽可读）；全量交给下方可滚动表格
+      const runs = runsAll.slice(0, this.runsChartCap)
       const names = runs.map(r => r.run_id.slice(0, 6))
       const c = chart('metrics-runs-chart')
       if (!c) return
@@ -241,12 +257,12 @@ export default {
         tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
         legend: { textStyle: { color: '#8494b5', fontSize: 10 }, top: 0 },
         grid: { left: 44, right: 14, top: 26, bottom: 28 },
-        xAxis: { type: 'category', data: names, axisLabel: { ...AXIS_LABEL, rotate: 40 } },
+        xAxis: { type: 'category', data: names, axisLabel: { ...AXIS_LABEL, rotate: 40, interval: 'auto', hideOverlap: true } },
         yAxis: { type: 'value', axisLabel: { ...AXIS_LABEL } },
         series: [
-          { name: '评估', type: 'bar', stack: 'm', data: runs.map(r => (r.n_eval ?? 0) + (r.n_eval_val ?? 0)), itemStyle: { color: '#4f8cff' }, barMaxWidth: 18 },
-          { name: '提交', type: 'bar', stack: 'm', data: runs.map(r => r.n_submit ?? 0), itemStyle: { color: '#e8c491' }, barMaxWidth: 18 },
-          { name: '入库', type: 'bar', stack: 'm', data: runs.map(r => (r.stored_candidate ?? 0) + (r.stored_production ?? 0)), itemStyle: { color: '#4fc3a1' }, barMaxWidth: 18 },
+          { name: '评估', type: 'bar', stack: 'm', data: runs.map(r => (r.n_eval ?? 0) + (r.n_eval_val ?? 0)), itemStyle: { color: '#4f8cff' }, barMaxWidth: 14 },
+          { name: '提交', type: 'bar', stack: 'm', data: runs.map(r => r.n_submit ?? 0), itemStyle: { color: '#e8c491' }, barMaxWidth: 14 },
+          { name: '入库', type: 'bar', stack: 'm', data: runs.map(r => (r.stored_candidate ?? 0) + (r.stored_production ?? 0)), itemStyle: { color: '#4fc3a1' }, barMaxWidth: 14 },
         ],
       }, true)
     },
