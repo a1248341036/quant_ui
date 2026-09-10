@@ -72,9 +72,45 @@ class TestFacetScopeViolation:
         assert "未触及" in vio["message"]
 
     def test_match_hint_lists_offending_key(self):
+        """未触及勾选面时，报错要回显实际命中的列，便于直接改写。"""
         vio = facet_scope_violation("TS_DELTA($close, 5)", ["事件面"])
         assert vio is not None
         assert "$close" in vio["message"]
+        assert "价量面" in vio["message"]
+
+
+class TestImpliedOperatorInputs:
+    """算子隐含输入面：勾筹码/拥挤/量能面时，其算子的原始输入列一并放行，
+    但"必须触及勾选面"的规则仍然生效——纯价量因子不能借道混入。"""
+
+    def test_chip_factor_with_price_inputs_allowed(self):
+        assert facet_scope_violation(
+            "CHIP_ENTROPY($close, $low, $high, $volume, 30, $float_cap)", ["筹码面"]
+        ) is None
+
+    def test_pure_price_factor_blocked_in_chip_run(self):
+        vio = facet_scope_violation("TS_MEAN($adj_close, 20)", ["筹码面"])
+        assert vio is not None
+        assert vio["reason"] == "no_touch"
+        assert "筹码面" in vio["message"]
+
+    def test_volume_operator_with_price_input_allowed(self):
+        assert facet_scope_violation(
+            "VOLUME_CLOCK_VPIN($adj_close, $volume, 20, 50)", ["量能面"]
+        ) is None
+
+    def test_crowd_operator_with_price_input_allowed(self):
+        assert facet_scope_violation("CROWD_SHARE($ret, $volume, 20)", ["拥挤面"]) is None
+
+    def test_unrelated_face_still_blocked(self):
+        vio = facet_scope_violation("$mgn_balance * $close", ["筹码面"])
+        assert vio is not None
+        assert vio["outside_facets"] == ["两融面"]
+
+    def test_allowed_facets_reported(self):
+        vio = facet_scope_violation("$mgn_balance", ["筹码面"])
+        assert vio is not None
+        assert set(vio["allowed_facets"]) == {"筹码面", "价量面", "量能面"}
 
 
 class TestDispatchFacetLock:

@@ -56,6 +56,33 @@ MOTIF_LABELS = {
 }
 
 
+def _facets_ok(facets: set[str], scope: set[str], required: set[str] | None) -> bool:
+    """面集合是否属于本 run：非空、⊆ scope，且（给出 required 时）与勾选面有交集。
+
+    required 的存在是为了对付"隐含输入面"：只勾筹码面时价量列可用于 CHIP_* 输入，
+    但纯价量因子（facets={价量面}）不能借道混进来。
+    """
+    facets = {str(f) for f in (facets or ()) if f}
+    if not facets or not facets <= scope:
+        return False
+    return not required or bool(facets & required)
+
+
+def _facets_in_scope(expr: str, scope: set[str], required: set[str] | None = None) -> bool:
+    """表达式触及的数据面是否属于本 run 允许范围。"""
+    return _facets_ok(expr_facets(str(expr or "")), scope, required)
+
+
+def _entry_in_scope(
+    entry: dict[str, Any], scope: set[str], required: set[str] | None = None
+) -> bool:
+    """记忆条目是否属于本 run 的数据面范围（老条目 facets 缺失时按表达式现算）。"""
+    facets = {str(f) for f in (entry.get("facets") or ()) if f}
+    if not facets:
+        return _facets_in_scope(str(entry.get("expression") or ""), scope, required)
+    return _facets_ok(facets, scope, required)
+
+
 class RetrievalMixin:
     """混合检索与提示上下文构建（v3 六层注入：经验 → 模式 → 编辑先验 → 饱和度 → 多样性 → 证据）。"""
 
@@ -126,11 +153,21 @@ class RetrievalMixin:
 
         return list(candidates.values())
 
-    def _guaranteed_positives(self, k: int) -> list[dict[str, Any]]:
+    def _guaranteed_positives(
+        self,
+        k: int,
+        *,
+        facet_scope: set[str] | None = None,
+        facet_required: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
         """跨族保底正向父本：全库正向条目按（验证档位, |IC|）全局排序，同族轮转取最优。
 
         与 BM25 命中无关 —— 通用 query 打不中 FTS 时正向通道也不断供，
         保证每轮证据块里一定有"值得作为父本"的正样本（2026-09-01）。
+
+        ``facet_scope`` 非空（数据面聚焦）时只保留面集合 ⊆ 聚焦范围的条目——
+        否则会把未选面的正向因子当成"优先在其邻近空间继续挖掘"的父本，直接
+        把 LLM 引向必被拦截的越界表达式。
         """
         if k <= 0:
             return []
@@ -149,6 +186,8 @@ class RetrievalMixin:
         ranked: list[tuple[tuple[int, float], dict[str, Any], str]] = []
         for row in rows:
             e = self._row_to_entry(row)
+            if facet_scope and not _entry_in_scope(e, facet_scope, facet_required):
+                continue
             m = e.get("metrics") if isinstance(e.get("metrics"), dict) else {}
             ic = m.get("ic") if m else None
             abs_ic = abs(float(ic)) if isinstance(ic, (int, float)) else 0.0
@@ -320,9 +359,18 @@ class RetrievalMixin:
         focus_families: set[str] | None = None,
         query_ops: set[str] | None = None,
         query_facets: set[str] | None = None,
+        facet_scope: set[str] | None = None,
+        facet_required: set[str] | None = None,
     ) -> str:
-        """构建单因子证据块（正/负池独立排序 + 各自多样性去重 + 40% 正池配额）。"""
+        """构建单因子证据块（正/负池独立排序 + 各自多样性去重 + 40% 正池配额）。
+
+        ``facet_scope``（数据面聚焦的允许范围，含隐含输入面）+ ``facet_required``
+        （勾选面）非空时，证据池先按面过滤：未选面的历史证据不再注入，避免
+        "照抄未选面父本 → 被拦截 → 重写"的 token 空转。
+        """
         entries = self._retrieval_candidates(research_goal, include_rejected)
+        if facet_scope:
+            entries = [e for e in entries if _entry_in_scope(e, facet_scope, facet_required)]
         if not entries:
             return ""
         focus_families = focus_families or set()
@@ -341,7 +389,9 @@ class RetrievalMixin:
         pos_quota = max(1, int(limit * 0.4))
         # 正向保底（2026-09-01）：跨族最优正向因子无条件入选约 2/3 正向配额，
         # BM25 正池只补充剩余 —— 通用 query 打不中 FTS 时正向通道不断供。
-        guaranteed = self._guaranteed_positives(max(0, pos_quota - 1))
+        guaranteed = self._guaranteed_positives(
+            max(0, pos_quota - 1), facet_scope=facet_scope, facet_required=facet_required
+        )
         g_names = {e.get("factor_name") for e in guaranteed}
         pos_pool_rest = [(s, e) for s, e in pos_pool
                          if e.get("factor_name") not in g_names]
@@ -381,11 +431,19 @@ class RetrievalMixin:
 
         return "\n".join(block_lines)
 
-    def _experience_block(self) -> str:
+    def _experience_block(
+        self,
+        facet_scope: set[str] | None = None,
+        facet_required: set[str] | None = None,
+    ) -> str:
         """经验块：FactorMiner 式可执行条目。
 
         success_pattern = 机制说明 + 参数槽模板 + 真实示例表达式（可照抄骨架）；
         forbidden = DO NOT 禁令（模板 + 死路/被拒因子名单）；insight = 战略洞察。
+
+        ``facet_scope``（数据面聚焦）非空时：成功模式的模板/示例只保留聚焦面内的
+        条目（越界模板会被工具拦截，注入等于浪费 token）；禁止行同理，若其模板
+        指向未选面则整行省略。纯文字洞察不受影响。
         """
         try:
             with self._open() as conn:
@@ -400,6 +458,7 @@ class RetrievalMixin:
             return ""
         if not rows:
             return ""
+        scope = {str(f) for f in (facet_scope or ()) if f}
         block_lines: list[str] = []
         block_lines.append("")
         block_lines.append("## 经验记忆（成功模式可照抄模板变异；DO NOT 行本轮不得违反）")
@@ -408,6 +467,9 @@ class RetrievalMixin:
         insight_rows = [r for r in rows if str(r["kind"]) == "insight"]
         for row in forbidden_rows:
             content = str(row["content"] or "")
+            template = str(row["template"] or "") if "template" in row.keys() else ""
+            if scope and template.strip() and not _facets_in_scope(template, scope, facet_required):
+                continue
             block_lines.append(f"- 【禁止】{content}")
         for row in success_rows:
             content = str(row["content"] or "")
@@ -417,6 +479,15 @@ class RetrievalMixin:
             except (TypeError, ValueError):
                 evidence = {}
             examples = [e for e in (evidence.get("examples") or []) if e]
+            if scope:
+                if template and not _facets_in_scope(template, scope, facet_required):
+                    template = ""
+                examples = [
+                    e for e in examples
+                    if _facets_in_scope(str(e), scope, facet_required)
+                ]
+                if not template and not examples:
+                    continue
             line = f"- 成功模式：{content}"
             if template:
                 line += f"\n  模板: `{template}`"
@@ -429,7 +500,13 @@ class RetrievalMixin:
 
     # ── 记忆出题（AlphaMemo 口径：记忆参与搜索决策）──
 
-    def recommend_edits(self, k: int = 2) -> list[dict[str, Any]]:
+    def recommend_edits(
+        self,
+        k: int = 2,
+        *,
+        facet_scope: set[str] | None = None,
+        facet_required: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
         """按 cells 残差×置信度给 (family, motif) 出题，附族内最优父本。
 
         与 _edit_prior_block 的区别：那边是"阅卷"（事后统计表），这里是
@@ -437,6 +514,9 @@ class RetrievalMixin:
         run 循环把它们写进任务消息。排序键 = 平均残差 × Eq.7 置信度，
         APV 双门否决的 (family, motif) 不推荐；无正 cells 时回退
         「出过正信号且未拥挤族 + 族内最优父本」的族级推荐。
+
+        ``facet_scope``（数据面聚焦）非空时，父本表达式触及未选面的推荐直接
+        丢弃——否则会把 LLM 派去改一个必被拦截的价量父本。
         """
         if k <= 0:
             return []
@@ -486,6 +566,10 @@ class RetrievalMixin:
             parent = self._best_family_parent(cand["family"])
             if parent is None:
                 continue
+            if facet_scope and not _facets_in_scope(
+                str(parent.get("parent_expression") or ""), facet_scope, facet_required
+            ):
+                continue
             picks.append({
                 **cand,
                 **parent,
@@ -514,6 +598,10 @@ class RetrievalMixin:
                 continue
             parent = self._best_family_parent(family)
             if parent is None:
+                continue
+            if facet_scope and not _facets_in_scope(
+                str(parent.get("parent_expression") or ""), facet_scope, facet_required
+            ):
                 continue
             picks.append({
                 "family": family, "motif": None,
@@ -969,6 +1057,8 @@ class RetrievalMixin:
         enable_edit_patterns: bool = False,
         recent_batch: list[dict[str, Any]] | None = None,
         max_inject_chars: int | None = None,
+        facet_scope: set[str] | None = None,
+        facet_required: set[str] | None = None,
     ) -> str:
         """构建注入上下文。显示顺序：经验 → 编辑先验 → 饱和度 → 多样性 → 证据。
 
@@ -1012,7 +1102,7 @@ class RetrievalMixin:
 
         # 核心块：无条件保留（超预算时行边界截断）
         core: list[str] = []
-        exp_block = self._experience_block()
+        exp_block = self._experience_block(facet_scope, facet_required)
         if exp_block:
             core.append(exp_block)
         if enable_edit_patterns:
@@ -1046,6 +1136,8 @@ class RetrievalMixin:
                 focus_families=focus_families,
                 query_ops=query_ops,
                 query_facets=query_facets,
+                facet_scope=facet_scope,
+                facet_required=facet_required,
             )
             if factor_block:
                 secondary.append((0, factor_block))

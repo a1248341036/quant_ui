@@ -1,10 +1,26 @@
 # -*- coding: utf-8 -*-
-"""模块 09b · tool_examples：tool_calls 并行示例 JSON（含基本面变体）。原文精确切片。"""
+"""模块 09b · tool_examples：tool_calls 并行示例 JSON（含基本面变体）。原文精确切片。
+
+数据面聚焦生效时按 facets 裁剪：触及未选面的示例整体移除——示例是最容易被
+照抄的上下文，聚焦 run 里出现价量示例就等于把 LLM 往越界表达式上引。
+"""
 
 import json
 
+from alphaagent.factor.mining.memory.expressions import expr_facets
 
-def _tool_call_examples_section(*, include_fundamentals: bool = True) -> str:
+
+def _example_in_scope(example: dict, scope: set[str]) -> bool:
+    if not scope:
+        return True
+    expr = str((example.get("arguments") or {}).get("multi_line_expr") or "")
+    facets = expr_facets(expr)
+    return bool(facets) and facets <= scope
+
+
+def _tool_call_examples_section(
+    *, include_fundamentals: bool = True, focus_facets=None
+) -> str:
     examples = [
         {
             "name": "eval_on_train_set",
@@ -66,12 +82,20 @@ def _tool_call_examples_section(*, include_fundamentals: bool = True) -> str:
             },
         }
     )
+    scope = {str(f) for f in (focus_facets or ()) if f}
+    if scope:
+        examples = [e for e in examples if _example_in_scope(e, scope)]
+        if not examples:
+            return ""
     submit_note = (
         "\n\n**交付示例**：train/val 均达标后，须调用 `submit_factor`（上表第 4 条）；"
         "查重失败则读 `similarity.top_neighbors[].expr` 改写后重试。"
     )
     body = json.dumps(examples, ensure_ascii=False, indent=2)
-    dims = "动量、周线偏离、基本面残差、门控反转" if include_fundamentals else "动量、周线偏离、门控反转"
+    if scope:
+        dims = "本 run 聚焦数据面示例（越界示例已按数据面裁剪）"
+    else:
+        dims = "动量、周线偏离、基本面残差、门控反转" if include_fundamentals else "动量、周线偏离、门控反转"
     note = (
         f"上表为同轮并行 `eval_on_train_set` 示例（{dims}）。"
         "建议每轮 3～5 条并行；仅当 train 有满意候选时，偶尔对少数 factor 做 val 抽检。"
@@ -89,7 +113,9 @@ def _tool_call_examples_section(*, include_fundamentals: bool = True) -> str:
 NAME = "tool_examples"
 TITLE = "tool_calls 并行示例"
 ORDER = 125
-REQUIRED = True
+# required=False：数据面聚焦时若所有示例都越界，本模块会整体不注入
+# （调用格式由常驻 tool_contracts 覆盖），此时不应记为"核心板块缺失"。
+REQUIRED = False
 SEP_BEFORE = "\n\n"
 # 探索阶段裁剪（2026-09-06）：调用格式已由 tool_contracts（常驻）+ 报错自愈
 # 覆盖；deepen 起深度迭代时再注入完整示例
@@ -101,4 +127,7 @@ def render(ctx) -> str:  # noqa: ANN001
         ctx.panel_columns is None
         or any(c.startswith("funda_") for c in ctx.panel_columns)
     )
-    return _tool_call_examples_section(include_fundamentals=funda_effective)
+    return _tool_call_examples_section(
+        include_fundamentals=funda_effective,
+        focus_facets=getattr(ctx, "focus_facets", ()),
+    )

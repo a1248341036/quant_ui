@@ -14,9 +14,62 @@ ORDER = 135
 REQUIRED = False
 SEP_BEFORE = "\n\n---\n\n"
 
+# 不属于任何数据面的通用列：聚焦时始终可用（市值/可交易标记/行业分组）
+_NEUTRAL_COLUMNS = ("float_cap", "tot_cap", "is_trade", "not_st", "industry_sw_l1")
+
 
 def enabled(ctx) -> bool:  # noqa: ANN001
     return bool(getattr(ctx, "focus_facets", None))
+
+
+def _whitelist_lines(ctx, facets: list[str]) -> list[str]:  # noqa: ANN001
+    """按 panel 实际列生成"本 run 唯一可用列"白名单（LLM 只看到勾选面的数据）。
+
+    勾选面的专属算子若隐含消费其他面的列（如 CHIP_* 需要 close/low/high/volume），
+    这些输入列一并列出，但单独用它们构造因子仍会被拦截（必须触及勾选面）。
+    """
+    from alphaagent.factor.mining.memory.expressions import (
+        expr_facets,
+        facet_allowed_scope,
+        facet_column_hint,
+    )
+
+    scope = facet_allowed_scope(facets)
+    input_faces = scope - set(facets)
+    hints = "；".join(f"{f} 可用: {facet_column_hint(f) or '—'}" for f in facets)
+    cols = getattr(ctx, "panel_columns", None)
+    if not cols:
+        return [
+            f"- 本 run 可用列族（白名单）：{hints}。",
+            "- 其他数据面的列/算子一律不可用——越界表达式会被工具层直接拦截。",
+        ]
+    col_names = [str(c) for c in cols]
+    allowed: list[str] = []
+    for name in col_names:
+        if name in _NEUTRAL_COLUMNS:
+            continue
+        hit = expr_facets("$" + name)
+        if hit and hit <= scope:
+            allowed.append("$" + name)
+    allowed.sort()
+    neutral = [f"${c}" for c in _NEUTRAL_COLUMNS if c in set(col_names)]
+    if allowed:
+        out = ["- 本 run 唯一可用列（白名单，表达式只能引用这些）：" + "、".join(allowed) + "。"]
+    else:
+        out = [f"- 本 run 可用列族（白名单）：{hints}（该面以算子派生为主）。"]
+    if neutral:
+        out.append("- 通用中性列（不属于任何数据面，随时可用）：" + "、".join(neutral) + "。")
+    if input_faces:
+        out.append(
+            "- 其中「" + "、".join(sorted(input_faces)) + "」的列仅作为聚焦面算子的输入"
+            "（如 CHIP_*/CROWD_* 需要 close/low/high/volume、VOLUME_CLOCK_VPIN 需要价格序列）；"
+            "单独用它们构造因子仍会被拦截——表达式必须触及勾选的聚焦面。"
+        )
+    out.append(
+        "- 白名单之外的列（其他数据面）本 run 不可用；系统提示其他章节若出现相关字段或"
+        "示例，一律视为不适用（越界表达式会被工具层直接拦截，不必尝试）。"
+    )
+    return out
 
 
 def render(ctx) -> str:  # noqa: ANN001
@@ -27,7 +80,7 @@ def render(ctx) -> str:  # noqa: ANN001
     if len(facets) >= 2:
         lines = [
             "## 数据面聚焦（用户指定，优先级最高，硬锁定）",
-            f"本轮挖掘锁定以下数据面：{'、'.join(facets)}。",
+            f"本轮挖掘跨面融合、锁定以下数据面：{'、'.join(facets)}。",
             "- 优先构造同时触及 ≥2 个所选面的融合因子，融合模式（按历史命中率优先）：",
             "  ① 分组条件 CS_GROUP_RANK(面A信号, CS_BUCKET(面B门控,5))；② 分歧表达 DIVERGENCE_RANK(面A, 面B)；",
             "  ③ 正交残差 CS_RESIDUALIZE(主信号, CS_BUCKET(面B控制变量,10))；④ 条件门控 GATED_SIGNAL(主信号, 面B门控, 阈值)；",
@@ -48,6 +101,7 @@ def render(ctx) -> str:  # noqa: ANN001
         "或完全未触及聚焦面 = 越界，evaluate/submit 会直接返回 facet_lock_violation 且不执行——"
         "请按报错改用锁定列族重写（$float_cap 等非面中性列不受限）。"
     )
+    lines.extend(_whitelist_lines(ctx, facets))
     # 豁免声明：ResearchSpec 契约（extra_instructions 板块）渲染了
     # "允许的信号族"白名单，与融合指令直接矛盾——聚焦生效时必须显式解禁，
     # 否则 LLM 会回避触及指定面的表达式。

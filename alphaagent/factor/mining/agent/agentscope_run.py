@@ -531,6 +531,8 @@ async def run_factor_mining_agentscope(
         if limit <= 0:
             return ""
 
+        from alphaagent.factor.mining.memory.expressions import facet_allowed_scope
+
         query = memory_store.query_for_attempts(
             user_message,
             tool_call_rows,
@@ -540,6 +542,8 @@ async def run_factor_mining_agentscope(
         # 数据面聚焦（用户多选）：与多样性块互斥——用户显式指定的数据面优先，
         # 聚焦生效时不再注入"去探索其他面"的自动多样性引导。
         focus = getattr(config, "focus_facets", None) or []
+        facet_scope = facet_allowed_scope(focus) if focus else None
+        facet_required = {str(f) for f in focus} or None
         block = memory_store.context_for(
             query,
             limit=limit,
@@ -554,6 +558,8 @@ async def run_factor_mining_agentscope(
                 for r in tool_call_rows[-8:]
                 if r.get("expression")
             ] or None,
+            facet_scope=facet_scope,
+            facet_required=facet_required,
         )
         # 数据面聚焦（用户多选）：每轮追加聚焦提醒，持续引导数据面方向。
         if focus:
@@ -597,7 +603,8 @@ async def run_factor_mining_agentscope(
                     "economic_mechanism(≥20字)}——未传会自动补占位并警告，机制描述请显式写。"
                 )
             lines.append(
-                "- 硬性锁定：表达式只允许使用聚焦面列族/算子；触达未选面列/算子或完全未触及"
+                "- 硬性锁定：上下文已按聚焦面裁剪（字段表/示例/历史证据里的未选面内容已隐藏），"
+                "唯一可用列见系统提示「数据面聚焦」板块的白名单；触达未选面列/算子或完全未触及"
                 "聚焦面 = 越界，evaluate/submit 会直接 facet_lock_violation 拦截（不执行），按报错重写即可。"
             )
             if off_focus:
@@ -916,7 +923,12 @@ async def run_factor_mining_agentscope(
                     explored_dims.add("chip")
                 if "overnight" in fname or "gap" in fname:
                     explored_dims.add("overnight")
-            if len(explored_dims) <= 1 and len(all_ics) >= 3:
+            if (
+                not getattr(config, "focus_facets", None)
+                and len(explored_dims) <= 1
+                and len(all_ics) >= 3
+            ):
+                # 数据面聚焦时不给这套"换维度"建议——列出的全是价量维度，会把 LLM 推向越界
                 reflection_lines.append(f"💡 已探索维度: {explored_dims or {'unknown'}}。未探索: 动量(TS_MEAN($ret,N)), 波动率(TS_STD($ret,N)), 量价关系(TS_CORR), 隔夜跳空($adj_open vs prev_close), VWAP偏离, 筹码(CHIP_*). 请选一个未尝试的维度。")
 
             # ── 记忆出题（AlphaMemo 口径）：每轮前 k 个名额由记忆推荐驱动 ──
@@ -924,7 +936,14 @@ async def run_factor_mining_agentscope(
             # 父本 × 编辑类型按 cells 残差×置信排序，APV 否决方向不推荐。
             if memory_store is not None and getattr(memory_store, "suggest_slots", 0) > 0:
                 try:
-                    recs = memory_store.recommend_edits(int(memory_store.suggest_slots))
+                    from alphaagent.factor.mining.memory.expressions import facet_allowed_scope
+
+                    _focus_faces = {str(f) for f in (getattr(config, "focus_facets", None) or ())}
+                    recs = memory_store.recommend_edits(
+                        int(memory_store.suggest_slots),
+                        facet_scope=facet_allowed_scope(_focus_faces) if _focus_faces else None,
+                        facet_required=_focus_faces or None,
+                    )
                 except Exception:
                     recs = []
                 if recs:

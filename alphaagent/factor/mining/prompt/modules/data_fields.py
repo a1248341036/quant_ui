@@ -283,48 +283,96 @@ _INDUSTRY_NOTE = """
 
 """
 
+# ── 数据面聚焦时的行情变量表（按勾选面裁剪）──
+# 说明：非聚焦路径仍用上面的 _VARIABLES_TABLE_HEAD（逐字节冻结，黄金基线依赖）；
+# 这里为聚焦路径单独提供行族常量，避免重构老常量引入字节漂移。
+_SCOPED_VAR_TABLE_HEAD = """### 可用行情变量
+
+表达式引用列须 **`$` + 列名**：
+
+| 字段 | 说明 |
+|------|------|
+"""
+_SCOPED_VAR_PRICE_ROWS_MD = """| `$open` / `$high` / `$low` / `$close` | 原始 OHLC |
+| `$adj_open` / `$adj_high` / `$adj_low` / `$adj_close` | 复权 OHLC（**优先**） |
+| `$vwap` | 成交量加权均价（与 `$close` 同单位尺度：amount/volume） |
+| `$adj_vwap` | 后复权 VWAP（`$vwap × $adjfactor`，与 `$adj_close` 同复权口径） |
+| `$ret` | 日 adj_close pct_change（按 instrument） |
+"""
+_SCOPED_VAR_VOLUME_ROWS_MD = """| `$volume` / `$amount` | 成交量 / 成交额 |
+"""
+_SCOPED_VAR_NEUTRAL_ROWS_MD = """| `$float_cap` / `$tot_cap` | 流通 / 总市值 |
+| `$is_trade` / `$not_st` | 可交易 / 非 ST 标记 |
+| `$industry_sw_l1` | 申万一级行业**离散码**（严格 PIT，`--with-industry` 时才有）；仅用于分组，不做数值运算 |
+"""
+
+
+def _scoped_variables_table(scope: set[str]) -> str:
+    """按聚焦面（含算子隐含输入面）裁剪行情变量表。
+
+    例：只勾筹码面时仍列出 OHLC/volume —— CHIP_* 需要它们作输入；
+    但只勾基本面时不列任何行情列（基本面因子不需要价量输入）。
+    """
+    rows = _SCOPED_VAR_TABLE_HEAD
+    if "价量面" in scope:
+        rows += _SCOPED_VAR_PRICE_ROWS_MD
+    if "量能面" in scope:
+        rows += _SCOPED_VAR_VOLUME_ROWS_MD
+    rows += _SCOPED_VAR_NEUTRAL_ROWS_MD
+    return rows
+
 
 def render(ctx) -> str:  # noqa: ANN001
     cols = ctx.panel_columns
+    focus = [str(f) for f in (getattr(ctx, "focus_facets", None) or ())]
+    scope = set(focus)
+    # 行情变量表用"含隐含输入面"的范围（CHIP_* 需要 OHLC/volume 作输入），
+    # 字段族区块仍按勾选面严格裁剪（未选基本面就不显示 funda_*）。
+    from alphaagent.factor.mining.memory.expressions import facet_allowed_scope
+
+    input_scope = facet_allowed_scope(focus) if scope else scope
+
+    def _want(face: str) -> bool:
+        """字段族注入判定：聚焦生效时只注入勾选面，未聚焦时全量（老行为）。"""
+        return not scope or face in scope
+
     funda_effective = ctx.include_fundamentals and (
         cols is None or any(c.startswith("funda_") for c in cols)
     )
-    ff_available = cols is None or all(c in cols for c in FF_PANEL_COLUMNS)
+    ff_available = (cols is None or all(c in cols for c in FF_PANEL_COLUMNS)) and _want("资金面")
     ff_rows = _FF_FIELD_ROWS_MD if ff_available else ""
     ff_advice = _FF_ADVICE_MD if ff_available else ""
     funda_block = _FUNDAMENTAL_SECTION_MD if funda_effective else _FUNDAMENTAL_DISABLED_MD
+    # 聚焦时未选基本面 → 该区块整体不注入（不是显示"未启用"文案，省 token 且不误导）
+    include_funda_block = True if not scope else (funda_effective and "基本面" in scope)
 
-    # 事件/披露字段族：按 panel 实际列逐块拼接（插件缺数据时对应块不注入）
+    # 事件/披露字段族：按 panel 实际列 + 聚焦面逐块拼接（插件缺数据时对应块不注入）
     event_blocks: list[str] = []
-    if cols is None or any(c.startswith("pred_") for c in cols):
+    if (cols is None or any(c.startswith("pred_") for c in cols)) and _want("业绩面"):
         event_blocks.append(_PRED_SECTION_MD)
-    if cols is None or any(c.startswith("holder_") for c in cols):
+    if (cols is None or any(c.startswith("holder_") for c in cols)) and _want("股东面"):
         event_blocks.append(_HOLDER_SECTION_MD)
-    if cols is None or any(c in cols for c in EVENT_FACE_PANEL_COLUMNS):
+    if (cols is None or any(c in cols for c in EVENT_FACE_PANEL_COLUMNS)) and _want("事件面"):
         event_blocks.append(_EVENT_FACES_SECTION_MD)
-    if cols is None or any(c in cols for c in MARGIN_PANEL_COLUMNS):
+    if (cols is None or any(c in cols for c in MARGIN_PANEL_COLUMNS)) and _want("两融面"):
         event_blocks.append(_MARGIN_SECTION_MD)
-    if cols is None or any(c in cols for c in INST_PANEL_COLUMNS):
+    if (cols is None or any(c in cols for c in INST_PANEL_COLUMNS)) and _want("机构面"):
         event_blocks.append(_INSTITUTIONAL_SECTION_MD)
-    if cols is None or any(c in cols for c in TH_PANEL_COLUMNS):
+    if (cols is None or any(c in cols for c in TH_PANEL_COLUMNS)) and _want("股东集中面"):
         event_blocks.append(_TOP_HOLDERS_SECTION_MD)
-    if cols is None or any(c in cols for c in EXPRESS_PANEL_COLUMNS):
+    if (cols is None or any(c in cols for c in EXPRESS_PANEL_COLUMNS)) and _want("业绩面"):
         event_blocks.append(_EXPRESS_SECTION_MD)
-    if cols is None or any(c in cols for c in DISCLOSURE_PANEL_COLUMNS):
+    if (cols is None or any(c in cols for c in DISCLOSURE_PANEL_COLUMNS)) and _want("披露面"):
         event_blocks.append(_DISCLOSURE_SECTION_MD)
-    if cols is None or any(c in cols for c in DIVIDEND_PANEL_COLUMNS):
+    if (cols is None or any(c in cols for c in DIVIDEND_PANEL_COLUMNS)) and _want("分红面"):
         event_blocks.append(_DIVIDEND_SECTION_MD)
-    event_disclosure_block = "\n\n---\n\n".join(event_blocks) if event_blocks else ""
 
-    # 与旧装配逐字节一致：
-    # - FF 表行带换行尾巴，接行业注释；FF 建议为空时其 "---" 段收敛
-    # - 事件披露块存在时 funda 与事件之间有 "---"；事件为空时直接到 funda 结尾
-    #   （旧装配 {{EVENT_DISCLOSURE_SECTION}}\n\n---\n\n 整体消失的语义）
-    # - 尾部 "---" 由本模块携带（多周期之前），尾部空行数与旧 replace 链逐字节一致
-    parts = [_VARIABLES_TABLE_HEAD + ff_rows + _INDUSTRY_NOTE]
+    variables = _VARIABLES_TABLE_HEAD if not scope else _scoped_variables_table(input_scope)
+    parts = [variables + ff_rows + _INDUSTRY_NOTE]
     parts.append(ff_advice + "\n\n---\n\n" if ff_advice else "---\n\n")
-    if event_disclosure_block:
-        parts.append(funda_block + "\n\n---\n\n" + event_disclosure_block + "\n\n---")
+    tail_blocks = ([funda_block] if include_funda_block else []) + event_blocks
+    if tail_blocks:
+        parts.append("\n\n---\n\n".join(tail_blocks) + "\n\n---")
     else:
-        parts.append(funda_block + "\n\n---")
+        parts.append("---")
     return "".join(parts)

@@ -25,17 +25,34 @@ def _focused_prefixes(focus_facets) -> tuple[str, ...]:
     return tuple(prefixes)
 
 
+def _excluded_prefixes(focus_facets) -> tuple[str, ...]:
+    """未选面的专属算子族整体隐藏（工具层会拦其表达式，留着只会诱导越界）。"""
+    focus = {str(f) for f in (focus_facets or ()) if f}
+    if not focus:
+        return ()
+    excluded: list[str] = []
+    for facet, prefixes in _FACET_FAMILY_PREFIXES.items():
+        if facet not in focus:
+            excluded.extend(prefixes)
+    return tuple(excluded)
+
+
 def render(ctx) -> str:  # noqa: ANN001
+    focused = _focused_prefixes(getattr(ctx, "focus_facets", ()))
     catalog = (
-        operator_catalog_markdown(focused_prefixes=_focused_prefixes(getattr(ctx, "focus_facets", ())))
+        operator_catalog_markdown(
+            focused_prefixes=focused,
+            excluded_prefixes=_excluded_prefixes(getattr(ctx, "focus_facets", ())),
+        )
         if ctx.include_operator_catalog
         else "（本次未注入算子清单）"
     )
     focused_note = ""
-    focused = _focused_prefixes(getattr(ctx, "focus_facets", ()))
     phase = getattr(ctx, "prompt_phase", "full")
     if focused and ctx.include_operator_catalog:
         focused_note = f"本轮聚焦数据面：{'/'.join(focused)} 开头的算子已附完整签名，优先在聚焦族内构建机制。"
+    elif getattr(ctx, "focus_facets", ()) and ctx.include_operator_catalog:
+        focused_note = "本轮已按聚焦数据面隐藏未选面的专属算子族（其表达式会被工具层拦截）。"
     explore_hint = ""
     if phase == "explore" and ctx.include_operator_catalog:
         explore_hint = " 探索阶段优先使用高频算子（已附完整签名），冷门算子签名见报错自愈。"
