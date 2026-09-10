@@ -194,6 +194,11 @@
                         <span v-if="(ml.detail.report.gate||{}).passed === false" class="mlv-bad">
                           未过原因：{{ ((ml.detail.report.gate||{}).fail_reasons||[]).join('、') }}
                         </span>
+                        <button class="mlv-ghost" type="button" :disabled="!!savingCompositeId || !t.out_dir"
+                                title="把这次组合运行的产物（报告+分数）固化为组合因子库条目——含构成/指标/复现命令，点组合因子库行即可回看"
+                                @click.stop="saveCompositeFactor(t)">
+                          {{ savingCompositeId === t.train_id ? '保存中…' : '另存为组合因子' }}
+                        </button>
                       </div>
                       <div v-if="gateCards.length" class="metrics-cards">
                         <div v-for="c in gateCards" :key="c.label" class="metrics-card" :title="c.title"><b>{{ c.value }}</b><span>{{ c.label }}</span></div>
@@ -355,6 +360,76 @@
       </div>
     </template>
 
+    <!-- ── 组合因子库：固化组合分数为可复现条目 ── -->
+    <div class="mlv-block">
+      <div class="mlv-block-head">
+        <h4>组合因子库</h4>
+        <span class="summary-facet-hint" title="把等权/ICIR/HRP/ML 组合的运行产物固化为条目：SQLite 存复现元数据，分数矩阵存 parquet（回测可直接消费）。点击行展开构成/指标/复现命令。">ⓘ</span>
+        <button class="mlv-ghost" type="button" @click="loadCompositeFactors(true)">刷新</button>
+      </div>
+      <div v-if="compositeList.length" class="ml-cf-wrap">
+        <table class="lib-table">
+          <thead>
+            <tr>
+              <th>名称</th><th>方案</th><th>OOS IC</th><th>ICIR</th><th>样本日</th><th>gate</th><th>特征数</th><th>保存时间</th>
+            </tr>
+          </thead>
+          <tbody>
+            <template v-for="c in compositeList" :key="c.id">
+              <tr :class="{active: compositeSelected === c.id}" @click="viewComposite(c.id)">
+                <td><strong>{{ c.name }}</strong></td>
+                <td>{{ c.scheme_label }}</td>
+                <td :class="icClass(c.oos_ic)"><strong>{{ fmtNum(c.oos_ic) }}</strong></td>
+                <td>{{ fmtNum(c.oos_ic_ir) }}</td>
+                <td>{{ c.n_days ?? '—' }}</td>
+                <td>
+                  <span class="lib-status" :class="c.gate_passed === true ? 'status-completed' : (c.gate_passed === false ? 'mlv-bad' : '')">
+                    {{ c.gate_passed == null ? '—' : (c.gate_passed ? '通过' : '未过') }}
+                  </span>
+                </td>
+                <td>{{ c.feature_count }}</td>
+                <td class="mlv-sub">{{ c.created_at }}</td>
+              </tr>
+              <tr v-if="compositeSelected === c.id && compositeDetail && compositeDetail.id === c.id" class="mlv-expand-row">
+                <td colspan="8">
+                  <div class="mlv-expand">
+                    <div class="mlv-expand-head">
+                      <span class="mlv-sub">方法：{{ (compositeDetail.provenance||{}).method }}</span>
+                    </div>
+                    <div class="mlv-expand-head">
+                      <span class="mlv-sub">mining_end: {{ (compositeDetail.provenance||{}).mining_end || '—' }}</span>
+                      <span class="mlv-sub">panel: {{ (compositeDetail.provenance||{}).panel_start }} ~ {{ (compositeDetail.provenance||{}).panel_end }}</span>
+                      <span class="mlv-sub">持有 {{ (compositeDetail.provenance||{}).label_days }}d · 平滑 WMA-{{ (compositeDetail.provenance||{}).score_smooth }} · {{ (compositeDetail.provenance||{}).folds }} 折</span>
+                      <span class="mlv-sub">{{ (compositeDetail.provenance||{}).time_isolation }}</span>
+                    </div>
+                    <div v-if="cfGateCards.length" class="metrics-cards">
+                      <div v-for="card in cfGateCards" :key="card.label" class="metrics-card" :title="card.title"><b>{{ card.value }}</b><span>{{ card.label }}</span></div>
+                    </div>
+                    <div v-if="compositeDetail.note" class="mlv-sub">备注：{{ compositeDetail.note }}</div>
+                    <template v-if="cfFeatures.length">
+                      <div class="mlv-block-head">
+                        <h5>组合构成（{{ cfFeatures.length }}）</h5>
+                        <span class="mlv-sub">衰减保留均值 {{ pct(cfDecayRetention) }}</span>
+                      </div>
+                      <div class="ml-features">{{ cfFeatures.join(' · ') }}</div>
+                      <div v-for="d in (compositeDetail.features||{}).dropped || []" :key="d.name" class="ml-drop">− {{ d.name }}（{{ d.library }}）：{{ d.reason }}</div>
+                    </template>
+                    <div class="mlv-block-head"><h5>复现</h5></div>
+                    <pre class="ml-log">{{ (compositeDetail.provenance||{}).repro_command || '—' }}</pre>
+                    <div class="mlv-sub" v-if="(compositeDetail.provenance||{}).score_path">分数文件：{{ compositeDetail.provenance.score_path }}</div>
+                    <div class="mlv-sub" v-if="(compositeDetail.provenance||{}).report_path">报告文件：{{ compositeDetail.provenance.report_path }}</div>
+                  </div>
+                </td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+      <div v-else class="mlv-sub" style="padding:8px 2px">
+        暂无固化条目——在训练历史里展开某次组合运行，点"另存为组合因子"；或 POST /api/alphaagent/composite-factors
+      </div>
+    </div>
+
     <!-- ── 因子卡片：点击展开，数据 + 机制解释（可滚动） ── -->
     <teleport to="body">
       <div v-if="factorCard" class="ml-factor-card" :style="{ left: factorCardPos.x + 'px', top: factorCardPos.y + 'px' }" @click.stop>
@@ -472,6 +547,10 @@ export default {
       factorCardPos: { x: 0, y: 0 },
       historySortKey: '',
       historySortDir: -1,
+      compositeList: [],
+      compositeSelected: null,
+      compositeDetail: null,
+      savingCompositeId: '',
     }
   },
   computed: {
@@ -551,6 +630,26 @@ export default {
       const a = this.multiPathAgg
       return !!(a && a.n_negative_ic > 0)
     },
+    /** 组合因子库详情：构成/衰减保留/gate 卡片 */
+    cfFeatures() {
+      return this.compositeDetail?.features?.feature_names || []
+    },
+    cfDecayRetention() {
+      return this.compositeDetail?.metrics?.decay_retention_mean ?? null
+    },
+    cfGateCards() {
+      const g = this.compositeDetail?.metrics?.gate || {}
+      const gm = g.metrics || {}
+      const dg = g.diagnostics || {}
+      const pct = v => (v == null ? '—' : (Number(v) * 100).toFixed(1) + '%')
+      if (g.passed == null && gm.excess_annual == null) return []
+      return [
+        { label: '超额年化', value: pct(gm.excess_annual), title: 'engine_gate OOS 段净超额年化' },
+        { label: '超额夏普', value: gm.excess_sharpe == null ? '—' : Number(gm.excess_sharpe).toFixed(2), title: 'engine_gate 超额夏普' },
+        { label: '最大回撤', value: pct(gm.max_drawdown ?? dg.max_drawdown), title: 'OOS 段最大回撤' },
+        { label: '日换手', value: pct(dg.avg_daily_turnover), title: '组合日均单边换手' },
+      ]
+    },
     contribMetrics: () => [
       { key: 'ic_drop', label: 'IC 口径' },
       { key: 'sharpe_drop', label: 'Sharpe 口径' },
@@ -624,6 +723,7 @@ export default {
   mounted() {
     this.loadMl()
     this.loadFactorPool()
+    this.loadCompositeFactors()
     this._docClick = (e) => {
       if (!this.factorCard) return
       const t = e.target
@@ -1037,6 +1137,47 @@ export default {
         await this.loadMl()
       } catch (e) {
         this.ml.error = e.message
+      }
+    },
+    async loadCompositeFactors(force = false) {
+      if (!force && this._cfLoaded) return
+      try {
+        this.compositeList = await api('/api/alphaagent/composite-factors')
+        this._cfLoaded = true
+      } catch (e) {
+        // 列表加载失败不阻塞训练面板
+      }
+    },
+    async viewComposite(id) {
+      if (this.compositeSelected === id && this.compositeDetail?.id === id) {
+        this.compositeSelected = null
+        this.compositeDetail = null
+        return
+      }
+      try {
+        this.compositeDetail = await api('/api/alphaagent/composite-factors/' + encodeURIComponent(id))
+        this.compositeSelected = id
+      } catch (e) {
+        this.ml.error = e.message
+      }
+    },
+    async saveCompositeFactor(t) {
+      if (!t?.out_dir || this.savingCompositeId) return
+      this.savingCompositeId = t.train_id
+      try {
+        const res = await api('/api/alphaagent/composite-factors', {
+          method: 'POST',
+          body: { out_dir: t.out_dir },
+        })
+        await this.loadCompositeFactors(true)
+        this.compositeDetail = await api('/api/alphaagent/composite-factors/' + encodeURIComponent(res.id))
+        this.compositeSelected = res.id
+      } catch (e) {
+        let msg = String(e && e.message ? e.message : e)
+        try { msg = JSON.parse(msg).detail || msg } catch (_) { /* keep raw */ }
+        this.ml.error = '保存组合因子失败：' + msg
+      } finally {
+        this.savingCompositeId = ''
       }
     },
   },
