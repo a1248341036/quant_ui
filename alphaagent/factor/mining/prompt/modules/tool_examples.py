@@ -18,97 +18,8 @@ def _example_in_scope(example: dict, scope: set[str]) -> bool:
     return bool(facets) and facets <= scope
 
 
-# 聚焦 run 的兜底示例：默认示例库整体越界被裁空后，聚焦 run 没有任何合规骨架可抄，
-# LLM 会按先验拼经典价量结构（2026-09-10 run 51e02d47a3f3 turn0 纯价量因子被拦的
-# 根因之一）。按勾选面的代表列合成示例——只用聚焦面列，绝不引用仅作输入的面。
-_FACE_REPR_COLUMN: dict[str, str] = {
-    "价量面": "adj_close",
-    "量能面": "amount",
-    "业绩面": "pred_surprise",
-    "基本面": "funda_roe",
-    "股东面": "holder_count_chg_pct",
-    "资金面": "ff_super_net",
-    "两融面": "mgn_buy",
-    "事件面": "dt_net_buy_90d",
-    "机构面": "inst_ratio",
-    "股东集中面": "th_top10_pct",
-    "披露面": "ds_days_since_actual",
-    "分红面": "div_cash_div",
-}
-_FACE_ASCII: dict[str, str] = {
-    "价量面": "pv",
-    "量能面": "vol",
-    "业绩面": "earn",
-    "基本面": "funda",
-    "股东面": "holder",
-    "资金面": "ff",
-    "两融面": "margin",
-    "事件面": "event",
-    "机构面": "inst",
-    "股东集中面": "topholder",
-    "披露面": "disc",
-    "分红面": "div",
-}
-
-
-def _scoped_fallback_examples(focus: list[str], panel_columns) -> list[dict]:
-    """按聚焦面代表列合成示例（面无代表列或列不在 panel 时跳过该面）。"""
-    available = None if panel_columns is None else {str(c) for c in panel_columns}
-    faces = [
-        f
-        for f in (focus or [])
-        if _FACE_REPR_COLUMN.get(f)
-        and (available is None or _FACE_REPR_COLUMN[f] in available)
-    ]
-    if not faces:
-        return []
-    if len(faces) == 1:
-        col = "$" + _FACE_REPR_COLUMN[faces[0]]
-        return [
-            {
-                "name": "eval_on_train_set",
-                "arguments": {
-                    "multi_line_expr": (
-                        f"chg = TS_DELTA({col}, 20)\n"
-                        f"CS_ZSCORE(CS_WINSORIZE(chg, 0.01, 0.99))"
-                    ),
-                    "factor_name": f"{_FACE_ASCII.get(faces[0], 'face')}_delta_z",
-                },
-            }
-        ]
-    face_a, face_b = faces[0], faces[1]
-    col_a = "$" + _FACE_REPR_COLUMN[face_a]
-    col_b = "$" + _FACE_REPR_COLUMN[face_b]
-    name_a = _FACE_ASCII.get(face_a, "faceA")
-    name_b = _FACE_ASCII.get(face_b, "faceB")
-    return [
-        {
-            "name": "eval_on_train_set",
-            "arguments": {
-                "multi_line_expr": (
-                    f"base = CS_ZSCORE(CS_WINSORIZE({col_a}, 0.01, 0.99))\n"
-                    f"state = RANK(TS_MEAN({col_b}, 20))\n"
-                    f"GATED_SIGNAL(base, state, 0.8, true, 0)"
-                ),
-                "factor_name": f"{name_a}_x_{name_b}_gate",
-                "interaction": {
-                    "interaction_type": "gated_signal",
-                    "base_signal": f"{face_a}核心信号",
-                    "condition_signal": f"{face_b}活跃度状态",
-                    "economic_mechanism": (
-                        f"{face_a}信号在{face_b}活跃放大的状态下更可靠，"
-                        "门控集中高置信组"
-                    ),
-                    "expected_subgroup_pattern": {"high_state": "信号启用", "other": "中性"},
-                    "ablation_required": True,
-                },
-            },
-        }
-    ]
-
-
 def _tool_call_examples_section(
-    *, include_fundamentals: bool = True, focus_facets=None, panel_columns=None
+    *, include_fundamentals: bool = True, focus_facets=None
 ) -> str:
     examples = [
         {
@@ -171,13 +82,9 @@ def _tool_call_examples_section(
             },
         }
     )
-    scope = [str(f) for f in (focus_facets or ()) if f]
-    synthesized = False
+    scope = {str(f) for f in (focus_facets or ()) if f}
     if scope:
-        examples = [e for e in examples if _example_in_scope(e, set(scope))]
-        if not examples:
-            examples = _scoped_fallback_examples(scope, panel_columns)
-            synthesized = bool(examples)
+        examples = [e for e in examples if _example_in_scope(e, scope)]
         if not examples:
             return ""
     submit_note = (
@@ -186,11 +93,7 @@ def _tool_call_examples_section(
     )
     body = json.dumps(examples, ensure_ascii=False, indent=2)
     if scope:
-        dims = (
-            "本 run 聚焦数据面合成示例（默认示例越界已裁剪，按勾选面代表列生成的骨架，仅供参考）"
-            if synthesized
-            else "本 run 聚焦数据面示例（越界示例已按数据面裁剪）"
-        )
+        dims = "本 run 聚焦数据面示例（越界示例已按数据面裁剪）"
     else:
         dims = "动量、周线偏离、基本面残差、门控反转" if include_fundamentals else "动量、周线偏离、门控反转"
     note = (
@@ -227,5 +130,4 @@ def render(ctx) -> str:  # noqa: ANN001
     return _tool_call_examples_section(
         include_fundamentals=funda_effective,
         focus_facets=getattr(ctx, "focus_facets", ()),
-        panel_columns=ctx.panel_columns,
     )

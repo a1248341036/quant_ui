@@ -92,7 +92,10 @@ def validate_interaction(
         }
 
     subgroup = value.get("expected_subgroup_pattern")
-    if subgroup is not None and not isinstance(subgroup, (dict, list)):
+    # str 放宽（2026-09-10）：融合指令模板示例就是字符串（"高条件组更强"），
+    # 校验却只收 dict/list → deepseek 单轮 8/8 契约被拒。该字段无下游消费点，
+    # 仅描述性——字符串原样放行。
+    if subgroup is not None and not isinstance(subgroup, (dict, list, str)):
         return None, {
             "ok": False,
             "error": "expected_subgroup_pattern_must_be_object_or_list",
