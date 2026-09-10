@@ -731,6 +731,51 @@ def stacking_stop(train_id: str) -> dict[str, Any]:
     return result
 
 
+# ══════════════════════════════════════════════════════════════════════
+#  组合因子库（composite factors）：固化组合分数为可复现条目
+# ══════════════════════════════════════════════════════════════════════
+
+
+class CompositeFactorSaveRequest(BaseModel):
+    out_dir: str                                   # 组合运行产物目录（含 report.json + 分数 parquet）
+    name: str | None = None                        # 条目名（缺省按方案+OOS 起点自动命名）
+    note: str | None = None                        # 备注
+
+
+@router.get("/composite-factors")
+def composite_factors_list(limit: int = 50) -> list[dict[str, Any]]:
+    from backend import composite_factor_service
+
+    return composite_factor_service.list_composite_factors(limit=limit)
+
+
+@router.get("/composite-factors/{cf_id}")
+def composite_factor_detail(cf_id: str) -> dict[str, Any]:
+    from backend import composite_factor_service
+
+    item = composite_factor_service.get_composite_factor(cf_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="composite_factor_not_found")
+    return item
+
+
+@router.post("/composite-factors")
+def composite_factor_save(req: CompositeFactorSaveRequest) -> dict[str, Any]:
+    from backend import composite_factor_service
+
+    result = composite_factor_service.save_composite_factor(req.out_dir, name=req.name, note=req.note)
+    if "error" in result:
+        raise HTTPException(status_code=404, detail=result["error"])
+    return result
+
+
+@router.delete("/composite-factors/{cf_id}")
+def composite_factor_delete(cf_id: str) -> dict[str, Any]:
+    from backend import composite_factor_service
+
+    return {"ok": composite_factor_service.delete_composite_factor(cf_id)}
+
+
 @router.post("/session-cache/evict")
 def evict_all_sessions() -> dict[str, Any]:
     """清空所有会话缓存，释放内存。
