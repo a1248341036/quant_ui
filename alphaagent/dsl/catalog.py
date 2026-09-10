@@ -108,6 +108,7 @@ def operator_catalog_markdown(
     include_basic: bool = False,
     tier: str = "hybrid",
     focused_prefixes: tuple[str, ...] = (),
+    excluded_prefixes: tuple[str, ...] = (),
 ) -> str:
     """按机制分组渲染算子目录。
 
@@ -128,11 +129,18 @@ def operator_catalog_markdown(
     focused_prefixes：按数据面聚焦动态注入签名的族前缀（如选中筹码面 →
     ``("CHIP_",)``）——匹配的算子在 hybrid 档也渲染完整签名行。探索路径
     不因瘦身堵死：聚焦哪一面，哪一面的专业算子签名就常驻。
+
+    excluded_prefixes：数据面聚焦时把未选面的专属算子族**整体移除**
+    （如未选筹码面 → 隐藏 ``CHIP_*``）——工具层会拦截触及未选面的表达式，
+    留在目录里只会诱导 LLM 写出必被拒绝的代码。
     """
     ns = build_operator_namespace()
+    excluded = tuple(p for p in excluded_prefixes if p)
     folded: list[str] = []
     groups: dict[str, list[str]] = {}
     for name in sorted(ns):
+        if excluded and name.startswith(excluded):
+            continue
         for title, match in _CATALOG_GROUPS:
             if match(name):
                 groups.setdefault(title, []).append(name)

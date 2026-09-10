@@ -91,6 +91,11 @@ def assemble_system_prompt(modules: list[PromptModule], ctx: PromptContext) -> t
         required_empty = False
         if on:
             text = module.render(ctx)
+            # 数据面聚焦：把触及未选面的可复制代码片段替换为说明行，LLM 看不到越界示例
+            if getattr(ctx, "focus_facets", ()):
+                from alphaagent.factor.mining.prompt.scope_filter import scrub_out_of_scope
+
+                text = scrub_out_of_scope(text, ctx.focus_facets)
             placeholders = _find_placeholders(text)
             if text.strip():
                 if parts:
