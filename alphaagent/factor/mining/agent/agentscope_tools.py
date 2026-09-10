@@ -912,8 +912,10 @@ def build_factor_eval_toolkit(
             result, _elapsed = await _dispatch_with_timeout(
                 loop, _executor(max_workers), tools, "submit_factor",
                 submit_args,
-                # 提交含全区间复检 + 首次 JIT 编译，600s 会白白失败一次（重试靠热缓存才过）。
-                timeout=900,
+                # 提交含全区间复检 + 首次 JIT 编译 + 正交 hook 重评 registry 候选
+                # （~22 条 × 10s）+ 深夜慢速 reviewer LLM（超时重试可达 +180s），
+                # 实测 908s 撞穿 900s 旧上限 → stage_one 过线因子全部丢失。
+                timeout=1800,
             )
             if _legacy_kwargs:
                 result["ignored_arguments"] = sorted(_legacy_kwargs)
