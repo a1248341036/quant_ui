@@ -138,8 +138,16 @@ class TestPromptScopeProjection:
         # 选中筹码面后该族不再被排除
         assert "CHIP_" not in _excluded_prefixes(["业绩面", "筹码面"])
 
-    def test_tool_examples_scoped_out_silently(self):
+    def test_tool_examples_synthesized_for_focus(self):
+        """默认示例全越界被裁空时，按聚焦面代表列合成合规骨架——
+        没有骨架时 LLM 会按先验拼纯价量结构（run 51e02d47a3f3 教训）。"""
         _prompt(["业绩面", "量能面"])
+        row = next(r for r in last_assembly_report if r["module"] == "tool_examples")
+        assert row["chars"] > 0
+        assert row["required_empty"] is False
+
+    def test_tool_examples_empty_without_repr_faces(self):
+        _prompt(["筹码面"])
         row = next(r for r in last_assembly_report if r["module"] == "tool_examples")
         assert row["chars"] == 0
         assert row["required_empty"] is False
@@ -148,6 +156,34 @@ class TestPromptScopeProjection:
         text = _prompt(None)
         assert "$adj_close" in text and "funda_roe" in text
         assert "本 run 唯一可用列" not in text
+
+
+class TestInputColumnGrouping:
+    """聚焦列与仅作输入列分组呈现（白名单 + 变量表双处标注）。"""
+
+    def test_whitelist_splits_focus_and_input_columns(self):
+        text = _prompt(["业绩面", "量能面"])
+        lines = text.splitlines()
+        focus_line = next(l for l in lines if "聚焦面列" in l and "唯一可用列" in l)
+        input_line = next(l for l in lines if "仅作输入列" in l)
+        assert "$pred_surprise" in focus_line and "$amount" in focus_line
+        assert "$adj_close" not in focus_line
+        assert "$adj_close" in input_line and "$pred_surprise" not in input_line
+
+    def test_vars_table_marks_input_only_scope(self):
+        text = _prompt(["业绩面", "量能面"])
+        assert "输入列提示" in text
+        assert "仅作输入" in text
+
+    def test_no_input_note_without_implied_faces(self):
+        text = _prompt(["业绩面"])
+        assert "输入列提示" not in text
+        assert "仅作输入列" not in text
+
+    def test_chip_focus_marks_price_volume_as_input(self):
+        text = _prompt(["筹码面"])
+        assert "输入列提示" in text
+        assert "价量面" in text and "量能面" in text
 
 
 # ── 3. 记忆检索按面过滤 ──
