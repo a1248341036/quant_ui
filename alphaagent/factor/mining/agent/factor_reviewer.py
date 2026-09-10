@@ -12,7 +12,7 @@ from agentscope.credential import OpenAICredential
 from agentscope.message import UserMsg
 from agentscope.model import OpenAIChatModel  # noqa: F401  (类型标注用)
 
-from alphaagent.factor.mining.infra.usage_capture import UsageCapturedChatModel
+from alphaagent.factor.mining.infra.provider_compat import ProviderSafeChatModel
 from agentscope.permission import PermissionContext, PermissionMode
 from agentscope.state import AgentState
 from agentscope.workspace import LocalWorkspace
@@ -163,7 +163,7 @@ class FactorReviewer:
         params: dict[str, Any] = {"max_tokens": max_tokens, "parallel_tool_calls": False}
         if self.config.temperature is not None:
             params["temperature"] = self.config.temperature
-        return UsageCapturedChatModel(
+        return ProviderSafeChatModel(
             usage_listener=self.usage_bridge.record if self.usage_bridge else None,
             credential=OpenAICredential(api_key=self.api_key, base_url=self.base_url),
             model=self.config.model,

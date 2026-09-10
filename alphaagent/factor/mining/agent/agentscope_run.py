@@ -27,7 +27,8 @@ from alphaagent.factor.mining.schemas import SessionCreateRequest
 from alphaagent.factor.mining.service import StockEvalService
 from alphaagent.factor.mining.agentscope_tools import build_factor_eval_toolkit, context_to_openai_messages
 from alphaagent.factor.mining.cli_stream import MiningStreamObserver, stream_to_cli
-from alphaagent.factor.mining.infra.usage_capture import UsageBridge, UsageCapturedChatModel
+from alphaagent.factor.mining.infra.provider_compat import ProviderSafeChatModel
+from alphaagent.factor.mining.infra.usage_capture import UsageBridge
 from alphaagent.factor.mining.config import MiningConfig
 from alphaagent.factor.mining.console import ConsolePrinter, ensure_utf8_stream
 from alphaagent.factor.mining.loop import _NUDGE, _submit_record
@@ -95,7 +96,7 @@ def _build_model(
     }
     if config.temperature is not None:
         params["temperature"] = config.temperature
-    return UsageCapturedChatModel(
+    return ProviderSafeChatModel(
         usage_listener=usage_listener,
         credential=OpenAICredential(api_key=api_key, base_url=base_url),
         model=config.model,
