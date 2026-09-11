@@ -20,7 +20,7 @@ from alphaagent.factor.mining.schemas import (
 )
 from alphaagent.factor.evaluation.engine import EvaluationEngine
 from alphaagent.factor.evaluation.profile import EvaluationProfile, default_evaluation_profiles
-from alphaagent.factor.mining.session import SessionStore
+from alphaagent.factor.mining.session import SessionStore, StockEvalSession
 
 
 def _eval_lite_enabled() -> bool:
@@ -105,6 +105,7 @@ class StockEvalService:
             include_fundamentals=req.include_fundamentals,
             asset_type=req.asset_type,
             focus_facets=tuple(getattr(req, "focus_facets", ()) or ()),
+            engine_gate_policy=getattr(req, "engine_gate_policy", None),
         )
         session = self.sessions.create(ctx)
         cols = list(session.panel.columns[:12])
@@ -217,7 +218,69 @@ class StockEvalService:
             legacy["include_detail_tables"] = True
         resp = format_eval_response(legacy, expected_sign=None)
         resp["screen_stage"] = "full"
+        # 引擎预演：train 过线因子附 val 窗口可交易口径（对齐用户"统计↔实盘"意图）
+        self._maybe_engine_preview(session, req.multi_line_expr, resp)
         return resp
+
+    def _maybe_engine_preview(
+        self, session: StockEvalSession, multi_line_expr: str, result: dict[str, Any]
+    ) -> None:
+        """train 过线因子 → val 窗口引擎预演（就地注入 ``result["engine_preview"]``）。
+
+        用户设计意图（2026-09-11 确认）：统计口径（分位组前瞻收益）与实盘口径
+        （core.engine 完整约束）必须对齐——此前引擎只在 submit 时首次出现，
+        LLM 整个迭代期都在用统计口径选方向，"统计好引擎差"的因子烧掉大量轮次。
+
+        - 直接复用 ``run_engine_gate``（单一真源，零语义漂移）；
+        - 窗口 = val（样本外可交易预演）；盲测段仍只属于 submit 链路；
+        - 策略 = 本 run 的 engine_gate 配置（用户显式调仓/档位默认/top_pct）；
+        - 异常全吞：预演是增益信息，绝不阻断评估。
+        """
+        try:
+            policy = getattr(session.ctx, "engine_gate_policy", None)
+            if not isinstance(policy, dict) or not policy.get("enabled", True):
+                return
+            panel = session.panel
+            if panel is None or len(panel) == 0:
+                return
+            from alphaagent.dsl import eval_factor
+            from alphaagent.factor.mining.engine_gate import run_engine_gate
+
+            import numpy as np
+
+            out = eval_factor(multi_line_expr, panel)
+            values = out.reindex(panel.index).to_numpy(dtype=np.float64)
+            cs = (result.get("metrics") or {}).get("cross_sectional_core") or {}
+            ic = cs.get("ic")
+            if ic is None:
+                ic = (result.get("summary") or {}).get("ic")
+            sign = 1 if (isinstance(ic, (int, float)) and ic >= 0) else -1
+            gate = run_engine_gate(
+                panel,
+                values,
+                val_start=session.ctx.val_start,
+                val_end=session.ctx.val_end,
+                direction=sign,
+                policy=policy,
+                asset_type=getattr(session.ctx, "asset_type", "stock"),
+            )
+            m = gate.get("metrics") or {}
+            result["engine_preview"] = {
+                "window": {"start": session.ctx.val_start, "end": session.ctx.val_end},
+                "freq": policy.get("freq"),
+                "passed": bool(gate.get("passed")),
+                "annual_return": m.get("annual_return"),
+                "excess_annual": m.get("excess_annual"),
+                "sharpe": m.get("sharpe"),
+                "max_drawdown": m.get("max_drawdown"),
+                "fail_reasons": gate.get("fail_reasons") or [],
+                "note": (
+                    "val 窗口可交易口径预演：完整 T+1/涨跌停/停牌/流动性/成本约束，"
+                    "选股口径同交付策略（与分位组前瞻收益统计口径不可直接比较）"
+                ),
+            }
+        except Exception as exc:  # noqa: BLE001 — 预演绝不阻断评估
+            result["engine_preview"] = {"error": f"{type(exc).__name__}: {exc}"}
 
     def eval_train(self, req: EvalTrainRequest) -> dict[str, Any]:
         if _eval_lite_enabled():

@@ -53,6 +53,9 @@ def run_factor_mining(
             include_fundamentals=ctx.include_fundamentals,
             asset_type=ctx.asset_type,
             focus_facets=tuple(getattr(config, "focus_facets", None) or ()),
+            engine_gate_policy=((config.research_spec or {}).get("delivery_policy") or {})
+            .get("production", {})
+            .get("engine_gate"),
         )
     )
 

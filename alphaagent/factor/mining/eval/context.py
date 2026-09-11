@@ -48,6 +48,9 @@ class StockEvalContext:
     """资产类型：'stock'（默认）/ 'etf'。决定数据源、单位换算与评估 profile。"""
     focus_facets: tuple[str, ...] = ()
     """数据面聚焦（用户勾选）：非空时 panel 只加载/保留聚焦面列族（省内存）。"""
+    engine_gate_policy: dict | None = None
+    """engine_gate 交付策略（delivery_policy.production.engine_gate）。
+    非空时 train 过线因子自动附 val 窗口引擎预演（engine_preview，可交易口径）。"""
 
     def resolved_test_end(self) -> str:
         """解析后的测试段右端（None → 数据源最新交易日）。"""
