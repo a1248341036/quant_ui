@@ -737,6 +737,12 @@ class FactorSubmitService:
             return payload
 
         # 统计达标 → 先入候选池（registry_only）；Reviewer 意见只影响是否继续冲正式库。
+        # 组合层收益指标（多头年化/夏普/回撤等）随候选记录落库（2026-09-11）：
+        # 此前这些指标只存在于 submit 回执 payload，registry/UI 一律看不到。
+        cand_metrics = dict(metrics)
+        qp = reported.get("quantile_portfolio")
+        if isinstance(qp, dict):
+            cand_metrics["quantile_portfolio"] = qp
         candidate_reg, candidate_dsl = write_candidate_registry(
             self.candidate_registry_path,
             factor_id=factor_id,
@@ -746,7 +752,7 @@ class FactorSubmitService:
             expr_dir=self.candidate_expr_dir,
             repo_root=self.repo_root,
             policy=stage_one_policy,
-            metrics=metrics,
+            metrics=cand_metrics,
             similarity=similarity_report,
             source="submit_stage_one",
             evaluation_evidence=evaluation_evidence,
@@ -889,6 +895,18 @@ class FactorSubmitService:
             payload["test_holdout"] = test_report
 
         # 真正入库才做一次 canonical 对齐（会话域 → 库行序），指标复用免重算。
+        # 正式库记录同步携带组合层收益指标：stage_one 十分组多头组合（年化/夏普）
+        # + 引擎回测净值指标（净超额年化/超额夏普/回撤，中文键由引擎给定）。
+        enriched_metrics = dict(metrics)
+        qp = reported.get("quantile_portfolio")
+        if isinstance(qp, dict):
+            enriched_metrics["quantile_portfolio"] = qp
+        eb = payload.get("engine_backtest") or {}
+        if isinstance(eb.get("metrics"), dict):
+            enriched_metrics["engine_gate"] = eb["metrics"]
+        teg = ((test_report or {}).get("engine_gate") or {}).get("metrics")
+        if isinstance(teg, dict):
+            enriched_metrics["engine_gate_test"] = teg
         canonical_values = align_values_to_rows(values_by_key, zoo.index.rows)
         result = ingest_factor(
             zoo,
@@ -898,7 +916,7 @@ class FactorSubmitService:
             panel=None,
             policy=IngestPolicy.from_context(ctx, max_cs_corr=self.criteria.production.max_abs_corr, similar_top_k=self.similar_top_k),
             stored_values=canonical_values,
-            metrics_override=metrics,
+            metrics_override=enriched_metrics,
             overwrite=self.overwrite,
         )
         if not result.stored:
