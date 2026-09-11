@@ -51,17 +51,22 @@ from core import factor_categories
 
 _NUDGE_MSG = _NUDGE
 
-# 传输类异常类型名（字符串匹配：兼容 httpx2/httpx/httpcore 的命名差异与异常包装）
-_TRANSPORT_ERROR_NAMES = frozenset({"RemoteProtocolError", "ReadError", "ConnectError", "ReadTimeout"})
+# 可重试异常类型名（字符串匹配：兼容 httpx2/httpx/httpcore 的命名差异与异常包装）。
+# ToolJSONDecodeError（2026-09-11）：deepseek 偶发把 tool arguments JSON 截断
+# （Unterminated string）——生成抖动，重发同轮调用即可恢复，不应杀 run。
+_RETRYABLE_ERROR_NAMES = frozenset({
+    "RemoteProtocolError", "ReadError", "ConnectError", "ReadTimeout",
+    "ToolJSONDecodeError",
+})
 
 
 def _is_transport_error(exc: BaseException) -> bool:
-    """判断异常（沿 __cause__ 链）是否为网络传输类错误，可安全重发本轮调用。"""
+    """判断异常（沿 __cause__ 链）是否为可安全重发的瞬态错误（传输中断/生成截断）。"""
     seen: set[int] = set()
     cur: BaseException | None = exc
     while cur is not None and id(cur) not in seen:
         seen.add(id(cur))
-        if type(cur).__name__ in _TRANSPORT_ERROR_NAMES:
+        if type(cur).__name__ in _RETRYABLE_ERROR_NAMES:
             return True
         cur = cur.__cause__ or cur.__context__
     return False
