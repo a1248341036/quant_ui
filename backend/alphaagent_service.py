@@ -1354,6 +1354,9 @@ def _candidate_factor_view(factor_id: str, entry: dict[str, Any], *, category: s
         "val_ic": val_ic,
         "val_icir": val_icir,
         "val_ic_retention": val_retention,
+        "test_ic": _safe_float(metrics.get("test_ic")),
+        "test_icir": _safe_float(metrics.get("test_icir")),
+        "test_ic_retention": _safe_float(metrics.get("test_ic_retention")),
         "annualized_return": _safe_float(qp.get("top_group_annualized_return")),
         "annualized_excess_return": _safe_float(qp.get("top_group_annualized_excess_return")),
         "sharpe": _safe_float(qp.get("top_group_sharpe")),
@@ -1457,6 +1460,9 @@ def list_factors(*, library: str = "production", category: str = "technical", fa
             "val_ic": metrics.get("val_ic"),
             "val_icir": metrics.get("val_icir"),
             "val_ic_retention": metrics.get("val_ic_retention"),
+            "test_ic": metrics.get("test_ic"),
+            "test_icir": metrics.get("test_icir"),
+            "test_ic_retention": metrics.get("test_ic_retention"),
             "status": entry.get("ingest_status") or item.get("status"),
         }
         qp = metrics.get("quantile_portfolio")
