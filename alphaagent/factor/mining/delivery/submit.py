@@ -762,6 +762,38 @@ class FactorSubmitService:
             payload["error"] = f"factor_review_{review_verdict}_blocked"
             return payload
 
+        # ── val 窗口引擎回测（候选入库前统一预演，2026-09-11）──────────────
+        # 晋升裁决与三段表"引擎净值"行共用同一次回测：metrics["engine_gate"]
+        # 随候选/正式记录落库，候选库与正式库展示口径统一；裁决本身仍在
+        # stage_two 之后执行（回测计算前移，不改变准入顺序）。
+        engine_gate_cfg = (self.delivery_policy.get("production") or {}).get("engine_gate")
+        engine_gate_result: dict[str, Any] | None = None
+        if isinstance(engine_gate_cfg, dict) and engine_gate_cfg.get("enabled"):
+            from alphaagent.factor.mining.engine_gate import run_engine_gate
+            ic_sign = 1 if float(metrics.get("ic") or 0.0) >= 0 else -1
+            # 会话域回测：cand_values 与 session panel 行序一一对应。
+            engine_gate_result = run_engine_gate(
+                panel,
+                cand_values,
+                val_start=ctx.val_start,
+                val_end=ctx.val_end,
+                direction=ic_sign,
+                policy={**engine_gate_cfg, "freq": chosen_freq},
+                asset_type=getattr(ctx, "asset_type", "stock"),
+            )
+            payload["engine_backtest"] = engine_gate_result
+            log_step(
+                "submit.engine_gate",
+                name,
+                passed=bool(engine_gate_result.get("passed")),
+                freq=chosen_freq,
+                fail=engine_gate_result.get("fail_reasons") or None,
+                ms=_stage_ms(),
+            )
+            _eg = engine_gate_result.get("metrics")
+            if isinstance(_eg, dict):
+                metrics["engine_gate"] = dict(_eg)
+
         # 统计达标 → 先入候选池（registry_only）；Reviewer 意见只影响是否继续冲正式库。
         # 组合层收益指标（多头年化/夏普/回撤等）随候选记录落库（2026-09-11）：
         # 此前这些指标只存在于 submit 回执 payload，registry/UI 一律看不到。
@@ -862,43 +894,20 @@ class FactorSubmitService:
             if _replacement is not None:
                 payload["replacement_candidate"] = _replacement
 
-        # engine_gate 配置从原始 delivery_policy 读取（缺失时跳过回测门禁，
-        # 与重构前语义一致）；criteria 的 engine_gate 仅用于默认值兜底与 prompt 渲染。
-        engine_gate_cfg = (self.delivery_policy.get("production") or {}).get("engine_gate")
-        if isinstance(engine_gate_cfg, dict) and engine_gate_cfg.get("enabled"):
-            from alphaagent.factor.mining.engine_gate import run_engine_gate
-            ic_sign = 1 if float(metrics.get("ic") or 0.0) >= 0 else -1
-            # 会话域回测：cand_values 与 session panel 行序一一对应。
-            gate = run_engine_gate(
-                panel,
-                cand_values,
-                val_start=ctx.val_start,
-                val_end=ctx.val_end,
-                direction=ic_sign,
-                policy={**engine_gate_cfg, "freq": chosen_freq},
-                asset_type=getattr(ctx, "asset_type", "stock"),
+        # engine_gate 净值裁决（回测已在候选入库前统一预演，此处只做裁决；
+        # 配置缺失/关闭时不设门禁，与重构前语义一致）。
+        if engine_gate_result is not None and not engine_gate_result.get("passed"):
+            set_candidate_promotion(
+                self.candidate_registry_path,
+                factor_id=factor_id,
+                promotion_status="engine_gate_failed",
             )
-            payload["engine_backtest"] = gate
-            log_step(
-                "submit.engine_gate",
-                name,
-                passed=bool(gate.get("passed")),
-                freq=chosen_freq,
-                fail=gate.get("fail_reasons") or None,
-                ms=_stage_ms(),
+            payload["skipped_reason"] = (
+                f"engine_gate_failed:{','.join(engine_gate_result.get('fail_reasons') or [])}"
             )
-            if not gate.get("passed"):
-                set_candidate_promotion(
-                    self.candidate_registry_path,
-                    factor_id=factor_id,
-                    promotion_status="engine_gate_failed",
-                )
-                payload["skipped_reason"] = (
-                    f"engine_gate_failed:{','.join(gate.get('fail_reasons') or [])}"
-                )
-                payload["error_type"] = "EngineGateError"
-                payload["error"] = payload["skipped_reason"]
-                return payload
+            payload["error_type"] = "EngineGateError"
+            payload["error"] = payload["skipped_reason"]
+            return payload
 
         # ── test 段 engine_gate 回测（补充到 test_report，供报告展示）─────
         # 盲测终审门禁已在 stage_one 之前执行（IC 保留比 + 方向一致性）。
