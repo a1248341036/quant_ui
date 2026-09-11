@@ -1578,6 +1578,13 @@ def get_factor_detail(factor_id: str, *, library: str = "production", category: 
                 "val_icir": metrics.get("val_icir"),
                 "val_ic_retention": metrics.get("val_ic_retention"),
             })
+            # 与列表/候选库视图同口径：组合层收益指标铺到顶层（2026-09-11）
+            qp = metrics.get("quantile_portfolio")
+            if isinstance(qp, dict):
+                detail["avg_daily_side_turnover"] = qp.get("avg_daily_side_turnover")
+                detail["annualized_return"] = _safe_float(qp.get("top_group_annualized_return"))
+                detail["annualized_excess_return"] = _safe_float(qp.get("top_group_annualized_excess_return"))
+                detail["sharpe"] = _safe_float(qp.get("top_group_sharpe"))
     return detail
 
 
