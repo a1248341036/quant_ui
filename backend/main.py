@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import os
 import time
 import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend.logging_config import api_logger, main_logger, setup_root_logger
@@ -87,6 +89,38 @@ async def no_cache_html(request: Request, call_next):
     if request.url.path in ("/", "/index.html"):
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return response
+
+
+# ---------- 公网访问门禁（经 Cloudflare Tunnel 暴露时使用） ----------
+# 首次访问带 ?key=<QUANT_UI_ACCESS_KEY> 校验通过后种 HttpOnly Cookie，
+# 页面内后续 API 请求自动携带 Cookie 放行；本机回环来源直接放行。
+_ACCESS_KEY = os.environ.get("QUANT_UI_ACCESS_KEY", "")
+_ACCESS_COOKIE = "qk"
+
+
+@app.middleware("http")
+async def access_gate(request: Request, call_next):
+    if not _ACCESS_KEY:
+        return await call_next(request)  # 未配置密钥 = 不启用门禁
+    client_host = request.client.host if request.client else ""
+    if client_host in ("127.0.0.1", "::1"):
+        return await call_next(request)
+    if request.url.path == "/api/health":
+        return await call_next(request)
+    if request.cookies.get(_ACCESS_COOKIE) == _ACCESS_KEY:
+        return await call_next(request)
+    provided = request.query_params.get("key", "")
+    if provided == _ACCESS_KEY:
+        response = await call_next(request)
+        response.set_cookie(
+            _ACCESS_COOKIE,
+            _ACCESS_KEY,
+            max_age=365 * 24 * 3600,
+            httponly=True,
+            samesite="lax",
+        )
+        return response
+    return JSONResponse({"detail": "unauthorized"}, status_code=401)
 
 
 @app.on_event("startup")
