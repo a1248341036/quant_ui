@@ -98,12 +98,19 @@ _ACCESS_KEY = os.environ.get("QUANT_UI_ACCESS_KEY", "")
 _ACCESS_COOKIE = "qk"
 
 
+def _client_host(request: Request) -> str:
+    # 经 Tunnel 到达的请求 TCP 对端是本机 cloudflared，须以边缘注入的
+    # CF-Connecting-IP 判定真实来源，否则回环直通会放行全部公网流量。
+    return request.headers.get("cf-connecting-ip") or (
+        request.client.host if request.client else ""
+    )
+
+
 @app.middleware("http")
 async def access_gate(request: Request, call_next):
     if not _ACCESS_KEY:
         return await call_next(request)  # 未配置密钥 = 不启用门禁
-    client_host = request.client.host if request.client else ""
-    if client_host in ("127.0.0.1", "::1"):
+    if _client_host(request) in ("127.0.0.1", "::1"):
         return await call_next(request)
     if request.url.path == "/api/health":
         return await call_next(request)
