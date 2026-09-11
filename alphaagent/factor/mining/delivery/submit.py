@@ -769,6 +769,12 @@ class FactorSubmitService:
         qp = reported.get("quantile_portfolio")
         if isinstance(qp, dict):
             cand_metrics["quantile_portfolio"] = qp
+        # 盲测段 IC 指标随候选记录落库（2026-09-11，三阶段展示）：此前 test_* 只在
+        # submit 回执 payload，registry/UI 列表一律看不到盲测列。
+        for _k in ("test_ic", "test_icir", "test_rank_ic", "test_ic_retention", "test_sign_consistent"):
+            _v = reported.get(_k)
+            if _v is not None:
+                cand_metrics[_k] = _v
         _pbs = metrics_train.get("portfolio_by_segment")
         if isinstance(_pbs, dict) and _pbs:
             cand_metrics["portfolio_by_segment"] = _pbs

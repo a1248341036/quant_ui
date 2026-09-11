@@ -188,6 +188,8 @@ export default {
           { key: 'facets', label: '数据面', sortable: true },
           { key: 'train_ic', label: 'Train IC', sortable: true },
           { key: 'val_ic', label: 'Val IC', sortable: true },
+          { key: 'test_ic', label: '盲测 IC', sortable: true },
+          { key: 'test_ic_retention', label: '盲测保留', sortable: true },
           { key: 'ic', label: '全区间 IC', sortable: true },
           { key: 'icir', label: 'ICIR', sortable: true },
           { key: 'annualized_return', label: '多头年化', sortable: true },
@@ -360,7 +362,7 @@ export default {
         return
       }
       const cols = ['加入时间', 'factor_id', '中台ID', '名称', '数据面', '融合', '调仓频率', '研究档位', '准入状态', '审查判定',
-                    'Train IC', 'Val IC', '全区间 IC', 'ICIR', 'RankIC', 'Coverage',
+                    'Train IC', 'Val IC', '盲测 IC', '盲测保留', '全区间 IC', 'ICIR', 'RankIC', 'Coverage',
                     '多头年化', '超额年化', '夏普', 'val保留比', 'val多头超额',
                     'Label', 'Expr']
       const num = v => (v === null || v === undefined || Number.isNaN(Number(v))) ? '' : Number(v)
@@ -369,7 +371,8 @@ export default {
         (f.facets || []).join('+'), f.is_fusion ? '是' : '',
         f.rebalance_freq ? (freqShort(f.rebalance_freq) + '/' + f.rebalance_freq) : '', f.research_mode || '',
         f.promotion_status || f.status, f.review_verdict || '',
-        num(f.train_ic), num(f.val_ic), num(f.metrics?.ic), num(f.metrics?.icir),
+        num(f.train_ic), num(f.val_ic), num(f.test_ic), num(f.test_ic_retention),
+        num(f.metrics?.ic), num(f.metrics?.icir),
         num(f.metrics?.rank_ic), num(f.metrics?.factor_coverage),
         num(f.annualized_return), num(f.annualized_excess_return), num(f.sharpe),
         num(f.val_ic_retention), num(f.val_long_excess),
