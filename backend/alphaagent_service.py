@@ -1462,6 +1462,11 @@ def list_factors(*, library: str = "production", category: str = "technical", fa
         qp = metrics.get("quantile_portfolio")
         if isinstance(qp, dict):
             merged["avg_daily_side_turnover"] = qp.get("avg_daily_side_turnover")
+            # 与候选库视图同口径展开（2026-09-11）：此前正式库只铺了换手，
+            # 前端 f.sharpe/f.annualized_return 取不到值 —— 正式库夏普列全空。
+            merged["annualized_return"] = _safe_float(qp.get("top_group_annualized_return"))
+            merged["annualized_excess_return"] = _safe_float(qp.get("top_group_annualized_excess_return"))
+            merged["sharpe"] = _safe_float(qp.get("top_group_sharpe"))
         # 数据面分类：delivered registry 带 facets；缺字段时按表达式现算兜底
         facets = entry.get("facets") if isinstance(entry.get("facets"), list) else None
         if not facets:
