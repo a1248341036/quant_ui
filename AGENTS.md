@@ -172,17 +172,32 @@ logs/factor_mining/ui/        # 每次 Web run 的 JSONL 轨迹 + run_meta.json 
 
 | 阶段 | 门槛（默认） | 写入位置 |
 |---|---|---|
-| candidate（海选） | \|IC\| ≥ 0.02（2026-09-01 从 0.015 上调：0.015~0.02 区间因子经盲测/换手门禁几乎全灭）, \|ICIR\| > 0.25, coverage > 0.85, max_corr < 0.5, lag1 自相关 ≥ 0.18, val 保留比 ≥ 0.5 | candidate_main/（统一大库） |
+| 盲测终审（stage_one 之前） | \|test IC\| ≥ 0.012（2026-09-11 新增绝对下限）, test/train IC 保留比 ≥ 0.50, 方向一致 | 不进任何库（不通过直接拒） |
+| candidate（预筛池，2026-09-11 起） | \|train IC\| ≥ 0.025, \|train ICIR\| > 0.30, coverage > 0.85, max_corr < 0.5, lag1 自相关 ≥ 0.18, val 保留比 ≥ 0.5, \|val IC\| ≥ 0.015 | candidate_main/（统一大库） |
 | production | \|train IC\| ≥ 0.025, \|train ICIR\| ≥ 0.30, \|val IC\| ≥ 0.015, val 保留比 ≥ 0.60, winsorized 衰减 ≤ 0.10, max_corr < 0.4 | production_main/（统一大库） |
 
+> **2026-09-11 门槛收紧（预筛池口径）**：海选 train 门槛与精筛对齐（0.02/0.25 → 0.025/0.30），
+> 并给 val（≥0.015）与盲测（≥0.012）补绝对下限——此前两段只卡相对保留比，train 0.02 的因子
+> val 低到 0.01 也能进池。动机：26 条存量候选里 16 条（61%）止步 stage_two，主死因是
+> train ICIR < 0.30，属"评估算力换炮灰"；收紧后同类池子仅 6/26 存活。
+> `evaluation_policy`（评估屏幕线）同步提到 0.025/0.30/0.015，避免"评估过线、提交即拒"。
+> fundamental 档按同一哲学对齐（候选 = 精筛幸存者）：eval / candidate / production 三条线统一到
+> 0.020/0.28（val 绝对门 0.012），仅 production 的 val 保留比 0.70、截尾衰减 0.12 更严；
+> 盲测绝对下限无模式 override，两档共用 0.012。
+> 说明：盲测绝对门不增加盲测段查询次数（同一份 test 评估上加一条判定），但**每加一条盲测
+> 判据都会轻微增加对盲测段的选择偏置**，故三条（绝对/保留比/方向）为上限，不再细叠。
+
 提交流程顺序：
-1. **stage_one 统计门槛**（IC/ICIR/coverage/换手/val 保留比）→ 不通过拒绝
+0. **盲测终审**（test 段 IC 绝对下限 + 保留比 + 方向一致）→ 不通过直接拒绝，不进候选池
+1. **stage_one 统计门槛**（IC/ICIR/coverage/换手/自相关/val 绝对下限/val 保留比）→ 不通过拒绝
 2. **正交性检查**（stage_one 统一查，不再只在 approve 后触发）→ 与正式库已有因子做截面相关，超过阈值拒绝
 3. **review_hook**（LLM Reviewer 审核）→ **仅 reject 硬拦**（抄袭/经典暴露不进任何库）；revise/pending_review 不阻断晋升，仅记录意见
-4. 入候选池（registry_only）
-5. **stage_two 精筛**（双窗口口径）→ 不通过停在候选池
-6. **engine_gate 回测门禁**（完整回测引擎净值裁决）→ 不通过停在候选池
-7. 入正式库（canonical 对齐 + ingest）
+4. **val 引擎回测预演**（候选入库前统一跑一次，`metrics["engine_gate"]` 随候选/正式记录落库，供三段表"引擎净值"行展示；裁决仍在第 6 步）
+5. 入候选池（registry_only）
+6. **stage_two 精筛**（双窗口口径）→ 不通过停在候选池
+7. **engine_gate 净值裁决**（复用第 4 步回测结果）→ 不通过停在候选池
+8. **test 段引擎回测诊断**（仅晋升因子补算，供正式库三段表盲测列展示）→ 不卡准入
+9. 入正式库（canonical 对齐 + ingest）
 
 **晋升链路关键语义（2026-08 修复）**：
 - **stage_one / stage_two 的相似度只查正式库**，候选池内部冗余不卡正式库准入。

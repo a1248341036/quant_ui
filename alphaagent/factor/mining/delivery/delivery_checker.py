@@ -111,17 +111,20 @@ class StageOneTurnover:
 
 
 class StageOneValRetention:
-    """样本外保留比门槛：|val_ic|/|train_ic| ≥ 阈值且方向不反转。
+    """样本外门槛：val 绝对下限 + |val_ic|/|train_ic| 保留比 + 方向不反转。
 
     val 窗口无数据时跳过（train-only 会话）。
-    阈值由调用方注入（候选池用 candidate.min_val_ic_retention=0.5；
-    正式库精筛用 production.min_val_ic_retention=0.60——两阶段阈值本就不同）。
+    阈值由调用方注入（候选池用 candidate.min_val_ic_retention=0.5 +
+    candidate.min_val_abs_ic=0.015；正式库精筛用 production 的对应值——
+    两阶段阈值本就不同）。保留比只卡相对衰减、不卡绝对水平，故补
+    绝对下限（2026-09-11 预筛池口径）。
     """
 
     name = "stage_one_val_retention"
 
-    def __init__(self, min_val_ic_retention: float) -> None:
+    def __init__(self, min_val_ic_retention: float, min_val_abs_ic: float = 0.0) -> None:
         self.min_ratio = float(min_val_ic_retention)
+        self.min_abs_ic = float(min_val_abs_ic)
 
     def run(self, evidence: dict[str, Any]) -> StageResult:
         train_metrics = evidence.get("train_metrics") or {}
@@ -139,6 +142,8 @@ class StageOneValRetention:
             return StageResult(passed=False, fail_reasons=["val_ic_missing"])
         if t * v < 0:
             return StageResult(passed=False, fail_reasons=["val_sign_flip"])
+        if abs(v) < self.min_abs_ic:
+            return StageResult(passed=False, fail_reasons=["val_abs_ic"])
         if abs(t) > 1e-12 and abs(v) / abs(t) < self.min_ratio:
             return StageResult(passed=False, fail_reasons=["val_retention"])
         return StageResult(passed=True, fail_reasons=[])
@@ -277,6 +282,10 @@ class BlindTestStage:
             if t_sign != s_sign:
                 reasons.append("blind_test_sign_flip")
 
+        # 绝对下限：同一份 test 评估上的附加判定（不增加盲测段查询次数）
+        if abs(s) < float(self.b.min_test_abs_ic):
+            reasons.append("blind_test_abs_ic")
+
         # IC 保留比 = |test_ic|/|train_ic|
         if abs(t) > 1e-12:
             retention = abs(s) / abs(t)
@@ -336,7 +345,10 @@ class DeliveryChecker:
         metrics_train: dict[str, Any],
         val_metrics: dict[str, Any],
     ) -> StageResult:
-        return StageOneValRetention(self.criteria.candidate.min_val_ic_retention).run({
+        return StageOneValRetention(
+            self.criteria.candidate.min_val_ic_retention,
+            self.criteria.candidate.min_val_abs_ic,
+        ).run({
             "train_metrics": metrics_train,
             "val_metrics": val_metrics,
         })

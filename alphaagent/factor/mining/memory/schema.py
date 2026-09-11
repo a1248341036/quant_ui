@@ -754,9 +754,10 @@ class SchemaMixin:
         cov_str = f"Coverage={coverage:.2f}" if coverage is not None else ""
         if is_val and (result.get("sign_check", {}).get("matches_expected_sign") is not False) and abs(ic or 0) >= 0.015:
             return "validated", f"训练外验证通过：{ic_str} {icir_str} {cov_str}。方向一致且有可用相关性，可在相邻但不重复的机制上扩展。"
-        # 海选线 2026-09-01 对齐 0.02（与 CandidateCriteria.min_abs_ic 同步）；
-        # 阈值按档位区分（2026-09-05）：fundamental 档 0.015。
-        th = 0.015 if str(metrics.get("research_mode")) == "fundamental" else 0.02
+        # 海选线 2026-09-11 对齐 0.025（预筛池口径，与 CandidateCriteria.min_abs_ic 同步）；
+        # 阈值按档位区分：fundamental 档 0.020。ICIR/coverage 仍用宽松线（0.2/0.85）——
+        # 原设计即"IC 跟门槛、ICIR 只作稳定性软线"，不随门槛收紧。
+        th = 0.020 if str(metrics.get("research_mode")) == "fundamental" else 0.025
         if abs(ic or 0) >= th and (icir or 0) > 0.2 and (coverage or 0) > 0.85:
             return "promising", f"训练阶段有潜力：{ic_str} {icir_str} {cov_str}。优先进行训练外验证或独立性改造。"
         # P0-2 near_miss（2026-09-05）：IC 达门槛 80%、ICIR/coverage 达标但未过线——

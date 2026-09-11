@@ -25,19 +25,23 @@ from core import trading_config
 
 @dataclass(frozen=True)
 class CandidateCriteria:
-    """候选池（海选）统计门槛：train-only 窗口口径。
+    """候选池（海选）统计门槛：预筛池口径（2026-09-11 起）。
 
-    海选 ICIR 与 train_screen 规则对齐（0.20 偏松，弱稳定因子堆积候选池）；
+    海选 train 门槛与正式库精筛对齐（0.025/0.30）——候选池定位从
+    "宽进观察池"改为"精筛幸存者预筛池"（历史数据：旧 0.02/0.25 海选
+    放进来的候选 61% 止步 stage_two，主死因 train ICIR < 0.30）；
     换手可行性硬门槛（低于阈值的因子截面排名日度剧变，不可交付）；
-    样本外保留比 = val_ic / train_ic 绝对比值下限（方向反转直接拦截）。
+    样本外绝对下限 |val_ic| >= min_val_abs_ic（与正式库 val 门同源，
+    保留比只卡相对衰减、不卡绝对水平）+ 保留比下限（方向反转直接拦截）。
     """
 
-    min_abs_ic: float = 0.02
-    min_icir: float = 0.25
+    min_abs_ic: float = 0.025
+    min_icir: float = 0.30
     min_coverage: float = 0.85
     max_abs_corr: float = 0.5
     min_cs_autocorr: float = 0.18
     min_val_ic_retention: float = 0.5
+    min_val_abs_ic: float = 0.015
     # 组合可交易性预检（2026-08-29）：日单边换手 >50% 的候选在 stage_one 直接拒，
     # 不再等 stage_two/engine_gate 才拦截（历史数据：30 个候选 26 个日换手>50%，
     # 全部止步 stage_two/engine_gate，浪费大量评估算力）。
@@ -105,15 +109,20 @@ class BlindTestCriteria:
     是最干净的样本外验证。盲测终审在 stage_one 之前执行——
     不通过直接拒绝，不进候选池，不消耗后续相似度/回测算力。
 
-    门槛项（2026-08-29 确立）：
+    门槛项（2026-08-29 确立，2026-09-11 增补绝对下限）：
     - IC 保留比 = |test_ic|/|train_ic| ≥ min_ic_retention（默认 0.50）；
-    - 方向一致性：test 段 IC 方向必须与 train 段一致（sign_consistent）。
+    - 方向一致性：test 段 IC 方向必须与 train 段一致（sign_consistent）；
+    - 绝对下限：|test_ic| ≥ min_test_abs_ic（默认 0.012）。同一份 test
+      评估上的附加判定，不增加盲测段查询次数，只收紧接受规则；定位是
+      "防死因子"粗门（test 段 ~410 交易日，0.012 ≈ t≈3），不再往上叠
+      更细的盲测判据（每多一条判据，幸存因子对盲测段的选择偏置多一分）。
 
     test 段当前约 20 个月（2025-01 ~ 数据最新日），样本充足可设硬门。
     """
 
     enabled: bool = True
     min_ic_retention: float = 0.50
+    min_test_abs_ic: float = 0.012
     require_sign_consistency: bool = True
 
 
@@ -293,6 +302,7 @@ class DeliveryCriteria:
 
         blind_test = (
             "盲测终审（test 段，stage_one 之前执行）："
+            f"`abs(test IC) >= {b.min_test_abs_ic}`、"
             f"`test/train IC 保留比 >= {_pct(b.min_ic_retention)}` 且"
             f"{'方向必须一致' if b.require_sign_consistency else '方向不限制'}；"
             "不通过直接拒绝，不进候选池。"
@@ -306,10 +316,11 @@ class DeliveryCriteria:
             "不通过不进候选池。"
         ) if sc.enabled else ""
         stage_one = (
-            "第一阶段（候选登记，train-only 窗口）："
+            "第一阶段（候选登记，预筛池口径）："
             f"`abs(IC) >= {c.min_abs_ic}`、`ICIR > {c.min_icir}`、"
             f"`Coverage > {_pct(c.min_coverage)}`、"
             f"`cs_autocorr >= {c.min_cs_autocorr}`、"
+            f"`val abs(IC) >= {c.min_val_abs_ic}`、"
             f"`val/train IC 保留比 >= {_pct(c.min_val_ic_retention)}` 且方向不反转、"
             f"与已有因子最大截面相关 `< {c.max_abs_corr}`；"
             "通过后写入轻量候选 registry（不物化全量因子值）。"

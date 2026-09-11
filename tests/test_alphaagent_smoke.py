@@ -128,7 +128,7 @@ class TestResearchSpec:
     def test_fundamental_override_preserves_defaults(self) -> None:
         """用户显式覆盖门槛时，基本面默认值不应污染 technical 默认。"""
         fund = normalize_research_spec({"research_mode": "fundamental"})
-        assert fund["delivery_policy"]["candidate"]["min_abs_ic"] == 0.012
+        assert fund["delivery_policy"]["candidate"]["min_abs_ic"] == 0.020
         assert fund["delivery_policy"]["production"]["min_train_abs_ic"] == 0.020
         assert fund["delivery_policy"]["production"]["engine_gate"]["min_excess_annual"] == 0.02
 
