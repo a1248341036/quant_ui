@@ -668,6 +668,31 @@ class FactorSubmitService:
                 for k, v in qp_metrics.items()
                 if k not in {"group_means"}
             }
+            # 三段组合指标（train/val/test 分段）：复用会话域 cand_values，
+            # 按 ctx 窗口切分后各算一次 quantile_portfolio，前端候选详情
+            # 与正式库一致展示"三阶段表现"。
+            _port_by_seg: dict[str, Any] = {}
+            _dt_level = panel.index.get_level_values("datetime")
+            for _seg, (_s, _e) in {
+                "train": (ctx.train_start, ctx.train_end),
+                "val": (ctx.val_start, ctx.val_end),
+                "test": (test_start, test_end),
+            }.items():
+                _mask = (_dt_level >= pd.Timestamp(_s)) & (_dt_level <= pd.Timestamp(_e))
+                if int(_mask.sum()) == 0:
+                    continue
+                _seg_qp = quantile_portfolio_metrics(
+                    pd.Series(cand_values, index=panel.index)[_mask],
+                    panel[ctx.label_col][_mask],
+                    n_groups=10, cost_bps=0.0, holding_days=qp_holding_days,
+                )
+                _port_by_seg[_seg] = {
+                    k: (round(float(v), 6) if isinstance(v, (int, float)) and np.isfinite(float(v)) else v)
+                    for k, v in _seg_qp.items()
+                    if k not in {"group_means"}
+                }
+            if _port_by_seg:
+                reported["portfolio_by_segment"] = _port_by_seg
         # test 段指标写入 reported（供 registry 检索）
         if test_report:
             for key in ("ic", "icir", "rank_ic"):

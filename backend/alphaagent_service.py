@@ -1288,6 +1288,9 @@ def _candidate_factor_view(factor_id: str, entry: dict[str, Any], *, category: s
 
     # ── 组合层收益指标（quantile_portfolio 由提交/回填写入）──
     qp = metrics.get("quantile_portfolio") if isinstance(metrics.get("quantile_portfolio"), dict) else {}
+    # 三段组合指标（train/val/test 分段）：候选池新条目由 submit 写入，
+    # 存量老条目经回填脚本补齐；缺失时前端显示"该因子早于三段组合指标入库"。
+    portfolio_by_segment = metrics.get("portfolio_by_segment") if isinstance(metrics.get("portfolio_by_segment"), dict) else None
 
     # ── label 与研究模式 ──
     ingest_cfg = entry.get("ingest_config") or {}
@@ -1363,6 +1366,9 @@ def _candidate_factor_view(factor_id: str, entry: dict[str, Any], *, category: s
             "icir": _safe_float(metrics.get("icir")),
             "rank_ic": _safe_float(metrics.get("rank_ic")),
             "factor_coverage": _safe_float(metrics.get("factor_coverage", metrics.get("coverage"))),
+            "portfolio_by_segment": portfolio_by_segment,
+            "engine_gate": metrics.get("engine_gate"),
+            "engine_gate_test": metrics.get("engine_gate_test"),
         },
         "extra": entry,
     }
