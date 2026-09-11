@@ -91,7 +91,14 @@ def upsert_mining_registry(
 
     dsl_path = expr_dir / f"{factor_id}.dsl"
     dsl_path.write_text(expr.strip() + "\n", encoding="utf-8")
-    rel_expr = dsl_path.relative_to(repo_root).as_posix()
+    # junction/挂载点容错（2026-09-11）：worktree 部署下 artifacts 经 junction
+    # 指向主仓库，resolve 后的真实路径脱离 worktree repo_root —— relative_to
+    # 抛 ValueError 导致 submit 整体中断、stage_one 过线因子全部丢失。
+    # 相对化失败时回退绝对路径：删除链路/UI 消费方用 Path(...) 均可打开。
+    try:
+        rel_expr = dsl_path.relative_to(repo_root).as_posix()
+    except ValueError:
+        rel_expr = dsl_path.as_posix()
 
     registry = load_mining_registry(registry_path) if merge else {}
     prev = registry.get(factor_id, {}) if merge else {}
@@ -149,6 +156,14 @@ def upsert_mining_registry(
     return str(registry_path), str(dsl_path)
 
 
+def _rel_or_abs(path: Path, root: Path) -> str:
+    """relative_to 的 junction 容错版：失败时回退绝对路径（见 write_candidate_registry）。"""
+    try:
+        return path.relative_to(root).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
 def write_candidate_registry(
     registry_path: Path,
     *,
@@ -193,7 +208,7 @@ def write_candidate_registry(
         "name": name,
         "comment": comment or prev.get("comment") or name,
         "expr": expr.strip(),
-        "expression_file": dsl_path.relative_to(repo_root).as_posix(),
+        "expression_file": _rel_or_abs(dsl_path, repo_root),
         "ingest_config": policy.ingest_config_dict(),
         "ingested_at": datetime.now(timezone.utc).isoformat(),
         "metrics": metrics or {},
