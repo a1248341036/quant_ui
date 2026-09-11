@@ -9,6 +9,16 @@ AIGC:
   ReservedCode2: 'd099cc50-3195-4f93-a0ad-f1c9ac4f1143'
 ---
 
+# 多 Agent 共享工作区纪律（强制，永久生效）
+
+本仓库常态是多 agent 共用同一工作区（D:\Quant\quant_ui），分支被并行 agent 频繁切换。分支纪律（新建分支→提交→merge）保护的是**已提交内容**，对工作区中他人**未提交**的改动零保护。以下三条禁止绕过：
+
+1. **前端构建只用独立 worktree**：`npm run build` 的产物内容 = 当前检出分支。构建前 `git worktree add` 临时挂载包含目标提交的 worktree，在其中构建，再把 `static/dist` 拷回。禁止把共享工作区的构建产物直接当作线上 bundle——共享工作区检出哪个分支取决于"碰巧在哪个 agent 手里"，会出现"功能已提交已推送、页面却看不到"。
+2. **禁止跨分支覆盖工作区文件**：`git checkout <branch> -- <path>` 会无警告、无条件覆盖工作区文件，禁止在共享工作区执行。需要其他分支的文件时，用 `git show <branch>:<path>` 导出到临时位置，或走临时 worktree。
+3. **动共享工作区前先 `git status` 快照**：记录他人未提交文件清单；提交只 stage 自己的文件；恢复/清理/覆盖类操作不得触碰他人未提交文件。
+
+背景（2026-09-11）：为重建含主干功能的前端 bundle，曾在共享工作区直接执行 `git checkout feat/alphaagent-metrics -- MetricsPanel.vue alphaagent.css`，覆盖了并行 agent 的未提交改动（所幸该内容已提交在 fix/fe-stale-version-guard 分支，得以完整恢复）；同一时段共享工作区检出的分支缺主干提交，导致已推送的因子库优化不出现在 bundle 中——两条教训即上面第 1、2 条。
+
 # AlphaAgent — 项目架构与开发指南
 
 ## 定位
