@@ -529,6 +529,14 @@ textarea.lab-input { resize:vertical; font:12px/1.5 var(--font-mono); }
 .factor-modal-expr { margin:0; padding:10px; border:1px solid var(--line); border-radius:7px; background:rgb(255 255 255 / .025); color:#c7d8ee; white-space:pre-wrap; overflow-wrap:break-word; word-break:break-all; font:12px/1.5 var(--font-mono); }
 .factor-modal-registry { margin:0; padding:10px; border:1px solid var(--line); border-radius:7px; background:rgb(255 255 255 / .025); color:#aebbd2; white-space:pre-wrap; overflow-wrap:break-word; font:11px/1.5 var(--font-mono); max-height:300px; overflow:auto; }
 .factor-modal-meta { display:flex; flex-wrap:wrap; gap:8px 14px; padding-top:10px; border-top:1px solid var(--line); color:var(--muted); font:10px var(--font-mono); }
+.factor-seg-table { width:100%; border-collapse:collapse; font:12px/1.5 var(--font-mono); }
+.factor-seg-table th, .factor-seg-table td { padding:5px 9px; border:1px solid var(--line); text-align:right; }
+.factor-seg-table th { color:var(--muted); font-size:10px; letter-spacing:.05em; text-transform:uppercase; background:rgb(255 255 255 / .03); }
+.factor-seg-table td:first-child, .factor-seg-table th:first-child { text-align:left; color:var(--text); }
+.factor-seg-table td.seg-label { color:var(--text); font-weight:500; }
+.factor-seg-note { margin-top:6px; color:var(--muted); font:10px/1.5 var(--font-mono); }
+.factor-modal-section details summary { cursor:pointer; color:var(--muted); font-size:10px; letter-spacing:.05em; text-transform:uppercase; list-style:none; }
+.factor-modal-section details summary:hover { color:var(--text); }
 
 @media (max-width: 820px) {
   .agent-page { height:auto; min-height:calc(100vh - 110px); }
