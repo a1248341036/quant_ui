@@ -82,6 +82,25 @@ class PinRequest(BaseModel):
     pinned: bool
 
 
+def apply_user_rebalance_freq(spec: dict[str, Any], rebalance_freq: str | None) -> None:
+    """把用户显式选择的调仓频率写成**硬约束**（就地修改 spec）。
+
+    2026-09-11 修正：此前只覆盖 engine_gate.freq，allowed_freqs 仍含全部三档——
+    submit 侧优先级是 `LLM 传值 > 用户设置`，模型无视 prompt 传别的值即可覆盖
+    用户选择（实测 day_a run：spec 要求 weekly，模型声明 daily 并入库展示"一天"）。
+    现在用户显式选择时 allowed_freqs 收窄为单值：prompt 渲染的可选范围与 submit
+    白名单同步收口，LLM 只能传用户指定的频率。"未选择（自动）"时不动白名单，
+    保留模型按因子证据在三档内声明的自由度。
+    """
+    if not rebalance_freq:
+        return
+    engine = spec.setdefault("delivery_policy", {}).setdefault("production", {}).setdefault(
+        "engine_gate", {}
+    )
+    engine["freq"] = rebalance_freq
+    engine["allowed_freqs"] = [rebalance_freq]
+
+
 @router.post("/runs")
 def start(req: StartRequest) -> dict[str, Any]:
     mode = req.research_mode
@@ -104,12 +123,7 @@ def start(req: StartRequest) -> dict[str, Any]:
     else:
         spec = build_default_research_spec(mode)
     spec["research_mode"] = mode
-    # 用户显式调仓频率：覆盖档位默认 engine_gate.freq（allowed_freqs 白名单
-    # 仍生效——LLM 的 submit_factor(rebalance_freq=) 只能选白名单内的值）。
-    if req.rebalance_freq:
-        spec.setdefault("delivery_policy", {}).setdefault("production", {}).setdefault(
-            "engine_gate", {}
-        )["freq"] = req.rebalance_freq
+    apply_user_rebalance_freq(spec, req.rebalance_freq)
     payload["research_spec"] = spec
     try:
         run = service.start_run(payload)
