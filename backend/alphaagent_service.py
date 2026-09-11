@@ -1271,6 +1271,7 @@ def _candidate_factor_view(factor_id: str, entry: dict[str, Any], *, category: s
     # ── 提取 train/val 分拆指标：优先读 submit 写入的分窗口字段，回退评估证据包 ──
     ee = entry.get("evaluation_evidence") if isinstance(entry.get("evaluation_evidence"), dict) else {}
     train_ic = _safe_float(metrics.get("train_ic"))
+    train_icir = _safe_float(metrics.get("train_icir"))
     val_ic = _safe_float(metrics.get("val_ic"))
     val_icir = _safe_float(metrics.get("val_icir"))
     val_retention = _safe_float(metrics.get("val_ic_retention"))
@@ -1351,6 +1352,7 @@ def _candidate_factor_view(factor_id: str, entry: dict[str, Any], *, category: s
         "comment_full": comment_full,
         "label_col": label_col,
         "train_ic": train_ic,
+        "train_icir": train_icir,
         "val_ic": val_ic,
         "val_icir": val_icir,
         "val_ic_retention": val_retention,
@@ -1366,6 +1368,12 @@ def _candidate_factor_view(factor_id: str, entry: dict[str, Any], *, category: s
             "icir": _safe_float(metrics.get("icir")),
             "rank_ic": _safe_float(metrics.get("rank_ic")),
             "factor_coverage": _safe_float(metrics.get("factor_coverage", metrics.get("coverage"))),
+            # 三段表多头指标数据源（5d6c05d）：不铺则候选详情 modal 多头行全空
+            "portfolio_by_segment": (
+                metrics.get("portfolio_by_segment")
+                if isinstance(metrics.get("portfolio_by_segment"), dict)
+                else {}
+            ),
         },
         "extra": entry,
     }
