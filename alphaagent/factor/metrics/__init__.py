@@ -258,11 +258,13 @@ def mls_fmb_summary(factor, label, *, n_deciles=10, min_stocks=30,
 def quantile_portfolio_metrics(factor, label, *, time_level="datetime",
                                n_groups=10, min_stocks=30, cost_bps=15.0,
                                annualization_factor=252.0, direction=None,
-                               holding_days=1):
+                               holding_days=1, depth_ks=None, eligibility=None,
+                               depth_only=False):
     return _qpm_raw(factor, label, time_level=time_level, n_groups=n_groups,
                    min_stocks=min_stocks, cost_bps=cost_bps,
                    annualization_factor=annualization_factor, direction=direction,
-                   holding_days=holding_days,
+                   holding_days=holding_days, depth_ks=depth_ks,
+                   eligibility=eligibility, depth_only=depth_only,
                    _day_slices=_DSLICE(), _fast_equal_freq_codes=_FCODE())
 
 

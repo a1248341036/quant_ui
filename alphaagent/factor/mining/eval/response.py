@@ -101,6 +101,25 @@ def monthly_corr_robustness_json(raw: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _format_depth_curve(rows: Any) -> list[dict[str, Any]]:
+    """L1 深度曲线压缩格式（每深度一行；非有限值 → None）。"""
+    out: list[dict[str, Any]] = []
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+        out.append({
+            "k": r.get("k"),
+            "avg_names": _round_float4(r.get("avg_names")),
+            "gross_excess_ann": _round_float4(r.get("gross_excess_ann")),
+            "net_excess_ann": _round_float4(r.get("net_excess_ann")),
+            "sharpe_net": _round_float4(r.get("sharpe_net")),
+            "mdd_net": _round_float4(r.get("mdd_net")),
+            "turnover": _round_float4(r.get("avg_rebalance_turnover")),
+            "cost_pp": _round_float4(r.get("cost_annual_pp")),
+        })
+    return out
+
+
 def format_eval_response(
     raw: dict[str, Any],
     *,
@@ -137,6 +156,28 @@ def format_eval_response(
     n_q = int(raw.get("label_quantile_n") or 0)
     if n_q >= 2:
         out["label_quantile_note"] = "D1/Q1=因子最低组； D10/Q10=因子最高组。summary.decile_mean_label 为固定十分组。"
+
+    # L1 深度曲线 + 可成交域透镜（quantile_portfolio 插件追加键的紧凑透传）
+    qp = raw.get("quantile_portfolio")
+    if isinstance(qp, dict):
+        if qp.get("depth_curve"):
+            out["depth_curve"] = _format_depth_curve(qp.get("depth_curve"))
+        if qp.get("depth_curve_tradable"):
+            out["depth_curve_tradable"] = _format_depth_curve(qp.get("depth_curve_tradable"))
+        td = qp.get("tradable_domain")
+        if isinstance(td, dict):
+            out["tradable_domain"] = {
+                "available": td.get("available"),
+                "coverage": _round_float4(td.get("mask_coverage")),
+                "budget_per_name": td.get("budget_per_name"),
+                "affordable_max_price": td.get("affordable_max_price"),
+            }
+        if out.get("depth_curve"):
+            out["depth_note"] = (
+                "同标签同成本，仅持仓深度不同（k=每期等权只数；Q10=十分位参考行）。"
+                "top-k 相对 Q10 崩掉 = alpha 集中在极端尾部，即引擎 top_pct 小组合口径缺口的主因；"
+                "depth_curve_tradable 与 depth_curve 的差 = 可成交性损耗。"
+            )
 
     if raw.get("include_detail_tables") or raw.get("by_month") is not None:
         if "by_month" in raw:

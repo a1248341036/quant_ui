@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import Any
+from typing import Any, Sequence
 
 import numpy as np
 import pandas as pd
@@ -83,6 +83,9 @@ def quantile_portfolio_metrics(
     annualization_factor: float = 252.0,
     direction: int | None = None,
     holding_days: int = 1,
+    depth_ks: Sequence[int] | None = None,
+    eligibility=None,
+    depth_only: bool = False,
     _day_slices=None,
     _fast_equal_freq_codes=None,
 ) -> dict[str, Any]:
@@ -98,6 +101,20 @@ def quantile_portfolio_metrics(
       未调向的原始高减低单调性见 ``raw_monotonicity``。
 
     参数 ``direction``：+1 买最高组，-1 买最低组；None 表示自动按 Rank IC 判定。
+
+    L1 深度曲线（2026-09 新增，均为追加键，不影响任何既有键的数值）：
+    - ``depth_ks``：每期等权持仓只数序列（如 (5, 10, 20, 50, 100)）。传 None
+      （默认）不产出深度键，行为与历史完全一致。
+    - ``eligibility``：与 factor 行对齐的 bool 数组，True = 该 (date, code) 可入选。
+      传入会收窄**全部**计算的候选池（含既有键）——主口径要保持不变时，调用方
+      应另起一次 ``depth_only=True`` 的调用只取 ``depth_curve``（见 evaluation
+      plugins 的可成交域透镜），不要把掩码传进主调用。
+    - ``depth_only``：只算深度曲线（跳过分箱/组均值/单调性），配合
+      ``eligibility`` 做可成交域透镜的低成本路径；返回 dict 不含 top_group_*。
+    - 输出键 ``depth_curve``：每深度一行 {k, n_periods, avg_names,
+      gross_excess_ann, net_excess_ann, sharpe_net, mdd_net,
+      avg_rebalance_turnover, cost_annual_pp}，末行 ``k=Q{n_groups}`` 为十分位
+      参考行（直接取主口径序列，保证与 top_group_* 逐位一致）。
 
     返回键（供 profile rules 引用）:
       - top_group_annualized_return / top_group_annualized_excess_return
@@ -117,6 +134,18 @@ def quantile_portfolio_metrics(
         ric_vals = daily_ric[np.isfinite(daily_ric.to_numpy(dtype=float, copy=False))]
         direction = 1 if len(ric_vals) == 0 or float(ric_vals.mean()) >= 0 else -1
     direction = 1 if int(direction) >= 0 else -1
+
+    # ── L1 深度曲线 / 可成交域参数 ──
+    _depth_ks: tuple[int, ...] = ()
+    if depth_ks:
+        _depth_ks = tuple(sorted({int(k) for k in depth_ks if int(k) > 0}))
+    elig_all: np.ndarray | None = None
+    if eligibility is not None:
+        elig_all = np.asarray(eligibility, dtype=bool)
+        if elig_all.shape[0] != len(factor):
+            raise ValueError(
+                f"eligibility 长度 {elig_all.shape[0]} 与 factor 长度 {len(factor)} 不一致"
+            )
 
     net: list[float] = []
     excess: list[float] = []
@@ -140,8 +169,10 @@ def quantile_portfolio_metrics(
     inst_all = np.asarray(factor.index.get_level_values("instrument"))
     slices = _day_slices(factor.index, time_level) if _day_slices else None
 
-    def _quantile_portfolio_day(xf, yl, inst):
+    def _quantile_portfolio_day(xf, yl, inst, el):
         mask = np.isfinite(xf) & np.isfinite(yl)
+        if el is not None:
+            mask &= el
         if int(mask.sum()) < max(min_stocks, n_groups):
             return None
         fac, ret, names = xf[mask], yl[mask], inst[mask]
@@ -166,15 +197,21 @@ def quantile_portfolio_metrics(
         day_iter = None
     if day_iter is not None:
         grouped_days = (
-            (ts, f_arr_all[st:en], l_arr_all[st:en], inst_all[st:en])
+            (ts, f_arr_all[st:en], l_arr_all[st:en], inst_all[st:en],
+             None if elig_all is None else elig_all[st:en])
             for ts, st, en in day_iter
         )
     else:
+        elig_series = (
+            pd.Series(elig_all, index=factor.index) if elig_all is not None else None
+        )
         grouped_days = (
             (ts,
              f_sub.to_numpy(dtype=np.float64, copy=False),
              label.xs(ts, level=time_level).to_numpy(dtype=np.float64, copy=False),
-             np.asarray(f_sub.index.get_level_values("instrument")))
+             np.asarray(f_sub.index.get_level_values("instrument")),
+             None if elig_series is None
+             else elig_series.xs(ts, level=time_level).to_numpy(dtype=bool))
             for ts, f_sub in factor.groupby(level=time_level, sort=False)
         )
 
@@ -194,9 +231,116 @@ def quantile_portfolio_metrics(
     collapse_days = 0
     processed_days = 0
 
-    for ts, xf, yl, inst in grouped_days:
+    def _compound_ann(series: list[float]) -> float:
+        arr = np.asarray(series, dtype=np.float64)
+        if np.any(arr <= -1.0):
+            return float("nan")
+        # nav_annualization 已按持有期缩放（label_20d → 每期 20 个交易日）
+        return float(np.prod(1.0 + arr) ** (nav_annualization / len(arr)) - 1.0)
+
+    def _sharpe(series: list[float]) -> float:
+        arr = np.asarray(series, dtype=np.float64)
+        std = float(arr.std(ddof=1)) if len(arr) > 1 else float("nan")
+        if std > 0 and np.isfinite(std):
+            return float(arr.mean() / std * math.sqrt(nav_annualization))
+        return float("nan")
+
+    def _max_drawdown(series: list[float]) -> float:
+        arr = np.asarray(series, dtype=np.float64)
+        nav = np.cumprod(1.0 + arr)
+        running_max = np.maximum.accumulate(nav)
+        drawdowns = 1.0 - nav / running_max
+        return float(drawdowns.max()) if len(drawdowns) else float("nan")
+
+    # ── L1 深度曲线累计器：同池同成本，只改持仓深度 ──
+    depth_net: dict[int, list] = {dk: [] for dk in _depth_ks}
+    depth_exc: dict[int, list] = {dk: [] for dk in _depth_ks}
+    depth_gross: dict[int, list] = {dk: [] for dk in _depth_ks}
+    depth_turn: dict[int, float] = {dk: 0.0 for dk in _depth_ks}
+    depth_names: dict[int, float] = {dk: 0.0 for dk in _depth_ks}
+    depth_prev: dict[int, set | None] = {dk: None for dk in _depth_ks}
+
+    def _depth_accumulate(fac, ret, names, universe_ret) -> None:
+        order = np.argsort(fac if direction < 0 else -fac, kind="stable")
+        n_pool = int(len(fac))
+        for dk in _depth_ks:
+            kk = dk if dk < n_pool else n_pool
+            sel_idx = order[:kk]
+            sel_names = names[sel_idx]
+            d_ret = float(ret[sel_idx].mean())
+            d_prev = depth_prev[dk]
+            if d_prev is None:
+                d_side = 1.0  # 建仓：单边买入
+            else:
+                d_side = 2.0 * len(set(sel_names.tolist()) - d_prev) / max(kk, 1)
+            depth_prev[dk] = set(sel_names.tolist())
+            depth_turn[dk] += d_side
+            depth_names[dk] += kk
+            d_cost = cost_bps / 10_000.0 * d_side
+            depth_net[dk].append(d_ret - d_cost)
+            depth_exc[dk].append((d_ret - universe_ret) - d_cost)
+            depth_gross[dk].append(d_ret - universe_ret)
+
+    def _build_depth_curve(include_ref: bool) -> list[dict] | None:
+        if not _depth_ks:
+            return None
+        rows: list[dict] = []
+        for dk in _depth_ks:
+            dn, de, dg = depth_net[dk], depth_exc[dk], depth_gross[dk]
+            if not dn:
+                continue
+            ge, ne = _compound_ann(dg), _compound_ann(de)
+            rows.append({
+                "k": int(dk),
+                "n_periods": int(len(dn)),
+                "avg_names": round(depth_names[dk] / max(len(dn), 1), 1),
+                "gross_excess_ann": ge,
+                "net_excess_ann": ne,
+                "sharpe_net": _sharpe(de),
+                "mdd_net": _max_drawdown(dn),
+                "avg_rebalance_turnover": round(depth_turn[dk] / max(len(dn), 1), 4),
+                "cost_annual_pp": (
+                    round((ge - ne) * 100.0, 4)
+                    if np.isfinite(ge) and np.isfinite(ne) else None
+                ),
+            })
+        if include_ref and net:
+            ge, ne = _compound_ann(gross_excess), _compound_ann(excess)
+            rows.append({
+                "k": f"Q{n_groups}",
+                "n_periods": int(nav_n_days),
+                "avg_names": None,
+                "gross_excess_ann": ge,
+                "net_excess_ann": ne,
+                "sharpe_net": _sharpe(excess),
+                "mdd_net": _max_drawdown(net),
+                "avg_rebalance_turnover": round(nav_turnover_sum / max(nav_n_days, 1), 4),
+                "cost_annual_pp": (
+                    round((ge - ne) * 100.0, 4)
+                    if np.isfinite(ge) and np.isfinite(ne) else None
+                ),
+            })
+        return rows or None
+
+    for ts, xf, yl, inst, el in grouped_days:
         day_index += 1
-        prepared = _quantile_portfolio_day(xf, yl, inst)
+        if depth_only:
+            # 只算深度曲线：跳过分箱/组均值/单调性，rebalance 日做一次 argsort
+            mask = np.isfinite(xf) & np.isfinite(yl)
+            if el is not None:
+                mask &= el
+            if int(mask.sum()) < max(min_stocks, n_groups):
+                continue
+            fac, ret, names = xf[mask], yl[mask], inst[mask]
+            universe_ret = float(ret.mean())
+            processed_days += 1
+            n_days += 1
+            if day_index % hold != 0:
+                continue
+            _depth_accumulate(fac, ret, names, universe_ret)
+            nav_n_days += 1
+            continue
+        prepared = _quantile_portfolio_day(xf, yl, inst, el)
         if prepared is None:
             continue
         fac, ret, names, b, k = prepared
@@ -260,6 +404,9 @@ def quantile_portfolio_metrics(
         excess.append((long_ret - universe_ret) - day_cost)
         gross_excess.append(long_ret - universe_ret)
 
+        if _depth_ks:
+            _depth_accumulate(fac, ret, names, universe_ret)
+
         for g in range(k):
             sel = b == g
             if sel.any():
@@ -268,6 +415,30 @@ def quantile_portfolio_metrics(
                 grp_cnt[key] = grp_cnt.get(key, 0) + int(sel.sum())
         n_days += 1
         nav_n_days += 1
+
+    if depth_only:
+        # depth_only 模式：只产出深度曲线（无 top_group_* 键）
+        curve = _build_depth_curve(include_ref=False)
+        if not curve:
+            return {
+                "n_groups": int(n_groups),
+                "available": False,
+                "error": "insufficient_data",
+                "direction": direction,
+                "depth_only": True,
+            }
+        return {
+            "n_groups": int(n_groups),
+            "available": True,
+            "direction": direction,
+            "long_side": f"Q{n_groups}" if direction >= 0 else "Q1",
+            "cost_model": "per_rebalance_turnover",
+            "cost_bps_per_side": float(cost_bps),
+            "holding_days": hold,
+            "n_periods": int(nav_n_days),
+            "depth_only": True,
+            "depth_curve": curve,
+        }
 
     if n_days == 0:
         # 有处理过天数但全部塌缩 → 低离散度因子，分位组合不可用
@@ -316,27 +487,6 @@ def quantile_portfolio_metrics(
         ranks_g = np.arange(1, len(group_means_vals) + 1, dtype=np.float64)
         raw_monotonicity = float(spearman_ic(ranks_g, group_means_vals, min_pairs=3))
 
-    def _compound_ann(series: list[float]) -> float:
-        arr = np.asarray(series, dtype=np.float64)
-        if np.any(arr <= -1.0):
-            return float("nan")
-        # nav_annualization 已按持有期缩放（label_20d → 每期 20 个交易日）
-        return float(np.prod(1.0 + arr) ** (nav_annualization / len(arr)) - 1.0)
-
-    def _sharpe(series: list[float]) -> float:
-        arr = np.asarray(series, dtype=np.float64)
-        std = float(arr.std(ddof=1)) if len(arr) > 1 else float("nan")
-        if std > 0 and np.isfinite(std):
-            return float(arr.mean() / std * math.sqrt(nav_annualization))
-        return float("nan")
-
-    def _max_drawdown(series: list[float]) -> float:
-        arr = np.asarray(series, dtype=np.float64)
-        nav = np.cumprod(1.0 + arr)
-        running_max = np.maximum.accumulate(nav)
-        drawdowns = 1.0 - nav / running_max
-        return float(drawdowns.max()) if len(drawdowns) else float("nan")
-
     return {
         "n_groups": int(n_groups),
         "available": True,
@@ -369,4 +519,11 @@ def quantile_portfolio_metrics(
         "raw_monotonicity": raw_monotonicity,
         "spread_daily_mean": float(np.mean(high_minus_low)) if high_minus_low else float("nan"),
         "spread_annualized": _compound_ann(high_minus_low) if high_minus_low else float("nan"),
+        # ── L1 追加键：深度曲线（depth_ks=None 时为 None，既有键零变化）──
+        "depth_curve": _build_depth_curve(include_ref=True),
+        "depth_curve_note": (
+            f"同标签同成本，仅持仓深度不同（k=每期等权持仓只数；Q{n_groups}=十分位参考行，"
+            "与 top_group_* 同序列）。top-k 相对 Q10 崩掉 = alpha 集中在极端尾部/深度问题，"
+            "即引擎 top_pct 小组合口径缺口的主要来源。"
+        ) if _depth_ks else None,
     }

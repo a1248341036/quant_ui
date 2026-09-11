@@ -63,6 +63,14 @@ def _engine_result_to_legacy(raw: dict[str, Any]) -> dict[str, Any]:
         "label_quantile_n": raw.get("label_quantile_n"),
         "eval_wall_seconds": (raw.get("timing_ms") or {}).get("total_ms", 0) / 1000.0,
     }
+    # L1 深度曲线透传（quantile_portfolio 插件的追加键；不存在时整体缺省）
+    qp = metrics.get("quantile_portfolio")
+    if isinstance(qp, dict) and qp.get("depth_curve"):
+        out["quantile_portfolio"] = {
+            "depth_curve": qp.get("depth_curve"),
+            "depth_curve_tradable": qp.get("depth_curve_tradable"),
+            "tradable_domain": qp.get("tradable_domain"),
+        }
     if raw.get("by_month") is not None:
         out["by_month"] = raw["by_month"]
     if raw.get("by_symbol") is not None:
