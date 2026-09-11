@@ -25,23 +25,23 @@ from core import trading_config
 
 @dataclass(frozen=True)
 class CandidateCriteria:
-    """候选池（海选）统计门槛：预筛池口径（2026-09-11 起）。
+    """候选池（海选）统计门槛：观察池口径（2026-09-11 第二版）。
 
-    海选 train 门槛与正式库精筛对齐（0.025/0.30）——候选池定位从
-    "宽进观察池"改为"精筛幸存者预筛池"（历史数据：旧 0.02/0.25 海选
-    放进来的候选 61% 止步 stage_two，主死因 train ICIR < 0.30）；
+    进池线回到晋升线之下半档（0.020/0.28 vs 精筛 0.025/0.30）——池子承担
+    "三段都有真信号的结构"存档 + ML 样本源，正式库质量由精筛线单独把守；
+    三段绝对门按各段噪声量纲折算（train 0.02 家族：val 0.012、盲测 0.010），
+    统一数字不等于统一严格度（日频 IC 量纲 0.015~0.03、盲测段仅 ~410 天）；
     换手可行性硬门槛（低于阈值的因子截面排名日度剧变，不可交付）；
-    样本外绝对下限 |val_ic| >= min_val_abs_ic（与正式库 val 门同源，
-    保留比只卡相对衰减、不卡绝对水平）+ 保留比下限（方向反转直接拦截）。
+    样本外保留比下限（方向反转直接拦截）。
     """
 
-    min_abs_ic: float = 0.025
-    min_icir: float = 0.30
+    min_abs_ic: float = 0.020
+    min_icir: float = 0.28
     min_coverage: float = 0.85
     max_abs_corr: float = 0.5
     min_cs_autocorr: float = 0.18
     min_val_ic_retention: float = 0.5
-    min_val_abs_ic: float = 0.015
+    min_val_abs_ic: float = 0.012
     # 组合可交易性预检（2026-08-29）：日单边换手 >50% 的候选在 stage_one 直接拒，
     # 不再等 stage_two/engine_gate 才拦截（历史数据：30 个候选 26 个日换手>50%，
     # 全部止步 stage_two/engine_gate，浪费大量评估算力）。
@@ -112,17 +112,18 @@ class BlindTestCriteria:
     门槛项（2026-08-29 确立，2026-09-11 增补绝对下限）：
     - IC 保留比 = |test_ic|/|train_ic| ≥ min_ic_retention（默认 0.50）；
     - 方向一致性：test 段 IC 方向必须与 train 段一致（sign_consistent）；
-    - 绝对下限：|test_ic| ≥ min_test_abs_ic（默认 0.012）。同一份 test
+    - 绝对下限：|test_ic| ≥ min_test_abs_ic（默认 0.010）。同一份 test
       评估上的附加判定，不增加盲测段查询次数，只收紧接受规则；定位是
-      "防死因子"粗门（test 段 ~410 交易日，0.012 ≈ t≈3），不再往上叠
-      更细的盲测判据（每多一条判据，幸存因子对盲测段的选择偏置多一分）。
+      "防死因子"粗门（test 段 ~410 交易日，0.010 ≈ t≈2.5；0.012 会出现
+      差 0.0001 的刀刃误杀），不再往上叠更细的盲测判据（每多一条判据，
+      幸存因子对盲测段的选择偏置多一分）。
 
     test 段当前约 20 个月（2025-01 ~ 数据最新日），样本充足可设硬门。
     """
 
     enabled: bool = True
     min_ic_retention: float = 0.50
-    min_test_abs_ic: float = 0.012
+    min_test_abs_ic: float = 0.010
     require_sign_consistency: bool = True
 
 

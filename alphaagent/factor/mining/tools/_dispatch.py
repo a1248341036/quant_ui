@@ -198,7 +198,7 @@ def _candidate_ic_bar(research_mode: str | None) -> float:
             bar = float(getattr(spec, "candidate_overrides", {}).get("min_abs_ic", bar))
         return bar
     except Exception:  # noqa: BLE001
-        return 0.025
+        return 0.020
 
 
 def _near_miss_verdict(metrics: dict[str, Any]) -> bool:

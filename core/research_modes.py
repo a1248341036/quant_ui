@@ -78,19 +78,19 @@ RESEARCH_MODES: dict[str, ResearchModeSpec] = {
             "只有通过验证和去重门槛的因子才提交。"
         ),
         # 基本面为慢因子：季频 PIT 信号弱，统计门槛放宽松，但可交易性只小幅放松。
-        # 2026-09-11 预筛池口径同步：candidate 与 production 的 train/val 绝对门对齐
-        # （0.020/0.28/0.012），evaluation 屏幕线同步到同一水平——避免"评估过线、
-        # 提交即拒"；候选池定位与 technical 档一致（池子 = 精筛幸存者）。
+        # 2026-09-11 观察池口径：technical 候选线回到 0.020/0.28 后与 fundamental
+        # 同值——本档 override 保留作为"量纲锚"（technical 若再调整，fundamental
+        # 仍锚定 0.020/0.28/0.012），仅 val 保留比（0.65）与 production 更严项是实差异。
         evaluation_overrides={
-            "min_train_abs_ic": 0.020,   # technical 0.025 → 0.020
-            "min_train_icir": 0.28,      # technical 0.30 → 0.28
-            "min_val_abs_ic": 0.012,     # technical 0.015 → 0.012
+            "min_train_abs_ic": 0.020,
+            "min_train_icir": 0.28,
+            "min_val_abs_ic": 0.012,
             "min_val_ic_retention_ratio": 0.5,
         },
         candidate_overrides={
-            "min_abs_ic": 0.020,         # technical 0.025 → 0.020（与精筛对齐）
-            "min_icir": 0.28,            # technical 0.30 → 0.28
-            "min_val_abs_ic": 0.012,     # technical 0.015 → 0.012（慢因子量纲小一档）
+            "min_abs_ic": 0.020,
+            "min_icir": 0.28,
+            "min_val_abs_ic": 0.012,
             # 2026-08-29 审计：11 个候选 8 个 val 保留比 <65%（train→val 衰减
             # 严重），10d 持有期对季频 PIT 信号过短也是成因之一（切 label_20d）
             "min_val_ic_retention": 0.65,

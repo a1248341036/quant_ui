@@ -147,8 +147,8 @@ class _AnalysisMixin:
         if passed is None:
             ic_thr, icir_thr, cov_thr = _AnalysisMixin._rule_thresholds(result)
             passed = bool(
-                ic is not None and abs(ic) >= (ic_thr or 0.025)
-                and icir is not None and icir > (icir_thr or 0.30)
+                ic is not None and abs(ic) >= (ic_thr or 0.020)
+                and icir is not None and icir > (icir_thr or 0.28)
                 and coverage is not None and coverage > (cov_thr or 0.85)
             )
 
@@ -168,10 +168,10 @@ class _AnalysisMixin:
                     tips.append(f"❌ {metric}={actual:.4f} 未达 {op} {expected}")
             else:
                 ic_thr, icir_thr, cov_thr = _AnalysisMixin._rule_thresholds(result)
-                if ic is not None and abs(ic) < (ic_thr or 0.025):
-                    tips.append(f"IC={ic:+.4f} 偏低（需 |IC|≥{ic_thr or 0.025}），信号太弱或方向有误。")
-                if icir is not None and icir < (icir_thr or 0.30):
-                    tips.append(f"ICIR={icir:+.3f} 偏低（需≥{icir_thr or 0.30}），IC 日间波动太大，考虑平滑(TS_MEAN/EMA)或换窗口。")
+                if ic is not None and abs(ic) < (ic_thr or 0.020):
+                    tips.append(f"IC={ic:+.4f} 偏低（需 |IC|≥{ic_thr or 0.020}），信号太弱或方向有误。")
+                if icir is not None and icir < (icir_thr or 0.28):
+                    tips.append(f"ICIR={icir:+.3f} 偏低（需≥{icir_thr or 0.28}），IC 日间波动太大，考虑平滑(TS_MEAN/EMA)或换窗口。")
                 if coverage is not None and coverage < (cov_thr or 0.85):
                     tips.append(f"Coverage={coverage:.3f} 偏低，因子缺失太多，检查数据条件或放宽过滤。")
 
@@ -248,8 +248,8 @@ class _AnalysisMixin:
         if passed is None:
             ic_thr, icir_thr, cov_thr = _AnalysisMixin._rule_thresholds(result)
             passed = bool(
-                ic is not None and abs(ic) >= (ic_thr or 0.025)
-                and icir is not None and icir > (icir_thr or 0.30)
+                ic is not None and abs(ic) >= (ic_thr or 0.020)
+                and icir is not None and icir > (icir_thr or 0.28)
                 and coverage is not None and coverage > (cov_thr or 0.85)
             )
 
