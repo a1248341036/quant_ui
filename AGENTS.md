@@ -186,6 +186,14 @@ logs/factor_mining/ui/        # 每次 Web run 的 JSONL 轨迹 + run_meta.json 
 > 盲测绝对下限无模式 override，两档共用 0.012。
 > 说明：盲测绝对门不增加盲测段查询次数（同一份 test 评估上加一条判定），但**每加一条盲测
 > 判据都会轻微增加对盲测段的选择偏置**，故三条（绝对/保留比/方向）为上限，不再细叠。
+>
+> **存量重筛（2026-09-11）**：门槛变更后跑 `scripts/rescreen_candidate_pool.py` 把新门槛回溯
+> 应用于存量候选。动作是 **soft-drop**（`dropped_from_ml` + `dropped_reason` + `dropped_at`），
+> 不是删除：条目/DSL/研究记忆全部保留，ML 组合训练集默认剔除（`factor/stacking/dataset.py`
+> 的 `include_dropped=False`），删标记即恢复。promoted 条目一律不动；**已有标记的条目不复活**
+> （此前由样本外衰减审计等其它原因剔除），仅列为人工复核。实测（26 条池子）：
+> 19 条被标记、7 条有效（含 1 条 promoted），ML 枚举 26 → 7；备份落在
+> `mining_candidate_registry.bak-prescreen-<ts>.json`。
 
 提交流程顺序：
 0. **盲测终审**（test 段 IC 绝对下限 + 保留比 + 方向一致）→ 不通过直接拒绝，不进候选池
@@ -425,6 +433,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start_backend_with_s
 
 # 候选池重放晋升（把候选池已有因子重新走一遍修复后的两阶段链路）
 .venv\Scripts\python.exe scripts\promote_candidates.py
+
+# 存量候选池按当前门槛重筛（soft-drop：打 dropped_from_ml 标记，数据/DSL/记忆保留；
+# 缺省 dry-run，--apply 执行；门槛复用 DeliveryChecker，与提交路径零口径漂移）
+.venv\Scripts\python.exe scripts\rescreen_candidate_pool.py --data-root . --apply
 
 # 盲测段因子重测（默认 2026-01-01 起；锁定段——挖掘循环与入库门槛从未见过 2026 数据）
 .venv\Scripts\python.exe scripts\blind_test_factors.py
