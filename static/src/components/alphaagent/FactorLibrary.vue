@@ -124,15 +124,32 @@
               <label>表达式</label>
               <pre class="factor-modal-expr">{{ factorDetail.expr }}</pre>
             </div>
-            <div class="factor-modal-section" v-if="factorDetail.registry_entry">
-              <label>Registry 记录</label>
-              <pre class="factor-modal-registry">{{ JSON.stringify(factorDetail.registry_entry, null, 2) }}</pre>
+            <div class="factor-modal-section" v-if="segmentRows.length">
+              <label>三阶段表现</label>
+              <table class="factor-seg-table">
+                <thead>
+                  <tr><th>指标</th><th>Train</th><th>Val</th><th>盲测</th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="row in segmentRows" :key="row.label">
+                    <td class="seg-label">{{ row.label }}</td>
+                    <td :class="icClass(row.train)">{{ row.train ?? '—' }}</td>
+                    <td :class="icClass(row.val)">{{ row.val ?? '—' }}</td>
+                    <td :class="icClass(row.test)">{{ row.test ?? '—' }}</td>
+                  </tr>
+                </tbody>
+              </table>
+              <div class="factor-seg-note">{{ segmentNote }}</div>
             </div>
             <div class="factor-modal-meta">
               <span>状态: {{ factorDetail.status }}</span>
               <span>有限值: {{ factorDetail.finite_count }}</span>
               <span>创建: {{ formatTime(factorDetail.created_at) }}</span>
             </div>
+            <details class="factor-modal-section">
+              <label>Registry 记录</label>
+              <pre class="factor-modal-registry">{{ JSON.stringify(factorDetail.registry_entry || factorDetail.metrics, null, 2) }}</pre>
+            </details>
           </div>
         </div>
       </div>
@@ -187,6 +204,44 @@ export default {
     }
   },
   computed: {
+    segmentRows() {
+      const d = this.factorDetail
+      if (!d) return []
+      const pbs = (d.metrics && d.metrics.portfolio_by_segment) || {}
+      const seg = k => pbs[k] || {}
+      const n = v => (v === null || v === undefined || !Number.isFinite(Number(v))) ? null : Number(v)
+      const pct = v => (n(v) === null ? null : (n(v) * 100).toFixed(1) + '%')
+      const r4 = v => (n(v) === null ? null : n(v).toFixed(4))
+      const rows = [
+        { label: 'IC', train: r4(d.train_ic), val: r4(d.val_ic), test: r4(d.test_ic) },
+        { label: 'ICIR', train: r4(d.train_icir), val: r4(d.val_icir), test: r4(d.test_icir) },
+        { label: 'IC 保留比', train: null, val: pct(d.val_ic_retention), test: pct(d.test_ic_retention) },
+        { label: '多头年化', train: pct(seg('train').top_group_annualized_return), val: pct(seg('val').top_group_annualized_return), test: pct(seg('test').top_group_annualized_return) },
+        { label: '多头超额年化', train: pct(seg('train').top_group_annualized_excess_return), val: pct(seg('val').top_group_annualized_excess_return), test: pct(seg('test').top_group_annualized_excess_return) },
+        { label: '多头夏普', train: r4(seg('train').top_group_sharpe), val: r4(seg('val').top_group_sharpe), test: r4(seg('test').top_group_sharpe) },
+        { label: '多头最大回撤', train: pct(seg('train').top_group_max_drawdown), val: pct(seg('val').top_group_max_drawdown), test: pct(seg('test').top_group_max_drawdown) },
+        { label: '日单边换手', train: pct(seg('train').avg_daily_side_turnover), val: pct(seg('val').avg_daily_side_turnover), test: pct(seg('test').avg_daily_side_turnover) },
+      ]
+      const egVal = (d.metrics && d.metrics.engine_gate) || {}
+      const egTest = (d.metrics && d.metrics.engine_gate_test) || {}
+      if (egVal.annual_return !== undefined || egTest.annual_return !== undefined) {
+        rows.push(
+          { label: '引擎净值年化(含成本)', train: null, val: pct(egVal.annual_return), test: pct(egTest.annual_return) },
+          { label: '引擎净值超额年化', train: null, val: pct(egVal.excess_annual), test: pct(egTest.excess_annual) },
+          { label: '引擎净值夏普', train: null, val: r4(egVal.sharpe), test: r4(egTest.sharpe) },
+          { label: '引擎净值最大回撤', train: null, val: pct(egVal.max_drawdown), test: pct(egTest.max_drawdown) },
+        )
+      }
+      return rows.filter(r => r.train !== null || r.val !== null || r.test !== null)
+    },
+    segmentNote() {
+      const d = this.factorDetail
+      if (!d) return ''
+      const pbs = d.metrics && d.metrics.portfolio_by_segment
+      const hold = (String(d.label_col || '').match(/\d+/) || ['1'])[0]
+      const base = `多头组合：Q10 分组、无成本、持有 ${hold} 天；引擎净值为含成本调仓回测`
+      return pbs ? base : base + '（该因子早于三段组合指标入库，组合收益行不可用，IC 行完整）'
+    },
     libFactorsFaceted() {
       const facet = this.lib.facetFilter
       const freq = this.lib.freqFilter

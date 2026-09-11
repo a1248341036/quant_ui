@@ -1577,6 +1577,9 @@ def get_factor_detail(factor_id: str, *, library: str = "production", category: 
                 "val_ic": metrics.get("val_ic"),
                 "val_icir": metrics.get("val_icir"),
                 "val_ic_retention": metrics.get("val_ic_retention"),
+                "test_ic": metrics.get("test_ic"),
+                "test_icir": metrics.get("test_icir"),
+                "test_ic_retention": metrics.get("test_ic_retention"),
             })
             # 与列表/候选库视图同口径：组合层收益指标铺到顶层（2026-09-11）
             qp = metrics.get("quantile_portfolio")

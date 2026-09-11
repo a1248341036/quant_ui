@@ -447,6 +447,32 @@ class FactorSubmitService:
         )
         qp_ms = round((time.perf_counter() - t_qp) * 1000)
         metrics_train["quantile_portfolio"] = qp_metrics
+        # 三段多头组合指标（2026-09-11，ema3 教训）：train/val/盲测各算一次十分组
+        # 多头组合，详情页并排展示"样本内 vs 盲测"的收益落差，杜绝只看样本内误判。
+        portfolio_by_segment: dict[str, Any] = {}
+        try:
+            factor_series = pd.Series(cand_values, index=panel.index)
+            dt_level = panel.index.get_level_values("datetime")
+            label_series = panel[ctx.label_col]
+            for _seg, (_s, _e) in {
+                "train": (ctx.train_start, ctx.train_end),
+                "val": (ctx.val_start, ctx.val_end),
+                "test": (ctx.test_start, ctx.resolved_test_end()),
+            }.items():
+                try:
+                    _mask = (dt_level >= pd.Timestamp(_s)) & (dt_level <= pd.Timestamp(_e))
+                    if int(_mask.sum()) == 0:
+                        continue
+                    portfolio_by_segment[_seg] = quantile_portfolio_metrics(
+                        factor_series[_mask], label_series[_mask],
+                        n_groups=10, cost_bps=0.0, holding_days=qp_holding_days,
+                    )
+                except Exception:  # noqa: BLE001 — 单段失败不影响其他段
+                    continue
+        except Exception:  # noqa: BLE001 — 分段指标是增益信息，绝不阻断提交
+            portfolio_by_segment = {}
+        if portfolio_by_segment:
+            metrics_train["portfolio_by_segment"] = portfolio_by_segment
         # 门槛前三段耗时分解：DSL 物化 / train 指标 / 组合换手预检
         log_step("submit.precheck", name, mat_ms=mat_ms, train_ms=train_ms, qp_ms=qp_ms)
 
@@ -743,6 +769,9 @@ class FactorSubmitService:
         qp = reported.get("quantile_portfolio")
         if isinstance(qp, dict):
             cand_metrics["quantile_portfolio"] = qp
+        _pbs = metrics_train.get("portfolio_by_segment")
+        if isinstance(_pbs, dict) and _pbs:
+            cand_metrics["portfolio_by_segment"] = _pbs
         candidate_reg, candidate_dsl = write_candidate_registry(
             self.candidate_registry_path,
             factor_id=factor_id,
@@ -901,6 +930,9 @@ class FactorSubmitService:
         qp = reported.get("quantile_portfolio")
         if isinstance(qp, dict):
             enriched_metrics["quantile_portfolio"] = qp
+        _pbs = metrics_train.get("portfolio_by_segment")
+        if isinstance(_pbs, dict) and _pbs:
+            enriched_metrics["portfolio_by_segment"] = _pbs
         eb = payload.get("engine_backtest") or {}
         if isinstance(eb.get("metrics"), dict):
             enriched_metrics["engine_gate"] = eb["metrics"]
