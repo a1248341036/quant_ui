@@ -23,6 +23,7 @@ from alphaagent.factor.mining.infra.provider_compat import (
     ProviderSafeChatModel,
     _tool_choice_auto_enabled,
 )
+from alphaagent.factor.mining.infra import usage_capture as usage_capture_mod
 from alphaagent.factor.mining.infra.usage_capture import UsageCapturedChatModel
 
 _PATCHES: list[tuple[type, object | None]] = []
@@ -113,6 +114,112 @@ class TestTransportRetry:
             "peer closed connection without sending complete message body"
         )
         assert isinstance(err, ProviderSafeChatModel._get_retryable_exceptions())
+
+
+class TestStreamInterruptRetry:
+    """2026-09-12（run 42254d3990f0）真实死因回归测试。
+
+    agentscope 基类 ``max_retries`` 只重试请求建立；流式响应**中途**断连
+    （``httpx2.RemoteProtocolError: incomplete chunked read``）发生在
+    ``async for chunk`` 迭代内，旧实现仅在 ``_get_retryable_exceptions`` 把异常
+    加入集合（不生效）→ 断流直接冒泡终止整个 run。本组测试锁定新的
+    ``_retry_stream`` 行为：断流后重发同一次请求续流。
+    """
+
+    def _model(self) -> ProviderSafeChatModel:
+        m = object.__new__(ProviderSafeChatModel)
+        m.max_retries = 2
+        m.retry_delay = 0.0
+        m.model = "test-model"
+        return m
+
+    def test_interrupt_retries_and_recovers(self, monkeypatch):
+        """断流一次 → 重发请求续流，产出全部 chunk，不再抛异常。"""
+        retried: list = []
+        seen = {"n": 0}
+
+        async def good_stream(elements):
+            for e in elements:
+                yield e
+
+        async def stub_call(self, model_name, messages, tools=None, tool_choice=None, **kw):
+            # 模拟 OpenAIChatModel._call_api：async def 返回 async generator 对象
+            # （原实现 return self._parse_stream_response(...)，不 await）——
+            # 重发路径本次成功，不再断流。
+            retried.append((model_name, messages))
+            return good_stream([1, 2, 3])
+
+        monkeypatch.setattr(usage_capture_mod.OpenAIChatModel, "_call_api", stub_call)
+        m = self._model()
+
+        async def break_once():
+            # 只断一次：第一条迭代前抛异常
+            if seen["n"] == 0:
+                seen["n"] += 1
+                raise httpx2.RemoteProtocolError("incomplete chunked read")
+            async for e in good_stream([1, 2, 3]):
+                yield e
+
+        async def run():
+            out = []
+            gen = m._retry_stream("m", ["msg"], None, None, {}, break_once())
+            async for chunk in gen:
+                out.append(chunk)
+            return out
+
+        out = asyncio.run(run())
+        assert out == [1, 2, 3]
+        assert len(retried) == 1  # 断流后重发了一次请求
+
+    def test_retry_exhausted_raises(self, monkeypatch):
+        """每次重发都断流 → 重试耗尽后抛原始异常（不再静默/不再冒泡别的）。"""
+        calls = {"n": 0}
+
+        async def always_broken(elements):
+            raise httpx2.RemoteProtocolError("always broken")
+            yield elements  # pragma: no cover
+
+        async def stub_call(self, model_name, messages, tools=None, tool_choice=None, **kw):
+            calls["n"] += 1
+            return always_broken([1])
+
+        monkeypatch.setattr(usage_capture_mod.OpenAIChatModel, "_call_api", stub_call)
+        m = self._model()
+
+        async def run():
+            gen = m._retry_stream(
+                "m", ["msg"], None, None, {}, always_broken([1]),
+            )
+            async for _ in gen:
+                pass
+
+        with pytest.raises(httpx2.RemoteProtocolError):
+            asyncio.run(run())
+        # 初始流断 1 次后，重发 max_retries 次都断流 → 重发路径只走 max_retries 次
+        assert calls["n"] == m.max_retries
+
+    def test_non_retryable_raises_without_retry(self, monkeypatch):
+        """非传输类异常（如 TypeError）不重试直接抛。"""
+        retried = {"n": 0}
+
+        async def bad_type_err(elements):
+            raise TypeError("bad arg")
+            yield elements  # pragma: no cover
+
+        async def stub_call(self, model_name, messages, tools=None, tool_choice=None, **kw):
+            retried["n"] += 1
+            return bad_type_err([1])
+
+        monkeypatch.setattr(usage_capture_mod.OpenAIChatModel, "_call_api", stub_call)
+        m = self._model()
+
+        async def run():
+            async for _ in m._retry_stream("m", ["msg"], None, None, {}, bad_type_err([1])):
+                pass
+
+        with pytest.raises(TypeError):
+            asyncio.run(run())
+        assert retried["n"] == 0  # 未触发重发
 
 
 class TestBuildModelWiring:
