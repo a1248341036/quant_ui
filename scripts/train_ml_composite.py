@@ -51,6 +51,7 @@ from alphaagent.factor.stacking import (  # noqa: E402
 )
 from alphaagent.factor.mining.research_spec import default_research_spec  # noqa: E402
 from alphaagent.factor.stacking.dataset import _to_utc_naive  # noqa: E402
+from core import trading_config  # noqa: E402
 
 SCHEME_LABELS = {
     "ml": "ML 学习加权（Ridge+LGBM）",
@@ -83,6 +84,27 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--max-corr", type=float, default=0.6, help="跨库因子冗余剔除阈值（默认 0.6，与候选池去重口径一致；相关 0.8 的 20 个因子 ≈ 2-3 个独立信号，放进来只会稀释权重、放大过拟合面）")
     ap.add_argument("--size-neutral/--no-size-neutral", dest="size_neutral", default=True)
     ap.add_argument("--no-gate", action="store_true", help="跳过 engine_gate 回测裁决")
+    ap.add_argument(
+        "--gate-selection-pct", type=float, default=trading_config.ML_GATE_SELECTION_PCT,
+        help="engine_gate 组合选股宽度（动态百分比口径）。默认取 trading_config.ML_GATE_SELECTION_PCT"
+             f"（{trading_config.ML_GATE_SELECTION_PCT}，≈15 只）——Phase 2 实证的 gateway 全绿宽度，"
+             "而非全局回测 SELECTION_PCT（0.004，excess_sharpe 差 0.02）或单因子门禁 "
+             f"GATE_SELECTION_PCT（{trading_config.GATE_SELECTION_PCT}，≈5 只）。"
+             "Phase 1 可交易性改造：基线死穴（3.4 只持仓/62%%换手/60 次现金不足拒单）"
+             "正是错误复用单因子极窄选股造成。阈值本身不受影响。")
+    ap.add_argument(
+        "--gate-top-n", type=int, default=None,
+        help="engine_gate 改用固定 Top-N 选股（selection_mode=top_n）；缺省保持动态百分比"
+             "（top_pct，用 --gate-selection-pct）。传此参数后 --gate-selection-pct 失效。")
+    ap.add_argument(
+        "--gate-capital", type=float, default=None,
+        help="engine_gate 组合门禁资金。缺省按所选宽度等比放大 GATE_CAPITAL（10 万）→ "
+             "每只预算密度与单因子门禁（GATE_CAPITAL/GATE_TOP_N=2 万/只）保持一致："
+             "top_pct 时 capital = GATE_CAPITAL × selection_pct/GATE_SELECTION_PCT"
+             f"（{trading_config.ML_GATE_SELECTION_PCT} 默认宽度 → 30 万）；"
+             "top_n 时 = GATE_CAPITAL × top_n/GATE_TOP_N。显式传值则直接用。"
+             "Phase 2a：修复组合宽度 × 10 万资金 = 5000 元/只系统性买不起一手"
+             "导致的现金不足拒单（0.003 联动 30 万后投入比 97.5%%、gate 全绿）。")
     ap.add_argument("--no-write-pred", action="store_true", help="不写 pred 通道文件")
     ap.add_argument("--subset-curve", action="store_true",
                     help="贡献排序累积子集曲线：按置换贡献降序取 Top-k 逐级重训（成本 ≈ 2n 次拟合），"
@@ -420,7 +442,30 @@ def main() -> None:
         from alphaagent.factor.mining.engine_gate import run_engine_gate
 
         policy = default_research_spec(args.modes[0])["delivery_policy"]["production"]["engine_gate"]
-        print(f"engine_gate（{first_oos.date()} ~ {end.date()}，freq={policy.get('freq')}）…")
+        # Phase 1 可交易性改造：组合引擎门禁的选股宽度改用组合口径（top 0.4%≈20 只），
+        # 而非单因子门禁的 GATE_SELECTION_PCT(0.001≈5 只)。基线死穴——3.4 只持仓、
+        # 62% 换手、60 次现金不足拒单、回撤 −41%——正是窄选股把合成分数逼进不可交易
+        # 尾部的连锁反应。阈值（超额年化/夏普/回撤等）一律不动。
+        if args.gate_top_n is not None:
+            policy = {**policy, "selection_mode": "top_n", "top_n": args.gate_top_n}
+        else:
+            policy = {**policy, "selection_mode": "top_pct", "selection_pct": args.gate_selection_pct}
+        # Phase 2a 资金联动：0.004 组合宽度 × 10 万 = 5000 元/只，买不起中高价股一手
+        # → 455 次"现金不足/预算过小"。保持与单因子门禁相同的"2 万/只"预算密度，
+        # 按宽度等比放大门禁资金（非作弊——20 只组合实盘本就需更大账户）。
+        if args.gate_capital is not None:
+            capital = float(args.gate_capital)
+        elif policy["selection_mode"] == "top_n":
+            capital = trading_config.GATE_CAPITAL * (float(policy["top_n"]) / trading_config.GATE_TOP_N)
+        else:
+            capital = trading_config.GATE_CAPITAL * (float(policy["selection_pct"]) / trading_config.GATE_SELECTION_PCT)
+        policy = {**policy, "capital": capital}
+        sel_desc = (
+            f"Top-N={policy['top_n']}" if policy["selection_mode"] == "top_n"
+            else f"top {policy['selection_pct'] * 100:.2f}%"
+        )
+        print(f"engine_gate（{first_oos.date()} ~ {end.date()}，freq={policy.get('freq')}，"
+              f"{sel_desc}，capital={capital:,.0f}）…")
         gate_result = run_engine_gate(
             panel, stacked, val_start=str(first_oos.date()), val_end=str(end.date()), policy=policy
         )
