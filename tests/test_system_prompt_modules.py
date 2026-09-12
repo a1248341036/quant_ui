@@ -169,16 +169,18 @@ def _phase_report(phase: str) -> tuple[str, list[dict]]:
 
 
 def test_explore_disables_deepen_only_modules():
-    """explore 阶段：multi_period / delivery_submission / tool_examples 不注入。
+    """explore 阶段：multi_period / delivery_submission 不注入；tool_examples
+    保留（2026-09-12 回退：run 42254d 实测无示例导致调用格式盲试、失败率
+    +5pp；样例仅 ~450 token，换取格式稳定）。
     data_calibration / ic_robustness / neutralization_guide 保留（质量引导不可省）。"""
     text, report = _phase_report("explore")
     disabled = {r["module"] for r in report if not r["enabled"]}
     assert "multi_period" in disabled
     assert "delivery_submission" in disabled
-    assert "tool_examples" in disabled
     # 质量引导模块在 explore 也保留
     enabled = {r["module"] for r in report if r["enabled"]}
-    for must_on in ("data_calibration", "ic_robustness", "neutralization_guide"):
+    for must_on in ("data_calibration", "ic_robustness", "neutralization_guide",
+                    "tool_examples"):
         assert must_on in enabled, f"{must_on} should be enabled in explore phase"
     # 核心模块仍启用
     for must_on in ("core_identity", "strategy_tracks", "operator_catalog",
@@ -188,10 +190,9 @@ def test_explore_disables_deepen_only_modules():
     assert "轨道 A/B/C" not in text
     assert "正交预判" not in text
     assert "如何阅读每轮注入" not in text
-    # tool_examples 探索版不注入（调用格式由 tool_contracts + 报错自愈覆盖；
-    # 用示例独有锚点——tool_contracts 的工具清单表也含 eval_on_train_set）
-    assert "ma20_dev" not in text
-    assert "funda_roe_growth_neutral" not in text
+    # tool_examples 探索版注入（ma20_dev / funda_roe_growth_neutral 是其示例锚点）
+    assert "ma20_dev" in text
+    assert "funda_roe_growth_neutral" in text
     # operator_catalog 探索阶段精简：不再注入完整目录，改为高频算子名 + 提示语
     assert "探索阶段精简" in text or "探索阶段优先使用高频算子" in text
 

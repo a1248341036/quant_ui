@@ -214,9 +214,12 @@ ORDER = 125
 # （调用格式由常驻 tool_contracts 覆盖），此时不应记为"核心板块缺失"。
 REQUIRED = False
 SEP_BEFORE = "\n\n"
-# 探索阶段裁剪（2026-09-06）：调用格式已由 tool_contracts（常驻）+ 报错自愈
-# 覆盖；deepen 起深度迭代时再注入完整示例
-PHASES = frozenset({"deepen", "deliver", "full"})
+# 2026-09-06 曾把 explore 从 PHASES 移除（2026-09-12 回退）：实测 run
+# 42254d3990f0 中 explore 阶段因无调用示例 + 算子签名被藏，工具失败率
+# 13.1%→18.1%（模型靠报错自愈盲试，console.log 满屏 "Signature unknown.
+# errors are cheap"）；tool_examples 仅 ~450-630 token/轮（含基本面），
+# 以极小成本换调用格式稳定。multi_period/delivery_submission 仍保持裁剪。
+PHASES = frozenset({"explore", "deepen", "deliver", "full"})
 
 
 def render(ctx) -> str:  # noqa: ANN001
