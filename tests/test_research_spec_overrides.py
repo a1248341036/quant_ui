@@ -51,7 +51,7 @@ class TestPersistence:
 class TestEffectiveSpec:
     def test_effective_defaults_when_no_overrides(self) -> None:
         eff = rs.effective_research_spec("technical")
-        assert eff["evaluation_policy"]["min_train_abs_ic"] == 0.025
+        assert eff["evaluation_policy"]["min_train_abs_ic"] == 0.020
 
     def test_effective_applies_saved_overrides(self) -> None:
         rs.save_research_spec_overrides("fundamental", {"evaluation_policy": {"min_train_abs_ic": 0.01}})
@@ -94,7 +94,7 @@ class TestRunSpecMerge:
     def test_load_research_spec_none(self) -> None:
         loaded = rs.load_research_spec(None)
         assert loaded["research_mode"] == "technical"
-        assert loaded["evaluation_policy"]["min_train_abs_ic"] == 0.025
+        assert loaded["evaluation_policy"]["min_train_abs_ic"] == 0.020
 
 
 class TestDiff:

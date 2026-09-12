@@ -172,28 +172,29 @@ logs/factor_mining/ui/        # 每次 Web run 的 JSONL 轨迹 + run_meta.json 
 
 | 阶段 | 门槛（默认） | 写入位置 |
 |---|---|---|
-| 盲测终审（stage_one 之前） | \|test IC\| ≥ 0.012（2026-09-11 新增绝对下限）, test/train IC 保留比 ≥ 0.50, 方向一致 | 不进任何库（不通过直接拒） |
-| candidate（预筛池，2026-09-11 起） | \|train IC\| ≥ 0.025, \|train ICIR\| > 0.30, coverage > 0.85, max_corr < 0.5, lag1 自相关 ≥ 0.18, val 保留比 ≥ 0.5, \|val IC\| ≥ 0.015 | candidate_main/（统一大库） |
+| 盲测终审（stage_one 之前） | \|test IC\| ≥ 0.010（2026-09-11 新增绝对下限，防死门 t≈2.5）, test/train IC 保留比 ≥ 0.50, 方向一致 | 不进任何库（不通过直接拒） |
+| candidate（观察池，2026-09-11 第二版） | \|train IC\| ≥ 0.020, \|train ICIR\| > 0.28, coverage > 0.85, max_corr < 0.5, lag1 自相关 ≥ 0.18, val 保留比 ≥ 0.5, \|val IC\| ≥ 0.012 | candidate_main/（统一大库） |
 | production | \|train IC\| ≥ 0.025, \|train ICIR\| ≥ 0.30, \|val IC\| ≥ 0.015, val 保留比 ≥ 0.60, winsorized 衰减 ≤ 0.10, max_corr < 0.4 | production_main/（统一大库） |
 
-> **2026-09-11 门槛收紧（预筛池口径）**：海选 train 门槛与精筛对齐（0.02/0.25 → 0.025/0.30），
-> 并给 val（≥0.015）与盲测（≥0.012）补绝对下限——此前两段只卡相对保留比，train 0.02 的因子
-> val 低到 0.01 也能进池。动机：26 条存量候选里 16 条（61%）止步 stage_two，主死因是
-> train ICIR < 0.30，属"评估算力换炮灰"；收紧后同类池子仅 6/26 存活。
-> `evaluation_policy`（评估屏幕线）同步提到 0.025/0.30/0.015，避免"评估过线、提交即拒"。
-> fundamental 档按同一哲学对齐（候选 = 精筛幸存者）：eval / candidate / production 三条线统一到
-> 0.020/0.28（val 绝对门 0.012），仅 production 的 val 保留比 0.70、截尾衰减 0.12 更严；
-> 盲测绝对下限无模式 override，两档共用 0.012。
-> 说明：盲测绝对门不增加盲测段查询次数（同一份 test 评估上加一条判定），但**每加一条盲测
+> **2026-09-11 门槛演进（两轮）**：第一版曾把进池线抬到与精筛对齐（0.025/0.30，
+> 预筛池）——实测 technical 日频带（IC 0.015~0.03）几乎清空（25 条候选仅 1 条 tech
+> 存活），遂回改为**观察池**：进池线回到 0.020/0.28（晋升线之下半档），val（≥0.012）
+> 与盲测（≥0.010）绝对门保留——三段绝对门防"train 行 OOS 死"的假因子，量纲按各段
+> 噪声折算（统一数字 ≠ 统一严格度；全段统一 0.02 会使 technical 存活为 0，实测）。
+> `evaluation_policy`（评估屏幕线）同步 0.020/0.28/0.012；fundamental 档 override 与
+> technical 同值（0.020/0.28/0.012，作为量纲锚），仅 val 保留比 0.65 与 production 更严项
+> （保留比 0.70/衰减 0.12）是实差异；**晋升线 0.025/0.30 始终未动**。
+> 盲测绝对门不增加盲测段查询次数（同一份 test 评估上加一条判定），但**每加一条盲测
 > 判据都会轻微增加对盲测段的选择偏置**，故三条（绝对/保留比/方向）为上限，不再细叠。
 >
-> **存量重筛（2026-09-11）**：门槛变更后跑 `scripts/rescreen_candidate_pool.py` 把新门槛回溯
-> 应用于存量候选。动作是 **soft-drop**（`dropped_from_ml` + `dropped_reason` + `dropped_at`），
-> 不是删除：条目/DSL/研究记忆全部保留，ML 组合训练集默认剔除（`factor/stacking/dataset.py`
-> 的 `include_dropped=False`），删标记即恢复。promoted 条目一律不动；**已有标记的条目不复活**
-> （此前由样本外衰减审计等其它原因剔除），仅列为人工复核。实测（26 条池子）：
-> 19 条被标记、7 条有效（含 1 条 promoted），ML 枚举 26 → 7；备份落在
-> `mining_candidate_registry.bak-prescreen-<ts>.json`。
+> **存量重筛（2026-09-11）**：门槛变更后跑 `scripts/rescreen_candidate_pool.py` 把当前门槛回溯
+> 应用于存量候选，两种动作：**soft-drop**（缺省，`dropped_from_ml` + `dropped_reason` +
+> `dropped_at`，条目/DSL/研究记忆保留，ML 组合训练集默认剔除）与 **--hard**（条目 + DSL
+> 移出并完整归档到 `*.removed-prescreen-<ts>.json` / `expressions.bak-prescreen-<ts>/`，
+> 可整体回捞；研究记忆不清理——记忆存的是评估证据，与库成员资格解耦）。promoted 条目
+> 一律不动；prescreen 自家标记（`dropped_reason` 以 `prescreen_gate:` 开头）在判定转好时
+> 自动复活，衰减审计等其它来源的标记不自动动、仅列出供人工复核。每次执行都会先写
+> `mining_candidate_registry.bak-prescreen-<ts>.json` 全量快照。
 
 提交流程顺序：
 0. **盲测终审**（test 段 IC 绝对下限 + 保留比 + 方向一致）→ 不通过直接拒绝，不进候选池

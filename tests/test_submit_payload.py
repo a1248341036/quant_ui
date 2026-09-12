@@ -196,8 +196,8 @@ def test_submit_stage_one_fail_returns_payload_not_crash(submit_service, monkeyp
     赋值的 production_similarity，stage_one 失败路径直接 UnboundLocalError，
     preflight 冒烟提交（必然失败）被它打死 → 每次 run 秒退（2026-09-02）。
     """
-    # 注：ic 取 0.02 —— 盲测绝对下限 0.012 可过（保留比 1.0、方向一致），
-    # 但 stage_one 的 IC(0.025)/ICIR(0.30)/自相关(0.18) 三处均不达标。
+    # 注：ic 取 0.02 —— 恰好挂住观察池 IC 门（0.020），盲测绝对下限 0.010 可过
+    # （保留比 1.0、方向一致），但 stage_one 的 ICIR(0.28)/自相关(0.18) 不达标。
     monkeypatch.setattr(
         submit_module, "compute_ingest_metrics",
         lambda *a, **k: {"ic": 0.02, "icir": 0.08, "coverage": 0.9,

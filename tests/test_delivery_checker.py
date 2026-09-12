@@ -28,17 +28,17 @@ def test_criteria_defaults_match_research_spec():
 
     # 关键数值抽查（防止整体相等被结构差异掩盖后仍然误报）
     cand = criteria_dp["candidate"]
-    assert cand["min_abs_ic"] == 0.025  # 2026-09-11 预筛池：与精筛 train 门对齐
-    assert cand["min_icir"] == 0.30
+    assert cand["min_abs_ic"] == 0.020  # 2026-09-11 观察池第二版：回到 0.02 家族
+    assert cand["min_icir"] == 0.28
     assert cand["min_coverage"] == 0.85
     assert cand["max_abs_corr"] == 0.5
     assert cand["min_cs_autocorr"] == 0.18
     assert cand["min_val_ic_retention"] == 0.5
-    assert cand["min_val_abs_ic"] == 0.015
+    assert cand["min_val_abs_ic"] == 0.012
 
     blind = criteria_dp["blind_test"]
     assert blind["min_ic_retention"] == 0.50
-    assert blind["min_test_abs_ic"] == 0.012  # 2026-09-11 盲测绝对下限
+    assert blind["min_test_abs_ic"] == 0.010  # 2026-09-11 盲测绝对下限（防死门）
 
     prod = criteria_dp["production"]
     assert prod["min_train_abs_ic"] == 0.025
@@ -58,8 +58,8 @@ def test_criteria_from_spec_fills_missing_keys():
         "production": {"min_train_abs_ic": 0.03},
     })
     assert partial.candidate.min_abs_ic == 0.02
-    assert partial.candidate.min_icir == 0.30  # 回落默认
-    assert partial.candidate.min_val_abs_ic == 0.015  # 回落默认（2026-09-11 新增）
+    assert partial.candidate.min_icir == 0.28  # 回落默认
+    assert partial.candidate.min_val_abs_ic == 0.012  # 回落默认（2026-09-11 新增）
     assert partial.production.min_train_abs_ic == 0.03
     assert partial.production.min_train_icir == 0.30
 
@@ -87,10 +87,10 @@ def checker() -> DeliveryChecker:
 def _old_stage_one_stats(metrics):
     reasons = []
     ic = metrics.get("ic")
-    if ic is None or abs(float(ic)) < 0.025:
+    if ic is None or abs(float(ic)) < 0.020:
         reasons.append("ic")
     icir = metrics.get("icir")
-    if icir is None or abs(float(icir)) < 0.30:
+    if icir is None or abs(float(icir)) < 0.28:
         reasons.append("icir")
     cov = metrics.get("coverage") or metrics.get("factor_coverage")
     if cov is None or float(cov) <= 0.85:
@@ -101,7 +101,7 @@ def _old_stage_one_stats(metrics):
     return reasons
 
 
-# 复刻旧 _stage_one_val_retention_reasons 语义（候选阈值 0.5 + val 绝对下限 0.015）
+# 复刻旧 _stage_one_val_retention_reasons 语义（候选阈值 0.5 + val 绝对下限 0.012）
 def _old_stage_one_val_retention(train, val):
     n_days = val.get("n_days") or val.get("n_instruments")
     if n_days is not None and int(n_days) == 0:
@@ -114,7 +114,7 @@ def _old_stage_one_val_retention(train, val):
         return ["val_ic_missing"]
     if t * v < 0:
         return ["val_sign_flip"]
-    if abs(v) < 0.015:  # 2026-09-11 预筛池：val 绝对下限
+    if abs(v) < 0.012:  # 2026-09-11 观察池：val 绝对下限
         return ["val_abs_ic"]
     if abs(t) > 1e-12 and abs(v) / abs(t) < 0.5:
         return ["val_retention"]
@@ -180,8 +180,8 @@ LOW_CORR = {"max_abs_corr": 0.1}
     {"icir": None},           # 缺失 ICIR
     {"coverage": None},       # 缺失 coverage
     {"cs_pearson_autocorr": None},  # 缺失换手
-    {"ic": 0.024999},        # 恰好低于 IC 门槛
-    {"icir": 0.30},           # 恰好等于 ICIR 门槛（< 判定，放行）
+    {"ic": 0.019999},        # 恰好低于 IC 门槛
+    {"icir": 0.28},           # 恰好等于 ICIR 门槛（< 判定，放行）
     {"coverage": 0.85},       # 恰好等于 coverage 门槛（<= 拒绝）
 ])
 def test_stage_one_stats_parity(checker, mut):
@@ -222,8 +222,8 @@ def test_stage_one_val_retention_parity(checker):
         (GOOD_STAGE2_TRAIN, GOOD_STAGE2_VAL),
         (GOOD_STAGE2_TRAIN, {"ic": -0.03, "n_days": 100}),  # 方向反转
         (GOOD_STAGE2_TRAIN, {"ic": 0.02, "n_days": 100}),   # 保留比 0.5 正好过
-        (GOOD_STAGE2_TRAIN, {"ic": 0.015, "n_days": 100}),  # 恰好挂住 val 绝对下限，保留比 0.375 < 0.5
-        (GOOD_STAGE2_TRAIN, {"ic": 0.012, "n_days": 100}),  # val 绝对下限未达（0.012 < 0.015）
+        (GOOD_STAGE2_TRAIN, {"ic": 0.015, "n_days": 100}),  # 保留比 0.375 < 0.5
+        (GOOD_STAGE2_TRAIN, {"ic": 0.011, "n_days": 100}),  # val 绝对下限未达（0.011 < 0.012）
         (GOOD_STAGE2_TRAIN, {"ic": None, "n_days": 100}),   # val IC 缺失
         (GOOD_STAGE2_TRAIN, {"n_days": 0}),                 # val 空窗跳过
     ]

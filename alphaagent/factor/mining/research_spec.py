@@ -138,12 +138,12 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
         "max_candidates_per_round": 8,
     },
     "evaluation_policy": {
-        # 2026-09-11 预筛池口径：评估屏幕线与 delivery 候选门（0.025/0.30）对齐，
-        # 避免"评估过线但提交即拒"的算力浪费。
-        "min_train_abs_ic": 0.025,
-        "min_train_icir": 0.30,
+        # 2026-09-11 观察池口径：评估屏幕线与 delivery 候选门（0.020/0.28）对齐，
+        # 避免"评估过线但提交即拒"的算力浪费；晋升线（0.025/0.30）在 delivery_policy。
+        "min_train_abs_ic": 0.020,
+        "min_train_icir": 0.28,
         "min_train_coverage": 0.85,
-        "min_val_abs_ic": 0.015,
+        "min_val_abs_ic": 0.012,
         "min_val_ic_retention_ratio": 0.5,
         "require_sign_consistency": True,
         # 换手率约束：因子排名日度自相关低于此值的候选不入池（高换手→高交易成本）
