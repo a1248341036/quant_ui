@@ -120,6 +120,17 @@ def save_composite_factor(out_dir: str | Path, *, name: str | None = None,
         "gate_fail_reasons": gate.get("fail_reasons") or [],
         "decay_retention_mean": round(sum(ratios) / len(ratios), 4) if ratios else None,
         "decay_table": decay,
+        # 对齐候选因子库详情：铺全 gate 完整对象（metrics/diagnostics/thresholds/窗口/选股参数）
+        "gate": gate,
+        # 逐折 OOS 明细（fold_metrics: {model: [{oos_start,oos_end,ic_mean,ic_ir,n_days,...}]}）
+        "fold_metrics": report.get("fold_metrics") or {},
+        # 简单加权对照表（等权/ICIR/HRP 的 OOS IC/Sharpe/回撤），与训练历史视图同口径
+        "scheme_compare": report.get("scheme_compare") or {},
+        # OOS 段窗口（gate 裁决区间）
+        "oos_window": {
+            "start": (gate.get("window") or {}).get("start"),
+            "end": (gate.get("window") or {}).get("end"),
+        },
     }
     provenance = {
         "scheme": scheme,
