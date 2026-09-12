@@ -92,6 +92,31 @@ class TestResearchSpec:
         with pytest.raises(ValueError):
             normalize_research_spec({"evaluation_policy": {"min_train_abs_ic": -1}})
 
+    def test_engine_gate_validation_restored(self) -> None:
+        """2026-09-12 回归：35c8b30 误删 engine_gate 校验，freq/数值边界
+        不再被拒（非法值可落盘、运行时才炸）——恢复校验并锁定。"""
+        # 非法 freq 白名单
+        with pytest.raises(ValueError) as e1:
+            normalize_research_spec({
+                "delivery_policy": {"production": {"engine_gate": {
+                    "freq": "hourly", "allowed_freqs": ["daily", "hourly"],
+                }}},
+            })
+        assert "engine_gate" in str(e1.value)
+        # freq 不在 allowed_freqs 内
+        with pytest.raises(ValueError):
+            normalize_research_spec({
+                "delivery_policy": {"production": {"engine_gate": {
+                    "freq": "monthly", "allowed_freqs": ["daily", "weekly"],
+                }}},
+            })
+        # 数值边界
+        for patch in ({"max_drawdown": -5}, {"min_excess_annual": 99}, {"min_invested_ratio": 2}):
+            with pytest.raises(ValueError):
+                normalize_research_spec({
+                    "delivery_policy": {"production": {"engine_gate": patch}},
+                })
+
     def test_fundamental_mode_defaults(self) -> None:
         spec = normalize_research_spec(default_research_spec("fundamental"))
         assert spec["research_mode"] == "fundamental"
