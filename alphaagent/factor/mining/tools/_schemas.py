@@ -128,7 +128,10 @@ _PROFILE_EVAL_PARAMETERS: dict[str, Any] = {
         "factor_name": _EVAL_PARAMETERS["properties"]["factor_name"],
         "profile_id": {
             "type": "string",
-            "description": "冻结的 EvaluationProfile ID；决定 split、transform、metrics 与 rule gate。",
+            "enum": ["train_screen", "validation", "size_neutral_validation"],
+            "description": "冻结的 EvaluationProfile ID；决定 split、transform、metrics 与 rule gate。"
+            "训练集海选用 train_screen；样本外验证用 validation / size_neutral_validation。"
+            "（train_screen_lite 等内部 profile 禁止在挖掘期直接评估——错误信息不做枚举引导。）",
         },
         "interaction": _INTERACTION_PARAMETER,
         "prediction": _PREDICTION_PARAMETER,
