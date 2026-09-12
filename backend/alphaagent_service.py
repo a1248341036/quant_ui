@@ -308,7 +308,20 @@ def _active_run_count() -> int:
     for run in runs:
         try:
             if run.process is not None:
-                active += 1
+                # 有句柄：以进程真实存活为准（poll() 返回 None = 仍在运行）。
+                # spawn 的 run 进程退出后句柄仍留在内存，若只看 process is not None
+                # 会永久占用并发额度（2026-09-12 实测：2 个 failed run 退出 2 小时
+                # 后 active_runs 仍为 2，新 run 全被 429 拒绝）。
+                if run.process.poll() is None:
+                    active += 1
+                else:
+                    run.refresh()  # 顺手刷新终态，与列表页口径一致
+            elif run.status in {"running", "starting", "stopping"}:
+                # 无句柄（后端重启恢复/外部启动）：以事件轨迹状态为准。
+                # status 是上次 refresh 的结果；running 说明轨迹 15 分钟内仍在推进。
+                run.refresh()
+                if run.status in {"running", "starting", "stopping"}:
+                    active += 1
         except Exception:  # noqa: BLE001
             continue
     return active
