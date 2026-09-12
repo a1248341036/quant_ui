@@ -1179,18 +1179,11 @@ def _candidate_root(category: str = "technical") -> Path:
 def _entry_matches_facet(entry: dict[str, Any], facet: str) -> bool:
     """registry 条目的数据面匹配：facets 交集，或 "融合" 匹配 is_fusion。
 
-    老条目缺 facets 字段时按表达式现算兜底（与记忆层同口径）。
+    复用 _classify_facets 的 facets 现算兜底（与记忆层同口径，单一事实源）。
     """
-    from alphaagent.factor.mining.memory.expressions import classify_family_ex, expr_facets
-
     facets = entry.get("facets")
     if not isinstance(facets, list) or not facets:
-        expr = str(entry.get("expr") or "")
-        if not expr:
-            rel = str(entry.get("expression_file") or "")
-            path = ROOT / rel if rel else None
-            expr = path.read_text(encoding="utf-8") if path and path.is_file() else ""
-        facets = sorted(expr_facets(str(entry.get("name") or "") + " " + expr))
+        facets = _classify_facets(entry, str(entry.get("expr") or ""))["facets"]
     if facet == "融合":
         return entry.get("is_fusion") if isinstance(entry.get("is_fusion"), bool) else len(facets) >= 2
     return facet in facets
@@ -1208,17 +1201,12 @@ _FREQ_MAP_CACHE: dict[str, Any] = {"stamp": None, "map": {}}
 
 
 def factor_freq_meta(entry: dict[str, Any]) -> tuple[str | None, str | None, str | None]:
-    """registry 条目 → (rebalance_freq, research_mode, freq_source)；老条目按 label_col 推导。"""
-    from alphaagent.factor.mining.infra.registry_io import derive_freq_from_label_col
+    """registry 条目 → (rebalance_freq, research_mode, freq_source)；老条目按 label_col 推导。
 
-    freq = str(entry.get("rebalance_freq") or "") or None
-    mode = str(entry.get("research_mode") or "") or None
-    if freq or mode:
-        return freq, mode, "recorded"
-    cfg = entry.get("ingest_config") if isinstance(entry.get("ingest_config"), dict) else {}
-    label_col = str(cfg.get("label_col") or "") or str(entry.get("eval_label") or "")
-    d_mode, d_freq = derive_freq_from_label_col(label_col)
-    return d_freq, d_mode, "derived" if (d_freq or d_mode) else None
+    复用 _freq_trace（单一事实源），避免语句级重复（此前两处各写一遍）。
+    """
+    _t = _freq_trace(entry)
+    return _t["rebalance_freq"], _t["research_mode"], _t["freq_source"]
 
 
 def factor_freq_map() -> dict[str, dict[str, Any]]:
@@ -1337,6 +1325,92 @@ def _split_factor_metrics(metrics: dict[str, Any], ee: dict[str, Any]) -> dict[s
     }
 
 
+def _entry_metrics(entry: dict[str, Any] | None) -> dict[str, Any]:
+    """解析 registry entry 的 metrics 源（全站统一入口）。
+
+    production 的 delivered registry 存 ingest_metrics，candidate registry 存
+    metrics——此前各视图用 `entry.get("ingest_metrics") or entry.get("metrics")`
+    二选一，散落 5 处。统一在此解析，避免口径漂移（如某处只读 metrics 而
+    production 因子显示不出来）。
+    """
+    if not isinstance(entry, dict):
+        return {}
+    m = entry.get("ingest_metrics")
+    if not isinstance(m, dict) or not m:
+        m = entry.get("metrics")
+    return m if isinstance(m, dict) else {}
+
+
+def _classify_facets(entry: dict[str, Any], expr_text: str | None) -> dict[str, Any]:
+    """数据面分类单一事实源：facets / facets_label / is_fusion / family / eval_label。
+
+    老条目缺 facets 时按表达式现算兜底；candidate 与 production 此前各写一遍
+    （expr_facets/classify_family_ex 散落 6 处），统一在此。
+    """
+    facets = entry.get("facets") if isinstance(entry.get("facets"), list) else None
+    if not facets:
+        from alphaagent.factor.mining.memory.expressions import classify_family_ex, expr_facets
+
+        facets = sorted(expr_facets(str(entry.get("name") or "") + " " + str(expr_text or "")))
+    is_fusion = entry.get("is_fusion") if isinstance(entry.get("is_fusion"), bool) else len(facets) >= 2
+    family = str(entry.get("family") or "") or (
+        classify_family_ex(str(entry.get("name") or ""), str(expr_text or ""))
+        if expr_text
+        else ""
+    )
+    return {
+        "facets": facets,
+        "facets_label": "×".join(facets) if facets else "—",
+        "is_fusion": is_fusion,
+        "family": family,
+        "eval_label": str(entry.get("eval_label") or "") or None,
+    }
+
+
+def _freq_trace(entry: dict[str, Any]) -> dict[str, Any]:
+    """调仓频率/研究档位溯源单一事实源：新条目 records，老条目按 label_col 推导。
+
+    label_col 从 ingest_config 取、缺时回退 eval_label（candidate/production
+    同口径）；freq_source 区分 recorded/derived/None。此前散落 4 处推导，统一。
+    """
+    from alphaagent.factor.mining.infra.registry_io import derive_freq_from_label_col
+
+    entry_freq = str(entry.get("rebalance_freq") or "") or None
+    entry_mode = str(entry.get("research_mode") or "") or None
+    if entry_freq or entry_mode:
+        return {
+            "rebalance_freq": entry_freq,
+            "research_mode": entry_mode,
+            "freq_source": "recorded",
+        }
+    cfg = entry.get("ingest_config") if isinstance(entry.get("ingest_config"), dict) else {}
+    label_col = str(cfg.get("label_col") or "") or str(entry.get("eval_label") or "")
+    research_mode, rebalance_freq = derive_freq_from_label_col(label_col)
+    return {
+        "rebalance_freq": rebalance_freq,
+        "research_mode": research_mode,
+        "freq_source": "derived" if (research_mode or rebalance_freq) else None,
+    }
+
+
+def _portfolio_view(metrics: dict[str, Any]) -> dict[str, Any]:
+    """组合层指标单一事实源：quantile_portfolio 顶层字段 + 三段组合 + 换手。
+
+    candidate 与 production 此前各自 metrics.get("quantile_portfolio") 取
+    avg_daily_side_turnover / annualized_*，口径分散，统一在此。
+    """
+    qp = metrics.get("quantile_portfolio") if isinstance(metrics.get("quantile_portfolio"), dict) else {}
+    portfolio_by_segment = metrics.get("portfolio_by_segment") if isinstance(metrics.get("portfolio_by_segment"), dict) else None
+    return {
+        "qp": qp,
+        "portfolio_by_segment": portfolio_by_segment,
+        "avg_daily_side_turnover": _safe_float(qp.get("avg_daily_side_turnover")),
+        "annualized_return": _safe_float(qp.get("top_group_annualized_return")),
+        "annualized_excess_return": _safe_float(qp.get("top_group_annualized_excess_return")),
+        "sharpe": _safe_float(qp.get("top_group_sharpe")),
+    }
+
+
 def _candidate_factor_view(factor_id: str, entry: dict[str, Any], *, category: str = "technical") -> dict[str, Any]:
     metrics = entry.get("metrics") if isinstance(entry.get("metrics"), dict) else {}
     fingerprint = entry.get("data_fingerprint") if isinstance(entry.get("data_fingerprint"), dict) else {}
@@ -1358,42 +1432,21 @@ def _candidate_factor_view(factor_id: str, entry: dict[str, Any], *, category: s
     test_retention = _sp["test_ic_retention"]
     test_sign_consistent = _sp["test_sign_consistent"]
 
-    # ── 组合层收益指标（quantile_portfolio 由提交/回填写入）──
-    qp = metrics.get("quantile_portfolio") if isinstance(metrics.get("quantile_portfolio"), dict) else {}
-    # 三段组合指标（train/val/test 分段）：候选池新条目由 submit 写入，
-    # 存量老条目经回填脚本补齐；缺失时前端显示"该因子早于三段组合指标入库"。
-    portfolio_by_segment = metrics.get("portfolio_by_segment") if isinstance(metrics.get("portfolio_by_segment"), dict) else None
+    # ── 组合层收益指标（quantile_portfolio）+ 三段组合：单一事实源 ──
+    _pv = _portfolio_view(metrics)
+    qp = _pv["qp"]
+    portfolio_by_segment = _pv["portfolio_by_segment"]
 
     # ── label 与研究模式 ──
     ingest_cfg = entry.get("ingest_config") or {}
     label_col = str(ingest_cfg.get("label_col") or "")
 
-    # ── 数据面分类（facets/is_fusion/family）：老条目缺 facets 时按表达式现算兜底 ──
-    from alphaagent.factor.mining.memory.expressions import classify_family_ex, expr_facets
-
-    facets = entry.get("facets") if isinstance(entry.get("facets"), list) else None
+    # ── 数据面分类：单一事实源 ──
     expr_text = _candidate_expr(entry, factor_id, category=category)
-    if not facets:
-        facets = sorted(expr_facets(str(entry.get("name") or "") + " " + expr_text))
-    is_fusion = entry.get("is_fusion") if isinstance(entry.get("is_fusion"), bool) else len(facets) >= 2
-    family = str(entry.get("family") or "") or classify_family_ex(
-        str(entry.get("name") or ""), expr_text
-    )
-    eval_label = str(entry.get("eval_label") or "") or None
+    _fc = _classify_facets(entry, expr_text)
 
-    # ── 调仓频率/研究档位（2026-09-03 溯源）：新条目入库已记录；
-    #    老条目缺字段时按 label_col 推导兜底（freq_source 区分口径）──
-    from alphaagent.factor.mining.infra.registry_io import derive_freq_from_label_col
-
-    entry_freq = str(entry.get("rebalance_freq") or "") or None
-    entry_mode = str(entry.get("research_mode") or "") or None
-    if entry_freq or entry_mode:
-        rebalance_freq = entry_freq
-        research_mode = entry_mode
-        freq_source = "recorded"
-    else:
-        research_mode, rebalance_freq = derive_freq_from_label_col(label_col)
-        freq_source = "derived" if (research_mode or rebalance_freq) else None
+    # ── 调仓频率/研究档位溯源：单一事实源 ──
+    _fq = _freq_trace(entry)
 
     # ── comment 预览 ──
     comment_full = str(entry.get("comment") or "")
@@ -1412,14 +1465,14 @@ def _candidate_factor_view(factor_id: str, entry: dict[str, Any], *, category: s
         "status": str(entry.get("review_status") or "pending_review"),
         "promotion_status": str(entry.get("promotion_status") or "pending"),
         "review_verdict": str(review.get("verdict") or ""),
-        "facets": facets,
-        "facets_label": "×".join(facets) if facets else "—",
-        "is_fusion": is_fusion,
-        "family": family,
-        "eval_label": eval_label,
-        "rebalance_freq": rebalance_freq,
-        "research_mode": research_mode,
-        "freq_source": freq_source,
+        "facets": _fc["facets"],
+        "facets_label": _fc["facets_label"],
+        "is_fusion": _fc["is_fusion"],
+        "family": _fc["family"],
+        "eval_label": _fc["eval_label"],
+        "rebalance_freq": _fq["rebalance_freq"],
+        "research_mode": _fq["research_mode"],
+        "freq_source": _fq["freq_source"],
         "finite_count": finite_count or 0,
         "created_at": str(entry.get("ingested_at") or ""),
         "comment_preview": comment_preview,
@@ -1434,9 +1487,10 @@ def _candidate_factor_view(factor_id: str, entry: dict[str, Any], *, category: s
         "test_rank_ic": test_rank_ic,
         "test_ic_retention": test_retention,
         "test_sign_consistent": test_sign_consistent,
-        "annualized_return": _safe_float(qp.get("top_group_annualized_return")),
-        "annualized_excess_return": _safe_float(qp.get("top_group_annualized_excess_return")),
-        "sharpe": _safe_float(qp.get("top_group_sharpe")),
+        "annualized_return": _pv["annualized_return"],
+        "annualized_excess_return": _pv["annualized_excess_return"],
+        "sharpe": _pv["sharpe"],
+        "avg_daily_side_turnover": _pv["avg_daily_side_turnover"],
         "review_reasons": review_summary,
         "metrics": {
             "ic": _safe_float(metrics.get("ic")),
@@ -1514,9 +1568,7 @@ def list_factors(*, library: str = "production", category: str = "technical", fa
                 **item,
                 "factor_uid": factor_uid(str(item.get("name") or item.get("factor_id") or "")),
             }
-        metrics = entry.get("ingest_metrics") if isinstance(entry.get("ingest_metrics"), dict) else {}
-        if not metrics:
-            metrics = entry.get("metrics") if isinstance(entry.get("metrics"), dict) else {}
+        metrics = _entry_metrics(entry)
         expr_text = entry.get("expr")
         if not expr_text:
             # delivered registry 只存 expression_file 路径，读 DSL 文件补齐
@@ -1536,52 +1588,15 @@ def list_factors(*, library: str = "production", category: str = "technical", fa
             "metrics": metrics,
             "status": entry.get("ingest_status") or item.get("status"),
         }
-        # 三段指标：单一事实源 _split_factor_metrics（含 test 段；此前手工挑漏项）
+        # 三段指标 + 组合指标 + 数据面 + 调仓溯源：全部走单一事实源
         _ee = entry.get("evaluation_evidence") if isinstance(entry.get("evaluation_evidence"), dict) else {}
         merged.update(_split_factor_metrics(metrics, _ee))
-        qp = metrics.get("quantile_portfolio")
-        if isinstance(qp, dict):
-            merged["avg_daily_side_turnover"] = qp.get("avg_daily_side_turnover")
-        # 数据面分类：delivered registry 带 facets；缺字段时按表达式现算兜底
-        facets = entry.get("facets") if isinstance(entry.get("facets"), list) else None
-        if not facets:
-            from alphaagent.factor.mining.memory.expressions import classify_family_ex, expr_facets
-
-            expr_for_facets = expr_text or ""
-            facets = sorted(expr_facets(str(entry.get("name") or "") + " " + expr_for_facets))
-        merged["facets"] = facets
-        merged["facets_label"] = "×".join(facets) if facets else "—"
-        merged["is_fusion"] = (
-            entry.get("is_fusion") if isinstance(entry.get("is_fusion"), bool) else len(facets) >= 2
-        )
-        merged["family"] = str(entry.get("family") or "") or (
-            classify_family_ex(str(entry.get("name") or ""), expr_text or "")
-            if expr_text
-            else None
-        )
-        merged["eval_label"] = str(entry.get("eval_label") or "") or None
+        merged.update(_portfolio_view(metrics))
+        merged.update(_classify_facets(entry, expr_text))
+        merged.update(_freq_trace(entry))
         merged["factor_uid"] = str(entry.get("factor_uid") or "") or factor_uid(
             str(entry.get("name") or item.get("name") or "")
         )
-        # 调仓频率/研究档位溯源：老条目缺字段时按 label_col 推导兜底
-        from alphaagent.factor.mining.infra.registry_io import derive_freq_from_label_col
-
-        prod_freq = str(entry.get("rebalance_freq") or "") or None
-        prod_mode = str(entry.get("research_mode") or "") or None
-        if prod_freq or prod_mode:
-            merged["rebalance_freq"] = prod_freq
-            merged["research_mode"] = prod_mode
-            merged["freq_source"] = "recorded"
-        else:
-            prod_label_col = str(
-                (entry.get("ingest_config") or {}).get("label_col")
-                if isinstance(entry.get("ingest_config"), dict)
-                else ""
-            ) or str(entry.get("eval_label") or "")
-            d_mode, d_freq = derive_freq_from_label_col(prod_label_col)
-            merged["rebalance_freq"] = d_freq
-            merged["research_mode"] = d_mode
-            merged["freq_source"] = "derived" if (d_mode or d_freq) else None
         return merged
 
     factors = [_merge_production_entry(item) for item in factors]
@@ -1640,17 +1655,18 @@ def get_factor_detail(factor_id: str, *, library: str = "production", category: 
             registry = {}
         entry = registry.get(factor_id) or registry.get(str(detail.get("name") or "")) or {}
         if isinstance(entry, dict) and entry:
-            metrics = entry.get("ingest_metrics") if isinstance(entry.get("ingest_metrics"), dict) else {}
-            if not metrics:
-                metrics = entry.get("metrics") if isinstance(entry.get("metrics"), dict) else {}
+            metrics = _entry_metrics(entry)
             detail.update({
                 "expr": entry.get("expr") or detail.get("expr"),
                 "comment": entry.get("comment") or detail.get("comment"),
                 "metrics": {**(detail.get("metrics") or {}), **metrics},
+                "factor_uid": str(entry.get("factor_uid") or "") or detail.get("factor_uid"),
             })
-            # 三段指标：单一事实源 _split_factor_metrics（含 test 段；此前手工挑漏项）
+            # 三段 + 组合 + 调仓溯源：单一事实源（与 list/candidate 同口径）
             _ee = entry.get("evaluation_evidence") if isinstance(entry.get("evaluation_evidence"), dict) else {}
             detail.update(_split_factor_metrics(metrics, _ee))
+            detail.update(_portfolio_view(metrics))
+            detail.update(_freq_trace(entry))
     return detail
 
 
