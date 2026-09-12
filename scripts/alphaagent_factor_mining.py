@@ -84,8 +84,8 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--temperature", type=float, default=None)
     p.add_argument("--max-tokens", type=int, default=16384)  # hy3 thinking 需 >8K
     p.add_argument(
-        "--reasoning-effort", default=None,
-        help="思考强度 none/low/medium/high/xhigh（默认不设=上游默认）；压 thinking 优先用此参数而非砍 max_tokens",
+        "--reasoning-effort", default="medium",
+        help="思考强度 none/low/medium/high/xhigh（默认 medium，见 MiningConfig；显式传 none 关闭）；压 thinking 优先用此参数而非砍 max_tokens",
     )
     p.add_argument(
         "--max-turns",

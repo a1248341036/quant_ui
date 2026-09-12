@@ -630,6 +630,9 @@ def _build_run_command(params: dict[str, Any], log_dir: Path, control_file: Path
         command.extend(["--max-parallel-eval", str(params["max_parallel_eval"])])
     if params.get("population_max") is not None:
         command.extend(["--population-max", str(int(params["population_max"]))])
+    # 思考强度：显式传值才覆盖 MiningConfig 默认（medium）；None 走 CLI/配置默认。
+    if params.get("reasoning_effort"):
+        command.extend(["--reasoning-effort", str(params["reasoning_effort"])])
     # 研究模式决定是否载入基本面列：needs_fundamentals=True 的模式必须载入
     # funda_* 字段（如基本面模式）；其余省内存。
     wants_fundamentals = bool(get_research_mode(mode).needs_fundamentals)
