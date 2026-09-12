@@ -664,6 +664,12 @@ def main() -> None:
         pred_path.parent.mkdir(parents=True, exist_ok=True)
         write_pred_parquet(stacked, panel, pred_path)
         print(f"组合分数已写入 pred 通道：{pred_path}")
+        # 自包含副本：out_dir/scores.parquet（同一份 date/code/score 长表）。
+        # 供组合因子库（composite_factors）固化——save_composite_factor 依赖
+        # out_dir 内报告 + 分数 parquet 完整，复现命令不依赖会被覆盖的全局 pred_demo。
+        scores_path = out_dir / "scores.parquet"
+        write_pred_parquet(stacked, panel, scores_path)
+        print(f"组合分数已写入 out_dir 自包含副本：{scores_path}")
 
 
 def _wma_smooth_scores(values: np.ndarray, panel: pd.DataFrame, window: int) -> np.ndarray:

@@ -53,6 +53,15 @@ def _connect() -> sqlite3.Connection:
     return con
 
 
+def _find_score_file(out_dir: Path) -> str | None:
+    """out_dir 内分数 parquet 探测：优先新命名 scores.parquet，回退历史 hrp_scores.parquet。"""
+    for cand in ("scores.parquet", "hrp_scores.parquet"):
+        p = out_dir / cand
+        if p.is_file():
+            return str(p)
+    return None
+
+
 def _read_report_json(report_path: Path) -> dict[str, Any] | None:
     try:
         return json.loads(report_path.read_text(encoding="utf-8"))
@@ -81,7 +90,7 @@ def _repro_command(report: dict[str, Any], out_dir: Path) -> str:
     parts.append(f"--mining-end {report.get('mining_end')}")
     parts.append("--isolation holdout")
     parts.append(f'--out-dir "{out_dir}"')
-    parts.append(f'--pred-out "{out_dir / "hrp_scores.parquet"}"')
+    parts.append(f'--pred-out "{out_dir / "scores.parquet"}"')
     return " ".join(parts)
 
 
@@ -123,7 +132,8 @@ def save_composite_factor(out_dir: str | Path, *, name: str | None = None,
         "label_days": report.get("label_days"),
         "score_smooth": report.get("score_smooth"),
         "folds": report.get("folds"),
-        "score_path": str(out_dir / "hrp_scores.parquet") if (out_dir / "hrp_scores.parquet").is_file() else None,
+        # 分数 parquet 命名演进：(scores.parquet 新 self-contained 命名) / (hrp_scores.parquet 历史命名)
+        "score_path": _find_score_file(out_dir),
         "report_path": str(out_dir / "report.json"),
         "repro_command": _repro_command(report, out_dir),
         "saved_from_train_id": out_dir.name,
