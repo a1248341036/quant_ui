@@ -57,3 +57,46 @@ def test_interaction_type_inference_and_tolerance():
         "allowed_interaction_types": ["gated_signal"],
     })
     assert e5 is None and s5 is None and w5 is None
+
+
+def test_interaction_type_alias_canonicalization():
+    """2026-09-12：run f7fa3d11caa2 中 LLM 传 residual_signal_note（已知类型
+    带说明性后缀）与连字符/大小写变体被 unknown_interaction_type 拒——
+    语义主型对但措辞变体应归一放行，非法值仍拒并回显原始值。"""
+    spec = {
+        "base_signal": "10日成本线折价",
+        "condition_signal": "低关注度",
+        "economic_mechanism": "长窗口成本线折价在低关注度股票中修正更慢，关注度低使套利资金进入不足，错误定价持续",
+    }
+    expr = "RANK(CS_RESIDUALIZE($adj_close, $industry_sw_l1))"
+
+    # 已知类型带后缀 → 前缀归一
+    ok_spec = lint_expression_interaction(expr, {**spec, "interaction_type": "residual_signal_note"}, policy={})
+    assert ok_spec[2] is None and ok_spec[0]["interaction_type"] == "residual_signal"
+
+    # 连字符/大小写/空格变体
+    for raw in ("Residual-Signal", "residual signal", "gated-signal", "GATED_SIGNAL"):
+        probe = {**spec, "interaction_type": raw}
+        probe_expr = expr if "residual" in raw.lower() else (
+            "sig = GATED_SIGNAL(rev5, amt_surp, 0.8, true, 0)"
+        )
+        s, w, e = lint_expression_interaction(probe_expr, probe, policy={})
+        assert e is None, raw
+        assert s["interaction_type"] in ("residual_signal", "gated_signal"), raw
+
+    # 显式别名表
+    aliased = lint_expression_interaction(expr, {**spec, "interaction_type": "residualize"}, policy={})
+    assert aliased[2] is None and aliased[0]["interaction_type"] == "residual_signal"
+
+    # 真正非法仍拒，且错误回显原始值
+    bad = lint_expression_interaction(expr, {**spec, "interaction_type": "quantum_entanglement"}, policy={})
+    assert bad[2] is not None
+    assert "unknown_interaction_type:quantum_entanglement" in bad[2]["error"]
+
+    # allowed_types 与归一联动：归一后不在白名单仍拒
+    not_allowed = lint_expression_interaction(
+        expr, {**spec, "interaction_type": "residual_signal_note"},
+        policy={"allowed_interaction_types": ["gated_signal"]},
+    )
+    assert not_allowed[2] is not None
+    assert "interaction_type_not_allowed:residual_signal" in not_allowed[2]["error"]

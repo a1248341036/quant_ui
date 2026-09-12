@@ -18,14 +18,17 @@ from alphaagent.factor.mining.tools._dispatch import (
 )
 
 
-def _result(ic=0.024, icir=0.3, cov=0.99, passed=True, split="train"):
+def _result(ic=0.024, icir=0.3, cov=0.99, passed=True, split="train", turnover=None):
+    metrics = {
+        "cross_sectional_core": {"ic": ic, "icir": icir, "factor_coverage": cov},
+    }
+    if turnover is not None:
+        metrics["quantile_portfolio"] = {"avg_daily_side_turnover": turnover}
     return {
         "ok": True,
         "passed": passed,
         "split": split,
-        "metrics": {
-            "cross_sectional_core": {"ic": ic, "icir": icir, "factor_coverage": cov},
-        },
+        "metrics": metrics,
     }
 
 
@@ -45,6 +48,33 @@ class TestSubmitDecisionRequired:
         r = _result(split="val")
         _attach_yield_hints(r, "expr", {})
         assert "submit_decision_required" not in r
+
+
+class TestTurnoverPreflightHint:
+    """2026-09-12：run f7fa3d11caa2 中 16 次 submit_factor 死于 StageOne
+    换手超标（0.57~1.20 > 0.50）——train 过线但换手超标时，promising 提示
+    必须改为"勿提交 + 降噪建议"，省掉一次注定失败的 submit。"""
+
+    def test_high_turnover_replaces_promising_hint(self):
+        r = _result(turnover=0.61)
+        _attach_yield_hints(r, "expr", {})
+        hint = r.get("submit_decision_required", "")
+        assert "0.61" in hint
+        assert "请勿提交" in hint
+        assert "①立即调用 submit_factor" not in hint  # 不再给提交选项
+
+    def test_borderline_turnover_still_promising(self):
+        # 恰好在 0.4 红线下 → 正常 promising 提示
+        r = _result(turnover=0.40)
+        _attach_yield_hints(r, "expr", {})
+        assert "submit_factor" in r["submit_decision_required"]
+        assert "请勿提交" not in r["submit_decision_required"]
+
+    def test_zero_or_missing_turnover_still_promising(self):
+        # 无 quantile_portfolio（如 legacy shape）→ 不影响 promising 提示
+        r = _result()
+        _attach_yield_hints(r, "expr", {})
+        assert "请勿提交" not in r["submit_decision_required"]
 
 
 class TestNearMissHint:
