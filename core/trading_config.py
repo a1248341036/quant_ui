@@ -62,11 +62,12 @@ GATE_MIN_DAILY_OVERLAP: float = 0.5     # 日换手稳定性下限
 GATE_MIN_INVESTED_RATIO: float = 0.8    # 仓位利用率下限
 GATE_FREQ: str = "weekly"               # 门禁默认调仓频率
 
-# ── ML 组合引擎门禁专用（train_ml_composite）──
-# 组合口径：不是单因子 GATE_SELECTION_PCT(0.001≈5只)，也不是全局回测 SELECTION_PCT(0.004)。
-# Phase 2 实证：0.003（≈15 只，capital 联动 30 万）是唯一让完整 gate 全绿的宽度——
-# 0.004 时 excess_sharpe=0.480（差 0.02），0.003 时 0.541 过线、超额年化 +15.6%。
-ML_GATE_SELECTION_PCT: float = 0.003   # ML 组合门禁选股宽度（实证最优）
+# ── ML 组合引擎门禁（train_ml_composite）──
+# 盲测隔离纪律（2026-09-12 修正）：盲测段（mining_end 之后）只做一次最终引擎裁决，
+# 绝不作为参数调整依据。执行参数（选股宽度等）须在 2024 前 train/val 段正式选定并锁定。
+# 在此之前默认保持全局组合口径 SELECTION_PCT=0.004（系统预设，非盲测冲线值）——
+# 0.003 曾被误用为默认（来自盲测段冲线，违反隔离纪律），已撤销。
+ML_GATE_SELECTION_PCT: float = 0.004   # ML 组合门禁选股宽度（先验组合口径，待 train/val 段正式选定）
 
 
 def defaults() -> dict:

@@ -231,3 +231,63 @@ gate `enabled=true`，`passed=false`。失败原因：`excess_sharpe`、`max_dra
 | Phase 2c | 默认参数固化 `ML_GATE_SELECTION_PCT=0.003` | ✅ 已实现 |
 
 ML 组合引擎门禁从"3.4 只/62% 换手/60 拒单/gate 不过"演进到"8.3 只/49% 换手/投入比 97.5%/gate 全绿"（excess_annual +15.6%、excess_sharpe 0.541、回撤 −32.0%）。统计端 OOS IC 0.059 与单因子上限一致但组合可交易性达标。
+
+---
+
+## 12. 盲测隔离纪律修订（2026-09-12，推翻 10/10b/10c 的调参路径）
+
+> 上述 §10/10b/10c（资金联动 30 万、宽度 0.003 "实证最优"）是**方法论错误**——
+> 它们在盲测段（2025+）上反复用 gate 结果调参，烧掉了盲测的样本外信用。
+> 现按用户纪律推翻，改为**双段机制**。
+
+### 12.1 纪律
+
+1. **盲测段（mining_end=2024-12-31 之后）始终不可见**，不参与任何参数选择/调整；
+2. **执行参数（选股宽度 + 调仓频率）在 2024 前 train/val 段选定并锁定**，写 `exec_params.json`；
+3. **盲测段只做一次最终引擎裁决（0/1）**，结果只写报告、永不回调参数；
+4. **资金固定散户口径 10 万**（`GATE_CAPITAL`），不做宽度联动放大。
+
+### 12.2 双段工具链
+
+- **执行参数选定**：`scripts/select_ml_exec_params.py --widths 0.001,0.002,0.003,0.004 --freqs weekly,monthly`
+  - 用 `walk_forward_splits(train_start=panel_start)` 生成 train/val 段折，**每折 OOS 末端必须 < mining_end**（盲测零接触）；
+  - 网格扫描 width×freq，引擎门禁（10 万、完整约束）评估；
+  - 优先取全门槛通过者，否则取 excess_sharpe 最高者并**如实记录未过**，写 `exec_params.json`；
+  - 窗口 = 组合分数实际覆盖区间（首折~末折 OOS），避免分数空白区造成的假 overlap/infeasible。
+- **盲测终局裁决**：`train_ml_composite.py --exec-params <exec_params.json>` 用锁定参数在盲测段跑一次 gate，结果进 report 不回调。
+
+### 12.3 train/val 段实测（2023-11-27 ~ 2024-09-24，两折）
+
+| width×freq | excess_sharpe | 持仓重叠 | fail |
+|---|---|---|---|
+| 0.001 × weekly | 1.97 | 29.0% | **hold_overlap** |
+| 0.001 × monthly | 0.98 | 15.6% | hold_overlap |
+| 0.002 × weekly | 1.51 | 29.3% | hold_overlap |
+| 0.004 × weekly | 1.11 | 28.4% | hold_overlap |
+
+**诚实的结论**：train/val 段所有参数组合（width 0.001~0.004 × weekly/monthly）都被**持仓重叠（<50%）**卡住——ML 组合在该段周选股换手 60%+、相邻调仓重叠仅 29%，**不是宽度/频率参数能解的可交易性缺陷**，而是组合分数本身高换手。这正是双段机制的价值：在干净选参段如实暴露"不可交易"，而不是像盲测冲线那样硬凑 gate 全绿。
+- 选定锁定：0.001 × weekly（excess_sharpe 1.97 最高），"train/val 段全门槛未通过，盲测终局将如实裁决"。
+- 盲测终局在 §13 用该锁定值一次裁决。
+
+### 12.4 撤销清单
+
+- `--gate-capital`：取消默认资金联动，固定 10 万（显式覆盖仅高阶保留）；
+- `ML_GATE_SELECTION_PCT`：从盲测冲线值 0.003 回退到**先验组合口径 0.004**，注释标明"待 train/val 段正式选定"；
+- `--gate-selection-pct`/`--gate-top-n`：保留，但盲测段结果不再回调。
+
+## 13. 盲测终局裁决（blind_final_v4，2026-09-12）
+
+用 §12 锁定的执行参数（`exec_select_v4/exec_params.json`：0.001 × weekly，10 万）在盲测段跑**一次**最终裁决：
+
+```
+执行参数来自 train/val 段锁定文件 exec_params.json：pct=0.001, freq=weekly（盲测段结果不回调参数）
+gate passed=True  fail_reasons=[]
+  excess_annual=+14.4%  excess_sharpe=0.515  daily_overlap=53.4%  turnover=60.0%
+```
+
+**关键**：blinds 段这次"通过"与 §10 的"盲测冲线全绿"性质完全不同——
+- 参数（0.001 宽度、weekly、10 万）来自 **train/val 段干净选定**，盲测段只做一次 0/1 裁决；
+- 盲测结果不回流参数；report 记录 `selection_pct=0.001, capital=100,000`；
+- 0.001 尽管在 train/val 段重叠不达标（§12.3），但盲测段重叠 53.4% 过线——显示盲测段该组合换手特征与 train/val 段不同，终局如实放行。
+
+双段工具链闭环：`select_ml_exec_params.py`（选参）→ `exec_params.json`（锁定）→ `train_ml_composite.py --exec-params`（终局裁决）。盲测隔离纪律完整落地。

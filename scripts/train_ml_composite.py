@@ -97,14 +97,18 @@ def _parse_args() -> argparse.Namespace:
         help="engine_gate 改用固定 Top-N 选股（selection_mode=top_n）；缺省保持动态百分比"
              "（top_pct，用 --gate-selection-pct）。传此参数后 --gate-selection-pct 失效。")
     ap.add_argument(
+        "--exec-params", default=None,
+        help="执行参数锁定文件（select_ml_exec_params.py 在 train/val 段产出 exec_params.json）。"
+             "指定后盲测终局 gate 用它锁定的 selection_pct/freq，盲测结果不回调参数。")
+    ap.add_argument(
         "--gate-capital", type=float, default=None,
-        help="engine_gate 组合门禁资金。缺省按所选宽度等比放大 GATE_CAPITAL（10 万）→ "
-             "每只预算密度与单因子门禁（GATE_CAPITAL/GATE_TOP_N=2 万/只）保持一致："
-             "top_pct 时 capital = GATE_CAPITAL × selection_pct/GATE_SELECTION_PCT"
-             f"（{trading_config.ML_GATE_SELECTION_PCT} 默认宽度 → 30 万）；"
-             "top_n 时 = GATE_CAPITAL × top_n/GATE_TOP_N。显式传值则直接用。"
-             "Phase 2a：修复组合宽度 × 10 万资金 = 5000 元/只系统性买不起一手"
-             "导致的现金不足拒单（0.003 联动 30 万后投入比 97.5%%、gate 全绿）。")
+        help="engine_gate 门禁资金，显式覆盖。默认固定散户口径 GATE_CAPITAL=10 万"
+             f"（{trading_config.GATE_CAPITAL:,.0f}）——盲测隔离纪律：不按宽度联动放大，"
+             "执行参数在 train/val 段选定，而非改资金。")
+    ap.add_argument(
+        "--exec-selection", default=None,
+        help="（已废弃 → 用 scripts/select_ml_exec_params.py）执行参数选定模式。"
+             "盲测隔离：参数只在 train/val 段选定，盲测段只做终局裁决。")
     ap.add_argument("--no-write-pred", action="store_true", help="不写 pred 通道文件")
     ap.add_argument("--subset-curve", action="store_true",
                     help="贡献排序累积子集曲线：按置换贡献降序取 Top-k 逐级重训（成本 ≈ 2n 次拟合），"
@@ -442,23 +446,30 @@ def main() -> None:
         from alphaagent.factor.mining.engine_gate import run_engine_gate
 
         policy = default_research_spec(args.modes[0])["delivery_policy"]["production"]["engine_gate"]
-        # Phase 1 可交易性改造：组合引擎门禁的选股宽度改用组合口径（top 0.4%≈20 只），
-        # 而非单因子门禁的 GATE_SELECTION_PCT(0.001≈5 只)。基线死穴——3.4 只持仓、
-        # 62% 换手、60 次现金不足拒单、回撤 −41%——正是窄选股把合成分数逼进不可交易
-        # 尾部的连锁反应。阈值（超额年化/夏普/回撤等）一律不动。
-        if args.gate_top_n is not None:
+        # 执行参数来源（盲测隔离纪律 v2）：
+        # 若显式传 --exec-params（select_ml_exec_params.py 在 train/val 段锁定的参数），
+        # 以锁定值为准；否则回落到 --gate-selection-pct/--gate-top-n（或默认先验口径）。
+        # 盲测段只做最终一次裁决，其结果永不回调参数。
+        if args.exec_params:
+            try:
+                ep_path = Path(args.exec_params)
+                ep = json.loads(ep_path.read_text(encoding="utf-8"))
+                policy = {**policy, "selection_mode": "top_pct",
+                          "selection_pct": float(ep["selection_pct"]),
+                          "freq": str(ep.get("freq") or policy.get("freq"))}
+                print(f"执行参数来自 train/val 段锁定文件 {ep_path}："
+                      f"pct={ep['selection_pct']}, freq={policy.get('freq')}"
+                      f"（盲测段结果不回调参数）")
+            except (OSError, KeyError, ValueError, json.JSONDecodeError) as exc:
+                print(f"警告：读取 --exec-params {args.exec_params} 失败（{exc}），回落命令参数")
+        elif args.gate_top_n is not None:
             policy = {**policy, "selection_mode": "top_n", "top_n": args.gate_top_n}
         else:
             policy = {**policy, "selection_mode": "top_pct", "selection_pct": args.gate_selection_pct}
-        # Phase 2a 资金联动：0.004 组合宽度 × 10 万 = 5000 元/只，买不起中高价股一手
-        # → 455 次"现金不足/预算过小"。保持与单因子门禁相同的"2 万/只"预算密度，
-        # 按宽度等比放大门禁资金（非作弊——20 只组合实盘本就需更大账户）。
-        if args.gate_capital is not None:
-            capital = float(args.gate_capital)
-        elif policy["selection_mode"] == "top_n":
-            capital = trading_config.GATE_CAPITAL * (float(policy["top_n"]) / trading_config.GATE_TOP_N)
-        else:
-            capital = trading_config.GATE_CAPITAL * (float(policy["selection_pct"]) / trading_config.GATE_SELECTION_PCT)
+        # 盲测隔离纪律（2026-09-12 修正）：门禁资金固定散户口径 GATE_CAPITAL（10 万），
+        # 不做资金联动放大——组合宽度买不起一手是真实可交易性约束，不是参数问题。
+        # --gate-capital 仅作为显式覆盖保留（高阶用途），默认绝不偏离 10 万。
+        capital = float(args.gate_capital) if args.gate_capital is not None else trading_config.GATE_CAPITAL
         policy = {**policy, "capital": capital}
         sel_desc = (
             f"Top-N={policy['top_n']}" if policy["selection_mode"] == "top_n"
