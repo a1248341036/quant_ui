@@ -30,6 +30,7 @@
             <div class="metrics-card"><b>{{ fmt(data.summary.total_wall_minutes ?? 0) }}<i>min</i></b><span>总时长</span></div>
             <div class="metrics-card"><b>{{ fmt(data.summary.total_input_k_tokens ?? 0) }}<i>K</i></b><span>输入 tokens</span></div>
             <div class="metrics-card"><b>{{ fmt(data.summary.total_output_k_tokens ?? 0) }}<i>K</i></b><span>输出 tokens</span></div>
+            <div class="metrics-card"><b>{{ data.summary.total_cache_hit_rate == null ? '-' : (data.summary.total_cache_hit_rate * 100).toFixed(0) }}<i>%</i></b><span>缓存命中率</span></div>
             <div class="metrics-card"><b>{{ fmt(data.summary.total_thinking_k_chars ?? 0) }}<i>K</i></b><span>思维链字符</span></div>
             <div class="metrics-card"><b>{{ data.summary.total_eval ?? 0 }}</b><span>因子评估</span></div>
             <div class="metrics-card"><b>{{ data.summary.total_submit ?? 0 }}</b><span>提交</span></div>

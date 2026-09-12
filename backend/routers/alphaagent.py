@@ -424,6 +424,11 @@ def metrics_overview(last: int = 20) -> dict[str, Any]:
         "total_wall_minutes": round(sum(m["wall_minutes"] for m in rows), 1),
         "total_input_k_tokens": round(sum(m["input_k_tokens"] for m in rows), 1),
         "total_output_k_tokens": round(sum(m["output_k_tokens"] for m in rows), 1),
+        "total_cache_hit_rate": (
+            round(sum(m["input_k_tokens"] * (m.get("cache_hit_rate") or 0) for m in rows) /
+                  sum(m["input_k_tokens"] for m in rows), 4)
+            if sum(m["input_k_tokens"] for m in rows) > 0 else None
+        ),
         "total_thinking_k_chars": round(sum(m["thinking_k_chars"] for m in rows), 1),
         "total_eval": total_eval,
         "total_submit": sum(m["n_submit"] for m in rows),
@@ -1047,3 +1052,47 @@ def dsl_operator_monitor(
         since_ts = _t.time() - since_hours * 3600.0
     agg = monitor.read_accumulated(top_k=top_k, since_ts=since_ts)
     return {"ok": True, "source": "artifacts/dsl_operator_profiling.jsonl", **agg}
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  整夜挖掘监控（overnight monitor）
+# ══════════════════════════════════════════════════════════════════════
+
+
+class OvernightMonitorStartRequest(BaseModel):
+    deadline: str = Field(default="07:00", pattern=r"^\d{1,2}:\d{2}$")
+    max_runs: int = Field(default=0, ge=0, le=50)
+    # 前端芯片多选传数组；服务层 join 成逗号串给脚本 --focus-facets
+    focus_facets: list[str] | str | None = None
+    message: str | None = Field(default=None, max_length=5000)
+    max_turns: int = Field(default=0, ge=0, le=50)
+    restart_backend: bool = True
+    keep_awake: bool = True
+    poll: int = Field(default=60, ge=10, le=600)
+
+
+@router.post("/overnight-monitor/start")
+def overnight_monitor_start(req: OvernightMonitorStartRequest) -> dict[str, Any]:
+    """启动整夜挖掘监控子进程（前端悬浮窗调用）。"""
+    from backend import overnight_monitor_service
+
+    result = overnight_monitor_service.start_monitor(req.model_dump())
+    if "error" in result:
+        raise HTTPException(status_code=409, detail=result["error"])
+    return result
+
+
+@router.post("/overnight-monitor/stop")
+def overnight_monitor_stop() -> dict[str, Any]:
+    """停止整夜挖掘监控子进程。"""
+    from backend import overnight_monitor_service
+
+    return overnight_monitor_service.stop_monitor()
+
+
+@router.get("/overnight-monitor/status")
+def overnight_monitor_status(tail_lines: int = 80) -> dict[str, Any]:
+    """查询整夜挖掘监控当前状态 + 日志尾。"""
+    from backend import overnight_monitor_service
+
+    return overnight_monitor_service.get_status(tail_lines=tail_lines)

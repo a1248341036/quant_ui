@@ -31,7 +31,7 @@
         </span>
         <span v-if="agent.usage.calls" class="usage-chip" title="本次 Agent 模型调用累计 usage">
           ↑ {{ formatTokens(agent.usage.input_tokens) }} · ↓ {{ formatTokens(agent.usage.output_tokens) }}
-          <em v-if="agent.usage.cache_input_tokens">缓存 {{ formatTokens(agent.usage.cache_input_tokens) }}</em>
+          <em v-if="agent.usage.cache_input_tokens">缓存 {{ formatTokens(agent.usage.cache_input_tokens) }}<template v-if="agent.usage.cache_hit_rate"> · 命中 {{ (agent.usage.cache_hit_rate * 100).toFixed(0) }}%</template></em>
           <em v-else>缓存未返回</em>
         </span>
         <span v-if="agent.current" class="live-status" :class="'live-' + agent.current.status">
