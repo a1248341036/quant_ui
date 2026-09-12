@@ -707,3 +707,167 @@ textarea.lab-input { resize:vertical; font:12px/1.5 var(--font-mono); }
 .metrics-rate-bar i.rate-good { background:#4fc3a1; }
 .metrics-rate-bar i.rate-mid { background:#e8c491; }
 .metrics-rate-bar i.rate-bad { background:#ef6b73; }
+/* ═══ 整夜挖掘监控悬浮窗（OvernightMonitorWidget）═══ */
+.ovm-widget { position: fixed; bottom: 20px; right: 20px; z-index: 9000; font-family: var(--font-sans); }
+
+/* 收起态圆形按钮 */
+.ovm-fab {
+  position: relative;
+  width: 48px; height: 48px;
+  border: 1px solid var(--line); border-radius: 50%;
+  background: var(--card); color: var(--accent);
+  box-shadow: 0 4px 16px rgba(0 0 0 / .3);
+  cursor: pointer; transition: all .2s;
+  display: grid; place-items: center;
+}
+.ovm-fab:hover { border-color: var(--accent); box-shadow: 0 4px 20px rgba(91 140 255 / .3); }
+.ovm-fab-icon { font-size: 20px; }
+.ovm-fab-dot {
+  position: absolute; top: 2px; right: 2px;
+  width: 8px; height: 8px; border-radius: 50%;
+  background: #43d17a; box-shadow: 0 0 8px rgba(67 209 122 / .7);
+  animation: ovm-pulse 2s infinite;
+}
+@keyframes ovm-pulse { 0%,100% { opacity: 1; } 50% { opacity: .4; } }
+
+/* 展开态面板 */
+.ovm-panel {
+  width: 340px; max-height: 520px;
+  border: 1px solid var(--line); border-radius: 14px;
+  background: var(--card); box-shadow: 0 8px 32px rgba(0 0 0 / .4);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.ovm-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 12px 16px; border-bottom: 1px solid var(--line);
+  background: var(--bg-soft);
+}
+.ovm-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.ovm-status { font-size: 10px; padding: 2px 8px; border-radius: 999px; margin-left: auto; }
+.ovm-status-running { background: rgba(67 209 122 / .15); color: #43d17a; }
+.ovm-status-idle { background: rgba(255 255 255 / .08); color: var(--muted); }
+.ovm-status-stopped { background: rgba(245 189 79 / .15); color: #f5bd4f; }
+.ovm-status-failed { background: rgba(239 107 115 / .15); color: #ef6b73; }
+.ovm-status-completed { background: rgba(102 128 168 / .15); color: #6680a8; }
+.ovm-close {
+  width: 24px; height: 24px; border: 0; border-radius: 6px;
+  background: transparent; color: var(--muted); font-size: 16px; cursor: pointer;
+}
+.ovm-close:hover { background: rgba(255 255 255 / .08); color: var(--text); }
+
+/* 拖动：标题栏拖拽手柄 + 拖动中光标与禁选中 */
+.ovm-header { cursor: grab; user-select: none; }
+.ovm-header:active { cursor: grabbing; }
+.ovm-drag-handle { color: var(--muted); font-size: 12px; opacity: .7; }
+.ovm-widget.dragging, .ovm-widget.dragging * { cursor: grabbing !important; user-select: none !important; }
+
+.ovm-body { padding: 12px 16px; overflow-y: auto; flex: 1; min-height: 0; }
+
+/* 启动表单 */
+.ovm-form { display: grid; gap: 10px; }
+.ovm-field { display: flex; flex-direction: column; gap: 4px; }
+.ovm-field span { font-size: 11px; color: var(--muted); }
+.ovm-field input, .ovm-field select {
+  padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--bg-soft); color: var(--text); font-size: 12px;
+  font-family: var(--font-mono);
+}
+.ovm-field input:focus, .ovm-field select:focus { outline: 0; border-color: var(--accent); }
+.ovm-field-wide { grid-column: 1 / -1; }
+
+/* 数据面芯片多选（复用全局 .facet-chip，此处只做尺寸收紧） */
+.ovm-facet-chips { flex-wrap: wrap; gap: 5px; }
+.ovm-facet-chips .facet-chip { padding: 2px 9px; font-size: 10px; }
+.ovm-facet-hint { display: block; font-size: 10px; color: var(--muted); margin-bottom: 2px; }
+
+/* 停止日期时间选择 + 快捷按钮 */
+.ovm-datetime { display: flex; gap: 6px; }
+.ovm-datetime input {
+  flex: 1; min-width: 0; padding: 5px 8px; border: 1px solid var(--line);
+  border-radius: 6px; background: var(--bg-soft); color: var(--text);
+  font: 12px var(--font-mono); color-scheme: dark;
+}
+.ovm-datetime input:focus { outline: 0; border-color: var(--accent); }
+.ovm-quick-btns { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+.ovm-quick-btn {
+  padding: 3px 10px; border: 1px solid var(--line); border-radius: 999px;
+  background: transparent; color: var(--muted); font-size: 10px;
+  cursor: pointer; transition: all .12s;
+}
+.ovm-quick-btn:hover { color: var(--text); border-color: var(--accent); }
+.ovm-quick-btn.active {
+  color: #fff; border-color: var(--accent, #5b8cff);
+  background: color-mix(in srgb, var(--accent, #5b8cff) 22%, transparent);
+}
+.ovm-deadline-hint { margin-top: 4px; }
+
+.ovm-toggles { display: flex; gap: 16px; grid-column: 1 / -1; }
+.ovm-toggle { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+.ovm-toggle input { width: 14px; height: 14px; accent-color: var(--accent); }
+.ovm-toggle span { font-size: 11px; color: var(--text-dim, #8a93a6); }
+
+.ovm-start-btn {
+  grid-column: 1 / -1;
+  padding: 8px; border: 0; border-radius: 8px;
+  background: var(--accent); color: #fff; font-size: 13px; font-weight: 600;
+  cursor: pointer; transition: opacity .15s;
+}
+.ovm-start-btn:hover:not(:disabled) { opacity: .9; }
+.ovm-start-btn:disabled { opacity: .5; cursor: not-allowed; }
+
+.ovm-error { grid-column: 1 / -1; font-size: 11px; color: #ef6b73; margin: 0; }
+
+/* 运行态信息 */
+.ovm-running-info { display: grid; gap: 8px; }
+.ovm-info-row { display: flex; justify-content: space-between; align-items: center; }
+.ovm-info-label { font-size: 11px; color: var(--muted); }
+.ovm-info-val { font-size: 12px; color: var(--text); font-family: var(--font-mono); }
+
+.ovm-stop-btn {
+  margin-top: 6px; padding: 7px; border: 1px solid rgba(239 107 115 / .4);
+  border-radius: 8px; background: rgba(239 107 115 / .1); color: #ef6b73;
+  font-size: 12px; font-weight: 500; cursor: pointer; transition: all .15s;
+}
+.ovm-stop-btn:hover:not(:disabled) { background: rgba(239 107 115 / .2); }
+.ovm-stop-btn:disabled { opacity: .5; cursor: not-allowed; }
+
+/* 当前运行 run 列表（逐条停止） */
+.ovm-runs-block {
+  margin-top: 10px; padding: 8px 10px; border: 1px solid var(--line);
+  border-radius: 8px; background: var(--bg-soft);
+  display: grid; gap: 6px;
+}
+.ovm-runs-title { font-size: 11px; color: var(--muted); font-weight: 500; }
+.ovm-run-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+}
+.ovm-run-meta { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.ovm-run-id {
+  font: 11px var(--font-mono); color: var(--text); background: rgb(255 255 255 / .06);
+  padding: 1px 6px; border-radius: 4px; white-space: nowrap;
+}
+.ovm-run-status { font-size: 10px; padding: 1px 6px; border-radius: 999px; white-space: nowrap; }
+.ovm-run-status-starting { background: rgba(245 189 79 / .15); color: #f5bd4f; }
+.ovm-run-status-running { background: rgba(67 209 122 / .15); color: #43d17a; }
+.ovm-run-status-stopping { background: rgba(245 189 79 / .15); color: #f5bd4f; }
+.ovm-run-events { font-size: 10px; color: var(--muted); white-space: nowrap; }
+.ovm-run-stop {
+  flex-shrink: 0; padding: 3px 10px; border: 1px solid rgba(239 107 115 / .4);
+  border-radius: 6px; background: transparent; color: #ef6b73;
+  font-size: 11px; cursor: pointer; transition: all .12s;
+}
+.ovm-run-stop:hover:not(:disabled) { background: rgba(239 107 115 / .15); }
+.ovm-run-stop:disabled { opacity: .5; cursor: not-allowed; }
+.ovm-no-runs { font-size: 11px; color: var(--muted); margin-top: 6px; }
+
+/* 日志尾 */
+.ovm-log-section { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
+.ovm-log-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.ovm-log-header span:first-child { font-size: 11px; color: var(--muted); font-weight: 500; }
+.ovm-log-count { font-size: 10px; color: var(--muted); font-family: var(--font-mono); }
+.ovm-log-tail {
+  max-height: 200px; overflow-y: auto; margin: 0; padding: 8px;
+  border-radius: 6px; background: var(--bg-soft);
+  font: 10px/1.5 var(--font-mono); color: var(--text-dim, #8a93a6);
+  white-space: pre-wrap; word-break: break-all;
+}
