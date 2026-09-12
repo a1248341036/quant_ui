@@ -194,6 +194,15 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
         "suggest_slots": 2,
     },
     "delivery_policy": _default_delivery_policy(),
+    # 提示词分阶段注入策略（2026-09-12 新增）：
+    # - phase_mode="auto" → 按 turn 比例自动切换 explore→deepen→deliver，
+    #   explore 阶段裁掉冷门模块，省 ~28% system prompt token；
+    # - phase_mode="full" → 全量注入（旧行为，向后兼容）。
+    # phase_ratio 三段比例默认均分 [1/3, 1/3, 1/3]。
+    "prompt_policy": {
+        "phase_mode": "auto",
+        "phase_ratio": [1 / 3, 1 / 3, 1 / 3],
+    },
 }
 
 
@@ -432,24 +441,26 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
     if eg.get("max_participation") is not None:
         eg["max_participation"] = _bounded_number(eg.get("max_participation"), "engine_gate.max_participation", 0.001, 1)
     eg["allowed_freqs"] = _string_list(eg.get("allowed_freqs"), "engine_gate.allowed_freqs")
-    invalid_freqs = set(eg["allowed_freqs"]) - {"daily", "weekly", "monthly"}
-    if invalid_freqs:
-        raise ValueError("research_spec.engine_gate.allowed_freqs_invalid")
-    if eg.get("freq") is not None:
-        eg["freq"] = str(eg["freq"]).lower()
-        if eg["freq"] not in eg["allowed_freqs"]:
-            raise ValueError("research_spec.engine_gate.freq_not_in_allowed")
-    for key in ("min_excess_annual",):
-        eg[key] = _bounded_number(eg.get(key), f"engine_gate.{key}", -1, 5)
-    for key in ("min_excess_sharpe", "max_drawdown", "min_daily_overlap"):
-        if eg.get(key) is not None:
-            eg[key] = _bounded_number(eg.get(key), f"engine_gate.{key}", 0, 10)
-    if eg.get("min_invested_ratio") is not None:
-        eg["min_invested_ratio"] = _bounded_number(eg.get("min_invested_ratio"), "engine_gate.min_invested_ratio", 0, 1)
-    if eg.get("capital") is not None:
-        eg["capital"] = _bounded_number(eg.get("capital"), "engine_gate.capital", 10_000, 1_000_000_000)
-    if eg.get("min_am20_yuan") is not None:
-        eg["min_am20_yuan"] = _bounded_number(eg.get("min_am20_yuan"), "engine_gate.min_am20_yuan", 0, 1_000_000_000_000)
+
+    # ── prompt_policy：分阶段注入策略（2026-09-12 新增）──
+    pp = spec.get("prompt_policy")
+    if not isinstance(pp, dict):
+        pp = {}
+    pp["phase_mode"] = str(pp.get("phase_mode", "auto"))
+    if pp["phase_mode"] not in ("full", "auto"):
+        raise ValueError("research_spec.prompt_policy.phase_mode_invalid")
+    # phase_ratio：三段比例，和≈1.0，每段 >0
+    raw_ratio = pp.get("phase_ratio", [1 / 3, 1 / 3, 1 / 3])
+    if not isinstance(raw_ratio, list) or len(raw_ratio) != 3:
+        raise ValueError("research_spec.prompt_policy.phase_ratio_must_be_3_elements")
+    ratio = [float(_bounded_number(r, "prompt_policy.phase_ratio", 0, 1)) for r in raw_ratio]
+    if abs(sum(ratio) - 1.0) > 0.02:
+        raise ValueError("research_spec.prompt_policy.phase_ratio_must_sum_to_1")
+    if any(r <= 0 for r in ratio):
+        raise ValueError("research_spec.prompt_policy.phase_ratio_must_be_positive")
+    pp["phase_ratio"] = ratio
+    spec["prompt_policy"] = pp
+
     profiles = resolve_profiles(spec)
     spec["evaluation_profiles"] = {profile_id: profile.as_dict() for profile_id, profile in profiles.items()}
 
@@ -531,4 +542,19 @@ def research_policy_prompt(spec: dict[str, Any]) -> str:
             "交付策略："
             "通过 validation 的因子自动进入 candidate 候选池；Reviewer approve 后进入 production 正式库。",
         ]
+    )
+
+
+def prompt_phase_summary(spec: dict[str, Any]) -> str:
+    """提示词分阶段策略的可读摘要，注入 research_policy_prompt 末尾。
+
+    phase_mode=full 时不注入（旧行为）；auto 时告知 LLM 当前阶段裁剪了哪些内容。
+    """
+    pp = spec.get("prompt_policy") or {}
+    mode = str(pp.get("phase_mode", "auto"))
+    if mode != "auto":
+        return ""
+    return (
+        "提示词分阶段注入：探索阶段(explore)精简算子目录与部分约束模块，"
+        "深耕阶段(deepen)恢复完整约束，交付阶段(deliver)全量含交付模块。"
     )

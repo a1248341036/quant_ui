@@ -17,7 +17,7 @@ ORDER = 80
 REQUIRED = False
 SEP_BEFORE = "\n\n---\n\n"
 # 分阶段注入：探索阶段靠直觉，深耕/交付阶段才需精细化指南
-PHASES = frozenset({"deepen", "deliver", "full"})
+PHASES = frozenset({"explore", "deepen", "deliver", "full"})
 
 
 def render(ctx) -> str:  # noqa: ANN001

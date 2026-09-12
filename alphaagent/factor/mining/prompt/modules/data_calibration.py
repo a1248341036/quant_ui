@@ -70,7 +70,7 @@ REQUIRED = True
 SEP_BEFORE = "\n\n---\n\n"
 # 探索阶段裁剪（2026-09-06）：探索期机制优先、少碰口径细节；label 语义
 # 已由 data_fields（常驻）覆盖；deepen 起深度迭代时再注入
-PHASES = frozenset({"deepen", "deliver", "full"})
+PHASES = frozenset({"explore", "deepen", "deliver", "full"})
 
 
 def render(ctx) -> str:  # noqa: ANN001

@@ -169,18 +169,18 @@ def _phase_report(phase: str) -> tuple[str, list[dict]]:
 
 
 def test_explore_disables_deepen_only_modules():
-    """explore 阶段：multi_period / neutralization_guide / ic_robustness / delivery_submission /
-    tool_examples / data_calibration 不注入（2026-09-06 扩裁剪）。"""
+    """explore 阶段：multi_period / delivery_submission / tool_examples 不注入。
+    data_calibration / ic_robustness / neutralization_guide 保留（质量引导不可省）。"""
     text, report = _phase_report("explore")
     disabled = {r["module"] for r in report if not r["enabled"]}
     assert "multi_period" in disabled
-    assert "neutralization_guide" in disabled
-    assert "ic_robustness" in disabled
     assert "delivery_submission" in disabled
     assert "tool_examples" in disabled
-    assert "data_calibration" in disabled
-    # 核心模块仍启用
+    # 质量引导模块在 explore 也保留
     enabled = {r["module"] for r in report if r["enabled"]}
+    for must_on in ("data_calibration", "ic_robustness", "neutralization_guide"):
+        assert must_on in enabled, f"{must_on} should be enabled in explore phase"
+    # 核心模块仍启用
     for must_on in ("core_identity", "strategy_tracks", "operator_catalog",
                      "behavior_rules", "tool_contracts", "delivery_interface"):
         assert must_on in enabled, f"{must_on} should be enabled in explore phase"
@@ -192,8 +192,8 @@ def test_explore_disables_deepen_only_modules():
     # 用示例独有锚点——tool_contracts 的工具清单表也含 eval_on_train_set）
     assert "ma20_dev" not in text
     assert "funda_roe_growth_neutral" not in text
-    # operator_catalog 探索提示
-    assert "探索阶段优先使用高频算子" in text
+    # operator_catalog 探索阶段精简：不再注入完整目录，改为高频算子名 + 提示语
+    assert "探索阶段精简" in text or "探索阶段优先使用高频算子" in text
 
 
 def test_deepen_includes_deepen_modules():

@@ -39,6 +39,24 @@ def _excluded_prefixes(focus_facets) -> tuple[str, ...]:
 
 def render(ctx) -> str:  # noqa: ANN001
     focused = _focused_prefixes(getattr(ctx, "focus_facets", ()))
+    phase = getattr(ctx, "prompt_phase", "full")
+    focused_note = ""
+    if focused and ctx.include_operator_catalog:
+        focused_note = f"本轮聚焦数据面：{'/'.join(focused)} 开头的算子已附完整签名，优先在聚焦族内构建机制。"
+    elif getattr(ctx, "focus_facets", ()) and ctx.include_operator_catalog:
+        focused_note = "本轮已按聚焦数据面隐藏未选面的专属算子族（其表达式会被工具层拦截）。"
+
+    # ── explore 阶段：不注入完整目录，只给一行提示 + 高频算子名 ──
+    if phase == "explore" and ctx.include_operator_catalog and not focused:
+        from alphaagent.dsl.catalog import build_operator_namespace, _FREQUENT_OPERATORS
+        ns = build_operator_namespace()
+        freq = [n for n in sorted(ns) if n in _FREQUENT_OPERATORS]
+        freq_text = " ".join(f"`{n}`" for n in freq)
+        return f"""### 可用算子（探索阶段精简）
+
+算子均为**大写**（如 `TS_MEAN`、`DELTA`）。高频算子（已附签名见报错自愈）：{freq_text}。
+冷门算子传参出错时错误信息会附真实签名，按提示修正即可。深耕阶段恢复完整目录。{focused_note}"""
+
     catalog = (
         operator_catalog_markdown(
             focused_prefixes=focused,
@@ -47,12 +65,6 @@ def render(ctx) -> str:  # noqa: ANN001
         if ctx.include_operator_catalog
         else "（本次未注入算子清单）"
     )
-    focused_note = ""
-    phase = getattr(ctx, "prompt_phase", "full")
-    if focused and ctx.include_operator_catalog:
-        focused_note = f"本轮聚焦数据面：{'/'.join(focused)} 开头的算子已附完整签名，优先在聚焦族内构建机制。"
-    elif getattr(ctx, "focus_facets", ()) and ctx.include_operator_catalog:
-        focused_note = "本轮已按聚焦数据面隐藏未选面的专属算子族（其表达式会被工具层拦截）。"
     explore_hint = ""
     if phase == "explore" and ctx.include_operator_catalog:
         explore_hint = " 探索阶段优先使用高频算子（已附完整签名），冷门算子签名见报错自愈。"
