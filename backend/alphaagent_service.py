@@ -1287,6 +1287,13 @@ def _candidate_factor_view(factor_id: str, entry: dict[str, Any], *, category: s
     val_ic = _safe_float(metrics.get("val_ic"))
     val_icir = _safe_float(metrics.get("val_icir"))
     val_retention = _safe_float(metrics.get("val_ic_retention"))
+    # 盲测/test 段指标（2026-09-12：此前 detail 视图漏了 test_ic 提取，
+    # 前端"盲测 IC"列恒为 None——数据在 entry.metrics 齐全，纯展示层缺字段接线）
+    test_ic = _safe_float(metrics.get("test_ic"))
+    test_icir = _safe_float(metrics.get("test_icir"))
+    test_rank_ic = _safe_float(metrics.get("test_rank_ic"))
+    test_retention = _safe_float(metrics.get("test_ic_retention"))
+    test_sign_consistent = metrics.get("test_sign_consistent")
     if train_ic is None:
         for split_entry in ee.get("train", []):
             s = split_entry.get("summary") or {}
@@ -1297,6 +1304,13 @@ def _candidate_factor_view(factor_id: str, entry: dict[str, Any], *, category: s
             s = split_entry.get("summary") or {}
             val_ic = _safe_float(s.get("ic"))
             val_icir = _safe_float(s.get("icir"))
+            break
+    if test_ic is None:
+        for split_entry in ee.get("test", []):
+            s = split_entry.get("summary") or {}
+            test_ic = _safe_float(s.get("ic"))
+            test_icir = _safe_float(s.get("icir"))
+            test_retention = _safe_float(s.get("ic_retention"))
             break
 
     # ── 组合层收益指标（quantile_portfolio 由提交/回填写入）──
@@ -1370,6 +1384,11 @@ def _candidate_factor_view(factor_id: str, entry: dict[str, Any], *, category: s
         "val_ic": val_ic,
         "val_icir": val_icir,
         "val_ic_retention": val_retention,
+        "test_ic": test_ic,
+        "test_icir": test_icir,
+        "test_rank_ic": test_rank_ic,
+        "test_ic_retention": test_retention,
+        "test_sign_consistent": test_sign_consistent,
         "annualized_return": _safe_float(qp.get("top_group_annualized_return")),
         "annualized_excess_return": _safe_float(qp.get("top_group_annualized_excess_return")),
         "sharpe": _safe_float(qp.get("top_group_sharpe")),
