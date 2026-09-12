@@ -429,6 +429,30 @@ class TestPredictionAliasAndErrorDetail:
             assert pred is not None, raw
             assert pred["expected_strong_side"] == want, raw
 
+    def test_shape_enum_with_suffix_alias(self):
+        """2026-09-12（run adfbf57c45aa）：deepseek 8 次 prediction_invalid 于
+        expected_shape='monotone_increasing_D1_to_D10'——模型把描述后缀 D1~D10
+        接到合法枚举后，整串被当散文（中文正则不命中、D1/D10 端点平票歧义）。
+        合法枚举/别名带描述后缀应按前缀归一放行，语义主型未变不拒。"""
+        from alphaagent.factor.mining.eval.prediction import normalize_prediction
+
+        base = {"expected_strong_side": "high_factor", "expected_sign": 1}
+        for raw, want in (
+            ("monotone_increasing_D1_to_D10", "monotonic_increasing"),
+            ("monotonic_increasing_d1_strongest", "monotonic_increasing"),
+            ("monotone_decreasing_value", "monotonic_decreasing"),
+            ("inverted_u_shape_peak_middle", "inverted_u"),
+            ("u_shape_value", "u_shape"),
+            ("spike_at_extreme_top_decile", "spike_at_extreme"),
+            ("irregular_no_pattern", "irregular"),
+        ):
+            pred = normalize_prediction({**base, "expected_shape": raw})
+            assert pred is not None, raw
+            assert pred["expected_shape"] == want, raw
+
+        # 真正非法（前缀都不是合法枚举）仍拒
+        assert normalize_prediction({**base, "expected_shape": "quantum_entangled"}) is None
+
 
 class TestProsePrediction:
     """2026-09-06：散文→枚举归一。
