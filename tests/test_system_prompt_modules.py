@@ -27,13 +27,13 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 _SPEC = {
     "delivery_policy": {
-        "candidate": {"min_abs_ic": 0.02, "min_icir": 0.25},
+        "candidate": {"min_abs_ic": 0.025, "min_icir": 0.30},
         "production": {
             "min_train_abs_ic": 0.025,
             "engine_gate": {"enabled": True, "freq": "weekly"},
         },
     },
-    "evaluation_policy": {"min_train_abs_ic": 0.02},
+    "evaluation_policy": {"min_train_abs_ic": 0.025},
 }
 
 _CASES = {

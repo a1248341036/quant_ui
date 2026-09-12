@@ -9,6 +9,16 @@ AIGC:
   ReservedCode2: 'd099cc50-3195-4f93-a0ad-f1c9ac4f1143'
 ---
 
+# 多 Agent 共享工作区纪律（强制，永久生效）
+
+本仓库常态是多 agent 共用同一工作区（D:\Quant\quant_ui），分支被并行 agent 频繁切换。分支纪律（新建分支→提交→merge）保护的是**已提交内容**，对工作区中他人**未提交**的改动零保护。以下三条禁止绕过：
+
+1. **前端构建只用独立 worktree**：`npm run build` 的产物内容 = 当前检出分支。构建前 `git worktree add` 临时挂载包含目标提交的 worktree，在其中构建，再把 `static/dist` 拷回。禁止把共享工作区的构建产物直接当作线上 bundle——共享工作区检出哪个分支取决于"碰巧在哪个 agent 手里"，会出现"功能已提交已推送、页面却看不到"。
+2. **禁止跨分支覆盖工作区文件**：`git checkout <branch> -- <path>` 会无警告、无条件覆盖工作区文件，禁止在共享工作区执行。需要其他分支的文件时，用 `git show <branch>:<path>` 导出到临时位置，或走临时 worktree。
+3. **动共享工作区前先 `git status` 快照**：记录他人未提交文件清单；提交只 stage 自己的文件；恢复/清理/覆盖类操作不得触碰他人未提交文件。
+
+背景（2026-09-11）：为重建含主干功能的前端 bundle，曾在共享工作区直接执行 `git checkout feat/alphaagent-metrics -- MetricsPanel.vue alphaagent.css`，覆盖了并行 agent 的未提交改动（所幸该内容已提交在 fix/fe-stale-version-guard 分支，得以完整恢复）；同一时段共享工作区检出的分支缺主干提交，导致已推送的因子库优化不出现在 bundle 中——两条教训即上面第 1、2 条。
+
 # AlphaAgent — 项目架构与开发指南
 
 ## 定位
@@ -162,17 +172,40 @@ logs/factor_mining/ui/        # 每次 Web run 的 JSONL 轨迹 + run_meta.json 
 
 | 阶段 | 门槛（默认） | 写入位置 |
 |---|---|---|
-| candidate（海选） | \|IC\| ≥ 0.02（2026-09-01 从 0.015 上调：0.015~0.02 区间因子经盲测/换手门禁几乎全灭）, \|ICIR\| > 0.25, coverage > 0.85, max_corr < 0.5, lag1 自相关 ≥ 0.18, val 保留比 ≥ 0.5 | candidate_main/（统一大库） |
+| 盲测终审（stage_one 之前） | \|test IC\| ≥ 0.012（2026-09-11 新增绝对下限）, test/train IC 保留比 ≥ 0.50, 方向一致 | 不进任何库（不通过直接拒） |
+| candidate（预筛池，2026-09-11 起） | \|train IC\| ≥ 0.025, \|train ICIR\| > 0.30, coverage > 0.85, max_corr < 0.5, lag1 自相关 ≥ 0.18, val 保留比 ≥ 0.5, \|val IC\| ≥ 0.015 | candidate_main/（统一大库） |
 | production | \|train IC\| ≥ 0.025, \|train ICIR\| ≥ 0.30, \|val IC\| ≥ 0.015, val 保留比 ≥ 0.60, winsorized 衰减 ≤ 0.10, max_corr < 0.4 | production_main/（统一大库） |
 
+> **2026-09-11 门槛收紧（预筛池口径）**：海选 train 门槛与精筛对齐（0.02/0.25 → 0.025/0.30），
+> 并给 val（≥0.015）与盲测（≥0.012）补绝对下限——此前两段只卡相对保留比，train 0.02 的因子
+> val 低到 0.01 也能进池。动机：26 条存量候选里 16 条（61%）止步 stage_two，主死因是
+> train ICIR < 0.30，属"评估算力换炮灰"；收紧后同类池子仅 6/26 存活。
+> `evaluation_policy`（评估屏幕线）同步提到 0.025/0.30/0.015，避免"评估过线、提交即拒"。
+> fundamental 档按同一哲学对齐（候选 = 精筛幸存者）：eval / candidate / production 三条线统一到
+> 0.020/0.28（val 绝对门 0.012），仅 production 的 val 保留比 0.70、截尾衰减 0.12 更严；
+> 盲测绝对下限无模式 override，两档共用 0.012。
+> 说明：盲测绝对门不增加盲测段查询次数（同一份 test 评估上加一条判定），但**每加一条盲测
+> 判据都会轻微增加对盲测段的选择偏置**，故三条（绝对/保留比/方向）为上限，不再细叠。
+>
+> **存量重筛（2026-09-11）**：门槛变更后跑 `scripts/rescreen_candidate_pool.py` 把新门槛回溯
+> 应用于存量候选。动作是 **soft-drop**（`dropped_from_ml` + `dropped_reason` + `dropped_at`），
+> 不是删除：条目/DSL/研究记忆全部保留，ML 组合训练集默认剔除（`factor/stacking/dataset.py`
+> 的 `include_dropped=False`），删标记即恢复。promoted 条目一律不动；**已有标记的条目不复活**
+> （此前由样本外衰减审计等其它原因剔除），仅列为人工复核。实测（26 条池子）：
+> 19 条被标记、7 条有效（含 1 条 promoted），ML 枚举 26 → 7；备份落在
+> `mining_candidate_registry.bak-prescreen-<ts>.json`。
+
 提交流程顺序：
-1. **stage_one 统计门槛**（IC/ICIR/coverage/换手/val 保留比）→ 不通过拒绝
+0. **盲测终审**（test 段 IC 绝对下限 + 保留比 + 方向一致）→ 不通过直接拒绝，不进候选池
+1. **stage_one 统计门槛**（IC/ICIR/coverage/换手/自相关/val 绝对下限/val 保留比）→ 不通过拒绝
 2. **正交性检查**（stage_one 统一查，不再只在 approve 后触发）→ 与正式库已有因子做截面相关，超过阈值拒绝
 3. **review_hook**（LLM Reviewer 审核）→ **仅 reject 硬拦**（抄袭/经典暴露不进任何库）；revise/pending_review 不阻断晋升，仅记录意见
-4. 入候选池（registry_only）
-5. **stage_two 精筛**（双窗口口径）→ 不通过停在候选池
-6. **engine_gate 回测门禁**（完整回测引擎净值裁决）→ 不通过停在候选池
-7. 入正式库（canonical 对齐 + ingest）
+4. **val 引擎回测预演**（候选入库前统一跑一次，`metrics["engine_gate"]` 随候选/正式记录落库，供三段表"引擎净值"行展示；裁决仍在第 6 步）
+5. 入候选池（registry_only）
+6. **stage_two 精筛**（双窗口口径）→ 不通过停在候选池
+7. **engine_gate 净值裁决**（复用第 4 步回测结果）→ 不通过停在候选池
+8. **test 段引擎回测诊断**（仅晋升因子补算，供正式库三段表盲测列展示）→ 不卡准入
+9. 入正式库（canonical 对齐 + ingest）
 
 **晋升链路关键语义（2026-08 修复）**：
 - **stage_one / stage_two 的相似度只查正式库**，候选池内部冗余不卡正式库准入。
@@ -401,6 +434,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start_backend_with_s
 
 # 候选池重放晋升（把候选池已有因子重新走一遍修复后的两阶段链路）
 .venv\Scripts\python.exe scripts\promote_candidates.py
+
+# 存量候选池按当前门槛重筛（soft-drop：打 dropped_from_ml 标记，数据/DSL/记忆保留；
+# 缺省 dry-run，--apply 执行；门槛复用 DeliveryChecker，与提交路径零口径漂移）
+.venv\Scripts\python.exe scripts\rescreen_candidate_pool.py --data-root . --apply
 
 # 盲测段因子重测（默认 2026-01-01 起；锁定段——挖掘循环与入库门槛从未见过 2026 数据）
 .venv\Scripts\python.exe scripts\blind_test_factors.py

@@ -34,9 +34,12 @@ from alphaagent.factor.zoo import FactorZoo
 
 # 冒烟因子：最小算子组合，只验证管道可算，不追求任何 IC。
 # 用 TS_MEAN + DELTA 两个基础算子，避免引入 CHIP_* / 交互等重算子干扰自检。
-_SMOKE_EVAL_EXPR = "ma = TS_MEAN($ret, 5)\nDELTA(ma, 1)"
+# 基础字段用 $close（_ALWAYS_KEEP_COLUMNS，任何聚焦剪枝后的面板都在）——
+# 2026-09-11 修复：原硬编码 $ret 在无价量 implied 的聚焦组合（事件/资金/
+# 纯基本面等）面板上不存在，冒烟必死 → 这类 run 全部无法启动。
+_SMOKE_EVAL_EXPR = "ma = TS_MEAN($close, 5)\nDELTA(ma, 1)"
 # 冒烟 submit：必然不达标（低 IC/无时序结构），验证 submit 返回正常判定而非抛异常。
-_SMOKE_SUBMIT_EXPR = "CS_ZSCORE($ret)"
+_SMOKE_SUBMIT_EXPR = "CS_ZSCORE($close)"
 _SMOKE_NAME = "__preflight_smoke__"
 
 

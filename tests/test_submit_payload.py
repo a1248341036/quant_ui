@@ -94,10 +94,13 @@ def submit_service(tmp_path: Path, monkeypatch) -> FactorSubmitService:
         "alphaagent.factor.metrics.quantile_portfolio_metrics",
         lambda *a, **k: {"long_annual": 0.05, "group_means": []},
     )
-    monkeypatch.setattr(
-        submit_module, "write_candidate_registry",
-        lambda *a, **k: (str(tmp_path / "cand.json"), str(tmp_path / "cand.dsl")),
-    )
+    cand_writes: list[dict] = []
+
+    def _write_candidate_registry(*_a, **kw):
+        cand_writes.append(kw)
+        return (str(tmp_path / "cand.json"), str(tmp_path / "cand.dsl"))
+
+    monkeypatch.setattr(submit_module, "write_candidate_registry", _write_candidate_registry)
     monkeypatch.setattr(submit_module, "set_candidate_review", lambda *a, **k: None)
     monkeypatch.setattr(submit_module, "set_candidate_promotion", lambda *a, **k: None)
     monkeypatch.setattr(
@@ -113,11 +116,25 @@ def submit_service(tmp_path: Path, monkeypatch) -> FactorSubmitService:
         submit_module, "align_values_to_rows",
         lambda *a, **k: np.ones(4),
     )
-    # 跳过 engine_gate 真实回测:桩返回通过
+    # 跳过 engine_gate 真实回测:桩返回通过（带 metrics，供候选记录落库校验）。
+    # 两处都打：submit 经 shim（alphaagent.factor.mining.engine_gate）导入，
+    # 而 shim 的 `import *` 在模块首次导入时就把函数对象绑死了——只打 delivery
+    # 路径时，若 shim 已被其他用例导入（全量测试顺序），桩会失效、真实回测接管，
+    # 表现为与本用例无关的假失败（2026-09-11 定位）。
+    def _gate_pass(*_a, **_k):
+        return {
+            "passed": True,
+            "fail_reasons": [],
+            "metrics": {
+                "annual_return": 0.2, "excess_annual": 0.05,
+                "sharpe": 1.1, "max_drawdown": -0.1,
+            },
+        }
+
     monkeypatch.setattr(
-        "alphaagent.factor.mining.delivery.engine_gate.run_engine_gate",
-        lambda *a, **k: {"passed": True, "fail_reasons": []},
+        "alphaagent.factor.mining.delivery.engine_gate.run_engine_gate", _gate_pass
     )
+    monkeypatch.setattr("alphaagent.factor.mining.engine_gate.run_engine_gate", _gate_pass)
 
     service = FactorSubmitService(
         FakeService(),
@@ -128,6 +145,7 @@ def submit_service(tmp_path: Path, monkeypatch) -> FactorSubmitService:
         # 与生产路径一致:注入 research_spec 的 delivery_policy(engine_gate.freq=weekly)
         delivery_policy={"candidate": {}, "production": {"engine_gate": {"freq": "weekly", "enabled": True, "allowed_freqs": ["daily", "weekly", "monthly"]}}},
     )
+    service._test_cand_writes = cand_writes  # 测试捕获：候选入库时写入的 metrics
     return service
 
 
@@ -150,6 +168,10 @@ def test_submit_full_promotion_payload(submit_service):
     assert result["skipped_reason"] is None
     assert "registry_path" in result and "dsl_path" in result
     assert result["rebalance_freq"] == "weekly"  # 默认来自 spec engine_gate
+    # 2026-09-11：val 引擎回测在候选入库前统一预演 → 候选记录 metrics 携带 engine_gate
+    assert result["engine_backtest"]["passed"] is True
+    writes = submit_service._test_cand_writes
+    assert writes and writes[0]["metrics"]["engine_gate"]["annual_return"] == 0.2
 
 
 def test_submit_stage_two_fail_keeps_candidate(submit_service):
@@ -174,9 +196,11 @@ def test_submit_stage_one_fail_returns_payload_not_crash(submit_service, monkeyp
     赋值的 production_similarity，stage_one 失败路径直接 UnboundLocalError，
     preflight 冒烟提交（必然失败）被它打死 → 每次 run 秒退（2026-09-02）。
     """
+    # 注：ic 取 0.02 —— 盲测绝对下限 0.012 可过（保留比 1.0、方向一致），
+    # 但 stage_one 的 IC(0.025)/ICIR(0.30)/自相关(0.18) 三处均不达标。
     monkeypatch.setattr(
         submit_module, "compute_ingest_metrics",
-        lambda *a, **k: {"ic": 0.005, "icir": 0.08, "coverage": 0.9,
+        lambda *a, **k: {"ic": 0.02, "icir": 0.08, "coverage": 0.9,
                          "cs_pearson_autocorr": 0.05, "winsorized_abs_ic_decay": 0.01},
     )
     result = submit_service.submit(

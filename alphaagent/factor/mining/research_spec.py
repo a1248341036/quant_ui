@@ -138,10 +138,12 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
         "max_candidates_per_round": 8,
     },
     "evaluation_policy": {
-        "min_train_abs_ic": 0.02,
-        "min_train_icir": 0.25,
+        # 2026-09-11 预筛池口径：评估屏幕线与 delivery 候选门（0.025/0.30）对齐，
+        # 避免"评估过线但提交即拒"的算力浪费。
+        "min_train_abs_ic": 0.025,
+        "min_train_icir": 0.30,
         "min_train_coverage": 0.85,
-        "min_val_abs_ic": 0.01,
+        "min_val_abs_ic": 0.015,
         "min_val_ic_retention_ratio": 0.5,
         "require_sign_consistency": True,
         # 换手率约束：因子排名日度自相关低于此值的候选不入池（高换手→高交易成本）
@@ -372,6 +374,8 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
     if blind.get("enabled") is not None:
         blind["enabled"] = _require_bool(blind.get("enabled"), "delivery_policy.blind_test.enabled")
     blind["min_ic_retention"] = _bounded_number(blind.get("min_ic_retention"), "delivery_policy.blind_test.min_ic_retention", 0, 2)
+    # 盲测段 IC 绝对下限（2026-09-11 预筛池口径新增）
+    blind["min_test_abs_ic"] = _bounded_number(blind.get("min_test_abs_ic"), "delivery_policy.blind_test.min_test_abs_ic", 0, 1)
     if blind.get("require_sign_consistency") is not None:
         blind["require_sign_consistency"] = _require_bool(
             blind.get("require_sign_consistency"), "delivery_policy.blind_test.require_sign_consistency"
@@ -407,6 +411,8 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
     # 换手可行性与样本外保留比（0.18 / 0.5 由 DEFAULT_RESEARCH_SPEC 提供默认值）
     candidate["min_cs_autocorr"] = _bounded_number(candidate.get("min_cs_autocorr"), "delivery_policy.candidate.min_cs_autocorr", 0, 1)
     candidate["min_val_ic_retention"] = _bounded_number(candidate.get("min_val_ic_retention"), "delivery_policy.candidate.min_val_ic_retention", 0, 1)
+    # val 端 IC 绝对下限（2026-09-11 预筛池口径新增：保留比只卡相对衰减）
+    candidate["min_val_abs_ic"] = _bounded_number(candidate.get("min_val_abs_ic"), "delivery_policy.candidate.min_val_abs_ic", 0, 1)
     production = _require_dict(delivery.get("production"), "delivery_policy.production")
     # 双窗口统计门槛（2026-08 重构：混合窗口稀释 val 衰减，已弃用单口径 min_abs_ic/min_icir）
     for key in ("min_train_abs_ic", "min_val_abs_ic", "max_winsorized_abs_ic_decay", "max_abs_corr"):

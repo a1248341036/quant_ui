@@ -138,8 +138,8 @@ def test_implicit_fallback_weighted(tmp_path):
     store = ResearchMemoryStore(tmp_path / "m.db")
     store.record_tool_result(run_id="r1", row=_eval_row("eval_on_train_set", PARENT_EXPR, "vwap_dev_10", ic=0.020))
     # 不声明父本 → 结构相似隐式兜底（窗口 10→20 是真实编辑观测）
-    # ic=0.024：新海选线 0.02 之上（promising），且父本桶仍在 medium [0.015, 0.025)
-    entry = store.record_tool_result(run_id="r1", row=_eval_row("eval_on_train_set", CHILD_EXPR, "vwap_dev_20b", ic=0.024))
+    # ic=0.026：新海选线 0.025 之上（promising）；父本 |IC|=0.020 仍在 medium [0.015, 0.025)
+    entry = store.record_tool_result(run_id="r1", row=_eval_row("eval_on_train_set", CHILD_EXPR, "vwap_dev_20b", ic=0.026))
     assert entry["parent_origin"] == "implicit"
     with store._open() as conn:
         row = conn.execute("SELECT implicit_s, explicit_s, implicit_f, explicit_f FROM memory_cells").fetchone()
@@ -321,7 +321,7 @@ def test_advisory_duplicate_prior_result(tmp_path):
     store = ResearchMemoryStore(tmp_path / "m.db")
     # 同指纹的历史正向条目（窗口参数不同 → 同结构指纹：数字归一化为 N）
     store.record_tool_result(
-        run_id="r1", row=_eval_row("eval_on_train_set", "TS_MEAN($adj_close, 9) + 0.25", "prior_prom", ic=0.024)
+        run_id="r1", row=_eval_row("eval_on_train_set", "TS_MEAN($adj_close, 9) + 0.25", "prior_prom", ic=0.026)
     )
     advisory = store.advisory_for("TS_MEAN($adj_close, 5) + 0.5")
     assert advisory is not None
@@ -343,7 +343,7 @@ def test_advisory_duplicate_prior_result(tmp_path):
     # 死路与正向并存：两种提醒同时出现（互补不互斥）
     store3 = ResearchMemoryStore(tmp_path / "m3.db")
     store3.record_tool_result(
-        run_id="r0", row=_eval_row("eval_on_train_set", "TS_MEAN($adj_close, 9) + 0.25", "prior_prom", ic=0.024)
+        run_id="r0", row=_eval_row("eval_on_train_set", "TS_MEAN($adj_close, 9) + 0.25", "prior_prom", ic=0.026)
     )
     for i in range(2):
         store3.record_tool_result(
@@ -631,7 +631,7 @@ def test_saturation_promising_downweighted(tmp_path):
     for w in range(10, 20):
         store.record_tool_result(run_id="r1", row=_eval_row(
             "eval_on_train_set",
-            f"RANK(SUBTRACT($adj_close, TS_MEAN($vwap, {w})))", f"vwap_dev_{w}", ic=0.02))
+            f"RANK(SUBTRACT($adj_close, TS_MEAN($vwap, {w})))", f"vwap_dev_{w}", ic=0.026))
     # 另一族：3 条 validated（eval_on_val_set + |ic|>=0.015）→ 饱和度 >=1.0，拥挤
     for w in (10, 20, 30):
         store.record_tool_result(run_id="r1", row=_eval_row(

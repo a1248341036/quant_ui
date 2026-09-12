@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import gzip
 import hashlib
 import json
@@ -50,6 +51,26 @@ from core import factor_categories
 
 _NUDGE_MSG = _NUDGE
 
+# 可重试异常类型名（字符串匹配：兼容 httpx2/httpx/httpcore 的命名差异与异常包装）。
+# ToolJSONDecodeError（2026-09-11）：deepseek 偶发把 tool arguments JSON 截断
+# （Unterminated string）——生成抖动，重发同轮调用即可恢复，不应杀 run。
+_RETRYABLE_ERROR_NAMES = frozenset({
+    "RemoteProtocolError", "ReadError", "ConnectError", "ReadTimeout",
+    "ToolJSONDecodeError",
+})
+
+
+def _is_transport_error(exc: BaseException) -> bool:
+    """判断异常（沿 __cause__ 链）是否为可安全重发的瞬态错误（传输中断/生成截断）。"""
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if type(cur).__name__ in _RETRYABLE_ERROR_NAMES:
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
 
 def _cache_hit_rate(totals: dict[str, Any]) -> float:
     """缓存命中率 = 命中 tokens / 总 input tokens（OpenAI 口径 prompt 含 cached）。"""
@@ -65,9 +86,21 @@ def _client_kwargs() -> dict[str, Any]:
     Some third-party relay providers (e.g. okmcode behind Cloudflare) block
     requests whose ``User-Agent`` contains "OpenAI/Python".  Override it
     with a neutral value so the request goes through CC Switch unmodified.
+
+    timeout（2026-09-11）：CC Switch 半开连接会永久挂起流式读取（无数据、
+    无异常、无超时）——过夜实测单 run 两次挂死各 28/20 分钟且 openai 默认
+    timeout 未生效。显式收紧：块间 read 300s / connect 30s，挂起 5 分钟必抛
+    ReadTimeout，由 ProviderSafeChatModel 的可重试集合兜底重发。
     """
+    try:
+        import httpx2  # noqa: PLC0415
+
+        timeout: Any = httpx2.Timeout(300.0, connect=30.0)
+    except Exception:  # noqa: BLE001 — httpx2 不可导入时退回裸秒数
+        timeout = 300.0
     return {
         "default_headers": {"User-Agent": "quant-ui/1.0"},
+        "timeout": timeout,
     }
 
 
@@ -829,27 +862,52 @@ async def run_factor_mining_agentscope(
             log_step("memory_retrieve", f"entries={retrieved_count} chars={len(turn_memory)}")
 
         user_msg = UserMsg(name="user", content=agent_prompt)
-        try:
-            had_tools = await stream_to_cli(
-                agent,
-                user_msg,
-                show_thinking=True,
-                auto_confirm=True,
-                observer=observer,
-                quiet=not verbose,
-            )
-        except Exception as exc:
-            end_reason = "error"
-            _emit(
-                "session_error",
-                {
-                    "turn": outer_turn,
-                    "error_type": type(exc).__name__,
-                    "error": str(exc),
-                    "traceback": traceback.format_exc(limit=20),
-                },
-            )
-            break
+        # 传输错误重试（2026-09-10）：agentscope 的重试只包 _call_api 发起阶段，
+        # 流式响应消费中途的断连（CC Switch 链路 RemoteProtocolError/incomplete
+        # chunked read）直达 run 循环终结整个挖掘。此处兜底：传输类异常重发同
+        # 一轮调用（最多 3 次）；半截响应未完成工具链，最坏情况是上下文多一条
+        # 截断 assistant 消息，远好于 run 直接报废。
+        transport_attempts = 0
+        while True:
+            try:
+                had_tools = await stream_to_cli(
+                    agent,
+                    user_msg,
+                    show_thinking=True,
+                    auto_confirm=True,
+                    observer=observer,
+                    quiet=not verbose,
+                )
+                break
+            except Exception as exc:
+                if transport_attempts < 3 and _is_transport_error(exc):
+                    transport_attempts += 1
+                    _emit(
+                        "transport_retry",
+                        {
+                            "turn": outer_turn,
+                            "attempt": transport_attempts,
+                            "error_type": type(exc).__name__,
+                            "error": str(exc)[:300],
+                        },
+                    )
+                    log_step(
+                        "transport_retry",
+                        f"turn={outer_turn} attempt={transport_attempts} err={type(exc).__name__}",
+                    )
+                    await asyncio.sleep(min(30, 5 * transport_attempts))
+                    continue
+                end_reason = "error"
+                _emit(
+                    "session_error",
+                    {
+                        "turn": outer_turn,
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                        "traceback": traceback.format_exc(limit=20),
+                    },
+                )
+                break
 
         queued_messages = _take_control_messages()
         if queued_messages:

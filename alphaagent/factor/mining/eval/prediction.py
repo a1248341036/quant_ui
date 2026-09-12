@@ -198,6 +198,16 @@ _SHAPE_EXTRA_ALIASES = {
     "monotonicdecreasing": "monotonic_decreasing",
     "spike": "spike_at_extreme",
     "spikeatextreme": "spike_at_extreme",
+    # 英文自然变体（2026-09-10 deepseek 实测：单轮 8/8 评估因
+    # monotone_increasing 被拒；prose 正则只认中文梯度词，救不了英文）
+    "monotone_increasing": "monotonic_increasing",
+    "monotone_decreasing": "monotonic_decreasing",
+    "monotoneup": "monotonic_increasing",
+    "monotonedown": "monotonic_decreasing",
+    "monotone_up": "monotonic_increasing",
+    "monotone_down": "monotonic_decreasing",
+    "increasing": "monotonic_increasing",
+    "decreasing": "monotonic_decreasing",
 }
 
 # ── 散文→枚举归一（2026-09-06 实测：并行 batch 里 8/11 条 expected_shape

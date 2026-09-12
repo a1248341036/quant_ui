@@ -150,8 +150,13 @@ def _attach_yield_hints(result: dict[str, Any], expr: str, arguments: dict[str, 
                 cov_f = float(cov) if cov is not None else None
             except (TypeError, ValueError):
                 icir_f = cov_f = None
+            # near_miss 门槛直接取"实际未过的屏幕规则"期望值（档位/override 同源，
+            # 不再硬编码）：规则缺失时回落候选池准入线。
+            _nm_th = _ic_bar_from_rules(result.get("screen_rules")) or _candidate_ic_bar(
+                result.get("research_mode")
+            )
             if (
-                ic_f is not None and 0.012 <= ic_f < 0.02
+                ic_f is not None and _NEAR_MISS_RATIO * _nm_th <= ic_f < _nm_th
                 and icir_f is not None and icir_f > 0.2
                 and cov_f is not None and cov_f > 0.85
             ):
@@ -198,6 +203,34 @@ def _attach_yield_hints(result: dict[str, Any], expr: str, arguments: dict[str, 
         pass
 
 
+def _ic_bar_from_rules(rules: Any) -> float | None:
+    """取屏幕规则里的 |IC| 期望值（与档位 override 同源），无则 None。"""
+    if not isinstance(rules, list):
+        return None
+    for row in rules:
+        if isinstance(row, dict) and str(row.get("metric") or "").endswith("cross_sectional_core.ic"):
+            try:
+                return float(row.get("expected"))
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def _candidate_ic_bar(research_mode: str | None) -> float:
+    """候选池 |IC| 准入线兜底（唯一真源：DEFAULT_RESEARCH_SPEC + 模式 override）。"""
+    try:
+        from alphaagent.factor.mining.research_spec import DEFAULT_RESEARCH_SPEC
+        from core.research_modes import RESEARCH_MODES
+
+        bar = float(DEFAULT_RESEARCH_SPEC["delivery_policy"]["candidate"]["min_abs_ic"])
+        spec = RESEARCH_MODES.get(str(research_mode or "technical"))
+        if spec is not None:
+            bar = float(getattr(spec, "candidate_overrides", {}).get("min_abs_ic", bar))
+        return bar
+    except Exception:  # noqa: BLE001
+        return 0.025
+
+
 def _near_miss_verdict(metrics: dict[str, Any]) -> bool:
     """IC 达门槛 80%、ICIR/coverage 达标但未过线 → near_miss（供 memory._classify 复用）。"""
     ic = metrics.get("ic")
@@ -211,7 +244,9 @@ def _near_miss_verdict(metrics: dict[str, Any]) -> bool:
         return False
     if ic_f is None:
         return False
-    th = 0.015 if str(metrics.get("research_mode")) == "fundamental" else 0.02
+    th = _ic_bar_from_rules(metrics.get("screen_rules")) or _candidate_ic_bar(
+        metrics.get("research_mode")
+    )
     return bool(
         _NEAR_MISS_RATIO * th <= ic_f < th
         and (icir_f is not None and icir_f > 0.2)

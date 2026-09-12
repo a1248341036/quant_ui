@@ -51,20 +51,20 @@ class TestPersistence:
 class TestEffectiveSpec:
     def test_effective_defaults_when_no_overrides(self) -> None:
         eff = rs.effective_research_spec("technical")
-        assert eff["evaluation_policy"]["min_train_abs_ic"] == 0.02
+        assert eff["evaluation_policy"]["min_train_abs_ic"] == 0.025
 
     def test_effective_applies_saved_overrides(self) -> None:
         rs.save_research_spec_overrides("fundamental", {"evaluation_policy": {"min_train_abs_ic": 0.01}})
         eff = rs.effective_research_spec("fundamental")
         assert eff["evaluation_policy"]["min_train_abs_ic"] == 0.01
         # 未改的键仍跟随注册表默认
-        assert eff["delivery_policy"]["candidate"]["min_icir"] == 0.20
+        assert eff["delivery_policy"]["candidate"]["min_icir"] == 0.28
 
     def test_default_research_spec_stays_pure(self) -> None:
         """纯默认函数不受保存覆盖影响（测试/调用方语义稳定）。"""
         rs.save_research_spec_overrides("fundamental", {"evaluation_policy": {"min_train_abs_ic": 0.01}})
         pure = rs.default_research_spec("fundamental")
-        assert pure["evaluation_policy"]["min_train_abs_ic"] == 0.015
+        assert pure["evaluation_policy"]["min_train_abs_ic"] == 0.020
 
 
 class TestRunSpecMerge:
@@ -94,7 +94,7 @@ class TestRunSpecMerge:
     def test_load_research_spec_none(self) -> None:
         loaded = rs.load_research_spec(None)
         assert loaded["research_mode"] == "technical"
-        assert loaded["evaluation_policy"]["min_train_abs_ic"] == 0.02
+        assert loaded["evaluation_policy"]["min_train_abs_ic"] == 0.025
 
 
 class TestDiff:

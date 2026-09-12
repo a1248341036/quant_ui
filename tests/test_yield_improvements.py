@@ -96,8 +96,8 @@ class TestTurnoverPreflightHint:
 
 class TestNearMissHint:
     def test_near_miss_hint_injected(self):
-        # |IC|=0.017 ∈ [0.012, 0.02)，ICIR>0.2，coverage>0.85 → near_miss 提示
-        r = _result(ic=0.017, icir=0.35, cov=0.99, passed=False)
+        # |IC|=0.021 ∈ [0.020, 0.025)，ICIR>0.2，coverage>0.85 → near_miss 提示
+        r = _result(ic=0.021, icir=0.35, cov=0.99, passed=False)
         _attach_yield_hints(r, "expr", {})
         assert "near_miss_hint" in r
         assert "窗口微调" in r["near_miss_hint"]
@@ -125,33 +125,34 @@ class TestNearMissHint:
 
 class TestNearMissVerdict:
     def test_dispatch_helper_technical(self):
-        assert _near_miss_verdict({"ic": 0.017, "icir": 0.3, "factor_coverage": 0.99}) is True
+        assert _near_miss_verdict({"ic": 0.021, "icir": 0.3, "factor_coverage": 0.99}) is True
         assert _near_miss_verdict({"ic": 0.010, "icir": 0.3, "factor_coverage": 0.99}) is False
-        assert _near_miss_verdict({"ic": 0.017, "icir": 0.1, "factor_coverage": 0.99}) is False
-        assert _near_miss_verdict({"ic": 0.017, "icir": 0.3, "factor_coverage": 0.5}) is False
+        assert _near_miss_verdict({"ic": 0.021, "icir": 0.1, "factor_coverage": 0.99}) is False
+        assert _near_miss_verdict({"ic": 0.021, "icir": 0.3, "factor_coverage": 0.5}) is False
         # 过线的不属于 near_miss
         assert _near_miss_verdict({"ic": 0.025, "icir": 0.3, "factor_coverage": 0.99}) is False
 
     def test_dispatch_helper_fundamental_mode(self):
+        # fundamental 档候选线 0.020 → near_miss 带 [0.016, 0.020)
         assert _near_miss_verdict(
-            {"ic": 0.013, "icir": 0.3, "factor_coverage": 0.99, "research_mode": "fundamental"}
+            {"ic": 0.017, "icir": 0.3, "factor_coverage": 0.99, "research_mode": "fundamental"}
         ) is True
         assert _near_miss_verdict(
-            {"ic": 0.013, "icir": 0.3, "factor_coverage": 0.99, "research_mode": "technical"}
-        ) is False  # technical 档 0.013 < 0.8×0.02=0.016
+            {"ic": 0.017, "icir": 0.3, "factor_coverage": 0.99, "research_mode": "technical"}
+        ) is False  # technical 档 0.017 < 0.8×0.025=0.020
 
     def test_memory_classify_near_miss(self):
         from alphaagent.factor.mining.memory.schema import SchemaMixin
 
         result = {"ok": True, "split": "train"}
-        metrics = {"ic": 0.017, "icir": 0.35, "factor_coverage": 0.99}
+        metrics = {"ic": 0.021, "icir": 0.35, "factor_coverage": 0.99}
         verdict, conclusion = SchemaMixin._classify(
             "evaluate_factor", result, metrics, error=""
         )
         assert verdict == "near_miss"
         assert "接近海选线" in conclusion
-        # fundamental 档：IC 0.013 应为 near_miss 而非 weak
-        metrics_f = {"ic": 0.013, "icir": 0.30, "factor_coverage": 0.99,
+        # fundamental 档：IC 0.017 应为 near_miss 而非 weak（候选线 0.020）
+        metrics_f = {"ic": 0.017, "icir": 0.30, "factor_coverage": 0.99,
                      "research_mode": "fundamental"}
         verdict_f, _ = SchemaMixin._classify(
             "evaluate_factor", result, metrics_f, error=""

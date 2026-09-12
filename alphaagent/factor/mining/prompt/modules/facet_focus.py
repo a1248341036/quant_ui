@@ -15,7 +15,7 @@ REQUIRED = False
 SEP_BEFORE = "\n\n---\n\n"
 
 # 不属于任何数据面的通用列：聚焦时始终可用（市值/可交易标记/行业分组）
-_NEUTRAL_COLUMNS = ("float_cap", "tot_cap", "is_trade", "not_st", "industry_sw_l1")
+_NEUTRAL_COLUMNS = ("float_cap", "tot_cap", "is_trade", "not_st", "industry_sw_l1", "industry_zx_l1")
 
 
 def enabled(ctx) -> bool:  # noqa: ANN001
@@ -26,7 +26,9 @@ def _whitelist_lines(ctx, facets: list[str]) -> list[str]:  # noqa: ANN001
     """按 panel 实际列生成"本 run 唯一可用列"白名单（LLM 只看到勾选面的数据）。
 
     勾选面的专属算子若隐含消费其他面的列（如 CHIP_* 需要 close/low/high/volume），
-    这些输入列一并列出，但单独用它们构造因子仍会被拦截（必须触及勾选面）。
+    这些输入列一并列出但**分组呈现**：与聚焦列混排时输入列按字母序排在最前
+    （$adj_* 优先入目），实测会诱导 LLM 直接拼纯价量因子（2026-09-10 run
+    51e02d47a3f3 turn0 被拦截的根因）。
     """
     from alphaagent.factor.mining.memory.expressions import (
         expr_facets,
@@ -43,32 +45,62 @@ def _whitelist_lines(ctx, facets: list[str]) -> list[str]:  # noqa: ANN001
             f"- 本 run 可用列族（白名单）：{hints}。",
             "- 其他数据面的列/算子一律不可用——越界表达式会被工具层直接拦截。",
         ]
-    col_names = [str(c) for c in cols]
-    allowed: list[str] = []
-    for name in col_names:
+    focus_set = set(facets)
+    focus_cols: list[str] = []
+    input_cols: list[str] = []
+    for name in [str(c) for c in cols]:
         if name in _NEUTRAL_COLUMNS:
             continue
         hit = expr_facets("$" + name)
-        if hit and hit <= scope:
-            allowed.append("$" + name)
-    allowed.sort()
-    neutral = [f"${c}" for c in _NEUTRAL_COLUMNS if c in set(col_names)]
-    if allowed:
-        out = ["- 本 run 唯一可用列（白名单，表达式只能引用这些）：" + "、".join(allowed) + "。"]
+        if not hit or not hit <= scope:
+            continue
+        (focus_cols if hit & focus_set else input_cols).append("$" + name)
+    focus_cols.sort()
+    input_cols.sort()
+    neutral = [f"${c}" for c in _NEUTRAL_COLUMNS if c in set(cols)]
+    out: list[str] = []
+    if focus_cols:
+        out.append(
+            "- 本 run 唯一可用列（白名单，表达式只能引用这些）——**聚焦面列**"
+            "（表达式必须至少触及其中之一）：" + "、".join(focus_cols) + "。"
+        )
     else:
-        out = [f"- 本 run 可用列族（白名单）：{hints}（该面以算子派生为主）。"]
+        out.append(f"- 本 run 可用列族（白名单）：{hints}（该面以算子派生为主）。")
+    if input_cols:
+        out.append(
+            "- **仅作输入列**（不属于聚焦面，不能单独构成因子）：" + "、".join(input_cols)
+            + "。只能与聚焦面列组合使用（比值/相关/门控等），或作为聚焦面专属算子的输入。"
+        )
     if neutral:
         out.append("- 通用中性列（不属于任何数据面，随时可用）：" + "、".join(neutral) + "。")
     if input_faces:
+        from alphaagent.factor.mining.prompt.modules.operator_catalog import _focused_prefixes
+
+        prefixes = _focused_prefixes(facets)
+        anchor = (
+            "、".join(prefixes) + " 等聚焦面专属算子需要它们作输入"
+            if prefixes
+            else "比值/相关等组合构造需要它们"
+        )
         out.append(
-            "- 其中「" + "、".join(sorted(input_faces)) + "」的列仅作为聚焦面算子的输入"
-            "（如 CHIP_*/CROWD_* 需要 close/low/high/volume、VOLUME_CLOCK_VPIN 需要价格序列）；"
-            "单独用它们构造因子仍会被拦截——表达式必须触及勾选的聚焦面。"
+            "- 「" + "、".join(sorted(input_faces)) + "」仅作为聚焦面算子的输入面"
+            "（" + anchor + "）；单独用它们构造因子仍会被拦截——表达式必须触及勾选的聚焦面。"
         )
     out.append(
         "- 白名单之外的列（其他数据面）本 run 不可用；系统提示其他章节若出现相关字段或"
         "示例，一律视为不适用（越界表达式会被工具层直接拦截，不必尝试）。"
     )
+    if cols is not None:
+        present = set(str(c) for c in cols)
+        not_present = [c for c in _NEUTRAL_COLUMNS if c not in present]
+        if not_present:
+            out.append(
+                "- 上方未列出的字段名（如 "
+                + "、".join("`$" + c + "`" for c in not_present)
+                + " 等行业/规模列）**本 run 面板并未加载**，引用即报「不可用字段」并被拦截"
+                "——只使用上方明确列出的列，不要凭熟悉度猜测列名（聚焦 run 不会加载未选"
+                "数据面的辅助列族）。"
+            )
     return out
 
 

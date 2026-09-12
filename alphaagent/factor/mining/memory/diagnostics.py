@@ -117,9 +117,10 @@ def _rebuild_conclusion(name: str, result: dict[str, Any], metrics: dict[str, An
 
     if is_val and (result.get("sign_check", {}).get("matches_expected_sign") is not False) and abs(ic or 0) >= 0.015:
         return "validated", f"训练外验证通过：{ic_str} {icir_str} {cov_str}。方向一致且有可用相关性，可在相邻但不重复的机制上扩展。"
-    # 2026-09-01 起海选线对齐 0.02：0.015~0.02 区间因子经盲测/换手门禁几乎全灭，
-    # 不再授予 promising（正向 verdict 会驱动记忆与父本策略向其倾斜）。
-    if abs(ic or 0) >= 0.02 and (icir or 0) > 0.2 and (coverage or 0) > 0.85:
+    # 2026-09-11 起海选线对齐 0.025（预筛池口径，与 CandidateCriteria.min_abs_ic 同步）：
+    # 不再授予 0.015~0.025 区间 promising（正向 verdict 会驱动记忆与父本策略向其倾斜）。
+    # ICIR 仍用宽松线 0.2（原设计：IC 跟门槛、ICIR 只作稳定性软线）。
+    if abs(ic or 0) >= 0.025 and (icir or 0) > 0.2 and (coverage or 0) > 0.85:
         return "promising", f"训练阶段有潜力：{ic_str} {icir_str} {cov_str}。优先进行训练外验证或独立性改造。"
     return "weak", f"指标不足：{ic_str} {icir_str} {cov_str}。除非改变变量、经济机制或处理方式，否则不要机械重试。"
 
