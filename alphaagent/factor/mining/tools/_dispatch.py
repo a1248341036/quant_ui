@@ -10,6 +10,7 @@ from alphaagent.factor.mining.memory.expressions import facet_scope_violation
 from alphaagent.factor.mining.schemas import EvalProfileRequest, EvalTrainRequest, EvalValRequest
 from alphaagent.factor.mining.service import StockEvalService
 from alphaagent.factor.mining.submit import FactorSubmitService
+from alphaagent.factor.mining.delivery.delivery_criteria import DeliveryCriteria
 from alphaagent.factor.mining.eval.prediction import (
     GATING_OP_RE,
     build_ablation_check,
@@ -98,6 +99,10 @@ _NEAR_MISS_RATIO = 0.8
 # train 段 |IC| 高于此值且属财务/慢标签口径时提示 PIT 伪影嫌疑（实测
 # fundamental 档 train IC 0.06~0.08 的因子几乎全部 val 阵亡——阶梯函数语义陷阱）
 _PIT_SUSPICION_IC = 0.045
+# 建议红线（prompt rule 2 同步配套）与 stage_one 换手硬门槛（delivery_criteria
+# 单一真源）——硬门槛动态读取，避免口径漂移；建议红线固定 0.4，保持保守提前量。
+_TURNOVER_ADVISORY_REDLINE = 0.4
+_TURNOVER_GATE_LIMIT = DeliveryCriteria.defaults().candidate.max_avg_daily_side_turnover
 
 
 def _attach_yield_hints(result: dict[str, Any], expr: str, arguments: dict[str, Any]) -> None:
@@ -169,11 +174,18 @@ def _attach_yield_hints(result: dict[str, Any], expr: str, arguments: dict[str, 
             turnover_f = float(turnover) if turnover is not None else None
         except (TypeError, ValueError):
             turnover_f = None
-        if turnover_f is not None and turnover_f > 0.4:
+        if turnover_f is not None and turnover_f > _TURNOVER_ADVISORY_REDLINE:
+            # prompt rule 2 的 0.4 是建议红线；stage_one 换手硬门槛是
+            # _TURNOVER_GATE_LIMIT（delivery_criteria 单一真源）——建议红线与
+            # 硬门槛之间的区间不会被 stage_one 硬拦，但历史 26/30 候选最终
+            # 仍止步精筛/engine_gate，提示口径必须分开，避免误导 LLM。
+            if turnover_f >= _TURNOVER_GATE_LIMIT:
+                gate_line = f"必被 stage_one 换手硬门槛拦截（>{_TURNOVER_GATE_LIMIT:.2f}）"
+            else:
+                gate_line = f"超建议红线（{_TURNOVER_ADVISORY_REDLINE:.2f}），且此区间多半止步精筛/engine_gate"
             result["submit_decision_required"] = (
-                f"训练已过海选线，但日单边换手 {turnover_f:.2f} > 0.40 红线——"
-                "调用 submit_factor 也必被 stage_one 拦截（历史 26/30 候选止步于此，纯浪费算力）。"
-                "请勿提交：改为结构降噪（TS_MEDIAN/TS_MEAN ≥20 长窗平滑、RANK/CS_ZSCORE 截面秩变换"
+                f"训练已过海选线，但日单边换手 {turnover_f:.2f} 超标——{gate_line}，"
+                "调用 submit_factor 纯浪费算力。请勿提交：改为结构降噪（TS_MEDIAN/TS_MEAN ≥20 长窗平滑、RANK/CS_ZSCORE 截面秩变换"
                 "压尾部锐度、换慢信息源），或放弃该结构换信号族。"
             )
             return

@@ -441,6 +441,24 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
     if eg.get("max_participation") is not None:
         eg["max_participation"] = _bounded_number(eg.get("max_participation"), "engine_gate.max_participation", 0.001, 1)
     eg["allowed_freqs"] = _string_list(eg.get("allowed_freqs"), "engine_gate.allowed_freqs")
+    invalid_freqs = set(eg["allowed_freqs"]) - {"daily", "weekly", "monthly"}
+    if invalid_freqs:
+        raise ValueError("research_spec.engine_gate.allowed_freqs_invalid")
+    if eg.get("freq") is not None:
+        eg["freq"] = str(eg["freq"]).lower()
+        if eg["freq"] not in eg["allowed_freqs"]:
+            raise ValueError("research_spec.engine_gate.freq_not_in_allowed")
+    for key in ("min_excess_annual",):
+        eg[key] = _bounded_number(eg.get(key), f"engine_gate.{key}", -1, 5)
+    for key in ("min_excess_sharpe", "max_drawdown", "min_daily_overlap"):
+        if eg.get(key) is not None:
+            eg[key] = _bounded_number(eg.get(key), f"engine_gate.{key}", 0, 10)
+    if eg.get("min_invested_ratio") is not None:
+        eg["min_invested_ratio"] = _bounded_number(eg.get("min_invested_ratio"), "engine_gate.min_invested_ratio", 0, 1)
+    if eg.get("capital") is not None:
+        eg["capital"] = _bounded_number(eg.get("capital"), "engine_gate.capital", 10_000, 1_000_000_000)
+    if eg.get("min_am20_yuan") is not None:
+        eg["min_am20_yuan"] = _bounded_number(eg.get("min_am20_yuan"), "engine_gate.min_am20_yuan", 0, 1_000_000_000_000)
 
     # ── prompt_policy：分阶段注入策略（2026-09-12 新增）──
     pp = spec.get("prompt_policy")
@@ -511,6 +529,7 @@ def research_policy_prompt(spec: dict[str, Any]) -> str:
         if needs_funda
         else f"研究模式：{mode_spec.label}。信号以价量/波动/筹码等行情字段为主。"
     )
+    phase_summary = prompt_phase_summary(spec)
     return "\n".join(
         [
             "# 本次运行的 ResearchSpec（高优先级研究约束）",
@@ -542,6 +561,7 @@ def research_policy_prompt(spec: dict[str, Any]) -> str:
             "交付策略："
             "通过 validation 的因子自动进入 candidate 候选池；Reviewer approve 后进入 production 正式库。",
         ]
+        + ([phase_summary] if phase_summary else [])
     )
 
 

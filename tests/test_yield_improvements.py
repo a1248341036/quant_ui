@@ -76,6 +76,23 @@ class TestTurnoverPreflightHint:
         _attach_yield_hints(r, "expr", {})
         assert "请勿提交" not in r["submit_decision_required"]
 
+    def test_advisory_band_distinguishes_hard_gate(self):
+        # 0.41~0.50 区间：超过建议红线(0.4)但未触 hard gate(0.5)——文案
+        # 不得谎称"必被 stage_one 拦截"，须区分口径。
+        r = _result(turnover=0.45)
+        _attach_yield_hints(r, "expr", {})
+        hint = r["submit_decision_required"]
+        assert "请勿提交" in hint
+        assert "建议红线" in hint
+        assert "必被 stage_one" not in hint
+
+    def test_at_hard_gate_explicit_block(self):
+        # 达到 hard gate(0.5) → 明确"必被 stage_one 拦截"
+        r = _result(turnover=0.50)
+        _attach_yield_hints(r, "expr", {})
+        hint = r["submit_decision_required"]
+        assert "必被 stage_one" in hint
+
 
 class TestNearMissHint:
     def test_near_miss_hint_injected(self):
