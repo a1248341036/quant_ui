@@ -50,6 +50,33 @@ class TestSubmitDecisionRequired:
         assert "submit_decision_required" not in r
 
 
+class TestIcirPreflightHint:
+    """2026-09-12：run 42254d 中 2 次 submit_factor 死于 StageOne :icir——
+    IC 过线但 ICIR<0.30 就提交，白烧一轮。promising 时按实际 ICIR 分流。"""
+
+    def test_low_icir_replaces_promising_hint(self):
+        r = _result(ic=0.03, icir=0.20, turnover=0.2)
+        _attach_yield_hints(r, "expr", {})
+        hint = r.get("submit_decision_required", "")
+        assert "0.20" in hint          # 实际 ICIR 回显
+        assert "升 ICIR" in hint       # 引导先升 IR 再交
+        assert "请勿提交" in hint
+        assert "①立即调用 submit_factor" not in hint  # 不再给提交选项
+
+    def test_at_gate_icir_still_promising(self):
+        # ICIR 恰达标(0.30)且换手低 → 正常 promising 提交提示
+        r = _result(ic=0.03, icir=0.30, turnover=0.2)
+        _attach_yield_hints(r, "expr", {})
+        assert "submit_factor" in r["submit_decision_required"]
+        assert "请勿提交" not in r["submit_decision_required"]
+
+    def test_low_icir_no_turnover_field_still_blocks(self):
+        # 无 quantile_portfolio(换手不可得)但 ICIR<0.30 → ICIR 预检照常触发
+        r = _result(ic=0.03, icir=0.18)
+        _attach_yield_hints(r, "expr", {})
+        assert "升 ICIR" in r.get("submit_decision_required", "")
+
+
 class TestTurnoverPreflightHint:
     """2026-09-12：run f7fa3d11caa2 中 16 次 submit_factor 死于 StageOne
     换手超标（0.57~1.20 > 0.50）——train 过线但换手超标时，promising 提示
