@@ -124,15 +124,32 @@
               <label>表达式</label>
               <pre class="factor-modal-expr">{{ factorDetail.expr }}</pre>
             </div>
-            <div class="factor-modal-section" v-if="factorDetail.registry_entry">
-              <label>Registry 记录</label>
-              <pre class="factor-modal-registry">{{ JSON.stringify(factorDetail.registry_entry, null, 2) }}</pre>
+            <div class="factor-modal-section" v-if="segmentRows.length">
+              <label>三阶段表现</label>
+              <table class="factor-seg-table">
+                <thead>
+                  <tr><th>指标</th><th>Train</th><th>Val</th><th>盲测</th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="row in segmentRows" :key="row.label">
+                    <td class="seg-label">{{ row.label }}</td>
+                    <td :class="icClass(row.train)">{{ row.train ?? '—' }}</td>
+                    <td :class="icClass(row.val)">{{ row.val ?? '—' }}</td>
+                    <td :class="icClass(row.test)">{{ row.test ?? '—' }}</td>
+                  </tr>
+                </tbody>
+              </table>
+              <div class="factor-seg-note">{{ segmentNote }}</div>
             </div>
             <div class="factor-modal-meta">
               <span>状态: {{ factorDetail.status }}</span>
               <span>有限值: {{ factorDetail.finite_count }}</span>
               <span>创建: {{ formatTime(factorDetail.created_at) }}</span>
             </div>
+            <details class="factor-modal-section">
+              <label>Registry 记录</label>
+              <pre class="factor-modal-registry">{{ JSON.stringify(factorDetail.registry_entry || factorDetail.metrics, null, 2) }}</pre>
+            </details>
           </div>
         </div>
       </div>
@@ -171,6 +188,8 @@ export default {
           { key: 'facets', label: '数据面', sortable: true },
           { key: 'train_ic', label: 'Train IC', sortable: true },
           { key: 'val_ic', label: 'Val IC', sortable: true },
+          { key: 'test_ic', label: '盲测 IC', sortable: true },
+          { key: 'test_ic_retention', label: '盲测保留', sortable: true },
           { key: 'ic', label: '全区间 IC', sortable: true },
           { key: 'icir', label: 'ICIR', sortable: true },
           { key: 'annualized_return', label: '多头年化', sortable: true },
@@ -187,6 +206,58 @@ export default {
     }
   },
   computed: {
+    segmentRows() {
+      const d = this.factorDetail
+      if (!d) return []
+      const pbs = (d.metrics && d.metrics.portfolio_by_segment) || {}
+      const seg = k => pbs[k] || {}
+      const n = v => (v === null || v === undefined || !Number.isFinite(Number(v))) ? null : Number(v)
+      const pct = v => (n(v) === null ? null : (n(v) * 100).toFixed(1) + '%')
+      const r4 = v => (n(v) === null ? null : n(v).toFixed(4))
+      const rows = [
+        { label: 'IC', train: r4(d.train_ic), val: r4(d.val_ic), test: r4(d.test_ic) },
+        { label: 'ICIR', train: r4(d.train_icir), val: r4(d.val_icir), test: r4(d.test_icir) },
+        { label: 'IC 保留比', train: null, val: pct(d.val_ic_retention), test: pct(d.test_ic_retention) },
+        { label: '多头年化', train: pct(seg('train').top_group_annualized_return), val: pct(seg('val').top_group_annualized_return), test: pct(seg('test').top_group_annualized_return) },
+        { label: '多头超额年化', train: pct(seg('train').top_group_annualized_excess_return), val: pct(seg('val').top_group_annualized_excess_return), test: pct(seg('test').top_group_annualized_excess_return) },
+        { label: '多头夏普', train: r4(seg('train').top_group_sharpe), val: r4(seg('val').top_group_sharpe), test: r4(seg('test').top_group_sharpe) },
+        { label: '多头最大回撤', train: pct(seg('train').top_group_max_drawdown), val: pct(seg('val').top_group_max_drawdown), test: pct(seg('test').top_group_max_drawdown) },
+        { label: '日单边换手', train: pct(seg('train').avg_daily_side_turnover), val: pct(seg('val').avg_daily_side_turnover), test: pct(seg('test').avg_daily_side_turnover) },
+      ]
+      const egVal = (d.metrics && d.metrics.engine_gate) || {}
+      const egTest = (d.metrics && d.metrics.engine_gate_test) || {}
+      if (egVal.annual_return !== undefined || egTest.annual_return !== undefined) {
+        rows.push(
+          { label: '引擎净值年化(含成本)', train: null, val: pct(egVal.annual_return), test: pct(egTest.annual_return) },
+          { label: '引擎净值超额年化', train: null, val: pct(egVal.excess_annual), test: pct(egTest.excess_annual) },
+          { label: '引擎净值夏普', train: null, val: r4(egVal.sharpe), test: r4(egTest.sharpe) },
+          { label: '引擎净值最大回撤', train: null, val: pct(egVal.max_drawdown), test: pct(egTest.max_drawdown) },
+        )
+      }
+      return rows.filter(r => r.train !== null || r.val !== null || r.test !== null)
+    },
+    segmentNote() {
+      const d = this.factorDetail
+      if (!d) return ''
+      const pbs = d.metrics && d.metrics.portfolio_by_segment
+      // 优先从 portfolio_by_segment 读实际 holding_days（与回测口径一致），
+      // 缺失时回退到 label_col 名称中提取的数字，最终兜底 1。
+      let hold = null
+      if (pbs) {
+        for (const seg of ['train', 'val', 'test']) {
+          const hd = pbs[seg] && pbs[seg].holding_days
+          if (hd !== null && hd !== undefined && Number.isFinite(Number(hd))) {
+            hold = Number(hd)
+            break
+          }
+        }
+      }
+      if (hold === null) {
+        hold = (String(d.label_col || '').match(/\d+/) || ['1'])[0]
+      }
+      const base = `多头组合：Q10 分组、无成本、持有 ${hold} 天；引擎净值为含成本调仓回测`
+      return pbs ? base : base + '（该因子早于三段组合指标入库，组合收益行不可用，IC 行完整）'
+    },
     libFactorsFaceted() {
       const facet = this.lib.facetFilter
       const freq = this.lib.freqFilter
@@ -305,7 +376,7 @@ export default {
         return
       }
       const cols = ['加入时间', 'factor_id', '中台ID', '名称', '数据面', '融合', '调仓频率', '研究档位', '准入状态', '审查判定',
-                    'Train IC', 'Val IC', '全区间 IC', 'ICIR', 'RankIC', 'Coverage',
+                    'Train IC', 'Val IC', '盲测 IC', '盲测保留', '全区间 IC', 'ICIR', 'RankIC', 'Coverage',
                     '多头年化', '超额年化', '夏普', 'val保留比', 'val多头超额',
                     'Label', 'Expr']
       const num = v => (v === null || v === undefined || Number.isNaN(Number(v))) ? '' : Number(v)
@@ -314,7 +385,8 @@ export default {
         (f.facets || []).join('+'), f.is_fusion ? '是' : '',
         f.rebalance_freq ? (freqShort(f.rebalance_freq) + '/' + f.rebalance_freq) : '', f.research_mode || '',
         f.promotion_status || f.status, f.review_verdict || '',
-        num(f.train_ic), num(f.val_ic), num(f.metrics?.ic), num(f.metrics?.icir),
+        num(f.train_ic), num(f.val_ic), num(f.test_ic), num(f.test_ic_retention),
+        num(f.metrics?.ic), num(f.metrics?.icir),
         num(f.metrics?.rank_ic), num(f.metrics?.factor_coverage),
         num(f.annualized_return), num(f.annualized_excess_return), num(f.sharpe),
         num(f.val_ic_retention), num(f.val_long_excess),
