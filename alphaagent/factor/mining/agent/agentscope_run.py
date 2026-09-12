@@ -129,6 +129,8 @@ def _build_model(
     }
     if config.temperature is not None:
         params["temperature"] = config.temperature
+    if config.reasoning_effort is not None:
+        params["reasoning_effort"] = config.reasoning_effort
     return ProviderSafeChatModel(
         usage_listener=usage_listener,
         credential=OpenAICredential(api_key=api_key, base_url=base_url),
