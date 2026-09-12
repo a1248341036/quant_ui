@@ -544,6 +544,7 @@ def build_factor_eval_toolkit(
         prediction: dict[str, Any] | None = None,
         parent_factor: str | None = None,
         edit_note: str | None = None,
+        **_legacy_kwargs: Any,
     ) -> ToolChunk:
         """训练集评估多行因子表达式，返回 summary、monthly_corr_robustness、label_quantile_buckets。"""
         loop = __import__("asyncio").get_running_loop()
@@ -582,6 +583,8 @@ def build_factor_eval_toolkit(
                 result,
             )
         result.setdefault("factor_name", factor_name)
+        if _legacy_kwargs:
+            result["ignored_arguments"] = sorted(_legacy_kwargs)
         return _result_tool_chunk(result)
 
     async def evaluate_factor(
@@ -592,6 +595,7 @@ def build_factor_eval_toolkit(
         prediction: dict[str, Any] | None = None,
         parent_factor: str | None = None,
         edit_note: str | None = None,
+        **_legacy_kwargs: Any,
     ) -> ToolChunk:
         """按已冻结 EvaluationProfile 执行 DSL 评估；profile 控制 split、transform、指标与规则。"""
         # ── 因子逻辑预审 ──
@@ -716,6 +720,8 @@ def build_factor_eval_toolkit(
             except Exception as exc:  # noqa: BLE001 — 召回是增益信息，失败不影响评估
                 result["similar_existing"] = {"error": f"{type(exc).__name__}: {str(exc)[:120]}"}
         result.setdefault("factor_name", factor_name)
+        if _legacy_kwargs:
+            result["ignored_arguments"] = sorted(_legacy_kwargs)
         return _result_tool_chunk(result)
 
     async def propose_population(
@@ -807,6 +813,7 @@ def build_factor_eval_toolkit(
         profile_id: str | None = None,
         parent_factor: str | None = None,
         edit_note: str | None = None,
+        **_legacy_kwargs: Any,
     ) -> ToolChunk:
         """验证集评估；须传 expected_sign（train IC 符号 1/-1），结果含 sign_check。"""
         # 模型常从 evaluate_factor 习惯性带入 profile_id：显式接受并校验，避免 TypeError。
@@ -857,6 +864,8 @@ def build_factor_eval_toolkit(
             result["interaction"] = contract
         if interaction_warning:
             result.setdefault("preflight_warning", interaction_warning)
+        if _legacy_kwargs:
+            result["ignored_arguments"] = sorted(_legacy_kwargs)
         return _result_tool_chunk(result)
 
     func_tools: list[FunctionTool] = [
