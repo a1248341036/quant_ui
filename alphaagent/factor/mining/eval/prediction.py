@@ -325,6 +325,19 @@ def _canon_shape(value: Any) -> str | None:
     aliased = _SHAPE_EXTRA_ALIASES.get(key)
     if aliased:
         return aliased
+    # 合法枚举/别名 + 描述后缀（2026-09-12 实测：deepseek 单 run 8 次
+    # prediction_invalid 于 expected_shape='monotone_increasing_D1_to_D10'——
+    # 模型把预期形态后追加 D1~D10 描述，整串视为散文后中文正则不命中、
+    # D1/D10 端点平票被判歧义全拒。与 interaction_type 前缀回退同款：
+    # 按下划线层级截前缀，命中合法枚举/别名即归一放行——仅措辞变体，
+    # 语义主型未变，拒掉只会烧掉整批并行评估。）
+    parts = key.split("_")
+    for i in range(len(parts) - 1, 0, -1):
+        head = "_".join(parts[:i])
+        if head in _VALID_SHAPES:
+            return head
+        if head in _SHAPE_EXTRA_ALIASES:
+            return _SHAPE_EXTRA_ALIASES[head]
     # 散文回退：只有当原文不是合法枚举/别名时才做关键词推断
     return _prose_shape(str(value))
 
