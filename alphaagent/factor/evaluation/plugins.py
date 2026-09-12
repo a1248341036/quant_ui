@@ -442,6 +442,12 @@ def quantile_portfolio(context: EvaluationContext, params: dict[str, Any]) -> di
       - top_group_sharpe
       - top_group_max_drawdown
       - monotonicity
+      - depth_curve（L1，追加键）：同标签同成本下 top-k 深度曲线 +
+        Q_N 参考行；诊断 alpha 集中在哪一层（引擎 top_pct 小组合口径
+        缺口的主要来源）。depth_ks=None 时不产出。
+      - depth_curve_tradable（L1，追加键）：可成交域透镜——先按引擎同源
+        规则（一手可负担 / 次日非涨停停牌 / am20 流动性下限）收窄候选池
+        再算同一条曲线；与 depth_curve 的差 = 可成交性损耗。
     """
     from alphaagent.factor.metrics import quantile_portfolio_metrics
 
@@ -451,7 +457,15 @@ def quantile_portfolio(context: EvaluationContext, params: dict[str, Any]) -> di
     raw_direction = params.get("direction")
     direction = None if raw_direction is None else int(raw_direction)
 
-    return quantile_portfolio_metrics(
+    raw_depth = params.get("depth_ks", (5, 10, 20, 50, 100))
+    depth_ks = None
+    if raw_depth not in (None, (), []):
+        try:
+            depth_ks = tuple(int(k) for k in raw_depth)
+        except (TypeError, ValueError):
+            depth_ks = None
+
+    out = quantile_portfolio_metrics(
         context.factor,
         context.label,
         n_groups=n_groups,
@@ -459,4 +473,54 @@ def quantile_portfolio(context: EvaluationContext, params: dict[str, Any]) -> di
         cost_bps=cost_bps,
         direction=direction,
         holding_days=getattr(context, "label_holding_days", 1),
+        depth_ks=depth_ks,
     )
+
+    # ── L1 可成交域透镜：第二路 depth_only 调用，主口径键零影响 ──
+    if depth_ks and params.get("tradable_domain", True):
+        try:
+            from alphaagent.factor.metrics.tradable import tradable_mask
+            from core import trading_config
+
+            mask, diag = tradable_mask(
+                context.panel,
+                capital=float(params.get("tradable_capital", trading_config.GATE_CAPITAL)),
+                target_count=int(params.get("tradable_top_n", trading_config.GATE_TOP_N)),
+                lot_size=int(trading_config.LOT_SIZE),
+                min_am20_yuan=float(
+                    params.get("tradable_min_am20_yuan", trading_config.GATE_MIN_AM20_YUAN)
+                ),
+            )
+            sub = quantile_portfolio_metrics(
+                context.factor,
+                context.label,
+                n_groups=n_groups,
+                min_stocks=min_stocks,
+                cost_bps=cost_bps,
+                direction=direction,
+                holding_days=getattr(context, "label_holding_days", 1),
+                depth_ks=depth_ks,
+                eligibility=mask.to_numpy(dtype=bool),
+                depth_only=True,
+            )
+            sub_curve = sub.get("depth_curve")
+            out["depth_curve_tradable"] = sub_curve
+            out["tradable_domain"] = {
+                "available": bool(sub.get("available")),
+                "mask_coverage": diag.get("coverage"),
+                "avg_daily_coverage": diag.get("avg_daily_coverage"),
+                "min_daily_coverage": diag.get("min_daily_coverage"),
+                "budget_per_name": diag.get("budget_per_name"),
+                "affordable_max_price": diag.get("affordable_max_price"),
+                "note": (
+                    "可成交域透镜：先按引擎同源规则收窄候选池（一手可负担=执行日开盘价×"
+                    "lot_size<=等权预算、次日非涨停/停牌、am20>=流动性下限），再算同一条"
+                    "深度曲线。与 depth_curve 的差 = 可成交性损耗；不复制引擎盈亏口径，"
+                    "最终裁决仍是 engine_gate。"
+                ),
+            }
+        except Exception as exc:  # noqa: BLE001 — 透镜失败不影响主指标
+            out["depth_curve_tradable"] = None
+            out["tradable_domain"] = {"available": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    return out

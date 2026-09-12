@@ -32,7 +32,7 @@ ORDER = 100
 REQUIRED = False
 SEP_BEFORE = "\n\n---\n\n"
 # 分阶段注入：探索阶段只需基础 IC，深耕/交付阶段需形态学判读
-PHASES = frozenset({"deepen", "deliver", "full"})
+PHASES = frozenset({"explore", "deepen", "deliver", "full"})
 
 
 def render(ctx) -> str:  # noqa: ANN001

@@ -444,7 +444,39 @@ class FactorSubmitService:
         qp_metrics = quantile_portfolio_metrics(
             pd.Series(cand_values, index=panel.index), panel[ctx.label_col],
             n_groups=10, cost_bps=0.0, holding_days=qp_holding_days,
+            depth_ks=(5, 10, 20, 50, 100),
         )
+        # L1 可成交域透镜留档：与评估层同源三规则（可负担/次日非涨停停牌/am20
+        # 下限）收窄候选池后重算同一条深度曲线，registry 留档供离线分析
+        # 「深度损耗 + 可成交性损耗」，不参与任何门槛。
+        try:
+            from alphaagent.factor.metrics.tradable import tradable_mask
+            from core import trading_config as _gate_tc
+
+            _mask, _diag = tradable_mask(
+                panel,
+                capital=_gate_tc.GATE_CAPITAL,
+                target_count=_gate_tc.GATE_TOP_N,
+                lot_size=_gate_tc.LOT_SIZE,
+                min_am20_yuan=_gate_tc.GATE_MIN_AM20_YUAN,
+            )
+            _lens = quantile_portfolio_metrics(
+                pd.Series(cand_values, index=panel.index), panel[ctx.label_col],
+                n_groups=10, cost_bps=0.0, holding_days=qp_holding_days,
+                depth_ks=(5, 10, 20, 50, 100),
+                eligibility=_mask.to_numpy(dtype=bool), depth_only=True,
+            )
+            qp_metrics["depth_curve_tradable"] = _lens.get("depth_curve")
+            qp_metrics["tradable_domain"] = {
+                "available": bool(_lens.get("available")),
+                "mask_coverage": _diag.get("coverage"),
+                "avg_daily_coverage": _diag.get("avg_daily_coverage"),
+                "budget_per_name": _diag.get("budget_per_name"),
+                "affordable_max_price": _diag.get("affordable_max_price"),
+            }
+        except Exception:  # noqa: BLE001 — 透镜失败不影响主指标
+            qp_metrics["depth_curve_tradable"] = None
+            qp_metrics["tradable_domain"] = {"available": False}
         qp_ms = round((time.perf_counter() - t_qp) * 1000)
         metrics_train["quantile_portfolio"] = qp_metrics
         # 门槛前三段耗时分解：DSL 物化 / train 指标 / 组合换手预检
@@ -636,6 +668,31 @@ class FactorSubmitService:
                 for k, v in qp_metrics.items()
                 if k not in {"group_means"}
             }
+            # 三段组合指标（train/val/test 分段）：复用会话域 cand_values，
+            # 按 ctx 窗口切分后各算一次 quantile_portfolio，前端候选详情
+            # 与正式库一致展示"三阶段表现"。
+            _port_by_seg: dict[str, Any] = {}
+            _dt_level = panel.index.get_level_values("datetime")
+            for _seg, (_s, _e) in {
+                "train": (ctx.train_start, ctx.train_end),
+                "val": (ctx.val_start, ctx.val_end),
+                "test": (test_start, test_end),
+            }.items():
+                _mask = (_dt_level >= pd.Timestamp(_s)) & (_dt_level <= pd.Timestamp(_e))
+                if int(_mask.sum()) == 0:
+                    continue
+                _seg_qp = quantile_portfolio_metrics(
+                    pd.Series(cand_values, index=panel.index)[_mask],
+                    panel[ctx.label_col][_mask],
+                    n_groups=10, cost_bps=0.0, holding_days=qp_holding_days,
+                )
+                _port_by_seg[_seg] = {
+                    k: (round(float(v), 6) if isinstance(v, (int, float)) and np.isfinite(float(v)) else v)
+                    for k, v in _seg_qp.items()
+                    if k not in {"group_means"}
+                }
+            if _port_by_seg:
+                reported["portfolio_by_segment"] = _port_by_seg
         # test 段指标写入 reported（供 registry 检索）
         if test_report:
             for key in ("ic", "icir", "rank_ic"):
