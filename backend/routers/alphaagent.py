@@ -65,6 +65,10 @@ class StartRequest(BaseModel):
     # 调仓频率（交付门禁）：显式指定时覆盖档位默认 engine_gate.freq；空 = 档位
     # 默认 + LLM 按评估证据自选（submit_factor 的 rebalance_freq 参数）。
     rebalance_freq: str | None = Field(default=None, pattern="^(daily|weekly|monthly)$")
+    # 思考强度：none/low/medium/high/xhigh。None = 用 MiningConfig 默认（medium，
+    # 2026-09-12 A/B 实测：none 探索发散、medium 吞吐 +178% 且多产 promising）。
+    # 压 thinking 优先用此参数而非砍 max_tokens（避免 tool_calls 截断重蹈 12288 覆辙）。
+    reasoning_effort: str | None = Field(default=None, pattern="^(none|low|medium|high|xhigh)$")
     # 兼容保留：显式传入优先于自动推断；前端不再展示模式下拉。
     research_mode: str | None = None
     research_spec: dict[str, Any] = Field(default_factory=build_default_research_spec)

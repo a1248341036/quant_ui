@@ -62,6 +62,18 @@ def test_start_request_rebalance_freq_pattern():
         StartRequest(rebalance_freq="hourly")
 
 
+def test_start_request_reasoning_effort_pattern():
+    from pydantic import ValidationError
+    from backend.routers.alphaagent import StartRequest
+
+    # 默认 None → 走 MiningConfig 默认（medium）；显式档位白名单校验
+    assert StartRequest().reasoning_effort is None
+    assert StartRequest(reasoning_effort="medium").reasoning_effort == "medium"
+    assert StartRequest(reasoning_effort="none").reasoning_effort == "none"
+    with pytest.raises(ValidationError):
+        StartRequest(reasoning_effort="ultra")
+
+
 def test_start_endpoint_wires_freq_and_mode(monkeypatch):
     """start() 端点逻辑：自动推断 mode + rebalance_freq 写入 spec（不真正启动 run）。"""
     from backend.routers import alphaagent as router_mod

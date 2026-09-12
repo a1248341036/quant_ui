@@ -80,7 +80,20 @@ class AdvisoryMixin:
             # ① 指纹负证据：同一结构指纹的已否定条目累计 ≥2 次尝试 → 已知死路。
             #    跨变体聚合：同骨架换窗口/参数刷出的 weak/revise_required 变体各自
             #    attempts=1，但同构已多轮失败、再测同构无新增信息，一并计入死路。
+            #    豁免：该指纹已有正向结果（promising/入库）时不判死路——结构已被证明
+            #    出过信号，失败变体是正常迭代噪声而非结构先天死路；以正向条目为父本
+            #    继续变异/提交是正确动作（交由 ①b duplicate_prior_result 只提醒不拦截）。
             if fingerprint:
+                pos_exists = conn.execute(
+                    f"""
+                    SELECT 1 FROM memory_entries
+                    WHERE structure_fingerprint = ?
+                      AND verdict IN ({_POSITIVE_PH})
+                    LIMIT 1
+                    """,
+                    (fingerprint, *_POSITIVE_VERDICTS),
+                ).fetchone()
+                has_positive = pos_exists is not None
                 agg = conn.execute(
                     """
                     SELECT COUNT(*) AS n_entries, COALESCE(SUM(attempts), 0) AS n_tries
@@ -90,7 +103,7 @@ class AdvisoryMixin:
                     """,
                     (fingerprint,),
                 ).fetchone()
-                if agg and (int(agg["n_entries"]) >= 2 or int(agg["n_tries"]) >= 2):
+                if agg and not has_positive and (int(agg["n_entries"]) >= 2 or int(agg["n_tries"]) >= 2):
                     row = conn.execute(
                         """
                         SELECT factor_name, verdict, fail_detail, attempts FROM memory_entries
@@ -116,8 +129,9 @@ class AdvisoryMixin:
                     })
 
             # ①b 指纹正证据：同结构曾有正向 verdict（promising/入库）→ 重复劳动提醒。
-            #    与死路提醒独立并存（死路指失败变体，正向条目指值得改造的变体，
-            #    互补不矛盾）；仅提醒、永不拦截——hard_block_duplicates 只作用于死路。
+            #    结构已证明出过信号，永不判死路（① 已豁免）、仅提醒不拦截——
+            #    hard_block_duplicates 只作用于纯失败指纹。正证据与失败变体并存时，
+            #    只输出本提醒：正确动作是变异或以父本继续提交通过晋升卡点，而非机械重测。
             if fingerprint:
                 pos_row = conn.execute(
                     f"""
