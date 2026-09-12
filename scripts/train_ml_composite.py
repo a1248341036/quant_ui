@@ -30,6 +30,15 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+# Windows 中文控制台默认 GBK 编码，numpy 负号格式化成 \u2212（MINUS SIGN）会
+# 触发 UnicodeEncodeError 中断整条管线（2026-09-12 Phase 0 实跑命中）。显式
+# 用 UTF-8 + 兜底替换，保证 report 打印在任何 locale 都不崩。
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except (AttributeError, ValueError):  # 非交互 stdout（重定向对象无 reconfigure）时忽略
+    pass
+
 from alphaagent.data.adapters.cnequity import load_panel_from_cne  # noqa: E402
 from alphaagent.factor.cache import FactorValueCache  # noqa: E402
 from alphaagent.factor.stacking import (  # noqa: E402
