@@ -194,6 +194,23 @@ def _attach_yield_hints(result: dict[str, Any], expr: str, arguments: dict[str, 
                 "压尾部锐度、换慢信息源），或放弃该结构换信号族。"
             )
             return
+        # P0-4 ICIR 预检（2026-09-12：run 42254d 中 2 次 submit_factor 死于
+        # StageOneDeliveryCheckError:icir——IC 过线但 ICIR 不足 0.30，白交一次
+        # submit + 一轮重思考。把实际 ICIR 与 stage_one 门槛写进 promising 提示，
+        # ICIR 未达时引导先升 ICIR（换窗/平滑）再交，而不是必拦的提交。）
+        try:
+            icir_f = abs(float(icir)) if icir is not None else None
+        except (TypeError, ValueError):
+            icir_f = None
+        _icir_gate = DeliveryCriteria.defaults().candidate.min_icir
+        if icir_f is not None and icir_f < _icir_gate:
+            result["submit_decision_required"] = (
+                f"训练已过海选线（promising），但 ICIR={icir_f:.3f} < stage_one 门槛 {_icir_gate:.2f}——"
+                "调用 submit_factor 大概率被 stage_one 拦截（纯浪费算力）。请勿提交，改为升 ICIR："
+                "换窗（如 20→10/40）、平滑（TS_MEAN/TS_MEDIAN）、去极值压缩日度波动——IC 方向已对，"
+                "先让 IR 过线再交。"
+            )
+            return
         result["submit_decision_required"] = (
             "训练已过海选线（promising）。两个动作二选一，不得沉默跳过："
             "①立即调用 submit_factor 走入库门槛（正交检查/审查/精筛会自动裁决）；"
