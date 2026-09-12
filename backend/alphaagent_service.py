@@ -1273,6 +1273,70 @@ def _candidate_expr(entry: dict[str, Any], factor_id: str, *, category: str = "t
     return path.read_text(encoding="utf-8").strip() if path.exists() else ""
 
 
+def _split_factor_metrics(metrics: dict[str, Any], ee: dict[str, Any]) -> dict[str, Any]:
+    """从 registry entry 的 metrics + evaluation_evidence 提取 train/val/test
+    三段视图字段（单一事实源）。
+
+    2026-09-12 收敛：此前 candidate_view / production_list(_merge_production_entry)
+    / production_detail(get_factor_detail) 三处各自手工挑字段，缺 test_ic 等
+    导致前端"盲测 IC"列恒空、反复打补丁。此后新增/修改字段只改此处，三类入口
+    同步生效。metrics 优先（submit 写入的完整分窗口口径），缺失回退
+    evaluation_evidence。<summary ic> 为评估证据包格式。
+    """
+    train_ic = _safe_float(metrics.get("train_ic"))
+    val_ic = _safe_float(metrics.get("val_ic"))
+    val_icir = _safe_float(metrics.get("val_icir"))
+    val_retention = _safe_float(metrics.get("val_ic_retention"))
+    val_rank_ic = _safe_float(metrics.get("val_rank_ic"))
+    val_long_excess = _safe_float(metrics.get("val_long_excess"))
+    test_ic = _safe_float(metrics.get("test_ic"))
+    test_icir = _safe_float(metrics.get("test_icir"))
+    test_rank_ic = _safe_float(metrics.get("test_rank_ic"))
+    test_retention = _safe_float(metrics.get("test_ic_retention"))
+    test_sign = metrics.get("test_sign_consistent")
+
+    def _ee_ic(split_key: str) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        for split_entry in ee.get(split_key, []):
+            s = split_entry.get("summary") or {}
+            out.setdefault("ic", _safe_float(s.get("ic")))
+            out.setdefault("icir", _safe_float(s.get("icir")))
+            out.setdefault("retention", _safe_float(s.get("ic_retention")))
+            break
+        return out
+
+    if train_ic is None:
+        train_ic = _ee_ic("train").get("ic")
+    if val_ic is None:
+        _v = _ee_ic("validation")
+        val_ic = _v.get("ic")
+        if val_icir is None:
+            val_icir = _v.get("icir")
+    if test_ic is None:
+        _t = _ee_ic("test")
+        test_ic = _t.get("ic")
+        if test_icir is None:
+            test_icir = _t.get("icir")
+        if test_retention is None:
+            test_retention = _t.get("retention")
+
+    return {
+        "train_ic": train_ic,
+        "train_icir": _safe_float(metrics.get("train_icir")),
+        "train_rank_ic": _safe_float(metrics.get("train_rank_ic")),
+        "val_ic": val_ic,
+        "val_icir": val_icir,
+        "val_rank_ic": val_rank_ic,
+        "val_ic_retention": val_retention,
+        "val_long_excess": val_long_excess,
+        "test_ic": test_ic,
+        "test_icir": test_icir,
+        "test_rank_ic": test_rank_ic,
+        "test_ic_retention": test_retention,
+        "test_sign_consistent": test_sign,
+    }
+
+
 def _candidate_factor_view(factor_id: str, entry: dict[str, Any], *, category: str = "technical") -> dict[str, Any]:
     metrics = entry.get("metrics") if isinstance(entry.get("metrics"), dict) else {}
     fingerprint = entry.get("data_fingerprint") if isinstance(entry.get("data_fingerprint"), dict) else {}
@@ -1281,37 +1345,18 @@ def _candidate_factor_view(factor_id: str, entry: dict[str, Any], *, category: s
         finite_count = int(float(metrics["finite_ratio"]) * int(fingerprint["n_rows"]))
     review = entry.get("review") if isinstance(entry.get("review"), dict) else {}
 
-    # ── 提取 train/val 分拆指标：优先读 submit 写入的分窗口字段，回退评估证据包 ──
+    # ── 提取 train/val/test 分拆指标：单一事实源（metrics 优先，回退评估证据包）──
     ee = entry.get("evaluation_evidence") if isinstance(entry.get("evaluation_evidence"), dict) else {}
-    train_ic = _safe_float(metrics.get("train_ic"))
-    val_ic = _safe_float(metrics.get("val_ic"))
-    val_icir = _safe_float(metrics.get("val_icir"))
-    val_retention = _safe_float(metrics.get("val_ic_retention"))
-    # 盲测/test 段指标（2026-09-12：此前 detail 视图漏了 test_ic 提取，
-    # 前端"盲测 IC"列恒为 None——数据在 entry.metrics 齐全，纯展示层缺字段接线）
-    test_ic = _safe_float(metrics.get("test_ic"))
-    test_icir = _safe_float(metrics.get("test_icir"))
-    test_rank_ic = _safe_float(metrics.get("test_rank_ic"))
-    test_retention = _safe_float(metrics.get("test_ic_retention"))
-    test_sign_consistent = metrics.get("test_sign_consistent")
-    if train_ic is None:
-        for split_entry in ee.get("train", []):
-            s = split_entry.get("summary") or {}
-            train_ic = _safe_float(s.get("ic"))
-            break
-    if val_ic is None:
-        for split_entry in ee.get("validation", []):
-            s = split_entry.get("summary") or {}
-            val_ic = _safe_float(s.get("ic"))
-            val_icir = _safe_float(s.get("icir"))
-            break
-    if test_ic is None:
-        for split_entry in ee.get("test", []):
-            s = split_entry.get("summary") or {}
-            test_ic = _safe_float(s.get("ic"))
-            test_icir = _safe_float(s.get("icir"))
-            test_retention = _safe_float(s.get("ic_retention"))
-            break
+    _sp = _split_factor_metrics(metrics, ee)
+    train_ic = _sp["train_ic"]
+    val_ic = _sp["val_ic"]
+    val_icir = _sp["val_icir"]
+    val_retention = _sp["val_ic_retention"]
+    test_ic = _sp["test_ic"]
+    test_icir = _sp["test_icir"]
+    test_rank_ic = _sp["test_rank_ic"]
+    test_retention = _sp["test_ic_retention"]
+    test_sign_consistent = _sp["test_sign_consistent"]
 
     # ── 组合层收益指标（quantile_portfolio 由提交/回填写入）──
     qp = metrics.get("quantile_portfolio") if isinstance(metrics.get("quantile_portfolio"), dict) else {}
@@ -1489,14 +1534,11 @@ def list_factors(*, library: str = "production", category: str = "technical", fa
             "ingest_config": entry.get("ingest_config"),
             "ingested_at": entry.get("ingested_at"),
             "metrics": metrics,
-            "train_ic": metrics.get("train_ic"),
-            "train_icir": metrics.get("train_icir"),
-            "train_rank_ic": metrics.get("train_rank_ic"),
-            "val_ic": metrics.get("val_ic"),
-            "val_icir": metrics.get("val_icir"),
-            "val_ic_retention": metrics.get("val_ic_retention"),
             "status": entry.get("ingest_status") or item.get("status"),
         }
+        # 三段指标：单一事实源 _split_factor_metrics（含 test 段；此前手工挑漏项）
+        _ee = entry.get("evaluation_evidence") if isinstance(entry.get("evaluation_evidence"), dict) else {}
+        merged.update(_split_factor_metrics(metrics, _ee))
         qp = metrics.get("quantile_portfolio")
         if isinstance(qp, dict):
             merged["avg_daily_side_turnover"] = qp.get("avg_daily_side_turnover")
@@ -1605,12 +1647,10 @@ def get_factor_detail(factor_id: str, *, library: str = "production", category: 
                 "expr": entry.get("expr") or detail.get("expr"),
                 "comment": entry.get("comment") or detail.get("comment"),
                 "metrics": {**(detail.get("metrics") or {}), **metrics},
-                "train_ic": metrics.get("train_ic"),
-                "train_icir": metrics.get("train_icir"),
-                "val_ic": metrics.get("val_ic"),
-                "val_icir": metrics.get("val_icir"),
-                "val_ic_retention": metrics.get("val_ic_retention"),
             })
+            # 三段指标：单一事实源 _split_factor_metrics（含 test 段；此前手工挑漏项）
+            _ee = entry.get("evaluation_evidence") if isinstance(entry.get("evaluation_evidence"), dict) else {}
+            detail.update(_split_factor_metrics(metrics, _ee))
     return detail
 
 
