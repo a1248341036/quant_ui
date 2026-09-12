@@ -16,10 +16,12 @@ class MiningConfig:
     eval: StockEvalContext
     model: str = "gpt-4o-mini"
     temperature: float | None = None
-    max_tokens: int = 12288  # 2026-09-12 自 16384 下调：run f7fa3d11caa2 实测 110 次调用
-    # 中位 output ~4K、p90 <10K，16K 档位只有截断浪费（19 次打满 + 4 次 tool_calls
-    # JSON 被硬切作废）；12K 兼容 hy3/deepseek thinking（~8K）+ 响应正文 + 并行
-    # tool_calls 余量。8192 已验证会截断 tool_calls，是下限不可再降。
+    max_tokens: int = 16384  # 2026-09-12 曾下探到 12288，2026-09-12 退回：
+    # run 42254d3990f0 实测 37.3% 调用打满 12288（中位 9.4K、p90 封顶），thinking
+    # 平均约 2 万字符，深思考型模型输出时长——降档只会把截断点提前，反而引入
+    # tool_calls JSON 被硬切作废的重试风暴（15fac33 的"16K 档只有截断浪费"结论
+    # 与本次 run 数据不符）。16384 保留 thinking + 正文 + 并行 tool_calls 余量；
+    # 8192 已验证会截断 tool_calls，仍是最低下限。
     model_max_retries: int = 10
     """单次 LLM 调用的重试次数（框架默认 3）。抖动型代理/上游需要更大韧性。"""
     model_retry_delay: float = 5.0
