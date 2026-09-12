@@ -18,6 +18,49 @@ INTERACTION_TYPES = {
     "multiplication": {"MULTIPLY"},
 }
 
+# interaction_type 别名归一（2026-09-12：run f7fa3d11caa2 中 LLM 传
+# "residual_signal_note"（带后缀注释的自然变体）与 "residual_s…" 之类截断/变体
+# 全被 unknown_interaction_type 拒掉；枚举语义对但措辞变体不该整条拒。
+# 策略：规范化后精确匹配 → 去后缀前缀匹配（已知类型 + "_" 开头）→
+# 显式别名表；都不中才报 unknown。）
+_INTERACTION_TYPE_ALIASES = {
+    "residual": "residual_signal",
+    "residualize": "residual_signal",
+    "cs_residualize": "residual_signal",
+    "gated": "gated_signal",
+    "gate": "gated_signal",
+    "gate_signal": "gated_signal",
+    "conditional_group": "conditional_group_rank",
+    "group_rank": "conditional_group_rank",
+    "divergence": "divergence_signal",
+    "divergence_rank": "divergence_signal",
+    "rolling": "rolling_relation",
+    "rolling_corr": "rolling_relation",
+    "piecewise": "piecewise_state",
+    "necessary_condition": "necessary_condition_signal",
+    "multiply": "multiplication",
+    "multiplicative": "multiplication",
+}
+
+
+def _canon_interaction_type(kind: str) -> str | None:
+    """interaction_type 归一：容忍大小写/连字符/空格/别名/已知类型带后缀。"""
+    key = re.sub(r"[\s\-]+", "_", str(kind or "").strip().lower())
+    if key in INTERACTION_TYPES:
+        return key
+    if key in _INTERACTION_TYPE_ALIASES:
+        return _INTERACTION_TYPE_ALIASES[key]
+    # 已知类型带说明性后缀（"residual_signal_note" / "gated_signal_v2"）：
+    # 截到下划线层级回退匹配，保留语义主型。
+    parts = key.split("_")
+    for i in range(len(parts) - 1, 0, -1):
+        prefix = "_".join(parts[:i])
+        if prefix in INTERACTION_TYPES:
+            return prefix
+        if prefix in _INTERACTION_TYPE_ALIASES:
+            return _INTERACTION_TYPE_ALIASES[prefix]
+    return None
+
 _MULTIPLY_RE = re.compile(r"\bMULTIPLY\s*\(", re.IGNORECASE)
 _INTERACTION_OPERATORS = {
     operator
@@ -58,11 +101,12 @@ def validate_interaction(
             "error_type": "InteractionContractError",
         }
 
-    kind = str(value.get("interaction_type") or "").strip().lower()
-    if kind not in INTERACTION_TYPES:
+    kind_raw = str(value.get("interaction_type") or "").strip()
+    kind = _canon_interaction_type(kind_raw)
+    if kind is None:
         return None, {
             "ok": False,
-            "error": f"unknown_interaction_type:{kind}",
+            "error": f"unknown_interaction_type:{kind_raw}",
             "error_type": "InteractionContractError",
             "allowed_types": sorted(INTERACTION_TYPES),
         }

@@ -170,11 +170,18 @@ def classify_decile_shape(decile_rows: list[dict[str, Any]] | None, *, n_deciles
 # 别名归一（2026-09-05 实测：GLM 系会传 "D10" 之类分位组词汇而非端位枚举，
 # 一次 run 7 次调用全部被拒——评估上下文满屏 D1~D10，强求切换词汇体系是
 # 逆 LLM 天性的；语义对但词汇错的输入做确定性归一，真正非法的才拒。）
+# 2026-09-12 补充：deepseek-v4.1-flash 单 run 内 10 次全拒于 top_decile /
+# bottom_decile（run f7fa3d11caa2，占该 run 工具失败 60 次中的 10 次）——
+# "最高/最低十分位"是强侧的自然散文写法，与 high/low 语义完全同义，纳入别名。
 _SIDE_ALIASES = {
     "high_factor": "high_factor", "high": "high_factor", "top": "high_factor",
+    "top_decile": "high_factor", "top_deciles": "high_factor",
+    "highest_decile": "high_factor", "upper_decile": "high_factor",
     "d8": "high_factor", "d9": "high_factor", "d10": "high_factor",
     "q8": "high_factor", "q9": "high_factor", "q10": "high_factor",
     "low_factor": "low_factor", "low": "low_factor", "bottom": "low_factor",
+    "bottom_decile": "low_factor", "bottom_deciles": "low_factor",
+    "lowest_decile": "low_factor", "lower_decile": "low_factor",
     "d1": "low_factor", "d2": "low_factor", "d3": "low_factor",
     "q1": "low_factor", "q2": "low_factor", "q3": "low_factor",
     "middle": "middle", "mid": "middle",

@@ -159,6 +159,24 @@ def _attach_yield_hints(result: dict[str, Any], expr: str, arguments: dict[str, 
             return
         if result.get("split") != "train":
             return
+        # P0-3 换手预检（2026-09-12：run f7fa3d11caa2 中 16 次 submit_factor
+        # 死于 StageOneDeliveryCheckError 换手超标——prompt rule 2 的 0.4 红线
+        # 在评估结果可见时才被 LLM 真正遵守；把超标事实写进 promising 提示，
+        # 让"不要提交"有数据支撑，省掉一次注定失败的 submit + 一轮重思考）。
+        qp = (result.get("metrics") or {}).get("quantile_portfolio") or {}
+        turnover = qp.get("avg_daily_side_turnover") if isinstance(qp, dict) else None
+        try:
+            turnover_f = float(turnover) if turnover is not None else None
+        except (TypeError, ValueError):
+            turnover_f = None
+        if turnover_f is not None and turnover_f > 0.4:
+            result["submit_decision_required"] = (
+                f"训练已过海选线，但日单边换手 {turnover_f:.2f} > 0.40 红线——"
+                "调用 submit_factor 也必被 stage_one 拦截（历史 26/30 候选止步于此，纯浪费算力）。"
+                "请勿提交：改为结构降噪（TS_MEDIAN/TS_MEAN ≥20 长窗平滑、RANK/CS_ZSCORE 截面秩变换"
+                "压尾部锐度、换慢信息源），或放弃该结构换信号族。"
+            )
+            return
         result["submit_decision_required"] = (
             "训练已过海选线（promising）。两个动作二选一，不得沉默跳过："
             "①立即调用 submit_factor 走入库门槛（正交检查/审查/精筛会自动裁决）；"

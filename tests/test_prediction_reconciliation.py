@@ -409,6 +409,26 @@ class TestPredictionAliasAndErrorDetail:
         })
         assert err is None
 
+    def test_side_alias_decile_words(self):
+        """2026-09-12：run f7fa3d11caa2 中 deepseek-v4.1-flash 同批 10 次全拒于
+        top_decile/bottom_decile——强侧的自然散文写法必须归一放行。"""
+        from alphaagent.factor.mining.eval.prediction import normalize_prediction
+
+        base = {"expected_shape": "monotonic_increasing", "expected_sign": 1}
+        for raw, want in (
+            ("top_decile", "high_factor"),
+            ("top_deciles", "high_factor"),
+            ("highest_decile", "high_factor"),
+            ("upper_decile", "high_factor"),
+            ("bottom_decile", "low_factor"),
+            ("bottom_deciles", "low_factor"),
+            ("lowest_decile", "low_factor"),
+            ("lower_decile", "low_factor"),
+        ):
+            pred = normalize_prediction({**base, "expected_strong_side": raw})
+            assert pred is not None, raw
+            assert pred["expected_strong_side"] == want, raw
+
 
 class TestProsePrediction:
     """2026-09-06：散文→枚举归一。

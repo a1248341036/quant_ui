@@ -16,7 +16,10 @@ class MiningConfig:
     eval: StockEvalContext
     model: str = "gpt-4o-mini"
     temperature: float | None = None
-    max_tokens: int = 16384  # hy3 推理模型 thinking 约耗 8K，8192 会截断 tool_calls
+    max_tokens: int = 12288  # 2026-09-12 自 16384 下调：run f7fa3d11caa2 实测 110 次调用
+    # 中位 output ~4K、p90 <10K，16K 档位只有截断浪费（19 次打满 + 4 次 tool_calls
+    # JSON 被硬切作废）；12K 兼容 hy3/deepseek thinking（~8K）+ 响应正文 + 并行
+    # tool_calls 余量。8192 已验证会截断 tool_calls，是下限不可再降。
     model_max_retries: int = 10
     """单次 LLM 调用的重试次数（框架默认 3）。抖动型代理/上游需要更大韧性。"""
     model_retry_delay: float = 5.0

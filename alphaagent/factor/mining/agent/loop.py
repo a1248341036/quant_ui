@@ -118,7 +118,7 @@ def run_trajectory(
     max_tool_workers: int = 8,
     min_tool_call_rounds_before_allow_stop: int = 3,
     temperature: float | None = None,
-    max_tokens: int = 16384,  # hy3 thinking 需 >8K
+    max_tokens: int = 12288,  # 2026-09-12 自 16384 下调（与 MiningConfig 同步）：打满=截断浪费
     extra_body: dict[str, Any] | None = None,
     printer: ConsolePrinter | None = None,
 ) -> list[dict[str, Any]]:
