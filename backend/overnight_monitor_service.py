@@ -50,22 +50,56 @@ def _read_state() -> dict[str, Any]:
         return {"status": "idle"}
 
 
+def _pid_alive(pid: int | None) -> bool:
+    """pid 对应的进程是否存活（优先 psutil，回退 ctypes）。"""
+    if not pid:
+        return False
+    try:
+        import psutil
+        return psutil.pid_exists(pid)
+    except Exception:  # noqa: BLE001 — psutil 不可用时回退 ctypes
+        pass
+    try:
+        import ctypes
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return False
+        ctypes.windll.kernel32.CloseHandle(handle)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _proc_status() -> tuple[str, dict[str, Any] | None]:
+    """当前监控状态。优先内存 _current；进程已死/内存丢失时回退状态文件。
+
+    关键修复：start_monitor 默认 restart_backend=true 会重启后端进程，
+    重启后 _current 被清空。若只看内存，监控实际在跑也会误报 idle，
+    前端刷新后"停止监控"按钮消失。这里用 STATE_FILE 记录的 pid 兜底。
+    """
     global _current
     with _lock:
         cur = _current
-        if cur is None:
-            return "idle", None
-        code = cur["proc"].poll()
-        if code is None:
-            return "running", cur
-        status = "completed" if code == 0 else "failed"
-        cur["exit_code"] = code
-        # 进程已结束：写最终状态后清空 _current
-        _write_state(status, exit_code=code,
-                     params=cur.get("params"), finished_at=_now_iso())
-        _current = None
-        return status, cur
+        if cur is not None:
+            code = cur["proc"].poll()
+            if code is None:
+                return "running", cur
+            status = "completed" if code == 0 else "failed"
+            cur["exit_code"] = code
+            # 进程已结束：写最终状态后清空 _current
+            _write_state(status, exit_code=code,
+                         params=cur.get("params"), finished_at=_now_iso())
+            _current = None
+            return status, cur
+
+        # 内存丢失（后端重启过）→ 用状态文件里的 pid 判断 monitor 是否存活
+        saved = _read_state()
+        pid = saved.get("pid")
+        if saved.get("status") in {"running", "starting"} and _pid_alive(pid):
+            return "running", {"pid": pid, "started_at": saved.get("started_at"),
+                               "params": saved.get("params"), "log_file": saved.get("log_file")}
+        return "idle", None
 
 
 def _tail_log(log_path: Path, lines: int = 80) -> list[str]:
@@ -147,7 +181,7 @@ def start_monitor(params: dict[str, Any]) -> dict[str, Any]:
             "log_file": str(log_file),
         }
         _write_state("running", started_at=_current["started_at"],
-                     params=params, log_file=str(log_file))
+                     params=params, log_file=str(log_file), pid=proc.pid)
         return {"ok": True, "status": "running", "log_file": str(log_file)}
 
 
@@ -155,14 +189,32 @@ def stop_monitor() -> dict[str, Any]:
     global _current
     with _lock:
         cur = _current
-        if cur is None or cur["proc"].poll() is not None:
+        # 内存里有进程句柄：直接 kill
+        if cur is not None:
+            if cur["proc"].poll() is None:
+                cur["proc"].kill()
+                _write_state("stopped", params=cur.get("params"), stopped_at=_now_iso())
+                _current = None
+                return {"ok": True, "status": "stopped"}
             _current = None
             _write_state("idle")
             return {"ok": True, "status": "idle", "note": "monitor_not_running"}
-        cur["proc"].kill()
-        _write_state("stopped", params=cur.get("params"), stopped_at=_now_iso())
-        _current = None
-        return {"ok": True, "status": "stopped"}
+
+        # 内存丢失（后端重启过）→ 用状态文件 pid 兜底杀进程
+        saved = _read_state()
+        pid = saved.get("pid")
+        if saved.get("status") in {"running", "starting"} and _pid_alive(pid):
+            try:
+                import psutil
+                proc = psutil.Process(pid)
+                proc.kill()
+                _write_state("stopped", params=saved.get("params"), stopped_at=_now_iso())
+                return {"ok": True, "status": "stopped"}
+            except Exception:  # noqa: BLE001 — 杀不掉也把状态标记为 stopped，避免前端误判
+                _write_state("stopped", params=saved.get("params"), stopped_at=_now_iso())
+                return {"ok": True, "status": "stopped"}
+        _write_state("idle")
+        return {"ok": True, "status": "idle", "note": "monitor_not_running"}
 
 
 def _active_runs(tail: int = 40) -> list[dict[str, Any]]:

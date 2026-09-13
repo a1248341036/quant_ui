@@ -40,6 +40,9 @@
     <!-- 长期记忆详情弹窗 -->
     <memory-detail-modal />
 
+    <!-- 整夜挖掘监控悬浮窗 -->
+    <overnight-monitor-widget />
+
     <!-- 因子回测弹窗（因子实验室 / 因子库共用） -->
     <factor-backtest-dialog
       v-if="btOpen"
@@ -67,6 +70,7 @@ import MlPanel from '../components/alphaagent/MlPanel.vue'
 import ResearchSummary from '../components/alphaagent/ResearchSummary.vue'
 import ResearchMemoryBank from '../components/alphaagent/ResearchMemoryBank.vue'
 import MetricsPanel from '../components/alphaagent/MetricsPanel.vue'
+import OvernightMonitorWidget from '../components/alphaagent/OvernightMonitorWidget.vue'
 
 export default {
   name: 'AlphaAgent',
@@ -82,6 +86,7 @@ export default {
     'research-summary': ResearchSummary,
     'research-memory-bank': ResearchMemoryBank,
     'metrics-panel': MetricsPanel,
+    'overnight-monitor-widget': OvernightMonitorWidget,
   },
   data() {
     return {

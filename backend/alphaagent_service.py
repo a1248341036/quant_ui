@@ -183,6 +183,10 @@ class AgentRun:
                     self.error = f"AlphaAgent exited with code {code}" + (f": {detail[-1200:]}" if detail else "")
             return
         # 无进程句柄（后端重启后从磁盘恢复，或 CLI 启动）：
+        # 显式终态优先于一切推断——stop_run 已写入 stopped 的 run 不得被
+        # 时间窗口推断拉回 running（否则前端永远卡绿"运行中"）。
+        if self.status in {"stopped", "completed", "failed"}:
+            return
         # 终态事件优先，其次若轨迹仍在推进（15 分钟内有新事件）视为 running。
         terminal = _terminal_from_events()
         if terminal is not None:
