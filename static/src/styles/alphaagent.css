@@ -214,6 +214,10 @@
 .tool-state { float:right; color:var(--muted); font-size:10px; }
 .tool-expression, .result-expression { margin:0 11px 8px; padding:7px 8px; border-left:2px solid rgb(125 211 252 / .65); border-radius:3px; color:#c7d8ee; background:rgb(125 211 252 / .055); white-space:pre-wrap; overflow-wrap:break-word; word-break:break-all; font:11px/1.5 var(--font-mono); }
 .thinking-card pre, .tool-card pre { margin:0; padding:0 11px 11px; color:#aebbd2; white-space:pre-wrap; overflow-wrap:break-word; word-break:break-all; font:12px/1.55 var(--font-mono); }
+.think-trunc { color:var(--muted); font-style:normal; font-weight:400; }
+.think-expand-row { display:flex; gap:8px; padding:0 11px 11px; }
+.think-expand-btn, .think-copy-btn { padding:3px 10px; border:1px solid var(--line); border-radius:6px; background:var(--bg-soft); color:var(--muted); font-size:11px; cursor:pointer; }
+.think-expand-btn:hover, .think-copy-btn:hover { color:var(--text); border-color:var(--accent); background:rgb(79 140 255 / .12); }
 .result-card { padding:10px 12px; border-color:rgb(67 209 122 / .2); }
 .result-head { display:flex; align-items:center; gap:7px; font-size:12px; }
 .result-icon { color:#43d17a; font-weight:700; }
@@ -707,6 +711,17 @@ textarea.lab-input { resize:vertical; font:12px/1.5 var(--font-mono); }
 .metrics-rate-bar i.rate-good { background:#4fc3a1; }
 .metrics-rate-bar i.rate-mid { background:#e8c491; }
 .metrics-rate-bar i.rate-bad { background:#ef6b73; }
+
+/* 因子详情三阶段表现表（feat/alphaagent-metrics FactorLibrary） */
+.factor-seg-table { width:100%; border-collapse:collapse; font:12px/1.5 var(--font-mono); }
+.factor-seg-table th, .factor-seg-table td { padding:5px 9px; border:1px solid var(--line); text-align:right; }
+.factor-seg-table th { color:var(--muted); font-size:10px; letter-spacing:.05em; text-transform:uppercase; background:rgb(255 255 255 / .03); }
+.factor-seg-table td:first-child, .factor-seg-table th:first-child { text-align:left; color:var(--text); }
+.factor-seg-table td.seg-label { color:var(--text); font-weight:500; }
+.factor-seg-note { margin-top:6px; color:var(--muted); font:10px/1.5 var(--font-mono); }
+.factor-modal-section details summary { cursor:pointer; color:var(--muted); font-size:10px; letter-spacing:.05em; text-transform:uppercase; list-style:none; }
+.factor-modal-section details summary:hover { color:var(--text); }
+
 /* ═══ 整夜挖掘监控悬浮窗（OvernightMonitorWidget）═══ */
 .ovm-widget { position: fixed; bottom: 20px; right: 20px; z-index: 9000; font-family: var(--font-sans); }
 

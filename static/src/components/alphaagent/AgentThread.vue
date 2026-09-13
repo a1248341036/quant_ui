@@ -85,9 +85,13 @@
           </div>
         </div>
 
-        <details v-else-if="message.kind === 'thinking'" class="thinking-card" open>
-          <summary><span class="thinking-icon">◌</span> {{ message.label }}</summary>
+        <details v-else-if="message.kind === 'thinking'" class="thinking-card">
+          <summary><span class="thinking-icon">◌</span> {{ message.label }}<template v-if="message.long"> · <em class="think-trunc">{{ message.full.length }} 字符</em></template></summary>
           <pre>{{ message.text }}</pre>
+          <div v-if="message.long" class="think-expand-row">
+            <button class="think-expand-btn" @click="expandThinking(message)">展开全文</button>
+            <button class="think-copy-btn" @click="copyMessage(message.full)" title="复制完整思考文本">复制全文</button>
+          </div>
         </details>
 
         <details v-else-if="message.kind === 'tool_call'" class="tool-card">
@@ -139,9 +143,13 @@
           <div v-if="message.text" class="result-note">{{ message.text }}</div>
         </div>
 
-        <details v-else-if="message.kind === 'reviewer_thinking'" class="thinking-card reviewer-card" open>
-          <summary><span class="thinking-icon">◌</span> FactorReviewer 审查中</summary>
+        <details v-else-if="message.kind === 'reviewer_thinking'" class="thinking-card reviewer-card">
+          <summary><span class="thinking-icon">◌</span> FactorReviewer 审查中<template v-if="message.long"> · <em class="think-trunc">{{ message.full.length }} 字符</em></template></summary>
           <pre>{{ message.text }}</pre>
+          <div v-if="message.long" class="think-expand-row">
+            <button class="think-expand-btn" @click="expandThinking(message)">展开全文</button>
+            <button class="think-copy-btn" @click="copyMessage(message.full)" title="复制完整思考文本">复制全文</button>
+          </div>
         </details>
 
         <div v-else-if="message.kind === 'review'" class="review-card" :class="'review-' + message.verdict">
@@ -284,6 +292,7 @@ import { fmt, pct } from '../../utils/format.js'
 import {
   runTitle, statusLabel, formatTokens, formatTime,
   toolLabel, reviewLabel, memoryVerdictLabel,
+  THINK_PREVIEW_LIMIT,
 } from '../../utils/alphaagent.js'
 
 export default {
@@ -347,6 +356,11 @@ export default {
         document.execCommand('copy')
         document.body.removeChild(ta)
       }
+    },
+    expandThinking(message) {
+      if (!message || !message.long) return
+      // 展开 = 把完整文本替换进 DOM；再次点击收回为预览（text 无 full 冗余）。
+      message.text = message.text === message.full ? message.text.slice(0, THINK_PREVIEW_LIMIT) + '\n…（已截断，展开查看全部）' : message.full
     },
   },
 }

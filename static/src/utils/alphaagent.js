@@ -306,6 +306,24 @@ export function toolResultMessage(row, key) {
   }
 }
 
+// 思考链文本超限截断阈值：历史会话卡顿主因是 thinking 全量文本（每条约 2 万字符）
+// 直接渲染进 DOM。超过阈值的只把预览放进 DOM，完整文本保留在 full 字段，
+// 用户主动"展开全文"时才渲染（减少默认 DOM 文本量 10 倍以上）。
+export const THINK_PREVIEW_LIMIT = 2000
+
+function thinkingMessage(key, kind, label, text) {
+  const full = String(text || '')
+  const long = full.length > THINK_PREVIEW_LIMIT
+  return {
+    key,
+    kind,
+    label,
+    text: long ? full.slice(0, THINK_PREVIEW_LIMIT) + '\n…（已截断，展开查看全部）' : full,
+    full: long ? full : '',
+    long,
+  }
+}
+
 // 事件流 → 会话时间线消息（纯函数；跳过心跳/usage 等内部事件）
 export function buildTimeline(events) {
   const out = []
@@ -315,14 +333,14 @@ export function buildTimeline(events) {
     if (event.event === 'user_message') {
       out.push({ key, kind: 'user', text: event.content || '' })
     } else if (event.event === 'agent_thinking') {
-      out.push({ key, kind: 'thinking', label: '思考摘要', text: event.content || '' })
+      out.push(thinkingMessage(key, 'thinking', '思考摘要', event.content || ''))
     } else if (event.event === 'assistant_tool_call') {
       const args = parseArgs(event.arguments_raw)
       out.push({ key, kind: 'tool_call', name: event.name || 'tool', factorName: args.factor_name || '', expression: args.multi_line_expr || '', text: event.arguments_raw || '' })
     } else if (event.event === 'assistant_message') {
       out.push({ key, kind: 'assistant', text: event.content || '' })
     } else if (event.event === 'assistant') {
-      if (event.reasoning) out.push({ key: key + '-r', kind: 'thinking', label: '思考摘要', text: event.reasoning })
+      if (event.reasoning) out.push(thinkingMessage(key + '-r', 'thinking', '思考摘要', event.reasoning))
       if (event.content) out.push({ key: key + '-a', kind: 'assistant', text: event.content })
       for (const call of event.tool_calls || []) {
         const args = parseArgs(call.function?.arguments || '')
@@ -355,7 +373,7 @@ export function buildTimeline(events) {
     } else if (event.event === 'reviewer_start') {
       out.push({ key, kind: 'system', text: 'FactorReviewer 开始独立审查候选因子' })
     } else if (event.event === 'reviewer_thinking') {
-      out.push({ key, kind: 'reviewer_thinking', text: event.content || '' })
+      out.push(thinkingMessage(key, 'reviewer_thinking', 'FactorReviewer 审查中', event.content || ''))
     } else if (event.event === 'reviewer_message') {
       out.push({ key, kind: 'assistant', text: 'FactorReviewer：' + (event.content || '') })
     } else if (event.event === 'factor_review') {
