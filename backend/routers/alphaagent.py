@@ -717,6 +717,7 @@ class StackingTrainRequest(BaseModel):
     include_factors: list[str] | None = None      # 因子白名单（factor_name 精确匹配）；空/None=全部
     score_smooth: int = Field(default=0, ge=0, le=60)  # 组合分数 WMA 平滑窗；0=自动取 label_days
     multi_path: bool = Field(default=False)       # 多路径对照：折边界平移 2/4 个月重训，输出路径分布
+    llm_assist: bool = Field(default=False)       # LLM 辅助：A) 语义推荐因子子集（锁定复用） C) 训练后组合说明书；失败自动回退
 
 
 @router.post("/stacking/train")
@@ -1064,7 +1065,11 @@ def dsl_operator_monitor(
 
 
 class OvernightMonitorStartRequest(BaseModel):
-    deadline: str = Field(default="07:00", pattern=r"^\d{1,2}:\d{2}$")
+    # HH:MM（顺延到明天）或完整日期时间 YYYY-MM-DD HH:MM / ISO T 格式
+    deadline: str = Field(
+        default="07:00",
+        pattern=r"^(\d{1,2}:\d{2}|\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2})$",
+    )
     max_runs: int = Field(default=0, ge=0, le=50)
     # 前端芯片多选传数组；服务层 join 成逗号串给脚本 --focus-facets
     focus_facets: list[str] | str | None = None

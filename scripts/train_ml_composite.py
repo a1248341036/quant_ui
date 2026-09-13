@@ -131,6 +131,11 @@ def _parse_args() -> argparse.Namespace:
                     help="strict：walk-forward 仅用挖掘期后干净段（fold 少但指标可信）；"
                          "holdout：全历史训练、挖掘期后干净段整体作留出测试（推荐）")
     ap.add_argument("--pred-out", default=None, help="pred 分数输出路径（默认 data/stock/pred_demo.parquet）")
+    ap.add_argument("--llm-assist", action="store_true",
+                    help="LLM 辅助：A) 枚举后语义研判推荐因子子集（白名单，不给权重）；"
+                         "C) 训练后生成组合说明书写入 report.llm_summary。"
+                         "推荐落盘后按候选池指纹锁定复用，池不变不重调 LLM；"
+                         "失败自动回退全量因子，绝不阻断训练（默认关闭）")
     return ap.parse_args()
 
 
@@ -149,6 +154,79 @@ def main() -> None:
         entries = [e for e in entries if e.name in wanted]
         print(f"因子白名单：请求 {len(wanted)} 个，命中 {len(entries)} 个")
     print(f"因子枚举：{len(entries)} 个（去重后）")
+    if len(entries) < 2:
+        print("因子数不足（<2），无法组合。请先挖掘入库更多因子（或核对白名单拼写）。")
+        sys.exit(1)
+
+    # ①b LLM 语义推荐（A 族，--llm-assist 开启时）：
+    #    在白名单过滤之后、mining_end 推断与数据集构建之前，只做语义预筛。
+    #    白名单只是有界预筛，最终有效特征仍由 build_stacking_dataset 的
+    #    max-corr 冗余过滤收口。推荐落盘后按候选池指纹锁定复用：池不变
+    #    直接复用（盲测可复现），池变（新增/删因子）判定过期重新研判。
+    #    任何失败回退全量，绝不阻断训练。
+    llm_recommendation_meta: dict | None = None
+    entries_snapshot = list(entries)  # LLM 推荐回退全量时恢复用
+    if args.llm_assist:
+        from alphaagent.core.llm_provider import load_codex_provider
+        from alphaagent.factor.stacking.llm_assist import (
+            RECOMMENDATION_LOCK_FILE,
+            candidate_pool_fingerprint,
+            llm_recommend_subset,
+        )
+
+        pool_fp = candidate_pool_fingerprint(entries)
+        rec: dict | None = None
+        reused = False
+        try:
+            if RECOMMENDATION_LOCK_FILE.is_file():
+                try:
+                    rec = json.loads(RECOMMENDATION_LOCK_FILE.read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, OSError):
+                    rec = None
+                if not isinstance(rec, dict):  # 锁定文件被手改坏 → 重新研判
+                    rec = None
+                if rec is not None and rec.get("pool_fingerprint") != pool_fp:
+                    print("[warn] 已有 LLM 推荐的候选池指纹与当前不一致（因子池已变化），视作过期，重新研判")
+                    rec = None
+            if rec is not None and not isinstance(rec.get("recommended"), list):
+                rec = None
+            if rec is not None:
+                reused = True
+                print(f"LLM 推荐：复用锁定推荐（{len(rec.get('recommended') or [])} 个因子，池指纹未变，不重调 LLM）")
+            else:
+                load_codex_provider()
+                rec = llm_recommend_subset(entries, pool_fingerprint=pool_fp)
+        except Exception as exc:  # noqa: BLE001  硬保证：A 任何异常回退全量，不阻断训练
+            print(f"[warn] LLM 推荐环节异常，回退全量因子：{exc}")
+            rec = None
+        if rec and isinstance(rec.get("recommended"), list) and rec["recommended"]:
+            allowed = {n for n in rec["recommended"] if isinstance(n, str)}
+            before = len(entries)
+            entries = [e for e in entries if e.name in allowed]
+            if len(entries) < 2:
+                print(f"[warn] LLM 推荐与当前候选池交集仅 {len(entries)} 个（<2），回退全量因子")
+                entries = entries_snapshot
+            else:
+                print(f"LLM 推荐 {len(rec['recommended'])} 个，命中 {len(entries)}/{before} 个"
+                      f"（依据: {str(rec.get('rationale') or '')[:80]}）")
+                RECOMMENDATION_LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+                RECOMMENDATION_LOCK_FILE.write_text(
+                    json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8"
+                )
+                print(f"推荐已锁定写入 {RECOMMENDATION_LOCK_FILE}（候选池不变时后续训练直接复用）")
+                llm_recommendation_meta = {
+                    "recommended": rec["recommended"],
+                    "n_recommended": len(rec["recommended"]),
+                    "n_hit": len(entries),
+                    "rationale": rec.get("rationale"),
+                    "model": rec.get("model"),
+                    "pool_fingerprint": rec.get("pool_fingerprint"),
+                    "reused": reused,
+                }
+        else:
+            print("[warn] LLM 推荐不可用（LLM 不可用或输出不可解析），回退全量因子")
+            entries = entries_snapshot
+
     if len(entries) < 2:
         print("因子数不足（<2），无法组合。请先挖掘入库更多因子（或核对白名单拼写）。")
         sys.exit(1)
@@ -316,6 +394,10 @@ def main() -> None:
                 "结论仅作框架演示，不能作为入库依据。".format(latest, end.date())
             )
         sys.exit(1)
+    # strict 分支此前不给 first_oos 赋值（只在 holdout 分支赋值），而
+    # scheme_compare（⑤c）在 gate（⑦ 原赋值点）之前就消费它 → strict 模式
+    # + ML 方案必崩 UnboundLocalError。统一在此处赋值，后续覆盖为同一值。
+    first_oos = pd.Timestamp(folds[0].oos_dates.min())
 
     is_simple_scheme = args.scheme != "ml"
     kinds = [] if is_simple_scheme else (["ridge", "lgbm"] if args.model == "both" else [args.model])
@@ -441,7 +523,7 @@ def main() -> None:
 
     # ⑦ engine_gate 裁决（OOS 段，周调仓口径）
     gate_result = None
-    first_oos = folds[0].oos_dates.min()
+    first_oos = pd.Timestamp(folds[0].oos_dates.min())  # 已在折生成后赋值，此处保持原位兜底（同一值）
     if not args.no_gate:
         from alphaagent.factor.mining.engine_gate import run_engine_gate
 
@@ -652,6 +734,8 @@ def main() -> None:
         "scheme_compare": scheme_compare,
         "multi_path": multi_path,
     }
+    if args.llm_assist:
+        report["llm_recommendation"] = llm_recommendation_meta  # None=回退全量；否则含名单摘要/指纹/是否复用
     (out_dir / "report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=1, default=str), encoding="utf-8"
     )
@@ -669,6 +753,31 @@ def main() -> None:
         out_dir / "model.joblib",
     )
     print(f"报告与模型已写入 {out_dir}")
+
+    # ⑧b LLM 组合说明书（C 族，--llm-assist 开启时）：report.json 已完整落盘
+    #     之后才执行，读改写一次。llm_summarize_report 带超时（含重试 ≤40s），
+    #     失败只写 llm_summary_error 字段，训练核心交付物（模型/分数/report）
+    #     已在前面全部落盘，不受影响。
+    if args.llm_assist:
+        from alphaagent.core.llm_provider import load_codex_provider
+        from alphaagent.factor.stacking.llm_assist import llm_summarize_report
+
+        print("生成 LLM 组合说明书（C）…")
+        load_codex_provider()
+        try:
+            summary = llm_summarize_report(report)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[warn] LLM 说明书生成异常：{exc}")
+            summary = None
+        if summary:
+            report["llm_summary"] = summary
+            print(f"组合说明书已写入 report.llm_summary（summary: {summary['summary'][:60]}…）")
+        else:
+            report["llm_summary_error"] = "生成失败（LLM 不可用或输出不可解析）"
+            print("[warn] LLM 说明书生成失败，已写入 llm_summary_error（训练结果不受影响）")
+        (out_dir / "report.json").write_text(
+            json.dumps(report, ensure_ascii=False, indent=1, default=str), encoding="utf-8"
+        )
 
     if not args.no_write_pred:
         pred_path = Path(args.pred_out) if args.pred_out else (ROOT / "data" / "stock" / "pred_demo.parquet")

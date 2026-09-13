@@ -88,6 +88,8 @@ def start_training(params: dict[str, Any]) -> dict[str, Any]:
             command += ["--score-smooth", str(score_smooth)]
         if params.get("multi_path"):
             command += ["--multi-path-shifts", "0,2,4"]
+        if params.get("llm_assist"):
+            command += ["--llm-assist"]
 
         # 参数快照落盘：历史列表/详情页展示训练配置用
         out_dir.mkdir(parents=True, exist_ok=True)
