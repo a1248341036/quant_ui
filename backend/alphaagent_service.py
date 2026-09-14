@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -1134,6 +1135,7 @@ def evaluate_single_factor(
         train_end=train_end,
         val_start=val_start,
         val_end=val_end,
+        test_end=val_end,
         label_col=label_col,
         include_fundamentals=include_fundamentals,
     )
@@ -1215,6 +1217,7 @@ def evaluate_multi_profile(
         train_end=train_end,
         val_start=val_start,
         val_end=val_end,
+        test_end=val_end,
         label_col=label_col,
         include_fundamentals=include_fundamentals,
     )
