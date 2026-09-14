@@ -17,17 +17,27 @@
           <button :class="{active: agent.agentMode==='normal'}" @click="agent.switchAgentMode('normal')">普通</button>
         </div>
         <span v-if="agent.agentBusy" class="activity-line"><i></i>{{ agent.currentActivity }}</span>
+        <!-- 基础挖掘指标大盘 Chip -->
         <span v-if="agent.liveMetrics" class="usage-chip live-metrics"
-              title="实时挖掘指标（每个评估/提交节点刷新）：墙钟 · 评估次数 · 提交次数 · 入候选池 · 晋升正式库 · 思维链体量">
+              :title="liveMetricsTooltip(agent.liveMetrics)">
           ⏱ {{ agent.liveMetrics.wall_minutes }}m
           · 评估 {{ agent.liveMetrics.n_eval }}<template v-if="agent.liveMetrics.n_eval_val">+{{ agent.liveMetrics.n_eval_val }}val</template>
           · 提交 {{ agent.liveMetrics.n_submit }}
-          · 入库 {{ agent.liveMetrics.stored_candidate }}
-          · 晋升 {{ agent.liveMetrics.stored_production }}
+          · <span :class="{ 'lm-highlight': agent.liveMetrics.stored_candidate > 0 }">入库 {{ agent.liveMetrics.stored_candidate }}</span>
+          · <span :class="{ 'lm-gold': agent.liveMetrics.stored_production > 0 }">晋升 {{ agent.liveMetrics.stored_production }}</span>
           · 思维链 {{ agent.liveMetrics.thinking_k_chars }}K
           <template v-if="agent.liveMetrics.n_tool_errors"> · <em class="lm-err">错 {{ agent.liveMetrics.n_tool_errors }}</em></template>
-          <template v-if="agent.liveMetrics.dup_dead_end"> · <em class="lm-err">死路提醒 {{ agent.liveMetrics.dup_dead_end }}</em></template>
-          <em v-if="agent.liveMetrics.last_submit">{{ agent.liveMetrics.last_submit.factor }}：{{ agent.liveMetrics.last_submit.verdict || (agent.liveMetrics.last_submit.skipped || '处理中') }}</em>
+          <template v-if="agent.liveMetrics.dup_dead_end"> · <em class="lm-warn">死路 {{ agent.liveMetrics.dup_dead_end }}</em></template>
+        </span>
+        <!-- 最新提交与裁决动态独立 Chip（杜绝文本黏连与截断） -->
+        <span v-if="agent.liveMetrics?.last_submit" class="usage-chip live-last-submit"
+              :title="lastSubmitTooltip(agent.liveMetrics.last_submit)">
+          <i class="last-submit-icon">🎯</i>
+          <span class="last-submit-factor">{{ agent.liveMetrics.last_submit.factor }}</span>
+          <span class="last-submit-sep">：</span>
+          <span class="last-submit-verdict" :class="submitVerdictClass(agent.liveMetrics.last_submit)">
+            {{ formatSubmitVerdict(agent.liveMetrics.last_submit) }}
+          </span>
         </span>
         <span v-if="agent.usage.calls" class="usage-chip" title="本次 Agent 模型调用累计 usage">
           ↑ {{ formatTokens(agent.usage.input_tokens) }} · ↓ {{ formatTokens(agent.usage.output_tokens) }}
@@ -347,6 +357,45 @@ export default {
         document.execCommand('copy')
         document.body.removeChild(ta)
       }
+    },
+    liveMetricsTooltip(m) {
+      if (!m) return ''
+      const lines = [
+        '【实时挖掘指标概览】',
+        `• 墙钟耗时：${m.wall_minutes || 0} 分钟`,
+        `• 因子评估：训练段 ${m.n_eval || 0} 次${m.n_eval_val ? ` / 验证段 ${m.n_eval_val} 次` : ''}`,
+        `• 提交审核：提交 ${m.n_submit || 0} 次 · 候选入库 ${m.stored_candidate || 0} · 正式晋升 ${m.stored_production || 0}`,
+        `• 思维链量：${m.thinking_k_chars || 0} K 字符`,
+      ]
+      if (m.n_tool_errors) lines.push(`• 工具错误：${m.n_tool_errors} 次`)
+      if (m.dup_dead_end) lines.push(`• 死路提醒：${m.dup_dead_end} 次`)
+      return lines.join('\n')
+    },
+    lastSubmitTooltip(sub) {
+      if (!sub) return ''
+      const res = sub.verdict || sub.skipped || '处理中'
+      return `【最新提交因子】\n• 因子名称：${sub.factor || '—'}\n• 裁决结果：${res}`
+    },
+    formatSubmitVerdict(sub) {
+      if (!sub) return '处理中'
+      const raw = String(sub.verdict || sub.skipped || '处理中')
+      if (raw.includes('offline_orthogonality_failed')) return '正交超标'
+      if (raw.includes('correlation_threshold')) return '正交超标'
+      if (raw.includes('stage_one_failed')) return '初筛未过'
+      if (raw.includes('stage_two_failed')) return '精筛未过'
+      if (raw.includes('engine_gate_failed')) return '回测未过'
+      if (raw.includes('candidate_approved') || raw.includes('candidate_stored')) return '入候选池'
+      if (raw.includes('production_approved') || raw.includes('promoted')) return '正式晋升'
+      if (raw === 'rejected') return '未过拒绝'
+      if (raw.length > 20) return raw.slice(0, 18) + '…'
+      return raw
+    },
+    submitVerdictClass(sub) {
+      if (!sub) return ''
+      const raw = String(sub.verdict || sub.skipped || '')
+      if (raw.includes('approved') || raw.includes('stored') || raw.includes('promoted')) return 'verdict-ok'
+      if (raw.includes('failed') || raw.includes('rejected') || raw.includes('error')) return 'verdict-err'
+      return 'verdict-warn'
     },
   },
 }

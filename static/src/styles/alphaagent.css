@@ -177,9 +177,22 @@
 .page-jump-input:disabled { opacity:.45; cursor:default; }
 .usage-chip { display:flex; align-items:center; gap:5px; padding:5px 8px; border:1px solid var(--line); border-radius:7px; color:var(--muted); font:10px var(--font-mono); white-space:nowrap; }
 .usage-chip em { color:#91d4ac; font-style:normal; }
-.live-metrics { display:block; flex:0 1 auto; min-width:0; color:#8ab4d8; max-width:min(38vw, 560px); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.live-metrics em { color:#e8c491; }
-.live-metrics .lm-err { color:#ef6b73; }
+.live-metrics { display:inline-flex; align-items:center; gap:5px; color:#8ab4d8; flex:none; white-space:nowrap; cursor:default; }
+.live-metrics em { color:#e8c491; font-style:normal; }
+.live-metrics .lm-err { color:#ef6b73; font-weight:600; }
+.live-metrics .lm-warn { color:#f5bd4f; font-weight:600; }
+.live-metrics .lm-highlight { color:#5ee0a0; font-weight:600; }
+.live-metrics .lm-gold { color:#ffd166; font-weight:700; text-shadow:0 0 8px rgba(255, 209, 102, 0.4); }
+
+.live-last-submit { display:inline-flex; align-items:center; gap:4px; max-width:min(32vw, 420px); color:#c6d2e8; background:rgba(232, 196, 145, 0.08); border-color:rgba(232, 196, 145, 0.28); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; cursor:pointer; transition:all .15s; }
+.live-last-submit:hover { background:rgba(232, 196, 145, 0.15); border-color:rgba(232, 196, 145, 0.45); }
+.last-submit-icon { font-style:normal; font-size:11px; flex:none; }
+.last-submit-factor { color:#7fb0ff; font-family:var(--font-mono, monospace); max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.last-submit-sep { color:var(--muted); flex:none; }
+.last-submit-verdict { font-size:10px; padding:1px 5px; border-radius:4px; flex:none; font-weight:550; }
+.last-submit-verdict.verdict-ok { color:#5ee0a0; background:rgba(94, 224, 160, 0.12); }
+.last-submit-verdict.verdict-warn { color:#f5bd4f; background:rgba(245, 189, 79, 0.12); }
+.last-submit-verdict.verdict-err { color:#ef8b92; background:rgba(239, 139, 146, 0.12); }
 .activity-line { display:flex; align-items:center; gap:6px; color:#b9a3e8; font-size:11px; white-space:nowrap; }
 .activity-line i, .activity-bar i { display:inline-block; width:6px; height:6px; border-radius:50%; background:#c792ea; box-shadow:0 0 9px rgb(199 146 234 / .85); animation:agentPulse 1.1s infinite; }
 .live-status { display:flex; align-items:center; gap:6px; color:var(--muted); font-size:12px; }
