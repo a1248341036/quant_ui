@@ -778,6 +778,22 @@ def stacking_stop(train_id: str) -> dict[str, Any]:
     return result
 
 
+@router.get("/stacking/trainings/{train_id}/events")
+async def stacking_events(train_id: str):
+    """ML 组合训练流式事件总线（SSE 端点）：实时推送思考、各阶段进展与折进度。"""
+    from backend import stacking_service
+
+    return StreamingResponse(
+        stacking_service.stream_training_events(train_id),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 # ══════════════════════════════════════════════════════════════════════
 #  组合因子库（composite factors）：固化组合分数为可复现条目
 # ══════════════════════════════════════════════════════════════════════
