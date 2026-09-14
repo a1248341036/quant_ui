@@ -61,6 +61,23 @@ SCHEME_LABELS = {
 }
 
 
+def _emit_event(out_dir: Path, event: str, **payload: Any) -> None:
+    """标准化 ML 事件推流与落盘：打印 [ML_EVENT] 供实时 tail，同时双写 events.jsonl。"""
+    data = {
+        "ts": datetime.now().isoformat(timespec="seconds"),
+        "event": event,
+        **payload,
+    }
+    line = f"[ML_EVENT] {json.dumps(data, ensure_ascii=False, default=str)}"
+    print(line, flush=True)
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        with (out_dir / "events.jsonl").open("a", encoding="utf-8") as f:
+            f.write(json.dumps(data, ensure_ascii=False, default=str) + "\n")
+    except Exception:
+        pass
+
+
 def _parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--modes", nargs="+", default=["technical", "fundamental"],
@@ -155,6 +172,23 @@ def main() -> None:
     out_dir = Path(args.out_dir) if args.out_dir else ROOT / "artifacts" / "alphaagent" / "stacking" / run_id
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    _emit_event(
+        out_dir,
+        "session_start",
+        run_id=run_id,
+        eval_mode=args.eval_mode,
+        scheme=args.scheme,
+        scheme_label=SCHEME_LABELS.get(args.scheme, args.scheme),
+        model=args.model,
+        label_days=args.label_days,
+        train_months=args.train_months,
+        step_months=args.step_months,
+        isolation=args.isolation,
+        no_candidate=args.no_candidate,
+        max_corr=args.max_corr,
+        llm_assist=args.llm_assist,
+    )
+
     # ① 因子枚举
     entries = collect_factor_entries(
         modes=tuple(args.modes), include_candidate=not args.no_candidate, include_production=True
@@ -187,6 +221,12 @@ def main() -> None:
         pool_fp = candidate_pool_fingerprint(entries)
         rec: dict | None = None
         reused = False
+        _emit_event(
+            out_dir,
+            "agent_thinking",
+            title="LLM 因子研判与子集推荐",
+            content=f"当前候选池共 {len(entries_snapshot)} 个因子。正在结合数据面多样性与经济逻辑，进行语义去冗余分析...",
+        )
         try:
             if RECOMMENDATION_LOCK_FILE.is_file():
                 try:
@@ -236,6 +276,17 @@ def main() -> None:
         else:
             print("[warn] LLM 推荐不可用（LLM 不可用或输出不可解析），回退全量因子")
             entries = entries_snapshot
+
+        _emit_event(
+            out_dir,
+            "ml_pool_screened",
+            title="因子子集语义研判结果",
+            recommended=llm_recommendation_meta.get("recommended") if llm_recommendation_meta else [],
+            rationale=llm_recommendation_meta.get("rationale") if llm_recommendation_meta else "已回退全量因子",
+            n_recommended=len(entries),
+            n_total=len(entries_snapshot),
+            reused=reused,
+        )
 
     if len(entries) < 2:
         print("因子数不足（<2），无法组合。请先挖掘入库更多因子（或核对白名单拼写）。")
@@ -305,11 +356,34 @@ def main() -> None:
 
     # ③ panel 加载（磁盘缓存命中则秒级）
     print("加载 CNE panel …")
+    _emit_event(
+        out_dir,
+        "ml_stage",
+        stage="panel_loading",
+        title="加载 CNE 数据面板",
+        message=f"正在拉取 [{panel_start.date()} ~ {end.date()}] 日线与基本面数据，执行盲测截断校验...",
+    )
     panel = load_panel_from_cne(start=panel_start, end=end, include_fundamentals=True)
     print(f"panel: {panel.shape[0]} 行 × {panel.shape[1]} 列")
+    _emit_event(
+        out_dir,
+        "ml_stage",
+        stage="panel_loaded",
+        title="面板数据加载就绪",
+        message=f"面板包含 {panel.shape[0]:,} 行 × {panel.shape[1]} 列，盲测段已严格截断",
+        rows=panel.shape[0],
+        cols=panel.shape[1],
+    )
 
     # ④ 数据集构建（物化 + 预处理 + 冗余过滤）
     cache = FactorValueCache()
+    _emit_event(
+        out_dir,
+        "ml_stage",
+        stage="dataset_building",
+        title="物化因子矩阵与去重",
+        message=f"正在物化因子值，并执行 max_corr={args.max_corr} 跨库冗余过滤...",
+    )
     dataset = build_stacking_dataset(
         panel,
         entries,
@@ -324,6 +398,15 @@ def main() -> None:
     print(f"有效特征 {len(dataset.feature_names)} 个；剔除 {len(dataset.dropped)} 个")
     for d in dataset.dropped:
         print(f"  - drop {d['name']} ({d['library']}): {d['reason']}")
+    _emit_event(
+        out_dir,
+        "ml_features_filtered",
+        title="特征筛选完成",
+        feature_names=dataset.feature_names,
+        n_features=len(dataset.feature_names),
+        n_dropped=len(dataset.dropped),
+        dropped=dataset.dropped,
+    )
 
     # ④b mRMR 推荐模式（B 族）：不训练，只输出"强+互补"推荐清单供前端一键勾选
     if args.recommend_k > 0:
@@ -449,6 +532,18 @@ def main() -> None:
     fold_reports: dict[str, list] = {}
     feature_weights: dict[str, list] = {}
     feature_contribution: dict[str, list] = {}
+
+    _emit_event(
+        out_dir,
+        "ml_stage",
+        stage="walk_forward_start",
+        title="开始 Walk-Forward 滚动拟合",
+        total_folds=len(folds),
+        isolation=args.isolation,
+        models=kinds if kinds else [args.scheme],
+        message=f"共 {len(folds)} 折滚动区间，隔离模式：{args.isolation}",
+    )
+
     for kind in kinds:
         print(f"训练 {kind} …")
         pred, report, feat_w, feat_c = fit_predict_walkforward(
@@ -476,6 +571,16 @@ def main() -> None:
             print(f"  OOS {r['oos_start']}~{r['oos_end']}: n_train={r['n_train']} "
                   f"IC={ic if ic is None else round(ic, 4)} "
                   f"{'SKIP' if r.get('skipped') else ''}")
+
+        _emit_event(
+            out_dir,
+            "ml_fold_progress",
+            title=f"{kind.upper()} 拟合完成",
+            kind=kind,
+            fold_reports=report,
+            feature_weights=(feat_w or [])[:15],
+            feature_contribution=(feat_c or [])[:15],
+        )
 
     # 组合分数：多模型 OOS 预测取平均（折内无 in-sample 污染）
     if not is_simple_scheme:
@@ -599,6 +704,14 @@ def main() -> None:
         print(
             f"  excess_annual={gm.get('excess_annual')} excess_sharpe={gm.get('excess_sharpe')} "
             f"daily_overlap={gm.get('daily_overlap')} turnover={gate_result.get('diagnostics', {}).get('avg_daily_turnover')}"
+        )
+        _emit_event(
+            out_dir,
+            "ml_gate_evaluated",
+            title="engine_gate 门禁回测完成",
+            passed=gate_result.get("passed"),
+            metrics=gm,
+            fail_reasons=gate_result.get("fail_reasons") or [],
         )
 
     # ⑦b 累积子集曲线（可选）：按置换贡献降序 Top-k 逐级重训，
@@ -797,6 +910,12 @@ def main() -> None:
         from alphaagent.factor.stacking.llm_assist import llm_summarize_report
 
         print("生成 LLM 组合说明书（C）…")
+        _emit_event(
+            out_dir,
+            "agent_thinking",
+            title="生成组合说明书",
+            content="正在汇总各折 OOS 收益特征与 Gate 实盘指标，撰写组合研判说明书...",
+        )
         load_codex_provider()
         try:
             summary = llm_summarize_report(report)
@@ -806,6 +925,12 @@ def main() -> None:
         if summary:
             report["llm_summary"] = summary
             print(f"组合说明书已写入 report.llm_summary（summary: {summary['summary'][:60]}…）")
+            _emit_event(
+                out_dir,
+                "ml_summary_generated",
+                title="组合说明书已生成",
+                summary=summary,
+            )
         else:
             report["llm_summary_error"] = "生成失败（LLM 不可用或输出不可解析）"
             print("[warn] LLM 说明书生成失败，已写入 llm_summary_error（训练结果不受影响）")
@@ -824,6 +949,18 @@ def main() -> None:
         scores_path = out_dir / "scores.parquet"
         write_pred_parquet(stacked, panel, scores_path)
         print(f"组合分数已写入 out_dir 自包含副本：{scores_path}")
+
+    _emit_event(
+        out_dir,
+        "session_end",
+        title="组合训练收敛完成",
+        status="completed",
+        run_id=run_id,
+        oos_ic=report.get("oos_ic_blended", {}).get("ic_mean"),
+        oos_ir=report.get("oos_ic_blended", {}).get("ic_ir"),
+        gate_passed=gate_result.get("passed") if gate_result else None,
+        out_dir=str(out_dir),
+    )
 
 
 def _wma_smooth_scores(values: np.ndarray, panel: pd.DataFrame, window: int) -> np.ndarray:

@@ -247,7 +247,168 @@ def get_training(train_id: str, *, tail_lines: int = 40) -> dict[str, Any]:
         pass
     else:
         out["progress_tail"] = tail or [f"未找到训练 {train_id} 的输出"]
+    out["events"] = get_training_events(train_id)
     return out
+
+
+def get_training_events(train_id: str) -> list[dict[str, Any]]:
+    """读取训练的结构化事件列表；若无 events.jsonl 则从 report.json 合成兜底回放事件。"""
+    out_dir = STACKING_ROOT / train_id
+    events_file = out_dir / "events.jsonl"
+    events: list[dict[str, Any]] = []
+    if events_file.is_file():
+        try:
+            for line in events_file.read_text(encoding="utf-8", errors="replace").splitlines():
+                if line.strip():
+                    try:
+                        events.append(json.loads(line))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+    if events:
+        return events
+
+    # 若没有 events.jsonl（历史老训练），从 report.json 与 progress_log 合成回放事件
+    report_path = out_dir / "report.json"
+    if report_path.is_file():
+        report = _read_report_json(report_path)
+        if report:
+            events.append({
+                "ts": report.get("run_id") or "0",
+                "event": "session_start",
+                "run_id": train_id,
+                "scheme": report.get("scheme"),
+                "scheme_label": report.get("scheme_label"),
+                "label_days": report.get("label_days"),
+                "isolation": report.get("time_isolation"),
+                "eval_mode": report.get("eval_mode", "tuning"),
+                "blind_test_isolated": report.get("blind_test_isolated", True),
+            })
+            if report.get("llm_recommendation"):
+                rec = report["llm_recommendation"]
+                events.append({
+                    "ts": report.get("run_id") or "0",
+                    "event": "ml_pool_screened",
+                    "title": "因子语义研判推荐",
+                    "recommended": rec.get("recommended", []),
+                    "rationale": rec.get("rationale", ""),
+                    "n_recommended": rec.get("n_recommended", 0),
+                    "reused": rec.get("reused", False),
+                })
+            if report.get("feature_names"):
+                events.append({
+                    "ts": report.get("run_id") or "0",
+                    "event": "ml_features_filtered",
+                    "title": "特征筛选完成",
+                    "feature_names": report.get("feature_names", []),
+                    "n_features": len(report.get("feature_names", [])),
+                    "n_dropped": len(report.get("dropped", [])),
+                    "dropped": report.get("dropped", []),
+                })
+            fold_metrics = report.get("fold_metrics") or {}
+            for kind, rows in fold_metrics.items():
+                if isinstance(rows, list):
+                    events.append({
+                        "ts": report.get("run_id") or "0",
+                        "event": "ml_fold_progress",
+                        "title": f"{kind.upper()} 拟合完成",
+                        "kind": kind,
+                        "fold_reports": rows,
+                        "feature_weights": (report.get("feature_weights", {}).get(kind) or [])[:15],
+                    })
+            if report.get("gate"):
+                g = report["gate"]
+                events.append({
+                    "ts": report.get("run_id") or "0",
+                    "event": "ml_gate_evaluated",
+                    "title": "engine_gate 门禁回测完成",
+                    "passed": g.get("passed"),
+                    "metrics": g.get("metrics") or {},
+                    "fail_reasons": g.get("fail_reasons") or [],
+                })
+            if report.get("llm_summary"):
+                events.append({
+                    "ts": report.get("run_id") or "0",
+                    "event": "ml_summary_generated",
+                    "title": "组合说明书",
+                    "summary": report["llm_summary"],
+                })
+            events.append({
+                "ts": report.get("run_id") or "0",
+                "event": "session_end",
+                "title": "训练完成",
+                "status": "completed",
+                "run_id": train_id,
+                "oos_ic": (report.get("oos_ic_blended") or {}).get("ic_mean"),
+                "oos_ir": (report.get("oos_ic_blended") or {}).get("ic_ir"),
+            })
+    return events
+
+
+async def stream_training_events(train_id: str):
+    """异步生成 SSE 事件流：先回放存量事件，若运行中则持续异步 tail 新行直至结束。"""
+    import asyncio
+
+    out_dir = STACKING_ROOT / train_id
+    events_file = out_dir / "events.jsonl"
+
+    # 1. 存量事件回放
+    initial_events = get_training_events(train_id)
+    for ev in initial_events:
+        yield f"data: {json.dumps(ev, ensure_ascii=False, default=str)}\n\n"
+
+    # 2. 如果当前没有处于 running 状态，回放完即结束
+    status, cur = _proc_status()
+    running_id = cur["train_id"] if cur else None
+    if train_id != running_id:
+        return
+
+    # 3. 运行中：持续监听 events.jsonl 文件追加
+    pos = 0
+    if events_file.is_file():
+        pos = events_file.stat().st_size
+
+    while True:
+        await asyncio.sleep(1.0)
+        if events_file.is_file():
+            try:
+                with events_file.open("r", encoding="utf-8", errors="replace") as f:
+                    f.seek(pos)
+                    lines = f.readlines()
+                    pos = f.tell()
+                    for line in lines:
+                        line = line.strip()
+                        if line:
+                            try:
+                                ev = json.loads(line)
+                                yield f"data: {json.dumps(ev, ensure_ascii=False, default=str)}\n\n"
+                                if ev.get("event") == "session_end":
+                                    return
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+
+        status, cur = _proc_status()
+        if cur is None or cur.get("train_id") != train_id or status != "running":
+            # 子进程已退出，再次检查一次剩余文件内容
+            if events_file.is_file():
+                try:
+                    with events_file.open("r", encoding="utf-8", errors="replace") as f:
+                        f.seek(pos)
+                        lines = f.readlines()
+                        for line in lines:
+                            line = line.strip()
+                            if line:
+                                try:
+                                    ev = json.loads(line)
+                                    yield f"data: {json.dumps(ev, ensure_ascii=False, default=str)}\n\n"
+                                except Exception:
+                                    pass
+                except Exception:
+                    pass
+            break
 
 
 def stop_training(train_id: str) -> dict[str, Any]:

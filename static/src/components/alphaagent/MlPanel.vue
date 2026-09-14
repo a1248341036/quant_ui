@@ -1,479 +1,508 @@
 <template>
-  <div class="ml-panel">
-    <!-- ── 状态条：当前训练状态 + 主行动 ── -->
-    <div class="mlv-status">
-      <span class="mlv-dot" :class="{ running: anyRunning, ok: !anyRunning && latest }"></span>
-      <div class="mlv-status-text">
-        <b>{{ anyRunning ? '运行中 · ' + runningTrain.train_id : latest ? '空闲 · 最新 ' + latest.train_id : '尚未运行' }}</b>
-        <span v-if="anyRunning && runningTail" class="mlv-sub">{{ runningTail }}</span>
-        <span v-else-if="latest" class="mlv-sub">{{ paramSummary(latest) }}</span>
-        <span v-else class="mlv-sub">选一个组合方法（ML 学习加权或简单加权），配置后开始 walk-forward 运行</span>
+  <div class="ml-agent-shell agent-shell">
+    <!-- ════════════════ 左侧边栏：Runs 列表 ════════════════ -->
+    <aside class="agent-sidebar ml-sidebar">
+      <div class="sidebar-head">
+        <div>
+          <span class="eyebrow">STACKING</span>
+          <h2>ML 组合任务</h2>
+        </div>
+        <button class="new-run" type="button" @click="openNewModal">
+          <span>＋</span> 新建
+        </button>
       </div>
-      <div class="mlv-actions">
-        <button class="mlv-ghost" @click="toggleConfig">{{ showConfig ? '收起配置 ▴' : '运行配置 ▾' }}</button>
-        <button v-if="anyRunning" class="mlv-stop" @click="stopMl(runningTrain.train_id)">停止</button>
-        <button class="mlv-primary" :disabled="ml.starting || anyRunning" @click="startMl">{{ anyRunning ? '运行中…' : (latest ? '再次运行' : '开始运行') }}</button>
-      </div>
-    </div>
 
-    <!-- ── 训练配置（折叠） ── -->
-    <div v-show="showConfig" class="ml-config">
-      <div class="ml-form">
-        <label title="组合方法决定组合分数怎么合成：ML 用 Ridge/LGBM 学习加权（默认，最慢）；等权/ICIR/HRP 不拟合任何模型，符号/权重只由各折训练段按规则滚动估计，产出同款 OOS 报告 + engine_gate + pred 通道。">组合方法
-          <select v-model="ml.form.scheme" class="ml-input">
-            <option value="ml">ML 学习加权（Ridge + LGBM）</option>
-            <option value="equal">等权 1/N</option>
-            <option value="icir">ICIR 加权</option>
-            <option value="hrp">HRP 加权</option>
-          </select>
-        </label>
-        <label v-if="ml.form.scheme === 'ml'">模型
-          <select v-model="ml.form.model" class="ml-input">
-            <option value="both">Ridge + LGBM</option>
-            <option value="ridge">Ridge</option>
-            <option value="lgbm">LightGBM</option>
-          </select>
-        </label>
-        <span v-else class="ml-scheme-hint">简单加权：不挑因子、不拟合模型，权重按规则滚动合成后照常跑报告与 gate</span>
-        <label>持有天数 <input type="number" v-model.number="ml.form.label_days" class="ml-input ml-num"></label>
-        <label>训练月数 <input type="number" v-model.number="ml.form.train_months" class="ml-input ml-num"></label>
-        <label>折长(月) <input type="number" v-model.number="ml.form.step_months" class="ml-input ml-num"></label>
-        <label>去重阈值 <input type="number" step="0.05" v-model.number="ml.form.max_corr" class="ml-input ml-num"></label>
-        <label>隔离模式
-          <select v-model="ml.form.isolation" class="ml-input">
-            <option value="holdout">留出测试（推荐）</option>
-            <option value="strict">严格隔离</option>
-          </select>
-        </label>
-        <label class="ml-check"><input type="checkbox" v-model="ml.form.no_candidate"> 只用正式库</label>
-        <label class="ml-check"><input type="checkbox" v-model="ml.form.no_gate"> 跳过 engine_gate</label>
-        <label v-if="ml.form.scheme === 'ml'" class="ml-check" title="按置换贡献降序取 Top-k 逐级重训（成本 ≈ 2n 次拟合，训练时间明显变长）。输出'子集规模 vs OOS IC'曲线，定位边际收益归零的最优因子数。"><input type="checkbox" v-model="ml.form.subset_curve"> 累积子集曲线</label>
-        <label v-if="ml.form.scheme === 'ml'" class="ml-check" title="LLM 语义研判：因子枚举后按数据面覆盖去冗余推荐训练子集（只出白名单、不给权重，最终有效特征仍由 max-corr 过滤收口）；训练后 LLM 解读 report 生成组合说明书（写 report.llm_summary）。推荐按候选池指纹锁定复用，池不变不重调 LLM；失败自动回退全量因子，不阻断训练。默认关闭。"><input type="checkbox" v-model="ml.form.llm_assist"> LLM 辅助（推荐 + 说明书）</label>
-        <label v-if="ml.form.scheme === 'ml'" class="ml-check" title="同一段干净历史换两种折边界（整体平移 2/4 个月）各重训一遍，输出 OOS IC/ICIR/Sharpe/回撤 的路径分布——单条切法上的好成绩可能只是那条边界的运气。成本 ≈ 2 次完整训练。"><input type="checkbox" v-model="ml.form.multi_path"> 多路径对照</label>
-        <span class="ml-gate-mode" title="因子池已是统一大库（不分技术/基本面）；engine_gate 档位自动跟随持有天数：≤7 天→技术档（周调仓·严门槛），>7 天→基本面档（月调仓·松门槛）。">gate 档位：{{ gateModeLabel }}（自动）</span>
-        <span class="ml-safe-badge" title="盲测物理隔离：当前处于研发验证态，数据严格物理截断至 2024-12-31，2025+ 盲测段安全锁定未加载，LLM 绝无法窥探盲测数据。">🛡️ 盲测隔离（≤2024-12-31）</span>
+      <div class="session-label">
+        <span>历史运行（{{ ml.list.length }}）</span>
+        <button class="archived-toggle" type="button" title="刷新列表" @click="loadMl">刷新</button>
       </div>
-      <!-- ── 训练因子自选（白名单；不选=全部） ── -->
-      <div class="ml-factor-picker">
-        <div class="mlv-block-head" style="margin:0 0 6px">
-          <h5>训练因子</h5>
-          <span class="mlv-sub">不选 = 全部（统一大库）</span>
-          <span v-if="ml.form.include_factors.length" class="mlv-sub">已选 {{ ml.form.include_factors.length }}</span>
-          <button class="mlv-ghost" type="button" @click="setAllFactors(true)">全选</button>
-          <button class="mlv-ghost" type="button" @click="setAllFactors(false)">清空</button>
-          <button class="mlv-ghost" type="button" title="重新拉取因子库列表（挖掘新入库的因子也会出现）" @click="loadFactorPool(true)">刷新</button>
-        </div>
-        <div v-if="ml.factorPoolLoading" class="mlv-sub" style="padding:6px 2px">加载因子列表…</div>
-        <div v-else-if="ml.factorPool.length" class="ml-factor-list">
-          <!-- 不用 label 包裹：label 会把点击默认转发给 checkbox（吞掉 stopPropagation），卡片点击永远打不开 -->
-          <div v-for="f in ml.factorPool" :key="f.name" class="ml-factor-row">
-            <input type="checkbox" :value="f.name" v-model="ml.form.include_factors">
-            <span class="ml-factor-name" :class="{ active: factorCard && factorCard.name === f.name }"
-                  title="点击查看因子数据与机制说明"
-                  @click.stop.prevent="toggleFactorCard(f, $event)">{{ f.name }}</span>
-            <i class="ml-factor-lib">{{ f.library }}</i>
-          </div>
-        </div>
-        <div class="ml-reco-bar">
-          <button class="mlv-ghost" type="button"
-                  :disabled="ml.recommending || anyRunning"
-                  title="物化因子面板后按'自己强 + 与已选互补'贪心排序（mRMR）。约 1-3 分钟：首次含面板加载，因子值会进磁盘缓存，随后直接点训练可复用。"
-                  @click="recommendFactors">
-            {{ ml.recommending ? '推荐计算中（可关掉面板等结果）…' : '帮我推荐 Top-8' }}
-          </button>
-          <span class="mlv-sub">质量 = mining 窗口日均 |IC|；冗余 = 与已选最大相关；自动填入勾选</span>
-        </div>
-        <div v-if="ml.recommend" class="ml-reco">
-          <div class="mlv-block-head" style="margin:8px 0 4px">
-            <h5>mRMR 推荐清单（已填入上方勾选）</h5>
-            <button class="mlv-ghost" type="button" title="清空推荐并取消勾选" @click="clearRecommend">清空推荐</button>
-          </div>
-          <div class="ml-reco-list">
-            <div v-for="r in ml.recommend.ranking" :key="r.name" class="ml-reco-row">
-              <b>#{{ r.rank }}</b>
-              <span class="ml-reco-name" title="点击查看因子数据与机制说明"
-                    @click.stop.prevent="toggleFactorCard(poolFactor(r.name), $event)">{{ r.name }}</span>
-              <i class="ml-factor-lib">{{ r.library }}</i>
-              <i class="mlv-sub">|IC| {{ fmtNum(r.ic_mean) }} · 冗余 {{ num2(r.redundancy) }}</i>
+
+      <div class="session-list">
+        <div
+          v-for="t in ml.list"
+          :key="t.train_id"
+          class="session-item"
+          :class="{ active: ml.selected === t.train_id }"
+          @click="selectTrain(t.train_id)"
+        >
+          <div class="session-select">
+            <span class="status-dot" :class="runStatusClass(t)"></span>
+            <div class="session-copy">
+              <strong>{{ fmtTrainId(t.train_id) }}</strong>
+              <small>{{ schemeBadge(t) }} · {{ formatOos(t) }} · {{ t.n_folds ?? '—' }}折</small>
             </div>
           </div>
         </div>
-      </div>
-      <div v-if="ml.error" class="ml-error">{{ ml.error }}</div>
-    </div>
-
-    <!-- ── 空状态引导 ── -->
-    <div v-if="!ml.list.length && !ml.loadingList" class="mlv-empty">
-      <p>还没有组合运行记录。组合会用因子库中的全部因子做 walk-forward 时间隔离评估：</p>
-      <p>ML 学习加权（Ridge/LGBM）或等权 1/N、ICIR、HRP 简单加权，产出 OOS 分数与 engine_gate 可交易性裁决。</p>
-      <button class="mlv-primary" @click="showConfig = true; $nextTick(() => startMl())">开始第一次运行</button>
-    </div>
-
-    <template v-if="ml.list.length">
-      <!-- ── 最新一次成功训练的核心指标 ── -->
-      <div v-if="latest" class="metrics-cards">
-        <div class="metrics-card" title="组合分数 OOS IC 均值（时间隔离，挖掘期外）">
-          <b :class="latest.oos_ic_mean >= 0 ? 'ic-pos' : 'ic-neg'">{{ fmtNum(latest.oos_ic_mean) }}</b><span>最新 OOS IC</span>
-        </div>
-        <div class="metrics-card" title="组合分数 OOS ICIR">
-          <b>{{ fmtNum(latest.oos_ic_ir) }}</b><span>OOS ICIR</span>
-        </div>
-        <div class="metrics-card" title="engine_gate 可交易性裁决（OOS 段周调仓）">
-          <b :class="latest.gate_passed ? 'ic-pos' : 'ic-neg'">{{ latest.gate_passed == null ? '—' : (latest.gate_passed ? '通过' : '未过') }}</b><span>engine_gate</span>
-        </div>
-        <div class="metrics-card" title="gate 超额年化">
-          <b>{{ gateOf(latest, 'excess_annual', true) }}</b><span>gate 超额年化</span>
-        </div>
-        <div class="metrics-card" title="组合特征数 / walk-forward 折数">
-          <b>{{ latest.n_features ?? '—' }}<i>/</i>{{ latest.n_folds ?? '—' }}</b><span>特征 / 折数</span>
+        <div v-if="!ml.list.length && !loadingList" class="sidebar-empty">
+          暂无组合任务记录
         </div>
       </div>
 
-      <!-- ── 跨训练趋势 ── -->
-      <div v-if="trendRows.length >= 2" class="mlv-block">
-        <div class="mlv-block-head">
-          <h4>训练趋势</h4>
-          <span class="summary-facet-hint" title="每次训练的 OOS IC / ICIR。看组合 alpha 随因子库扩大是在增强还是衰减。">ⓘ</span>
-        </div>
-        <div id="ml-trend-chart" class="metrics-chart" style="height: 210px"></div>
+      <div class="sidebar-footer">
+        <button class="ml-drawer-btn" type="button" @click="showCfDrawer = true">
+          📁 组合因子库 ({{ compositeList.length }})
+        </button>
       </div>
+    </aside>
 
-      <!-- ── 历史训练（点击行展开详情；数值列点击排序） ── -->
-      <div class="mlv-block">
-        <div class="mlv-block-head">
-          <h4>训练历史</h4>
-          <span class="mlv-sub">点击行展开权重 / 折级 / 衰减详情 · 点击表头按该列排序</span>
+    <!-- ════════════════ 右侧主视窗：Agent 工作台 ════════════════ -->
+    <main class="agent-main ml-main">
+      <!-- 顶部 Header -->
+      <header class="agent-header ml-header">
+        <div class="agent-title">
+          <div class="agent-orb">ML</div>
+          <div>
+            <h1>{{ activeTitle }}</h1>
+            <div class="agent-subtitle">
+              {{ activeSubtitle }}
+            </div>
+          </div>
         </div>
-        <table class="lib-table">
-          <thead>
-            <tr>
-              <th>训练</th>
-              <th v-for="col in historyColumns" :key="col.key" :class="{ sortable: true, active: historySortKey === col.key }"
-                  @click="toggleHistorySort(col.key)" :title="col.title || ''">
-                {{ col.label }}<span v-if="historySortKey === col.key">{{ historySortDir > 0 ? ' ▲' : ' ▼' }}</span>
-              </th>
-              <th>gate</th>
-              <th title="衰减保留比：decay_table 各因子 OOS IC / 挖掘 IC 的均值（跨训练可比）">衰减保留</th>
-              <th title="全部折中最差的 OOS IC（稳定性下界）">最差折</th>
-              <th title="分模型折均 OOS IC">R/L IC</th>
-              <th title="被相关性去重剔除的因子数">剔除</th>
-            </tr>
-          </thead>
-          <tbody>
-            <template v-for="t in historySorted" :key="t.train_id">
-              <tr :class="{active: ml.selected===t.train_id}" @click="toggleDetail(t.train_id)">
-                <td class="lib-fid">{{ fmtTrainId(t.train_id) }}</td>
-                <td :class="icClass(t.oos_ic_mean)"><strong>{{ fmtNum(t.oos_ic_mean) }}</strong></td>
-                <td>{{ fmtNum(t.oos_ic_ir) }}</td>
-                <td :class="{ neg: (t.gate_excess_annual ?? 0) < 0 }">{{ pct(t.gate_excess_annual) }}</td>
-                <td>{{ num2(t.gate_excess_sharpe) }}</td>
-                <td :class="{ neg: (t.gate_max_drawdown ?? 0) > 0.4 }">{{ pct(t.gate_max_drawdown) }}</td>
-                <td>{{ pct(t.gate_daily_overlap) }}</td>
-                <td>{{ pct(t.gate_daily_turnover) }}</td>
-                <td>{{ t.n_folds ?? '—' }}</td>
-                <td>{{ t.n_features ?? '—' }}<span v-if="t.n_dropped" class="mlv-sub">−{{ t.n_dropped }}</span></td>
-                <td>{{ (t.model || '—').toUpperCase() }}</td>
-                <td>{{ t.label_days ? t.label_days + 'd' : '—' }}</td>
-                <td><span class="lib-status" :class="t.gate_passed === true ? 'status-completed' : (t.gate_passed === false ? 'mlv-bad' : '')">{{ gateText(t) }}</span></td>
-                <td><span class="mlv-sub">{{ isolationShort(t) }}</span></td>
-                <td>
-                  <span v-if="t.model_ic && t.model_ic.ridge != null" class="mlv-sub">{{ fmtNum(t.model_ic.ridge) }}</span>
-                  <span v-else class="mlv-sub">—</span>
-                  <span class="mlv-sub"> / </span>
-                  <span v-if="t.model_ic && t.model_ic.lgbm != null" class="mlv-sub">{{ fmtNum(t.model_ic.lgbm) }}</span>
-                  <span v-else class="mlv-sub">—</span>
-                </td>
-              </tr>
-              <tr v-if="ml.selected === t.train_id && ml.detail && ml.detail.train_id === t.train_id" class="mlv-expand-row">
-                <td colspan="15">
-                  <div class="mlv-expand">
-                    <pre v-if="ml.detail.status==='running'" class="ml-log">{{ (ml.detail.progress_tail || []).slice(-8).join('\n') || '（等待输出…）' }}</pre>
-                    <template v-if="ml.detail.report">
-                      <div class="mlv-expand-head">
-                        <span class="mlv-sub">组合方法：{{ ml.detail.report.scheme_label || 'ML 学习加权（Ridge+LGBM）' }}</span>
-                        <span class="mlv-sub">{{ ml.detail.report.time_isolation }}</span>
-                        <span class="mlv-sub">训练窗口终点（mining_end）: {{ ml.detail.report.mining_end || '—' }}</span>
-                        <span class="ml-safe-badge" v-if="ml.detail.report.blind_test_isolated" title="该运行产物处于研发验证态，数据严格截止 2024-12-31，盲测段安全锁定。">🛡️ 盲测隔离生效（数据至 {{ ml.detail.report.panel_end || '2024-12-31' }}）</span>
-                        <span v-if="(ml.detail.report.gate||{}).passed === false" class="mlv-bad">
-                          未过原因：{{ ((ml.detail.report.gate||{}).fail_reasons||[]).join('、') }}
-                        </span>
-                        <button class="mlv-ghost" type="button" :disabled="!!savingCompositeId || !t.out_dir"
-                                title="把这次组合运行的产物（报告+分数）固化为组合因子库条目——含构成/指标/复现命令，点组合因子库行即可回看"
-                                @click.stop="saveCompositeFactor(t)">
-                          {{ savingCompositeId === t.train_id ? '保存中…' : '另存为组合因子' }}
-                        </button>
-                      </div>
-                      <div v-if="gateCards.length" class="metrics-cards">
-                        <div v-for="c in gateCards" :key="c.label" class="metrics-card" :title="c.title"><b>{{ c.value }}</b><span>{{ c.label }}</span></div>
-                      </div>
-                      <template v-if="weightKinds.length">
-                        <div class="mlv-block-head">
-                          <h5>特征权重 Top15（跨折归一平均）</h5>
-                          <span class="mlv-sub">组合 OOS IC {{ fmtNum(blendedIc) }} vs 最强单因子 {{ fmtNum(bestSingleIc) }}
-                            <b :class="diversificationGain >= 0 ? 'ic-pos' : 'ic-neg'">{{ diversificationGain == null ? '' : (diversificationGain >= 0 ? '+' : '') + fmtNum(diversificationGain) }}</b>
-                            （多样性增益 = 组合 − 最强单因子）</span>
-                        </div>
-                        <div class="mlv-grid2">
-                          <div v-for="kind in weightKinds" :key="'w-' + kind">
-                            <strong>{{ kind.toUpperCase() }}</strong>
-                            <div :id="'ml-weights-' + kind" class="metrics-chart" :style="{ height: Math.max(160, weightRows(kind).length * 24 + 40) + 'px' }"></div>
-                          </div>
-                        </div>
-                      </template>
-                      <template v-if="contribKinds.length">
-                        <div class="mlv-block-head">
-                          <h5>置换贡献（打乱该因子后组合损失多少）</h5>
-                          <span class="mlv-metric-toggle">
-                            <button v-for="m in contribMetrics" :key="m.key" type="button"
-                                    :class="{ active: contribMetric === m.key }"
-                                    @click="setContribMetric(m.key)">{{ m.label }}</button>
-                          </span>
-                          <span class="summary-facet-hint" :title="contribHint">ⓘ</span>
-                        </div>
-                        <div class="mlv-grid2">
-                          <div v-for="kind in contribKinds" :key="'c-' + kind">
-                            <strong>{{ kind.toUpperCase() }}</strong>
-                            <div :id="'ml-contrib-' + kind" class="metrics-chart"
-                                 :style="{ height: Math.max(160, Math.min(15, contribRows(kind).length) * 24 + 40) + 'px' }"></div>
-                          </div>
-                        </div>
-                      </template>
-                      <template v-if="(ml.detail.report.subset_curve || []).length">
-                        <div class="mlv-block-head">
-                          <h5>累积子集曲线（子集规模 vs OOS IC）</h5>
-                          <span v-if="bestSubset" class="mlv-sub">
-                            IC 峰值 <b>k={{ bestSubset.k }}</b>：blended OOS IC <b>{{ fmtNum(bestSubset.blended) }}</b>
-                          </span>
-                          <span v-if="bestSubsetRisk" class="mlv-sub">
-                            Sharpe 峰值 <b>k={{ bestSubsetRisk.k }}</b>：Sharpe <b>{{ fmtNum(bestSubsetRisk.oos_sharpe) }}</b> · 回撤 {{ pct(bestSubsetRisk.oos_max_drawdown) }}
-                          </span>
-                        </div>
-                        <div id="ml-subset-curve" class="metrics-chart" style="height: 240px"></div>
-                        <template v-if="hasSubsetRisk">
-                          <div class="mlv-block-head">
-                            <h5>子集风险曲线（Top-k 重训组合的 OOS Sharpe / 最大回撤）</h5>
-                            <span class="summary-facet-hint" title="每级重训的组合在 OOS 段按预测取前 20% 等权多头、按持有期去重叠后的年化 Sharpe 与最大回撤（轻量口径，不含换手成本，供相对比较）。IC 峰值与 Sharpe 峰值不一致时，以 Sharpe/回撤侧为准——IC 高不等于可交易。">ⓘ</span>
-                          </div>
-                          <div id="ml-subset-risk" class="metrics-chart" style="height: 220px"></div>
-                        </template>
-                      </template>
-                      <template v-if="schemeRows.length">
-                        <div class="mlv-block-head">
-                          <h5>不挑全上对照（简单投票 vs 学习加权）</h5>
-                          <span class="summary-facet-hint" :title="(ml.detail.report.scheme_compare||{}).note || ''">ⓘ</span>
-                          <span v-if="schemeWinner" class="mlv-sub">
-                            跑赢当前组合：<b class="ic-pos">{{ schemeWinner.label }}</b>
-                            （IC <b class="ic-pos">{{ schemeWinner.ic_gap >= 0 ? '+' : '' }}{{ fmtNum(schemeWinner.ic_gap) }}</b>）
-                          </span>
-                          <span v-else class="mlv-sub">
-                            简单投票未能跑赢当前学习加权——拟合权重暂时"值得"
-                          </span>
-                        </div>
-                        <table class="lib-table">
-                          <thead>
-                            <tr>
-                              <th>方案</th><th>OOS IC</th><th>ICIR</th><th>OOS Sharpe</th>
-                              <th>最大回撤</th><th>样本日</th><th>IC − 当前组合</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            <tr v-for="row in schemeRows" :key="row.scheme">
-                              <td :title="row.note">
-                                <strong v-if="row.scheme === 'stacked'">{{ row.label }}</strong>
-                                <template v-else>{{ row.label }}</template>
-                              </td>
-                              <td :class="icClass(row.ic_mean)"><strong>{{ fmtNum(row.ic_mean) }}</strong></td>
-                              <td>{{ fmtNum(row.ic_ir) }}</td>
-                              <td>{{ row.oos_sharpe == null ? '—' : num2(row.oos_sharpe) }}</td>
-                              <td>{{ row.oos_max_drawdown == null ? '—' : pct(row.oos_max_drawdown) }}</td>
-                              <td>{{ row.n_days }}</td>
-                              <td v-if="row.scheme === 'stacked'">—</td>
-                              <td v-else :class="icClass(row.ic_gap)">
-                                {{ row.ic_gap == null ? '—' : (row.ic_gap >= 0 ? '+' : '') + fmtNum(row.ic_gap) }}
-                              </td>
-                            </tr>
-                          </tbody>
-                        </table>
-                      </template>
-                      <template v-if="multiPathRows.length">
-                        <div class="mlv-block-head">
-                          <h5>多路径 OOS 对照（折边界平移重训）</h5>
-                          <span class="summary-facet-hint" :title="(ml.detail.report.multi_path||{}).note || ''">ⓘ</span>
-                          <span v-if="multiPathWarning" class="mlv-bad">
-                            ⚠ 有 {{ multiPathAgg.n_negative_ic }}/{{ multiPathAgg.n_paths }} 条平移路径 IC ≤ 0——组合对数据切法敏感，结论可交易性存疑
-                          </span>
-                          <span v-else-if="multiPathAgg" class="mlv-sub">
-                            平移路径 IC [{{ fmtNum(multiPathAgg.ic_min) }} ~ {{ fmtNum(multiPathAgg.ic_max) }}]
-                            中位 {{ fmtNum(multiPathAgg.ic_median) }} · 最差 Sharpe {{ num2(multiPathAgg.sharpe_min) }}
-                          </span>
-                        </div>
-                        <table class="lib-table">
-                          <thead>
-                            <tr>
-                              <th>平移</th><th>折数</th><th>OOS 区间</th><th>OOS IC</th><th>ICIR</th>
-                              <th>OOS Sharpe</th><th>最大回撤</th><th>IC − 主路径</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            <tr v-for="row in multiPathRows" :key="row.shift_months">
-                              <td>{{ row.shift_months }} 月</td>
-                              <td>{{ row.folds }}</td>
-                              <td>{{ row.oos_start }} ~ {{ row.oos_end }}</td>
-                              <td :class="icClass(row.ic_mean)"><strong>{{ fmtNum(row.ic_mean) }}</strong></td>
-                              <td>{{ fmtNum(row.ic_ir) }}</td>
-                              <td>{{ row.oos_sharpe == null ? '—' : num2(row.oos_sharpe) }}</td>
-                              <td>{{ row.oos_max_drawdown == null ? '—' : pct(row.oos_max_drawdown) }}</td>
-                              <td :class="icClass(row.ic_gap_vs_main)">
-                                {{ row.ic_gap_vs_main == null ? '—' : (row.ic_gap_vs_main >= 0 ? '+' : '') + fmtNum(row.ic_gap_vs_main) }}
-                              </td>
-                            </tr>
-                          </tbody>
-                        </table>
-                      </template>
-                      <template v-if="(ml.detail.report.llm_recommendation) || (ml.detail.report.llm_summary) || (ml.detail.report.llm_summary_error)">
-                        <div class="mlv-block-head">
-                          <h5>LLM 辅助（A 推荐 + C 说明书）</h5>
-                          <span class="mlv-sub" v-if="llmRecMeta">{{ llmRecMeta }}</span>
-                        </div>
-                        <template v-if="(ml.detail.report.llm_recommendation||{}).recommended">
-                          <div class="mlv-sub" style="margin-bottom:4px">
-                            推荐 {{ (ml.detail.report.llm_recommendation||{}).n_recommended }} 个因子（命中 {{ (ml.detail.report.llm_recommendation||{}).n_hit }}）· 模型 {{ (ml.detail.report.llm_recommendation||{}).model || '—' }}
-                            <template v-if="(ml.detail.report.llm_recommendation||{}).reused"> · 已复用锁定推荐</template>
-                          </div>
-                          <div class="ml-features">{{ ((ml.detail.report.llm_recommendation||{}).recommended||[]).join(' · ') }}</div>
-                          <div v-if="(ml.detail.report.llm_recommendation||{}).rationale" class="ml-reco-rationale">依据：{{ (ml.detail.report.llm_recommendation||{}).rationale }}</div>
-                        </template>
-                        <template v-if="ml.detail.report.llm_summary">
-                          <div class="ml-llm-summary">
-                            <div class="ml-llm-sec"><b>总结</b><p>{{ ml.detail.report.llm_summary.summary || '—' }}</p></div>
-                            <div v-if="(ml.detail.report.llm_summary.strengths||[]).length" class="ml-llm-sec"><b>优势</b><ul><li v-for="(s,i) in ml.detail.report.llm_summary.strengths" :key="'s'+i">{{ s }}</li></ul></div>
-                            <div v-if="(ml.detail.report.llm_summary.risks||[]).length" class="ml-llm-sec"><b>风险</b><ul class="ml-llm-risk"><li v-for="(r,i) in ml.detail.report.llm_summary.risks" :key="'r'+i">{{ r }}</li></ul></div>
-                            <div v-if="(ml.detail.report.llm_summary.suggestions||[]).length" class="ml-llm-sec"><b>建议</b><ul><li v-for="(g,i) in ml.detail.report.llm_summary.suggestions" :key="'g'+i">{{ g }}</li></ul></div>
-                            <div class="mlv-sub">生成模型：{{ ml.detail.report.llm_summary.model || '—' }}</div>
-                          </div>
-                        </template>
-                        <div v-else-if="ml.detail.report.llm_summary_error" class="mlv-bad">LLM 说明书生成失败：{{ ml.detail.report.llm_summary_error }}</div>
-                      </template>
-                      <div v-if="Object.keys(ml.detail.report.fold_metrics || {}).length" class="mlv-block-head"><h5>折级 OOS IC</h5></div>
-                      <div class="mlv-grid2">
-                        <div v-for="(rows, model) in ml.detail.report.fold_metrics" :key="'f-' + model">
-                          <strong>{{ model.toUpperCase() }}</strong>
-                          <div :id="'ml-folds-' + model" class="metrics-chart" style="height: 170px"></div>
-                        </div>
-                      </div>
-                      <div class="mlv-block-head"><h5>衰减对照（挖掘期 IC vs OOS IC，按 |OOS IC| Top20）</h5></div>
-                      <div v-if="decayRows.length" id="ml-decay-chart" class="metrics-chart" :style="{ height: Math.max(160, decayRows.length * 26 + 50) + 'px' }"></div>
-                      <details class="mlv-details">
-                        <summary>特征清单（{{ (ml.detail.report.feature_names||[]).length }}）/ 剔除（{{ (ml.detail.report.dropped||[]).length }}）/ 衰减明细表</summary>
-                        <div class="ml-features">{{ (ml.detail.report.feature_names||[]).join(' · ') }}</div>
-                        <div v-for="d in ml.detail.report.dropped" :key="d.name" class="ml-drop">− {{ d.name }}（{{ d.library }}）：{{ d.reason }}</div>
-                        <table class="lib-table">
-                          <thead><tr><th>因子</th><th>挖掘 IC</th><th>OOS IC</th><th>衰减比</th></tr></thead>
-                          <tbody>
-                            <tr v-for="row in ml.detail.report.decay_table" :key="row.name">
-                              <td>{{ row.name }}</td><td>{{ fmtNum(row.ic_mining) }}</td>
-                              <td>{{ fmtNum(row.ic_oos) }}</td><td>{{ fmtNum(row.decay_ratio) }}</td>
-                            </tr>
-                          </tbody>
-                        </table>
-                      </details>
-                    </template>
+
+        <div class="header-actions">
+          <span class="ml-safe-badge" title="盲测物理隔离：当前处于研发验证态，数据严格物理截断至 2024-12-31，2025+ 盲测段安全锁定未加载，LLM 绝无法窥探盲测数据。">
+            🛡️ 盲测隔离（≤2024-12-31）
+          </span>
+
+          <div class="mode-toggle">
+            <button :class="{ active: viewMode === 'timeline' }" @click="viewMode = 'timeline'">⚡ 流式时间线</button>
+            <button :class="{ active: viewMode === 'analytics' }" @click="viewMode = 'analytics'">📊 深度归因看板</button>
+          </div>
+
+          <button
+            v-if="activeTrain && activeTrain.status === 'completed' && activeReport"
+            class="mlv-ghost"
+            type="button"
+            :disabled="!!savingCompositeId"
+            @click="saveCompositeFactor(activeTrain)"
+          >
+            {{ savingCompositeId === activeTrain.train_id ? '保存中…' : '另存为组合因子' }}
+          </button>
+
+          <button
+            v-if="activeTrain && activeTrain.status === 'running'"
+            class="stop-btn"
+            type="button"
+            @click="stopMl(activeTrain.train_id)"
+          >
+            停止
+          </button>
+        </div>
+      </header>
+
+      <!-- ══ 主体：流式时间线视图 ══ -->
+      <div v-if="viewMode === 'timeline'" class="agent-thread ml-thread" ref="threadContainer">
+        <!-- 空状态引导 -->
+        <div v-if="!activeTrain" class="welcome">
+          <div class="welcome-orb">ML</div>
+          <h2>开启多因子智能组合</h2>
+          <p>基于统一因子大库与 Walk-Forward 时间隔离，通过机器学习（Ridge/LGBM）或规则加权（1/N、ICIR、HRP）进行样本外滚动评估与实盘门禁裁决。</p>
+          <div class="suggestions">
+            <button class="mlv-primary" @click="openNewModal">开始新建组合运行</button>
+          </div>
+        </div>
+
+        <!-- 结构化事件时间线卡片 -->
+        <template v-else>
+          <div v-for="(ev, idx) in currentEvents" :key="idx" class="message-row">
+            <!-- 1. session_start: 参数与任务概览 -->
+            <div v-if="ev.event === 'session_start'" class="ml-card ml-start-card">
+              <div class="ml-card-head">
+                <span class="ml-card-tag">任务启动</span>
+                <strong>{{ ev.scheme_label || ev.scheme?.toUpperCase() }}</strong>
+                <span class="ml-card-time">{{ ev.ts }}</span>
+              </div>
+              <div class="ml-card-body">
+                <div class="ml-meta-grid">
+                  <span><i>模型：</i>{{ (ev.model || 'both').toUpperCase() }}</span>
+                  <span><i>持有天数：</i>{{ ev.label_days }}d</span>
+                  <span><i>隔离模式：</i>{{ ev.isolation }}</span>
+                  <span><i>去重阈值：</i>{{ ev.max_corr }}</span>
+                  <span><i>模式档位：</i>{{ ev.eval_mode || 'tuning' }}</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 2. agent_thinking: 思考过程气泡（展开/折叠） -->
+            <details v-else-if="ev.event === 'agent_thinking'" open class="thinking-card ml-think-bubble">
+              <summary>
+                <span class="thinking-icon">💭</span>
+                <b>{{ ev.title || '思考过程' }}</b>
+                <span class="tool-state">{{ ev.ts }}</span>
+              </summary>
+              <pre>{{ ev.content }}</pre>
+            </details>
+
+            <!-- 3. ml_stage: 阶段状态卡片 -->
+            <div v-else-if="ev.event === 'ml_stage'" class="ml-stage-card" :class="ev.stage">
+              <div class="ml-stage-icon">
+                <span v-if="ev.stage === 'panel_loading'" class="spinner"></span>
+                <span v-else>✓</span>
+              </div>
+              <div class="ml-stage-content">
+                <strong>{{ ev.title || '运行阶段' }}</strong>
+                <p>{{ ev.message }}</p>
+              </div>
+              <span class="ml-card-time">{{ ev.ts }}</span>
+            </div>
+
+            <!-- 4. ml_pool_screened: 因子语义研判卡片 -->
+            <div v-else-if="ev.event === 'ml_pool_screened'" class="ml-card ml-screen-card">
+              <div class="ml-card-head">
+                <span class="ml-card-tag prod">因子语义研判</span>
+                <strong>推荐 {{ ev.n_recommended }} / {{ ev.n_total }} 个候选因子</strong>
+                <span v-if="ev.reused" class="mlv-sub">· 复用锁定推荐</span>
+                <span class="ml-card-time">{{ ev.ts }}</span>
+              </div>
+              <div class="ml-card-body">
+                <p v-if="ev.rationale" class="ml-reco-rationale"><b>研判依据：</b>{{ ev.rationale }}</p>
+                <div class="ml-factor-chips">
+                  <span
+                    v-for="name in (ev.recommended || [])"
+                    :key="name"
+                    class="ml-chip"
+                    @click.stop.prevent="toggleFactorCard(poolFactor(name), $event)"
+                  >
+                    {{ name }}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 5. ml_features_filtered: 特征物化与去重卡片 -->
+            <div v-else-if="ev.event === 'ml_features_filtered'" class="ml-card ml-filter-card">
+              <div class="ml-card-head">
+                <span class="ml-card-tag">特征过滤</span>
+                <strong>入选 {{ ev.n_features }} 个有效特征（剔除 {{ ev.n_dropped }} 个）</strong>
+                <span class="ml-card-time">{{ ev.ts }}</span>
+              </div>
+              <div class="ml-card-body">
+                <details v-if="ev.dropped && ev.dropped.length" class="ml-drop-details">
+                  <summary>查看剔除明细 ({{ ev.dropped.length }})</summary>
+                  <div v-for="d in ev.dropped" :key="d.name" class="ml-drop-item">
+                    − {{ d.name }}: {{ d.reason }}
                   </div>
-                </td>
-              </tr>
-            </template>
-          </tbody>
-        </table>
-      </div>
-    </template>
+                </details>
+              </div>
+            </div>
 
-    <!-- ── 组合因子库：固化组合分数为可复现条目 ── -->
-    <div class="mlv-block">
-      <div class="mlv-block-head">
-        <h4>组合因子库</h4>
-        <span class="summary-facet-hint" title="把等权/ICIR/HRP/ML 组合的运行产物固化为条目：SQLite 存复现元数据，分数矩阵存 parquet（回测可直接消费）。点击行展开构成/指标/复现命令。">ⓘ</span>
-        <button class="mlv-ghost" type="button" @click="loadCompositeFactors(true)">刷新</button>
+            <!-- 6. ml_fold_progress: Walk-Forward 拟合进度卡片 -->
+            <div v-else-if="ev.event === 'ml_fold_progress'" class="ml-card ml-fold-card">
+              <div class="ml-card-head">
+                <span class="ml-card-tag">模型拟合</span>
+                <strong>{{ ev.title || ev.kind?.toUpperCase() }}</strong>
+                <span class="ml-card-time">{{ ev.ts }}</span>
+              </div>
+              <div class="ml-card-body">
+                <div v-if="ev.fold_reports && ev.fold_reports.length" class="ml-folds-grid">
+                  <div v-for="f in ev.fold_reports" :key="f.fold" class="ml-fold-item">
+                    <b>折 {{ f.fold }} ({{ String(f.oos_start).slice(2) }}~{{ String(f.oos_end).slice(2) }})</b>
+                    <span :class="icClass(f.ic_mean)">IC: {{ fmtNum(f.ic_mean) }}</span>
+                    <span>IR: {{ fmtNum(f.ic_ir) }}</span>
+                  </div>
+                </div>
+                <div v-if="ev.feature_weights && ev.feature_weights.length" class="ml-top-weights">
+                  <small>特征权重 Top5：</small>
+                  <span v-for="w in ev.feature_weights.slice(0, 5)" :key="w.name">
+                    {{ w.name }} ({{ (w.weight * 100).toFixed(1) }}%)
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 7. ml_gate_evaluated: engine_gate 门禁回测 -->
+            <div v-else-if="ev.event === 'ml_gate_evaluated'" class="ml-card ml-gate-card">
+              <div class="ml-card-head">
+                <span class="ml-card-tag" :class="ev.passed ? 'prod' : 'bad'">
+                  {{ ev.passed ? 'GATE 通过' : 'GATE 未过' }}
+                </span>
+                <strong>实盘可交易性裁决（周调仓）</strong>
+                <span class="ml-card-time">{{ ev.ts }}</span>
+              </div>
+              <div class="ml-card-body">
+                <div class="metrics-cards">
+                  <div class="metrics-card">
+                    <b>{{ pct(ev.metrics?.excess_annual) }}</b><span>超额年化</span>
+                  </div>
+                  <div class="metrics-card">
+                    <b>{{ num2(ev.metrics?.excess_sharpe) }}</b><span>超额夏普</span>
+                  </div>
+                  <div class="metrics-card">
+                    <b>{{ pct(ev.metrics?.max_drawdown) }}</b><span>最大回撤</span>
+                  </div>
+                  <div class="metrics-card">
+                    <b>{{ pct(ev.metrics?.daily_overlap) }}</b><span>日重叠</span>
+                  </div>
+                </div>
+                <div v-if="ev.fail_reasons && ev.fail_reasons.length" class="mlv-bad" style="margin-top:8px">
+                  未过原因：{{ ev.fail_reasons.join('、') }}
+                </div>
+              </div>
+            </div>
+
+            <!-- 8. ml_summary_generated: 组合说明书 -->
+            <div v-else-if="ev.event === 'ml_summary_generated'" class="ml-card ml-summary-card">
+              <div class="ml-card-head">
+                <span class="ml-card-tag prod">组合研判说明书</span>
+                <strong>LLM 深度解读报告</strong>
+                <span class="ml-card-time">{{ ev.ts }}</span>
+              </div>
+              <div class="ml-card-body">
+                <div class="ml-llm-summary">
+                  <div class="ml-llm-sec">
+                    <b>总体总结</b>
+                    <p>{{ ev.summary?.summary }}</p>
+                  </div>
+                  <div v-if="ev.summary?.strengths?.length" class="ml-llm-sec">
+                    <b>核心优势</b>
+                    <ul><li v-for="(s, i) in ev.summary.strengths" :key="'s'+i">{{ s }}</li></ul>
+                  </div>
+                  <div v-if="ev.summary?.risks?.length" class="ml-llm-sec">
+                    <b>潜在风险</b>
+                    <ul class="ml-llm-risk"><li v-for="(r, i) in ev.summary.risks" :key="'r'+i">{{ r }}</li></ul>
+                  </div>
+                  <div v-if="ev.summary?.suggestions?.length" class="ml-llm-sec">
+                    <b>改进建议</b>
+                    <ul><li v-for="(g, i) in ev.summary.suggestions" :key="'g'+i">{{ g }}</li></ul>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 9. session_end: 收敛完成 -->
+            <div v-else-if="ev.event === 'session_end'" class="ml-card ml-end-card">
+              <div class="ml-card-head">
+                <span class="ml-card-tag prod">训练完成</span>
+                <strong>组合 OOS IC: {{ fmtNum(ev.oos_ic) }} · ICIR: {{ fmtNum(ev.oos_ir) }}</strong>
+                <span class="ml-card-time">{{ ev.ts }}</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 运行中实时输出日志尾部 -->
+          <div v-if="activeTrain.status === 'running'" class="message-row">
+            <div class="typing-row">
+              <div class="typing"><i></i><i></i><i></i></div>
+              <span>组合拟合计算中…</span>
+            </div>
+            <pre class="ml-log">{{ runningTail || '等待子进程实时输出…' }}</pre>
+          </div>
+        </template>
       </div>
-      <div v-if="compositeList.length" class="ml-cf-wrap">
-        <table class="lib-table">
-          <thead>
-            <tr>
-              <th>名称</th><th>方案</th><th>OOS IC</th><th>ICIR</th><th>样本日</th><th>gate</th><th>特征数</th><th>保存时间</th>
-            </tr>
-          </thead>
-          <tbody>
-            <template v-for="c in compositeList" :key="c.id">
-              <tr :class="{active: compositeSelected === c.id}" @click="viewComposite(c.id)">
+
+      <!-- ══ 主体：深度归因看板视图 ══ -->
+      <div v-else-if="viewMode === 'analytics'" class="agent-thread ml-thread ml-analytics-panel">
+        <template v-if="activeReport">
+          <!-- 核心指标卡片 -->
+          <div class="metrics-cards">
+            <div class="metrics-card">
+              <b :class="icClass(activeReport.oos_ic_blended?.ic_mean)">{{ fmtNum(activeReport.oos_ic_blended?.ic_mean) }}</b>
+              <span>OOS IC 均值</span>
+            </div>
+            <div class="metrics-card">
+              <b>{{ fmtNum(activeReport.oos_ic_blended?.ic_ir) }}</b>
+              <span>OOS ICIR</span>
+            </div>
+            <div class="metrics-card">
+              <b :class="activeReport.gate?.passed ? 'ic-pos' : 'ic-neg'">{{ activeReport.gate?.passed ? '通过' : '未过' }}</b>
+              <span>engine_gate</span>
+            </div>
+            <div class="metrics-card">
+              <b>{{ (activeReport.feature_names || []).length }}/{{ activeReport.folds }}</b>
+              <span>特征 / 折数</span>
+            </div>
+          </div>
+
+          <!-- 特征权重 Top15 -->
+          <div v-if="weightKinds.length" class="mlv-block">
+            <div class="mlv-block-head">
+              <h5>特征权重 Top15（跨折归一平均）</h5>
+              <span class="mlv-sub">
+                组合 OOS IC {{ fmtNum(blendedIc) }} vs 最强单因子 {{ fmtNum(bestSingleIc) }}
+                <b :class="diversificationGain >= 0 ? 'ic-pos' : 'ic-neg'">
+                  {{ diversificationGain == null ? '' : (diversificationGain >= 0 ? '+' : '') + fmtNum(diversificationGain) }}
+                </b>
+                （多样性增益）
+              </span>
+            </div>
+            <div class="mlv-grid2">
+              <div v-for="kind in weightKinds" :key="'w-' + kind">
+                <strong>{{ kind.toUpperCase() }}</strong>
+                <div :id="'ml-weights-' + kind" class="metrics-chart" :style="{ height: Math.max(160, weightRows(kind).length * 24 + 40) + 'px' }"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 置换重要性贡献 -->
+          <div v-if="contribKinds.length" class="mlv-block">
+            <div class="mlv-block-head">
+              <h5>置换贡献（打乱该因子后组合损失多少）</h5>
+              <span class="mlv-metric-toggle">
+                <button v-for="m in contribMetrics" :key="m.key" type="button" :class="{ active: contribMetric === m.key }" @click="setContribMetric(m.key)">{{ m.label }}</button>
+              </span>
+              <span class="summary-facet-hint" :title="contribHint">ⓘ</span>
+            </div>
+            <div class="mlv-grid2">
+              <div v-for="kind in contribKinds" :key="'c-' + kind">
+                <strong>{{ kind.toUpperCase() }}</strong>
+                <div :id="'ml-contrib-' + kind" class="metrics-chart" :style="{ height: Math.max(160, Math.min(15, contribRows(kind).length) * 24 + 40) + 'px' }"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 累积子集曲线 -->
+          <div v-if="(activeReport.subset_curve || []).length" class="mlv-block">
+            <div class="mlv-block-head">
+              <h5>累积子集曲线（子集规模 vs OOS IC）</h5>
+              <span v-if="bestSubset" class="mlv-sub">IC 峰值 k={{ bestSubset.k }}：blended {{ fmtNum(bestSubset.blended) }}</span>
+            </div>
+            <div id="ml-subset-curve" class="metrics-chart" style="height: 240px"></div>
+          </div>
+
+          <!-- 不挑全上对照 -->
+          <div v-if="schemeRows.length" class="mlv-block">
+            <div class="mlv-block-head">
+              <h5>不挑全上对照（简单投票 vs 学习加权）</h5>
+            </div>
+            <table class="lib-table">
+              <thead>
+                <tr><th>方案</th><th>OOS IC</th><th>ICIR</th><th>OOS Sharpe</th><th>最大回撤</th><th>样本日</th></tr>
+              </thead>
+              <tbody>
+                <tr v-for="row in schemeRows" :key="row.scheme">
+                  <td><strong>{{ row.label }}</strong></td>
+                  <td :class="icClass(row.ic_mean)"><strong>{{ fmtNum(row.ic_mean) }}</strong></td>
+                  <td>{{ fmtNum(row.ic_ir) }}</td>
+                  <td>{{ row.oos_sharpe == null ? '—' : num2(row.oos_sharpe) }}</td>
+                  <td>{{ row.oos_max_drawdown == null ? '—' : pct(row.oos_max_drawdown) }}</td>
+                  <td>{{ row.n_days }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- 衰减对照表 -->
+          <div v-if="decayRows.length" class="mlv-block">
+            <div class="mlv-block-head"><h5>衰减对照（挖掘期 IC vs OOS IC，Top20）</h5></div>
+            <div id="ml-decay-chart" class="metrics-chart" :style="{ height: Math.max(160, decayRows.length * 26 + 50) + 'px' }"></div>
+          </div>
+        </template>
+        <div v-else class="normal-mode-empty">
+          当前训练暂无深度归因报表
+        </div>
+      </div>
+    </main>
+
+    <!-- ════════════════ 弹窗：新建组合运行 ════════════════ -->
+    <div v-if="showNewModal" class="ml-modal-mask" @click.self="showNewModal = false">
+      <div class="ml-modal">
+        <div class="ml-modal-head">
+          <h3>新建 ML 组合训练</h3>
+          <button class="ml-modal-close" @click="showNewModal = false">×</button>
+        </div>
+        <div class="ml-modal-body">
+          <div class="ml-form">
+            <label>组合方法
+              <select v-model="ml.form.scheme" class="ml-input">
+                <option value="ml">ML 学习加权（Ridge + LGBM）</option>
+                <option value="equal">等权 1/N</option>
+                <option value="icir">ICIR 加权</option>
+                <option value="hrp">HRP 加权</option>
+              </select>
+            </label>
+            <label v-if="ml.form.scheme === 'ml'">模型
+              <select v-model="ml.form.model" class="ml-input">
+                <option value="both">Ridge + LGBM</option>
+                <option value="ridge">Ridge</option>
+                <option value="lgbm">LightGBM</option>
+              </select>
+            </label>
+            <label>持有天数 <input type="number" v-model.number="ml.form.label_days" class="ml-input ml-num"></label>
+            <label>训练月数 <input type="number" v-model.number="ml.form.train_months" class="ml-input ml-num"></label>
+            <label>折长(月) <input type="number" v-model.number="ml.form.step_months" class="ml-input ml-num"></label>
+            <label>去重阈值 <input type="number" step="0.05" v-model.number="ml.form.max_corr" class="ml-input ml-num"></label>
+            <label>隔离模式
+              <select v-model="ml.form.isolation" class="ml-input">
+                <option value="holdout">留出测试（推荐）</option>
+                <option value="strict">严格隔离</option>
+              </select>
+            </label>
+            <label class="ml-check"><input type="checkbox" v-model="ml.form.no_candidate"> 只用正式库</label>
+            <label class="ml-check"><input type="checkbox" v-model="ml.form.no_gate"> 跳过 engine_gate</label>
+            <label v-if="ml.form.scheme === 'ml'" class="ml-check"><input type="checkbox" v-model="ml.form.subset_curve"> 累积子集曲线</label>
+            <label v-if="ml.form.scheme === 'ml'" class="ml-check"><input type="checkbox" v-model="ml.form.llm_assist"> LLM 辅助（推荐 + 说明书）</label>
+            <label v-if="ml.form.scheme === 'ml'" class="ml-check"><input type="checkbox" v-model="ml.form.multi_path"> 多路径对照</label>
+          </div>
+
+          <div class="ml-factor-picker">
+            <div class="mlv-block-head" style="margin:0 0 6px">
+              <h5>训练因子自选（未选 = 全部）</h5>
+              <span v-if="ml.form.include_factors.length" class="mlv-sub">已选 {{ ml.form.include_factors.length }}</span>
+              <button class="mlv-ghost" type="button" @click="setAllFactors(true)">全选</button>
+              <button class="mlv-ghost" type="button" @click="setAllFactors(false)">清空</button>
+              <button class="mlv-ghost" type="button" @click="recommendFactors" :disabled="ml.recommending">
+                {{ ml.recommending ? '推荐中…' : '帮我推荐 Top-8' }}
+              </button>
+            </div>
+            <div class="ml-factor-list">
+              <div v-for="f in ml.factorPool" :key="f.name" class="ml-factor-row">
+                <input type="checkbox" :value="f.name" v-model="ml.form.include_factors">
+                <span class="ml-factor-name" @click.stop.prevent="toggleFactorCard(f, $event)">{{ f.name }}</span>
+                <i class="ml-factor-lib">{{ f.library }}</i>
+              </div>
+            </div>
+          </div>
+          <div v-if="ml.error" class="ml-error">{{ ml.error }}</div>
+        </div>
+        <div class="ml-modal-foot">
+          <button class="mlv-ghost" @click="showNewModal = false">取消</button>
+          <button class="mlv-primary" :disabled="ml.starting" @click="startMl">开始运行</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ════════════════ 抽屉：组合因子库 ════════════════ -->
+    <div v-if="showCfDrawer" class="ml-drawer-mask" @click.self="showCfDrawer = false">
+      <div class="ml-drawer">
+        <div class="ml-drawer-head">
+          <h3>组合因子中台库 ({{ compositeList.length }})</h3>
+          <button class="ml-modal-close" @click="showCfDrawer = false">×</button>
+        </div>
+        <div class="ml-drawer-body">
+          <table class="lib-table">
+            <thead>
+              <tr><th>名称</th><th>方案</th><th>OOS IC</th><th>gate</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="c in compositeList" :key="c.id" :class="{ active: compositeSelected === c.id }" @click="viewComposite(c.id)">
                 <td><strong>{{ c.name }}</strong></td>
                 <td>{{ c.scheme_label }}</td>
-                <td :class="icClass(c.oos_ic)"><strong>{{ fmtNum(c.oos_ic) }}</strong></td>
-                <td>{{ fmtNum(c.oos_ic_ir) }}</td>
-                <td>{{ c.n_days ?? '—' }}</td>
-                <td>
-                  <span class="lib-status" :class="c.gate_passed === true ? 'status-completed' : (c.gate_passed === false ? 'mlv-bad' : '')">
-                    {{ c.gate_passed == null ? '—' : (c.gate_passed ? '通过' : '未过') }}
-                  </span>
-                </td>
-                <td>{{ c.feature_count }}</td>
-                <td class="mlv-sub">{{ c.created_at }}</td>
+                <td :class="icClass(c.oos_ic)">{{ fmtNum(c.oos_ic) }}</td>
+                <td>{{ c.gate_passed ? '通过' : '未过' }}</td>
               </tr>
-              <tr v-if="compositeSelected === c.id && compositeDetail && compositeDetail.id === c.id" class="mlv-expand-row">
-                <td colspan="8">
-                  <div class="mlv-expand">
-                    <div class="mlv-expand-head">
-                      <span class="mlv-sub">方法：{{ (compositeDetail.provenance||{}).method }}</span>
-                    </div>
-                    <div class="mlv-expand-head">
-                      <span class="mlv-sub">mining_end: {{ (compositeDetail.provenance||{}).mining_end || '—' }}</span>
-                      <span class="mlv-sub">panel: {{ (compositeDetail.provenance||{}).panel_start }} ~ {{ (compositeDetail.provenance||{}).panel_end }}</span>
-                      <span class="mlv-sub">持有 {{ (compositeDetail.provenance||{}).label_days }}d · 平滑 WMA-{{ (compositeDetail.provenance||{}).score_smooth }} · {{ (compositeDetail.provenance||{}).folds }} 折</span>
-                      <span class="mlv-sub">{{ (compositeDetail.provenance||{}).time_isolation }}</span>
-                    </div>
-                    <div v-if="cfGateCards.length" class="metrics-cards">
-                      <div v-for="card in cfGateCards" :key="card.label" class="metrics-card" :title="card.title"><b>{{ card.value }}</b><span>{{ card.label }}</span></div>
-                    </div>
-                    <div v-if="compositeDetail.note" class="mlv-sub">备注：{{ compositeDetail.note }}</div>
-                    <template v-if="cfFeatures.length">
-                      <div class="mlv-block-head">
-                        <h5>组合构成（{{ cfFeatures.length }}）</h5>
-                        <span class="mlv-sub">衰减保留均值 {{ pct(cfDecayRetention) }}</span>
-                      </div>
-                      <div class="ml-features">{{ cfFeatures.join(' · ') }}</div>
-                      <div v-for="d in (compositeDetail.features||{}).dropped || []" :key="d.name" class="ml-drop">− {{ d.name }}（{{ d.library }}）：{{ d.reason }}</div>
-                    </template>
-                    <div class="mlv-block-head"><h5>复现</h5></div>
-                    <pre class="ml-log">{{ (compositeDetail.provenance||{}).repro_command || '—' }}</pre>
-                    <div class="mlv-sub" v-if="(compositeDetail.provenance||{}).score_path">分数文件：{{ compositeDetail.provenance.score_path }}</div>
-                    <div class="mlv-sub" v-if="(compositeDetail.provenance||{}).report_path">报告文件：{{ compositeDetail.provenance.report_path }}</div>
-                  </div>
-                </td>
-              </tr>
-            </template>
-          </tbody>
-        </table>
-      </div>
-      <div v-else class="mlv-sub" style="padding:8px 2px">
-        暂无固化条目——在训练历史里展开某次组合运行，点"另存为组合因子"；或 POST /api/alphaagent/composite-factors
+            </tbody>
+          </table>
+          <div v-if="compositeDetail" class="ml-cf-detail">
+            <h4>{{ compositeDetail.name }} 复现详情</h4>
+            <pre class="ml-log">{{ (compositeDetail.provenance||{}).repro_command }}</pre>
+            <div class="mlv-sub">分数文件：{{ (compositeDetail.provenance||{}).score_path }}</div>
+          </div>
+        </div>
       </div>
     </div>
 
-    <!-- ── 因子卡片：点击展开，数据 + 机制解释（可滚动） ── -->
+    <!-- ════════════════ 全局 Teleport 机制卡片 ════════════════ -->
     <teleport to="body">
       <div v-if="factorCard" class="ml-factor-card" :style="{ left: factorCardPos.x + 'px', top: factorCardPos.y + 'px' }" @click.stop>
         <div class="mlfc-head">
           <b>{{ factorCard.name }}</b>
           <span class="mlfc-tag" :class="factorCard.library === '正式' ? 'tag-prod' : 'tag-cand'">{{ factorCard.library }}</span>
-          <button class="mlfc-close" type="button" title="关闭（Esc）" @click="factorCard = null">×</button>
+          <button class="mlfc-close" type="button" @click="factorCard = null">×</button>
         </div>
         <div class="mlfc-metrics">
-          <span title="训练段 IC"><i>train IC</i>{{ fmtNum(factorCard.data.train_ic) }}</span>
-          <span title="训练段 ICIR"><i>ICIR</i>{{ fmtNum(factorCard.data.train_icir ?? (factorCard.data.metrics||{}).icir) }}</span>
-          <span title="验证段 IC"><i>val IC</i>{{ fmtNum(factorCard.data.val_ic) }}</span>
-          <span title="验证 IC / 训练 IC 保留比"><i>保留</i>{{ factorCard.data.val_ic_retention != null ? (factorCard.data.val_ic_retention * 100).toFixed(0) + '%' : '—' }}</span>
-          <span title="截面秩自相关（换手代理，越低换手越高）"><i>autocorr</i>{{ fmtNum((factorCard.data.metrics||{}).cs_pearson_autocorr ?? factorCard.data.cs_pearson_autocorr) }}</span>
-          <span title="分位组合年化超额"><i>年超额</i>{{ factorCard.data.annualized_excess_return != null ? (factorCard.data.annualized_excess_return * 100).toFixed(1) + '%' : '—' }}</span>
-          <span title="调仓频率 / 研究档位"><i>频率</i>{{ factorCard.data.rebalance_freq || '—' }}/{{ factorCard.data.research_mode === 'fundamental' ? '基本面' : '技术' }}</span>
-          <span title="库内状态"><i>状态</i>{{ factorCard.data.promotion_status || factorCard.data.status || '—' }}</span>
+          <span><i>train IC</i>{{ fmtNum(factorCard.data.train_ic) }}</span>
+          <span><i>val IC</i>{{ fmtNum(factorCard.data.val_ic) }}</span>
+          <span><i>保留比</i>{{ factorCard.data.val_ic_retention != null ? (factorCard.data.val_ic_retention * 100).toFixed(0) + '%' : '—' }}</span>
         </div>
         <div v-if="hoverSegments.length" class="mlfc-body">
           <div v-for="(seg, i) in hoverSegments" :key="i" class="mlfc-seg">
@@ -481,8 +510,6 @@
             <span class="mlfc-seg-text">{{ seg.body }}</span>
           </div>
         </div>
-        <div v-else class="mlfc-body"><span class="mlfc-seg-text mlfc-muted">该因子无文字说明（comment 为空）</span></div>
-        <div class="mlfc-review" v-if="factorCard.data.review_reasons" :title="factorCard.data.review_reasons">Reviewer：{{ factorCard.data.review_reasons }}</div>
       </div>
     </teleport>
   </div>
@@ -493,24 +520,14 @@ import { api } from '../../utils/api.js'
 import { chart } from '../../utils/charts.js'
 
 const AXIS_LABEL = { color: '#8494b5', fontSize: 10 }
-
-/** comment 分段标签白名单（长词在前防"预测对账"被"对账"截断） */
 const SEG_LABELS = [
   '经济直觉', '机制', '结构', '统计', '消融佐证', '单腿消融', '消融', '预测对账', '对账',
   '设计目的', '变异类型', 'Reviewer备注', 'IC方向', 'train指标', '盲测', '验证', '风险', '注意',
 ].sort((a, b) => b.length - a.length).join('|')
 
-/**
- * comment 分段：识别两种主流写法——
- * 1.【标记】式（挖掘 agent 常用）；
- * 2. 行内"标签：/标签="式（句号/分号后接 2-4 字标签词 + 冒号/等号），
- *    全文一行无换行时也能切出独立段；
- * 都没有则整段 plain。返回 [{title, body}]。
- */
 function parseCommentSegments(text) {
   if (!text) return []
   const trimmed = String(text).trim()
-  // ①【标记】式
   if (/【[^】]+】/.test(trimmed)) {
     const parts = trimmed.split(/(【[^】]*】)/).filter(s => s && s.trim())
     const segs = []
@@ -528,7 +545,6 @@ function parseCommentSegments(text) {
     }
     return segs
   }
-  // ② 行内"标签：/标签="式：句边界后接白名单标签词
   const re = new RegExp('(?:^|[。；;！!])\\s*(' + SEG_LABELS + ')[：:=]', 'g')
   const marks = []
   let m
@@ -554,6 +570,9 @@ export default {
   name: 'MlPanel',
   data() {
     return {
+      viewMode: 'timeline', // 'timeline' | 'analytics'
+      showNewModal: false,
+      showCfDrawer: false,
       ml: {
         form: { eval_mode: 'tuning', scheme: 'ml', model: 'both', label_days: 5, train_months: 18, step_months: 6, max_corr: 0.6, isolation: 'holdout', no_candidate: false, no_gate: false, subset_curve: false, multi_path: false, llm_assist: false, include_factors: [] },
         factorPool: [],
@@ -563,17 +582,14 @@ export default {
         detail: null,
         starting: false,
         error: '',
-        recommending: false,  // mRMR 推荐计算中
-        recommend: null,      // {ranking:[...], k, ...}（POST /stacking/recommend 结果）
+        recommending: false,
+        recommend: null,
       },
+      currentEvents: [],
       loadingList: false,
-      showConfig: false,
-      exporting: false,
       contribMetric: 'ic_drop',
       factorCard: null,
       factorCardPos: { x: 0, y: 0 },
-      historySortKey: '',
-      historySortDir: -1,
       compositeList: [],
       compositeSelected: null,
       compositeDetail: null,
@@ -581,147 +597,48 @@ export default {
     }
   },
   computed: {
-    historyColumns: () => [
-      { key: 'oos_ic_mean', label: 'OOS IC' },
-      { key: 'oos_ic_ir', label: 'ICIR' },
-      { key: 'gate_excess_annual', label: '超额年化' },
-      { key: 'gate_excess_sharpe', label: '超额夏普' },
-      { key: 'gate_max_drawdown', label: '回撤' },
-      { key: 'gate_daily_overlap', label: '日重叠' },
-      { key: 'gate_daily_turnover', label: '日换手' },
-      { key: 'n_folds', label: '折数' },
-      { key: 'n_features', label: '特征' },
-      { key: 'worst_fold_ic', label: '最差折 IC' },
-      { key: 'decay_retention', label: '衰减保留' },
-    ],
-    anyRunning() {
-      return (this.ml.list || []).some(t => t.status === 'running')
+    activeTrain() {
+      return (this.ml.list || []).find(t => t.train_id === this.ml.selected) || (this.ml.list[0] || null)
     },
-    runningTrain() {
-      return (this.ml.list || []).find(t => t.status === 'running') || null
+    activeReport() {
+      return this.ml.detail?.report || null
     },
-    latest() {
-      return (this.ml.list || []).find(t => t.status === 'completed' && Number.isFinite(Number(t.oos_ic_mean))) || null
+    activeTitle() {
+      if (!this.activeTrain) return 'ML 组合智能体'
+      return this.fmtTrainId(this.activeTrain.train_id) + ' · ' + (this.activeTrain.status === 'running' ? '运行中' : '已完成')
+    },
+    activeSubtitle() {
+      if (!this.activeTrain) return '统一因子大库 · Walk-Forward 滚动组合与实盘门禁裁决'
+      return this.paramSummary(this.activeTrain)
     },
     runningTail() {
       const tail = this.ml.detail?.progress_tail || []
       return tail.length ? tail[tail.length - 1] : ''
     },
-    trendRows() {
-      return (this.ml.list || [])
-        .filter(t => t.status === 'completed' && Number.isFinite(Number(t.oos_ic_mean)))
-        .slice()
-        .sort((a, b) => (a.train_id < b.train_id ? -1 : 1))
-    },
     weightKinds() {
-      return Object.keys(this.ml.detail?.report?.feature_weights || {})
+      return Object.keys(this.activeReport?.feature_weights || {})
     },
     contribKinds() {
-      return Object.keys(this.ml.detail?.report?.feature_contribution || {})
+      return Object.keys(this.activeReport?.feature_contribution || {})
     },
     bestSubset() {
-      const curve = this.ml.detail?.report?.subset_curve || []
+      const curve = this.activeReport?.subset_curve || []
       const valid = curve.filter(r => r.blended != null)
       if (!valid.length) return null
       return valid.reduce((a, b) => (b.blended > a.blended ? b : a))
     },
-    bestSubsetRisk() {
-      const curve = this.ml.detail?.report?.subset_curve || []
-      const valid = curve.filter(r => r.oos_sharpe != null)
-      if (!valid.length) return null
-      return valid.reduce((a, b) => (b.oos_sharpe > a.oos_sharpe ? b : a))
-    },
-    hasSubsetRisk() {
-      return (this.ml.detail?.report?.subset_curve || []).some(r => r.oos_sharpe != null)
-    },
-    /** D 族"不挑全上"对照行（服务端同一 OOS 行集算好，前端直接渲染） */
     schemeRows() {
-      return this.ml.detail?.report?.scheme_compare?.schemes || []
+      return this.activeReport?.scheme_compare?.schemes || []
     },
-    /** 跑赢当前组合的简单投票方案（按 IC 差最大者）；无则 null */
-    schemeWinner() {
-      const rows = this.schemeRows.filter(
-        r => r.scheme !== 'stacked' && Number.isFinite(Number(r.ic_gap)) && Number(r.ic_gap) > 0,
-      )
-      if (!rows.length) return null
-      return rows.reduce((a, b) => (Number(b.ic_gap) > Number(a.ic_gap) ? b : a))
-    },
-    /** A 族多路径对照行（折边界平移重训的路径分布） */
-    multiPathRows() {
-      return this.ml.detail?.report?.multi_path?.paths || []
-    },
-    multiPathAgg() {
-      return this.ml.detail?.report?.multi_path?.aggregate || null
-    },
-    multiPathWarning() {
-      const a = this.multiPathAgg
-      return !!(a && a.n_negative_ic > 0)
-    },
-    /** LLM 辅助：推荐是否被复用 / 指纹摘要（详情页头部一行） */
-    llmRecMeta() {
-      const rec = this.ml.detail?.report?.llm_recommendation || null
-      if (!rec) return ''
-      const parts = []
-      if (rec.n_recommended != null) parts.push(`推荐 ${rec.n_recommended} 个`)
-      if (rec.n_hit != null) parts.push(`命中 ${rec.n_hit}`)
-      if (rec.reused) parts.push('复用锁定推荐（池未变）')
-      if (rec.pool_fingerprint) parts.push(`池指纹 ${rec.pool_fingerprint}`)
-      return parts.join(' · ')
-    },
-    /** 组合因子库详情：构成/衰减保留/gate 卡片 */
-    cfFeatures() {
-      return this.compositeDetail?.features?.feature_names || []
-    },
-    cfDecayRetention() {
-      return this.compositeDetail?.metrics?.decay_retention_mean ?? null
-    },
-    cfGateCards() {
-      const g = this.compositeDetail?.metrics?.gate || {}
-      const gm = g.metrics || {}
-      const dg = g.diagnostics || {}
-      const pct = v => (v == null ? '—' : (Number(v) * 100).toFixed(1) + '%')
-      if (g.passed == null && gm.excess_annual == null) return []
-      return [
-        { label: '超额年化', value: pct(gm.excess_annual), title: 'engine_gate OOS 段净超额年化' },
-        { label: '超额夏普', value: gm.excess_sharpe == null ? '—' : Number(gm.excess_sharpe).toFixed(2), title: 'engine_gate 超额夏普' },
-        { label: '最大回撤', value: pct(gm.max_drawdown ?? dg.max_drawdown), title: 'OOS 段最大回撤' },
-        { label: '日换手', value: pct(dg.avg_daily_turnover), title: '组合日均单边换手' },
-      ]
-    },
-    contribMetrics: () => [
-      { key: 'ic_drop', label: 'IC 口径' },
-      { key: 'sharpe_drop', label: 'Sharpe 口径' },
-      { key: 'dd_impact', label: '回撤口径' },
-    ],
-    /** gate 档位自动跟随持有天数：≤7 天→技术档（周调仓严门槛），>7 天→基本面档（月调仓松门槛）。
-     *  因子池 09-03 统一大库后 modes 已无筛选作用，仅 modes[0] 决定 engine_gate 政策。 */
-    gateMode() {
-      return Number(this.ml.form.label_days) > 7 ? 'fundamental' : 'technical'
-    },
-    gateModeLabel() {
-      return this.gateMode === 'fundamental' ? '基本面档 · 月调仓松门槛' : '技术档 · 周调仓严门槛'
-    },
-    /** 卡片正文：完整机制说明（候选库 comment_full / 正式库 comment 截断版） */
-    hoverComment() {
-      const d = this.factorCard?.data || {}
-      return d.comment_full || d.comment || ''
-    },
-    /** comment 分段渲染：{title, body} 列表；无标记则整段返回 */
-    hoverSegments() {
-      return parseCommentSegments(this.hoverComment)
-    },
-    contribHint() {
-      return ({
-        ic_drop: '逐折在 OOS 段把单因子行内打乱后重预测，组合 OOS IC 下降量跨折平均。正值 = 真贡献（掉得越多越重要）；负值（红）= 打乱反而更好，该因子在拖后腿，是剔除候选。',
-        sharpe_drop: '同一份打乱预测上重算组合 OOS Sharpe 的下降量。正 = 该因子在贡献收益稳定性；负（红）= 打乱后 Sharpe 反而更高，该因子在拖累风险调整收益。轻量口径：OOS 段前 20% 等权多头、按持有期去重叠年化，不含成本。',
-        dd_impact: '打乱该因子后组合最大回撤的变化（幅度差）。正 = 打乱后回撤更深 ⇒ 该因子在压回撤；负（红）= 打乱后回撤反而收窄 ⇒ 该因子在放大回撤，是回撤剔除候选。',
-      })[this.contribMetric]
+    decayRows() {
+      const rows = this.activeReport?.decay_table || []
+      return rows.slice().sort((a, b) => Math.abs(b.ic_oos || 0) - Math.abs(a.ic_oos || 0)).slice(0, 20)
     },
     blendedIc() {
-      return this.ml.detail?.report?.oos_ic_blended?.ic_mean ?? null
+      return this.activeReport?.oos_ic_blended?.ic_mean ?? null
     },
     bestSingleIc() {
-      const rows = this.ml.detail?.report?.decay_table || []
+      const rows = this.activeReport?.decay_table || []
       const ics = rows.map(r => r.ic_oos).filter(v => Number.isFinite(Number(v)))
       return ics.length ? Math.max(...ics.map(Number)) : null
     },
@@ -729,33 +646,32 @@ export default {
       if (this.blendedIc == null || this.bestSingleIc == null) return null
       return this.blendedIc - this.bestSingleIc
     },
-    gateCards() {
-      const g = this.ml.detail?.report?.gate || {}
-      const gm = g.metrics || {}
-      const dg = g.diagnostics || {}
-      const pct = v => (v == null ? '—' : (Number(v) * 100).toFixed(1) + '%')
-      return [
-        { label: '超额年化', value: pct(gm.excess_annual), title: 'engine_gate OOS 段净超额年化' },
-        { label: '超额夏普', value: gm.excess_sharpe == null ? '—' : Number(gm.excess_sharpe).toFixed(2), title: 'engine_gate 超额夏普' },
-        { label: '最大回撤', value: pct(gm.max_drawdown ?? dg.max_drawdown), title: 'OOS 段最大回撤' },
-        { label: '日换手', value: pct(dg.avg_daily_turnover), title: '组合日均单边换手' },
-      ]
+    contribMetrics: () => [
+      { key: 'ic_drop', label: 'IC 口径' },
+      { key: 'sharpe_drop', label: 'Sharpe 口径' },
+      { key: 'dd_impact', label: '回撤口径' },
+    ],
+    hoverComment() {
+      const d = this.factorCard?.data || {}
+      return d.comment_full || d.comment || ''
     },
-    decayRows() {
-      const rows = this.ml.detail?.report?.decay_table || []
-      return rows.slice().sort((a, b) => Math.abs(b.ic_oos || 0) - Math.abs(a.ic_oos || 0)).slice(0, 20)
+    hoverSegments() {
+      return parseCommentSegments(this.hoverComment)
     },
-    /** 历史表排序：默认时间倒序（train_id 字典序），点击数值列切换 */
-    historySorted() {
-      const key = this.historySortKey
-      const rows = (this.ml.list || []).slice()
-      if (!key) return rows.sort((a, b) => (a.train_id < b.train_id ? 1 : -1))
-      const dir = this.historySortDir
-      return rows.sort((a, b) => {
-        const va = a[key] == null ? -Infinity : Number(a[key])
-        const vb = b[key] == null ? -Infinity : Number(b[key])
-        return (va - vb) * dir
-      })
+    gateMode() {
+      return Number(this.ml.form.label_days) > 7 ? 'fundamental' : 'technical'
+    },
+  },
+  watch: {
+    viewMode(val) {
+      if (val === 'analytics') {
+        this.renderAll()
+      }
+    },
+    'ml.selected'(newId) {
+      if (newId) {
+        this.connectEvents(newId)
+      }
     },
   },
   mounted() {
@@ -765,27 +681,170 @@ export default {
     this._docClick = (e) => {
       if (!this.factorCard) return
       const t = e.target
-      if (t.closest && (t.closest('.ml-factor-card') || t.closest('.ml-factor-name'))) return
+      if (t.closest && (t.closest('.ml-factor-card') || t.closest('.ml-factor-name') || t.closest('.ml-chip'))) return
       this.factorCard = null
     }
-    this._escKey = (e) => {
-      if (e.key === 'Escape') this.factorCard = null
-    }
     document.addEventListener('click', this._docClick)
-    document.addEventListener('keydown', this._escKey)
   },
   beforeUnmount() {
     document.removeEventListener('click', this._docClick)
-    document.removeEventListener('keydown', this._escKey)
+    if (this._eventSource) {
+      this._eventSource.close()
+      this._eventSource = null
+    }
     if (this._mlTimer) {
       clearInterval(this._mlTimer)
       this._mlTimer = null
     }
   },
   methods: {
-    toggleConfig() {
-      this.showConfig = !this.showConfig
-      if (this.showConfig) this.loadFactorPool(true)
+    openNewModal() {
+      this.showNewModal = true
+      this.loadFactorPool(true)
+    },
+    runStatusClass(t) {
+      if (t.status === 'running') return 'status-running'
+      if (t.status === 'completed') return 'status-completed'
+      return 'status-failed'
+    },
+    schemeBadge(t) {
+      const s = t.scheme || 'ml'
+      return ({ ml: 'ML', equal: '1/N', icir: 'ICIR', hrp: 'HRP' })[s] || s.toUpperCase()
+    },
+    formatOos(t) {
+      if (t.oos_ic_mean == null) return '—'
+      return 'IC ' + Number(t.oos_ic_mean).toFixed(3)
+    },
+    fmtTrainId(id) {
+      const s = String(id || '')
+      return s.length >= 8 ? `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)} ${s.slice(9, 11) || ''}:${s.slice(11, 13) || ''}`.trim() : s
+    },
+    paramSummary(t) {
+      const p = t.params || {}
+      const parts = []
+      parts.push(({ ml: 'ML学习加权', equal: '等权1/N', icir: 'ICIR', hrp: 'HRP' })[t.scheme || 'ml'] || 'ML')
+      parts.push(`持有${t.label_days ?? 5}d`)
+      parts.push(`${t.n_folds ?? '—'}折`)
+      return parts.join(' · ')
+    },
+    fmtNum(v) {
+      if (v === null || v === undefined || Number.isNaN(Number(v))) return '—'
+      return Number(v).toFixed(4)
+    },
+    num2(v) {
+      if (v === null || v === undefined || Number.isNaN(Number(v))) return '—'
+      return Number(v).toFixed(2)
+    },
+    pct(v) {
+      if (v === null || v === undefined || Number.isNaN(Number(v))) return '—'
+      return (Number(v) * 100).toFixed(1) + '%'
+    },
+    icClass(v) {
+      const n = Number(v)
+      if (!Number.isFinite(n)) return ''
+      return n >= 0 ? 'ic-pos' : 'ic-neg'
+    },
+    selectTrain(trainId) {
+      this.ml.selected = trainId
+      this.viewMl(trainId)
+    },
+    async viewMl(trainId, silent) {
+      try {
+        const d = await api('/api/alphaagent/stacking/trainings/' + encodeURIComponent(trainId))
+        if (!silent || this.ml.selected === trainId) {
+          this.ml.selected = trainId
+          this.ml.detail = d
+          if (Array.isArray(d.events) && d.events.length) {
+            this.currentEvents = d.events
+          }
+          if (this.viewMode === 'analytics') this.renderAll()
+        }
+      } catch (e) {
+        if (!silent) this.ml.error = e.message
+      }
+    },
+    connectEvents(trainId) {
+      if (this._eventSource) {
+        this._eventSource.close()
+        this._eventSource = null
+      }
+      const es = new EventSource('/api/alphaagent/stacking/trainings/' + encodeURIComponent(trainId) + '/events')
+      this._eventSource = es
+      es.onmessage = (e) => {
+        try {
+          const row = JSON.parse(e.data)
+          this.appendEvent(row)
+          if (row.event === 'session_end') {
+            es.close()
+            this._eventSource = null
+            this.loadMl()
+          }
+        } catch (_) {}
+      }
+      es.onerror = () => {
+        es.close()
+        this._eventSource = null
+      }
+    },
+    appendEvent(ev) {
+      if (!this.currentEvents.some(x => x.event === ev.event && x.ts === ev.ts && JSON.stringify(x) === JSON.stringify(ev))) {
+        this.currentEvents.push(ev)
+      }
+      this.$nextTick(() => {
+        const container = this.$refs.threadContainer
+        if (container) container.scrollTop = container.scrollHeight
+      })
+    },
+    async loadMl() {
+      this.loadingList = true
+      try {
+        this.ml.list = await api('/api/alphaagent/stacking/trainings')
+        if (!this.ml.selected && this.ml.list.length) {
+          this.selectTrain(this.ml.list[0].train_id)
+        }
+        if (this.ml.list.some(t => t.status === 'running')) {
+          this.scheduleMlPoll()
+        }
+      } catch (e) {
+        this.ml.error = e.message
+      } finally {
+        this.loadingList = false
+      }
+    },
+    async startMl() {
+      this.ml.starting = true
+      this.ml.error = ''
+      try {
+        const res = await api('/api/alphaagent/stacking/train', { method: 'POST', body: { ...this.ml.form, modes: [this.gateMode] } })
+        this.showNewModal = false
+        this.ml.selected = res.train_id
+        this.currentEvents = []
+        await this.loadMl()
+        this.selectTrain(res.train_id)
+      } catch (e) {
+        this.ml.error = e.message
+      } finally {
+        this.ml.starting = false
+      }
+    },
+    scheduleMlPoll() {
+      if (this._mlTimer) return
+      this._mlTimer = setInterval(async () => {
+        await this.loadMl()
+        if (this.ml.selected) await this.viewMl(this.ml.selected, true)
+        if (!(this.ml.list || []).some(t => t.status === 'running')) {
+          clearInterval(this._mlTimer)
+          this._mlTimer = null
+        }
+      }, 4000)
+    },
+    async stopMl(trainId) {
+      try {
+        await api('/api/alphaagent/stacking/trainings/' + encodeURIComponent(trainId) + '/stop', { method: 'POST' })
+        await this.loadMl()
+      } catch (e) {
+        this.ml.error = e.message
+      }
     },
     async loadFactorPool(force = false) {
       if (!force && (this.ml.factorPool.length || this.ml.factorPoolLoading)) return
@@ -808,28 +867,10 @@ export default {
         }
         pool.sort((a, b) => a.name.localeCompare(b.name))
         this.ml.factorPool = pool
-      } catch (e) {
-        // 因子池加载失败不阻塞训练（不选=全部）
-      } finally {
+      } catch (_) {}
+      finally {
         this.ml.factorPoolLoading = false
       }
-    },
-    /** 点击因子名开关卡片：同因子再点关闭，点其他因子切换 */
-    toggleFactorCard(f, evt) {
-      if (this.factorCard && this.factorCard.name === f.name) {
-        this.factorCard = null
-        return
-      }
-      this.factorCard = f
-      const rect = evt.currentTarget.getBoundingClientRect()
-      const W = 400
-      let x = rect.right + 12
-      if (x + W > window.innerWidth - 8) x = Math.max(8, rect.left - W - 12)
-      const y = Math.min(rect.top - 6, window.innerHeight - 140)
-      this.factorCardPos = { x: Math.max(8, x), y: Math.max(8, y) }
-    },
-    closeFactorCard() {
-      this.factorCard = null
     },
     setAllFactors(on) {
       this.ml.form.include_factors = on ? this.ml.factorPool.map(f => f.name) : []
@@ -837,11 +878,23 @@ export default {
     poolFactor(name) {
       return (this.ml.factorPool || []).find(f => f.name === name) || null
     },
-    /** mRMR 推荐：物化因子面板算精确两两相关（约 1-3 分钟），成功后自动填入勾选 */
+    toggleFactorCard(f, evt) {
+      if (!f) return
+      if (this.factorCard && this.factorCard.name === f.name) {
+        this.factorCard = null
+        return
+      }
+      this.factorCard = f
+      const rect = evt.currentTarget.getBoundingClientRect()
+      const W = 380
+      let x = rect.right + 12
+      if (x + W > window.innerWidth - 8) x = Math.max(8, rect.left - W - 12)
+      const y = Math.min(rect.top - 6, window.innerHeight - 140)
+      this.factorCardPos = { x: Math.max(8, x), y: Math.max(8, y) }
+    },
     async recommendFactors() {
-      if (this.anyRunning || this.ml.recommending) return
+      if (this.ml.recommending) return
       this.ml.recommending = true
-      this.ml.error = ''
       try {
         const res = await api('/api/alphaagent/stacking/recommend', {
           method: 'POST',
@@ -853,109 +906,55 @@ export default {
             k: 8,
           },
         })
-        if (!res.ok) throw new Error((res.error) || '推荐失败')
-        this.ml.recommend = res
         const names = (res.ranking || []).map(r => r.name).filter(Boolean)
         if (names.length) this.ml.form.include_factors = names
       } catch (e) {
-        let msg = String(e && e.message ? e.message : e)
-        // FastAPI 409 的 detail 是 JSON 字符串时解出来
-        try { msg = JSON.parse(msg).detail || msg } catch (_) { /* keep raw */ }
-        this.ml.error = '推荐失败：' + msg
+        this.ml.error = '推荐失败：' + (e.message || e)
       } finally {
         this.ml.recommending = false
       }
     },
-    clearRecommend() {
-      this.ml.recommend = null
-      this.ml.form.include_factors = []
+    async loadCompositeFactors(force = false) {
+      if (!force && this._cfLoaded) return
+      try {
+        this.compositeList = await api('/api/alphaagent/composite-factors')
+        this._cfLoaded = true
+      } catch (_) {}
     },
-    fmtNum(v) {
-      if (v === null || v === undefined || Number.isNaN(Number(v))) return '—'
-      return Number(v).toFixed(4)
-    },
-    num2(v) {
-      if (v === null || v === undefined || Number.isNaN(Number(v))) return '—'
-      return Number(v).toFixed(2)
-    },
-    pct(v) {
-      if (v === null || v === undefined || Number.isNaN(Number(v))) return '—'
-      return (Number(v) * 100).toFixed(1) + '%'
-    },
-    toggleHistorySort(key) {
-      if (this.historySortKey === key) {
-        this.historySortDir = -this.historySortDir
-      } else {
-        this.historySortKey = key
-        this.historySortDir = -1  // 指标默认降序（最好在前）
+    async viewComposite(id) {
+      try {
+        this.compositeDetail = await api('/api/alphaagent/composite-factors/' + encodeURIComponent(id))
+        this.compositeSelected = id
+      } catch (e) {
+        this.ml.error = e.message
       }
     },
-    icClass(v) {
-      const n = Number(v)
-      if (!Number.isFinite(n)) return ''
-      return n >= 0 ? 'ic-pos' : 'ic-neg'
+    async saveCompositeFactor(t) {
+      if (!t?.out_dir || this.savingCompositeId) return
+      this.savingCompositeId = t.train_id
+      try {
+        const res = await api('/api/alphaagent/composite-factors', {
+          method: 'POST',
+          body: { out_dir: t.out_dir },
+        })
+        await this.loadCompositeFactors(true)
+        this.showCfDrawer = true
+        this.viewComposite(res.id)
+      } catch (e) {
+        this.ml.error = '保存组合因子失败：' + (e.message || e)
+      } finally {
+        this.savingCompositeId = ''
+      }
     },
-    fmtTrainId(id) {
-      const s = String(id || '')
-      return s.length >= 8 ? `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)} ${s.slice(9, 11) || ''}:${s.slice(11, 13) || ''}`.trim() : s
-    },
-    gateText(t) {
-      if (t.gate_passed === true) return '通过'
-      if (t.gate_passed === false) return '未过'
-      return '—'
-    },
-    isolationShort(t) {
-      const s = String(t.time_isolation || '')
-      if (s.startsWith('holdout')) return '留出'
-      if (s.startsWith('strict')) return '严格'
-      return s.slice(0, 4) || '—'
-    },
-    paramSummary(t) {
-      const p = t.params || {}
-      const parts = []
-      const scheme = t.scheme || p.scheme || 'ml'
-      const schemeShort = ({ ml: 'ML', equal: '等权1/N', icir: 'ICIR', hrp: 'HRP' })[scheme] || scheme.toUpperCase()
-      parts.push(schemeShort)
-      if (scheme === 'ml') parts.push((t.model || p.model || 'both').toUpperCase())
-      parts.push((p.modes && p.modes.join('/')) || 'technical')
-      parts.push(`持有${t.label_days ?? p.label_days ?? 5}d`)
-      parts.push(`${t.n_folds ?? '—'}折`)
-      parts.push(`gate=${(p.modes && p.modes[0]) === 'fundamental' ? '基本面档' : '技术档'}`)
-      return parts.join(' · ')
-    },
-    gateOf(t, key, asPct) {
-      const gm = (this.ml.detail?.report?.gate?.metrics) || {}
-      void t
-      const v = gm[key]
-      if (v == null) return '—'
-      return asPct ? (Number(v) * 100).toFixed(1) + '%' : Number(v).toFixed(2)
+    setContribMetric(key) {
+      this.contribMetric = key
+      for (const kind of this.contribKinds) this.renderContribution(kind)
     },
     weightRows(kind) {
-      return (this.ml.detail?.report?.feature_weights?.[kind] || []).slice(0, 15)
+      return (this.activeReport?.feature_weights?.[kind] || []).slice(0, 15)
     },
     contribRows(kind) {
-      return (this.ml.detail?.report?.feature_contribution?.[kind] || []).slice(0, 15)
-    },
-    renderTrend() {
-      const rows = this.trendRows
-      if (rows.length < 2) return
-      const names = rows.map(t => {
-        const s = String(t.train_id)
-        return `${s.slice(4, 6)}-${s.slice(6, 8)}`
-      })
-      const c = chart('ml-trend-chart')
-      if (!c) return
-      c.setOption({
-        tooltip: { trigger: 'axis' },
-        legend: { textStyle: { color: '#8494b5', fontSize: 10 }, top: 0 },
-        grid: { left: 44, right: 14, top: 26, bottom: 24 },
-        xAxis: { type: 'category', data: names, axisLabel: { ...AXIS_LABEL, rotate: 30 } },
-        yAxis: { type: 'value', axisLabel: { ...AXIS_LABEL } },
-        series: [
-          { name: 'OOS IC', type: 'line', data: rows.map(t => t.oos_ic_mean), showSymbol: true, lineStyle: { width: 2 }, itemStyle: { color: '#4f8cff' } },
-          { name: 'OOS ICIR', type: 'line', data: rows.map(t => t.oos_ic_ir), showSymbol: true, lineStyle: { width: 2, type: 'dashed' }, itemStyle: { color: '#4fc3a1' } },
-        ],
-      }, true)
+      return (this.activeReport?.feature_contribution?.[kind] || []).slice(0, 15)
     },
     renderWeights(kind) {
       const rows = this.weightRows(kind)
@@ -975,48 +974,17 @@ export default {
         }],
       }, true)
     },
-    renderFolds(model) {
-      const rows = (this.ml.detail?.report?.fold_metrics?.[model] || []).filter(r => !r.skipped)
-      if (!rows.length) return
-      const c = chart('ml-folds-' + model)
-      if (!c) return
-      const positive = rows.every(r => (r.ic_mean ?? 0) >= 0)
-      c.setOption({
-        tooltip: { trigger: 'item', formatter: p => `${p.name}：<b>${Number(p.value).toFixed(4)}</b>` },
-        grid: { left: 44, right: 14, top: 20, bottom: 26 },
-        xAxis: { type: 'category', data: rows.map(r => String(r.oos_start).slice(2)), axisLabel: { ...AXIS_LABEL, rotate: 30 } },
-        yAxis: { type: 'value', axisLabel: { ...AXIS_LABEL } },
-        series: [{
-          type: 'bar', data: rows.map(r => r.ic_mean), barMaxWidth: 26,
-          label: { show: true, position: 'top', color: '#c6d2e8', fontSize: 10, formatter: p => Number(p.value).toFixed(3) },
-          itemStyle: { borderRadius: [3, 3, 0, 0], color: positive ? '#4fc3a1' : '#e8c491' },
-        }],
-      }, true)
-    },
     renderContribution(kind) {
       const field = this.contribMetric
-      const rows = (this.ml.detail?.report?.feature_contribution?.[kind] || [])
+      const rows = (this.activeReport?.feature_contribution?.[kind] || [])
         .filter(r => r[field] != null)
         .sort((a, b) => b[field] - a[field])
         .slice(0, 15)
       const sorted = [...rows].reverse()
       const c = chart('ml-contrib-' + kind)
       if (!c) return
-      if (!rows.length) {
-        // 旧训练未采集该口径
-        c.setOption({
-          title: { text: '该训练未采集此口径（需重新训练）', left: 'center', top: 'middle', textStyle: { color: '#8494b5', fontSize: 12, fontWeight: 'normal' } },
-          xAxis: { show: false }, yAxis: { show: false }, series: [],
-        }, true)
-        return
-      }
-      const relTxt = row => (field === 'ic_drop' && row.ic_drop_rel != null
-        ? `（占组合 IC ${(row.ic_drop_rel * 100).toFixed(0)}%）` : '')
       c.setOption({
-        tooltip: { trigger: 'item', formatter: p => {
-          const row = sorted[p.dataIndex]
-          return `${p.name}：<b>${Number(p.value).toFixed(4)}</b> ${relTxt(row || {})}`
-        } },
+        tooltip: { trigger: 'item', formatter: p => `${p.name}：<b>${Number(p.value).toFixed(4)}</b>` },
         grid: { left: 190, right: 70, top: 6, bottom: 6 },
         xAxis: { type: 'value', axisLabel: { ...AXIS_LABEL }, splitLine: { lineStyle: { color: '#1c2536' } } },
         yAxis: { type: 'category', data: sorted.map(r => r.name), axisLabel: { ...AXIS_LABEL, width: 180, overflow: 'truncate' } },
@@ -1027,54 +995,19 @@ export default {
         }],
       }, true)
     },
-    setContribMetric(key) {
-      this.contribMetric = key
-      for (const kind of this.contribKinds) this.renderContribution(kind)
-    },
     renderSubsetCurve() {
-      const curve = this.ml.detail?.report?.subset_curve || []
+      const curve = this.activeReport?.subset_curve || []
       if (!curve.length) return
       const c = chart('ml-subset-curve')
       if (!c) return
-      const series = []
-      for (const kind of this.contribKinds) {
-        const data = curve.map(r => r[kind])
-        if (data.some(v => v != null)) series.push({ name: kind.toUpperCase() + ' IC', type: 'line', data, showSymbol: true, lineStyle: { width: 1.5, type: 'dashed' } })
-      }
-      series.push({ name: 'Blended IC', type: 'line', data: curve.map(r => r.blended), showSymbol: true, lineStyle: { width: 2.5 }, itemStyle: { color: '#4f8cff' },
-        markPoint: this.bestSubset ? { data: [{ coord: [this.bestSubset.k - 1, this.bestSubset.blended], value: '最优 k=' + this.bestSubset.k }] } : undefined,
-      })
       c.setOption({
         tooltip: { trigger: 'axis' },
-        legend: { textStyle: { color: '#8494b5', fontSize: 10 }, top: 0 },
         grid: { left: 44, right: 20, top: 28, bottom: 24 },
-        xAxis: { type: 'category', data: curve.map(r => 'k=' + r.k), axisLabel: { ...AXIS_LABEL, rotate: 45 } },
+        xAxis: { type: 'category', data: curve.map(r => 'k=' + r.k), axisLabel: { ...AXIS_LABEL } },
         yAxis: { type: 'value', axisLabel: { ...AXIS_LABEL }, scale: true },
-        series,
-      }, true)
-    },
-    renderSubsetRisk() {
-      const curve = (this.ml.detail?.report?.subset_curve || []).filter(r => r.oos_sharpe != null)
-      if (!curve.length) return
-      const c = chart('ml-subset-risk')
-      if (!c) return
-      c.setOption({
-        tooltip: { trigger: 'axis' },
-        legend: { textStyle: { color: '#8494b5', fontSize: 10 }, top: 0 },
-        grid: { left: 44, right: 48, top: 28, bottom: 24 },
-        xAxis: { type: 'category', data: curve.map(r => 'k=' + r.k), axisLabel: { ...AXIS_LABEL, rotate: 45 } },
-        yAxis: [
-          { type: 'value', name: 'Sharpe', nameTextStyle: AXIS_LABEL, axisLabel: { ...AXIS_LABEL }, scale: true, splitLine: { lineStyle: { color: '#1c2536' } } },
-          { type: 'value', name: '回撤', nameTextStyle: AXIS_LABEL, axisLabel: { ...AXIS_LABEL, formatter: v => (v * 100).toFixed(0) + '%' }, scale: true, splitLine: { show: false } },
-        ],
-        series: [
-          {
-            name: 'OOS Sharpe', type: 'line', data: curve.map(r => r.oos_sharpe), yAxisIndex: 0,
-            showSymbol: true, lineStyle: { width: 2 }, itemStyle: { color: '#4f8cff' },
-            markPoint: this.bestSubsetRisk ? { data: [{ coord: [curve.indexOf(this.bestSubsetRisk), this.bestSubsetRisk.oos_sharpe], value: '峰值 k=' + this.bestSubsetRisk.k }] } : undefined,
-          },
-          { name: '最大回撤', type: 'line', data: curve.map(r => r.oos_max_drawdown), yAxisIndex: 1, showSymbol: true, lineStyle: { width: 2, type: 'dashed' }, itemStyle: { color: '#ef6b73' } },
-        ],
+        series: [{
+          name: 'Blended IC', type: 'line', data: curve.map(r => r.blended), showSymbol: true, lineStyle: { width: 2.5 }, itemStyle: { color: '#4f8cff' },
+        }],
       }, true)
     },
     renderDecay() {
@@ -1084,8 +1017,7 @@ export default {
       const c = chart('ml-decay-chart')
       if (!c) return
       c.setOption({
-        tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
-        legend: { textStyle: { color: '#8494b5', fontSize: 10 }, top: 0 },
+        tooltip: { trigger: 'axis' },
         grid: { left: 190, right: 30, top: 24, bottom: 6 },
         xAxis: { type: 'value', axisLabel: { ...AXIS_LABEL } },
         yAxis: { type: 'category', data: sorted.map(r => r.name), axisLabel: { ...AXIS_LABEL, width: 180, overflow: 'truncate' } },
@@ -1098,204 +1030,148 @@ export default {
     renderAll() {
       if (!window.echarts) return
       this.$nextTick(() => {
-        this.renderTrend()
         for (const kind of this.weightKinds) this.renderWeights(kind)
         for (const kind of this.contribKinds) this.renderContribution(kind)
         this.renderSubsetCurve()
-        this.renderSubsetRisk()
-        for (const model of Object.keys(this.ml.detail?.report?.fold_metrics || {})) this.renderFolds(model)
         this.renderDecay()
       })
-    },
-    async loadMl() {
-      this.loadingList = true
-      try {
-        this.ml.list = await api('/api/alphaagent/stacking/trainings')
-        if (this.ml.list.some(t => t.status === 'running')) {
-          this.scheduleMlPoll()
-          if (!this.ml.selected) await this.viewMl(this.runningTrain?.train_id, true)
-        }
-        this.renderAll()
-      } catch (e) {
-        this.ml.error = e.message
-      } finally {
-        this.loadingList = false
-      }
-    },
-    async startMl() {
-      this.ml.starting = true
-      this.ml.error = ''
-      try {
-        const res = await api('/api/alphaagent/stacking/train', { method: 'POST', body: { ...this.ml.form, modes: [this.gateMode] } })
-        this.showConfig = false
-        this.ml.selected = res.train_id
-        await this.loadMl()
-        await this.viewMl(res.train_id)
-      } catch (e) {
-        this.ml.error = e.message
-      } finally {
-        this.ml.starting = false
-      }
-    },
-    async toggleDetail(trainId) {
-      if (this.ml.selected === trainId && this.ml.detail?.train_id === trainId) {
-        this.ml.selected = null
-        this.ml.detail = null
-        return
-      }
-      await this.viewMl(trainId)
-    },
-    async viewMl(trainId, silent) {
-      try {
-        const d = await api('/api/alphaagent/stacking/trainings/' + encodeURIComponent(trainId))
-        if (!silent || this.ml.selected === trainId) {
-          this.ml.selected = trainId
-          this.ml.detail = d
-          this.renderAll()
-        }
-        if (d.status === 'running') this.scheduleMlPoll()
-      } catch (e) {
-        if (!silent) this.ml.error = e.message
-      }
-    },
-    scheduleMlPoll() {
-      if (this._mlTimer) return
-      this._mlTimer = setInterval(async () => {
-        await this.loadMl()
-        if (this.ml.selected) await this.viewMl(this.ml.selected, true)
-        if (!(this.ml.list || []).some(t => t.status === 'running')) {
-          clearInterval(this._mlTimer)
-          this._mlTimer = null
-        }
-      }, 5000)
-    },
-    async stopMl(trainId) {
-      try {
-        await api('/api/alphaagent/stacking/trainings/' + encodeURIComponent(trainId) + '/stop', { method: 'POST' })
-        await this.loadMl()
-      } catch (e) {
-        this.ml.error = e.message
-      }
-    },
-    async loadCompositeFactors(force = false) {
-      if (!force && this._cfLoaded) return
-      try {
-        this.compositeList = await api('/api/alphaagent/composite-factors')
-        this._cfLoaded = true
-      } catch (e) {
-        // 列表加载失败不阻塞训练面板
-      }
-    },
-    async viewComposite(id) {
-      if (this.compositeSelected === id && this.compositeDetail?.id === id) {
-        this.compositeSelected = null
-        this.compositeDetail = null
-        return
-      }
-      try {
-        this.compositeDetail = await api('/api/alphaagent/composite-factors/' + encodeURIComponent(id))
-        this.compositeSelected = id
-      } catch (e) {
-        this.ml.error = e.message
-      }
-    },
-    async saveCompositeFactor(t) {
-      if (!t?.out_dir || this.savingCompositeId) return
-      this.savingCompositeId = t.train_id
-      try {
-        const res = await api('/api/alphaagent/composite-factors', {
-          method: 'POST',
-          body: { out_dir: t.out_dir },
-        })
-        await this.loadCompositeFactors(true)
-        this.compositeDetail = await api('/api/alphaagent/composite-factors/' + encodeURIComponent(res.id))
-        this.compositeSelected = res.id
-      } catch (e) {
-        let msg = String(e && e.message ? e.message : e)
-        try { msg = JSON.parse(msg).detail || msg } catch (_) { /* keep raw */ }
-        this.ml.error = '保存组合因子失败：' + msg
-      } finally {
-        this.savingCompositeId = ''
-      }
     },
   },
 }
 </script>
 
 <style scoped>
-.mlv-status { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg-soft); margin-bottom: 12px; }
-.mlv-dot { width: 9px; height: 9px; border-radius: 50%; background: #5b6b8c; flex: none; }
-.mlv-dot.ok { background: #4fc3a1; }
-.mlv-dot.running { background: #e8c491; animation: mlv-pulse 1.2s ease-in-out infinite; }
-@keyframes mlv-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
-.mlv-status-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
-.mlv-status-text b { font-size: 13px; color: var(--text); }
-.mlv-sub { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mlv-actions { display: flex; gap: 8px; align-items: center; flex: none; }
-.mlv-ghost { padding: 6px 12px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--muted); font-size: 12px; cursor: pointer; }
-.mlv-ghost:hover { color: var(--text); border-color: var(--accent, #5b9dff); }
-.mlv-primary { padding: 7px 16px; border: 0; border-radius: 8px; background: var(--accent, #4f8cff); color: #fff; font-size: 12px; cursor: pointer; white-space: nowrap; }
-.mlv-primary:disabled { background: var(--line-strong, #3a465e); cursor: default; }
-.mlv-stop { padding: 6px 12px; border: 1px solid #ef6b7355; border-radius: 8px; background: transparent; color: #ef6b73; font-size: 12px; cursor: pointer; }
-.mlv-empty { padding: 32px 20px; text-align: center; color: var(--muted); border: 1px dashed var(--line); border-radius: 10px; margin: 10px 0; }
-.mlv-empty p { margin: 4px 0; font-size: 12px; }
-.mlv-empty .mlv-primary { margin-top: 12px; }
-.mlv-block { margin-top: 14px; }
-.mlv-block-head { display: flex; align-items: center; gap: 8px; margin: 6px 0 8px; }
-.mlv-block-head h4, .mlv-block-head h5 { margin: 0; }
-.mlv-expand-row > td { background: rgb(79 140 255 / 0.04); }
-.mlv-expand { padding: 8px 6px; display: flex; flex-direction: column; gap: 12px; }
-.mlv-expand-head { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; }
-.mlv-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-@media (max-width: 1100px) { .mlv-grid2 { grid-template-columns: 1fr; } }
-.mlv-details summary { cursor: pointer; color: var(--muted); font-size: 12px; margin: 6px 0; }
-.mlv-details summary:hover { color: var(--text); }
-.mlv-bad { color: #ef6b73; }
-.mlv-metric-toggle { display: inline-flex; gap: 0; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
-.mlv-metric-toggle button { border: 0; background: transparent; color: var(--muted); font-size: 11px; padding: 3px 10px; cursor: pointer; }
-.mlv-metric-toggle button + button { border-left: 1px solid var(--line); }
-.mlv-metric-toggle button.active { background: rgb(79 140 255 / 0.18); color: var(--text); }
-.ml-gate-mode { align-self: center; color: var(--muted); font-size: 11px; border: 1px dashed var(--line); border-radius: 7px; padding: 4px 10px; cursor: help; }
-.ml-factor-picker { margin-top: 10px; }
-.ml-factor-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 2px 14px; max-height: 180px; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; }
-.ml-factor-lib { color: var(--muted); font-style: normal; font-size: 10px; }
-.ml-factor-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.ml-factor-name { cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text, #e6ecf7); }
-.ml-factor-name:hover, .ml-factor-name.active { color: #7fb0ff; text-decoration: underline dotted; }
-.ml-factor-card { position: fixed; z-index: 9999; width: 400px; max-height: min(72vh, 580px); overflow-y: auto; background: var(--bg-soft, #10192a); border: 1px solid var(--line, #2a3650); border-radius: 10px; padding: 10px 12px; box-shadow: 0 8px 28px rgb(0 0 0 / 0.45); }
-.mlfc-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
-.mlfc-head b { color: var(--text, #e6ecf7); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
-.mlfc-tag { flex: none; font-size: 10px; padding: 1px 7px; border-radius: 6px; }
-.mlfc-tag.tag-prod { background: rgb(79 195 161 / 0.16); color: #4fc3a1; }
-.mlfc-tag.tag-cand { background: rgb(232 196 145 / 0.16); color: #e8c491; }
-.mlfc-close { flex: none; border: 0; background: transparent; color: var(--muted, #8494b5); font-size: 15px; line-height: 1; cursor: pointer; padding: 2px 5px; border-radius: 5px; }
-.mlfc-close:hover { color: var(--text, #e6ecf7); background: rgb(255 255 255 / 0.08); }
-.mlfc-metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px 8px; margin-bottom: 8px; }
-.mlfc-metrics span { display: flex; flex-direction: column; gap: 1px; font-size: 11px; color: var(--text, #e6ecf7); font-family: var(--font-mono, monospace); }
-.mlfc-metrics span i { font-style: normal; font-size: 9px; color: var(--muted, #8494b5); }
-.mlfc-body { border-top: 1px solid var(--line, #2a3650); padding-top: 7px; }
-.mlfc-seg { margin-bottom: 9px; }
-.mlfc-seg:last-child { margin-bottom: 2px; }
-.mlfc-seg-title { display: block; color: #7fb0ff; font-size: 11px; font-weight: 600; margin-bottom: 2px; }
-.mlfc-seg-text { display: block; font-size: 11px; line-height: 1.7; color: #c6d2e8; white-space: pre-wrap; word-break: break-all; }
-.mlfc-seg-text.mlfc-muted { color: var(--muted, #8494b5); }
-.mlfc-review { margin-top: 7px; font-size: 10px; line-height: 1.5; color: #e8c491; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
-.ml-reco-bar { display: flex; align-items: center; gap: 10px; margin-top: 8px; flex-wrap: wrap; }
-.ml-reco-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 2px 16px; max-height: 170px; overflow-y: auto; border: 1px dashed var(--line); border-radius: 8px; padding: 6px 10px; margin-top: 2px; }
-.ml-reco-row { display: flex; align-items: center; gap: 7px; min-width: 0; font-size: 12px; }
-.ml-reco-row b { color: #7fb0ff; font-family: var(--font-mono, monospace); }
-.ml-reco-name { cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ml-reco-name:hover { color: #7fb0ff; text-decoration: underline dotted; }
-.ml-reco-row .mlv-sub { font-size: 10px; }
-.ml-reco-row .ml-factor-lib { flex: none; }
-.ml-scheme-hint { align-self: center; color: #7fb0ff; font-size: 11px; background: rgb(79 140 255 / 0.12); border-radius: 7px; padding: 5px 10px; }
-.ml-reco-rationale { color: var(--muted, #8494b5); font-size: 11px; line-height: 1.6; margin-top: 4px; }
-.ml-llm-summary { display: flex; flex-direction: column; gap: 10px; }
-.ml-llm-sec { border-left: 2px solid rgb(79 140 255 / 0.4); padding-left: 10px; }
-.ml-llm-sec b { color: #7fb0ff; font-size: 11px; display: block; margin-bottom: 3px; }
-.ml-llm-sec p { margin: 0; font-size: 12px; line-height: 1.7; color: var(--text, #e6ecf7); white-space: pre-wrap; word-break: break-all; }
+.ml-agent-shell { height: 100%; min-height: 600px; }
+.ml-sidebar { min-width: 260px; max-width: 280px; }
+.ml-main { display: flex; flex-direction: column; height: 100%; min-width: 0; }
+.ml-header { padding: 12px 20px; }
+.ml-thread { padding: 20px 24px; flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; }
+
+.ml-safe-badge {
+  color: #4fc3a1; font-size: 11px;
+  background: rgb(79 195 161 / 0.12);
+  border: 1px solid rgb(79 195 161 / 0.35);
+  border-radius: 6px; padding: 4px 9px; font-weight: 500;
+}
+
+/* 结构化时间线卡片 */
+.ml-card {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg-soft, #131a29);
+  padding: 12px 14px;
+}
+.ml-card-head {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+}
+.ml-card-tag {
+  font-size: 10px; padding: 2px 6px; border-radius: 4px;
+  background: rgb(79 140 255 / 0.15); color: #7fb0ff;
+}
+.ml-card-tag.prod { background: rgb(79 195 161 / 0.15); color: #4fc3a1; }
+.ml-card-tag.bad { background: rgb(239 107 115 / 0.15); color: #ef6b73; }
+.ml-card-time { margin-left: auto; color: var(--muted); font-size: 10px; font-family: var(--font-mono); }
+
+.ml-meta-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 6px;
+  font-size: 11px; color: var(--text);
+}
+.ml-meta-grid i { color: var(--muted); font-style: normal; margin-right: 4px; }
+
+.ml-stage-card {
+  display: flex; align-items: center; gap: 12px; padding: 10px 14px;
+  border: 1px solid var(--line); border-radius: 8px; background: rgba(255,255,255,0.02);
+}
+.ml-stage-icon {
+  width: 24px; height: 24px; border-radius: 50%;
+  display: grid; place-items: center; font-size: 12px;
+  background: rgb(79 140 255 / 0.15); color: #7fb0ff;
+}
+.ml-stage-content strong { display: block; font-size: 12px; }
+.ml-stage-content p { margin: 2px 0 0; font-size: 11px; color: var(--muted); }
+
+.ml-think-bubble {
+  margin-left: 0 !important;
+  background: rgb(199 146 234 / 0.04) !important;
+  border-color: rgb(199 146 234 / 0.25) !important;
+}
+
+.ml-factor-chips {
+  display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px;
+}
+.ml-chip {
+  font-size: 11px; font-family: var(--font-mono);
+  padding: 3px 8px; border-radius: 5px;
+  background: rgb(79 140 255 / 0.12); color: #a3c5ff;
+  cursor: pointer; border: 1px solid transparent;
+}
+.ml-chip:hover { border-color: var(--accent); }
+
+.ml-folds-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 8px; margin-bottom: 8px;
+}
+.ml-fold-item {
+  padding: 6px 8px; border-radius: 6px; background: rgba(0,0,0,0.2);
+  display: flex; flex-direction: column; gap: 2px; font-size: 11px;
+}
+.ml-top-weights { font-size: 11px; color: var(--muted); }
+.ml-top-weights span { margin-right: 8px; color: #c6d2e8; }
+
+.ml-drop-details summary { cursor: pointer; color: var(--muted); font-size: 11px; }
+.ml-drop-item { font-size: 11px; color: var(--muted); margin-top: 3px; }
+
+.ml-llm-summary { display: flex; flex-direction: column; gap: 8px; }
+.ml-llm-sec { border-left: 2px solid rgb(79 140 255 / 0.4); padding-left: 8px; }
+.ml-llm-sec b { color: #7fb0ff; font-size: 11px; display: block; margin-bottom: 2px; }
+.ml-llm-sec p { margin: 0; font-size: 12px; line-height: 1.6; color: var(--text); }
 .ml-llm-sec ul { margin: 0; padding-left: 16px; }
-.ml-llm-sec li { font-size: 12px; line-height: 1.7; color: var(--text, #e6ecf7); margin-bottom: 2px; }
+.ml-llm-sec li { font-size: 12px; line-height: 1.6; color: var(--text); }
 .ml-llm-sec ul.ml-llm-risk li { color: #e8c491; }
-.ml-safe-badge { align-self: center; color: #4fc3a1; font-size: 11px; background: rgb(79 195 161 / 0.12); border: 1px solid rgb(79 195 161 / 0.35); border-radius: 6px; padding: 3px 8px; font-weight: 500; }
+
+.ml-analytics-panel { padding: 18px 24px; }
+.ml-drawer-btn {
+  width: 100%; padding: 8px; border: 1px solid var(--line); border-radius: 6px;
+  background: transparent; color: var(--muted); font-size: 11px; cursor: pointer;
+}
+.ml-drawer-btn:hover { color: var(--text); border-color: var(--accent); }
+
+/* 弹窗与抽屉 */
+.ml-modal-mask, .ml-drawer-mask {
+  position: fixed; inset: 0; z-index: 9999;
+  background: rgba(0, 0, 0, 0.6); backdrop-filter: blur(2px);
+  display: flex; justify-content: center; align-items: center;
+}
+.ml-modal {
+  width: min(90vw, 760px); max-height: 85vh; border-radius: 12px;
+  background: var(--bg-soft, #161f30); border: 1px solid var(--line);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.ml-modal-head, .ml-drawer-head {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 14px 18px; border-bottom: 1px solid var(--line);
+}
+.ml-modal-close {
+  background: transparent; border: 0; color: var(--muted); font-size: 18px; cursor: pointer;
+}
+.ml-modal-body, .ml-drawer-body { padding: 16px 18px; overflow-y: auto; flex: 1; }
+.ml-modal-foot {
+  display: flex; justify-content: flex-end; gap: 10px;
+  padding: 12px 18px; border-top: 1px solid var(--line);
+}
+.ml-drawer {
+  position: absolute; right: 0; top: 0; bottom: 0; width: min(85vw, 560px);
+  background: var(--bg-soft, #161f30); border-left: 1px solid var(--line);
+  display: flex; flex-direction: column;
+}
+
+/* 因子选择器列表 */
+.ml-factor-list {
+  max-height: 180px; overflow-y: auto; border: 1px solid var(--line);
+  border-radius: 6px; padding: 6px; display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 4px;
+}
+.ml-factor-row { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+.ml-factor-name { cursor: pointer; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
+.ml-factor-name:hover { color: #7fb0ff; text-decoration: underline; }
+.ml-factor-lib { font-size: 9px; color: var(--muted); font-style: normal; margin-left: auto; }
 </style>
