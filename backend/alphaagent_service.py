@@ -1829,16 +1829,9 @@ def delete_factor(factor_id: str, *, library: str = "production", category: str 
     }
 
 
-def _safe_float(v: Any) -> float | None:
-    """安全转 float，None/NaN → None。"""
-    if v is None:
-        return None
-    try:
-        f = float(v)
-        import math
-        return f if math.isfinite(f) else None
-    except (TypeError, ValueError):
-        return None
+from core.numutil import to_float
+
+_safe_float = to_float
 
 
 # ══════════════════════════════════════════════════════════════════════

@@ -69,11 +69,6 @@ def _apv_gate(
     return False, pi_neg, pi_neg
 
 
-def _safe_float(value: Any) -> float | None:
-    try:
-        v = float(value)
-        if v != v:  # NaN
-            return None
-        return v
-    except (TypeError, ValueError):
-        return None
+from core.numutil import to_float
+
+_safe_float = to_float

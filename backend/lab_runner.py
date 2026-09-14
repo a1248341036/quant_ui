@@ -23,23 +23,7 @@ def load_module(path: str):
     return mod
 
 
-def _to_float(x) -> float | None:
-    if x is None or (isinstance(x, float) and (np.isnan(x) or np.isinf(x))):
-        return None
-    try:
-        return float(x)
-    except (TypeError, ValueError):
-        return None
-
-
-def points(s: pd.Series) -> list[dict]:
-    out = []
-    for idx, v in s.items():
-        v = _to_float(v)
-        if v is None:
-            continue
-        out.append({"date": str(pd.Timestamp(idx).date()), "value": v})
-    return out
+from backend.services import series_to_points as points
 
 
 def main() -> int:

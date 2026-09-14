@@ -14,7 +14,7 @@ import pandas as pd
 from core import trading_config
 from core.score_matrix import scores_to_engine_matrix
 from alphaagent.factor.window_config import BT_DEFAULT_START
-from scripts.qweave_research import ALPHA_SETS, build_alphas, load_panel, to_qweave_df
+from core.qweave import ALPHA_SETS, build_alphas, load_panel, to_qweave_df
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent

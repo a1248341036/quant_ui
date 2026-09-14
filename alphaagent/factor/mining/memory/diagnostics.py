@@ -12,19 +12,12 @@ from typing import Any
 
 from alphaagent.core.timeutil import utc_now_iso
 
+from core.numutil import to_float
+
 # ── 基础工具 ──
 
 _now = utc_now_iso
-
-
-def _safe_float(value: Any) -> float | None:
-    try:
-        v = float(value)
-        if v != v:  # NaN
-            return None
-        return v
-    except (TypeError, ValueError):
-        return None
+_safe_float = to_float
 
 
 def _parse_args(raw: Any) -> dict[str, Any]:

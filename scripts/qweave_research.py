@@ -46,16 +46,17 @@ sys.path.insert(0, str(PROJECT_ROOT))
 DEFAULT_RUN_ROOT = PROJECT_ROOT / "data" / "qweave"
 DEFAULT_OUT = PROJECT_ROOT / "data" / "stock" / "pred_demo.parquet"
 
-ALPHA_SETS = {
-    "alpha158": ("qlib_alpha158", ["close", "high", "low", "open", "volume", "vwap"]),
-    "alpha101": ("worldquant_alpha101", ["close", "high", "low", "open", "volume", "vwap"]),
-    "alpha191": ("gtja_alpha191", ["close", "high", "low", "open", "volume", "vwap"]),
-}
+from core.qweave import (
+    ALPHA_SETS,
+    build_alphas,
+    load_codes,
+    load_panel,
+    to_qweave_df,
+)
 
 
-def load_codes(codes_arg: str | None, max_codes: int | None,
-               asset_type: str = "stock") -> list[str] | None:
-    """--codes 逗号列表；缺省用 universe.csv；文件也没有就 None（全市场）。"""
+def _load_codes_fallback(codes_arg: str | None, max_codes: int | None,
+                         asset_type: str = "stock") -> list[str] | None:
     if codes_arg:
         return [str(c).strip().zfill(6) for c in codes_arg.split(",") if c.strip()]
     uni = (PROJECT_ROOT / "data" / "etf" / "etf.csv" if asset_type == "etf"
