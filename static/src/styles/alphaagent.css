@@ -899,3 +899,42 @@ textarea.lab-input { resize:vertical; font:12px/1.5 var(--font-mono); }
   font: 10px/1.5 var(--font-mono); color: var(--text-dim, #8a93a6);
   white-space: pre-wrap; word-break: break-all;
 }
+
+/* 整体统计：轻量自动轮询开关与脉冲点 */
+.metrics-poll-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  font-size: 11px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--bg-soft);
+  color: var(--muted);
+  cursor: pointer;
+  transition: all .15s;
+}
+.metrics-poll-toggle:hover {
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+.metrics-poll-toggle.active {
+  border-color: rgba(67, 209, 122, 0.35);
+  background: rgba(67, 209, 122, 0.08);
+  color: #43d17a;
+}
+.metrics-poll-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--muted);
+  display: inline-block;
+  transition: background .2s;
+}
+.metrics-poll-toggle.active .metrics-poll-dot {
+  background: #43d17a;
+  box-shadow: 0 0 6px rgba(67, 209, 122, 0.6);
+}
+.metrics-poll-dot.pulse {
+  animation: ovm-pulse 2s infinite;
+}

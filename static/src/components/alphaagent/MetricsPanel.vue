@@ -9,13 +9,22 @@
         </div>
       </div>
       <div class="header-actions">
-        <select v-model.number="lastN" class="metrics-last-select" @change="refresh">
+        <button
+          class="metrics-poll-toggle"
+          :class="{ active: autoPoll }"
+          @click="toggleAutoPoll"
+          :title="autoPoll ? '已开启 8s 轻量自动轮询更新，点击暂停' : '点击开启 8s 自动轮询更新'"
+        >
+          <span class="metrics-poll-dot" :class="{ pulse: autoPoll }"></span>
+          {{ autoPoll ? '自动更新中' : '自动更新已暂停' }}
+        </button>
+        <select v-model.number="lastN" class="metrics-last-select" @change="refresh(false)">
           <option :value="10">最近 10 个 run</option>
           <option :value="20">最近 20 个 run</option>
           <option :value="50">最近 50 个 run</option>
           <option :value="0">全部 run</option>
         </select>
-        <button class="summary-refresh-btn" :disabled="loading" @click="refresh">刷新</button>
+        <button class="summary-refresh-btn" :disabled="loading || refreshing" @click="refresh(false)">刷新</button>
       </div>
     </header>
 
@@ -178,7 +187,16 @@ const AXIS_LABEL = { color: '#8494b5', fontSize: 10 }
 export default {
   name: 'MetricsPanel',
   data() {
-    return { data: null, loading: false, error: '', lastN: 0, facetMetric: 'rate' }
+    return {
+      data: null,
+      loading: false,
+      refreshing: false,
+      error: '',
+      lastN: 0,
+      facetMetric: 'rate',
+      autoPoll: true,
+      pollTimer: null,
+    }
   },
   computed: {
     errorRows() { return Object.entries(this.data?.summary?.error_breakdown || {}) },
@@ -223,7 +241,15 @@ export default {
       return 24
     },
   },
-  mounted() { this.refresh() },
+  mounted() {
+    this.refresh(false)
+    this.startPolling()
+    document.addEventListener('visibilitychange', this.onVisibilityChange)
+  },
+  beforeUnmount() {
+    this.stopPolling()
+    document.removeEventListener('visibilitychange', this.onVisibilityChange)
+  },
   watch: {
     // 口径切换后重画（等 v-model 落值再渲染，避免用旧口径画图）
     facetMetric() { this.$nextTick(() => this.renderFacetOperatorCharts()) },
@@ -432,16 +458,52 @@ export default {
         duplicate_prior_result: '正向结构重复',
       })[kind] || kind
     },
-    async refresh() {
-      this.loading = true
-      this.error = ''
+    startPolling() {
+      this.stopPolling()
+      if (!this.autoPoll) return
+      // 8 秒一次轻量自动轮询（静默刷新，不打扰用户交互）
+      this.pollTimer = setInterval(() => {
+        this.refresh(true)
+      }, 8000)
+    },
+    stopPolling() {
+      if (this.pollTimer) {
+        clearInterval(this.pollTimer)
+        this.pollTimer = null
+      }
+    },
+    onVisibilityChange() {
+      if (document.hidden) {
+        this.stopPolling()
+      } else if (this.autoPoll) {
+        this.refresh(true)
+        this.startPolling()
+      }
+    },
+    toggleAutoPoll() {
+      this.autoPoll = !this.autoPoll
+      if (this.autoPoll) {
+        this.refresh(true)
+        this.startPolling()
+      } else {
+        this.stopPolling()
+      }
+    },
+    async refresh(silent = false) {
+      if (this.refreshing) return
+      this.refreshing = true
+      if (!silent) {
+        this.loading = true
+        this.error = ''
+      }
       try {
         this.data = await api(`/api/alphaagent/metrics/overview?last=${this.lastN}`)
         this.$nextTick(() => this.renderCharts())
       } catch (e) {
-        this.error = String(e.message || e)
+        if (!silent) this.error = String(e.message || e)
       } finally {
-        this.loading = false
+        this.refreshing = false
+        if (!silent) this.loading = false
       }
     },
   },
