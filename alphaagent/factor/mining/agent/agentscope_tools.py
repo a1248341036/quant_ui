@@ -304,16 +304,13 @@ def _orthogonality_check(tools: FactorEvalTools, multi_line_expr: str) -> dict[s
         from alphaagent.factor.metrics import spearman_ic
         from alphaagent.factor.zoo import FactorZoo
 
-        # 统一大库（2026-09-03）：production_main 两模式共享；FACTORZOO_DIR 指向
-        # 已改名的 production_technical（迁移遗留），仅作兜底保留。
+        # 统一大库（2026-09-03）：production_main 与 candidate_main 全模式共享。
         # 未初始化的库 = 没有可比较对象，跳过该库；不能让单个库缺失把整个
-        # 正交检查 fail-closed（曾把大库合并后的所有提交全部拒掉）。
+        # 正交检查 fail-closed。
         roots: list = []
         for root in (
             factor_categories.production_dir("technical"),
-            factor_categories.production_dir("fundamental"),
             factor_categories.candidate_dir("technical"),
-            factor_categories.candidate_dir("fundamental"),
             FACTORZOO_DIR,
         ):
             if root not in roots:

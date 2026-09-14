@@ -4,14 +4,10 @@
 （mode_id/label/candidate_dir/production_dir 均在那里），本模块只做路径
 派生与兼容接口，不再维护第二份清单。
 
-加新类别 = 在 core.research_modes.RESEARCH_MODES 加一项，本模块自动跟随。
-
-目录结构:
+统一大库结构 (2026-09-03 起):
   artifacts/alphaagent/factorzoo/
-    candidate_technical/       ← 候选库（日线技术）
-    production_technical/      ← 正式库（日线技术）
-    candidate_fundamental/     ← 候选库（基本面）
-    production_fundamental/    ← 正式库（基本面）
+    candidate_main/            ← 统一候选池（带 facets 标签）
+    production_main/           ← 统一正式库（带 facets 标签）
 """
 
 from __future__ import annotations

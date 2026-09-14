@@ -13,7 +13,7 @@ DISCLOSURE_CALENDAR_PATH = FUNDAMENTAL_DIR / "disclosure_calendar.parquet"
 INDUSTRY_DIR = ARTIFACTS_DIR / "industry"
 INDUSTRY_SW_PATH = INDUSTRY_DIR / "sw_l1_membership.parquet"
 INDEX_DIR = ARTIFACTS_DIR / "index"
-FACTORZOO_DIR = ARTIFACTS_DIR / "alphaagent" / "factorzoo" / "production_technical"
+FACTORZOO_DIR = ARTIFACTS_DIR / "alphaagent" / "factorzoo" / "production_main"
 FACTOR_EXPR_DIR = FACTORZOO_DIR / "expressions"
 # 每研究模式一份的 ResearchSpec 用户覆盖（门槛文件）：前端编辑保存、CLI/Web/晋升全链路生效
 RESEARCH_SPECS_DIR = ARTIFACTS_DIR / "alphaagent" / "research_specs"
