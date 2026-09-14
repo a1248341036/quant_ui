@@ -106,7 +106,7 @@ def _repro_command(report: dict[str, Any], out_dir: Path) -> str:
     ]
     if int(report.get("score_smooth") or 0) > 1:
         parts.append(f"--score-smooth {report.get('score_smooth')}")
-    include = report.get("include_factors")
+    include = report.get("include_factors") or report.get("feature_names")
     if include:
         parts.append("--include-factors " + " ".join(str(n) for n in include))
     parts.append(f"--mining-end {report.get('mining_end')}")
