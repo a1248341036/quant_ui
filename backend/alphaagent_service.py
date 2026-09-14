@@ -1420,10 +1420,10 @@ def _classify_facets(entry: dict[str, Any], expr_text: str | None) -> dict[str, 
     老条目缺 facets 时按表达式现算兜底；candidate 与 production 此前各写一遍
     （expr_facets/classify_family_ex 散落 6 处），统一在此。
     """
+    from alphaagent.factor.mining.memory.expressions import classify_family_ex, expr_facets
+
     facets = entry.get("facets") if isinstance(entry.get("facets"), list) else None
     if not facets:
-        from alphaagent.factor.mining.memory.expressions import classify_family_ex, expr_facets
-
         facets = sorted(expr_facets(str(entry.get("name") or "") + " " + str(expr_text or "")))
     is_fusion = entry.get("is_fusion") if isinstance(entry.get("is_fusion"), bool) else len(facets) >= 2
     family = str(entry.get("family") or "") or (

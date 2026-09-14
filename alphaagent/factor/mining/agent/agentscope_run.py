@@ -128,9 +128,9 @@ def _build_model(
         "max_tokens": config.max_tokens,
         "parallel_tool_calls": True,
     }
-    if config.temperature is not None:
+    if getattr(config, "temperature", None) is not None:
         params["temperature"] = config.temperature
-    if config.reasoning_effort is not None:
+    if getattr(config, "reasoning_effort", None) is not None:
         params["reasoning_effort"] = config.reasoning_effort
     return ProviderSafeChatModel(
         usage_listener=usage_listener,
