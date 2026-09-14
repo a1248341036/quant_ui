@@ -414,7 +414,7 @@ def run_metrics(run_id: str) -> dict[str, Any]:
 def metrics_overview(last: int = 20) -> dict[str, Any]:
     """整体统计：扫描全部 run 的效率/漏斗指标聚合 + Reviewer 校准 + 数据面/算子成功率。"""
     from alphaagent.factor.mining.run_metrics import compute_run_metrics, reviewer_calibration
-    from alphaagent.factor.mining.memory.analytics import facet_operator_breakdown
+    from alphaagent.factor.mining.memory.analytics import facet_operator_breakdown, research_funnel
 
     run_dirs = sorted(p for p in service.LOG_ROOT.iterdir() if p.is_dir())
     if last > 0:
@@ -454,17 +454,27 @@ def metrics_overview(last: int = 20) -> dict[str, Any]:
         for k, v in (m.get("advisory_breakdown") or {}).items():
             summary["advisory_breakdown"][k] = summary["advisory_breakdown"].get(k, 0) + v
 
-    cal = reviewer_calibration(
-        service.ROOT / "artifacts" / "alphaagent" / "factorzoo" / "candidate_main" / "mining_candidate_registry.json",
-        service.ROOT / "artifacts" / "alphaagent" / "factorzoo" / "production_main" / "mining_delivered_registry.json",
+    candidate_registry_path = (
+        service.ROOT / "artifacts" / "alphaagent" / "factorzoo" / "candidate_main" / "mining_candidate_registry.json"
     )
+    production_registry_path = (
+        service.ROOT / "artifacts" / "alphaagent" / "factorzoo" / "production_main" / "mining_delivered_registry.json"
+    )
+    cal = reviewer_calibration(candidate_registry_path, production_registry_path)
     # 数据面 / 算子成功率：研究记忆库聚合；last>0 时与页面的 run 窗口对齐（按 last_run_id 过滤）
     facet_ops = facet_operator_breakdown(
         service.RESEARCH_MEMORY_FILE,
         run_ids=[p.name for p in run_dirs] if last > 0 else None,
     )
+    # 漏斗转化：研究记忆库 + 因子库 registry（全库口径，跨 Web/CLI/整夜，不随 run 窗口变化）
+    funnel = research_funnel(
+        service.RESEARCH_MEMORY_FILE,
+        candidate_registry_path=candidate_registry_path,
+        production_registry_path=production_registry_path,
+    )
     return {"summary": summary, "runs": list(reversed(rows)),
-            "reviewer_calibration": cal, "facet_operator": facet_ops}
+            "reviewer_calibration": cal, "facet_operator": facet_ops,
+            "research_funnel": funnel}
 
 
 @router.post("/runs/{run_id}/stop")

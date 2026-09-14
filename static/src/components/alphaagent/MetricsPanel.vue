@@ -25,17 +25,17 @@
       <template v-else-if="data">
         <!-- ── 汇总卡片 ── -->
         <div class="summary-panel">
-          <div class="summary-panel-head"><h3>汇总（{{ data.summary.n_runs ?? 0 }} 个 run）</h3></div>
+          <div class="summary-panel-head"><h3>汇总（{{ data.summary.n_runs ?? 0 }} 个 run 的成本 · 因子评估/提交/入库为研究记忆库全库口径）</h3></div>
           <div class="metrics-cards">
             <div class="metrics-card"><b>{{ fmt(data.summary.total_wall_minutes ?? 0) }}<i>min</i></b><span>总时长</span></div>
             <div class="metrics-card"><b>{{ fmt(data.summary.total_input_k_tokens ?? 0) }}<i>K</i></b><span>输入 tokens</span></div>
             <div class="metrics-card"><b>{{ fmt(data.summary.total_output_k_tokens ?? 0) }}<i>K</i></b><span>输出 tokens</span></div>
             <div class="metrics-card"><b>{{ data.summary.total_cache_hit_rate == null ? '-' : (data.summary.total_cache_hit_rate * 100).toFixed(0) }}<i>%</i></b><span>缓存命中率</span></div>
             <div class="metrics-card"><b>{{ fmt(data.summary.total_thinking_k_chars ?? 0) }}<i>K</i></b><span>思维链字符</span></div>
-            <div class="metrics-card"><b>{{ data.summary.total_eval ?? 0 }}</b><span>因子评估</span></div>
-            <div class="metrics-card"><b>{{ data.summary.total_submit ?? 0 }}</b><span>提交</span></div>
-            <div class="metrics-card"><b>{{ data.summary.total_stored_candidate ?? 0 }}</b><span>入候选池</span></div>
-            <div class="metrics-card"><b>{{ data.summary.total_stored_production ?? 0 }}</b><span>晋升正式库</span></div>
+            <div class="metrics-card"><b>{{ fmt(data.research_funnel?.total ?? 0) }}</b><span>因子评估</span></div>
+            <div class="metrics-card"><b>{{ fmt(data.research_funnel?.submitted ?? 0) }}</b><span>发起提交</span></div>
+            <div class="metrics-card"><b>{{ data.research_funnel?.candidate_stored ?? 0 }}</b><span>入候选池</span></div>
+            <div class="metrics-card"><b>{{ data.research_funnel?.production_stored ?? 0 }}</b><span>晋升正式库</span></div>
             <div class="metrics-card"><b>{{ data.summary.mean_minutes_per_delivered == null ? '-' : fmt(data.summary.mean_minutes_per_delivered) }}</b><span>min/产出</span></div>
           </div>
         </div>
@@ -44,7 +44,7 @@
         <div class="summary-panel">
           <div class="summary-panel-head">
             <h3>漏斗转化</h3>
-            <span class="summary-facet-hint" title="每层标注相对上一层的转化率；stage_one/stage_two/engine_gate 为提交后各门槛的通过数。">ⓘ</span>
+            <span class="summary-facet-hint" title="口径 = 研究记忆库全量（Web/CLI/整夜全渠道），跨 run 稳定、不随上方 run 窗口变化。评估尝试 = 记忆库因子结构数；有效尝试剔除 eval_error（面板缺列/超时等没算出来的）；海选过线 = promising/validated/入库；发起提交 = 出现过 submit 阶段的去重因子；入候选池/晋升取因子库 registry 条目数（与因子库页一致）。每层标注相对上一层的转化率。">ⓘ</span>
           </div>
           <div id="metrics-funnel-chart" class="metrics-chart" :style="{ height: funnelHeight + 'px' }"></div>
         </div>
@@ -338,21 +338,24 @@ export default {
       return '#7d8bab'
     },
     renderFunnel() {
-      const s = this.data.summary || {}
+      // 漏斗 = 研究记忆库 + 因子库 registry（全库口径，跨 run 稳定）；
+      // run 日志只承载成本类指标，不再作为漏斗事实源。
+      const f = this.data.research_funnel || {}
+      const total = f.total ?? 0
       const stages = [
-        { name: '评估', value: s.total_eval ?? 0 },
-        { name: '提交', value: s.total_submit ?? 0 },
-        { name: 'stage_one', value: s.total_stage_one_pass ?? 0 },
-        { name: 'stage_two', value: s.total_stage_two_pass ?? 0 },
-        { name: 'engine_gate', value: s.total_gate_pass ?? 0 },
-        { name: '晋升', value: s.total_stored_production ?? 0 },
+        { name: '评估尝试', value: f.total ?? 0 },
+        { name: '有效尝试', value: f.valid ?? 0 },
+        { name: '海选过线', value: f.positive ?? 0 },
+        { name: '发起提交', value: f.submitted ?? 0 },
+        { name: '入候选池', value: f.candidate_stored ?? 0 },
+        { name: '晋升正式库', value: f.production_stored ?? 0 },
       ]
       const c = chart('metrics-funnel-chart')
       if (!c) return
       c.setOption({
         tooltip: {
           trigger: 'item',
-          formatter: p => `${p.name}：<b>${p.value}</b>（占评估 ${(s.total_eval ? (p.value / s.total_eval * 100).toFixed(1) : 0)}%）`,
+          formatter: p => `${p.name}：<b>${p.value}</b>（占评估尝试 ${(total ? (p.value / total * 100).toFixed(1) : 0)}%）`,
         },
         series: [{
           type: 'funnel',
