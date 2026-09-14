@@ -141,23 +141,46 @@ def _build_report_view(report: dict) -> str:
                 for fm in fold_metrics
             ]
 
-    # 特征权重 Top-10
+    # 特征权重 Top-10。report 实际形态：{"ridge": [{name,weight},...], "lgbm": [...]}
+    # 分模型 dict；兼容旧/简化的单层形态 {"name": weight} 或 list。
     fw = report.get("feature_weights") or {}
     if isinstance(fw, dict):
-        sorted_fw = sorted(fw.items(), key=lambda x: abs(x[1]) if isinstance(x[1], (int, float)) else 0, reverse=True)
-        view["feature_weights_top10"] = dict(sorted_fw[:10])
+        # 单层形态：{"name": weight} → 按绝对值取 Top-10
+        if all(isinstance(v, (int, float)) for v in fw.values()):
+            sorted_fw = sorted(fw.items(), key=lambda x: abs(x[1]), reverse=True)
+            view["feature_weights_top10"] = dict(sorted_fw[:10])
+        else:
+            # 分模型形态：{"ridge": [{name,weight},...], ...}
+            top10: dict[str, list[dict[str, Any]]] = {}
+            for kind, rows in fw.items():
+                if isinstance(rows, list):
+                    by_weight = sorted(
+                        rows, key=lambda x: abs(x.get("weight") or 0.0) if isinstance(x, dict) else 0.0,
+                        reverse=True,
+                    )
+                    top10[kind] = [
+                        {"name": r.get("name"), "weight": round(float(r.get("weight") or 0.0), 4)}
+                        for r in by_weight[:10] if isinstance(r, dict)
+                    ]
+            view["feature_weights_top10"] = top10
     elif isinstance(fw, list):
         view["feature_weights_top10"] = fw[:10]
 
-    # gate 结论
+    # gate 结论（实际结构：{"passed", "selection_pct", "metrics": {...}}）
     gate = report.get("gate")
-    if gate:
+    if gate and isinstance(gate, dict):
+        gm = gate.get("metrics") or {}
         view["gate"] = {
             "passed": gate.get("passed"),
             "selection_pct": gate.get("selection_pct"),
-            "sharpe": gate.get("sharpe"),
-            "max_drawdown": gate.get("max_drawdown"),
-            "turnover": gate.get("turnover"),
+            "freq": gate.get("freq"),
+            "selection_mode": gate.get("selection_mode"),
+            "excess_annual": gm.get("excess_annual"),
+            "excess_sharpe": gm.get("excess_sharpe"),
+            "sharpe": gm.get("sharpe"),
+            "max_drawdown": gm.get("max_drawdown"),
+            "daily_overlap": gm.get("daily_overlap"),
+            "annual_return": gm.get("annual_return"),
         }
 
     # 多路径对照

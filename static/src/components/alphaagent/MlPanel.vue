@@ -48,6 +48,7 @@
         <label class="ml-check"><input type="checkbox" v-model="ml.form.no_candidate"> 只用正式库</label>
         <label class="ml-check"><input type="checkbox" v-model="ml.form.no_gate"> 跳过 engine_gate</label>
         <label v-if="ml.form.scheme === 'ml'" class="ml-check" title="按置换贡献降序取 Top-k 逐级重训（成本 ≈ 2n 次拟合，训练时间明显变长）。输出'子集规模 vs OOS IC'曲线，定位边际收益归零的最优因子数。"><input type="checkbox" v-model="ml.form.subset_curve"> 累积子集曲线</label>
+        <label v-if="ml.form.scheme === 'ml'" class="ml-check" title="LLM 语义研判：因子枚举后按数据面覆盖去冗余推荐训练子集（只出白名单、不给权重，最终有效特征仍由 max-corr 过滤收口）；训练后 LLM 解读 report 生成组合说明书（写 report.llm_summary）。推荐按候选池指纹锁定复用，池不变不重调 LLM；失败自动回退全量因子，不阻断训练。默认关闭。"><input type="checkbox" v-model="ml.form.llm_assist"> LLM 辅助（推荐 + 说明书）</label>
         <label v-if="ml.form.scheme === 'ml'" class="ml-check" title="同一段干净历史换两种折边界（整体平移 2/4 个月）各重训一遍，输出 OOS IC/ICIR/Sharpe/回撤 的路径分布——单条切法上的好成绩可能只是那条边界的运气。成本 ≈ 2 次完整训练。"><input type="checkbox" v-model="ml.form.multi_path"> 多路径对照</label>
         <span class="ml-gate-mode" title="因子池已是统一大库（不分技术/基本面）；engine_gate 档位自动跟随持有天数：≤7 天→技术档（周调仓·严门槛），>7 天→基本面档（月调仓·松门槛）。">gate 档位：{{ gateModeLabel }}（自动）</span>
       </div>
@@ -327,6 +328,30 @@
                           </tbody>
                         </table>
                       </template>
+                      <template v-if="(ml.detail.report.llm_recommendation) || (ml.detail.report.llm_summary) || (ml.detail.report.llm_summary_error)">
+                        <div class="mlv-block-head">
+                          <h5>LLM 辅助（A 推荐 + C 说明书）</h5>
+                          <span class="mlv-sub" v-if="llmRecMeta">{{ llmRecMeta }}</span>
+                        </div>
+                        <template v-if="(ml.detail.report.llm_recommendation||{}).recommended">
+                          <div class="mlv-sub" style="margin-bottom:4px">
+                            推荐 {{ (ml.detail.report.llm_recommendation||{}).n_recommended }} 个因子（命中 {{ (ml.detail.report.llm_recommendation||{}).n_hit }}）· 模型 {{ (ml.detail.report.llm_recommendation||{}).model || '—' }}
+                            <template v-if="(ml.detail.report.llm_recommendation||{}).reused"> · 已复用锁定推荐</template>
+                          </div>
+                          <div class="ml-features">{{ ((ml.detail.report.llm_recommendation||{}).recommended||[]).join(' · ') }}</div>
+                          <div v-if="(ml.detail.report.llm_recommendation||{}).rationale" class="ml-reco-rationale">依据：{{ (ml.detail.report.llm_recommendation||{}).rationale }}</div>
+                        </template>
+                        <template v-if="ml.detail.report.llm_summary">
+                          <div class="ml-llm-summary">
+                            <div class="ml-llm-sec"><b>总结</b><p>{{ ml.detail.report.llm_summary.summary || '—' }}</p></div>
+                            <div v-if="(ml.detail.report.llm_summary.strengths||[]).length" class="ml-llm-sec"><b>优势</b><ul><li v-for="(s,i) in ml.detail.report.llm_summary.strengths" :key="'s'+i">{{ s }}</li></ul></div>
+                            <div v-if="(ml.detail.report.llm_summary.risks||[]).length" class="ml-llm-sec"><b>风险</b><ul class="ml-llm-risk"><li v-for="(r,i) in ml.detail.report.llm_summary.risks" :key="'r'+i">{{ r }}</li></ul></div>
+                            <div v-if="(ml.detail.report.llm_summary.suggestions||[]).length" class="ml-llm-sec"><b>建议</b><ul><li v-for="(g,i) in ml.detail.report.llm_summary.suggestions" :key="'g'+i">{{ g }}</li></ul></div>
+                            <div class="mlv-sub">生成模型：{{ ml.detail.report.llm_summary.model || '—' }}</div>
+                          </div>
+                        </template>
+                        <div v-else-if="ml.detail.report.llm_summary_error" class="mlv-bad">LLM 说明书生成失败：{{ ml.detail.report.llm_summary_error }}</div>
+                      </template>
                       <div v-if="Object.keys(ml.detail.report.fold_metrics || {}).length" class="mlv-block-head"><h5>折级 OOS IC</h5></div>
                       <div class="mlv-grid2">
                         <div v-for="(rows, model) in ml.detail.report.fold_metrics" :key="'f-' + model">
@@ -528,7 +553,7 @@ export default {
   data() {
     return {
       ml: {
-        form: { scheme: 'ml', model: 'both', label_days: 5, train_months: 18, step_months: 6, max_corr: 0.6, isolation: 'holdout', no_candidate: false, no_gate: false, subset_curve: false, multi_path: false, include_factors: [] },
+        form: { scheme: 'ml', model: 'both', label_days: 5, train_months: 18, step_months: 6, max_corr: 0.6, isolation: 'holdout', no_candidate: false, no_gate: false, subset_curve: false, multi_path: false, llm_assist: false, include_factors: [] },
         factorPool: [],
         factorPoolLoading: false,
         list: [],
@@ -629,6 +654,17 @@ export default {
     multiPathWarning() {
       const a = this.multiPathAgg
       return !!(a && a.n_negative_ic > 0)
+    },
+    /** LLM 辅助：推荐是否被复用 / 指纹摘要（详情页头部一行） */
+    llmRecMeta() {
+      const rec = this.ml.detail?.report?.llm_recommendation || null
+      if (!rec) return ''
+      const parts = []
+      if (rec.n_recommended != null) parts.push(`推荐 ${rec.n_recommended} 个`)
+      if (rec.n_hit != null) parts.push(`命中 ${rec.n_hit}`)
+      if (rec.reused) parts.push('复用锁定推荐（池未变）')
+      if (rec.pool_fingerprint) parts.push(`池指纹 ${rec.pool_fingerprint}`)
+      return parts.join(' · ')
     },
     /** 组合因子库详情：构成/衰减保留/gate 卡片 */
     cfFeatures() {
@@ -1251,4 +1287,12 @@ export default {
 .ml-reco-row .mlv-sub { font-size: 10px; }
 .ml-reco-row .ml-factor-lib { flex: none; }
 .ml-scheme-hint { align-self: center; color: #7fb0ff; font-size: 11px; background: rgb(79 140 255 / 0.12); border-radius: 7px; padding: 5px 10px; }
+.ml-reco-rationale { color: var(--muted, #8494b5); font-size: 11px; line-height: 1.6; margin-top: 4px; }
+.ml-llm-summary { display: flex; flex-direction: column; gap: 10px; }
+.ml-llm-sec { border-left: 2px solid rgb(79 140 255 / 0.4); padding-left: 10px; }
+.ml-llm-sec b { color: #7fb0ff; font-size: 11px; display: block; margin-bottom: 3px; }
+.ml-llm-sec p { margin: 0; font-size: 12px; line-height: 1.7; color: var(--text, #e6ecf7); white-space: pre-wrap; word-break: break-all; }
+.ml-llm-sec ul { margin: 0; padding-left: 16px; }
+.ml-llm-sec li { font-size: 12px; line-height: 1.7; color: var(--text, #e6ecf7); margin-bottom: 2px; }
+.ml-llm-sec ul.ml-llm-risk li { color: #e8c491; }
 </style>
