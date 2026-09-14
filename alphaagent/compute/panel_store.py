@@ -63,8 +63,8 @@ class WorkerPanelStore:
     def _load_panel_from_spec(self, spec: dict[str, Any]) -> pd.DataFrame:
         """从 spec 参数加载 panel（优先 mmap）。"""
         panel_path = spec.get("panel_path", "cne://")
-        start = spec.get("start", "2020-01-01")
-        end = spec.get("end", "2024-12-31")
+        start = spec.get("start") or spec.get("train_start", "2020-01-01")
+        end = spec.get("end") or spec.get("val_end", "2024-12-31")
         include_fundamentals = spec.get("include_fundamentals", True)
         asset_type = spec.get("asset_type", "stock")
         focus_facets = spec.get("focus_facets")

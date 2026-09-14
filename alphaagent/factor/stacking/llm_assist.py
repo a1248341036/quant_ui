@@ -30,7 +30,7 @@ RECOMMENDATION_LOCK_FILE = (
 # ── Prompt ──
 
 _SYSTEM_A = """\
-你是量化因子组合的语义筛选助手。你的任务是：从给定的因子清单中推荐一个适合进入 ML 组合训练的子集。
+你是量化因子组合的语义筛选助手。你的任务是：从给定的因子清单中推荐一个适合进入 ML 组合训练的子集，并提出本次组合的投资假设与专业命名。
 
 重要规则：
 1. mRMR 统计推荐已存在（基于 IC 和相关系数），你负责的是**语义维度**——数据面多样性、经济逻辑互补、同质变体去冗余。
@@ -38,10 +38,16 @@ _SYSTEM_A = """\
 3. 数据面多样性：价量、基本面、资金流、筹码等不同面应互补，不要同质堆叠（如 3 个动量变体只留 1 个）。
 4. 经济逻辑互补：动量+反转+质量 > 三个动量变体。不同信息源的因子组合更有价值。
 5. 时间衰减预警：入库时间老（created_at 早）的因子如果表达式简单，可能已被市场消化，适当降权。
-6. 推荐理由必须落到结构维度（数据面、算子族、同质/互补关系），不得引用任何"作者声称的因果故事"。
+6. 若用户提供了【本次探索重点引导要求】，请重点围绕该引导方向进行针对性筛选与互补搭配。
+7. 推荐理由必须落到结构维度（数据面、算子族、同质/互补关系），不得引用任何"作者声称的因果故事"。
 
 输出严格 JSON（不要 Markdown 代码块）：
-{"recommended": ["因子名1", "因子名2", ...], "rationale": "一句话概述推荐逻辑"}
+{
+  "composite_name": "6-14字中文组合名称（如：量价动量与低换手筹码组合）",
+  "hypothesis": "一句话投资逻辑假设（如：以低波动筹码集中因子为防御底仓，叠加短期成交量异常加速信号...）",
+  "recommended": ["因子名1", "因子名2", ...],
+  "rationale": "一句话概述推荐逻辑"
+}
 
 推荐数量不限，但应是一个精炼子集（通常 8-20 个），不是全选。"""
 
@@ -102,12 +108,20 @@ def _compress_entries(entries: list[FactorEntry], *, max_cap: int = 40) -> list[
     return items
 
 
-def _build_prompt_a(entries: list[FactorEntry], *, max_cap: int = 40) -> str:
-    """构建 A 步骤的 user prompt（因子清单 JSON）。"""
+def _build_prompt_a(
+    entries: list[FactorEntry],
+    *,
+    guidance: str | None = None,
+    max_cap: int = 40,
+) -> str:
+    """构建 A 步骤的 user prompt（因子清单 JSON + 可选探索引导）。"""
     compressed = _compress_entries(entries, max_cap=max_cap)
-    return "以下是因子库中的全部候选因子，请推荐适合进入 ML 组合训练的子集：\n\n" + json.dumps(
+    prompt = "以下是因子库中的全部候选因子，请推荐适合进入 ML 组合训练的子集：\n\n" + json.dumps(
         compressed, ensure_ascii=False, indent=1
     )
+    if guidance and guidance.strip():
+        prompt += f"\n\n【本次探索重点引导要求】：\n{guidance.strip()}\n请重点围绕该引导方向进行针对性挑选，并拟定组合名称与假设。"
+    return prompt
 
 
 def _build_report_view(report: dict) -> str:
@@ -223,26 +237,32 @@ def _build_report_view(report: dict) -> str:
 def llm_recommend_subset(
     entries: list[FactorEntry],
     *,
+    guidance: str | None = None,
     pool_fingerprint: str | None = None,
     max_factors_cap: int = 40,
+    temperature: float | None = None,
 ) -> dict | None:
-    """A 步骤：LLM 语义研判推荐因子子集白名单。
+    """A 步骤：LLM 语义研判推荐因子子集白名单与组合命名假设。
 
     返回 dict:
-      {"recommended": [...], "rationale": "...", "model": MODEL,
-       "pool_fingerprint": "...", "prompt_snapshot": "..."}
+      {"recommended": [...], "rationale": "...", "composite_name": "...", "hypothesis": "...",
+       "model": MODEL, "pool_fingerprint": "...", "prompt_snapshot": "..."}
     失败返回 None（调用方兜底回退全量）。
     """
     if len(entries) < 2:
         return None
 
     valid_names = {e.name for e in entries}
-    prompt_user = _build_prompt_a(entries, max_cap=max_factors_cap)
+    prompt_user = _build_prompt_a(entries, guidance=guidance, max_cap=max_factors_cap)
+
+    # 动态探索模式（传入了 guidance）使用 0.65 鼓励发散与多样化；默认复用模式使用 0.2 保守收敛
+    actual_temp = temperature if temperature is not None else (0.65 if (guidance and guidance.strip()) else 0.2)
+
     result = chat_json(
         system=_SYSTEM_A,
         user=prompt_user,
         max_tokens=4096,
-        temperature=0.2,
+        temperature=actual_temp,
     )
     if not result:
         return None
@@ -257,11 +277,15 @@ def llm_recommend_subset(
         return None
 
     rationale = str(result.get("rationale") or "")
+    composite_name = str(result.get("composite_name") or "").strip() or None
+    hypothesis = str(result.get("hypothesis") or "").strip() or None
     model_name = os.getenv("MODEL", "")
 
     return {
         "recommended": recommended,
         "rationale": rationale,
+        "composite_name": composite_name,
+        "hypothesis": hypothesis,
         "model": model_name,
         "pool_fingerprint": pool_fingerprint or candidate_pool_fingerprint(entries),
         "prompt_snapshot": prompt_user,

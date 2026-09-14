@@ -154,8 +154,15 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--llm-assist", action="store_true",
                     help="LLM 辅助：A) 枚举后语义研判推荐因子子集（白名单，不给权重）；"
                          "C) 训练后生成组合说明书写入 report.llm_summary。"
-                         "推荐落盘后按候选池指纹锁定复用，池不变不重调 LLM；"
+                         "未提供 --guidance 时按候选池指纹锁定复用，池不变不重调 LLM；"
+                         "显式提供 --guidance 时开启动态探索模式（每次重新研判并落盘）；"
                          "失败自动回退全量因子，绝不阻断训练（默认关闭）")
+    ap.add_argument("--guidance", default=None,
+                    help="用户探索引导指令（一句话），如：'不要用均线因子，侧重筹码分布与资金流异常'。"
+                         "显式传入将绕过全局指纹锁，触发动态探索与全新组合搭配。")
+    ap.add_argument("--auto-ingest", default="gate_pass", choices=["gate_pass", "always", "none"],
+                    help="组合因子库自动沉淀模式：gate_pass=仅通过 engine_gate 时自动入库（默认，保持高纯度）；"
+                         "always=成功生成有效组合即入库；none=不自动入库。")
     return ap.parse_args()
 
 
@@ -221,31 +228,44 @@ def main() -> None:
         pool_fp = candidate_pool_fingerprint(entries)
         rec: dict | None = None
         reused = False
+        is_explore_mode = bool(args.guidance and args.guidance.strip())
+
+        think_msg = (
+            f"当前候选池共 {len(entries_snapshot)} 个因子。收到引导指令：'{args.guidance.strip()}'，正在开启动态探索搭配..."
+            if is_explore_mode
+            else f"当前候选池共 {len(entries_snapshot)} 个因子。正在结合数据面多样性与经济逻辑，进行语义去冗余分析..."
+        )
         _emit_event(
             out_dir,
             "agent_thinking",
-            title="LLM 因子研判与子集推荐",
-            content=f"当前候选池共 {len(entries_snapshot)} 个因子。正在结合数据面多样性与经济逻辑，进行语义去冗余分析...",
+            title="LLM 因子研判与子集推荐" + (" (动态探索模式)" if is_explore_mode else ""),
+            content=think_msg,
         )
         try:
-            if RECOMMENDATION_LOCK_FILE.is_file():
-                try:
-                    rec = json.loads(RECOMMENDATION_LOCK_FILE.read_text(encoding="utf-8"))
-                except (json.JSONDecodeError, OSError):
-                    rec = None
-                if not isinstance(rec, dict):  # 锁定文件被手改坏 → 重新研判
-                    rec = None
-                if rec is not None and rec.get("pool_fingerprint") != pool_fp:
-                    print("[warn] 已有 LLM 推荐的候选池指纹与当前不一致（因子池已变化），视作过期，重新研判")
-                    rec = None
-            if rec is not None and not isinstance(rec.get("recommended"), list):
-                rec = None
-            if rec is not None:
-                reused = True
-                print(f"LLM 推荐：复用锁定推荐（{len(rec.get('recommended') or [])} 个因子，池指纹未变，不重调 LLM）")
-            else:
+            # 探索模式（传入了 guidance）：绕过全局锁定文件，强制重调 LLM 并落盘在本次 out_dir
+            if is_explore_mode:
                 load_codex_provider()
-                rec = llm_recommend_subset(entries, pool_fingerprint=pool_fp)
+                rec = llm_recommend_subset(entries, guidance=args.guidance, pool_fingerprint=pool_fp)
+            else:
+                # 默认模式：保持池指纹全局锁定复用，节约 API 成本并确保基线可比性
+                if RECOMMENDATION_LOCK_FILE.is_file():
+                    try:
+                        rec = json.loads(RECOMMENDATION_LOCK_FILE.read_text(encoding="utf-8"))
+                    except (json.JSONDecodeError, OSError):
+                        rec = None
+                    if not isinstance(rec, dict):  # 锁定文件被手改坏 → 重新研判
+                        rec = None
+                    if rec is not None and rec.get("pool_fingerprint") != pool_fp:
+                        print("[warn] 已有 LLM 推荐的候选池指纹与当前不一致（因子池已变化），视作过期，重新研判")
+                        rec = None
+                if rec is not None and not isinstance(rec.get("recommended"), list):
+                    rec = None
+                if rec is not None:
+                    reused = True
+                    print(f"LLM 推荐：复用锁定推荐（{len(rec.get('recommended') or [])} 个因子，池指纹未变，不重调 LLM）")
+                else:
+                    load_codex_provider()
+                    rec = llm_recommend_subset(entries, pool_fingerprint=pool_fp)
         except Exception as exc:  # noqa: BLE001  硬保证：A 任何异常回退全量，不阻断训练
             print(f"[warn] LLM 推荐环节异常，回退全量因子：{exc}")
             rec = None
@@ -259,19 +279,26 @@ def main() -> None:
             else:
                 print(f"LLM 推荐 {len(rec['recommended'])} 个，命中 {len(entries)}/{before} 个"
                       f"（依据: {str(rec.get('rationale') or '')[:80]}）")
-                RECOMMENDATION_LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
-                RECOMMENDATION_LOCK_FILE.write_text(
-                    json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8"
-                )
-                print(f"推荐已锁定写入 {RECOMMENDATION_LOCK_FILE}（候选池不变时后续训练直接复用）")
+                # 探索模式将推荐结果写入本次任务目录专属锁定文件，默认模式写全局文件
+                run_rec_file = out_dir / "llm_recommendation.json"
+                run_rec_file.write_text(json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8")
+                if not is_explore_mode:
+                    RECOMMENDATION_LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+                    RECOMMENDATION_LOCK_FILE.write_text(
+                        json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8"
+                    )
+                    print(f"推荐已锁定写入 {RECOMMENDATION_LOCK_FILE}（候选池不变时后续训练直接复用）")
                 llm_recommendation_meta = {
                     "recommended": rec["recommended"],
                     "n_recommended": len(rec["recommended"]),
                     "n_hit": len(entries),
                     "rationale": rec.get("rationale"),
+                    "composite_name": rec.get("composite_name"),
+                    "hypothesis": rec.get("hypothesis"),
                     "model": rec.get("model"),
                     "pool_fingerprint": rec.get("pool_fingerprint"),
                     "reused": reused,
+                    "explore_mode": is_explore_mode,
                 }
         else:
             print("[warn] LLM 推荐不可用（LLM 不可用或输出不可解析），回退全量因子")
@@ -280,12 +307,15 @@ def main() -> None:
         _emit_event(
             out_dir,
             "ml_pool_screened",
-            title="因子子集语义研判结果",
+            title="因子子集语义研判结果" + (" (动态探索)" if is_explore_mode else ""),
+            composite_name=llm_recommendation_meta.get("composite_name") if llm_recommendation_meta else None,
+            hypothesis=llm_recommendation_meta.get("hypothesis") if llm_recommendation_meta else None,
             recommended=llm_recommendation_meta.get("recommended") if llm_recommendation_meta else [],
             rationale=llm_recommendation_meta.get("rationale") if llm_recommendation_meta else "已回退全量因子",
             n_recommended=len(entries),
             n_total=len(entries_snapshot),
             reused=reused,
+            explore_mode=is_explore_mode,
         )
 
     if len(entries) < 2:
@@ -949,6 +979,49 @@ def main() -> None:
         scores_path = out_dir / "scores.parquet"
         write_pred_parquet(stacked, panel, scores_path)
         print(f"组合分数已写入 out_dir 自包含副本：{scores_path}")
+
+    # ⑨ 自动沉淀至组合因子库（Auto-Ingest 闭环）
+    #    tuning 研发态下，若开启 auto-ingest 且满足条件，自动入库并去重。
+    auto_ingest_mode = getattr(args, "auto_ingest", "gate_pass")
+    should_ingest = False
+    gate_passed = bool(gate_result and gate_result.get("passed") is True)
+
+    if args.eval_mode == "tuning":
+        if auto_ingest_mode == "gate_pass":
+            should_ingest = gate_passed
+        elif auto_ingest_mode == "always":
+            should_ingest = True
+
+    if should_ingest:
+        try:
+            from backend.composite_factor_service import save_composite_factor
+            cf_name = (llm_recommendation_meta or {}).get("composite_name")
+            if not cf_name:
+                cf_name = f"{SCHEME_LABELS.get(args.scheme, args.scheme)} · {run_id}"
+            ingest_note = f"LLM 组合假设：{(llm_recommendation_meta or {}).get('hypothesis', '—')}" if llm_recommendation_meta else None
+
+            ingest_res = save_composite_factor(
+                out_dir,
+                name=cf_name,
+                note=ingest_note,
+                auto_ingest=True,
+            )
+            if ingest_res.get("ok"):
+                if ingest_res.get("skipped_reason"):
+                    print(f"[auto-ingest] 检测到相同因子搭配存量组合（{ingest_res['name']}），且当前 IC 未超越存量，跳过入库")
+                else:
+                    action = "已更新覆盖存量组合" if ingest_res.get("updated") else "已自动沉淀入组合因子库"
+                    print(f"[auto-ingest] {action}：{ingest_res['name']} (id={ingest_res['id']})")
+                    _emit_event(
+                        out_dir,
+                        "ml_composite_saved",
+                        title=action,
+                        id=ingest_res["id"],
+                        name=ingest_res["name"],
+                        updated=ingest_res.get("updated", False),
+                    )
+        except Exception as exc:
+            print(f"[warn] 自动入库失败（不影响训练结果）：{exc}")
 
     _emit_event(
         out_dir,
