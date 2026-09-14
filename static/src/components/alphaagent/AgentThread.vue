@@ -83,7 +83,15 @@
         </div>
       </div>
 
-      <div v-for="(message, index) in timeline" :key="message.key + '-' + index" class="message-row" :class="'message-' + message.kind">
+      <!-- 渲染窗口：只把最近 visibleCount 条消息放进 DOM。长会话（51min+，数百条）
+           全量渲染是卡顿主因之一；更早的消息按需展开。 -->
+      <div v-if="hiddenCount > 0" class="load-more-btn-wrap" style="text-align:center">
+        <button class="load-more-btn" @click="visibleCount += 300">
+          展开更早的 {{ hiddenCount }} 条消息
+        </button>
+      </div>
+
+      <div v-for="message in visibleTimeline" :key="message._uid" class="message-row" :class="'message-' + message.kind">
         <button v-if="message.text" class="msg-copy-btn" title="复制内容" @click="copyMessage(message.text)">⧉</button>
         <div v-if="message.kind === 'user'" class="user-bubble">{{ message.text }}</div>
 
@@ -311,11 +319,20 @@ export default {
     return {
       agent: agentStore,
       showAdvanced: false,
+      // 时间线渲染窗口大小：默认只渲染最近 150 条，向上按需展开
+      visibleCount: 150,
     }
   },
   computed: {
     timeline() {
       return agentStore.timeline
+    },
+    visibleTimeline() {
+      const all = agentStore.timeline
+      return all.length > this.visibleCount ? all.slice(all.length - this.visibleCount) : all
+    },
+    hiddenCount() {
+      return Math.max(0, agentStore.timeline.length - this.visibleCount)
     },
     composerPlaceholder() {
       if (agentStore.agentBusy) return '向当前 Agent 追加研究指令…（Ctrl/⌘ + Enter）'
