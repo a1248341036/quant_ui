@@ -17,7 +17,12 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from alphaagent.factor.stacking.llm_assist import _build_report_view, llm_summarize_report
+from alphaagent.factor.stacking.dataset import FactorEntry
+from alphaagent.factor.stacking.llm_assist import (
+    _build_prompt_a,
+    _build_report_view,
+    llm_summarize_report,
+)
 from alphaagent.factor.window_config import (
     DEFAULT_TRAIN_END,
     DEFAULT_VAL_END,
@@ -95,3 +100,67 @@ def test_tuning_mode_date_logic():
     oos_start = mining_end + pd.Timedelta(days=1)
     assert oos_start == pd.Timestamp("2023-01-01")
     assert end == pd.Timestamp("2024-12-31")
+
+
+def test_prompt_a_no_blind_test_dates():
+    """P1 门禁：断言步骤 A 喂给 LLM 的 prompt 绝不泄漏 2025/2026 等盲测期时间戳。"""
+    entries = [
+        FactorEntry(
+            factor_id="f1",
+            name="factor_alpha",
+            library="production",
+            created_at="2026-09-03 14:20:00",
+            facets=("价量面",),
+            expr="CS_RANK($close)",
+        ),
+        FactorEntry(
+            factor_id="f2",
+            name="factor_beta",
+            library="candidate",
+            created_at="2025-06-15 09:30:00",
+            facets=("筹码面",),
+            expr="TS_MEAN($turnover, 20)",
+        ),
+        FactorEntry(
+            factor_id="f3",
+            name="factor_historical",
+            library="production",
+            created_at="2022-08-01 12:00:00",
+            facets=("基本面",),
+            expr="DIVIDE($pe, $pb)",
+        ),
+    ]
+    prompt_str = _build_prompt_a(entries)
+
+    # 严禁出现 2025 或 2026 年份字符串
+    assert "2026" not in prompt_str, "LLM prompt 中泄漏了 2026 年份"
+    assert "2025" not in prompt_str, "LLM prompt 中泄漏了 2025 年份"
+    # 历史年份 2022 可以安全保留年月
+    assert "2022-08" in prompt_str
+    # 2025/2026 入库的因子应被清洗为安全标签
+    assert "post-mining (recent)" in prompt_str
+
+
+def test_report_view_no_blind_test_dates():
+    """P1 门禁：断言步骤 C 喂给 LLM 的 report_view 绝不泄漏 2025/2026 等盲测期日期。"""
+    report = {
+        "run_id": "safe_tuning_run",
+        "eval_mode": "tuning",
+        "blind_test_isolated": True,
+        "mining_end": "2022-12-31",
+        "folds": 2,
+        "fold_metrics": {
+            "ridge": [
+                {"fold": 1, "ic_mean": 0.035, "oos_start": "2023-01-01", "oos_end": "2023-06-30"},
+                {"fold": 2, "ic_mean": 0.041, "oos_start": "2023-07-01", "oos_end": "2024-12-31"},
+            ]
+        },
+        "gate": {
+            "passed": True,
+            "metrics": {"excess_annual": 0.12},
+        },
+    }
+    view_str = _build_report_view(report)
+    assert "2025" not in view_str
+    assert "2026" not in view_str
+

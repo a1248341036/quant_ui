@@ -66,24 +66,39 @@ def candidate_pool_fingerprint(entries: list[FactorEntry]) -> str:
     return hashlib.sha256("|".join(names).encode()).hexdigest()[:16]
 
 
+def _sanitize_vintage(created_at: str | None) -> str:
+    """盲测防泄漏清洗：将入库时间转换为安全相对标识，严禁向 LLM 泄漏 2025+ 盲测期时间戳。"""
+    if not created_at:
+        return "unknown"
+    s = str(created_at).strip()
+    # 盲测安全隔离：禁止暴露 2025/2026 等盲测期年份，统一脱敏为相对标签
+    for forbidden in ("2025", "2026", "2027"):
+        if forbidden in s:
+            return "post-mining (recent)"
+    return s[:7]
+
+
 def _compress_entries(entries: list[FactorEntry], *, max_cap: int = 40) -> list[dict[str, Any]]:
     """把 FactorEntry 列表压缩成 LLM 可读的精简 dict 列表。
 
     只保留硬结构信息：name, facets, library, created_at, expr（截断 120 字）。
     超过 max_cap 个时按入库时间新→旧截断。
+    严格执行盲测防泄漏：输出字典中的 created_at 字段对 2025+ 盲测年份做脱敏清洗。
     """
+    sorted_entries = list(entries)
+    if len(sorted_entries) > max_cap:
+        sorted_entries.sort(key=lambda e: str(e.created_at or ""), reverse=True)
+        sorted_entries = sorted_entries[:max_cap]
+
     items = []
-    for e in entries:
+    for e in sorted_entries:
         items.append({
             "name": e.name,
             "facets": list(e.facets) if e.facets else [],
             "library": e.library,
-            "created_at": e.created_at or "",
+            "created_at": _sanitize_vintage(e.created_at),
             "expr": (e.expr or "")[:120],
         })
-    if len(items) > max_cap:
-        items.sort(key=lambda x: x.get("created_at", ""), reverse=True)
-        items = items[:max_cap]
     return items
 
 
