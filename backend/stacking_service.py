@@ -92,6 +92,10 @@ def start_training(params: dict[str, Any]) -> dict[str, Any]:
             command += ["--multi-path-shifts", "0,2,4"]
         if params.get("llm_assist"):
             command += ["--llm-assist"]
+        if params.get("guidance"):
+            command += ["--guidance", str(params["guidance"])]
+        if params.get("auto_ingest"):
+            command += ["--auto-ingest", str(params["auto_ingest"])]
 
         # 参数快照落盘：历史列表/详情页展示训练配置用
         out_dir.mkdir(parents=True, exist_ok=True)

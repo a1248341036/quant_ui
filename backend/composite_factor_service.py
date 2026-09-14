@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from datetime import datetime
@@ -32,7 +33,8 @@ CREATE TABLE IF NOT EXISTS composite_factors (
     provenance_json TEXT,
     metrics_json TEXT,
     features_json TEXT,
-    note TEXT
+    note TEXT,
+    combo_fp TEXT
 );
 """
 
@@ -50,6 +52,11 @@ def _connect() -> sqlite3.Connection:
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
     con.execute(_SCHEMA)
+    # 幂等迁移：老表补 combo_fp 列
+    try:
+        con.execute("ALTER TABLE composite_factors ADD COLUMN combo_fp TEXT")
+    except sqlite3.OperationalError:
+        pass
     return con
 
 
@@ -76,9 +83,24 @@ def _read_report_json(report_path: Path) -> dict[str, Any] | None:
 
 def _repro_command(report: dict[str, Any], out_dir: Path) -> str:
     """从 report 元数据重建可复现命令行（与 report/分数文件所在 out_dir 一致）。"""
+    params_file = out_dir / "params.json"
+    modes = None
+    if params_file.is_file():
+        try:
+            params = json.loads(params_file.read_text(encoding="utf-8"))
+            modes = params.get("modes")
+        except Exception:
+            pass
+    if not modes:
+        modes = report.get("modes") or ["technical"]
+    if isinstance(modes, (list, tuple)):
+        modes_arg = " ".join(str(m) for m in modes)
+    else:
+        modes_arg = str(modes)
+
     parts = [
         ".venv\\Scripts\\python.exe scripts\\train_ml_composite.py",
-        "--modes technical",
+        f"--modes {modes_arg}",
         f"--scheme {report.get('scheme') or 'ml'}",
         f"--label-days {report.get('label_days', 5)}",
     ]
@@ -94,8 +116,16 @@ def _repro_command(report: dict[str, Any], out_dir: Path) -> str:
     return " ".join(parts)
 
 
+def compute_combo_fingerprint(scheme: str, features: list[str], mining_end: str | None) -> str:
+    """计算因子组合特征与方案指纹，用于防重复入库。"""
+    feat_str = ",".join(sorted(features))
+    raw = f"{scheme}|{feat_str}|{mining_end or ''}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
 def save_composite_factor(out_dir: str | Path, *, name: str | None = None,
-                          note: str | None = None) -> dict[str, Any]:
+                          note: str | None = None,
+                          auto_ingest: bool = False) -> dict[str, Any]:
     """把一次组合运行的产物（report.json + 分数 parquet）固化为组合因子条目。"""
     out_dir = Path(out_dir)
     if not out_dir.is_absolute():
@@ -113,6 +143,17 @@ def save_composite_factor(out_dir: str | Path, *, name: str | None = None,
     decay = report.get("decay_table") or []
     ratios = [float(r["decay_ratio"]) for r in decay if isinstance(r.get("decay_ratio"), (int, float))]
     gate = report.get("gate") or {}
+
+    features = {
+        "feature_names": report.get("feature_names") or [],
+        "dropped": report.get("dropped") or [],
+    }
+    combo_fp = compute_combo_fingerprint(scheme, features["feature_names"], report.get("mining_end"))
+
+    eval_mode = report.get("eval_mode", "tuning")
+    blind_isolated = report.get("blind_test_isolated", True)
+    if not note:
+        note = f"研发验证态组合（覆盖至 {report.get('panel_end', '2024-12-31')}）· 盲测段安全锁定未曝光" if eval_mode == "tuning" else "终审盲测组合"
 
     metrics = {
         "oos_ic_blended": report.get("oos_ic_blended"),
@@ -136,6 +177,8 @@ def save_composite_factor(out_dir: str | Path, *, name: str | None = None,
         "scheme": scheme,
         "scheme_label": report.get("scheme_label") or scheme,
         "method": _METHOD_NOTES.get(scheme, ""),
+        "eval_mode": eval_mode,
+        "blind_test_isolated": blind_isolated,
         "mining_end": report.get("mining_end"),
         "time_isolation": report.get("time_isolation"),
         "panel_start": report.get("panel_start"),
@@ -148,19 +191,58 @@ def save_composite_factor(out_dir: str | Path, *, name: str | None = None,
         "report_path": str(out_dir / "report.json"),
         "repro_command": _repro_command(report, out_dir),
         "saved_from_train_id": out_dir.name,
-    }
-    features = {
-        "feature_names": report.get("feature_names") or [],
-        "dropped": report.get("dropped") or [],
+        "combo_fp": combo_fp,
     }
 
     with _connect() as con:
+        # ── 指纹去重：防止自动入库导致重复堆叠 ──
+        existing = con.execute(
+            "SELECT id, name, metrics_json FROM composite_factors WHERE combo_fp = ?",
+            (combo_fp,)
+        ).fetchone()
+
+        new_ic = abs(float((report.get("oos_ic_blended") or {}).get("ic_mean") or 0.0))
+
+        if existing:
+            existing_id = existing["id"]
+            existing_name = existing["name"]
+            existing_metrics = json.loads(existing["metrics_json"] or "{}")
+            existing_ic = abs(float((existing_metrics.get("oos_ic_blended") or {}).get("ic_mean") or 0.0))
+
+            if auto_ingest and new_ic <= existing_ic:
+                return {"ok": True, "id": existing_id, "name": existing_name, "skipped_reason": "duplicate_inferior"}
+
+            # 更新覆盖已有条目
+            con.execute(
+                """
+                UPDATE composite_factors
+                SET name = ?, scheme = ?, created_at = ?, train_id = ?, out_dir = ?,
+                    score_path = ?, provenance_json = ?, metrics_json = ?, features_json = ?, note = ?
+                WHERE id = ?
+                """,
+                (
+                    entry_name,
+                    scheme,
+                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    out_dir.name,
+                    str(out_dir),
+                    provenance["score_path"],
+                    json.dumps(provenance, ensure_ascii=False, indent=1),
+                    json.dumps(metrics, ensure_ascii=False, indent=1),
+                    json.dumps(features, ensure_ascii=False, indent=1),
+                    note,
+                    existing_id,
+                ),
+            )
+            return {"ok": True, "id": existing_id, "name": entry_name, "updated": True}
+
+        # 新增条目
         con.execute(
             """
-            INSERT OR REPLACE INTO composite_factors
+            INSERT INTO composite_factors
             (id, name, scheme, created_at, train_id, out_dir, score_path,
-             params_json, provenance_json, metrics_json, features_json, note)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             params_json, provenance_json, metrics_json, features_json, note, combo_fp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 cf_id,
@@ -175,6 +257,7 @@ def save_composite_factor(out_dir: str | Path, *, name: str | None = None,
                 json.dumps(metrics, ensure_ascii=False, indent=1),
                 json.dumps(features, ensure_ascii=False, indent=1),
                 note,
+                combo_fp,
             ),
         )
     return {"ok": True, "id": cf_id, "name": entry_name}
@@ -205,6 +288,7 @@ def list_composite_factors(limit: int = 50) -> list[dict[str, Any]]:
             "gate_passed": metrics.get("gate_passed"),
             "feature_count": len(features.get("feature_names") or []),
             "mining_end": provenance.get("mining_end"),
+            "eval_mode": provenance.get("eval_mode", "tuning"),
             "note": row["note"],
         })
     return out
