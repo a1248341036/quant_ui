@@ -197,11 +197,11 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
     },
     "delivery_policy": _default_delivery_policy(),
     # 提示词分阶段注入策略：
-    # - phase_mode="full" → 全量注入全部算子目录（默认，冷门算子带完整描述与签名，防算子盲区）；
-    # - phase_mode="auto" → 按 turn 比例切换 explore→deepen→deliver（极端节约 token 模式）。
+    # - phase_mode="auto" → 默认按 turn 比例自动切换 explore→deepen→deliver（节约非核心模块 token，但算子目录始终全量保留冷门算子）；
+    # - phase_mode="full" → 全量注入所有模块。
     # phase_ratio 三段比例默认均分 [1/3, 1/3, 1/3]。
     "prompt_policy": {
-        "phase_mode": "full",
+        "phase_mode": "auto",
         "phase_ratio": [1 / 3, 1 / 3, 1 / 3],
     },
 }
