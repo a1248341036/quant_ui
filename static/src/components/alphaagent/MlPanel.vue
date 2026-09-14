@@ -51,6 +51,7 @@
         <label v-if="ml.form.scheme === 'ml'" class="ml-check" title="LLM 语义研判：因子枚举后按数据面覆盖去冗余推荐训练子集（只出白名单、不给权重，最终有效特征仍由 max-corr 过滤收口）；训练后 LLM 解读 report 生成组合说明书（写 report.llm_summary）。推荐按候选池指纹锁定复用，池不变不重调 LLM；失败自动回退全量因子，不阻断训练。默认关闭。"><input type="checkbox" v-model="ml.form.llm_assist"> LLM 辅助（推荐 + 说明书）</label>
         <label v-if="ml.form.scheme === 'ml'" class="ml-check" title="同一段干净历史换两种折边界（整体平移 2/4 个月）各重训一遍，输出 OOS IC/ICIR/Sharpe/回撤 的路径分布——单条切法上的好成绩可能只是那条边界的运气。成本 ≈ 2 次完整训练。"><input type="checkbox" v-model="ml.form.multi_path"> 多路径对照</label>
         <span class="ml-gate-mode" title="因子池已是统一大库（不分技术/基本面）；engine_gate 档位自动跟随持有天数：≤7 天→技术档（周调仓·严门槛），>7 天→基本面档（月调仓·松门槛）。">gate 档位：{{ gateModeLabel }}（自动）</span>
+        <span class="ml-safe-badge" title="盲测物理隔离：当前处于研发验证态，数据严格物理截断至 2024-12-31，2025+ 盲测段安全锁定未加载，LLM 绝无法窥探盲测数据。">🛡️ 盲测隔离（≤2024-12-31）</span>
       </div>
       <!-- ── 训练因子自选（白名单；不选=全部） ── -->
       <div class="ml-factor-picker">
@@ -192,6 +193,7 @@
                         <span class="mlv-sub">组合方法：{{ ml.detail.report.scheme_label || 'ML 学习加权（Ridge+LGBM）' }}</span>
                         <span class="mlv-sub">{{ ml.detail.report.time_isolation }}</span>
                         <span class="mlv-sub">训练窗口终点（mining_end）: {{ ml.detail.report.mining_end || '—' }}</span>
+                        <span class="ml-safe-badge" v-if="ml.detail.report.blind_test_isolated" title="该运行产物处于研发验证态，数据严格截止 2024-12-31，盲测段安全锁定。">🛡️ 盲测隔离生效（数据至 {{ ml.detail.report.panel_end || '2024-12-31' }}）</span>
                         <span v-if="(ml.detail.report.gate||{}).passed === false" class="mlv-bad">
                           未过原因：{{ ((ml.detail.report.gate||{}).fail_reasons||[]).join('、') }}
                         </span>
@@ -553,7 +555,7 @@ export default {
   data() {
     return {
       ml: {
-        form: { scheme: 'ml', model: 'both', label_days: 5, train_months: 18, step_months: 6, max_corr: 0.6, isolation: 'holdout', no_candidate: false, no_gate: false, subset_curve: false, multi_path: false, llm_assist: false, include_factors: [] },
+        form: { eval_mode: 'tuning', scheme: 'ml', model: 'both', label_days: 5, train_months: 18, step_months: 6, max_corr: 0.6, isolation: 'holdout', no_candidate: false, no_gate: false, subset_curve: false, multi_path: false, llm_assist: false, include_factors: [] },
         factorPool: [],
         factorPoolLoading: false,
         list: [],
@@ -1295,4 +1297,5 @@ export default {
 .ml-llm-sec ul { margin: 0; padding-left: 16px; }
 .ml-llm-sec li { font-size: 12px; line-height: 1.7; color: var(--text, #e6ecf7); margin-bottom: 2px; }
 .ml-llm-sec ul.ml-llm-risk li { color: #e8c491; }
+.ml-safe-badge { align-self: center; color: #4fc3a1; font-size: 11px; background: rgb(79 195 161 / 0.12); border: 1px solid rgb(79 195 161 / 0.35); border-radius: 6px; padding: 3px 8px; font-weight: 500; }
 </style>

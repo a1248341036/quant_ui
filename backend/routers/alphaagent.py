@@ -718,6 +718,7 @@ class StackingTrainRequest(BaseModel):
     score_smooth: int = Field(default=0, ge=0, le=60)  # 组合分数 WMA 平滑窗；0=自动取 label_days
     multi_path: bool = Field(default=False)       # 多路径对照：折边界平移 2/4 个月重训，输出路径分布
     llm_assist: bool = Field(default=False)       # LLM 辅助：A) 语义推荐因子子集（锁定复用） C) 训练后组合说明书；失败自动回退
+    eval_mode: str = Field(default="tuning")      # tuning（默认，研发验证态，数据截止 2024-12-31，盲测安全锁定） | blind_test（终审盲测）
 
 
 @router.post("/stacking/train")
