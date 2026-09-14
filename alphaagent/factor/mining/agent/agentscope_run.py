@@ -1243,6 +1243,10 @@ async def run_factor_mining_agentscope(
         "usage": {**usage_total, "cache_hit_rate": _cache_hit_rate(usage_total)},
         "submitted_factors": submitted_factors,
         "submit_failures": submit_failures,
+        "unsubmitted_promising": [
+            {"factor_name": r.get("factor_name"), "expression": r.get("arguments_raw")}
+            for r in unsubmitted_promising_unique
+        ],
         "messages_snapshot": str(snapshot),
         "manifest": str(log_dir / "run_manifest.json"),
     }
@@ -1258,7 +1262,7 @@ async def run_factor_mining_agentscope(
         from alphaagent.factor.mining.run_metrics import generate_scorecard
         generate_scorecard(config.run_id, log_dir, summary_dict=summary)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("scorecard 生成异常: %s", exc)
+        log_step("scorecard", "error", error=str(exc)[:200], level=logging.ERROR)
 
     _emit("session_end", {"turn": outer_turn, "reason": end_reason})
     log_step(

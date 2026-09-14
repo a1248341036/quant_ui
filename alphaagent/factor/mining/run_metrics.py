@@ -123,9 +123,22 @@ def compute_run_metrics(run_id: str, run_dir: Path) -> dict:
 
             if name in ("evaluate_factor", "eval_on_train_set"):
                 n_eval += 1
-                expr = str(r.get("arguments_raw") or {}).strip()
-                if expr:
-                    unique_train_exprs.add(expr)
+                expr = ""
+                args_raw = r.get("arguments_raw")
+                if isinstance(args_raw, str):
+                    try:
+                        args_obj = json.loads(args_raw)
+                        expr = str(args_obj.get("multi_line_expr") or "")
+                    except Exception:
+                        expr = args_raw
+                elif isinstance(args_raw, dict):
+                    expr = str(args_raw.get("multi_line_expr") or "")
+                h = r.get("expression_sha256")
+                if not h and expr:
+                    from alphaagent.factor.mining.infra.audit import canonical_hash
+                    h = canonical_hash(expr)
+                if h:
+                    unique_train_exprs.add(h)
 
                 # prediction check
                 pc = res.get("prediction_check")
@@ -379,9 +392,11 @@ def generate_scorecard(
     ic_retentions = [float(r.get("ic_retention")) for r in matched if r.get("ic_retention") is not None]
     median_retention = round(float(sorted(ic_retentions)[len(ic_retentions) // 2]), 3) if ic_retentions else None
 
+    from alphaagent.core.timeutil import utc_now_iso
+
     scorecard: dict[str, Any] = {
         "run_id": run_id,
-        "created_at": datetime.utcnow().isoformat() + "Z",
+        "created_at": utc_now_iso(),
         "schema_version": 3,
         "summary": {
             "total_turns": s.get("turns_completed") or m.get("llm_calls") or 0,

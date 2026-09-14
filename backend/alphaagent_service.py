@@ -147,8 +147,8 @@ class AgentRun:
             try:
                 from alphaagent.factor.mining.run_metrics import generate_scorecard
                 generate_scorecard(self.run_id, self.log_dir)
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("run %s 终态兜底生成 scorecard.json 失败: %s", self.run_id, exc)
 
     def refresh(self) -> None:
         jsonl = self._jsonl()

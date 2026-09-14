@@ -263,13 +263,16 @@ if isinstance(abl_check, dict):
 ### 2. CLI：标准对照基准脚本 (`scripts/benchmark_agent_run.py`)
 提供一键回放与基准打分工具，支持：
 ```powershell
-# 对当前最新代码运行 5 轮标准基准测试（固定 Prompt、固定 5 轮预算）
-python scripts/benchmark_agent_run.py --rounds 5 --preset standard_tech
+# 1. 针对单 run 输出完整 3 维打分卡与拦截归因
+python scripts/benchmark_agent_run.py --run run_id
 
-# 针对两个已完成的 run_id 进行横向指标对比
+# 2. 针对两个已完成的 run_id 进行横向指标对比（改动前 vs 改动后）
 python scripts/benchmark_agent_run.py --compare run_id_A run_id_B
+
+# 3. 列出最近 N 个 run 概览排行
+python scripts/benchmark_agent_run.py --list 10
 ```
-输出清晰的 ASCII 对照表与差异雷达指标（吞吐提升、过线率变化、Gate 存活差异）。
+> 注：`--rounds --preset`（标准固定环境冷启动自动回放跑批）依赖后续冻结 Profile 与离线 Worker 队列对接，规划在下一期联动交付。输出清晰的 ASCII 对照表与差异雷达指标（吞吐提升、过线率变化、Gate 存活差异）。
 
 ### 3. 前端：Web 界面展示"产出漏斗与质量卡片"
 在 `AlphaAgent.vue` 的【研究】主页面右侧或运行明细中增加【Run 质量看板】：
