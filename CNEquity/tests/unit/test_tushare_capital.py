@@ -364,3 +364,91 @@ def test_step_fund_flow_falls_back_to_eastmoney_on_tushare_failure(
     result = cap.step_fund_flow(cfg, date(2024, 6, 28), "run-fb", {})
     assert em_calls == [date(2024, 6, 28)]
     assert result["rows_written"] == 1
+
+
+# ── dragon_tiger / block_trades: 空响应必须回落东财 ──────────────────────
+# 背景（2026-09-14 实测）：交易所当天的大宗交易数据 Tushare 次日才发布，东财当晚
+# 就有。若 allow_empty 保持默认 True，Tushare 的 0 行被当成正常空结果静默通过，
+# 水位不推进、东财兜底永不触发 → 数据集长期 STALE 而数据其实拿得到。
+
+
+def _block_trades_frame(day: date) -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "symbol": ["600519.SH"],
+            "trade_date": [day],
+            "price": [1.0],
+            "volume": [1.0],
+            "amount": [1.0],
+            "premium_ratio": [0.0],
+        }
+    )
+
+
+def _dragon_tiger_frame(day: date) -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "symbol": ["600519.SH"],
+            "trade_date": [day],
+            "reason": ["test"],
+            "buy_amount": [1.0],
+            "sell_amount": [0.0],
+            "net_amount": [1.0],
+        }
+    )
+
+
+def test_step_block_trades_tushare_primary_skips_eastmoney(monkeypatch, tmp_path):
+    from cnequity.config import Config
+    from cnequity.steps import capital as cap
+    from cnequity.storage.state import StateStore
+
+    cfg = Config(data_root=tmp_path / "data")
+    _seed_trading_calendar(cfg, date(2024, 6, 27), date(2024, 6, 28))
+    StateStore(cfg.meta_root).set_date("block_trades", date(2024, 6, 27))
+    em_calls: list[date] = []
+    ts_calls: list[date] = []
+    monkeypatch.setattr(cap, "_tushare_capital_ready", lambda config: True)
+    monkeypatch.setattr(
+        cap, "fetch_block_trades", lambda d, **kw: em_calls.append(d) or pl.DataFrame()
+    )
+    monkeypatch.setattr(
+        tc,
+        "fetch_block_trades_tushare",
+        lambda d, *, config: ts_calls.append(d) or _block_trades_frame(d),
+    )
+    cfg.staging_root.mkdir(parents=True)
+    result = cap.step_block_trades(cfg, date(2024, 6, 28), "run-bt-ts", {})
+    assert ts_calls == [date(2024, 6, 28)]
+    assert em_calls == []
+    assert result["rows_written"] == 1
+
+
+@pytest.mark.parametrize(
+    ("step_name", "dataset", "em_attr", "ts_attr", "frame_fn"),
+    [
+        ("block_trades", "block_trades", "fetch_block_trades",
+         "fetch_block_trades_tushare", _block_trades_frame),
+        ("dragon_tiger", "dragon_tiger", "fetch_dragon_tiger",
+         "fetch_dragon_tiger_tushare", _dragon_tiger_frame),
+    ],
+)
+def test_step_falls_back_to_eastmoney_when_tushare_day_is_empty(
+    monkeypatch, tmp_path, step_name, dataset, em_attr, ts_attr, frame_fn
+):
+    """Tushare 当天 0 行（尚未发布）→ 当故障上抛并回落东财，而非静默卡住水位。"""
+    from cnequity.config import Config
+    from cnequity.steps import capital as cap
+    from cnequity.storage.state import StateStore
+
+    cfg = Config(data_root=tmp_path / "data")
+    _seed_trading_calendar(cfg, date(2024, 6, 27), date(2024, 6, 28))
+    StateStore(cfg.meta_root).set_date(dataset, date(2024, 6, 27))
+    em_calls: list[date] = []
+    monkeypatch.setattr(cap, "_tushare_capital_ready", lambda config: True)
+    monkeypatch.setattr(tc, ts_attr, lambda d, *, config: pl.DataFrame())
+    monkeypatch.setattr(cap, em_attr, lambda d, **kw: em_calls.append(d) or frame_fn(d))
+    cfg.staging_root.mkdir(parents=True)
+    result = getattr(cap, f"step_{step_name}")(cfg, date(2024, 6, 28), "run-empty", {})
+    assert em_calls == [date(2024, 6, 28)]
+    assert result["rows_written"] == 1
