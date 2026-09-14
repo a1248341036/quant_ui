@@ -64,6 +64,16 @@
             🛡️ 盲测隔离（≤2024-12-31）
           </span>
 
+          <button
+            class="mlv-ghost"
+            type="button"
+            :disabled="ml.recommending"
+            title="以 Agent Tool 形式运行 mRMR 特征挑选算法，选出高质量且低相关的 Top-8 互补因子"
+            @click="recommendFactors"
+          >
+            {{ ml.recommending ? 'mRMR 选优中…' : '⚡ 推荐 Top-8 (Tool)' }}
+          </button>
+
           <div class="mode-toggle">
             <button :class="{ active: viewMode === 'timeline' }" @click="viewMode = 'timeline'">⚡ 流式时间线</button>
             <button :class="{ active: viewMode === 'analytics' }" @click="viewMode = 'analytics'">📊 深度归因看板</button>
@@ -144,6 +154,41 @@
                 <p>{{ ev.message }}</p>
               </div>
               <span class="ml-card-time">{{ ev.ts }}</span>
+            </div>
+
+            <!-- 3b. tool_call: 工具调用卡片 -->
+            <div v-else-if="ev.event === 'tool_call'" class="ml-stage-card" style="border-left: 3px solid #7dd3fc;">
+              <div class="ml-stage-icon" style="background: rgb(125 211 252 / 0.15); color: #7dd3fc;">⚙️</div>
+              <div class="ml-stage-content">
+                <strong>{{ ev.title || ev.name }}</strong>
+                <p>{{ ev.message }}</p>
+              </div>
+              <span class="ml-card-time">{{ ev.ts }}</span>
+            </div>
+
+            <!-- 3c. tool_result: 工具结果卡片 -->
+            <div v-else-if="ev.event === 'tool_result'" class="ml-card ml-screen-card" style="border-left: 3px solid #4fc3a1;">
+              <div class="ml-card-head">
+                <span class="ml-card-tag prod">TOOL 结果</span>
+                <strong>{{ ev.title }}</strong>
+                <span class="ml-card-time">{{ ev.ts }}</span>
+              </div>
+              <div class="ml-card-body">
+                <p class="ml-reco-rationale">{{ ev.summary || ev.error }}</p>
+                <div v-if="ev.recommended && ev.recommended.length" class="ml-factor-chips">
+                  <span
+                    v-for="name in ev.recommended"
+                    :key="name"
+                    class="ml-chip"
+                    @click.stop.prevent="toggleFactorCard(poolFactor(name), $event)"
+                  >
+                    {{ name }}
+                  </span>
+                </div>
+                <div v-if="ev.recommended && ev.recommended.length" class="mlv-sub" style="margin-top:6px; color:#4fc3a1">
+                  ✓ 已将上述 {{ ev.recommended.length }} 个因子填入当前训练勾选（窗口 {{ ev.window }}）
+                </div>
+              </div>
             </div>
 
             <!-- 4. ml_pool_screened: 因子语义研判卡片 -->
@@ -895,6 +940,14 @@ export default {
     async recommendFactors() {
       if (this.ml.recommending) return
       this.ml.recommending = true
+      this.viewMode = 'timeline'
+      this.appendEvent({
+        event: 'tool_call',
+        ts: new Date().toLocaleTimeString(),
+        name: 'recommend_mrmr_factors',
+        title: '调用 Tool: recommend_mrmr_factors(k=8)',
+        message: '正在使用 mRMR 贪心算法在统一因子库中计算 IC 与两两相关度，挑选互补因子...',
+      })
       try {
         const res = await api('/api/alphaagent/stacking/recommend', {
           method: 'POST',
@@ -908,8 +961,25 @@ export default {
         })
         const names = (res.ranking || []).map(r => r.name).filter(Boolean)
         if (names.length) this.ml.form.include_factors = names
+        this.appendEvent({
+          event: 'tool_result',
+          ts: new Date().toLocaleTimeString(),
+          name: 'recommend_mrmr_factors',
+          title: 'Tool: recommend_mrmr_factors 执行就绪',
+          summary: res.summary || `mRMR 算法已精选出 ${names.length} 个互补因子`,
+          recommended: names,
+          window: res.window || 'mining 窗口',
+          ranking: res.ranking || [],
+        })
       } catch (e) {
         this.ml.error = '推荐失败：' + (e.message || e)
+        this.appendEvent({
+          event: 'tool_result',
+          ts: new Date().toLocaleTimeString(),
+          name: 'recommend_mrmr_factors',
+          title: 'Tool: recommend_mrmr_factors 执行异常',
+          error: String(e.message || e),
+        })
       } finally {
         this.ml.recommending = false
       }

@@ -428,11 +428,90 @@ RECOMMEND_ROOT = ROOT / "artifacts" / "alphaagent" / "recommend"
 _recommend_busy = threading.Lock()
 
 
-def start_recommend(params: dict[str, Any]) -> dict[str, Any]:
-    """同步跑一次 mRMR 推荐：构建数据集（复用因子值磁盘缓存）→ recommend.json。
-
-    与训练互斥（panel 全量物化内存重）；训练中或已有推荐在跑时直接返回 error。
+def run_mrmr_recommendation(params: dict[str, Any]) -> dict[str, Any]:
+    """进程内快速计算 mRMR 因子推荐（Tool 执行核心）：
+    复用磁盘因子值缓存与当前已加载的 CNE 宽表，免去重新 fork 进程的巨大延迟。
     """
+    import pandas as pd
+    from alphaagent.data.adapters.cnequity import load_panel_from_cne
+    from alphaagent.factor.cache import FactorValueCache
+    from alphaagent.factor.stacking import build_stacking_dataset, collect_factor_entries
+    from alphaagent.factor.stacking.model import mrmr_rank_features
+    from alphaagent.factor.window_config import DEFAULT_TRAIN_END, DEFAULT_VAL_END
+
+    k = int(params.get("k") or 8)
+    k = max(1, min(k, 30))
+    max_corr = float(params.get("max_corr") or 0.6)
+    no_candidate = bool(params.get("no_candidate", False))
+    include = params.get("include_factors")
+
+    entries = collect_factor_entries(
+        include_candidate=not no_candidate, include_production=True
+    )
+    if include and isinstance(include, list):
+        wanted = {str(n).strip() for n in include if str(n).strip()}
+        if wanted:
+            entries = [e for e in entries if e.name in wanted]
+
+    if len(entries) < 2:
+        return {"ok": False, "error": "insufficient_factors", "message": "可用因子不足 2 个"}
+
+    mining_end = pd.Timestamp(DEFAULT_TRAIN_END)
+    panel_start = mining_end - pd.DateOffset(months=12) - pd.DateOffset(days=250)
+    end = pd.Timestamp(DEFAULT_VAL_END)
+    panel = load_panel_from_cne(start=panel_start, end=end, include_fundamentals=True)
+
+    cache = FactorValueCache()
+    dataset = build_stacking_dataset(
+        panel,
+        entries,
+        label_days=5,
+        mining_end=mining_end,
+        size_neutral=True,
+        max_corr=max_corr,
+        cache=cache,
+        decay_months=12,
+    )
+
+    if len(dataset.feature_names) < 2:
+        return {"ok": False, "error": "insufficient_valid_features", "message": "有效特征不足 2 个"}
+
+    dts = pd.DatetimeIndex(panel.index.get_level_values("datetime"))
+    rec_start = mining_end - pd.DateOffset(months=12)
+    ranking = mrmr_rank_features(
+        dataset.feature_matrix,
+        dataset.label,
+        pd.Series(dts),
+        dataset.feature_names,
+        window_start=rec_start,
+        window_end=mining_end,
+        k=k,
+        beta=0.7,
+    )
+
+    name_lib_map = {e.name: e.library for e in entries}
+    for item in ranking:
+        item["library"] = "正式" if "production" in name_lib_map.get(item["name"], "") else "候选"
+
+    return {
+        "ok": True,
+        "k": k,
+        "ranking": ranking,
+        "recommended_names": [r["name"] for r in ranking],
+        "window": f"[{rec_start.date()} ~ {mining_end.date()}]",
+        "summary": f"已通过 mRMR 选出 {len(ranking)} 个互补因子",
+    }
+
+
+def start_recommend(params: dict[str, Any]) -> dict[str, Any]:
+    """跑一次 mRMR 推荐：优先走进程内快速通道，失败回退子进程。"""
+    try:
+        res = run_mrmr_recommendation(params)
+        if res.get("ok"):
+            return res
+    except Exception as exc:
+        pass
+
     with _lock:
         if _current is not None and _current["proc"].poll() is None:
             return {"error": "training_already_running"}

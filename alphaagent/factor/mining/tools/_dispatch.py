@@ -22,6 +22,7 @@ from alphaagent.factor.mining.eval.prediction import (
 from ._schemas import (
     _EVAL_PARAMETERS,
     _PROFILE_EVAL_PARAMETERS,
+    _RECOMMEND_MRMR_FACTORS_PARAMETERS,
     _SCREEN_FACTORS_PARAMETERS,
     _SUBMIT_PARAMETERS,
     _VAL_PARAMETERS,
@@ -514,6 +515,20 @@ class _DispatchMixin:
                 }
             )
 
+        out.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": "recommend_mrmr_factors",
+                    "description": (
+                        "【mRMR 因子子集推荐】基于最大相关最小冗余算法，在统一因子库中挑选高质量且低相关冗余"
+                        "的互补因子子集，输出 Top-k 推荐清单、IC 表现与冗余度。"
+                    ),
+                    "parameters": _RECOMMEND_MRMR_FACTORS_PARAMETERS,
+                },
+            }
+        )
+
         return out
 
     def dispatch(self, name: str, arguments: Any) -> dict[str, Any]:
@@ -686,6 +701,9 @@ class _DispatchMixin:
 
         if name == "screen_factors":
             return self._dispatch_screen_factors(arguments)
+
+        if name == "recommend_mrmr_factors":
+            return self._dispatch_recommend_mrmr_factors(arguments)
 
         return {"ok": False, "error": f"unknown_tool: {name}", "error_type": "UnknownTool"}
 
@@ -882,4 +900,96 @@ class _DispatchMixin:
                 "rejected": dict(list(result.rejected.items())[:10]),
                 "regime_dist": result.regime_dist,
             },
+        }
+
+    def _dispatch_recommend_mrmr_factors(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        """基于 mRMR 算法从候选池中推荐高质量且低冗余的因子子集。"""
+        import pandas as pd
+        from alphaagent.factor.cache import FactorValueCache
+        from alphaagent.factor.stacking import build_stacking_dataset, collect_factor_entries
+        from alphaagent.factor.stacking.model import mrmr_rank_features
+        from alphaagent.factor.window_config import DEFAULT_TRAIN_END, DEFAULT_VAL_END
+
+        k = int(arguments.get("k") or 8)
+        k = max(1, min(k, 30))
+        max_corr = float(arguments.get("max_corr") or 0.6)
+        no_candidate = bool(arguments.get("no_candidate", False))
+        include = arguments.get("include_factors")
+
+        entries = collect_factor_entries(
+            include_candidate=not no_candidate, include_production=True
+        )
+        if include and isinstance(include, list):
+            wanted = {str(n).strip() for n in include if str(n).strip()}
+            if wanted:
+                entries = [e for e in entries if e.name in wanted]
+
+        if len(entries) < 2:
+            return {
+                "ok": False,
+                "error": "insufficient_factors",
+                "message": f"可用因子数量不足（当前仅 {len(entries)} 个，需至少 2 个）",
+            }
+
+        panel = None
+        if hasattr(self, "session_id") and self.session_id and hasattr(self, "service"):
+            try:
+                sess = self.service.sessions.get(self.session_id)
+                if sess and sess.panel is not None and len(sess.panel) > 0:
+                    panel = sess.panel
+            except Exception:
+                panel = None
+
+        mining_end = pd.Timestamp(DEFAULT_TRAIN_END)
+        if panel is None:
+            from alphaagent.data.adapters.cnequity import load_panel_from_cne
+            panel_start = mining_end - pd.DateOffset(months=12) - pd.DateOffset(days=250)
+            end = pd.Timestamp(DEFAULT_VAL_END)
+            panel = load_panel_from_cne(start=panel_start, end=end, include_fundamentals=True)
+
+        cache = FactorValueCache()
+        dataset = build_stacking_dataset(
+            panel,
+            entries,
+            label_days=5,
+            mining_end=mining_end,
+            size_neutral=True,
+            max_corr=max_corr,
+            cache=cache,
+            decay_months=12,
+        )
+
+        if len(dataset.feature_names) < 2:
+            return {
+                "ok": False,
+                "error": "insufficient_valid_features",
+                "message": f"去重后有效特征不足（仅 {len(dataset.feature_names)} 个）",
+            }
+
+        dts = pd.DatetimeIndex(panel.index.get_level_values("datetime"))
+        rec_start = mining_end - pd.DateOffset(months=12)
+        ranking = mrmr_rank_features(
+            dataset.feature_matrix,
+            dataset.label,
+            pd.Series(dts),
+            dataset.feature_names,
+            window_start=rec_start,
+            window_end=mining_end,
+            k=k,
+            beta=0.7,
+        )
+
+        name_lib_map = {e.name: e.library for e in entries}
+        for item in ranking:
+            item["library"] = "正式" if "production" in name_lib_map.get(item["name"], "") else "候选"
+
+        return {
+            "ok": True,
+            "tool": "recommend_mrmr_factors",
+            "k": k,
+            "n_recommended": len(ranking),
+            "ranking": ranking,
+            "recommended_names": [r["name"] for r in ranking],
+            "window": f"[{rec_start.date()} ~ {mining_end.date()}]",
+            "summary": f"已通过 mRMR 选出 {len(ranking)} 个互补因子（Top: {', '.join(r['name'] for r in ranking[:3])}）",
         }

@@ -201,4 +201,41 @@ _SCREEN_FACTORS_PARAMETERS: dict[str, Any] = {
 }
 
 
-TOOL_NAMES = ("evaluate_factor", "eval_on_train_set", "eval_on_val_set", "submit_factor", "screen_factors")
+_RECOMMEND_MRMR_FACTORS_PARAMETERS: dict[str, Any] = {
+    "type": "object",
+    "description": "基于 mRMR（最大相关最小冗余）算法从候选因子池挑选互补因子子集。",
+    "properties": {
+        "k": {
+            "type": "integer",
+            "default": 8,
+            "description": "期望推荐的互补因子数量（默认 8）。",
+        },
+        "max_corr": {
+            "type": "number",
+            "default": 0.6,
+            "description": "相关性冗余惩罚阈值（默认 0.6）。",
+        },
+        "no_candidate": {
+            "type": "boolean",
+            "default": False,
+            "description": "是否只从正式库挑选（默认 False，包含候选池）。",
+        },
+        "include_factors": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "限定在特定因子名列表中挑选（为空表示全库）。",
+        },
+    },
+    "required": [],
+    "additionalProperties": False,
+}
+
+
+TOOL_NAMES = (
+    "evaluate_factor",
+    "eval_on_train_set",
+    "eval_on_val_set",
+    "submit_factor",
+    "screen_factors",
+    "recommend_mrmr_factors",
+)
