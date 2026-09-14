@@ -12,19 +12,15 @@ from typing import Any
 
 from alphaagent.core.timeutil import utc_now_iso
 
+from core.numutil import to_float
+
 # ── 基础工具 ──
 
 _now = utc_now_iso
 
 
 def _safe_float(value: Any) -> float | None:
-    try:
-        v = float(value)
-        if v != v:  # NaN
-            return None
-        return v
-    except (TypeError, ValueError):
-        return None
+    return to_float(value, allow_inf=True)
 
 
 def _parse_args(raw: Any) -> dict[str, Any]:
@@ -107,9 +103,9 @@ def _rebuild_conclusion(name: str, result: dict[str, Any], metrics: dict[str, An
         return "eval_error", f"{name} 评估未产出：{snippet}"
     if name == "submit_factor":
         return "rejected", "提交未通过，避免在未改变机制或拒绝原因的情况下重复提交。"
-    ic = _safe_float(metrics.get("ic"))
-    icir = _safe_float(metrics.get("icir"))
-    coverage = _safe_float(metrics.get("factor_coverage", metrics.get("coverage")))
+    ic = to_float(metrics.get("ic"), allow_inf=True)
+    icir = to_float(metrics.get("icir"), allow_inf=True)
+    coverage = to_float(metrics.get("factor_coverage", metrics.get("coverage")), allow_inf=True)
     is_val = name == "eval_on_val_set" or result.get("split") == "val"
 
     ic_str = f"IC={ic:+.4f}" if ic is not None else "IC=N/A"

@@ -106,7 +106,7 @@ def operator_catalog_markdown(
     *,
     max_summary_chars: int = 60,
     include_basic: bool = False,
-    tier: str = "hybrid",
+    tier: str = "full",
     focused_prefixes: tuple[str, ...] = (),
     excluded_prefixes: tuple[str, ...] = (),
 ) -> str:
@@ -119,12 +119,8 @@ def operator_catalog_markdown(
 
     tier
     ----
-    - ``"hybrid"``（默认）：高频算子（历史挖掘实际使用，见 _FREQUENT_OPERATORS）
-      与交互契约算子渲染完整签名行；其余冷门算子按节压成纯名字清单（无签名、
-      无摘要）——数据依据：2773 条历史评估记录仅触及 28 个算子（2026-09 统计），
-      未用过的签名占目录篇幅 60%+。冷门算子传参出错时 dispatch 会在错误信息
-      中附真实签名（自愈路径）。
-    - ``"full"``：全部算子完整签名行（旧行为）。
+    - ``"full"``（默认）：全部算子带完整签名与机制说明，彻底消灭冷门算子认知盲区。
+    - ``"hybrid"``：高频算子与交互算子带签名，其余压缩为名字列表（极端节约 token 模式）。
 
     focused_prefixes：按数据面聚焦动态注入签名的族前缀（如选中筹码面 →
     ``("CHIP_",)``）——匹配的算子在 hybrid 档也渲染完整签名行。探索路径

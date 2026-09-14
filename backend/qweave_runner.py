@@ -14,7 +14,7 @@ import pandas as pd
 from core import trading_config
 from core.score_matrix import scores_to_engine_matrix
 from alphaagent.factor.window_config import BT_DEFAULT_START
-from scripts.qweave_research import ALPHA_SETS, build_alphas, load_panel, to_qweave_df
+from core.qweave import ALPHA_SETS, get_alpha_expressions, load_panel, to_qweave_df
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -195,7 +195,7 @@ def run(req: dict) -> dict:
     if hasattr(mod, "ALPHA_SET") and (declared is None or len(declared) == 0):
         alpha_set = req.get("alpha_set", "alpha158")
         limit = req.get("alpha_limit", 30)
-        alphas, names = build_alphas(alpha_set, limit)
+        alphas, names = get_alpha_expressions(alpha_set, limit)
     else:
         alphas = builder() if callable(builder) else declared
         if alphas is None:

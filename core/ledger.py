@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from .atomicio import atomic_write_text
 from . import sqldb as pg
 from .store import DATA_DIR
 
@@ -20,18 +21,11 @@ _migrated = False
 
 
 def _atomic_write_csv(target: Path, df: pd.DataFrame) -> None:
-    ACCOUNT_DIR.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(ACCOUNT_DIR), prefix=f".{target.name}.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
-            df.to_csv(f, index=False)
-        os.replace(tmp, target)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    """原子写入 CSV（newline='' 避免Windows双换行）。"""
+    import io
+    buf = io.StringIO()
+    df.to_csv(buf, index=False, lineterminator="\n")
+    atomic_write_text(target, buf.getvalue())
 
 
 def _load_transactions_csv() -> pd.DataFrame:

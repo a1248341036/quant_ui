@@ -46,71 +46,13 @@ sys.path.insert(0, str(PROJECT_ROOT))
 DEFAULT_RUN_ROOT = PROJECT_ROOT / "data" / "qweave"
 DEFAULT_OUT = PROJECT_ROOT / "data" / "stock" / "pred_demo.parquet"
 
-ALPHA_SETS = {
-    "alpha158": ("qlib_alpha158", ["close", "high", "low", "open", "volume", "vwap"]),
-    "alpha101": ("worldquant_alpha101", ["close", "high", "low", "open", "volume", "vwap"]),
-    "alpha191": ("gtja_alpha191", ["close", "high", "low", "open", "volume", "vwap"]),
-}
-
-
-def load_codes(codes_arg: str | None, max_codes: int | None,
-               asset_type: str = "stock") -> list[str] | None:
-    """--codes 逗号列表；缺省用 universe.csv；文件也没有就 None（全市场）。"""
-    if codes_arg:
-        return [str(c).strip().zfill(6) for c in codes_arg.split(",") if c.strip()]
-    uni = (PROJECT_ROOT / "data" / "etf" / "etf.csv" if asset_type == "etf"
-           else PROJECT_ROOT / "data" / "stock" / "universe.csv")
-    if uni.exists():
-        import pandas as pd
-        codes = pd.read_csv(uni, dtype={"code": str})["code"].astype(str).str.zfill(6).tolist()
-        codes = sorted(codes)
-        if max_codes:
-            codes = codes[:max_codes]
-        print(f"[qweave] {'ETF' if asset_type == 'etf' else '股票'}池: {uni.name} {len(codes)} 只")
-        return codes
-    return None
-
-
-def load_panel(start: str, end: str, codes: list[str] | None,
-               asset_type: str = "stock"):
-    """读取与回测面板同口径的股票/ETF前复权日线。"""
-    if asset_type == "etf":
-        from core.data import load_etf_panel
-        panel = load_etf_panel(start=start, end=end)
-        if codes:
-            panel = panel[panel["code"].astype(str).isin(codes)].copy()
-        return panel
-    from core.data import _load_panel_pg_parquet
-    t0 = time.time()
-    panel = _load_panel_pg_parquet(start=start, end=end, codes=codes)
-    print(f"[qweave] 面板加载 {time.time()-t0:.1f}s rows={len(panel)} "
-          f"codes={panel['code'].nunique()} range={panel['date'].min().date()}~{panel['date'].max().date()}")
-    return panel
-
-
-def to_qweave_df(panel) -> "pl.DataFrame":
-    import numpy as np
-    import polars as pl
-    panel = panel.copy()
-    panel["volume"] = panel["volume"].astype(float)
-    panel["amount"] = panel["amount"].astype(float)
-    # 口径：vwap = amount(元) / (volume(手) * 100)
-    panel["vwap"] = np.where(panel["volume"] > 0,
-                             panel["amount"] / (panel["volume"] * 100.0), np.nan)
-    return pl.from_pandas(panel).select(
-        ["date", "code", "open", "high", "low", "close",
-         "volume", "amount", "turnover", "vwap"])
-
-
-def build_alphas(alpha_set: str, alpha_limit: int | None):
-    import qweave
-    fn_name, _fields = ALPHA_SETS[alpha_set]
-    alphas = getattr(qweave, fn_name)({})
-    if alpha_limit:
-        alphas = alphas[:alpha_limit]
-    names = [a.output_name() for a in alphas]
-    print(f"[qweave] {alpha_set}: {len(alphas)} 个因子")
-    return alphas, names
+from core.qweave import (
+    ALPHA_SETS,
+    get_alpha_expressions as build_alphas,
+    load_codes,
+    load_panel,
+    to_qweave_df,
+)
 
 
 def run_evaluate(lab, names: list[str], horizons: list[int], quantiles: int,

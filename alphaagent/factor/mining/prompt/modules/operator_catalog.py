@@ -46,19 +46,10 @@ def render(ctx) -> str:  # noqa: ANN001
     elif getattr(ctx, "focus_facets", ()) and ctx.include_operator_catalog:
         focused_note = "本轮已按聚焦数据面隐藏未选面的专属算子族（其表达式会被工具层拦截）。"
 
-    # ── explore 阶段：不注入完整目录，只给一行提示 + 高频算子名 ──
-    if phase == "explore" and ctx.include_operator_catalog and not focused:
-        from alphaagent.dsl.catalog import build_operator_namespace, _FREQUENT_OPERATORS
-        ns = build_operator_namespace()
-        freq = [n for n in sorted(ns) if n in _FREQUENT_OPERATORS]
-        freq_text = " ".join(f"`{n}`" for n in freq)
-        return f"""### 可用算子（探索阶段精简）
-
-算子均为**大写**（如 `TS_MEAN`、`DELTA`）。高频算子（已附签名见报错自愈）：{freq_text}。
-冷门算子传参出错时错误信息会附真实签名，按提示修正即可。深耕阶段恢复完整目录。{focused_note}"""
-
+    # 全量注入算子目录（全阶段带完整签名与说明，彻底消灭冷门算子认知盲区）
     catalog = (
         operator_catalog_markdown(
+            tier="full",
             focused_prefixes=focused,
             excluded_prefixes=_excluded_prefixes(getattr(ctx, "focus_facets", ())),
         )
@@ -70,6 +61,6 @@ def render(ctx) -> str:  # noqa: ANN001
         explore_hint = " 探索阶段优先使用高频算子（已附完整签名），冷门算子签名见报错自愈。"
     return f"""### 可用算子
 
-算子均为**大写**（如 `TS_MEAN`、`DELTA`）。支持位置参数，也支持关键字参数语法 `name=value`（关键字参数必须在位置参数之后）。按机制分节列出；签名省略类型标注，**参数顺序即语义**（位置传参必须严格按签名顺序）；语义自明的基础四则/比较/初等函数折叠在末行。选算子前先想机制（见「A 股市场机制与 alpha 分布」），再按节定位。低频算子未附签名——传参报错时错误信息会附真实签名，按提示修正即可，不必回避。{focused_note}{explore_hint}
+算子均为**大写**（如 `TS_MEAN`、`DELTA`）。支持位置参数，也支持关键字参数语法 `name=value`（关键字参数必须在位置参数之后）。按机制分节列出；签名省略类型标注，**参数顺序即语义**（位置传参必须严格按签名顺序）；语义自明的基础四则/比较/初等函数折叠在末行。选算子前先想机制（见「A 股市场机制与 alpha 分布」），再按节定位。{focused_note}
 
 {catalog}"""

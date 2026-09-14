@@ -193,8 +193,8 @@ def test_explore_disables_deepen_only_modules():
     # tool_examples 探索版注入（ma20_dev / funda_roe_growth_neutral 是其示例锚点）
     assert "ma20_dev" in text
     assert "funda_roe_growth_neutral" in text
-    # operator_catalog 探索阶段精简：不再注入完整目录，改为高频算子名 + 提示语
-    assert "探索阶段精简" in text or "探索阶段优先使用高频算子" in text
+    # operator_catalog 全量注入：包含完整算子机制目录
+    assert "可用算子" in text
 
 
 def test_deepen_includes_deepen_modules():
@@ -228,9 +228,9 @@ def test_full_phase_equals_no_phase():
 
 
 def test_explore_fewer_chars_than_full():
-    """explore 阶段字符数应明显少于 full 阶段。"""
+    """explore 阶段字符数应少于 full 阶段（裁剪了变异轨和提交说明等）。"""
     text_explore, _ = _phase_report("explore")
     text_full, _ = _phase_report("full")
     assert len(text_explore) < len(text_full)
-    # 至少减少 10%
-    assert len(text_explore) < len(text_full) * 0.9
+    # 至少减少 5%
+    assert len(text_explore) < len(text_full) * 0.95

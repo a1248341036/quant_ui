@@ -10,9 +10,8 @@ from __future__ import annotations
 """
 
 import json
-import os
-import tempfile
 
+from .atomicio import atomic_write_text
 from .factor_registry import factor_options
 from .store import DATA_DIR, STOCK_DIR
 
@@ -22,21 +21,6 @@ COMPOSITES_FILE = STOCK_DIR / "composites.json"
 
 # 组合编辑器可用的因子选项（由引擎因子注册表派生，见 core.factor_registry）
 FACTOR_OPTIONS: list[dict] = factor_options()
-
-
-def _atomic_write(data: str) -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(DATA_DIR), prefix=".composites.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(data)
-        os.replace(tmp, COMPOSITES_FILE)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
 
 
 def load_composites() -> dict[str, dict]:
@@ -61,7 +45,7 @@ def save_composite(name: str, weights: dict, directions: dict | None = None) -> 
         "directions": {str(k): bool(v) for k, v in (directions or {}).items()},
     }
     composites[item["name"]] = item
-    _atomic_write(json.dumps(composites, ensure_ascii=False, indent=2))
+    atomic_write_text(COMPOSITES_FILE, json.dumps(composites, ensure_ascii=False, indent=2))
     return item
 
 
@@ -70,5 +54,5 @@ def delete_composite(name: str) -> bool:
     if name not in composites:
         return False
     del composites[name]
-    _atomic_write(json.dumps(composites, ensure_ascii=False, indent=2))
+    atomic_write_text(COMPOSITES_FILE, json.dumps(composites, ensure_ascii=False, indent=2))
     return True

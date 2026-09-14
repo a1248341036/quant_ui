@@ -212,16 +212,9 @@ def build_codes(universe: str, exclude_kechuang: bool,
     return sorted(codes)
 
 
-def _to_float(x) -> float | None:
-    if x is None:
-        return None
-    try:
-        f = float(x)
-        if np.isnan(f) or np.isinf(f):
-            return None
-        return f
-    except (TypeError, ValueError):
-        return None
+from core.numutil import to_float
+
+_to_float = to_float
 
 
 def series_to_points(s: pd.Series) -> list[dict]:

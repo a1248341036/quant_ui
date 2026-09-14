@@ -629,12 +629,16 @@ def step_dragon_tiger(config: Config, trade_date: date, run_id: str, context: di
             source="tushare",
             floor=BACKFILL_START,
         )
+    # allow_empty=False：Tushare 空响应按故障上抛，由 _run_capital_step 回落东财。
+    # 默认的 allow_empty=True 会把"源当天还没发布"当成正常空结果——水位不推进，
+    # 东财兜底永不触发（2026-09-14 block_trades 实测踩到）。
     return _run_capital_step(
         config,
         trade_date,
         run_id,
         "dragon_tiger",
         fetch_dragon_tiger,
+        allow_empty=False,
         ts_fetch_fn=fetch_dragon_tiger_tushare,
     )
 
@@ -663,5 +667,6 @@ def step_block_trades(config: Config, trade_date: date, run_id: str, context: di
         run_id,
         "block_trades",
         fetch_block_trades,
+        allow_empty=False,
         ts_fetch_fn=fetch_block_trades_tushare,
     )

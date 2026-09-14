@@ -810,6 +810,11 @@ _SPECS = [
         tier="L8",
         partition_col="event_date",
         partition_granularity="year",
+        # 事件稀疏：有事件的交易日之间常隔 2-4 天（2026-09 实测 09-03/04、09-08、
+        # 09-10/11 有数据，其余为空），而 run_incremental_fetched 对 0 行刻意不推进
+        # 水位（避免把"源还没发布"误当无数据）。容差 1 天会让每个无事件日都挂
+        # STALE（2026-09-14 实测：东财/巨潮双源确认当天 0 条），放宽到 7 天只报真断供。
+        max_staleness_days=7,
         description="监管事件",
     ),
     # derived — ``layer`` is where the parquet lives, ``tier`` what the data is
