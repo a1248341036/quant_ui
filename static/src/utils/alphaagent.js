@@ -324,6 +324,19 @@ function thinkingMessage(key, kind, label, text) {
   }
 }
 
+/** ML 组合（stacking）事件 → 一句话文案（防御性：后端未来若走 SSE 发射 ml_* 事件时复用） */
+export function mlEventText(event) {
+  const name = String(event.event || '').replace(/^ml_/, '')
+  const msg = event.message || event.content || ''
+  const detail = []
+  if (event.n_recommended != null) detail.push(`推荐 ${event.n_recommended} 个`)
+  if (event.n_hit != null) detail.push(`命中 ${event.n_hit}`)
+  if (event.reused) detail.push('复用锁定推荐')
+  if (event.status) detail.push(event.status)
+  const suffix = detail.length ? '（' + detail.join(' · ') + '）' : ''
+  return 'ML 组合 · ' + name + (msg ? '：' + msg : '') + suffix
+}
+
 // 事件流 → 会话时间线消息（纯函数；跳过心跳/usage 等内部事件）
 export function buildTimeline(events) {
   const out = []
@@ -386,6 +399,9 @@ export function buildTimeline(events) {
         reasons: Array.isArray(event.reasons) ? event.reasons : [],
         changes: Array.isArray(event.required_changes) ? event.required_changes : [],
       })
+    } else if (event.event && event.event.startsWith('ml_')) {
+      // ML 组合（stacking）事件：默认展示为系统消息，语义来自 event.message / content
+      out.push({ key, kind: 'system', text: mlEventText(event) })
     }
   }
   return out
