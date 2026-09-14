@@ -17,7 +17,10 @@ from core.numutil import to_float
 # ── 基础工具 ──
 
 _now = utc_now_iso
-_safe_float = to_float
+
+
+def _safe_float(value: Any) -> float | None:
+    return to_float(value, allow_inf=True)
 
 
 def _parse_args(raw: Any) -> dict[str, Any]:

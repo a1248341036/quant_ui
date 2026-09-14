@@ -71,4 +71,6 @@ def _apv_gate(
 
 from core.numutil import to_float
 
-_safe_float = to_float
+
+def _safe_float(value: Any) -> float | None:
+    return to_float(value, allow_inf=True)
