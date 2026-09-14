@@ -56,8 +56,10 @@ def start_training(params: dict[str, Any]) -> dict[str, Any]:
         out_dir = STACKING_ROOT / train_id
         log_path = _progress_log(train_id)
 
+        eval_mode = str(params.get("eval_mode") or "tuning")
         command = [
             str(PYTHON_EXECUTABLE), str(ROOT / "scripts" / "train_ml_composite.py"),
+            "--eval-mode", eval_mode,
             "--modes", *modes,
             "--scheme", scheme,
             "--model", str(params.get("model") or "both"),

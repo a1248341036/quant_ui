@@ -98,6 +98,8 @@ def _build_prompt_a(entries: list[FactorEntry], *, max_cap: int = 40) -> str:
 def _build_report_view(report: dict) -> str:
     """把 report.json 压缩成 LLM 可读的视图（不传全量 report）。"""
     view: dict[str, Any] = {
+        "eval_mode": report.get("eval_mode", "tuning"),
+        "blind_test_isolated": report.get("blind_test_isolated", True),
         "folds": report.get("folds"),
         "scheme": report.get("scheme"),
         "scheme_label": report.get("scheme_label"),
@@ -260,6 +262,11 @@ def llm_summarize_report(report: dict) -> dict | None:
       {"summary": "...", "strengths": [...], "risks": [...], "suggestions": [...]}
     失败返回 None。
     """
+    # ── 盲测保护绝对拦截：终审盲测模式禁止调用 LLM 解读 ──
+    if report.get("eval_mode") == "blind_test" or report.get("blind_test_isolated") is False:
+        print("[safety-intercept] 拦截：报告包含 blind_test 盲测段数据，绝对禁止调用 LLM 进行解读，防止盲测数据泄漏。")
+        return None
+
     report_view = _build_report_view(report)
     result = chat_json(
         system=_SYSTEM_C,

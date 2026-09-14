@@ -130,6 +130,9 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--isolation", default="strict", choices=["strict", "holdout"],
                     help="strict：walk-forward 仅用挖掘期后干净段（fold 少但指标可信）；"
                          "holdout：全历史训练、挖掘期后干净段整体作留出测试（推荐）")
+    ap.add_argument("--eval-mode", default="tuning", choices=["tuning", "blind_test"],
+                    help="评估模式：tuning=研发验证模式（默认，右端严格物理截断至 val_end 2024-12-31，2025+盲测段完全不加载）；"
+                         "blind_test=终审盲测模式（仅用于定稿后一次性离线评估，严禁开启 --llm-assist）")
     ap.add_argument("--pred-out", default=None, help="pred 分数输出路径（默认 data/stock/pred_demo.parquet）")
     ap.add_argument("--llm-assist", action="store_true",
                     help="LLM 辅助：A) 枚举后语义研判推荐因子子集（白名单，不给权重）；"
@@ -141,6 +144,13 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = _parse_args()
+
+    # ── 盲测保护第一道防线：盲测模式绝对禁止 LLM 介入，防止盲测段数据被 LLM 窥探 ──
+    if args.eval_mode == "blind_test" and args.llm_assist:
+        print("[safety-violation] 安全拦截：--eval-mode blind_test 下绝对禁止开启 --llm-assist！"
+              "盲测数据必须作为诚实样本外严格保留，禁止 LLM 窥探或回流调优。")
+        sys.exit(1)
+
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_dir = Path(args.out_dir) if args.out_dir else ROOT / "artifacts" / "alphaagent" / "stacking" / run_id
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -254,17 +264,39 @@ def main() -> None:
     if mining_end.tzinfo is not None:
         mining_end = mining_end.tz_localize(None)
 
-    # ── 数据可用右端兜底（统一配置中心）──────────────────────────────
-    # mining_end 与 end 均不得超过数据源实际最新交易日，否则组合训练会静默
-    # 覆盖不存在的数据（历史教训：硬编码日期超过数据截至日）。动态解析
-    # resolve_test_end() = 数据源最新交易日，作为右端硬上限。
-    from alphaagent.factor.window_config import resolve_test_end
+    # ── 数据可用右端与盲测物理隔离（统一配置中心）──────────────────────────────
+    from alphaagent.factor.window_config import (
+        DEFAULT_TRAIN_END,
+        DEFAULT_VAL_END,
+        resolve_test_end,
+    )
 
-    data_latest = pd.Timestamp(resolve_test_end())
-    end = pd.Timestamp(args.end) if args.end else data_latest
-    if end > data_latest:
-        print(f"[warn] --end={end.date()} 超过数据源最新交易日 {data_latest.date()}，收敛到数据右端")
-        end = data_latest
+    if args.eval_mode == "tuning":
+        # ── 盲测保护核心防线：研发验证模式下，数据右端绝对物理封顶在 DEFAULT_VAL_END（2024-12-31）
+        # 2025-01-01 后的行情/标签/因子值在此处被物理截断，数据根本不进内存，LLM 物理上 0% 接触盲测数据
+        val_end_limit = pd.Timestamp(DEFAULT_VAL_END)
+        end = pd.Timestamp(args.end) if args.end else val_end_limit
+        if end > val_end_limit:
+            print(f"[safety] tuning 模式下 --end={end.date()} 超过验证段终点 {val_end_limit.date()}，物理截断至 {val_end_limit.date()}")
+            end = val_end_limit
+
+        # tuning 模式下，若 mining_end 为 auto，则对齐到 DEFAULT_TRAIN_END（2022-12-31），
+        # 留出 2023-01-01 ~ 2024-12-31（整整 24 个月的验证段）作为组合的 OOS 检验与 gate 回测，
+        # 保证组合评估与 LLM 说明书完全闭环在 2024 年底前，绝不窥探 2025+ 盲测段。
+        if args.mining_end == "auto":
+            mining_end = pd.Timestamp(DEFAULT_TRAIN_END)
+            print(f"[safety] tuning 模式时间隔离：mining_end 对齐至 train 终点 {mining_end.date()}，留出 2023~2024 作为安全 OOS 验证段")
+
+        print(f"[safety] 盲测安全隔离生效：eval_mode=tuning · 数据右端={end.date()} · 2025+ 盲测段物理隔离未加载")
+    else:
+        # blind_test 终审盲测模式：仅定稿后离线跑，且前面已拦截严禁开启 --llm-assist
+        data_latest = pd.Timestamp(resolve_test_end())
+        end = pd.Timestamp(args.end) if args.end else data_latest
+        if end > data_latest:
+            print(f"[warn] --end={end.date()} 超过数据源最新交易日 {data_latest.date()}，收敛到数据右端")
+            end = data_latest
+        print(f"[safety] 终审盲测模式：eval_mode=blind_test · 数据右端={end.date()} · 严禁 LLM 调优回流")
+
     if mining_end > end:
         print(f"[warn] mining_end={mining_end.date()} 超过数据右端 {end.date()}，收敛到数据右端")
         mining_end = end
@@ -712,6 +744,8 @@ def main() -> None:
 
     report = {
         "run_id": run_id,
+        "eval_mode": args.eval_mode,
+        "blind_test_isolated": args.eval_mode == "tuning",
         "mining_end": str(mining_end.date()),
         "time_isolation": time_isolation,
         "panel_start": str(panel_start.date()),
