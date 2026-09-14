@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from .atomicio import atomic_write_text
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = Path(os.getenv("QUANT_UI_DATA_DIR", str(PROJECT_ROOT / "data"))).expanduser()
@@ -78,21 +80,6 @@ def ensure_dir() -> None:
     DB_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def _atomic_write_text(target: Path, text: str) -> None:
-    ensure_dir()
-    fd, tmp = tempfile.mkstemp(dir=str(DATA_DIR), prefix=f".{target.name}.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(text)
-        os.replace(tmp, target)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-
-
 def save_panel(panel: pd.DataFrame) -> None:
     ensure_dir()
     fd, tmp = tempfile.mkstemp(dir=str(DATA_DIR), prefix=".panel.", suffix=".parquet.tmp")
@@ -135,7 +122,7 @@ def save_meta(extra: dict | None = None) -> None:
     meta = {"last_update": datetime.now().isoformat(timespec="seconds")}
     if extra:
         meta.update(extra)
-    _atomic_write_text(META_FILE, json.dumps(meta, ensure_ascii=False, indent=2))
+    atomic_write_text(META_FILE, json.dumps(meta, ensure_ascii=False, indent=2))
 
 
 def load_meta() -> dict:

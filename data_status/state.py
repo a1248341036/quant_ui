@@ -2,26 +2,15 @@
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 from typing import Any
+
+from core.atomicio import atomic_write_text
 
 from .config import STATE_FILE, TASKS_FILE
 
 
-def _atomic_write(path, data: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2, default=str)
-        os.replace(tmp, path)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+def _atomic_write_json(path, data: Any) -> None:
+    atomic_write_text(path, json.dumps(data, ensure_ascii=False, indent=2, default=str))
 
 
 def _atomic_read(path, default):
@@ -38,7 +27,7 @@ def load_state() -> dict:
 
 
 def save_state(state: dict) -> None:
-    _atomic_write(STATE_FILE, state)
+    _atomic_write_json(STATE_FILE, state)
 
 
 def load_tasks() -> list[dict]:
@@ -46,4 +35,4 @@ def load_tasks() -> list[dict]:
 
 
 def save_tasks(tasks: list[dict]) -> None:
-    _atomic_write(TASKS_FILE, tasks)
+    _atomic_write_json(TASKS_FILE, tasks)
