@@ -11,7 +11,7 @@ from .constants import APV_TAU_C_DEFAULT, APV_TAU_V_DEFAULT, EQ7_KAPPA_DEFAULT
 
 def _parent_bucket(parent_ic: Any) -> str:
     """父本质量桶：|IC|<0.015 → low；[0.015, 0.025) → medium；≥0.025 → high。"""
-    ic = _safe_float(parent_ic)
+    ic = to_float(parent_ic, allow_inf=True)
     if ic is None:
         return "low"
     a = abs(ic)
@@ -35,7 +35,7 @@ def _eq7_confidence(residuals: list[float], *, kappa: float = EQ7_KAPPA_DEFAULT)
     n = len(residuals)
     if n == 0:
         return 0.0
-    vals = [_safe_float(r) for r in residuals]
+    vals = [to_float(r, allow_inf=True) for r in residuals]
     vals = [v for v in vals if v is not None]
     n = len(vals)
     if n == 0:
