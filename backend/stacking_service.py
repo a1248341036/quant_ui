@@ -214,9 +214,18 @@ def list_trainings(limit: int = 30) -> list[dict[str, Any]]:
                 except (json.JSONDecodeError, OSError):
                     pass
             out.append(item)
-        # running 状态但目录尚未创建（panel 加载阶段）也补一条
-        if running_id and not any(x["train_id"] == running_id for x in out):
-            out.insert(0, {"train_id": running_id, "status": "running"})
+
+        # ── 运行中任务永久置顶在第 1 位，确保用户在任何时候都能一眼看到 ──
+        if running_id:
+            idx = next((i for i, x in enumerate(out) if x["train_id"] == running_id), None)
+            if idx is not None:
+                running_item = out.pop(idx)
+            else:
+                running_item = {"train_id": running_id, "status": "running", "params": cur.get("params")}
+            if not running_item.get("params") and cur.get("params"):
+                running_item["params"] = cur.get("params")
+            running_item["status"] = "running"
+            out.insert(0, running_item)
     return out[: max(1, limit)]
 
 
