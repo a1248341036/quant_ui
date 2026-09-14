@@ -1086,12 +1086,41 @@ def evaluate_single_factor(
 ) -> dict[str, Any]:
     """独立评估一个因子表达式。
 
-    单次请求使用一次性会话：panel 用后即释放（不缓存），避免多份全量
-    panel 常驻内存。批量挖掘走子进程内复用会话，不受影响。
-
-    include_fundamentals 参数已废弃（保留兼容）：数据源插件化后基本面
-    与其他辅助插件地位一致，panel 永远全插件加载。
+    优先通过 WorkerPoolClient 将任务派发到后台算力工作池子进程中执行，
+    避免主 Web 服务进程发生重度 Pandas/Numpy GIL 阻塞或内存争用。
+    如果工作池未启动或派发异常，自动优雅回落到本地一次性会话评估。
     """
+    # 构造 session_key 参数哈希与 spec
+    panel_spec = {
+        "panel_path": DEFAULT_PANEL,
+        "train_start": train_start,
+        "train_end": train_end,
+        "val_start": val_start,
+        "val_end": val_end,
+        "label_col": label_col,
+        "include_fundamentals": include_fundamentals,
+    }
+    session_key = hashlib.sha256(json.dumps(panel_spec, sort_keys=True).encode()).hexdigest()[:16]
+
+    try:
+        from alphaagent.compute import WorkerPoolClient, get_global_worker_pool
+        pool = get_global_worker_pool()
+        if pool.is_running:
+            client = WorkerPoolClient(pool)
+            return client.evaluate_factor(
+                session_key=session_key,
+                panel_spec=panel_spec,
+                multi_line_expr=multi_line_expr,
+                factor_name=factor_name,
+                profile_id=profile_id,
+                label_quantile_n=10,
+                include_charts=True,
+                include_detail_tables=False,
+                priority=1,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("WorkerPoolClient 评估失败，回落到本地评估: %s", exc)
+
     from alphaagent.factor.mining.schemas import (
         EvalProfileRequest,
         SessionCreateRequest,
@@ -1137,9 +1166,42 @@ def evaluate_multi_profile(
 ) -> dict[str, Any]:
     """一次评估多个 profile（train_screen + validation + size_neutral_validation）。
 
-    单次请求使用一次性会话：panel 用后即释放（不缓存）。
-    include_fundamentals 参数已废弃（保留兼容），见 evaluate_single_factor。
+    优先派发到 WorkerPool 计算，失败回落本地评估。
     """
+    profiles = ("train_screen", "validation", "size_neutral_validation")
+    panel_spec = {
+        "panel_path": DEFAULT_PANEL,
+        "train_start": train_start,
+        "train_end": train_end,
+        "val_start": val_start,
+        "val_end": val_end,
+        "label_col": label_col,
+        "include_fundamentals": include_fundamentals,
+    }
+    session_key = hashlib.sha256(json.dumps(panel_spec, sort_keys=True).encode()).hexdigest()[:16]
+
+    try:
+        from alphaagent.compute import WorkerPoolClient, get_global_worker_pool
+        pool = get_global_worker_pool()
+        if pool.is_running:
+            client = WorkerPoolClient(pool)
+            res = {}
+            for pid in profiles:
+                res[pid] = client.evaluate_factor(
+                    session_key=session_key,
+                    panel_spec=panel_spec,
+                    multi_line_expr=multi_line_expr,
+                    factor_name=factor_name,
+                    profile_id=pid,
+                    label_quantile_n=10,
+                    include_charts=True,
+                    include_detail_tables=False,
+                    priority=1,
+                )
+            return res
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("WorkerPoolClient 批量评估失败，回落到本地评估: %s", exc)
+
     from alphaagent.factor.mining.schemas import (
         EvalProfileRequest,
         SessionCreateRequest,
@@ -1161,7 +1223,7 @@ def evaluate_multi_profile(
 
     results: dict[str, Any] = {}
     try:
-        for profile_id in ("train_screen", "validation", "size_neutral_validation"):
+        for profile_id in profiles:
             eval_req = EvalProfileRequest(
                 session_id=session_id,
                 profile_id=profile_id,
