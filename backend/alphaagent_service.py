@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -59,8 +60,9 @@ _factor_repository: FactorRepository | None = None
 _service_lock = threading.RLock()
 
 
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+from alphaagent.core.timeutil import utc_now_iso
+
+_now = utc_now_iso
 
 
 def _pid_is_alive(pid: int | None) -> bool | None:
@@ -1134,6 +1136,7 @@ def evaluate_single_factor(
         train_end=train_end,
         val_start=val_start,
         val_end=val_end,
+        test_end=val_end,
         label_col=label_col,
         include_fundamentals=include_fundamentals,
     )
@@ -1215,6 +1218,7 @@ def evaluate_multi_profile(
         train_end=train_end,
         val_start=val_start,
         val_end=val_end,
+        test_end=val_end,
         label_col=label_col,
         include_fundamentals=include_fundamentals,
     )
@@ -1416,10 +1420,10 @@ def _classify_facets(entry: dict[str, Any], expr_text: str | None) -> dict[str, 
     老条目缺 facets 时按表达式现算兜底；candidate 与 production 此前各写一遍
     （expr_facets/classify_family_ex 散落 6 处），统一在此。
     """
+    from alphaagent.factor.mining.memory.expressions import classify_family_ex, expr_facets
+
     facets = entry.get("facets") if isinstance(entry.get("facets"), list) else None
     if not facets:
-        from alphaagent.factor.mining.memory.expressions import classify_family_ex, expr_facets
-
         facets = sorted(expr_facets(str(entry.get("name") or "") + " " + str(expr_text or "")))
     is_fusion = entry.get("is_fusion") if isinstance(entry.get("is_fusion"), bool) else len(facets) >= 2
     family = str(entry.get("family") or "") or (

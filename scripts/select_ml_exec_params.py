@@ -95,7 +95,8 @@ def main() -> None:
     print(f"panel: {len(panel)} 行 × {len(panel.columns)} 列 [{panel_start.date()} ~ {pd.Timestamp(dts.max()).date()}]")
 
     print("构建 stacking 数据集（物化 → 冗余过滤 → 组装）…")
-    cache = FactorValueCache()
+    from alphaagent.factor.cache import get_default_cache
+    cache = get_default_cache()
     dataset = build_stacking_dataset(
         panel, entries, label_days=args.label_days, mining_end=mining_end,
         size_neutral=True, max_corr=args.max_corr, cache=cache,

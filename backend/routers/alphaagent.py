@@ -503,13 +503,14 @@ def blind_test_reports(limit: int = 6) -> dict[str, Any]:
             report_path = d / "report.json"
             item: dict[str, Any] = {"run_ts": d.name, "report_path": str(report_path)}
             if report_path.is_file():
-                try:
-                    report = _json.loads(report_path.read_text(encoding="utf-8"))
+                from backend.report_io import read_report_json
+                report = read_report_json(report_path)
+                if report is not None:
                     item["report"] = report
                     item["status"] = "completed"
-                except (OSError, ValueError) as exc:
+                else:
                     item["status"] = "unreadable"
-                    item["error"] = str(exc)
+                    item["error"] = "json decode error or unreadable"
             else:
                 item["status"] = "missing"
             reports.append(item)
@@ -728,6 +729,8 @@ class StackingTrainRequest(BaseModel):
     score_smooth: int = Field(default=0, ge=0, le=60)  # 组合分数 WMA 平滑窗；0=自动取 label_days
     multi_path: bool = Field(default=False)       # 多路径对照：折边界平移 2/4 个月重训，输出路径分布
     llm_assist: bool = Field(default=False)       # LLM 辅助：A) 语义推荐因子子集（锁定复用） C) 训练后组合说明书；失败自动回退
+    guidance: str | None = None                   # 探索引导词：传入时激活动态探索模式（绕过全局锁，生成新组合并独立落盘）
+    auto_ingest: str = Field(default="gate_pass") # gate_pass (默认门禁通过自动入库) | always | none
     eval_mode: str = Field(default="tuning")      # tuning（默认，研发验证态，数据截止 2024-12-31，盲测安全锁定） | blind_test（终审盲测）
 
 

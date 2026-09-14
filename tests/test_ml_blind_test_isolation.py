@@ -234,4 +234,104 @@ def test_recommend_mrmr_factors_tool_registration():
     assert "no_candidate" in props
 
 
+def test_repro_command_dynamic_modes(tmp_path):
+    """P0 门禁：断言 _repro_command 依据 params/report 正确保留多模式（包括 fundamental），而非硬编码 technical。"""
+    from backend.composite_factor_service import _repro_command
+
+    out_dir = tmp_path / "test_run_repro"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    params_file = out_dir / "params.json"
+    params_file.write_text(json.dumps({"modes": ["technical", "fundamental"]}), encoding="utf-8")
+
+    report = {
+        "scheme": "ml",
+        "label_days": 10,
+        "mining_end": "2022-12-31",
+        "include_factors": ["f1", "f2"],
+    }
+    cmd = _repro_command(report, out_dir)
+    assert "--modes technical fundamental" in cmd
+    assert "--include-factors f1 f2" in cmd
+    assert "--isolation holdout" in cmd
+
+
+def test_save_composite_factor_auto_ingest_and_dedup(tmp_path, monkeypatch):
+    """P1 门禁：断言 save_composite_factor 支持 auto_ingest、eval_mode 标注与基于指纹的防重复入库。"""
+    from backend import composite_factor_service
+
+    fake_db = tmp_path / "composite_factors.db"
+    monkeypatch.setattr(composite_factor_service, "DB_PATH", fake_db)
+
+    out_dir = tmp_path / "run_combo_1"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    report_file = out_dir / "report.json"
+    report_file.write_text(
+        json.dumps({
+            "run_id": "run_combo_1",
+            "scheme": "ml",
+            "scheme_label": "ML 学习加权",
+            "eval_mode": "tuning",
+            "blind_test_isolated": True,
+            "mining_end": "2022-12-31",
+            "panel_end": "2024-12-31",
+            "feature_names": ["f1", "f2"],
+            "gate": {"passed": True, "metrics": {"excess_annual": 0.12}},
+            "oos_ic_blended": {"ic_mean": 0.035, "ic_ir": 0.38},
+        }),
+        encoding="utf-8",
+    )
+
+    # 首次自动入库：新增
+    res1 = composite_factor_service.save_composite_factor(out_dir, name="组合测试_v1", auto_ingest=True)
+    assert res1.get("ok") is True
+    assert res1.get("id") is not None
+
+    items = composite_factor_service.list_composite_factors()
+    assert len(items) == 1
+    assert items[0]["name"] == "组合测试_v1"
+    assert items[0]["eval_mode"] == "tuning"
+
+    # 第二次相同搭配入库（IC 0.030 弱于已有 0.035）：被跳过
+    out_dir_inferior = tmp_path / "run_combo_2"
+    out_dir_inferior.mkdir(parents=True, exist_ok=True)
+    (out_dir_inferior / "report.json").write_text(
+        json.dumps({
+            "run_id": "run_combo_2",
+            "scheme": "ml",
+            "scheme_label": "ML 学习加权",
+            "eval_mode": "tuning",
+            "mining_end": "2022-12-31",
+            "feature_names": ["f1", "f2"],
+            "oos_ic_blended": {"ic_mean": 0.030},
+        }),
+        encoding="utf-8",
+    )
+    res2 = composite_factor_service.save_composite_factor(out_dir_inferior, name="组合测试_v2", auto_ingest=True)
+    assert res2.get("skipped_reason") == "duplicate_inferior"
+    assert len(composite_factor_service.list_composite_factors()) == 1
+
+    # 第三次相同搭配入库（IC 0.045 优于已有 0.035）：更新覆盖，记录总数仍为 1
+    out_dir_superior = tmp_path / "run_combo_3"
+    out_dir_superior.mkdir(parents=True, exist_ok=True)
+    (out_dir_superior / "report.json").write_text(
+        json.dumps({
+            "run_id": "run_combo_3",
+            "scheme": "ml",
+            "scheme_label": "ML 学习加权",
+            "eval_mode": "tuning",
+            "mining_end": "2022-12-31",
+            "feature_names": ["f1", "f2"],
+            "oos_ic_blended": {"ic_mean": 0.045},
+        }),
+        encoding="utf-8",
+    )
+    res3 = composite_factor_service.save_composite_factor(out_dir_superior, name="组合测试_v3_优质", auto_ingest=True)
+    assert res3.get("updated") is True
+    items_after = composite_factor_service.list_composite_factors()
+    assert len(items_after) == 1
+    assert items_after[0]["name"] == "组合测试_v3_优质"
+    assert items_after[0]["oos_ic"] == 0.045
+
+
+
 

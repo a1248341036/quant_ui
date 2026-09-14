@@ -947,7 +947,8 @@ class _DispatchMixin:
             end = pd.Timestamp(DEFAULT_VAL_END)
             panel = load_panel_from_cne(start=panel_start, end=end, include_fundamentals=True)
 
-        cache = FactorValueCache()
+            from alphaagent.factor.cache import get_default_cache
+            cache = get_default_cache()
         dataset = build_stacking_dataset(
             panel,
             entries,

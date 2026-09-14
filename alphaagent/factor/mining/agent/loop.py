@@ -19,8 +19,9 @@ _NUDGE = (
 )
 
 
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+from alphaagent.core.timeutil import utc_now_iso
+
+_now = utc_now_iso
 
 
 def _chat_with_retry(client: Any, req: dict[str, Any], *, max_retries: int = 4, backoff: float = 2.0) -> Any:

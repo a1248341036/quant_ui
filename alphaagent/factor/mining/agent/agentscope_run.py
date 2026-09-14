@@ -111,8 +111,9 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[4]
 
 
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+from alphaagent.core.timeutil import utc_now_iso
+
+_now = utc_now_iso
 
 
 def _build_model(
@@ -127,9 +128,9 @@ def _build_model(
         "max_tokens": config.max_tokens,
         "parallel_tool_calls": True,
     }
-    if config.temperature is not None:
+    if getattr(config, "temperature", None) is not None:
         params["temperature"] = config.temperature
-    if config.reasoning_effort is not None:
+    if getattr(config, "reasoning_effort", None) is not None:
         params["reasoning_effort"] = config.reasoning_effort
     return ProviderSafeChatModel(
         usage_listener=usage_listener,

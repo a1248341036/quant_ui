@@ -10,10 +10,11 @@ from datetime import datetime, timezone
 from typing import Any
 
 
+from alphaagent.core.timeutil import utc_now_iso
+
 # ── 基础工具 ──
 
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+_now = utc_now_iso
 
 
 def _safe_float(value: Any) -> float | None:

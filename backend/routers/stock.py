@@ -21,6 +21,9 @@ def _f(x) -> float | None:
         return None
 
 
+from core.instruments import normalize_code
+
+
 @router.get("/search")
 def search(q: str = Query(..., min_length=1, max_length=32), limit: int = Query(20, ge=1, le=50)):
     """按代码前缀或名称子串搜索，返回带补全的候选列表。"""
@@ -32,7 +35,7 @@ def search(q: str = Query(..., min_length=1, max_length=32), limit: int = Query(
     code_matches: list[dict] = []
     name_matches: list[dict] = []
     for code, name in name_map.items():
-        c = str(code).zfill(6)
+        c = normalize_code(code)
         n = str(name or "")
         if c.startswith(q):
             code_matches.append({"code": c, "name": n,
@@ -52,7 +55,7 @@ def detail(code: str, days: int = Query(250, ge=10, le=2000),
     adj: qfq=前复权（默认，锚定导出快照最新因子）；hfq=后复权（历史价永不漂移）；
          raw=不复权原始价（真实成交价，除权日跳空）。
     """
-    code = str(code).zfill(6)
+    code = normalize_code(code)
     name_map = services.get_name_map()
     industry_map = services.get_industry_map()
 

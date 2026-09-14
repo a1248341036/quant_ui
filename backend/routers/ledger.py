@@ -20,10 +20,11 @@ def _ledger_panel() -> pd.DataFrame:
     """账本估值只涉及持仓股票代码，按交易起始日前移 60 天拉取，避免全量面板。"""
     tx = load_transactions()
     dep = load_deposits()
+    from core.instruments import normalize_code
     codes: set[str] = set()
     first = None
     if tx is not None and len(tx):
-        codes |= {str(c).zfill(6) for c in tx["code"].astype(str)}
+        codes |= {normalize_code(c) for c in tx["code"].astype(str)}
         first = pd.Timestamp(tx["date"].min())
     if dep is not None and len(dep):
         d = pd.Timestamp(dep["date"].min())

@@ -106,18 +106,27 @@ class ComputeWorker:
         panel = self.panel_store.get_panel(session_key, panel_spec)
 
         # 构造虚拟 Session 壳以供 EvaluationEngine 调用
+        from alphaagent.factor.window_config import (
+            DEFAULT_TRAIN_START,
+            DEFAULT_TRAIN_END,
+            DEFAULT_VAL_START,
+            DEFAULT_VAL_END,
+            DEFAULT_TEST_START,
+            resolve_test_end,
+        )
+
         class _MockSessionCtx:
             def __init__(self, spec: dict[str, Any]):
                 self.label_col = spec.get("label_col", "label_1d_open_to_open")
                 self.panel_path = spec.get("panel_path", "cne://")
-                self.train_start = spec.get("train_start", "2020-01-01")
-                self.train_end = spec.get("train_end", "2022-12-31")
-                self.val_start = spec.get("val_start", "2023-01-01")
-                self.val_end = spec.get("val_end", "2024-12-31")
-                self.test_start = spec.get("test_start", "2025-01-01")
-                self.test_end = spec.get("test_end", "2025-12-31")
-                self.include_fundamentals = spec.get("include_fundamentals", True)
+                self.train_start = spec.get("train_start", DEFAULT_TRAIN_START)
+                self.train_end = spec.get("train_end", DEFAULT_TRAIN_END)
+                self.val_start = spec.get("val_start", DEFAULT_VAL_START)
+                self.val_end = spec.get("val_end", DEFAULT_VAL_END)
+                self.test_start = spec.get("test_start", DEFAULT_TEST_START)
                 self.asset_type = spec.get("asset_type", "stock")
+                self.test_end = spec.get("test_end") or resolve_test_end(self.asset_type)
+                self.include_fundamentals = spec.get("include_fundamentals", True)
 
             def split_range(self, split: str) -> tuple[str, str]:
                 if split == "train":

@@ -214,11 +214,13 @@
             <div v-else-if="ev.event === 'ml_pool_screened'" class="ml-card ml-screen-card">
               <div class="ml-card-head">
                 <span class="ml-card-tag prod">因子语义研判</span>
-                <strong>推荐 {{ ev.n_recommended }} / {{ ev.n_total }} 个候选因子</strong>
+                <strong>{{ ev.composite_name || ('推荐 ' + ev.n_recommended + ' / ' + ev.n_total + ' 个候选因子') }}</strong>
                 <span v-if="ev.reused" class="mlv-sub">· 复用锁定推荐</span>
+                <span v-else-if="ev.explore_mode" class="mlv-sub" style="color:#4fc3a1">· 动态探索模式</span>
                 <span class="ml-card-time">{{ ev.ts }}</span>
               </div>
               <div class="ml-card-body">
+                <p v-if="ev.hypothesis" class="ml-reco-rationale" style="color:#c6d2e8"><b>组合假设：</b>{{ ev.hypothesis }}</p>
                 <p v-if="ev.rationale" class="ml-reco-rationale"><b>研判依据：</b>{{ ev.rationale }}</p>
                 <div class="ml-factor-chips">
                   <span
@@ -230,6 +232,20 @@
                     {{ name }}
                   </span>
                 </div>
+              </div>
+            </div>
+
+            <!-- 4b. ml_composite_saved: 组合因子库自动沉淀通知卡片 -->
+            <div v-else-if="ev.event === 'ml_composite_saved'" class="ml-card ml-ingest-card" style="border-color:rgba(79, 195, 161, 0.4); background:rgba(79, 195, 161, 0.08)">
+              <div class="ml-card-head">
+                <span class="ml-card-tag prod">{{ ev.updated ? '已更新组合' : '已自动入库' }}</span>
+                <strong>{{ ev.name }}</strong>
+                <span class="ml-card-time">{{ ev.ts }}</span>
+              </div>
+              <div class="ml-card-body">
+                <p style="margin:0; font-size:11px; color:#c6d2e8">
+                  已通过 engine_gate 门禁裁决，自动作为研发态组合沉淀至【组合因子中台库】（ID: {{ ev.id }}）。
+                </p>
               </div>
             </div>
 
@@ -496,6 +512,22 @@
             <label v-if="ml.form.scheme === 'ml'" class="ml-check"><input type="checkbox" v-model="ml.form.subset_curve"> 累积子集曲线</label>
             <label v-if="ml.form.scheme === 'ml'" class="ml-check"><input type="checkbox" v-model="ml.form.llm_assist"> LLM 辅助（推荐 + 说明书）</label>
             <label v-if="ml.form.scheme === 'ml'" class="ml-check"><input type="checkbox" v-model="ml.form.multi_path"> 多路径对照</label>
+            <label class="ml-check" title="当 engine_gate 门禁通过时，自动作为研发态组合沉淀至【组合因子中台库】"><input type="checkbox" v-model="ml.form.auto_ingest_enabled"> 门禁通过自动入库</label>
+          </div>
+
+          <!-- ── LLM 动态探索引导词 ── -->
+          <div v-if="ml.form.llm_assist" class="ml-guidance-box" style="margin-top:10px; padding:10px 12px; border-radius:8px; background:rgba(79,140,255,0.06); border:1px dashed var(--line)">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px">
+              <span style="font-size:12px; font-weight:600; color:#7fb0ff">💡 探索引导指令（Prompt Guidance）</span>
+              <span class="mlv-sub" style="font-size:10px">留空 = 静态复用锁定推荐；填写 = 触发动态探索新搭配</span>
+            </div>
+            <input
+              type="text"
+              v-model="ml.form.guidance"
+              class="ml-input"
+              style="width:100%; font-size:12px"
+              placeholder="例如：不要用均线因子，侧重筹码分布与资金流异常 / 挑选低流动性摩擦因子..."
+            />
           </div>
 
           <div class="ml-factor-picker">
@@ -535,7 +567,7 @@
         <div class="ml-drawer-body">
           <table class="lib-table">
             <thead>
-              <tr><th>名称</th><th>方案</th><th>OOS IC</th><th>gate</th></tr>
+              <tr><th>名称</th><th>方案</th><th>OOS IC</th><th>gate</th><th>资产属性</th></tr>
             </thead>
             <tbody>
               <tr v-for="c in compositeList" :key="c.id" :class="{ active: compositeSelected === c.id }" @click="viewComposite(c.id)">
@@ -543,6 +575,11 @@
                 <td>{{ c.scheme_label }}</td>
                 <td :class="icClass(c.oos_ic)">{{ fmtNum(c.oos_ic) }}</td>
                 <td>{{ c.gate_passed ? '通过' : '未过' }}</td>
+                <td>
+                  <span class="ml-safe-badge" style="font-size:9px; padding:1px 5px">
+                    {{ c.eval_mode === 'tuning' ? '研发态 (≤2024)' : '终审盲测' }}
+                  </span>
+                </td>
               </tr>
             </tbody>
           </table>
@@ -638,7 +675,24 @@ export default {
       showNewModal: false,
       showCfDrawer: false,
       ml: {
-        form: { eval_mode: 'tuning', scheme: 'ml', model: 'both', label_days: 5, train_months: 18, step_months: 6, max_corr: 0.6, isolation: 'holdout', no_candidate: false, no_gate: false, subset_curve: false, multi_path: false, llm_assist: false, include_factors: [] },
+        form: {
+          eval_mode: 'tuning',
+          scheme: 'ml',
+          model: 'both',
+          label_days: 5,
+          train_months: 18,
+          step_months: 6,
+          max_corr: 0.6,
+          isolation: 'holdout',
+          no_candidate: false,
+          no_gate: false,
+          subset_curve: false,
+          multi_path: false,
+          llm_assist: false,
+          guidance: '',
+          auto_ingest_enabled: true,
+          include_factors: [],
+        },
         factorPool: [],
         factorPoolLoading: false,
         list: [],
@@ -841,10 +895,14 @@ export default {
         try {
           const row = JSON.parse(e.data)
           this.appendEvent(row)
+          if (row.event === 'ml_composite_saved') {
+            this.loadCompositeFactors(true)
+          }
           if (row.event === 'session_end') {
             es.close()
             this._eventSource = null
             this.loadMl()
+            this.loadCompositeFactors(true)
           }
         } catch (_) {}
       }
@@ -885,7 +943,12 @@ export default {
       this.ml.starting = true
       this.ml.error = ''
       try {
-        const res = await api('/api/alphaagent/stacking/train', { method: 'POST', body: { ...this.ml.form, modes: [this.gateMode] } })
+        const payload = {
+          ...this.ml.form,
+          modes: [this.gateMode],
+          auto_ingest: this.ml.form.auto_ingest_enabled ? 'gate_pass' : 'none',
+        }
+        const res = await api('/api/alphaagent/stacking/train', { method: 'POST', body: payload })
         this.showNewModal = false
         this.ml.selected = res.train_id
         this.currentEvents = []

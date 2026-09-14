@@ -53,6 +53,10 @@ strategies/ricequant/__pycache__/
 # Misc temporary files
 baseline_failures.txt
 
+# Archived temporary scripts
+scripts/_archive/
+scripts/**/_archive/
+
 # Documents and images (not source code)
 *.docx
 *.jpg

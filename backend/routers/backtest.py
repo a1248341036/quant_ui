@@ -897,12 +897,13 @@ def signal_orders(req: SignalOrderRequest):
     weight = min(1.0 / n, max(req.max_weight, 0.01))
 
     # ---- 持仓来源 ----
+    from core.instruments import normalize_code
     held: dict[str, dict] = {}
     if req.account_id is not None:
         try:
             from core.paper.details import account_positions
             for r in account_positions(int(req.account_id)):
-                c = str(r["code"]).zfill(6)
+                c = normalize_code(r["code"])
                 if float(r.get("shares") or 0) > 0:
                     held[c] = {"shares": float(r["shares"]),
                                "avg_cost": float(r.get("avg_cost") or 0.0)}
@@ -910,13 +911,13 @@ def signal_orders(req: SignalOrderRequest):
             return {"error": f"读取模拟盘持仓失败: {type(exc).__name__}: {exc}"}
     elif req.holdings:
         for r in req.holdings:
-            c = str(r.get("code", "")).zfill(6)
+            c = normalize_code(r.get("code", ""))
             if c and float(r.get("shares") or 0) > 0:
                 held[c] = {"shares": float(r["shares"]),
                            "avg_cost": float(r.get("avg_cost") or 0.0)}
 
-    target_codes = [str(it["code"]).zfill(6) for it in items]
-    close_map = {str(it["code"]).zfill(6): float(it.get("close") or 0.0)
+    target_codes = [normalize_code(it["code"]) for it in items]
+    close_map = {normalize_code(it["code"]): float(it.get("close") or 0.0)
                  for it in items}
     nm = services.get_name_map()
 
@@ -926,7 +927,7 @@ def signal_orders(req: SignalOrderRequest):
         try:
             hp = load_signal_panel(missing)
             last = hp[hp["date"] == hp["date"].max()]
-            for c, px in zip(last["code"].astype(str).str.zfill(6),
+            for c, px in zip(last["code"].astype(str).map(normalize_code),
                              last["close"]):
                 close_map.setdefault(str(c), float(px))
         except Exception as exc:
@@ -941,7 +942,7 @@ def signal_orders(req: SignalOrderRequest):
 
     buys, holds = [], []
     for it in items:
-        c = str(it["code"]).zfill(6)
+        c = normalize_code(it["code"])
         px = close_map.get(c, 0.0) or float(it.get("close") or 0.0)
         base = {"code": c, "name": it.get("name") or nm.get(c, ""),
                 "score": it.get("score"), "close": px,
