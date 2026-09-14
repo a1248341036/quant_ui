@@ -33,14 +33,25 @@ from . import (
 
 
 def _phase_enabled(module, base_enabled):  # noqa: ANN001
-    """组合阶段过滤与模块自身 enabled：PHASES 为空 → 全阶段启用。"""
+    """组合阶段过滤、模块自身 enabled 与消融排除。
+
+    历史坑（2026-09-15 消融实验实测定位）：原先 ``PHASES is None`` 时直接
+    ``return base_enabled``（lambda ctx: True），**绕过了 excluded_modules
+    检查**——静态板块（market_mechanisms / behavior_rules 等）在消融
+    B1/B2 中并未被真正移除。现改为始终返回 _check 包装器。
+    """
     phases = getattr(module, "PHASES", None)
-    if phases is None:
-        return base_enabled
 
     def _check(ctx):  # noqa: ANN001
         if not base_enabled(ctx):
             return False
+        # 消融排除：research_spec.prompt_policy.excluded_modules（缺省空 → 恒放行）
+        spec = getattr(ctx, "research_spec", None) or {}
+        excluded = (spec.get("prompt_policy") or {}).get("excluded_modules") or []
+        if getattr(module, "NAME", None) in excluded:
+            return False
+        if phases is None:
+            return True
         phase = getattr(ctx, "prompt_phase", "full")
         # full 始终启用；否则要求当前阶段在 PHASES 集合中
         return phase == "full" or phase in phases

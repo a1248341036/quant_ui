@@ -1132,8 +1132,28 @@ async def run_factor_mining_agentscope(
         ok = sum(1 for r in tool_call_rows if r.get("ok"))
         printer.session_end(end_reason, ok, len(tool_call_rows))
 
-    train_attempts = {r.get("expression_sha256") for r in tool_call_rows if r.get("name") == "eval_on_train_set" and r.get("expression_sha256")}
-    val_attempts = {r.get("expression_sha256") for r in tool_call_rows if r.get("name") == "eval_on_val_set" and r.get("expression_sha256")}
+    # 训练/验证尝试去重口径：LLM 既可能用 evaluate_factor（按 profile_id 决定
+    # split），也可能用 eval_on_train_set / eval_on_val_set 两个显式工具。
+    # 历史坑（2026-09-15 消融实测定位）：原先只按工具名 "eval_on_train_set"
+    # 统计 train_attempts，而本轮 LLM 全部走 evaluate_factor ⇒
+    # unique_train_evaluated 记为 1（实际 ~60），stage_one_yield 分母失真、
+    # 与 unsubmitted_promising=20 自相矛盾。改为按 split 字段归口。
+    def _is_train_eval(r: dict[str, Any]) -> bool:
+        if not r.get("expression_sha256"):
+            return False
+        if r.get("name") == "eval_on_train_set":
+            return True
+        return r.get("name") == "evaluate_factor" and r.get("split") == "train"
+
+    def _is_val_eval(r: dict[str, Any]) -> bool:
+        if not r.get("expression_sha256"):
+            return False
+        if r.get("name") == "eval_on_val_set":
+            return True
+        return r.get("name") == "evaluate_factor" and r.get("split") == "val"
+
+    train_attempts = {r.get("expression_sha256") for r in tool_call_rows if _is_train_eval(r)}
+    val_attempts = {r.get("expression_sha256") for r in tool_call_rows if _is_val_eval(r)}
     candidate_stored = sum(1 for row in submit_records if row.get("candidate_stored"))
     production_stored = sum(1 for row in submit_records if row.get("stored"))
     failure_counts: dict[str, int] = {}
@@ -1141,8 +1161,8 @@ async def run_factor_mining_agentscope(
         if not row.get("ok"):
             code = str(row.get("error_type") or "tool_failed")
             failure_counts[code] = failure_counts.get(code, 0) + 1
-    train_by_expr = {r.get("expression_sha256"): r for r in tool_call_rows if r.get("name") == "eval_on_train_set" and r.get("expression_sha256")}
-    val_by_expr = {r.get("expression_sha256"): r for r in tool_call_rows if r.get("name") == "eval_on_val_set" and r.get("expression_sha256")}
+    train_by_expr = {r.get("expression_sha256"): r for r in tool_call_rows if _is_train_eval(r)}
+    val_by_expr = {r.get("expression_sha256"): r for r in tool_call_rows if _is_val_eval(r)}
     matched_audits: list[dict[str, Any]] = []
     for expr_hash in sorted(train_by_expr.keys() & val_by_expr.keys()):
         train_metrics = train_by_expr[expr_hash].get("metrics", {})

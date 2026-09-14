@@ -179,11 +179,17 @@ _SIDE_ALIASES = {
     "highest_decile": "high_factor", "upper_decile": "high_factor",
     "d8": "high_factor", "d9": "high_factor", "d10": "high_factor",
     "q8": "high_factor", "q9": "high_factor", "q10": "high_factor",
+    # 自然语言变体（2026-09-15 消融实测：LLM 反复发 high_positive/low_negative
+    # 被拒，单轮 ~15 次 prediction_invalid 白烧评估预算）
+    "high_positive": "high_factor", "high_side": "high_factor",
+    "high_end": "high_factor", "upper": "high_factor", "higher": "high_factor",
     "low_factor": "low_factor", "low": "low_factor", "bottom": "low_factor",
     "bottom_decile": "low_factor", "bottom_deciles": "low_factor",
     "lowest_decile": "low_factor", "lower_decile": "low_factor",
     "d1": "low_factor", "d2": "low_factor", "d3": "low_factor",
     "q1": "low_factor", "q2": "low_factor", "q3": "low_factor",
+    "low_negative": "low_factor", "low_side": "low_factor",
+    "low_end": "low_factor", "lower": "low_factor",
     "middle": "middle", "mid": "middle",
     "d4": "middle", "d5": "middle", "d6": "middle", "d7": "middle",
     "q4": "middle", "q5": "middle", "q6": "middle", "q7": "middle",
@@ -208,6 +214,18 @@ _SHAPE_EXTRA_ALIASES = {
     "monotone_down": "monotonic_decreasing",
     "increasing": "monotonic_increasing",
     "decreasing": "monotonic_decreasing",
+    # monotonic_* 系列（2026-09-15 消融实测：LLM 发 monotonic_down/monotonic_up
+    # 被拒——映射表只收了 monotone_*，漏了 monotonic_* 这一支）
+    "monotonicup": "monotonic_increasing",
+    "monotonicdown": "monotonic_decreasing",
+    "monotonic_up": "monotonic_increasing",
+    "monotonic_down": "monotonic_decreasing",
+    "monotonic_upward": "monotonic_increasing",
+    "monotonic_downward": "monotonic_decreasing",
+    "upward": "monotonic_increasing",
+    "downward": "monotonic_decreasing",
+    "ascending": "monotonic_increasing",
+    "descending": "monotonic_decreasing",
 }
 
 # ── 散文→枚举归一（2026-09-06 实测：并行 batch 里 8/11 条 expected_shape

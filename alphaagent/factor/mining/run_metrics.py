@@ -376,7 +376,12 @@ def generate_scorecard(
     cand_stored = cf.get("candidate_stored") if cf.get("candidate_stored") is not None else (m.get("stored_candidate") or 0)
     prod_stored = cf.get("production_stored") if cf.get("production_stored") is not None else (m.get("stored_production") or 0)
     token_factor_yield = round(cand_stored / (output_k / 100.0), 2) if output_k > 0 else 0.0
-    unique_train = cf.get("unique_train_evaluated") or m.get("unique_train_exprs_count") or max(1, n_eval)
+    # 训练尝试分母口径：优先取离线轨迹解析（canonical_hash 去重，含 evaluate_factor
+    # 与 eval_on_train_set 两类工具）；summary 的 candidate_funnel 仅在离线为 0 时兜底
+    # ——历史 bug（2026-09-15）summary 只数 eval_on_train_set，LLM 全走
+    # evaluate_factor 时该值退化为 1，导致 stage_one_yield 分母严重失真。
+    offline_unique = m.get("unique_train_exprs_count") or 0
+    unique_train = offline_unique or cf.get("unique_train_evaluated") or max(1, n_eval)
     stage_one_yield = round((cand_stored / unique_train) * 100.0, 2) if unique_train else 0.0
     gate_survival = round((prod_stored / cand_stored) * 100.0, 2) if cand_stored else 0.0
 
@@ -422,6 +427,7 @@ def generate_scorecard(
             "prediction_confirmed": p_conf,
             "prediction_contradicted": p_contra,
             "prediction_partial": pv.get("partial", 0),
+            "prediction_unverifiable": pv.get("unverifiable", 0),
             "confirmed_ratio_pct": conf_ratio_pct,
             "ablation_added_value": av.get("conditioning_added_value", 0),
             "ablation_destroyed_value": av.get("conditioning_destroyed_value", 0),

@@ -285,9 +285,24 @@ def _near_miss_verdict(metrics: dict[str, Any]) -> bool:
 
 
 def _engine_decile(result: dict[str, Any]) -> tuple[Any, Any]:
-    """从引擎原生 shape（evaluate_factor 结果）取 (ic, decile_rows)。"""
+    """从评估结果取 (ic, decile_rows)，兼容 engine 原生 shape 与 legacy shape。
+
+    历史坑（2026-09-15 消融实验实测定位）：train_screen 走两段式 eval_train，
+    返回的是 legacy 扁平 shape（summary.decile_mean_label），而本函数原先只读
+    engine 原生 shape（metrics.cross_sectional_core.decile_mean_label）——
+    metrics 键不存在 ⇒ 恒返回 (None, None) ⇒ prediction_check 全部
+    unverifiable，**预测对账机制在 train 路径静默失效**（实测 23/23 全
+    unverifiable）。此处补 legacy 回退，恢复对账。
+    """
     cs = (result.get("metrics") or {}).get("cross_sectional_core") or {}
-    return cs.get("ic"), cs.get("decile_mean_label")
+    ic = cs.get("ic")
+    decile_rows = cs.get("decile_mean_label")
+    if decile_rows is None:
+        summ = result.get("summary") or {}
+        if ic is None:
+            ic = summ.get("ic")
+        decile_rows = summ.get("decile_mean_label")
+    return ic, decile_rows
 
 
 def _legacy_decile(result: dict[str, Any]) -> tuple[Any, Any]:
