@@ -220,3 +220,18 @@ def test_get_training_events_fallback_from_report(tmp_path, monkeypatch):
     assert "session_end" in event_names
 
 
+def test_recommend_mrmr_factors_tool_registration():
+    """断言 recommend_mrmr_factors 工具正确注册且 schema 完备。"""
+    from alphaagent.factor.mining.tools._schemas import (
+        TOOL_NAMES,
+        _RECOMMEND_MRMR_FACTORS_PARAMETERS,
+    )
+    assert "recommend_mrmr_factors" in TOOL_NAMES
+    assert _RECOMMEND_MRMR_FACTORS_PARAMETERS["type"] == "object"
+    props = _RECOMMEND_MRMR_FACTORS_PARAMETERS["properties"]
+    assert "k" in props
+    assert "max_corr" in props
+    assert "no_candidate" in props
+
+
+
