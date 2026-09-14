@@ -101,9 +101,10 @@ def sentiment_news(top: int = 10, sort: str = "high", days: int = 7):
         sub = df
     sub = sub.sort_values("score", ascending=(sort != "high"))
     out = []
+    from core.instruments import normalize_code
     for _, r in sub.head(max(1, min(int(top), 100))).iterrows():
         out.append({
-            "code": str(r["code"]).zfill(6),
+            "code": normalize_code(r["code"]),
             "publish_time": str(r.get("publish_time", ""))[:19],
             "media": str(r.get("media", "")),
             "title": str(r.get("title", "")),

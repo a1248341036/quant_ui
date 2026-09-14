@@ -136,19 +136,9 @@ def _proc_status() -> tuple[str, dict[str, Any] | None]:
         return status, cur
 
 
-def _read_report_json(report_path: Path) -> dict[str, Any] | None:
-    """读 stacking report.json，兼容历史 GBK 落盘（train_ml_composite 旧版
-    write_text 未指定 encoding，Windows 默认 GBK——UnicodeDecodeError 曾把
-    trainings 列表接口整个 500）。utf-8 失败回退 gbk，再失败返回 None。"""
-    try:
-        return json.loads(report_path.read_text(encoding="utf-8"))
-    except UnicodeDecodeError:
-        try:
-            return json.loads(report_path.read_text(encoding="gbk"))
-        except (json.JSONDecodeError, OSError):
-            return None
-    except (json.JSONDecodeError, OSError):
-        return None
+from backend.report_io import read_report_json
+
+_read_report_json = read_report_json
 
 
 def list_trainings(limit: int = 30) -> list[dict[str, Any]]:
@@ -474,7 +464,9 @@ def run_mrmr_recommendation(params: dict[str, Any]) -> dict[str, Any]:
     end = pd.Timestamp(DEFAULT_VAL_END)
     panel = load_panel_from_cne(start=panel_start, end=end, include_fundamentals=True)
 
-    cache = FactorValueCache()
+    from alphaagent.factor.cache import get_default_cache
+
+    cache = get_default_cache()
     dataset = build_stacking_dataset(
         panel,
         entries,
@@ -576,13 +568,9 @@ def start_recommend(params: dict[str, Any]) -> dict[str, Any]:
         if log_path.is_file():
             tail = log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-15:]
         return {"error": f"recommend_failed(exit={exit_code})", "progress_tail": tail}
-    try:
-        rec = json.loads(rec_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        try:
-            rec = json.loads(rec_path.read_text(encoding="gbk"))
-        except (json.JSONDecodeError, OSError):
-            return {"error": "recommend.json 读取失败"}
+    rec = read_report_json(rec_path)
+    if rec is None:
+        return {"error": "recommend.json 读取失败"}
     rec["train_id"] = train_id
     rec["progress_log"] = str(log_path)
     return {"ok": True, **rec}

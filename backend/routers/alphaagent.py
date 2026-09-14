@@ -503,13 +503,14 @@ def blind_test_reports(limit: int = 6) -> dict[str, Any]:
             report_path = d / "report.json"
             item: dict[str, Any] = {"run_ts": d.name, "report_path": str(report_path)}
             if report_path.is_file():
-                try:
-                    report = _json.loads(report_path.read_text(encoding="utf-8"))
+                from backend.report_io import read_report_json
+                report = read_report_json(report_path)
+                if report is not None:
                     item["report"] = report
                     item["status"] = "completed"
-                except (OSError, ValueError) as exc:
+                else:
                     item["status"] = "unreadable"
-                    item["error"] = str(exc)
+                    item["error"] = "json decode error or unreadable"
             else:
                 item["status"] = "missing"
             reports.append(item)

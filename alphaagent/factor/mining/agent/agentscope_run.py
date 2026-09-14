@@ -111,8 +111,9 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[4]
 
 
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+from alphaagent.core.timeutil import utc_now_iso
+
+_now = utc_now_iso
 
 
 def _build_model(

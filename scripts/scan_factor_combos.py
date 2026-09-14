@@ -260,7 +260,8 @@ def main() -> None:
     print(f"panel: {panel.shape[0]} 行 × {panel.shape[1]} 列")
     dts = pd.Series(panel.index.get_level_values("datetime"))
 
-    cache = FactorValueCache()
+    from alphaagent.factor.cache import get_default_cache
+    cache = get_default_cache()
     materialized, dropped = materialize_entries(panel, entries, cache=cache,
                                                 progress=lambda m: print(" ", m, flush=True))
     for d in dropped:

@@ -69,16 +69,9 @@ def _find_score_file(out_dir: Path) -> str | None:
     return None
 
 
-def _read_report_json(report_path: Path) -> dict[str, Any] | None:
-    try:
-        return json.loads(report_path.read_text(encoding="utf-8"))
-    except UnicodeDecodeError:
-        try:
-            return json.loads(report_path.read_text(encoding="gbk"))
-        except (json.JSONDecodeError, OSError):
-            return None
-    except (json.JSONDecodeError, OSError):
-        return None
+from backend.report_io import read_report_json
+
+_read_report_json = read_report_json
 
 
 def _repro_command(report: dict[str, Any], out_dir: Path) -> str:

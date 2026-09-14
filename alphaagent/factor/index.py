@@ -46,8 +46,9 @@ _COLS = (
 )
 
 
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+from alphaagent.core.timeutil import utc_now_iso
+
+_now = utc_now_iso
 
 
 class FactorIndex:

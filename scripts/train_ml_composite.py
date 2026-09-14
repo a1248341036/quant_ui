@@ -406,7 +406,8 @@ def main() -> None:
     )
 
     # ④ 数据集构建（物化 + 预处理 + 冗余过滤）
-    cache = FactorValueCache()
+    from alphaagent.factor.cache import get_default_cache
+    cache = get_default_cache()
     _emit_event(
         out_dir,
         "ml_stage",

@@ -60,8 +60,9 @@ _factor_repository: FactorRepository | None = None
 _service_lock = threading.RLock()
 
 
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+from alphaagent.core.timeutil import utc_now_iso
+
+_now = utc_now_iso
 
 
 def _pid_is_alive(pid: int | None) -> bool | None:
