@@ -244,3 +244,83 @@ def facet_operator_breakdown(
         "operators": _rank(op_buckets),
         "min_attempts": min_attempts,
     }
+
+
+def research_funnel(
+    db_path: Path | str,
+    *,
+    candidate_registry_path: Path | str | None = None,
+    production_registry_path: Path | str | None = None,
+) -> dict[str, Any]:
+    """研究记忆库视角的漏斗转化（整体统计页漏斗图数据源，单一事实源）。
+
+    与 ``facet_operator_breakdown`` 同源（research_memory.db），粒度是「因子结构」：
+    一条 memory_entry = 一个尝试过的因子结构（同结构重试在 attempts 列累计，不加行）。
+
+    层级：
+      total      全部尝试过的因子结构（含 eval_error——没算出来的也是劳动量）
+      valid      有效尝试（剔除 eval_error：面板缺列/超时/参数错，未产出证据）
+      positive   海选过线（verdict ∈ POSITIVE_VERDICTS）
+      submitted  发起过提交（observations 出现过 submit_factor 阶段的去重因子数）
+      candidate  入候选池（candidate registry 条目数——库成员资格的事实源）
+      production 晋升正式库（production delivered registry 条目数）
+
+    candidate/production 取 registry 而非记忆 verdict 计数：库成员资格以 registry 为准
+    （旁路入库的条目未必回写记忆 verdict），且与因子库页展示口径一致。
+    全库口径，不随页面 run 窗口变化（run 窗口只影响 run 成本类指标）。
+    纯只读：DB/registry 缺失或读失败时对应层返回 0，绝不抛给调用方。
+    """
+    result: dict[str, Any] = {
+        "total": 0, "valid": 0, "positive": 0, "submitted": 0,
+        "candidate_stored": 0, "production_stored": 0,
+        "verdict_counts": {}, "created_min": None, "created_max": None,
+    }
+    path = Path(db_path)
+    if not path.is_file():
+        result["error"] = "memory_db_missing"
+        return result
+    try:
+        conn = _connect_ro(path)
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n, "
+                "COALESCE(SUM(CASE WHEN verdict = 'eval_error' THEN 1 ELSE 0 END), 0) AS n_err, "
+                "MIN(created_at) AS t_min, MAX(created_at) AS t_max "
+                "FROM memory_entries"
+            ).fetchone()
+            total = int(row["n"] or 0)
+            result["total"] = total
+            result["valid"] = max(0, total - int(row["n_err"] or 0))
+            result["created_min"] = row["t_min"]
+            result["created_max"] = row["t_max"]
+            pos_ph = ",".join("?" * len(POSITIVE_VERDICTS))
+            result["positive"] = int(conn.execute(
+                f"SELECT COUNT(*) FROM memory_entries WHERE verdict IN ({pos_ph})",
+                sorted(POSITIVE_VERDICTS),
+            ).fetchone()[0])
+            result["submitted"] = int(conn.execute(
+                "SELECT COUNT(DISTINCT entry_id) FROM memory_observations "
+                "WHERE stage = 'submit_factor'",
+            ).fetchone()[0])
+            for v, n in conn.execute(
+                "SELECT verdict, COUNT(*) FROM memory_entries GROUP BY verdict"
+            ).fetchall():
+                result["verdict_counts"][str(v or "unknown")] = int(n)
+        finally:
+            conn.close()
+    except Exception as exc:  # noqa: BLE001 - 统计失败不阻断页面
+        result["error"] = f"{type(exc).__name__}: {exc}"
+        return result
+
+    def _count_registry(p: Path | str | None) -> int:
+        if not p:
+            return 0
+        try:
+            data = json.loads(Path(p).read_text(encoding="utf-8"))
+            return len(data) if isinstance(data, dict) else len(data or [])
+        except Exception:  # noqa: BLE001
+            return 0
+
+    result["candidate_stored"] = _count_registry(candidate_registry_path)
+    result["production_stored"] = _count_registry(production_registry_path)
+    return result

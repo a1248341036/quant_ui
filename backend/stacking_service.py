@@ -56,8 +56,10 @@ def start_training(params: dict[str, Any]) -> dict[str, Any]:
         out_dir = STACKING_ROOT / train_id
         log_path = _progress_log(train_id)
 
+        eval_mode = str(params.get("eval_mode") or "tuning")
         command = [
             str(PYTHON_EXECUTABLE), str(ROOT / "scripts" / "train_ml_composite.py"),
+            "--eval-mode", eval_mode,
             "--modes", *modes,
             "--scheme", scheme,
             "--model", str(params.get("model") or "both"),
@@ -88,6 +90,8 @@ def start_training(params: dict[str, Any]) -> dict[str, Any]:
             command += ["--score-smooth", str(score_smooth)]
         if params.get("multi_path"):
             command += ["--multi-path-shifts", "0,2,4"]
+        if params.get("llm_assist"):
+            command += ["--llm-assist"]
 
         # 参数快照落盘：历史列表/详情页展示训练配置用
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -149,9 +153,9 @@ def list_trainings(limit: int = 30) -> list[dict[str, Any]]:
     running_id = cur["train_id"] if cur and status == "running" else None
     out: list[dict[str, Any]] = []
     if STACKING_ROOT.is_dir():
-        for d in sorted(STACKING_ROOT.iterdir(), reverse=True):
-            if not d.is_dir():
-                continue
+        dirs = [d for d in STACKING_ROOT.iterdir() if d.is_dir()]
+        dirs.sort(key=lambda d: d.stat().st_mtime, reverse=True)
+        for d in dirs:
             report_path = d / "report.json"
             item: dict[str, Any] = {
                 "train_id": d.name,
@@ -210,9 +214,18 @@ def list_trainings(limit: int = 30) -> list[dict[str, Any]]:
                 except (json.JSONDecodeError, OSError):
                     pass
             out.append(item)
-        # running 状态但目录尚未创建（panel 加载阶段）也补一条
-        if running_id and not any(x["train_id"] == running_id for x in out):
-            out.insert(0, {"train_id": running_id, "status": "running"})
+
+        # ── 运行中任务永久置顶在第 1 位，确保用户在任何时候都能一眼看到 ──
+        if running_id:
+            idx = next((i for i, x in enumerate(out) if x["train_id"] == running_id), None)
+            if idx is not None:
+                running_item = out.pop(idx)
+            else:
+                running_item = {"train_id": running_id, "status": "running", "params": cur.get("params")}
+            if not running_item.get("params") and cur.get("params"):
+                running_item["params"] = cur.get("params")
+            running_item["status"] = "running"
+            out.insert(0, running_item)
     return out[: max(1, limit)]
 
 
@@ -243,7 +256,168 @@ def get_training(train_id: str, *, tail_lines: int = 40) -> dict[str, Any]:
         pass
     else:
         out["progress_tail"] = tail or [f"未找到训练 {train_id} 的输出"]
+    out["events"] = get_training_events(train_id)
     return out
+
+
+def get_training_events(train_id: str) -> list[dict[str, Any]]:
+    """读取训练的结构化事件列表；若无 events.jsonl 则从 report.json 合成兜底回放事件。"""
+    out_dir = STACKING_ROOT / train_id
+    events_file = out_dir / "events.jsonl"
+    events: list[dict[str, Any]] = []
+    if events_file.is_file():
+        try:
+            for line in events_file.read_text(encoding="utf-8", errors="replace").splitlines():
+                if line.strip():
+                    try:
+                        events.append(json.loads(line))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+    if events:
+        return events
+
+    # 若没有 events.jsonl（历史老训练），从 report.json 与 progress_log 合成回放事件
+    report_path = out_dir / "report.json"
+    if report_path.is_file():
+        report = _read_report_json(report_path)
+        if report:
+            events.append({
+                "ts": report.get("run_id") or "0",
+                "event": "session_start",
+                "run_id": train_id,
+                "scheme": report.get("scheme"),
+                "scheme_label": report.get("scheme_label"),
+                "label_days": report.get("label_days"),
+                "isolation": report.get("time_isolation"),
+                "eval_mode": report.get("eval_mode", "tuning"),
+                "blind_test_isolated": report.get("blind_test_isolated", True),
+            })
+            if report.get("llm_recommendation"):
+                rec = report["llm_recommendation"]
+                events.append({
+                    "ts": report.get("run_id") or "0",
+                    "event": "ml_pool_screened",
+                    "title": "因子语义研判推荐",
+                    "recommended": rec.get("recommended", []),
+                    "rationale": rec.get("rationale", ""),
+                    "n_recommended": rec.get("n_recommended", 0),
+                    "reused": rec.get("reused", False),
+                })
+            if report.get("feature_names"):
+                events.append({
+                    "ts": report.get("run_id") or "0",
+                    "event": "ml_features_filtered",
+                    "title": "特征筛选完成",
+                    "feature_names": report.get("feature_names", []),
+                    "n_features": len(report.get("feature_names", [])),
+                    "n_dropped": len(report.get("dropped", [])),
+                    "dropped": report.get("dropped", []),
+                })
+            fold_metrics = report.get("fold_metrics") or {}
+            for kind, rows in fold_metrics.items():
+                if isinstance(rows, list):
+                    events.append({
+                        "ts": report.get("run_id") or "0",
+                        "event": "ml_fold_progress",
+                        "title": f"{kind.upper()} 拟合完成",
+                        "kind": kind,
+                        "fold_reports": rows,
+                        "feature_weights": (report.get("feature_weights", {}).get(kind) or [])[:15],
+                    })
+            if report.get("gate"):
+                g = report["gate"]
+                events.append({
+                    "ts": report.get("run_id") or "0",
+                    "event": "ml_gate_evaluated",
+                    "title": "engine_gate 门禁回测完成",
+                    "passed": g.get("passed"),
+                    "metrics": g.get("metrics") or {},
+                    "fail_reasons": g.get("fail_reasons") or [],
+                })
+            if report.get("llm_summary"):
+                events.append({
+                    "ts": report.get("run_id") or "0",
+                    "event": "ml_summary_generated",
+                    "title": "组合说明书",
+                    "summary": report["llm_summary"],
+                })
+            events.append({
+                "ts": report.get("run_id") or "0",
+                "event": "session_end",
+                "title": "训练完成",
+                "status": "completed",
+                "run_id": train_id,
+                "oos_ic": (report.get("oos_ic_blended") or {}).get("ic_mean"),
+                "oos_ir": (report.get("oos_ic_blended") or {}).get("ic_ir"),
+            })
+    return events
+
+
+async def stream_training_events(train_id: str):
+    """异步生成 SSE 事件流：先回放存量事件，若运行中则持续异步 tail 新行直至结束。"""
+    import asyncio
+
+    out_dir = STACKING_ROOT / train_id
+    events_file = out_dir / "events.jsonl"
+
+    # 1. 存量事件回放
+    initial_events = get_training_events(train_id)
+    for ev in initial_events:
+        yield f"data: {json.dumps(ev, ensure_ascii=False, default=str)}\n\n"
+
+    # 2. 如果当前没有处于 running 状态，回放完即结束
+    status, cur = _proc_status()
+    running_id = cur["train_id"] if cur else None
+    if train_id != running_id:
+        return
+
+    # 3. 运行中：持续监听 events.jsonl 文件追加
+    pos = 0
+    if events_file.is_file():
+        pos = events_file.stat().st_size
+
+    while True:
+        await asyncio.sleep(1.0)
+        if events_file.is_file():
+            try:
+                with events_file.open("r", encoding="utf-8", errors="replace") as f:
+                    f.seek(pos)
+                    lines = f.readlines()
+                    pos = f.tell()
+                    for line in lines:
+                        line = line.strip()
+                        if line:
+                            try:
+                                ev = json.loads(line)
+                                yield f"data: {json.dumps(ev, ensure_ascii=False, default=str)}\n\n"
+                                if ev.get("event") == "session_end":
+                                    return
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+
+        status, cur = _proc_status()
+        if cur is None or cur.get("train_id") != train_id or status != "running":
+            # 子进程已退出，再次检查一次剩余文件内容
+            if events_file.is_file():
+                try:
+                    with events_file.open("r", encoding="utf-8", errors="replace") as f:
+                        f.seek(pos)
+                        lines = f.readlines()
+                        for line in lines:
+                            line = line.strip()
+                            if line:
+                                try:
+                                    ev = json.loads(line)
+                                    yield f"data: {json.dumps(ev, ensure_ascii=False, default=str)}\n\n"
+                                except Exception:
+                                    pass
+                except Exception:
+                    pass
+            break
 
 
 def stop_training(train_id: str) -> dict[str, Any]:
@@ -263,11 +437,90 @@ RECOMMEND_ROOT = ROOT / "artifacts" / "alphaagent" / "recommend"
 _recommend_busy = threading.Lock()
 
 
-def start_recommend(params: dict[str, Any]) -> dict[str, Any]:
-    """同步跑一次 mRMR 推荐：构建数据集（复用因子值磁盘缓存）→ recommend.json。
-
-    与训练互斥（panel 全量物化内存重）；训练中或已有推荐在跑时直接返回 error。
+def run_mrmr_recommendation(params: dict[str, Any]) -> dict[str, Any]:
+    """进程内快速计算 mRMR 因子推荐（Tool 执行核心）：
+    复用磁盘因子值缓存与当前已加载的 CNE 宽表，免去重新 fork 进程的巨大延迟。
     """
+    import pandas as pd
+    from alphaagent.data.adapters.cnequity import load_panel_from_cne
+    from alphaagent.factor.cache import FactorValueCache
+    from alphaagent.factor.stacking import build_stacking_dataset, collect_factor_entries
+    from alphaagent.factor.stacking.model import mrmr_rank_features
+    from alphaagent.factor.window_config import DEFAULT_TRAIN_END, DEFAULT_VAL_END
+
+    k = int(params.get("k") or 8)
+    k = max(1, min(k, 30))
+    max_corr = float(params.get("max_corr") or 0.6)
+    no_candidate = bool(params.get("no_candidate", False))
+    include = params.get("include_factors")
+
+    entries = collect_factor_entries(
+        include_candidate=not no_candidate, include_production=True
+    )
+    if include and isinstance(include, list):
+        wanted = {str(n).strip() for n in include if str(n).strip()}
+        if wanted:
+            entries = [e for e in entries if e.name in wanted]
+
+    if len(entries) < 2:
+        return {"ok": False, "error": "insufficient_factors", "message": "可用因子不足 2 个"}
+
+    mining_end = pd.Timestamp(DEFAULT_TRAIN_END)
+    panel_start = mining_end - pd.DateOffset(months=12) - pd.DateOffset(days=250)
+    end = pd.Timestamp(DEFAULT_VAL_END)
+    panel = load_panel_from_cne(start=panel_start, end=end, include_fundamentals=True)
+
+    cache = FactorValueCache()
+    dataset = build_stacking_dataset(
+        panel,
+        entries,
+        label_days=5,
+        mining_end=mining_end,
+        size_neutral=True,
+        max_corr=max_corr,
+        cache=cache,
+        decay_months=12,
+    )
+
+    if len(dataset.feature_names) < 2:
+        return {"ok": False, "error": "insufficient_valid_features", "message": "有效特征不足 2 个"}
+
+    dts = pd.DatetimeIndex(panel.index.get_level_values("datetime"))
+    rec_start = mining_end - pd.DateOffset(months=12)
+    ranking = mrmr_rank_features(
+        dataset.feature_matrix,
+        dataset.label,
+        pd.Series(dts),
+        dataset.feature_names,
+        window_start=rec_start,
+        window_end=mining_end,
+        k=k,
+        beta=0.7,
+    )
+
+    name_lib_map = {e.name: e.library for e in entries}
+    for item in ranking:
+        item["library"] = "正式" if "production" in name_lib_map.get(item["name"], "") else "候选"
+
+    return {
+        "ok": True,
+        "k": k,
+        "ranking": ranking,
+        "recommended_names": [r["name"] for r in ranking],
+        "window": f"[{rec_start.date()} ~ {mining_end.date()}]",
+        "summary": f"已通过 mRMR 选出 {len(ranking)} 个互补因子",
+    }
+
+
+def start_recommend(params: dict[str, Any]) -> dict[str, Any]:
+    """跑一次 mRMR 推荐：优先走进程内快速通道，失败回退子进程。"""
+    try:
+        res = run_mrmr_recommendation(params)
+        if res.get("ok"):
+            return res
+    except Exception as exc:
+        pass
+
     with _lock:
         if _current is not None and _current["proc"].poll() is None:
             return {"error": "training_already_running"}

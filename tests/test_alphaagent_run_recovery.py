@@ -153,3 +153,31 @@ def test_active_count_uses_event_status_for_handleless_runs(tmp_path, monkeypatc
     assert run.status == "completed"
     svc._RUNS[run.run_id] = run
     assert svc._active_run_count() == 0
+
+
+# ── 显式 stopped 不得被时间窗口推断拉回 running（2026-09-13 修复） ──
+# 背景：stop_run 写盘 stopped 后，snapshot() 里的 refresh() 只看 jsonl 是否
+# 15 分钟内有新事件——已停的 run 若日志恰好新鲜，会被强行覆盖回 running，
+# 前端永远卡绿"运行中"。修复：无进程句柄分支尊重已持久化的显式终态。
+
+
+def test_explicit_stopped_not_overwritten_by_fresh_jsonl(tmp_path) -> None:
+    # 构造：无进程句柄 + jsonl 时间戳新鲜（<15 分钟）+ 显式 stopped
+    d = _make_run_dir(tmp_path, "stoppedrun", None)
+    run = svc.AgentRun(run_id="stoppedrun", command=[], log_dir=d)
+    run.pid = None
+    run.process = None
+    run.status = "stopped"  # stop_run 写盘后的状态
+    run.refresh()
+    # 即使日志新鲜，显式 stopped 也必须保持，不能被拉回 running
+    assert run.status == "stopped"
+
+
+def test_explicit_failed_not_overwritten_by_fresh_jsonl(tmp_path) -> None:
+    d = _make_run_dir(tmp_path, "failedrun", None)
+    run = svc.AgentRun(run_id="failedrun", command=[], log_dir=d)
+    run.pid = None
+    run.process = None
+    run.status = "failed"
+    run.refresh()
+    assert run.status == "failed"

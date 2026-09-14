@@ -5,37 +5,21 @@ from __future__ import annotations
 import os
 import runpy
 import sys
-import tomllib
 from pathlib import Path
 
-
+# 挖掘子进程可能从任意 cwd 被 spawn（如监控脚本用绝对路径拉起），
+# 必须在顶层 import alphaagent 之前先把仓库根加入 sys.path，
+# 否则会 ModuleNotFoundError: No module named 'alphaagent'
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+# load_codex_provider 上移到 alphaagent/core/llm_provider.py，
+# 此处 re-export 保持挖掘链路 import 路径不变
+from alphaagent.core.llm_provider import load_codex_provider  # noqa: F401
 UPSTREAM_ENTRY = ROOT / "scripts" / "alphaagent_factor_mining.py"
 DEFAULT_PANEL = "cne://"  # 从 CNE 数据湖实时构建
 DEFAULT_FACTORLIB = ROOT / "artifacts" / "alphaagent" / "factorzoo" / "production_main"
-
-
-def load_codex_provider() -> None:
-    try:
-        from dotenv import load_dotenv
-        load_dotenv(ROOT / ".env")
-    except Exception:
-        pass
-    if (os.getenv("ALPHA_LLM_PROVIDER") or "").lower() != "codex":
-        return
-    path = Path(os.getenv("CODEX_CONFIG", Path.home() / ".codex" / "config.toml"))
-    with path.open("rb") as handle:
-        config = tomllib.load(handle)
-    provider_name = config["model_provider"]
-    provider = config["model_providers"][provider_name]
-    token = provider.get("experimental_bearer_token") or config.get("experimental_bearer_token")
-    if not token:
-        raise RuntimeError(
-            f"Codex provider '{provider_name}' has no bearer token in provider or top-level config"
-        )
-    os.environ["OPENAI_API_KEY"] = str(token)
-    os.environ["OPENAI_API_BASE"] = str(provider["base_url"]).rstrip("/")
-    os.environ["MODEL"] = str(config["model"])
 
 
 def _install_fs_guard() -> None:

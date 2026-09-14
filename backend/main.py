@@ -203,13 +203,33 @@ async def access_gate(request: Request, call_next):
 
 @app.on_event("startup")
 def _ensure_db_schema() -> None:
-    """确保本地 DuckDB 归档表（backtest_runs/ledger/paper_*）存在，幂等。"""
+    """确保本地 DuckDB 归档表（backtest_runs/ledger/paper_*）存在，幂等；并按需预启动算力工作池。"""
     from core import sqldb as duck_store
     duck_store.create_schema()
     from backend.alphaagent_service import bootstrap_research_memory
     from core.backtest_archive import backfill_excess_metrics
     bootstrap_research_memory()
     backfill_excess_metrics()
+
+    # 预启动算力工作池（如果环境允许且未禁用）
+    if os.environ.get("ALPHA_DISABLE_COMPUTE_POOL", "0").strip() != "1":
+        try:
+            from alphaagent.compute import get_global_worker_pool
+            pool = get_global_worker_pool()
+            pool.start()
+            main_logger.info("算力工作池在应用启动时成功就绪")
+        except Exception as exc:  # noqa: BLE001
+            main_logger.warning("算力工作池启动跳过或失败（将自动回落本地计算）: %s", exc)
+
+
+@app.on_event("shutdown")
+def _shutdown_services() -> None:
+    """关闭常驻服务与子进程池。"""
+    try:
+        from alphaagent.compute import shutdown_global_worker_pool
+        shutdown_global_worker_pool()
+    except Exception as exc:  # noqa: BLE001
+        main_logger.warning("算力工作池关闭异常: %s", exc)
 
 
 @app.get("/api/health")

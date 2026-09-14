@@ -340,7 +340,7 @@ def test_advisory_duplicate_prior_result(tmp_path):
     store2 = ResearchMemoryStore(tmp_path / "m2.db")
     store2.record_tool_result(run_id="r0", row=_eval_row("eval_on_train_set", "TS_MEAN($adj_close, 5) + 0.5", "weak_0", ic=0.005))
     assert store2.advisory_for("TS_MEAN($adj_close, 5) + 0.5") is None
-    # 死路与正向并存：两种提醒同时出现（互补不互斥）
+    # 死路与正向并存：结构已出过信号 → 豁免死路，仅保留正证据提醒（永不拦截）
     store3 = ResearchMemoryStore(tmp_path / "m3.db")
     store3.record_tool_result(
         run_id="r0", row=_eval_row("eval_on_train_set", "TS_MEAN($adj_close, 9) + 0.25", "prior_prom", ic=0.026)
@@ -350,7 +350,48 @@ def test_advisory_duplicate_prior_result(tmp_path):
             run_id=f"r{i}", row=_eval_row("eval_on_train_set", "TS_MEAN($adj_close, 5) + 0.5", f"weak_{i}", ic=0.005)
         )
     kinds3 = [a["kind"] for a in store3.advisory_for("TS_MEAN($adj_close, 5) + 0.5")["advisories"]]
-    assert "duplicate_known_dead_end" in kinds3 and "duplicate_prior_result" in kinds3
+    assert "duplicate_known_dead_end" not in kinds3
+    assert "duplicate_prior_result" in kinds3
+
+
+def test_advisory_promising_rescued_from_hard_block(tmp_path):
+    """回归：promising 结构在迭代中出现 weak/revise 变体时，不被误判为死路硬拦。
+
+    A/B 实测（2026-09-12）：fusion_vp 族先刷出 promising（ICIR≈0.31），后续同指纹
+    变体被判 eval_error/weak 后，以该 promising 为父本的提交全部被
+    MemoryAdvisoryBlock(duplicate_known_dead_end) 拦截，候选交付清零。
+    结构已证明出过信号 → 应豁免死路判定，仅给只提醒不拦截的 duplicate_prior_result。
+    """
+    store = ResearchMemoryStore(tmp_path / "m.db", hard_block_duplicates=True)
+    # 1) 父本 promising
+    parent = "TS_MEAN($adj_close, 5) + 0.5"
+    store.record_tool_result(run_id="r1", row=_eval_row("eval_on_train_set", parent, "vp_prom", ic=0.026, icir=0.31))
+    # 2) 同指纹多个迭代失败变体（换窗口 → weak；缺列 → eval_error）
+    for i, (expr, kwargs) in enumerate((
+        ("TS_MEAN($adj_close, 9) + 0.25", {"ic": 0.008}),
+        ("TS_MEAN($adj_close, 3) + 0.1", {"ic": 0.005}),
+        ("TS_MEAN($adj_close, 7) + 0.3", {"error": "missing column $other"}),
+    )):
+        store.record_tool_result(run_id=f"r{i}", row=_eval_row("eval_on_train_set", expr, f"vp_var{i}", **kwargs))
+    # 3) 同指纹整体再评估 → 不得判死路硬拦
+    advisory = store.advisory_for(parent)
+    assert advisory is not None, "promising 指纹应仍给正证据提醒"
+    kinds = [a["kind"] for a in advisory["advisories"]]
+    assert "duplicate_known_dead_end" not in kinds, "promising 指纹不得被判死路"
+    assert "duplicate_prior_result" in kinds
+    # 换窗口变体同样豁免死路（仅提醒，即使 hard_block=true）
+    adv2 = store.advisory_for("TS_MEAN($adj_close, 20) + 0.5")
+    if adv2 is not None:
+        blocked = [a for a in adv2.get("advisories", []) if a.get("kind") == "duplicate_known_dead_end"]
+        assert not blocked, "有正证据的指纹即使 hard_block=true 也不得判死路拦截"
+
+    # 对照：同一指纹只有失败变体、无任何正证据 → 仍判死路
+    store4 = ResearchMemoryStore(tmp_path / "m4.db", hard_block_duplicates=True)
+    for i in range(2):
+        store4.record_tool_result(run_id=f"r{i}", row=_eval_row("eval_on_train_set", "TS_MEAN($adj_close, 15) + 0.2", f"dead_{i}", ic=0.005))
+    adv4 = store4.advisory_for("TS_MEAN($adj_close, 20) + 0.4")
+    dead4 = [a for a in adv4.get("advisories", []) if a.get("kind") == "duplicate_known_dead_end"]
+    assert dead4, "纯失败指纹仍应判死路"
 
 
 def test_advisory_edit_veto(tmp_path):

@@ -65,6 +65,10 @@ class StartRequest(BaseModel):
     # 调仓频率（交付门禁）：显式指定时覆盖档位默认 engine_gate.freq；空 = 档位
     # 默认 + LLM 按评估证据自选（submit_factor 的 rebalance_freq 参数）。
     rebalance_freq: str | None = Field(default=None, pattern="^(daily|weekly|monthly)$")
+    # 思考强度：none/low/medium/high/xhigh。None = 用 MiningConfig 默认（medium，
+    # 2026-09-12 A/B 实测：none 探索发散、medium 吞吐 +178% 且多产 promising）。
+    # 压 thinking 优先用此参数而非砍 max_tokens（避免 tool_calls 截断重蹈 12288 覆辙）。
+    reasoning_effort: str | None = Field(default=None, pattern="^(none|low|medium|high|xhigh)$")
     # 兼容保留：显式传入优先于自动推断；前端不再展示模式下拉。
     research_mode: str | None = None
     research_spec: dict[str, Any] = Field(default_factory=build_default_research_spec)
@@ -410,7 +414,7 @@ def run_metrics(run_id: str) -> dict[str, Any]:
 def metrics_overview(last: int = 20) -> dict[str, Any]:
     """整体统计：扫描全部 run 的效率/漏斗指标聚合 + Reviewer 校准 + 数据面/算子成功率。"""
     from alphaagent.factor.mining.run_metrics import compute_run_metrics, reviewer_calibration
-    from alphaagent.factor.mining.memory.analytics import facet_operator_breakdown
+    from alphaagent.factor.mining.memory.analytics import facet_operator_breakdown, research_funnel
 
     run_dirs = sorted(p for p in service.LOG_ROOT.iterdir() if p.is_dir())
     if last > 0:
@@ -450,17 +454,27 @@ def metrics_overview(last: int = 20) -> dict[str, Any]:
         for k, v in (m.get("advisory_breakdown") or {}).items():
             summary["advisory_breakdown"][k] = summary["advisory_breakdown"].get(k, 0) + v
 
-    cal = reviewer_calibration(
-        service.ROOT / "artifacts" / "alphaagent" / "factorzoo" / "candidate_main" / "mining_candidate_registry.json",
-        service.ROOT / "artifacts" / "alphaagent" / "factorzoo" / "production_main" / "mining_delivered_registry.json",
+    candidate_registry_path = (
+        service.ROOT / "artifacts" / "alphaagent" / "factorzoo" / "candidate_main" / "mining_candidate_registry.json"
     )
+    production_registry_path = (
+        service.ROOT / "artifacts" / "alphaagent" / "factorzoo" / "production_main" / "mining_delivered_registry.json"
+    )
+    cal = reviewer_calibration(candidate_registry_path, production_registry_path)
     # 数据面 / 算子成功率：研究记忆库聚合；last>0 时与页面的 run 窗口对齐（按 last_run_id 过滤）
     facet_ops = facet_operator_breakdown(
         service.RESEARCH_MEMORY_FILE,
         run_ids=[p.name for p in run_dirs] if last > 0 else None,
     )
+    # 漏斗转化：研究记忆库 + 因子库 registry（全库口径，跨 Web/CLI/整夜，不随 run 窗口变化）
+    funnel = research_funnel(
+        service.RESEARCH_MEMORY_FILE,
+        candidate_registry_path=candidate_registry_path,
+        production_registry_path=production_registry_path,
+    )
     return {"summary": summary, "runs": list(reversed(rows)),
-            "reviewer_calibration": cal, "facet_operator": facet_ops}
+            "reviewer_calibration": cal, "facet_operator": facet_ops,
+            "research_funnel": funnel}
 
 
 @router.post("/runs/{run_id}/stop")
@@ -713,6 +727,8 @@ class StackingTrainRequest(BaseModel):
     include_factors: list[str] | None = None      # 因子白名单（factor_name 精确匹配）；空/None=全部
     score_smooth: int = Field(default=0, ge=0, le=60)  # 组合分数 WMA 平滑窗；0=自动取 label_days
     multi_path: bool = Field(default=False)       # 多路径对照：折边界平移 2/4 个月重训，输出路径分布
+    llm_assist: bool = Field(default=False)       # LLM 辅助：A) 语义推荐因子子集（锁定复用） C) 训练后组合说明书；失败自动回退
+    eval_mode: str = Field(default="tuning")      # tuning（默认，研发验证态，数据截止 2024-12-31，盲测安全锁定） | blind_test（终审盲测）
 
 
 @router.post("/stacking/train")
@@ -770,6 +786,22 @@ def stacking_stop(train_id: str) -> dict[str, Any]:
     if not result.get("ok"):
         raise HTTPException(status_code=404, detail=result.get("error"))
     return result
+
+
+@router.get("/stacking/trainings/{train_id}/events")
+async def stacking_events(train_id: str):
+    """ML 组合训练流式事件总线（SSE 端点）：实时推送思考、各阶段进展与折进度。"""
+    from backend import stacking_service
+
+    return StreamingResponse(
+        stacking_service.stream_training_events(train_id),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1060,7 +1092,11 @@ def dsl_operator_monitor(
 
 
 class OvernightMonitorStartRequest(BaseModel):
-    deadline: str = Field(default="07:00", pattern=r"^\d{1,2}:\d{2}$")
+    # HH:MM（顺延到明天）或完整日期时间 YYYY-MM-DD HH:MM / ISO T 格式
+    deadline: str = Field(
+        default="07:00",
+        pattern=r"^(\d{1,2}:\d{2}|\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2})$",
+    )
     max_runs: int = Field(default=0, ge=0, le=50)
     # 前端芯片多选传数组；服务层 join 成逗号串给脚本 --focus-facets
     focus_facets: list[str] | str | None = None

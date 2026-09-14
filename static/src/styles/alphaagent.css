@@ -177,9 +177,22 @@
 .page-jump-input:disabled { opacity:.45; cursor:default; }
 .usage-chip { display:flex; align-items:center; gap:5px; padding:5px 8px; border:1px solid var(--line); border-radius:7px; color:var(--muted); font:10px var(--font-mono); white-space:nowrap; }
 .usage-chip em { color:#91d4ac; font-style:normal; }
-.live-metrics { display:block; flex:0 1 auto; min-width:0; color:#8ab4d8; max-width:min(38vw, 560px); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.live-metrics em { color:#e8c491; }
-.live-metrics .lm-err { color:#ef6b73; }
+.live-metrics { display:inline-flex; align-items:center; gap:5px; color:#8ab4d8; flex:none; white-space:nowrap; cursor:default; }
+.live-metrics em { color:#e8c491; font-style:normal; }
+.live-metrics .lm-err { color:#ef6b73; font-weight:600; }
+.live-metrics .lm-warn { color:#f5bd4f; font-weight:600; }
+.live-metrics .lm-highlight { color:#5ee0a0; font-weight:600; }
+.live-metrics .lm-gold { color:#ffd166; font-weight:700; text-shadow:0 0 8px rgba(255, 209, 102, 0.4); }
+
+.live-last-submit { display:inline-flex; align-items:center; gap:4px; max-width:min(32vw, 420px); color:#c6d2e8; background:rgba(232, 196, 145, 0.08); border-color:rgba(232, 196, 145, 0.28); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; cursor:pointer; transition:all .15s; }
+.live-last-submit:hover { background:rgba(232, 196, 145, 0.15); border-color:rgba(232, 196, 145, 0.45); }
+.last-submit-icon { font-style:normal; font-size:11px; flex:none; }
+.last-submit-factor { color:#7fb0ff; font-family:var(--font-mono, monospace); max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.last-submit-sep { color:var(--muted); flex:none; }
+.last-submit-verdict { font-size:10px; padding:1px 5px; border-radius:4px; flex:none; font-weight:550; }
+.last-submit-verdict.verdict-ok { color:#5ee0a0; background:rgba(94, 224, 160, 0.12); }
+.last-submit-verdict.verdict-warn { color:#f5bd4f; background:rgba(245, 189, 79, 0.12); }
+.last-submit-verdict.verdict-err { color:#ef8b92; background:rgba(239, 139, 146, 0.12); }
 .activity-line { display:flex; align-items:center; gap:6px; color:#b9a3e8; font-size:11px; white-space:nowrap; }
 .activity-line i, .activity-bar i { display:inline-block; width:6px; height:6px; border-radius:50%; background:#c792ea; box-shadow:0 0 9px rgb(199 146 234 / .85); animation:agentPulse 1.1s infinite; }
 .live-status { display:flex; align-items:center; gap:6px; color:var(--muted); font-size:12px; }
@@ -214,6 +227,10 @@
 .tool-state { float:right; color:var(--muted); font-size:10px; }
 .tool-expression, .result-expression { margin:0 11px 8px; padding:7px 8px; border-left:2px solid rgb(125 211 252 / .65); border-radius:3px; color:#c7d8ee; background:rgb(125 211 252 / .055); white-space:pre-wrap; overflow-wrap:break-word; word-break:break-all; font:11px/1.5 var(--font-mono); }
 .thinking-card pre, .tool-card pre { margin:0; padding:0 11px 11px; color:#aebbd2; white-space:pre-wrap; overflow-wrap:break-word; word-break:break-all; font:12px/1.55 var(--font-mono); }
+.think-trunc { color:var(--muted); font-style:normal; font-weight:400; }
+.think-expand-row { display:flex; gap:8px; padding:0 11px 11px; }
+.think-expand-btn, .think-copy-btn { padding:3px 10px; border:1px solid var(--line); border-radius:6px; background:var(--bg-soft); color:var(--muted); font-size:11px; cursor:pointer; }
+.think-expand-btn:hover, .think-copy-btn:hover { color:var(--text); border-color:var(--accent); background:rgb(79 140 255 / .12); }
 .result-card { padding:10px 12px; border-color:rgb(67 209 122 / .2); }
 .result-head { display:flex; align-items:center; gap:7px; font-size:12px; }
 .result-icon { color:#43d17a; font-weight:700; }
@@ -707,3 +724,217 @@ textarea.lab-input { resize:vertical; font:12px/1.5 var(--font-mono); }
 .metrics-rate-bar i.rate-good { background:#4fc3a1; }
 .metrics-rate-bar i.rate-mid { background:#e8c491; }
 .metrics-rate-bar i.rate-bad { background:#ef6b73; }
+
+/* 因子详情三阶段表现表（feat/alphaagent-metrics FactorLibrary） */
+.factor-seg-table { width:100%; border-collapse:collapse; font:12px/1.5 var(--font-mono); }
+.factor-seg-table th, .factor-seg-table td { padding:5px 9px; border:1px solid var(--line); text-align:right; }
+.factor-seg-table th { color:var(--muted); font-size:10px; letter-spacing:.05em; text-transform:uppercase; background:rgb(255 255 255 / .03); }
+.factor-seg-table td:first-child, .factor-seg-table th:first-child { text-align:left; color:var(--text); }
+.factor-seg-table td.seg-label { color:var(--text); font-weight:500; }
+.factor-seg-note { margin-top:6px; color:var(--muted); font:10px/1.5 var(--font-mono); }
+.factor-modal-section details summary { cursor:pointer; color:var(--muted); font-size:10px; letter-spacing:.05em; text-transform:uppercase; list-style:none; }
+.factor-modal-section details summary:hover { color:var(--text); }
+
+/* ═══ 整夜挖掘监控悬浮窗（OvernightMonitorWidget）═══ */
+.ovm-widget { position: fixed; bottom: 20px; right: 20px; z-index: 9000; font-family: var(--font-sans); }
+
+/* 收起态圆形按钮 */
+.ovm-fab {
+  position: relative;
+  width: 48px; height: 48px;
+  border: 1px solid var(--line); border-radius: 50%;
+  background: var(--card); color: var(--accent);
+  box-shadow: 0 4px 16px rgba(0 0 0 / .3);
+  cursor: pointer; transition: all .2s;
+  display: grid; place-items: center;
+}
+.ovm-fab:hover { border-color: var(--accent); box-shadow: 0 4px 20px rgba(91 140 255 / .3); }
+.ovm-fab-icon { font-size: 20px; }
+.ovm-fab-dot {
+  position: absolute; top: 2px; right: 2px;
+  width: 8px; height: 8px; border-radius: 50%;
+  background: #43d17a; box-shadow: 0 0 8px rgba(67 209 122 / .7);
+  animation: ovm-pulse 2s infinite;
+}
+@keyframes ovm-pulse { 0%,100% { opacity: 1; } 50% { opacity: .4; } }
+
+/* 展开态面板 */
+.ovm-panel {
+  width: 340px; max-height: 520px;
+  border: 1px solid var(--line); border-radius: 14px;
+  background: var(--card); box-shadow: 0 8px 32px rgba(0 0 0 / .4);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.ovm-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 12px 16px; border-bottom: 1px solid var(--line);
+  background: var(--bg-soft);
+}
+.ovm-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.ovm-status { font-size: 10px; padding: 2px 8px; border-radius: 999px; margin-left: auto; }
+.ovm-status-running { background: rgba(67 209 122 / .15); color: #43d17a; }
+.ovm-status-idle { background: rgba(255 255 255 / .08); color: var(--muted); }
+.ovm-status-stopped { background: rgba(245 189 79 / .15); color: #f5bd4f; }
+.ovm-status-failed { background: rgba(239 107 115 / .15); color: #ef6b73; }
+.ovm-status-completed { background: rgba(102 128 168 / .15); color: #6680a8; }
+.ovm-close {
+  width: 24px; height: 24px; border: 0; border-radius: 6px;
+  background: transparent; color: var(--muted); font-size: 16px; cursor: pointer;
+}
+.ovm-close:hover { background: rgba(255 255 255 / .08); color: var(--text); }
+
+/* 拖动：标题栏拖拽手柄 + 拖动中光标与禁选中 */
+.ovm-header { cursor: grab; user-select: none; }
+.ovm-header:active { cursor: grabbing; }
+.ovm-drag-handle { color: var(--muted); font-size: 12px; opacity: .7; }
+.ovm-widget.dragging, .ovm-widget.dragging * { cursor: grabbing !important; user-select: none !important; }
+
+.ovm-body { padding: 12px 16px; overflow-y: auto; flex: 1; min-height: 0; }
+
+/* 启动表单 */
+.ovm-form { display: grid; gap: 10px; }
+.ovm-field { display: flex; flex-direction: column; gap: 4px; }
+.ovm-field span { font-size: 11px; color: var(--muted); }
+.ovm-field input, .ovm-field select {
+  padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--bg-soft); color: var(--text); font-size: 12px;
+  font-family: var(--font-mono);
+}
+.ovm-field input:focus, .ovm-field select:focus { outline: 0; border-color: var(--accent); }
+.ovm-field-wide { grid-column: 1 / -1; }
+
+/* 数据面芯片多选（复用全局 .facet-chip，此处只做尺寸收紧） */
+.ovm-facet-chips { flex-wrap: wrap; gap: 5px; }
+.ovm-facet-chips .facet-chip { padding: 2px 9px; font-size: 10px; }
+.ovm-facet-hint { display: block; font-size: 10px; color: var(--muted); margin-bottom: 2px; }
+
+/* 停止日期时间选择 + 快捷按钮 */
+.ovm-datetime { display: flex; gap: 6px; }
+.ovm-datetime input {
+  flex: 1; min-width: 0; padding: 5px 8px; border: 1px solid var(--line);
+  border-radius: 6px; background: var(--bg-soft); color: var(--text);
+  font: 12px var(--font-mono); color-scheme: dark;
+}
+.ovm-datetime input:focus { outline: 0; border-color: var(--accent); }
+.ovm-quick-btns { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+.ovm-quick-btn {
+  padding: 3px 10px; border: 1px solid var(--line); border-radius: 999px;
+  background: transparent; color: var(--muted); font-size: 10px;
+  cursor: pointer; transition: all .12s;
+}
+.ovm-quick-btn:hover { color: var(--text); border-color: var(--accent); }
+.ovm-quick-btn.active {
+  color: #fff; border-color: var(--accent, #5b8cff);
+  background: color-mix(in srgb, var(--accent, #5b8cff) 22%, transparent);
+}
+.ovm-deadline-hint { margin-top: 4px; }
+
+.ovm-toggles { display: flex; gap: 16px; grid-column: 1 / -1; }
+.ovm-toggle { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+.ovm-toggle input { width: 14px; height: 14px; accent-color: var(--accent); }
+.ovm-toggle span { font-size: 11px; color: var(--text-dim, #8a93a6); }
+
+.ovm-start-btn {
+  grid-column: 1 / -1;
+  padding: 8px; border: 0; border-radius: 8px;
+  background: var(--accent); color: #fff; font-size: 13px; font-weight: 600;
+  cursor: pointer; transition: opacity .15s;
+}
+.ovm-start-btn:hover:not(:disabled) { opacity: .9; }
+.ovm-start-btn:disabled { opacity: .5; cursor: not-allowed; }
+
+.ovm-error { grid-column: 1 / -1; font-size: 11px; color: #ef6b73; margin: 0; }
+
+/* 运行态信息 */
+.ovm-running-info { display: grid; gap: 8px; }
+.ovm-info-row { display: flex; justify-content: space-between; align-items: center; }
+.ovm-info-label { font-size: 11px; color: var(--muted); }
+.ovm-info-val { font-size: 12px; color: var(--text); font-family: var(--font-mono); }
+
+.ovm-stop-btn {
+  margin-top: 6px; padding: 7px; border: 1px solid rgba(239 107 115 / .4);
+  border-radius: 8px; background: rgba(239 107 115 / .1); color: #ef6b73;
+  font-size: 12px; font-weight: 500; cursor: pointer; transition: all .15s;
+}
+.ovm-stop-btn:hover:not(:disabled) { background: rgba(239 107 115 / .2); }
+.ovm-stop-btn:disabled { opacity: .5; cursor: not-allowed; }
+
+/* 当前运行 run 列表（逐条停止） */
+.ovm-runs-block {
+  margin-top: 10px; padding: 8px 10px; border: 1px solid var(--line);
+  border-radius: 8px; background: var(--bg-soft);
+  display: grid; gap: 6px;
+}
+.ovm-runs-title { font-size: 11px; color: var(--muted); font-weight: 500; }
+.ovm-run-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+}
+.ovm-run-meta { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.ovm-run-id {
+  font: 11px var(--font-mono); color: var(--text); background: rgb(255 255 255 / .06);
+  padding: 1px 6px; border-radius: 4px; white-space: nowrap;
+}
+.ovm-run-status { font-size: 10px; padding: 1px 6px; border-radius: 999px; white-space: nowrap; }
+.ovm-run-status-starting { background: rgba(245 189 79 / .15); color: #f5bd4f; }
+.ovm-run-status-running { background: rgba(67 209 122 / .15); color: #43d17a; }
+.ovm-run-status-stopping { background: rgba(245 189 79 / .15); color: #f5bd4f; }
+.ovm-run-events { font-size: 10px; color: var(--muted); white-space: nowrap; }
+.ovm-run-stop {
+  flex-shrink: 0; padding: 3px 10px; border: 1px solid rgba(239 107 115 / .4);
+  border-radius: 6px; background: transparent; color: #ef6b73;
+  font-size: 11px; cursor: pointer; transition: all .12s;
+}
+.ovm-run-stop:hover:not(:disabled) { background: rgba(239 107 115 / .15); }
+.ovm-run-stop:disabled { opacity: .5; cursor: not-allowed; }
+.ovm-no-runs { font-size: 11px; color: var(--muted); margin-top: 6px; }
+
+/* 日志尾 */
+.ovm-log-section { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
+.ovm-log-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.ovm-log-header span:first-child { font-size: 11px; color: var(--muted); font-weight: 500; }
+.ovm-log-count { font-size: 10px; color: var(--muted); font-family: var(--font-mono); }
+.ovm-log-tail {
+  max-height: 200px; overflow-y: auto; margin: 0; padding: 8px;
+  border-radius: 6px; background: var(--bg-soft);
+  font: 10px/1.5 var(--font-mono); color: var(--text-dim, #8a93a6);
+  white-space: pre-wrap; word-break: break-all;
+}
+
+/* 整体统计：轻量自动轮询开关与脉冲点 */
+.metrics-poll-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  font-size: 11px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--bg-soft);
+  color: var(--muted);
+  cursor: pointer;
+  transition: all .15s;
+}
+.metrics-poll-toggle:hover {
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+.metrics-poll-toggle.active {
+  border-color: rgba(67, 209, 122, 0.35);
+  background: rgba(67, 209, 122, 0.08);
+  color: #43d17a;
+}
+.metrics-poll-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--muted);
+  display: inline-block;
+  transition: background .2s;
+}
+.metrics-poll-toggle.active .metrics-poll-dot {
+  background: #43d17a;
+  box-shadow: 0 0 6px rgba(67, 209, 122, 0.6);
+}
+.metrics-poll-dot.pulse {
+  animation: ovm-pulse 2s infinite;
+}

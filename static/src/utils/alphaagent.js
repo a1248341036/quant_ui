@@ -306,70 +306,130 @@ export function toolResultMessage(row, key) {
   }
 }
 
+// 思考链文本超限截断阈值：历史会话卡顿主因是 thinking 全量文本（每条约 2 万字符）
+// 直接渲染进 DOM。超过阈值的只把预览放进 DOM，完整文本保留在 full 字段，
+// 用户主动"展开全文"时才渲染（减少默认 DOM 文本量 10 倍以上）。
+export const THINK_PREVIEW_LIMIT = 2000
+
+function thinkingMessage(key, kind, label, text) {
+  const full = String(text || '')
+  const long = full.length > THINK_PREVIEW_LIMIT
+  return {
+    key,
+    kind,
+    label,
+    text: long ? full.slice(0, THINK_PREVIEW_LIMIT) + '\n…（已截断，展开查看全部）' : full,
+    full: long ? full : '',
+    long,
+  }
+}
+
+/** ML 组合（stacking）事件 → 一句话文案（防御性：后端未来若走 SSE 发射 ml_* 事件时复用） */
+export function mlEventText(event) {
+  const name = String(event.event || '').replace(/^ml_/, '')
+  const msg = event.message || event.content || ''
+  const detail = []
+  if (event.n_recommended != null) detail.push(`推荐 ${event.n_recommended} 个`)
+  if (event.n_hit != null) detail.push(`命中 ${event.n_hit}`)
+  if (event.reused) detail.push('复用锁定推荐')
+  if (event.status) detail.push(event.status)
+  const suffix = detail.length ? '（' + detail.join(' · ') + '）' : ''
+  return 'ML 组合 · ' + name + (msg ? '：' + msg : '') + suffix
+}
+
 // 事件流 → 会话时间线消息（纯函数；跳过心跳/usage 等内部事件）
+
+// 内部事件集合：进事件数组但不渲染成时间线消息
+const INTERNAL_EVENTS = new Set(['heartbeat', 'stream_start', 'usage', 'reviewer_usage', 'usage_total'])
+
+export function isInternalEvent(event) {
+  return INTERNAL_EVENTS.has(event?.event)
+}
+
+// 倒序扫描（不复制数组）取最后一条非内部事件——供"当前活动"文案用。
+// 长会话 events 数百条时，旧实现的 [...events].reverse().find() 每次事件都 O(n) 复制。
+function lastActionEvent(events) {
+  for (let i = (events || []).length - 1; i >= 0; i--) {
+    if (!isInternalEvent(events[i])) return events[i]
+  }
+  return {}
+}
+
+/**
+ * 将单个事件映射为时间线消息并追加到 out（增量路径与全量重建共用同一映射）。
+ * 每条消息盖唯一 _uid（= 追加时的 out.length）：v-for key 用它而不是数组下标，
+ * 时间线增量追加时老消息的 key 不漂移，Vue 能复用 DOM 节点而不是全量重渲染。
+ */
+export function pushTimelineMessage(out, event) {
+  if (isInternalEvent(event)) return
+  const key = event.ts || ''
+  const push = (msg) => { msg._uid = out.length; out.push(msg) }
+  if (event.event === 'user_message') {
+    push({ key, kind: 'user', text: event.content || '' })
+  } else if (event.event === 'agent_thinking') {
+    push(thinkingMessage(key, 'thinking', '思考摘要', event.content || ''))
+  } else if (event.event === 'assistant_tool_call') {
+    const args = parseArgs(event.arguments_raw)
+    push({ key, kind: 'tool_call', name: event.name || 'tool', factorName: args.factor_name || '', expression: args.multi_line_expr || '', text: event.arguments_raw || '' })
+  } else if (event.event === 'assistant_message') {
+    push({ key, kind: 'assistant', text: event.content || '' })
+  } else if (event.event === 'assistant') {
+    if (event.reasoning) push(thinkingMessage(key + '-r', 'thinking', '思考摘要', event.reasoning))
+    if (event.content) push({ key: key + '-a', kind: 'assistant', text: event.content })
+    for (const call of event.tool_calls || []) {
+      const args = parseArgs(call.function?.arguments || '')
+      push({ key: key + '-t-' + (call.id || call.function?.name || ''), kind: 'tool_call', name: call.function?.name || call.name || 'tool', factorName: args.factor_name || '', expression: args.multi_line_expr || '', text: call.function?.arguments || '' })
+    }
+  } else if (event.event === 'tool_results') {
+    for (const result of event.results || []) push(toolResultMessage(result, key))
+  } else if (event.event === 'run_summary') {
+    const tools = event.tool_calls || {}
+    push({ key, kind: 'system', text: '运行总结 · 工具调用 ' + (tools.count || 0) + ' 次 · 成功 ' + (tools.ok || 0) + ' 次' })
+  } else if (event.event === 'session_start') {
+    push({ key, kind: 'system', text: '会话开始 · ' + (event.model || '-') })
+  } else if (event.event === 'session_end') {
+    push({ key, kind: 'system', text: '会话结束 · ' + (event.reason || '-') })
+  } else if (event.event === 'research_memory_retrieved') {
+    push({ key, kind: 'system', text: `动态检索长期记忆 ${event.entry_count || 0} 条` })
+  } else if (event.event === 'nudge') {
+    push({ key, kind: 'system', text: 'Agent 继续推进研究' })
+  } else if (event.event === 'continuation_queued') {
+    push({ key, kind: 'system', text: '已追加指令，等待当前模型调用或工具批次结束后继续' })
+    push({ key: key + '-user', kind: 'user', text: event.content || '' })
+  } else if (event.event === 'continuation_accepted') {
+    push({ key, kind: 'system', text: 'Agent 已接收追加指令，开始下一轮研究' })
+  } else if (event.event === 'continuation_started') {
+    push({ key, kind: 'system', text: '已从这段研究历史恢复上下文，继续新的 Agent 回合' })
+    push({ key: key + '-user', kind: 'user', text: event.content || '' })
+  } else if (event.event === 'branch_started') {
+    push({ key, kind: 'system', text: '已从此处新建分支，分支会继承此前研究上下文' })
+    push({ key: key + '-user', kind: 'user', text: event.content || '' })
+  } else if (event.event === 'reviewer_start') {
+    push({ key, kind: 'system', text: 'FactorReviewer 开始独立审查候选因子' })
+  } else if (event.event === 'reviewer_thinking') {
+    push(thinkingMessage(key, 'reviewer_thinking', 'FactorReviewer 审查中', event.content || ''))
+  } else if (event.event === 'reviewer_message') {
+    push({ key, kind: 'assistant', text: 'FactorReviewer：' + (event.content || '') })
+  } else if (event.event === 'factor_review') {
+    push({
+      key,
+      kind: 'review',
+      verdict: event.verdict || 'reject',
+      novelty: event.novelty || 'low',
+      canonical: event.canonical_form || '未分类',
+      reasons: Array.isArray(event.reasons) ? event.reasons : [],
+      changes: Array.isArray(event.required_changes) ? event.required_changes : [],
+    })
+  } else if (event.event && event.event.startsWith('ml_')) {
+    // ML 组合（stacking）事件：默认展示为系统消息，语义来自 event.message / content
+    push({ key, kind: 'system', text: mlEventText(event) })
+  }
+}
+
+// 全量重建（会话加载/切换时用）；运行中的增量追加走 store.appendEvent → pushTimelineMessage
 export function buildTimeline(events) {
   const out = []
-  for (const [index, event] of (events || []).entries()) {
-    const key = event.ts || String(index)
-    if (event.event === 'heartbeat' || event.event === 'stream_start' || event.event === 'usage' || event.event === 'reviewer_usage' || event.event === 'usage_total') continue
-    if (event.event === 'user_message') {
-      out.push({ key, kind: 'user', text: event.content || '' })
-    } else if (event.event === 'agent_thinking') {
-      out.push({ key, kind: 'thinking', label: '思考摘要', text: event.content || '' })
-    } else if (event.event === 'assistant_tool_call') {
-      const args = parseArgs(event.arguments_raw)
-      out.push({ key, kind: 'tool_call', name: event.name || 'tool', factorName: args.factor_name || '', expression: args.multi_line_expr || '', text: event.arguments_raw || '' })
-    } else if (event.event === 'assistant_message') {
-      out.push({ key, kind: 'assistant', text: event.content || '' })
-    } else if (event.event === 'assistant') {
-      if (event.reasoning) out.push({ key: key + '-r', kind: 'thinking', label: '思考摘要', text: event.reasoning })
-      if (event.content) out.push({ key: key + '-a', kind: 'assistant', text: event.content })
-      for (const call of event.tool_calls || []) {
-        const args = parseArgs(call.function?.arguments || '')
-        out.push({ key: key + '-t-' + (call.id || call.function?.name || ''), kind: 'tool_call', name: call.function?.name || call.name || 'tool', factorName: args.factor_name || '', expression: args.multi_line_expr || '', text: call.function?.arguments || '' })
-      }
-    } else if (event.event === 'tool_results') {
-      for (const result of event.results || []) out.push(toolResultMessage(result, key))
-    } else if (event.event === 'run_summary') {
-      const tools = event.tool_calls || {}
-      out.push({ key, kind: 'system', text: '运行总结 · 工具调用 ' + (tools.count || 0) + ' 次 · 成功 ' + (tools.ok || 0) + ' 次' })
-    } else if (event.event === 'session_start') {
-      out.push({ key, kind: 'system', text: '会话开始 · ' + (event.model || '-') })
-    } else if (event.event === 'session_end') {
-      out.push({ key, kind: 'system', text: '会话结束 · ' + (event.reason || '-') })
-    } else if (event.event === 'research_memory_retrieved') {
-      out.push({ key, kind: 'system', text: `动态检索长期记忆 ${event.entry_count || 0} 条` })
-    } else if (event.event === 'nudge') {
-      out.push({ key, kind: 'system', text: 'Agent 继续推进研究' })
-    } else if (event.event === 'continuation_queued') {
-      out.push({ key, kind: 'system', text: '已追加指令，等待当前模型调用或工具批次结束后继续' })
-      out.push({ key: key + '-user', kind: 'user', text: event.content || '' })
-    } else if (event.event === 'continuation_accepted') {
-      out.push({ key, kind: 'system', text: 'Agent 已接收追加指令，开始下一轮研究' })
-    } else if (event.event === 'continuation_started') {
-      out.push({ key, kind: 'system', text: '已从这段研究历史恢复上下文，继续新的 Agent 回合' })
-      out.push({ key: key + '-user', kind: 'user', text: event.content || '' })
-    } else if (event.event === 'branch_started') {
-      out.push({ key, kind: 'system', text: '已从此处新建分支，分支会继承此前研究上下文' })
-      out.push({ key: key + '-user', kind: 'user', text: event.content || '' })
-    } else if (event.event === 'reviewer_start') {
-      out.push({ key, kind: 'system', text: 'FactorReviewer 开始独立审查候选因子' })
-    } else if (event.event === 'reviewer_thinking') {
-      out.push({ key, kind: 'reviewer_thinking', text: event.content || '' })
-    } else if (event.event === 'reviewer_message') {
-      out.push({ key, kind: 'assistant', text: 'FactorReviewer：' + (event.content || '') })
-    } else if (event.event === 'factor_review') {
-      out.push({
-        key,
-        kind: 'review',
-        verdict: event.verdict || 'reject',
-        novelty: event.novelty || 'low',
-        canonical: event.canonical_form || '未分类',
-        reasons: Array.isArray(event.reasons) ? event.reasons : [],
-        changes: Array.isArray(event.required_changes) ? event.required_changes : [],
-      })
-    }
-  }
+  for (const event of events || []) pushTimelineMessage(out, event)
   return out
 }
 
@@ -378,7 +438,7 @@ export function computeCurrentActivity(status, pendingMessages, events) {
   if (status === 'stopping') return '正在停止 Agent…'
   if (pendingMessages) return '已排队 ' + pendingMessages + ' 条追加指令，等待当前步骤结束…'
   if (!(events || []).length) return '正在加载数据并初始化 Agent…'
-  const last = [...events].reverse().find(e => !['heartbeat', 'stream_start', 'usage', 'reviewer_usage', 'usage_total'].includes(e.event)) || {}
+  const last = lastActionEvent(events)
   if (last.event === 'session_start') return '研究会话已建立 · 模型 ' + (last.model || '当前模型')
   if (last.event === 'research_memory_retrieved') return '已按最新进展检索 ' + (last.entry_count || 0) + ' 条研究记忆'
   if (last.event === 'agent_thinking') return dynamicThinking(last.content)
@@ -404,7 +464,7 @@ export function computeCurrentActivity(status, pendingMessages, events) {
 // 打字行动画文案
 export function computeLiveActivity(events, currentActivityValue) {
   if (!(events || []).length) return '正在加载数据并初始化 Agent…'
-  const last = [...events].reverse().find(e => !['heartbeat', 'stream_start', 'usage', 'reviewer_usage', 'usage_total'].includes(e.event)) || {}
+  const last = lastActionEvent(events)
   const turn = last.turn != null ? ' [Turn ' + (last.turn + 1) + ']' : ''
   if (last.event === 'llm_request') return '正在调用模型 · ' + (last.model || '') + ' · 上下文 ' + (last.message_count || '?') + ' 条消息' + turn
   if (last.event === 'assistant') {

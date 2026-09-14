@@ -291,3 +291,62 @@ gate passed=True  fail_reasons=[]
 - 0.001 尽管在 train/val 段重叠不达标（§12.3），但盲测段重叠 53.4% 过线——显示盲测段该组合换手特征与 train/val 段不同，终局如实放行。
 
 双段工具链闭环：`select_ml_exec_params.py`（选参）→ `exec_params.json`（锁定）→ `train_ml_composite.py --exec-params`（终局裁决）。盲测隔离纪律完整落地。
+
+---
+
+## 14. 新候选因子验证（2026-09-13，盲测隔离 v2 首次复验）
+
+2026-09-11~12 候选池新增 5 条因子后，沿双段工具链完整复验一次，回答"新挖因子对新 ML 是否有用"。
+
+### 14.1 脚本缺陷修复（本次先修）
+
+复验中发现 `select_ml_exec_params.py` 两个真实缺陷，已提交修复（`86cdced`，fix 分支并 merge 回 deploy）：
+
+1. **选参窗口漂移**：`use_folds[:3]` 在面板起点扩张（CNE 数据湖现覆盖 2020-01-02 起）时取最早 3 折（2020-08~2021-11），远离 `mining_end`，与 v4 口径（2023-11~2024-09）不可比——v5 实测组合 Excess Sharpe 全转负。改为 `[-3:]` 取贴 `mining_end` 的最后 3 折。
+2. **freq 覆盖 bug**：selection dict 中第二行 `"freq": policy_base.get("freq", "weekly")` 覆盖了选定 `chosen["freq"]`，坐标扫描选定 monthly 时会错误落盘 weekly。已删除。
+
+修复后窗口验证：`2023-07-03 ~ 2024-09-30`（3 折，全在 `mining_end=2024-12-31` 前）。
+
+### 14.2 选参段（v6，train/val 段）
+
+```
+窗口：2023-07-03 ~ 2024-09-30（3 折，OOS 末端均 < 2024-12-31，盲测段未触碰）
+8 组 width×freq 扫描：全部未过 gate（hold_overlap 卡住）
+选定：pct=0.004  freq=monthly  capital=100,000  （excess_sharpe 最高 0.3123，诚实记录未过）
+```
+
+对比 v4 选参（0.001×weekly）：窗口贴 mining_end 后 + 新因子池下，选出的最优参数变为 0.004×monthly。
+
+### 14.3 盲测终局（blind_newpool_v6）
+
+```
+执行参数来自 train/val 段锁定文件 exec_select_v6/exec_params.json：pct=0.004, freq=monthly
+gate passed=False  fail_reasons=['excess_annual','excess_sharpe','hold_overlap']
+  excess_annual=-9.9%  excess_sharpe=-0.054  daily_overlap=39.0%  turnover=69.5%  mdd=-37.1%
+OOS IC=0.057  ICIR=0.439（统计端依然健康，fold IC 0.02~0.13）
+```
+
+### 14.4 新因子归因（同参对照，关键）
+
+用 **v4 同参数（0.001×weekly×10万）** 跑新池做同参对照，隔离"参数 vs 池子"：
+
+| 维度 | v4 旧池（0.001 weekly） | 新池（0.001 weekly 同参） | 新池（v6 选参 0.004 monthly） |
+|---|---|---|---|
+| gate | **passed** | failed | failed |
+| excess_annual | **+14.4%** | **-3.4%** | -9.9% |
+| excess_sharpe | **0.515** | 0.197 | -0.054 |
+| daily_overlap | **53.4%** | 49.1% | 39.0% |
+| turnover | 60.0% | 61.3% | 69.5% |
+| max_drawdown | -33.1% | -42.3% | -37.1% |
+| OOS IC | 0.059 | 0.057 | 0.057 |
+
+**结论：新因子池对盲测 gate 是负贡献**（或至少无正贡献并干扰组合）：
+- 同参数下（0.001 weekly），仅把候选池换成含新因子的新池，excess_annual 从 **+14.4% 掉到 -3.4%**（-17.8pp）、excess_sharpe 从 0.52 掉到 0.20、overlap 从 53.4% 掉到 49.1%、mdd 恶化到 -42.3%——gate 从通过打成失败。
+- **5 条新因子中 4 条被冗余过滤剔除**（`am40_gdv8_gr5`、`lev_volbkt_gap20_vw5_2leg_rankgz_w05_sm2`、`vwself_onvw_mix_ovrese3_ema5`、`mix_ovlead_wma5_kg90_totcap_m15` 全部冗余于老因子 `illiq_x_vwapprem_div_sm3`，即与流动性族高度共线）；仅 `liq20_w097_gap13_gr_sm3` 存活（还把老的 `ovdiv_sub_szneut_wma20` 挤出），其 OOS 衰减保留比 1.59（OOS IC 0.0475 > mining 0.0299，池中最强保持力之一）但置换贡献弱（ridge ic_drop=-0.003、权重仅 2.5%）。
+- OOS 统计 IC 未恶化（0.057~0.059），但换手/重叠/回撤全面恶化——**统计有效性仍不转化为可交易性，执行层是瓶颈（组合交换手问题），加因子未解决反而加重**。
+
+### 14.5 复验结论
+
+- 双段工具链工作正常：选参全部在 mining_end 前、盲测段一次裁决、参数不回流，盲测隔离纪律完整保持。
+- **新挖这批因子（流动性族变体）对 ML 组合无用**：4/5 冗余、1/5 边际贡献近零，整体把盲测 gate 从通过打成失败。
+- 若继续 ML 优化，瓶颈在组合交换手（hold_overlap），应从训练分数侧（更长平滑/降频/更正交因子）入手，而非加同族因子。

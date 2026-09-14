@@ -61,6 +61,23 @@ SCHEME_LABELS = {
 }
 
 
+def _emit_event(out_dir: Path, event: str, **payload: Any) -> None:
+    """标准化 ML 事件推流与落盘：打印 [ML_EVENT] 供实时 tail，同时双写 events.jsonl。"""
+    data = {
+        "ts": datetime.now().isoformat(timespec="seconds"),
+        "event": event,
+        **payload,
+    }
+    line = f"[ML_EVENT] {json.dumps(data, ensure_ascii=False, default=str)}"
+    print(line, flush=True)
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        with (out_dir / "events.jsonl").open("a", encoding="utf-8") as f:
+            f.write(json.dumps(data, ensure_ascii=False, default=str) + "\n")
+    except Exception:
+        pass
+
+
 def _parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--modes", nargs="+", default=["technical", "fundamental"],
@@ -130,15 +147,47 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--isolation", default="strict", choices=["strict", "holdout"],
                     help="strict：walk-forward 仅用挖掘期后干净段（fold 少但指标可信）；"
                          "holdout：全历史训练、挖掘期后干净段整体作留出测试（推荐）")
+    ap.add_argument("--eval-mode", default="tuning", choices=["tuning", "blind_test"],
+                    help="评估模式：tuning=研发验证模式（默认，右端严格物理截断至 val_end 2024-12-31，2025+盲测段完全不加载）；"
+                         "blind_test=终审盲测模式（仅用于定稿后一次性离线评估，严禁开启 --llm-assist）")
     ap.add_argument("--pred-out", default=None, help="pred 分数输出路径（默认 data/stock/pred_demo.parquet）")
+    ap.add_argument("--llm-assist", action="store_true",
+                    help="LLM 辅助：A) 枚举后语义研判推荐因子子集（白名单，不给权重）；"
+                         "C) 训练后生成组合说明书写入 report.llm_summary。"
+                         "推荐落盘后按候选池指纹锁定复用，池不变不重调 LLM；"
+                         "失败自动回退全量因子，绝不阻断训练（默认关闭）")
     return ap.parse_args()
 
 
 def main() -> None:
     args = _parse_args()
+
+    # ── 盲测保护第一道防线：盲测模式绝对禁止 LLM 介入，防止盲测段数据被 LLM 窥探 ──
+    if args.eval_mode == "blind_test" and args.llm_assist:
+        print("[safety-violation] 安全拦截：--eval-mode blind_test 下绝对禁止开启 --llm-assist！"
+              "盲测数据必须作为诚实样本外严格保留，禁止 LLM 窥探或回流调优。")
+        sys.exit(1)
+
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_dir = Path(args.out_dir) if args.out_dir else ROOT / "artifacts" / "alphaagent" / "stacking" / run_id
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    _emit_event(
+        out_dir,
+        "session_start",
+        run_id=run_id,
+        eval_mode=args.eval_mode,
+        scheme=args.scheme,
+        scheme_label=SCHEME_LABELS.get(args.scheme, args.scheme),
+        model=args.model,
+        label_days=args.label_days,
+        train_months=args.train_months,
+        step_months=args.step_months,
+        isolation=args.isolation,
+        no_candidate=args.no_candidate,
+        max_corr=args.max_corr,
+        llm_assist=args.llm_assist,
+    )
 
     # ① 因子枚举
     entries = collect_factor_entries(
@@ -149,6 +198,96 @@ def main() -> None:
         entries = [e for e in entries if e.name in wanted]
         print(f"因子白名单：请求 {len(wanted)} 个，命中 {len(entries)} 个")
     print(f"因子枚举：{len(entries)} 个（去重后）")
+    if len(entries) < 2:
+        print("因子数不足（<2），无法组合。请先挖掘入库更多因子（或核对白名单拼写）。")
+        sys.exit(1)
+
+    # ①b LLM 语义推荐（A 族，--llm-assist 开启时）：
+    #    在白名单过滤之后、mining_end 推断与数据集构建之前，只做语义预筛。
+    #    白名单只是有界预筛，最终有效特征仍由 build_stacking_dataset 的
+    #    max-corr 冗余过滤收口。推荐落盘后按候选池指纹锁定复用：池不变
+    #    直接复用（盲测可复现），池变（新增/删因子）判定过期重新研判。
+    #    任何失败回退全量，绝不阻断训练。
+    llm_recommendation_meta: dict | None = None
+    entries_snapshot = list(entries)  # LLM 推荐回退全量时恢复用
+    if args.llm_assist:
+        from alphaagent.core.llm_provider import load_codex_provider
+        from alphaagent.factor.stacking.llm_assist import (
+            RECOMMENDATION_LOCK_FILE,
+            candidate_pool_fingerprint,
+            llm_recommend_subset,
+        )
+
+        pool_fp = candidate_pool_fingerprint(entries)
+        rec: dict | None = None
+        reused = False
+        _emit_event(
+            out_dir,
+            "agent_thinking",
+            title="LLM 因子研判与子集推荐",
+            content=f"当前候选池共 {len(entries_snapshot)} 个因子。正在结合数据面多样性与经济逻辑，进行语义去冗余分析...",
+        )
+        try:
+            if RECOMMENDATION_LOCK_FILE.is_file():
+                try:
+                    rec = json.loads(RECOMMENDATION_LOCK_FILE.read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, OSError):
+                    rec = None
+                if not isinstance(rec, dict):  # 锁定文件被手改坏 → 重新研判
+                    rec = None
+                if rec is not None and rec.get("pool_fingerprint") != pool_fp:
+                    print("[warn] 已有 LLM 推荐的候选池指纹与当前不一致（因子池已变化），视作过期，重新研判")
+                    rec = None
+            if rec is not None and not isinstance(rec.get("recommended"), list):
+                rec = None
+            if rec is not None:
+                reused = True
+                print(f"LLM 推荐：复用锁定推荐（{len(rec.get('recommended') or [])} 个因子，池指纹未变，不重调 LLM）")
+            else:
+                load_codex_provider()
+                rec = llm_recommend_subset(entries, pool_fingerprint=pool_fp)
+        except Exception as exc:  # noqa: BLE001  硬保证：A 任何异常回退全量，不阻断训练
+            print(f"[warn] LLM 推荐环节异常，回退全量因子：{exc}")
+            rec = None
+        if rec and isinstance(rec.get("recommended"), list) and rec["recommended"]:
+            allowed = {n for n in rec["recommended"] if isinstance(n, str)}
+            before = len(entries)
+            entries = [e for e in entries if e.name in allowed]
+            if len(entries) < 2:
+                print(f"[warn] LLM 推荐与当前候选池交集仅 {len(entries)} 个（<2），回退全量因子")
+                entries = entries_snapshot
+            else:
+                print(f"LLM 推荐 {len(rec['recommended'])} 个，命中 {len(entries)}/{before} 个"
+                      f"（依据: {str(rec.get('rationale') or '')[:80]}）")
+                RECOMMENDATION_LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+                RECOMMENDATION_LOCK_FILE.write_text(
+                    json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8"
+                )
+                print(f"推荐已锁定写入 {RECOMMENDATION_LOCK_FILE}（候选池不变时后续训练直接复用）")
+                llm_recommendation_meta = {
+                    "recommended": rec["recommended"],
+                    "n_recommended": len(rec["recommended"]),
+                    "n_hit": len(entries),
+                    "rationale": rec.get("rationale"),
+                    "model": rec.get("model"),
+                    "pool_fingerprint": rec.get("pool_fingerprint"),
+                    "reused": reused,
+                }
+        else:
+            print("[warn] LLM 推荐不可用（LLM 不可用或输出不可解析），回退全量因子")
+            entries = entries_snapshot
+
+        _emit_event(
+            out_dir,
+            "ml_pool_screened",
+            title="因子子集语义研判结果",
+            recommended=llm_recommendation_meta.get("recommended") if llm_recommendation_meta else [],
+            rationale=llm_recommendation_meta.get("rationale") if llm_recommendation_meta else "已回退全量因子",
+            n_recommended=len(entries),
+            n_total=len(entries_snapshot),
+            reused=reused,
+        )
+
     if len(entries) < 2:
         print("因子数不足（<2），无法组合。请先挖掘入库更多因子（或核对白名单拼写）。")
         sys.exit(1)
@@ -176,17 +315,39 @@ def main() -> None:
     if mining_end.tzinfo is not None:
         mining_end = mining_end.tz_localize(None)
 
-    # ── 数据可用右端兜底（统一配置中心）──────────────────────────────
-    # mining_end 与 end 均不得超过数据源实际最新交易日，否则组合训练会静默
-    # 覆盖不存在的数据（历史教训：硬编码日期超过数据截至日）。动态解析
-    # resolve_test_end() = 数据源最新交易日，作为右端硬上限。
-    from alphaagent.factor.window_config import resolve_test_end
+    # ── 数据可用右端与盲测物理隔离（统一配置中心）──────────────────────────────
+    from alphaagent.factor.window_config import (
+        DEFAULT_TRAIN_END,
+        DEFAULT_VAL_END,
+        resolve_test_end,
+    )
 
-    data_latest = pd.Timestamp(resolve_test_end())
-    end = pd.Timestamp(args.end) if args.end else data_latest
-    if end > data_latest:
-        print(f"[warn] --end={end.date()} 超过数据源最新交易日 {data_latest.date()}，收敛到数据右端")
-        end = data_latest
+    if args.eval_mode == "tuning":
+        # ── 盲测保护核心防线：研发验证模式下，数据右端绝对物理封顶在 DEFAULT_VAL_END（2024-12-31）
+        # 2025-01-01 后的行情/标签/因子值在此处被物理截断，数据根本不进内存，LLM 物理上 0% 接触盲测数据
+        val_end_limit = pd.Timestamp(DEFAULT_VAL_END)
+        end = pd.Timestamp(args.end) if args.end else val_end_limit
+        if end > val_end_limit:
+            print(f"[safety] tuning 模式下 --end={end.date()} 超过验证段终点 {val_end_limit.date()}，物理截断至 {val_end_limit.date()}")
+            end = val_end_limit
+
+        # tuning 模式下，若 mining_end 为 auto，则对齐到 DEFAULT_TRAIN_END（2022-12-31），
+        # 留出 2023-01-01 ~ 2024-12-31（整整 24 个月的验证段）作为组合的 OOS 检验与 gate 回测，
+        # 保证组合评估与 LLM 说明书完全闭环在 2024 年底前，绝不窥探 2025+ 盲测段。
+        if args.mining_end == "auto":
+            mining_end = pd.Timestamp(DEFAULT_TRAIN_END)
+            print(f"[safety] tuning 模式时间隔离：mining_end 对齐至 train 终点 {mining_end.date()}，留出 2023~2024 作为安全 OOS 验证段")
+
+        print(f"[safety] 盲测安全隔离生效：eval_mode=tuning · 数据右端={end.date()} · 2025+ 盲测段物理隔离未加载")
+    else:
+        # blind_test 终审盲测模式：仅定稿后离线跑，且前面已拦截严禁开启 --llm-assist
+        data_latest = pd.Timestamp(resolve_test_end())
+        end = pd.Timestamp(args.end) if args.end else data_latest
+        if end > data_latest:
+            print(f"[warn] --end={end.date()} 超过数据源最新交易日 {data_latest.date()}，收敛到数据右端")
+            end = data_latest
+        print(f"[safety] 终审盲测模式：eval_mode=blind_test · 数据右端={end.date()} · 严禁 LLM 调优回流")
+
     if mining_end > end:
         print(f"[warn] mining_end={mining_end.date()} 超过数据右端 {end.date()}，收敛到数据右端")
         mining_end = end
@@ -195,11 +356,34 @@ def main() -> None:
 
     # ③ panel 加载（磁盘缓存命中则秒级）
     print("加载 CNE panel …")
+    _emit_event(
+        out_dir,
+        "ml_stage",
+        stage="panel_loading",
+        title="加载 CNE 数据面板",
+        message=f"正在拉取 [{panel_start.date()} ~ {end.date()}] 日线与基本面数据，执行盲测截断校验...",
+    )
     panel = load_panel_from_cne(start=panel_start, end=end, include_fundamentals=True)
     print(f"panel: {panel.shape[0]} 行 × {panel.shape[1]} 列")
+    _emit_event(
+        out_dir,
+        "ml_stage",
+        stage="panel_loaded",
+        title="面板数据加载就绪",
+        message=f"面板包含 {panel.shape[0]:,} 行 × {panel.shape[1]} 列，盲测段已严格截断",
+        rows=panel.shape[0],
+        cols=panel.shape[1],
+    )
 
     # ④ 数据集构建（物化 + 预处理 + 冗余过滤）
     cache = FactorValueCache()
+    _emit_event(
+        out_dir,
+        "ml_stage",
+        stage="dataset_building",
+        title="物化因子矩阵与去重",
+        message=f"正在物化因子值，并执行 max_corr={args.max_corr} 跨库冗余过滤...",
+    )
     dataset = build_stacking_dataset(
         panel,
         entries,
@@ -214,6 +398,15 @@ def main() -> None:
     print(f"有效特征 {len(dataset.feature_names)} 个；剔除 {len(dataset.dropped)} 个")
     for d in dataset.dropped:
         print(f"  - drop {d['name']} ({d['library']}): {d['reason']}")
+    _emit_event(
+        out_dir,
+        "ml_features_filtered",
+        title="特征筛选完成",
+        feature_names=dataset.feature_names,
+        n_features=len(dataset.feature_names),
+        n_dropped=len(dataset.dropped),
+        dropped=dataset.dropped,
+    )
 
     # ④b mRMR 推荐模式（B 族）：不训练，只输出"强+互补"推荐清单供前端一键勾选
     if args.recommend_k > 0:
@@ -316,6 +509,10 @@ def main() -> None:
                 "结论仅作框架演示，不能作为入库依据。".format(latest, end.date())
             )
         sys.exit(1)
+    # strict 分支此前不给 first_oos 赋值（只在 holdout 分支赋值），而
+    # scheme_compare（⑤c）在 gate（⑦ 原赋值点）之前就消费它 → strict 模式
+    # + ML 方案必崩 UnboundLocalError。统一在此处赋值，后续覆盖为同一值。
+    first_oos = pd.Timestamp(folds[0].oos_dates.min())
 
     is_simple_scheme = args.scheme != "ml"
     kinds = [] if is_simple_scheme else (["ridge", "lgbm"] if args.model == "both" else [args.model])
@@ -335,6 +532,18 @@ def main() -> None:
     fold_reports: dict[str, list] = {}
     feature_weights: dict[str, list] = {}
     feature_contribution: dict[str, list] = {}
+
+    _emit_event(
+        out_dir,
+        "ml_stage",
+        stage="walk_forward_start",
+        title="开始 Walk-Forward 滚动拟合",
+        total_folds=len(folds),
+        isolation=args.isolation,
+        models=kinds if kinds else [args.scheme],
+        message=f"共 {len(folds)} 折滚动区间，隔离模式：{args.isolation}",
+    )
+
     for kind in kinds:
         print(f"训练 {kind} …")
         pred, report, feat_w, feat_c = fit_predict_walkforward(
@@ -362,6 +571,16 @@ def main() -> None:
             print(f"  OOS {r['oos_start']}~{r['oos_end']}: n_train={r['n_train']} "
                   f"IC={ic if ic is None else round(ic, 4)} "
                   f"{'SKIP' if r.get('skipped') else ''}")
+
+        _emit_event(
+            out_dir,
+            "ml_fold_progress",
+            title=f"{kind.upper()} 拟合完成",
+            kind=kind,
+            fold_reports=report,
+            feature_weights=(feat_w or [])[:15],
+            feature_contribution=(feat_c or [])[:15],
+        )
 
     # 组合分数：多模型 OOS 预测取平均（折内无 in-sample 污染）
     if not is_simple_scheme:
@@ -441,7 +660,7 @@ def main() -> None:
 
     # ⑦ engine_gate 裁决（OOS 段，周调仓口径）
     gate_result = None
-    first_oos = folds[0].oos_dates.min()
+    first_oos = pd.Timestamp(folds[0].oos_dates.min())  # 已在折生成后赋值，此处保持原位兜底（同一值）
     if not args.no_gate:
         from alphaagent.factor.mining.engine_gate import run_engine_gate
 
@@ -485,6 +704,14 @@ def main() -> None:
         print(
             f"  excess_annual={gm.get('excess_annual')} excess_sharpe={gm.get('excess_sharpe')} "
             f"daily_overlap={gm.get('daily_overlap')} turnover={gate_result.get('diagnostics', {}).get('avg_daily_turnover')}"
+        )
+        _emit_event(
+            out_dir,
+            "ml_gate_evaluated",
+            title="engine_gate 门禁回测完成",
+            passed=gate_result.get("passed"),
+            metrics=gm,
+            fail_reasons=gate_result.get("fail_reasons") or [],
         )
 
     # ⑦b 累积子集曲线（可选）：按置换贡献降序 Top-k 逐级重训，
@@ -630,6 +857,8 @@ def main() -> None:
 
     report = {
         "run_id": run_id,
+        "eval_mode": args.eval_mode,
+        "blind_test_isolated": args.eval_mode == "tuning",
         "mining_end": str(mining_end.date()),
         "time_isolation": time_isolation,
         "panel_start": str(panel_start.date()),
@@ -652,6 +881,8 @@ def main() -> None:
         "scheme_compare": scheme_compare,
         "multi_path": multi_path,
     }
+    if args.llm_assist:
+        report["llm_recommendation"] = llm_recommendation_meta  # None=回退全量；否则含名单摘要/指纹/是否复用
     (out_dir / "report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=1, default=str), encoding="utf-8"
     )
@@ -670,6 +901,43 @@ def main() -> None:
     )
     print(f"报告与模型已写入 {out_dir}")
 
+    # ⑧b LLM 组合说明书（C 族，--llm-assist 开启时）：report.json 已完整落盘
+    #     之后才执行，读改写一次。llm_summarize_report 带超时（含重试 ≤40s），
+    #     失败只写 llm_summary_error 字段，训练核心交付物（模型/分数/report）
+    #     已在前面全部落盘，不受影响。
+    if args.llm_assist:
+        from alphaagent.core.llm_provider import load_codex_provider
+        from alphaagent.factor.stacking.llm_assist import llm_summarize_report
+
+        print("生成 LLM 组合说明书（C）…")
+        _emit_event(
+            out_dir,
+            "agent_thinking",
+            title="生成组合说明书",
+            content="正在汇总各折 OOS 收益特征与 Gate 实盘指标，撰写组合研判说明书...",
+        )
+        load_codex_provider()
+        try:
+            summary = llm_summarize_report(report)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[warn] LLM 说明书生成异常：{exc}")
+            summary = None
+        if summary:
+            report["llm_summary"] = summary
+            print(f"组合说明书已写入 report.llm_summary（summary: {summary['summary'][:60]}…）")
+            _emit_event(
+                out_dir,
+                "ml_summary_generated",
+                title="组合说明书已生成",
+                summary=summary,
+            )
+        else:
+            report["llm_summary_error"] = "生成失败（LLM 不可用或输出不可解析）"
+            print("[warn] LLM 说明书生成失败，已写入 llm_summary_error（训练结果不受影响）")
+        (out_dir / "report.json").write_text(
+            json.dumps(report, ensure_ascii=False, indent=1, default=str), encoding="utf-8"
+        )
+
     if not args.no_write_pred:
         pred_path = Path(args.pred_out) if args.pred_out else (ROOT / "data" / "stock" / "pred_demo.parquet")
         pred_path.parent.mkdir(parents=True, exist_ok=True)
@@ -681,6 +949,18 @@ def main() -> None:
         scores_path = out_dir / "scores.parquet"
         write_pred_parquet(stacked, panel, scores_path)
         print(f"组合分数已写入 out_dir 自包含副本：{scores_path}")
+
+    _emit_event(
+        out_dir,
+        "session_end",
+        title="组合训练收敛完成",
+        status="completed",
+        run_id=run_id,
+        oos_ic=report.get("oos_ic_blended", {}).get("ic_mean"),
+        oos_ir=report.get("oos_ic_blended", {}).get("ic_ir"),
+        gate_passed=gate_result.get("passed") if gate_result else None,
+        out_dir=str(out_dir),
+    )
 
 
 def _wma_smooth_scores(values: np.ndarray, panel: pd.DataFrame, window: int) -> np.ndarray:

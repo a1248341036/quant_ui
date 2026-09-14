@@ -16,12 +16,13 @@ class MiningConfig:
     eval: StockEvalContext
     model: str = "gpt-4o-mini"
     temperature: float | None = None
-    # 思考强度（2026-09-12 接入，默认 None=不设）：deepseek 系 thinking 平均
+    # 思考强度（2026-09-12 接入，默认 medium）：deepseek 系 thinking 平均
     # 17.7K 字符/次（rule13 预算的 5.9 倍）是挖掘墙钟最大头。reasoning_effort
-    # =low/medium 让模型结构性少思考（不砍 max_tokens，避免 tool_calls 截断
-    # 重蹈 12288 覆辙）；设 None 保持上游默认。模型不支持该参数时空参数透传
-    # 由中转返回错误（可经 extra_body 覆盖），监控启用后按 A/B 数据定默认值。
-    reasoning_effort: str | None = None
+    # =medium 结构性少思考但保持方向性（A/B 实测：none 26min/70 eval/0 promising
+    # vs medium 16min/120 eval/多 promising，吞吐 +178%），不砍 max_tokens，
+    # 避免 tool_calls 截断重蹈 12288 覆辙。显式关闭可经 CLI --reasoning-effort none
+    # 或前端 extra_body 覆盖。
+    reasoning_effort: str | None = "medium"
     max_tokens: int = 16384  # 2026-09-12 曾下探到 12288，2026-09-12 退回：
     # run 42254d3990f0 实测 37.3% 调用打满 12288（中位 9.4K、p90 封顶），thinking
     # 平均约 2 万字符，深思考型模型输出时长——降档只会把截断点提前，反而引入

@@ -870,6 +870,7 @@ async def run_factor_mining_agentscope(
         # 一轮调用（最多 3 次）；半截响应未完成工具链，最坏情况是上下文多一条
         # 截断 assistant 消息，远好于 run 直接报废。
         transport_attempts = 0
+        had_tools = False  # 兜底初始化：模型调用失败(如 429 配额)直接走 error 终态，避免 UnboundLocalError
         while True:
             try:
                 had_tools = await stream_to_cli(
@@ -912,6 +913,10 @@ async def run_factor_mining_agentscope(
                 break
 
         queued_messages = _take_control_messages()
+        if end_reason == "error":
+            # 模型调用失败（如 429 配额耗尽/认证失败）：直接终止本轮，
+            # 不进入 nudge/续跑逻辑，避免带病配置无限重试刷屏。
+            break
         if queued_messages:
             pending = _queued_prompt(queued_messages)
             _emit("continuation_accepted", {"turn": outer_turn, "count": len(queued_messages)})

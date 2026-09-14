@@ -13,7 +13,7 @@ import { reactive, computed, nextTick } from 'vue'
 import { api, getWindowDefaults } from '../utils/api.js'
 import {
   addUsage, usageFromEvents, emptyUsage, latestMetricsSnapshot,
-  buildTimeline, computeCurrentActivity, computeLiveActivity,
+  buildTimeline, pushTimelineMessage, computeCurrentActivity, computeLiveActivity,
   runTitle,
 } from '../utils/alphaagent.js'
 
@@ -25,6 +25,11 @@ export const agentStore = reactive({
   runs: [],
   current: null,
   events: [],
+  // 时间线消息（由 events 增量映射而来，不整表重建——长会话卡顿主因已消除）。
+  // 每条消息带唯一 _uid，v-for key 用它，追加时 Vue 只渲染新增节点。
+  timelineMsgs: [],
+  // 实时挖掘指标快照（增量追踪最后一个 metrics_snapshot，避免全量倒扫 events）
+  liveMetricsData: null,
   memory: [],
   usage: emptyUsage(),
   running: false,
@@ -137,14 +142,14 @@ export const agentStore = reactive({
     agentStore.researchMemoryStats?.entries ?? agentStore.summaryTotal),
   menuRun: computed(() => agentStore.runs.find(run => run.run_id === agentStore.menuRunId) || null),
   renameRun: computed(() => agentStore.runs.find(run => run.run_id === agentStore.renameRunId) || null),
-  timeline: computed(() => buildTimeline(agentStore.events)),
+  timeline: computed(() => agentStore.timelineMsgs),
   currentActivity: computed(() => computeCurrentActivity(
     agentStore.current?.status,
     agentStore.pendingMessages,
     agentStore.events,
   )),
   liveActivity: computed(() => computeLiveActivity(agentStore.events, agentStore.currentActivity)),
-  liveMetrics: computed(() => latestMetricsSnapshot(agentStore.events)),
+  liveMetrics: computed(() => agentStore.liveMetricsData),
   researchSpecCustom: computed(() => {
     const mode = agentStore.form.research_mode
     const overrides = agentStore.specOverridesByMode[mode] || {}
@@ -179,6 +184,20 @@ export const agentStore = reactive({
   requestScroll(force = false) {
     this.scrollForce = force
     nextTick(() => { this.scrollTick++ })
+  },
+
+  // ── 事件 → 时间线（增量维护） ──
+  // 批量赋值（会话加载/切换/分支/续跑）：全量重建一次时间线与指标快照
+  setEvents(events) {
+    this.events = events
+    this.timelineMsgs = buildTimeline(events)
+    this.liveMetricsData = latestMetricsSnapshot(events)
+  },
+  // 单条追加（SSE 运行中）：只映射新事件，O(1)，不再整表重建
+  appendEvent(event) {
+    this.events.push(event)
+    pushTimelineMessage(this.timelineMsgs, event)
+    if (event.event === 'metrics_snapshot') this.liveMetricsData = event
   },
 
   // ── 任务列表 / 会话操作 ──
@@ -247,7 +266,7 @@ export const agentStore = reactive({
     if (!this.current || !deletedIds.includes(this.current.run_id)) return
     if (stream) { stream.close(); stream = null }
     this.current = null
-    this.events = []
+    this.setEvents([])
   },
   async commitRename(run) {
     if (this.renameRunId !== run.run_id) return
@@ -287,11 +306,11 @@ export const agentStore = reactive({
       })
       this.current = result
       this.current.status = result.status || 'starting'
-      this.events = [
+      this.setEvents([
         ...parentEvents,
         { event: 'branch_started', ts: new Date().toISOString(), parent_run_id: run.run_id, content: content.trim() },
         ...(result.events || []),
-      ]
+      ])
       this.usage = usageFromEvents(this.events)
       this.pendingMessages = 0
       this.running = true
@@ -306,7 +325,7 @@ export const agentStore = reactive({
     if (stream) stream.close()
     stream = null
     this.current = null
-    this.events = []
+    this.setEvents([])
     this.usage = emptyUsage()
     this.pendingMessages = 0
     this.error = ''
@@ -330,7 +349,7 @@ export const agentStore = reactive({
         this.researchSpecText = JSON.stringify(detail.research_spec, null, 2)
         this.specError = ''
       }
-      this.events = await this.conversationEvents(detail)
+      this.setEvents(await this.conversationEvents(detail))
       this.usage = usageFromEvents(this.events)
       this.pendingMessages = 0
       this.running = ['starting', 'running'].includes(detail.status)
@@ -415,7 +434,7 @@ export const agentStore = reactive({
       })
       this.current = result
       this.current.status = result.status || 'starting'
-      this.events = result.events || []
+      this.setEvents(result.events || [])
       this.usage = emptyUsage()
       this.pendingMessages = 0
       this.form.user_message = ''
@@ -461,7 +480,7 @@ export const agentStore = reactive({
         body: JSON.stringify({ content }),
       })
       if (!result.ok) throw new Error('追加失败')
-      this.events.push({ event: 'continuation_queued', ts: new Date().toISOString(), content })
+      this.appendEvent({ event: 'continuation_queued', ts: new Date().toISOString(), content })
       this.pendingMessages += 1
       this.form.user_message = ''
       this.requestScroll(true)
@@ -479,7 +498,7 @@ export const agentStore = reactive({
         body: JSON.stringify({ content }),
       })
       if (result.status === 'queued') {
-        this.events.push({ event: 'continuation_queued', ts: new Date().toISOString(), content })
+        this.appendEvent({ event: 'continuation_queued', ts: new Date().toISOString(), content })
         this.form.user_message = ''
         // 原地续跑（对已结束会话点继续）：respawn 后流未连接，接上才能实时看到新段事件
         if (!stream) this.connectAgentEvents(result.run_id)
@@ -487,11 +506,11 @@ export const agentStore = reactive({
       }
       this.current = result
       this.current.status = result.status || 'starting'
-      this.events = [
+      this.setEvents([
         ...previousEvents,
         { event: 'continuation_started', ts: new Date().toISOString(), parent_run_id: previousRun.run_id, content },
         ...(result.events || []),
-      ]
+      ])
       this.running = true
       this.form.user_message = ''
       await this.loadAgentRuns()
@@ -536,7 +555,7 @@ export const agentStore = reactive({
         } else if (event.event === 'usage_total') {
           this.usage = { ...this.usage, ...event }
         } else {
-          this.events.push(event)
+          this.appendEvent(event)
           if (event.event === 'research_memory_updated') {
             this.loadResearchMemory(true)
             this.loadSummaryPage()

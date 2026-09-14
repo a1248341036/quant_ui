@@ -114,7 +114,10 @@ def main() -> None:
         step_months=step_months, purge_days=max(5, args.label_days),
     )
     use_folds = [f for f in folds if pd.Timestamp(f.oos_dates.max()) < mining_end]
-    use_folds = use_folds[:3]
+    # 取最靠近 mining_end 的最后 3 折——贴近盲测边界的 train/val 段代表性最强；
+    # 否则数据源起点扩张时（如面板覆盖到 2020）[:3] 会取到最早的折（2020~2021），
+    # 远离 mining_end，选出的参数不可比（v5 实测 excess_sharpe 全转负）。
+    use_folds = use_folds[-3:]
     if not use_folds:
         sys.exit("train/val 段（mining_end 前，OOS 完整在界内）不足一折，无法选参"
                  "——panel 起点太晚或 mining_end 太早。")
@@ -179,7 +182,6 @@ def main() -> None:
         "selection_pct": chosen["selection_pct"],
         "freq": chosen["freq"],
         "capital": cap,
-        "freq": policy_base.get("freq", "weekly"),
         "selected_window": {"start": tv_start, "end": tv_end},
         "selected_reason": "train/val段引擎门禁全门槛通过"
                            if chosen["passed"] else "train/val段全门槛未通过，取 excess_sharpe 最高（盲测终局将如实裁决）",
