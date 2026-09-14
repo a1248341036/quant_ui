@@ -194,6 +194,21 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
         # 记忆出题（AlphaMemo 口径）：每轮前 k 个评估名额由 recommend_edits 推荐
         # （父本×编辑类型，残差×置信排序），0 = 关闭。注入块只做解释，名额由推荐驱动。
         "suggest_slots": 2,
+        # 总开关（消融 A1）：False = 整个记忆系统关闭（不检索注入、不 APV 否决、
+        # 不编辑先验、不硬拦死路、不蒸馏），等价 research_memory_path=None 的
+        # 零记忆探索；默认 True 不改行为。
+        "enabled": True,
+    },
+    # 认知对账层开关（消融 C1/C2）：关闭后评估结果不再注入 prediction_check /
+    # ablation_check，软门累计缺失拦截同步关闭；默认双开不动行为。
+    "cognition_policy": {
+        "prediction_check_enabled": True,
+        "ablation_check_enabled": True,
+    },
+    # 算子黑名单（消融 D2）：出现在列表中的算子名（大写）在评估/提交前直接拦截，
+    # 算子目录同步隐藏，返回明确错误引导 LLM 改用基础算子；默认空清单不动行为。
+    "operator_policy": {
+        "blacklist": [],
     },
     "delivery_policy": _default_delivery_policy(),
     # 提示词分阶段注入策略：
@@ -364,6 +379,37 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
     memory["edit_prior_recommend_conf"] = float(_bounded_number(memory.get("edit_prior_recommend_conf"), "memory_policy.edit_prior_recommend_conf", 0, 1))
     memory["edit_prior_veto_conf"] = float(_bounded_number(memory.get("edit_prior_veto_conf"), "memory_policy.edit_prior_veto_conf", 0, 1))
     memory["suggest_slots"] = int(_bounded_number(memory.get("suggest_slots"), "memory_policy.suggest_slots", 0, 10))
+    # 总开关（消融 A1）：False = 零记忆探索（等价 research_memory_path=None）
+    if memory.get("enabled") is not None:
+        memory["enabled"] = _require_bool(memory.get("enabled"), "memory_policy.enabled")
+    else:
+        memory["enabled"] = True
+
+    # ── cognition_policy：认知对账开关（2026-09-14 消融 spec 新增）──
+    cog = spec.get("cognition_policy")
+    if not isinstance(cog, dict):
+        cog = {}
+    cog["prediction_check_enabled"] = _require_bool(
+        cog.get("prediction_check_enabled"), "cognition_policy.prediction_check_enabled"
+    )
+    cog["ablation_check_enabled"] = _require_bool(
+        cog.get("ablation_check_enabled"), "cognition_policy.ablation_check_enabled"
+    )
+    spec["cognition_policy"] = cog
+
+    # ── operator_policy：算子黑名单（2026-09-14 消融 spec 新增）──
+    op_policy = spec.get("operator_policy")
+    if not isinstance(op_policy, dict):
+        op_policy = {}
+    from alphaagent.dsl.registry import build_operator_namespace
+
+    known_ops = set(build_operator_namespace().keys())
+    blacklist = _string_list(op_policy.get("blacklist"), "operator_policy.blacklist")
+    unknown_ops = {name.upper() for name in blacklist} - known_ops
+    if unknown_ops:
+        raise ValueError(f"research_spec.operator_policy.unknown_operators:{','.join(sorted(unknown_ops))}")
+    op_policy["blacklist"] = [name.upper() for name in blacklist]
+    spec["operator_policy"] = op_policy
 
     delivery = _require_dict(spec.get("delivery_policy"), "delivery_policy")
     # 盲测终审门槛（2026-08-29 新增）
@@ -566,7 +612,39 @@ def research_policy_prompt(spec: dict[str, Any]) -> str:
             "交付策略："
             "通过 validation 的因子自动进入 candidate 候选池；Reviewer approve 后进入 production 正式库。",
         ]
+        + ([cognition_policy_summary(spec)] if cognition_policy_summary(spec) else [])
+        + ([operator_policy_summary(spec)] if operator_policy_summary(spec) else [])
         + ([phase_summary] if phase_summary else [])
+    )
+
+
+def cognition_policy_summary(spec: dict[str, Any]) -> str:
+    """认知对账开关的可读摘要（消融 C1/C2 注入 research_policy_prompt）。
+
+    双开默认时不注入（保持旧 prompt 不变）；任一关闭时告知 LLM
+    本次运行不做对应对账，避免 LLM 按教学文本白白准备 prediction。
+    """
+    cog = spec.get("cognition_policy") or {}
+    parts = []
+    if cog.get("prediction_check_enabled") is False:
+        parts.append("本次运行关闭预测对账：评估无需传 prediction，结果也不会注入 prediction_check")
+    if cog.get("ablation_check_enabled") is False:
+        parts.append("本次运行关闭门控自动消融：结果不会注入 ablation_check/ablation_hint")
+    return "；".join(parts) + "。" if parts else ""
+
+
+def operator_policy_summary(spec: dict[str, Any]) -> str:
+    """算子黑名单的可读摘要（消融 D2 注入 research_policy_prompt）。
+
+    空名单（默认）不注入，保持旧行为。
+    """
+    blacklist = ((spec.get("operator_policy") or {}).get("blacklist")) or []
+    if not blacklist:
+        return ""
+    return (
+        "算子约束：本次运行禁用以下算子，评估/提交前会被直接拦截："
+        + ", ".join(blacklist)
+        + "。请改用基础时序/截面算子表达同一机制。"
     )
 
 
