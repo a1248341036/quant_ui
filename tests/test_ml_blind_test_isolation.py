@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -163,4 +164,59 @@ def test_report_view_no_blind_test_dates():
     view_str = _build_report_view(report)
     assert "2025" not in view_str
     assert "2026" not in view_str
+
+
+def test_get_training_events_from_jsonl(tmp_path, monkeypatch):
+    """断言 get_training_events 能正确从 events.jsonl 读取结构化事件。"""
+    from backend import stacking_service
+
+    fake_root = tmp_path / "artifacts" / "alphaagent" / "stacking"
+    monkeypatch.setattr(stacking_service, "STACKING_ROOT", fake_root)
+
+    train_dir = fake_root / "test_run_123"
+    train_dir.mkdir(parents=True, exist_ok=True)
+    events_file = train_dir / "events.jsonl"
+    events_file.write_text(
+        '{"event": "session_start", "ts": "2026-09-14T10:00:00", "scheme": "ml"}\n'
+        '{"event": "agent_thinking", "ts": "2026-09-14T10:00:05", "content": "thinking..."}\n'
+        '{"event": "session_end", "ts": "2026-09-14T10:01:00", "status": "completed"}\n',
+        encoding="utf-8",
+    )
+
+    evs = stacking_service.get_training_events("test_run_123")
+    assert len(evs) == 3
+    assert evs[0]["event"] == "session_start"
+    assert evs[1]["event"] == "agent_thinking"
+    assert evs[2]["event"] == "session_end"
+
+
+def test_get_training_events_fallback_from_report(tmp_path, monkeypatch):
+    """断言无 events.jsonl 的老训练能从 report.json 合成兜底回放事件。"""
+    from backend import stacking_service
+
+    fake_root = tmp_path / "artifacts" / "alphaagent" / "stacking"
+    monkeypatch.setattr(stacking_service, "STACKING_ROOT", fake_root)
+
+    train_dir = fake_root / "test_run_legacy"
+    train_dir.mkdir(parents=True, exist_ok=True)
+    report_file = train_dir / "report.json"
+    report_file.write_text(
+        json.dumps({
+            "run_id": "test_run_legacy",
+            "scheme": "ml",
+            "scheme_label": "ML 学习加权",
+            "feature_names": ["f1", "f2"],
+            "gate": {"passed": True, "metrics": {"excess_annual": 0.15}},
+            "oos_ic_blended": {"ic_mean": 0.042, "ic_ir": 0.45},
+        }),
+        encoding="utf-8",
+    )
+
+    evs = stacking_service.get_training_events("test_run_legacy")
+    assert len(evs) >= 3
+    event_names = [e["event"] for e in evs]
+    assert "session_start" in event_names
+    assert "ml_gate_evaluated" in event_names
+    assert "session_end" in event_names
+
 
