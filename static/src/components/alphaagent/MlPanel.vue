@@ -13,8 +13,26 @@
       </div>
 
       <div class="session-label">
-        <span>历史运行（{{ ml.list.length }}）</span>
+        <span>任务列表（{{ ml.list.length }}）</span>
         <button class="archived-toggle" type="button" title="刷新列表" @click="loadMl">刷新</button>
+      </div>
+
+      <!-- ── 运行中任务常驻专属置顶卡片 ── -->
+      <div
+        v-if="runningTrain"
+        class="ml-running-pinned-card"
+        :class="{ active: ml.selected === runningTrain.train_id }"
+        @click="selectTrain(runningTrain.train_id)"
+      >
+        <div class="ml-running-pinned-head">
+          <span class="status-dot status-running"></span>
+          <strong>当前任务正在运行中</strong>
+          <span class="ml-pulse-tag">RUNNING</span>
+        </div>
+        <div class="ml-running-pinned-body">
+          <b>{{ fmtTrainId(runningTrain.train_id) }}</b>
+          <small>{{ runningTail || '计算中，点击随时返回实时视窗…' }}</small>
+        </div>
       </div>
 
       <div class="session-list">
@@ -22,13 +40,13 @@
           v-for="t in ml.list"
           :key="t.train_id"
           class="session-item"
-          :class="{ active: ml.selected === t.train_id }"
+          :class="{ active: ml.selected === t.train_id, 'is-running': t.status === 'running' }"
           @click="selectTrain(t.train_id)"
         >
           <div class="session-select">
             <span class="status-dot" :class="runStatusClass(t)"></span>
             <div class="session-copy">
-              <strong>{{ fmtTrainId(t.train_id) }}</strong>
+              <strong>{{ fmtTrainId(t.train_id) }} <i v-if="t.status === 'running'" class="ml-tag-running">运行中</i></strong>
               <small>{{ schemeBadge(t) }} · {{ formatOos(t) }} · {{ t.n_folds ?? '—' }}折</small>
             </div>
           </div>
@@ -47,6 +65,17 @@
 
     <!-- ════════════════ 右侧主视窗：Agent 工作台 ════════════════ -->
     <main class="agent-main ml-main">
+      <!-- 若当前在看历史任务，但后台有正在运行的任务，显示醒目的悬浮横幅随时一键跳回 -->
+      <div
+        v-if="runningTrain && activeTrain && activeTrain.train_id !== runningTrain.train_id"
+        class="ml-viewing-history-alert"
+        @click="selectTrain(runningTrain.train_id)"
+      >
+        <span class="status-dot status-running"></span>
+        <span>后台任务 <b>{{ fmtTrainId(runningTrain.train_id) }}</b> 正在运行中（{{ runningTail || '计算中' }}）</span>
+        <button class="ml-jump-back-btn" type="button">点击返回正在运行的任务 ➜</button>
+      </div>
+
       <!-- 顶部 Header -->
       <header class="agent-header ml-header">
         <div class="agent-title">
@@ -63,16 +92,6 @@
           <span class="ml-safe-badge" title="盲测物理隔离：当前处于研发验证态，数据严格物理截断至 2024-12-31，2025+ 盲测段安全锁定未加载，LLM 绝无法窥探盲测数据。">
             🛡️ 盲测隔离（≤2024-12-31）
           </span>
-
-          <button
-            class="mlv-ghost"
-            type="button"
-            :disabled="ml.recommending"
-            title="以 Agent Tool 形式运行 mRMR 特征挑选算法，选出高质量且低相关的 Top-8 互补因子"
-            @click="recommendFactors"
-          >
-            {{ ml.recommending ? 'mRMR 选优中…' : '⚡ 推荐 Top-8 (Tool)' }}
-          </button>
 
           <div class="mode-toggle">
             <button :class="{ active: viewMode === 'timeline' }" @click="viewMode = 'timeline'">⚡ 流式时间线</button>
@@ -642,6 +661,9 @@ export default {
     }
   },
   computed: {
+    runningTrain() {
+      return (this.ml.list || []).find(t => t.status === 'running') || null
+    },
     activeTrain() {
       return (this.ml.list || []).find(t => t.train_id === this.ml.selected) || (this.ml.list[0] || null)
     },
@@ -844,7 +866,10 @@ export default {
       this.loadingList = true
       try {
         this.ml.list = await api('/api/alphaagent/stacking/trainings')
-        if (!this.ml.selected && this.ml.list.length) {
+        const running = this.ml.list.find(t => t.status === 'running')
+        if (running && (!this.ml.selected || !this.ml.list.some(x => x.train_id === this.ml.selected))) {
+          this.selectTrain(running.train_id)
+        } else if (!this.ml.selected && this.ml.list.length) {
           this.selectTrain(this.ml.list[0].train_id)
         }
         if (this.ml.list.some(t => t.status === 'running')) {
@@ -1122,6 +1147,66 @@ export default {
   background: rgb(79 195 161 / 0.12);
   border: 1px solid rgb(79 195 161 / 0.35);
   border-radius: 6px; padding: 4px 9px; font-weight: 500;
+}
+
+/* 置顶运行中卡片 */
+.ml-running-pinned-card {
+  margin: 0 8px 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgb(67 209 122 / 0.12);
+  border: 1px solid rgb(67 209 122 / 0.4);
+  cursor: pointer;
+  transition: all .15s;
+}
+.ml-running-pinned-card:hover, .ml-running-pinned-card.active {
+  background: rgb(67 209 122 / 0.2);
+  border-color: #43d17a;
+  box-shadow: 0 0 12px rgb(67 209 122 / 0.25);
+}
+.ml-running-pinned-head {
+  display: flex; align-items: center; gap: 6px; font-size: 11px;
+}
+.ml-running-pinned-head strong { color: #43d17a; }
+.ml-pulse-tag {
+  margin-left: auto; font-size: 9px; padding: 1px 5px; border-radius: 4px;
+  background: #43d17a; color: #000; font-weight: 700;
+  animation: agentPulse 1.2s infinite;
+}
+.ml-running-pinned-body {
+  margin-top: 4px; display: flex; flex-direction: column; gap: 2px;
+}
+.ml-running-pinned-body b { font-size: 12px; color: var(--text); }
+.ml-running-pinned-body small {
+  color: #a8d5b8; font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.session-item.is-running {
+  border-color: rgb(67 209 122 / 0.3);
+  background: rgb(67 209 122 / 0.06);
+}
+.ml-tag-running {
+  font-size: 9px; font-style: normal; padding: 1px 4px; border-radius: 3px;
+  background: rgb(67 209 122 / 0.25); color: #43d17a; margin-left: 4px;
+}
+
+/* 正在查看历史任务时的跳回横幅 */
+.ml-viewing-history-alert {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 16px;
+  background: rgb(245 189 79 / 0.14);
+  border-bottom: 1px solid rgb(245 189 79 / 0.35);
+  color: #f5bd4f;
+  font-size: 12px;
+  cursor: pointer;
+}
+.ml-viewing-history-alert:hover {
+  background: rgb(245 189 79 / 0.22);
+}
+.ml-jump-back-btn {
+  margin-left: auto; padding: 3px 10px; border-radius: 5px;
+  background: #f5bd4f; color: #000; font-weight: 600; border: 0;
+  font-size: 11px; cursor: pointer;
 }
 
 /* 结构化时间线卡片 */

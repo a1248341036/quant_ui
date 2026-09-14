@@ -153,9 +153,9 @@ def list_trainings(limit: int = 30) -> list[dict[str, Any]]:
     running_id = cur["train_id"] if cur and status == "running" else None
     out: list[dict[str, Any]] = []
     if STACKING_ROOT.is_dir():
-        for d in sorted(STACKING_ROOT.iterdir(), reverse=True):
-            if not d.is_dir():
-                continue
+        dirs = [d for d in STACKING_ROOT.iterdir() if d.is_dir()]
+        dirs.sort(key=lambda d: d.stat().st_mtime, reverse=True)
+        for d in dirs:
             report_path = d / "report.json"
             item: dict[str, Any] = {
                 "train_id": d.name,
