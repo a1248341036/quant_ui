@@ -70,6 +70,31 @@ def to_qweave_df(panel: pd.DataFrame) -> Any:
     return pl.from_pandas(panel).select(cols)
 
 
+def get_alpha_expressions(
+    alpha_set: str = "alpha158",
+    alpha_limit: int | None = None,
+) -> tuple[list, list[str]]:
+    """获取 qweave 因子表达式列表（不计算，仅返回表达式对象与名称）。
+
+    供 qweave_runner / qweave_research 调用 qweave.with_alphas() 前使用。
+    """
+    try:
+        import qweave
+    except ImportError as exc:
+        raise RuntimeError("请先安装 qweave: pip install qweave") from exc
+
+    spec = ALPHA_SETS.get(alpha_set)
+    if not spec:
+        raise ValueError(f"未知 alpha_set: {alpha_set}，可选: {list(ALPHA_SETS.keys())}")
+
+    mod_name, _req_cols = spec
+    alphas = getattr(qweave, mod_name)({})
+    if alpha_limit:
+        alphas = alphas[:alpha_limit]
+    names = [a.output_name() for a in alphas]
+    return alphas, names
+
+
 def build_alphas(
     df: Any,
     alpha_set: str = "alpha158",

@@ -48,22 +48,11 @@ DEFAULT_OUT = PROJECT_ROOT / "data" / "stock" / "pred_demo.parquet"
 
 from core.qweave import (
     ALPHA_SETS,
-    build_alphas,
+    get_alpha_expressions as build_alphas,
     load_codes,
     load_panel,
     to_qweave_df,
 )
-
-
-def build_alphas(alpha_set: str, alpha_limit: int | None):
-    import qweave
-    fn_name, _fields = ALPHA_SETS[alpha_set]
-    alphas = getattr(qweave, fn_name)({})
-    if alpha_limit:
-        alphas = alphas[:alpha_limit]
-    names = [a.output_name() for a in alphas]
-    print(f"[qweave] {alpha_set}: {len(alphas)} 个因子")
-    return alphas, names
 
 
 def run_evaluate(lab, names: list[str], horizons: list[int], quantiles: int,
