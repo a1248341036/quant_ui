@@ -1252,6 +1252,14 @@ async def run_factor_mining_agentscope(
     (log_dir / "run_summary.json").write_text(summary_text, encoding="utf-8")
     _emit("run_summary", summary)
     _emit("metrics_snapshot", {"turn": outer_turn, **build_metrics_snapshot(live_metrics)})
+    
+    # 自动生成 scorecard.json
+    try:
+        from alphaagent.factor.mining.run_metrics import generate_scorecard
+        generate_scorecard(config.run_id, log_dir, summary_dict=summary)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("scorecard 生成异常: %s", exc)
+
     _emit("session_end", {"turn": outer_turn, "reason": end_reason})
     log_step(
         "run_end",

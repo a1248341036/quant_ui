@@ -140,6 +140,16 @@ class AgentRun:
         """全部轨迹段（原地续跑后同目录有多段，按文件名时间戳即时间序）。"""
         return sorted(self.log_dir.glob("run_*.jsonl"))
 
+    def _maybe_generate_scorecard(self) -> None:
+        """终态兜底：若尚未生成 scorecard.json，尝试自动生成一次。"""
+        sc_path = self.log_dir / "scorecard.json"
+        if not sc_path.is_file():
+            try:
+                from alphaagent.factor.mining.run_metrics import generate_scorecard
+                generate_scorecard(self.run_id, self.log_dir)
+            except Exception:
+                pass
+
     def refresh(self) -> None:
         jsonl = self._jsonl()
 
@@ -172,8 +182,10 @@ class AgentRun:
                 self.status = "running"
             elif code == 0:
                 self.status = "completed"
+                self._maybe_generate_scorecard()
             else:
                 self.status = "failed"
+                self._maybe_generate_scorecard()
                 if not self.error:
                     detail = ""
                     if self.console_log and self.console_log.exists():
@@ -193,6 +205,7 @@ class AgentRun:
         terminal = _terminal_from_events()
         if terminal is not None:
             self.status = terminal
+            self._maybe_generate_scorecard()
             return
         if jsonl is None or not jsonl.exists():
             return
