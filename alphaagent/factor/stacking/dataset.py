@@ -296,6 +296,18 @@ def daily_spearman_ic(
     return ic
 
 
+def _entry_group(entry: FactorEntry) -> str:
+    """因子主组（延迟导入，避免 dataset ↔ groups 循环依赖）。"""
+    from .groups import derive_group
+
+    facets = tuple(getattr(entry, "facets", ()) or ())
+    if not facets:
+        from alphaagent.factor.mining.memory.expressions import expr_facets
+
+        facets = expr_facets(getattr(entry, "expr", ""))
+    return derive_group(facets)
+
+
 def build_dataset_from_values(
     panel: pd.DataFrame,
     factor_values: Sequence[tuple[FactorEntry, np.ndarray]],
@@ -310,6 +322,9 @@ def build_dataset_from_values(
 
     ``ics_for_quality``：{因子名: |mining 窗口日均 IC|}。冗余过滤为贪心：
     质量分高者先保留，后续因子与任一已保留因子 |corr| > max_corr 则剔除。
+    相关性只在**同组**（数据源组，``_entry_group``）内比较——跨组高相关因子
+    双双保留：跨面低相关/异源信息正是组合分散化的来源，跨组互剔会让数量占优
+    的价量因子系统性挤掉慢周期因子。
     """
     quality = ics_for_quality or {}
 
@@ -321,12 +336,14 @@ def build_dataset_from_values(
         reverse=True,
     )
     kept: list[tuple[FactorEntry, np.ndarray, np.ndarray]] = []  # (entry, raw, transformed)
+    kept_by_group: dict[str, list[tuple[FactorEntry, np.ndarray, np.ndarray]]] = {}
     dropped: list[dict] = []
     for i in order:
         entry, raw = factor_values[i]
         transformed = transform_factor_values(raw, panel, size_neutral=size_neutral)
+        group = _entry_group(entry)
         redundant_with: str | None = None
-        for kept_entry, _, kept_arr in kept:
+        for kept_entry, _, kept_arr in kept_by_group.get(group, []):
             corr = _sampled_corr(transformed, kept_arr, panel)
             if corr is not None and abs(corr) > max_corr:
                 redundant_with = kept_entry.name
@@ -336,6 +353,7 @@ def build_dataset_from_values(
                             "reason": f"redundant_with={redundant_with}"})
             continue
         kept.append((entry, raw, transformed))
+        kept_by_group.setdefault(group, []).append(kept[-1])
     kept.sort(key=lambda t: names_in_order.index(t[0].name))
 
     feature_matrix = (
@@ -376,6 +394,44 @@ def _sampled_corr(a: np.ndarray, b: np.ndarray, panel: pd.DataFrame, stride: int
     return float(np.corrcoef(a_all, b_all)[0, 1])
 
 
+def compute_quality_scores(
+    panel: pd.DataFrame,
+    materialized: Sequence[tuple[FactorEntry, np.ndarray]],
+    *,
+    mining_end: pd.Timestamp,
+    default_label_days: int,
+    decay_months: int = 12,
+) -> tuple[dict[str, float], dict[str, pd.Series]]:
+    """mining 窗口质量分：每个因子按**自己 label_col 的 horizon** 计 IC。
+
+    此前全部因子统一用 default_label_days 的前向收益算质量分，慢周期因子
+    （如 label_20d 验证的基本面因子）在短标签下被噪声稀释、系统性低估，
+    贪心冗余过滤时优先被剔。现在各因子对齐自己的入库 horizon 公平竞争；
+    **训练标签不受影响**（build_stacking_dataset 仍统一 default_label_days）。
+    label_col 缺失/无法解析的因子回退 default_label_days。
+    """
+    from .groups import parse_label_days
+
+    mining_start = _coerce_naive(mining_end) - pd.DateOffset(months=decay_months)
+    dts = pd.DatetimeIndex(panel.index.get_level_values("datetime"))
+    mask = (dts <= _coerce_naive(mining_end)) & (dts >= mining_start)
+    labels: dict[int, np.ndarray] = {}
+    quality: dict[str, float] = {}
+    ics: dict[str, pd.Series] = {}
+    for entry, raw in materialized:
+        if mask.sum() < 20:
+            quality[entry.name] = 0.0
+            continue
+        days = parse_label_days(entry.label_col) or default_label_days
+        if days not in labels:
+            labels[days] = forward_return_label(panel, days)
+        lbl = labels[days]
+        ic = daily_spearman_ic(raw[mask], lbl[mask], dts[mask])
+        ics[entry.name] = ic
+        quality[entry.name] = float(ic.abs().mean()) if len(ic) else 0.0
+    return quality, ics
+
+
 def build_stacking_dataset(
     panel: pd.DataFrame,
     entries: Sequence[FactorEntry],
@@ -389,25 +445,23 @@ def build_stacking_dataset(
     min_finite_ratio: float = 0.05,
     progress: Callable[[str], None] | None = None,
 ) -> StackingDataset:
-    """完整流水线：物化 → 冗余过滤（以 mining 窗口 IC 为质量分）→ 组装。"""
+    """完整流水线：物化 → 冗余过滤（以 mining 窗口 IC 为质量分）→ 组装。
+
+    质量分按各因子自己的 label horizon 计（见 compute_quality_scores）；
+    训练标签统一 label_days（对齐目标调仓频率）。
+    """
     materialized, dropped_eval = materialize_entries(
         panel, entries, cache=cache, min_finite_ratio=min_finite_ratio, progress=progress
     )
     dropped: list[dict] = list(dropped_eval)
 
-    mining_start = _coerce_naive(mining_end) - pd.DateOffset(months=decay_months)
-    dts = pd.DatetimeIndex(panel.index.get_level_values("datetime"))
-    label = forward_return_label(panel, label_days)
-    quality: dict[str, float] = {}
-    ics: dict[str, pd.Series] = {}
-    for entry, raw in materialized:
-        mask = (dts <= mining_end) & (dts >= mining_start)
-        if mask.sum() < 20:
-            quality[entry.name] = 0.0
-            continue
-        ic = daily_spearman_ic(raw[mask], label[mask], dts[mask])
-        ics[entry.name] = ic
-        quality[entry.name] = float(ic.abs().mean()) if len(ic) else 0.0
+    quality, _ = compute_quality_scores(
+        panel,
+        materialized,
+        mining_end=mining_end,
+        default_label_days=label_days,
+        decay_months=decay_months,
+    )
 
     dataset = build_dataset_from_values(
         panel,
