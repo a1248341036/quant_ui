@@ -264,6 +264,8 @@ async def run_factor_mining_agentscope(
         session_resp.session_id,
         submit_service=submit_service,
         focus_facets=getattr(config, "focus_facets", None),
+        cognition_policy=(config.research_spec or {}).get("cognition_policy"),
+        operator_policy=(config.research_spec or {}).get("operator_policy"),
     )
     system_prompt = build_system_prompt(
         include_operator_catalog=include_operator_catalog,
@@ -301,6 +303,9 @@ async def run_factor_mining_agentscope(
     )
     # v3-lite：记忆策略参数（research_spec.memory_policy）注入存储构造
     memory_policy = (config.research_spec or {}).get("memory_policy") or {}
+    # 总开关（消融 A1）：enabled=False → 零记忆探索（等价 research_memory_path=None），
+    # 默认 True 不改行为；CLI 传空 memory 路径关闭时同样得到 None。
+    _memory_enabled = bool(memory_policy.get("enabled", True))
     memory_store = (
         ResearchMemoryStore(
             research_memory_path,
@@ -313,7 +318,7 @@ async def run_factor_mining_agentscope(
             edit_prior_veto_conf=float(memory_policy.get("edit_prior_veto_conf") or EDIT_PRIOR_VETO_CONF_DEFAULT),
             suggest_slots=int(memory_policy.get("suggest_slots") if memory_policy.get("suggest_slots") is not None else 2),
         )
-        if research_memory_path is not None
+        if research_memory_path is not None and _memory_enabled
         else None
     )
     workspace_dir = log_dir / f"agentscope_workspace_{stamp}"
@@ -323,6 +328,8 @@ async def run_factor_mining_agentscope(
     factor_tools = FactorEvalTools(
         service, session_resp.session_id, submit_service=submit_service, memory_store=memory_store,
         focus_facets=getattr(config, "focus_facets", None),
+        cognition_policy=(config.research_spec or {}).get("cognition_policy"),
+        operator_policy=(config.research_spec or {}).get("operator_policy"),
     )
     system_prompt = build_system_prompt(
         include_operator_catalog=include_operator_catalog,

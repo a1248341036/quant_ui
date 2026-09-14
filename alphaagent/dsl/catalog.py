@@ -109,6 +109,7 @@ def operator_catalog_markdown(
     tier: str = "full",
     focused_prefixes: tuple[str, ...] = (),
     excluded_prefixes: tuple[str, ...] = (),
+    excluded_names: tuple[str, ...] = (),
 ) -> str:
     """按机制分组渲染算子目录。
 
@@ -129,13 +130,19 @@ def operator_catalog_markdown(
     excluded_prefixes：数据面聚焦时把未选面的专属算子族**整体移除**
     （如未选筹码面 → 隐藏 ``CHIP_*``）——工具层会拦截触及未选面的表达式，
     留在目录里只会诱导 LLM 写出必被拒绝的代码。
+
+    excluded_names：算子黑名单（research_spec.operator_policy.blacklist，
+    消融 D2）——按精确名字剔除，dispatch 层同步拦截其表达式；空（默认）不动行为。
     """
     ns = build_operator_namespace()
     excluded = tuple(p for p in excluded_prefixes if p)
+    excluded_set = {n.upper() for n in excluded_names if n}
     folded: list[str] = []
     groups: dict[str, list[str]] = {}
     for name in sorted(ns):
         if excluded and name.startswith(excluded):
+            continue
+        if excluded_set and name.upper() in excluded_set:
             continue
         for title, match in _CATALOG_GROUPS:
             if match(name):

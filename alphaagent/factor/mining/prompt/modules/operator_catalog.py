@@ -46,12 +46,24 @@ def render(ctx) -> str:  # noqa: ANN001
     elif getattr(ctx, "focus_facets", ()) and ctx.include_operator_catalog:
         focused_note = "本轮已按聚焦数据面隐藏未选面的专属算子族（其表达式会被工具层拦截）。"
 
+    # 算子黑名单（research_spec.operator_policy.blacklist，消融 D2）：
+    # 目录同步隐藏，避免 LLM 看得到却用不了；dispatch 层同步拦截。
+    op_policy = (getattr(ctx, "research_spec", None) or {}).get("operator_policy") or {}
+    blacklisted = tuple(str(n).upper() for n in (op_policy.get("blacklist") or ()))
+    blacklist_note = ""
+    if blacklisted and ctx.include_operator_catalog:
+        blacklist_note = (
+            f"\n\n⚠ 本次运行已禁用以下高级算子（表达式会被直接拦截，勿尝试）："
+            f"{', '.join(f'`{n}`' for n in blacklisted)}。请用基础时序/截面算子构造同机制表达式。"
+        )
+
     # 全量注入算子目录（全阶段带完整签名与说明，彻底消灭冷门算子认知盲区）
     catalog = (
         operator_catalog_markdown(
             tier="full",
             focused_prefixes=focused,
             excluded_prefixes=_excluded_prefixes(getattr(ctx, "focus_facets", ())),
+            excluded_names=blacklisted,
         )
         if ctx.include_operator_catalog
         else "（本次未注入算子清单）"
@@ -63,4 +75,4 @@ def render(ctx) -> str:  # noqa: ANN001
 
 算子均为**大写**（如 `TS_MEAN`、`DELTA`）。支持位置参数，也支持关键字参数语法 `name=value`（关键字参数必须在位置参数之后）。按机制分节列出；签名省略类型标注，**参数顺序即语义**（位置传参必须严格按签名顺序）；语义自明的基础四则/比较/初等函数折叠在末行。选算子前先想机制（见「A 股市场机制与 alpha 分布」），再按节定位。{focused_note}
 
-{catalog}"""
+{catalog}{blacklist_note}"""

@@ -85,6 +85,8 @@ def run_factor_mining(
         session_resp.session_id,
         submit_service=submit_service,
         focus_facets=getattr(config, "focus_facets", None),
+        cognition_policy=(config.research_spec or {}).get("cognition_policy"),
+        operator_policy=(config.research_spec or {}).get("operator_policy"),
     )
     system_prompt = build_system_prompt(
         include_operator_catalog=include_operator_catalog,

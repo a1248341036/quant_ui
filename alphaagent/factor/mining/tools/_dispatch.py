@@ -32,6 +32,14 @@ from ._prefilter import _is_naive_signal_addition
 
 _PREDICTION_SOFT_LIMIT = 3
 
+# 认知对账开关（research_spec.cognition_policy，消融 C1/C2）：缺省全开不改行为。
+# prediction_check_enabled=False → 不注入 prediction_check、缺失软门不再升级拦截；
+# ablation_check_enabled=False → 不注入 ablation_check/ablation_hint。
+_DEFAULT_COGNITION_POLICY = {"prediction_check_enabled": True, "ablation_check_enabled": True}
+# 算子黑名单（research_spec.operator_policy.blacklist，消融 D2）：命中即在
+# 评估/提交前拦截并引导 LLM 改用基础算子；缺省空清单不拦截。
+_DEFAULT_OPERATOR_POLICY = {"blacklist": ()}
+
 # 数据面聚焦硬锁定作用的工具：三个评估入口 + 提交入口（都带 multi_line_expr）。
 _FACET_LOCK_TOOLS = frozenset({
     "evaluate_factor",
@@ -50,7 +58,7 @@ _MINING_ALLOWED_PROFILES = frozenset({
 })
 
 
-def _prediction_argument_error(arguments: dict[str, Any]) -> dict[str, Any] | None:
+def _prediction_argument_error(arguments: dict[str, Any], *, enabled: bool = True) -> dict[str, Any] | None:
     """prediction 参数校验：携带但字段非法时返回 ToolArgumentsError。
 
     缺失走软门（``_DispatchMixin._prediction_gate``）：放行 + 结果附
@@ -62,7 +70,11 @@ def _prediction_argument_error(arguments: dict[str, Any]) -> dict[str, Any] | No
     词汇错的输入直接放行——上下文满屏 D1~D10，强求切换词汇是逆 LLM 天性）；
     ②真正非法时错误信息逐字段回显"收到什么/合法值是什么"，省掉盲猜重试
     （实测 7 次调用因错误信息不带实际值而连续失败）。
+
+    ``enabled=False``（消融 C1）：校验整体短路——携带了也不拦，缺失不记账。
     """
+    if not enabled:
+        return None
     pred = normalize_prediction(arguments.get("prediction"))
     if arguments.get("prediction") is None:
         return None  # 缺失 → 软门
@@ -317,11 +329,38 @@ class _DispatchMixin:
             "facet_lock": {k: v for k, v in vio.items() if k != "message"},
         }
 
+    def _operator_blacklist_block(self, tool_name: str, expr: Any) -> dict[str, Any] | None:
+        """算子黑名单拦截（research_spec.operator_policy.blacklist，消融 D2）。
+
+        表达式命中黑名单算子 → 评估/提交前直接拦截，错误信息列明被禁算子
+        并引导改用基础 TS/CS 算子；黑名单为空（默认）恒放行，不改行为。
+        """
+        blacklist = getattr(self, "operator_policy", {}).get("blacklist") or ()
+        if not blacklist or not isinstance(expr, str) or not expr.strip():
+            return None
+        used = sorted(
+            {tok.upper() for tok in re.findall(r"\b([A-Z][A-Z_]{2,})\b", expr) if tok.upper() in set(blacklist)}
+        )
+        if not used:
+            return None
+        return {
+            "ok": False,
+            "error": (
+                f"operator_blacklisted: 本次运行已禁用高级算子 {', '.join(used)}。"
+                "请改用基础时序/截面滚动算子（TS_MEAN / TS_STD / DELTA / RANK / CS_ZSCORE / TS_CORR 等）"
+                "重新构造同机制的表达式。"
+            ),
+            "error_type": "OperatorBlacklistBlock",
+            "blocked_operators": used,
+        }
+
     def _prediction_gate(self, tool_name: str, arguments: dict[str, Any], result: dict[str, Any]) -> dict[str, Any] | None:
         """prediction 软门：缺失放行但记账 + 附 prediction_warning；累计缺失
         ≥ ``_PREDICTION_SOFT_LIMIT`` 次升级拦截。返回拦截 result 或 None
         （result 原地注入 warning）。
         """
+        if not self.cognition_policy.get("prediction_check_enabled", True):
+            return None
         if arguments.get("prediction") is None:
             counts = getattr(self, "_missing_prediction_counts", None)
             if counts is None:
@@ -547,6 +586,12 @@ class _DispatchMixin:
             if facet_block is not None:
                 return facet_block
 
+        # 算子黑名单（消融 D2）：评估/提交表达式命中即拦截
+        if name in _FACET_LOCK_TOOLS:
+            op_block = self._operator_blacklist_block(name, arguments.get("multi_line_expr"))
+            if op_block is not None:
+                return op_block
+
         if name == "submit_factor":
             return self._dispatch_submit(arguments)
 
@@ -558,7 +603,9 @@ class _DispatchMixin:
             if not isinstance(profile_id, str) or not profile_id.strip():
                 return {"ok": False, "error": "profile_id_required_non_empty_string", "error_type": "ToolArgumentsError"}
             # prediction 软门：携带但字段非法 → 拦截；缺失 → 放行记账（见 _prediction_gate）
-            pred_error = _prediction_argument_error(arguments)
+            pred_error = _prediction_argument_error(
+                arguments, enabled=self.cognition_policy.get("prediction_check_enabled", True)
+            )
             if pred_error is not None:
                 return pred_error
             # profile 白名单（2026-09-10）：production_delivery 等"全区间/交付复检"
@@ -613,9 +660,11 @@ class _DispatchMixin:
                 )
             if isinstance(result, dict) and result.get("ok"):
                 ic, decile_rows = _engine_decile(result)
-                _attach_prediction_check(result, arguments.get("prediction"), ic=ic, decile_rows=decile_rows)
+                if self.cognition_policy.get("prediction_check_enabled", True):
+                    _attach_prediction_check(result, arguments.get("prediction"), ic=ic, decile_rows=decile_rows)
                 _attach_yield_hints(result, expr, arguments)
-                self._attach_ablation(expr, arguments, profile_id=profile_id, result=result)
+                if self.cognition_policy.get("ablation_check_enabled", True):
+                    self._attach_ablation(expr, arguments, profile_id=profile_id, result=result)
                 pred_block = self._prediction_gate("evaluate_factor", arguments, result)
                 if pred_block is not None:
                     return pred_block
@@ -646,7 +695,9 @@ class _DispatchMixin:
             label_quantile_n = 10
 
         if name == "eval_on_train_set":
-            pred_error = _prediction_argument_error(arguments)
+            pred_error = _prediction_argument_error(
+                arguments, enabled=self.cognition_policy.get("prediction_check_enabled", True)
+            )
             if pred_error is not None:
                 return pred_error
             gate = self._memory_gate(expr, arguments)
@@ -663,8 +714,10 @@ class _DispatchMixin:
             )
             if isinstance(result, dict) and result.get("ok"):
                 ic, decile_rows = _legacy_decile(result)
-                _attach_prediction_check(result, arguments.get("prediction"), ic=ic, decile_rows=decile_rows)
-                self._attach_ablation(expr, arguments, profile_id="train_screen", result=result)
+                if self.cognition_policy.get("prediction_check_enabled", True):
+                    _attach_prediction_check(result, arguments.get("prediction"), ic=ic, decile_rows=decile_rows)
+                if self.cognition_policy.get("ablation_check_enabled", True):
+                    self._attach_ablation(expr, arguments, profile_id="train_screen", result=result)
                 _attach_yield_hints(result, expr, arguments)
                 pred_block = self._prediction_gate("eval_on_train_set", arguments, result)
                 if pred_block is not None:
@@ -692,7 +745,8 @@ class _DispatchMixin:
                     expected_sign=expected_sign,
                 )
             )
-            if isinstance(result, dict) and result.get("ok") and arguments.get("prediction") is not None:
+            if isinstance(result, dict) and result.get("ok") and arguments.get("prediction") is not None \
+                    and self.cognition_policy.get("prediction_check_enabled", True):
                 ic, decile_rows = _legacy_decile(result)
                 _attach_prediction_check(result, arguments.get("prediction"), ic=ic, decile_rows=decile_rows)
             if isinstance(gate, dict):
