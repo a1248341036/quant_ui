@@ -193,7 +193,8 @@ class RetrievalMixin:
             abs_ic = abs(float(ic)) if isinstance(ic, (int, float)) else 0.0
             turnover = m.get("avg_daily_side_turnover") if m else None
             try:
-                # 2026-09-15 优化：高换手因子（>0.45）降权排后，优先向 LLM 推荐低换手正向父本
+                # 换手率软惩罚阈值（0.45）：介于 prompt 建议红线 (0.4) 与 stage_one 硬门槛 (0.5) 之间；
+                # 检索排序时对换手超标候选作降权排后，既不一刀切排除，又优先向 LLM 注入高可交易性父本。
                 high_turnover_penalty = 1 if turnover is not None and float(turnover) > 0.45 else 0
             except (TypeError, ValueError):
                 high_turnover_penalty = 0

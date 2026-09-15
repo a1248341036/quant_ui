@@ -70,7 +70,13 @@ class AdvisoryMixin:
 
     # ── 评估前 advisory ──
 
-    def advisory_for(self, expression: str | None, *, edit_note: str | None = None) -> dict[str, Any] | None:
+    def advisory_for(
+        self,
+        expression: str | None,
+        *,
+        edit_note: str | None = None,
+        current_run_id: str | None = None,
+    ) -> dict[str, Any] | None:
         """评估前硬提醒通道（v3：指纹负证据 / 指纹正证据 / 意向编辑 APV 双门）。默认只提醒不拦截。
 
         返回 None（无提醒）或 {"advisories": [...], "blocked": False}。
@@ -88,7 +94,7 @@ class AdvisoryMixin:
             return None
 
         fingerprint = _structure_fingerprint(expression)
-        cache_key = (fingerprint or expression, edit_note)
+        cache_key = (fingerprint or expression, edit_note, current_run_id)
         cache = self._get_advisory_cache()
         now = time.monotonic()
         if cache_key in cache:
@@ -102,10 +108,25 @@ class AdvisoryMixin:
             # ① 指纹负证据：同一结构指纹的已否定条目累计 ≥2 次尝试 → 已知死路。
             #    跨变体聚合：同骨架换窗口/参数刷出的 weak/revise_required 变体各自
             #    attempts=1，但同构已多轮失败、再测同构无新增信息，一并计入死路。
-            #    豁免：该指纹已有正向结果（promising/入库）时不判死路——结构已被证明
-            #    出过信号，失败变体是正常迭代噪声而非结构先天死路；以正向条目为父本
-            #    继续变异/提交是正确动作（交由 ①b duplicate_prior_result 只提醒不拦截）。
+            #    双重过线豁免：
+            #      a) 当前 run 内豁免：若表达式在当前 run 内已出过正向信号（promising/通过海选），绝对不拦；
+            #      b) 历史正向豁免：该指纹已有正向历史条目时不判死路（结构已被证明出过信号，失败变体为迭代噪声）。
             if fingerprint:
+                # 检查当前 run 内是否有过线记录
+                curr_run_passed = False
+                if current_run_id:
+                    curr_run_row = conn.execute(
+                        f"""
+                        SELECT 1 FROM memory_entries
+                        WHERE structure_fingerprint = ?
+                          AND last_run_id = ?
+                          AND (verdict IN ({_POSITIVE_PH}) OR verdict = 'promising')
+                        LIMIT 1
+                        """,
+                        (fingerprint, str(current_run_id), *_POSITIVE_VERDICTS),
+                    ).fetchone()
+                    curr_run_passed = curr_run_row is not None
+
                 pos_exists = conn.execute(
                     f"""
                     SELECT 1 FROM memory_entries
@@ -115,7 +136,7 @@ class AdvisoryMixin:
                     """,
                     (fingerprint, *_POSITIVE_VERDICTS),
                 ).fetchone()
-                has_positive = pos_exists is not None
+                has_positive = pos_exists is not None or curr_run_passed
                 agg = conn.execute(
                     """
                     SELECT COUNT(*) AS n_entries, COALESCE(SUM(attempts), 0) AS n_tries
@@ -148,7 +169,7 @@ class AdvisoryMixin:
                             f"该表达式结构与历史死路相同：同构已评估 {int(agg['n_tries'])} 次"
                             f"{scope}{latest}（{reason}），不建议继续同构重复评估。"
                         ),
-                        "exempt_from_block": False,
+                        "exempt_from_block": bool(curr_run_passed or has_positive),
                     })
 
             # ①b 指纹正证据：同结构曾有正向 verdict（promising/入库）→ 重复劳动提醒。

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import atexit
+import copy
 import hashlib
 import json
 import queue
@@ -70,13 +71,19 @@ class IngestionMixin:
     def _flush_batch_to_db(self, batch: list[tuple[Any, ...]]) -> None:
         if not batch:
             return
-        with self._open() as conn:
-            for item in batch:
-                fn, args, kwargs = item
-                try:
+        try:
+            with self._open() as conn:
+                for fn, args, kwargs in batch:
                     fn(conn, *args, **kwargs)
-                except Exception:
-                    pass
+        except Exception as batch_exc:
+            log_step("memory.async_write_batch_error", f"batch_size={len(batch)} err={batch_exc}")
+            # 批量事务失败时回退为逐条独立重试，避免好条目因单个坏条目被整批丢弃
+            for fn, args, kwargs in batch:
+                try:
+                    with self._open() as conn:
+                        fn(conn, *args, **kwargs)
+                except Exception as item_exc:
+                    log_step("memory.async_write_item_error", f"err={item_exc}")
 
     def flush_writes(self, timeout: float = 5.0) -> None:
         """等待后台写入队列全部落盘。"""
@@ -280,11 +287,14 @@ class IngestionMixin:
         else:
             entry["created_at"] = entry["updated_at"]
 
+        # 线程安全防护：深拷贝 entry 防止外部修改与后台落盘线程发生竞争
+        entry_snapshot = copy.deepcopy(entry)
+
         def _write_task(conn: sqlite3.Connection) -> None:
-            self._write_entry(conn, entry)
+            self._write_entry(conn, entry_snapshot)
             # v3-lite: 入账 cells（显式/隐式加权 + 同桶残差）
             self._update_cell(
-                conn, entry, struct,
+                conn, entry_snapshot, struct,
                 parent_id=parent_id,
                 parent_origin=parent_origin,
                 intended_motif=intended_motif,
@@ -299,7 +309,7 @@ class IngestionMixin:
                         child_id=signature,
                         child_expression=expression,
                         child_struct=struct,
-                        child_metrics=entry["metrics"],
+                        child_metrics=entry_snapshot["metrics"],
                     )
                 except Exception:
                     pass
