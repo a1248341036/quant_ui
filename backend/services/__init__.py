@@ -1,7 +1,7 @@
 # s"""后端服务模块（包含通用服务和 AlphaAgent 服务）。"""
 
-# ── 通用服务（从 backend.services_old 导入） ─────────────────────────────
-from backend.services_old import (
+# ── 通用服务（从 backend.services.common 导入） ─────────────────────────────
+from backend.services.common import (
     # 核心函数
     build_codes,
     normalize_universe,
