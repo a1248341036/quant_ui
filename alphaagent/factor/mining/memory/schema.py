@@ -414,8 +414,16 @@ class SchemaMixin:
     def _migrate_cells_coarse(self, conn: sqlite3.Connection) -> None:
         """v7 迁移：将存量 memory_cells 表按 9 大粗族重新聚合合并，加权累加成功/失败数并合并残差序列。
 
-        幂等：如果已全为粗族则合并后结构保持不变。
+        幂等：data_version 已为 7 时跳过（粗族键如 momentum_reversal 再过一遍
+        classify_family_coarse 会因字典未命中而回落 other，破坏已正确的数据）。
         """
+        from .constants import DATA_VERSION as CURRENT_VERSION
+        row = conn.execute(
+            "SELECT v FROM store_meta WHERE k = 'data_version'"
+        ).fetchone()
+        if row and row["v"] == CURRENT_VERSION:
+            return
+
         from alphaagent.dsl.core.ast import classify_family_coarse
 
         rows = conn.execute(
@@ -824,18 +832,22 @@ class SchemaMixin:
         ic_str = f"IC={ic:+.4f}" if ic is not None else "IC=N/A"
         icir_str = f"ICIR={icir:+.3f}" if icir is not None else "ICIR=N/A"
         cov_str = f"Coverage={coverage:.2f}" if coverage is not None else ""
-        if is_val and (result.get("sign_check", {}).get("matches_expected_sign") is not False) and abs(ic or 0) >= 0.015:
+        from alphaagent.factor.mining.research_spec import DEFAULT_RESEARCH_SPEC
+        _ep = DEFAULT_RESEARCH_SPEC["evaluation_policy"]
+        _th = float(_ep["min_train_abs_ic"])
+        _icir_soft = float(_ep.get("min_train_icir_soft", 0.2))
+        _cov = float(_ep["min_train_coverage"])
+        _val_abs_ic = float(_ep["min_val_abs_ic"])
+        if is_val and (result.get("sign_check", {}).get("matches_expected_sign") is not False) and abs(ic or 0) >= _val_abs_ic:
             return "validated", f"训练外验证通过：{ic_str} {icir_str} {cov_str}。方向一致且有可用相关性，可在相邻但不重复的机制上扩展。"
-        # 海选线 2026-09-11 对齐 0.020（观察池口径，与 CandidateCriteria.min_abs_ic 同步，
-        # 两档统一——fundamental 档 override 也已回到 0.020）。ICIR/coverage 仍用宽松线
-        # （0.2/0.85）——原设计即"IC 跟门槛、ICIR 只作稳定性软线"，不随门槛收紧。
-        th = 0.020
-        if abs(ic or 0) >= th and (icir or 0) > 0.2 and (coverage or 0) > 0.85:
+        # 海选线从真源 evaluation_policy 继承
+        th = _th
+        if abs(ic or 0) >= th and (icir or 0) > _icir_soft and (coverage or 0) > _cov:
             return "promising", f"训练阶段有潜力：{ic_str} {icir_str} {cov_str}。优先进行训练外验证或独立性改造。"
         # P0-2 near_miss（2026-09-05）：IC 达门槛 80%、ICIR/coverage 达标但未过线——
         # 不再直接记 weak 死档，给"窗口微调/推 val"的二次机会（记忆分析：technical
         # 档 239 个 near-miss 无一获得二次评估）。
-        if abs(ic or 0) >= 0.8 * th and (icir or 0) > 0.2 and (coverage or 0) > 0.85:
+        if abs(ic or 0) >= 0.8 * th and (icir or 0) > _icir_soft and (coverage or 0) > _cov:
             return "near_miss", (
                 f"接近海选线：{ic_str} {icir_str} {cov_str}（IC 距 {th} 门槛 <20%）。"
                 "建议窗口微调后重评（传 parent_factor/edit_note），或机制置信度高时直接 eval_on_val_set。"

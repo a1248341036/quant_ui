@@ -180,12 +180,13 @@ def screen_population(
         ac = r.get("cs_pearson_autocorr")
         if ac is None or not np.isfinite(float(ac)) or float(ac) < autocorr_gate:
             reasons.append(f"autocorr<{autocorr_gate}")
-        icir = r.get("icir")
-        if icir is None or abs(float(icir)) <= 0.25:
-            reasons.append("icir<=0.25")
+        from alphaagent.factor.mining.delivery.delivery_criteria import DeliveryCriteria
+        _cc = DeliveryCriteria.defaults().candidate
+        if icir is None or abs(float(icir)) <= _cc.min_icir:
+            reasons.append(f"icir<={_cc.min_icir}")
         cov = r.get("coverage")
-        if cov is None or float(cov) <= 0.85:
-            reasons.append("coverage<=0.85")
+        if cov is None or float(cov) <= _cc.min_coverage:
+            reasons.append(f"coverage<={_cc.min_coverage}")
         for key in reasons:
             dead[key] = dead.get(key, 0) + 1
 

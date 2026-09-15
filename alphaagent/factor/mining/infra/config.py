@@ -13,7 +13,7 @@ from alphaagent.factor.mining.context import StockEvalContext
 class MiningConfig:
     """一次挖掘运行的全部配置。"""
 
-    eval: StockEvalContext
+    eval: StockEvalContext | None = None
     model: str = "gpt-4o-mini"
     temperature: float | None = None
     # 思考强度（2026-09-12 接入，默认 medium）：deepseek 系 thinking 平均
@@ -54,6 +54,12 @@ class MiningConfig:
     similar_top_k: int = 3
     ingest_overwrite: bool = False
     auto_realign_panel: bool = True
+    # 运行超时参数（单一真源收口）
+    eval_timeout_seconds: float = 600.0        # 单次评估超时
+    submit_timeout_seconds: float = 120.0      # 提交链路超时
+    population_timeout_seconds: float = 1800.0 # 种群扫描超时
+    backtest_timeout_seconds: float = 120.0    # 回测超时
+
     # Keep delivery metadata with the FactorZoo unless a caller explicitly
     # overrides either path. A relative default here used to split successful
     # submissions across two different FactorZoo roots.

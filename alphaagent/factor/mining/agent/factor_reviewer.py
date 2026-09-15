@@ -248,20 +248,22 @@ class FactorReviewer:
         train_summary = train[0].get("summary") if isinstance(train[0].get("summary"), dict) else {}
         val_summary = val[0].get("summary") if isinstance(val[0].get("summary"), dict) else {}
         policy = self.policy.get("evaluation_policy", {})
+        from alphaagent.factor.mining.research_spec import DEFAULT_RESEARCH_SPEC
+        _ep = DEFAULT_RESEARCH_SPEC["evaluation_policy"]
         train_ic = float(train_summary.get("ic") or 0)
         val_ic = float(val_summary.get("ic") or 0)
         train_icir = float(train_summary.get("icir") or 0)
         coverage = float(train_summary.get("factor_coverage") or 0)
         reasons: list[str] = []
-        if abs(train_ic) < float(policy.get("min_train_abs_ic", 0.015)):
+        if abs(train_ic) < float(policy.get("min_train_abs_ic", _ep["min_train_abs_ic"])):
             reasons.append("训练集 abs(IC) 未达到 ResearchSpec 门槛。")
-        if abs(train_icir) < float(policy.get("min_train_icir", 0.2)):
+        if abs(train_icir) < float(policy.get("min_train_icir", _ep["min_train_icir"])):
             reasons.append("训练集 abs(ICIR) 未达到 ResearchSpec 门槛。")
-        if coverage < float(policy.get("min_train_coverage", 0.85)):
+        if coverage < float(policy.get("min_train_coverage", _ep["min_train_coverage"])):
             reasons.append("训练集 Coverage 未达到 ResearchSpec 门槛。")
-        if abs(val_ic) < float(policy.get("min_val_abs_ic", 0.01)):
+        if abs(val_ic) < float(policy.get("min_val_abs_ic", _ep["min_val_abs_ic"])):
             reasons.append("验证集 abs(IC) 未达到 ResearchSpec 门槛。")
-        if abs(val_ic) / max(abs(train_ic), 1e-12) < float(policy.get("min_val_ic_retention_ratio", 0.5)):
+        if abs(val_ic) / max(abs(train_ic), 1e-12) < float(policy.get("min_val_ic_retention_ratio", _ep["min_val_ic_retention_ratio"])):
             reasons.append("验证集相对训练集的 IC 保留比例不足。")
         if policy.get("require_sign_consistency", True) and train_ic * val_ic <= 0:
             reasons.append("训练集与验证集 IC 方向不一致。")

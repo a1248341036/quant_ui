@@ -24,6 +24,11 @@ from alphaagent.core.timeutil import utc_now_iso
 _now = utc_now_iso
 
 
+from alphaagent.factor.mining.infra.config import MiningConfig
+
+_DEFAULT_MINING_CONFIG = MiningConfig()
+
+
 def _chat_with_retry(client: Any, req: dict[str, Any], *, max_retries: int = 4, backoff: float = 2.0) -> Any:
     last: BaseException | None = None
     for attempt in range(max_retries + 1):
@@ -114,12 +119,12 @@ def run_trajectory(
     user_message: str,
     tools: FactorEvalTools,
     log_jsonl: Path,
-    max_turns: int = 16,
-    max_tool_calls_per_round: int = 12,
-    max_tool_workers: int = 8,
-    min_tool_call_rounds_before_allow_stop: int = 3,
+    max_turns: int = _DEFAULT_MINING_CONFIG.max_turns,
+    max_tool_calls_per_round: int = _DEFAULT_MINING_CONFIG.max_tool_calls_per_round,
+    max_tool_workers: int = _DEFAULT_MINING_CONFIG.max_tool_workers,
+    min_tool_call_rounds_before_allow_stop: int = _DEFAULT_MINING_CONFIG.min_tool_call_rounds_before_allow_stop,
     temperature: float | None = None,
-    max_tokens: int = 16384,  # 与 MiningConfig 同步：12288 曾被 37% 调用打满导致截断，退回 16384
+    max_tokens: int = _DEFAULT_MINING_CONFIG.max_tokens,
     extra_body: dict[str, Any] | None = None,
     printer: ConsolePrinter | None = None,
 ) -> list[dict[str, Any]]:

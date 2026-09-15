@@ -443,11 +443,17 @@ def _dispatch_sync(tools: FactorEvalTools, name: str, arguments: dict[str, Any])
     return result, elapsed
 
 
-# 单个因子评估的超时秒数：numba JIT 首次编译可能很慢，
-# submit 时需加载 CNE panel + realign + 重算，给更充裕的时间。
-# topn_portfolio 指标接入 core.engine 全量回测引擎（daily/weekly/monthly 三频率），
-# 单次评估计算量显著增加，300s 已不够用。
-_EVAL_TIMEOUT_SECONDS = 600
+# 默认运行参数由 MiningConfig 统一提供真源
+from alphaagent.factor.mining.infra.config import MiningConfig
+
+_DEFAULT_MINING_CONFIG = MiningConfig()
+_runtime_config: MiningConfig = _DEFAULT_MINING_CONFIG
+
+
+def set_runtime_config(config: MiningConfig | None) -> None:
+    """设置全局运行时 MiningConfig 配置。"""
+    global _runtime_config
+    _runtime_config = config or _DEFAULT_MINING_CONFIG
 
 
 async def _dispatch_with_timeout(
@@ -457,17 +463,18 @@ async def _dispatch_with_timeout(
     name: str,
     args: dict[str, Any],
     *,
-    timeout: float = _EVAL_TIMEOUT_SECONDS,
+    timeout: float | None = None,
 ) -> tuple[dict[str, Any], float]:
     """带超时的 dispatch，超时返回错误而非永久阻塞。"""
+    actual_timeout = float(timeout if timeout is not None else _runtime_config.eval_timeout_seconds)
     try:
         result, elapsed = await asyncio.wait_for(
             loop.run_in_executor(executor, _dispatch_sync, tools, name, args),
-            timeout=timeout,
+            timeout=actual_timeout,
         )
         return result, elapsed
     except asyncio.TimeoutError:
-        return {"ok": False, "error": f"评估超时（>{timeout:.0f}s），算子可能首次 JIT 编译或计算量过大，已自动跳过", "error_type": "EvalTimeout"}, timeout
+        return {"ok": False, "error": f"评估超时（>{actual_timeout:.0f}s），算子可能首次 JIT 编译或计算量过大，已自动跳过", "error_type": "EvalTimeout"}, actual_timeout
 
 
 def _result_tool_chunk(result: dict[str, Any]) -> ToolChunk:
@@ -697,7 +704,7 @@ def build_factor_eval_toolkit(
                     loop.run_in_executor(
                         _executor(max_workers), _orthogonality_check, tools, multi_line_expr,
                     ),
-                    timeout=120,
+                    timeout=_runtime_config.backtest_timeout_seconds,
                 )
                 similar = ortho.get("similar_factors") or []
                 if ortho.get("skipped_reason"):
@@ -788,12 +795,13 @@ def build_factor_eval_toolkit(
             )
 
         t0 = time.perf_counter()
+        _pop_timeout = _runtime_config.population_timeout_seconds
         try:
             result = await asyncio.wait_for(
-                loop.run_in_executor(_executor(max_workers), _run), timeout=1800.0
+                loop.run_in_executor(_executor(max_workers), _run), timeout=_pop_timeout
             )
         except asyncio.TimeoutError:
-            result = {"ok": False, "error": f"population_timeout:>1800s (n={max_population})", "error_type": "EvalTimeout"}
+            result = {"ok": False, "error": f"population_timeout:>{_pop_timeout:.0f}s (n={max_population})", "error_type": "EvalTimeout"}
         except Exception as exc:  # noqa: BLE001
             result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:400]}
         result["elapsed_seconds"] = round(time.perf_counter() - t0, 1)
@@ -921,7 +929,7 @@ def build_factor_eval_toolkit(
                 # 提交含全区间复检 + 首次 JIT 编译 + 正交 hook 重评 registry 候选
                 # （~22 条 × 10s）+ 深夜慢速 reviewer LLM（超时重试可达 +180s），
                 # 实测 908s 撞穿 900s 旧上限 → stage_one 过线因子全部丢失。
-                timeout=1800,
+                timeout=_runtime_config.population_timeout_seconds,
             )
             if _legacy_kwargs:
                 result["ignored_arguments"] = sorted(_legacy_kwargs)
@@ -949,7 +957,7 @@ def build_factor_eval_toolkit(
                     "factor_names": factor_names or [],
                     "signal_date": signal_date,
                 },
-                timeout=120,
+                timeout=_runtime_config.submit_timeout_seconds,
             )
             return _result_tool_chunk(result)
 

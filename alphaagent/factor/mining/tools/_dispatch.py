@@ -168,10 +168,14 @@ def _attach_yield_hints(result: dict[str, Any], expr: str, arguments: dict[str, 
             _nm_th = _ic_bar_from_rules(result.get("screen_rules")) or _candidate_ic_bar(
                 result.get("research_mode")
             )
+            from alphaagent.factor.mining.research_spec import DEFAULT_RESEARCH_SPEC
+            _default_ep = DEFAULT_RESEARCH_SPEC["evaluation_policy"]
+            _icir_soft = float(_default_ep.get("min_train_icir_soft", 0.2))
+            _cov_thr = float(_default_ep.get("min_train_coverage", 0.85))
             if (
                 ic_f is not None and _NEAR_MISS_RATIO * _nm_th <= ic_f < _nm_th
-                and icir_f is not None and icir_f > 0.2
-                and cov_f is not None and cov_f > 0.85
+                and icir_f is not None and icir_f > _icir_soft
+                and cov_f is not None and cov_f > _cov_thr
             ):
                 result["near_miss_hint"] = (
                     f"接近海选线（|IC|={ic_f:.4f}，ICIR={icir_f:.3f}，coverage={cov_f:.2f}）——"
@@ -204,14 +208,15 @@ def _attach_yield_hints(result: dict[str, Any], expr: str, arguments: dict[str, 
             result["submit_decision_required"] = (
                 f"训练已过海选线，但日单边换手 {turnover_f:.2f} 超标——{gate_line}，"
                 "调用 submit_factor 纯浪费算力。请勿提交：推荐 3 种降噪路径改造后再评："
-                "①用 TS_MEDIAN(x, 20) 或 TS_MEAN(x, 20) 包裹原信号进行长窗平滑；"
-                "②外层加 CS_ZSCORE(x) 压制极端尾部与日度排名抖动；"
-                "③换用慢信息源（如基本面 PIT 数据 $funda_*$、筹码周频变量）替代高频价格反转。"
+                "①换用慢信息源（如基本面 PIT 数据 $funda_*$、筹码周频变量）替代高频价格反转；"
+                "②外层加 CS_ZSCORE(x) 压制极端尾部与日度排名抖动（不压缩分布）；"
+                "③缩短信号窗口或换 TS_QUANTILE 降低日度翻转频率。"
+                "注意：末位 EMA/WMA/TS_MEAN 平滑会压缩因子值分布导致十分位塌陷，不建议作为降噪手段。"
             )
             result["turnover_reduction_hints"] = [
-                "TS_MEDIAN(x, 20) 或 TS_MEAN(x, 20) 长窗平滑",
-                "CS_ZSCORE 截面秩变换",
-                "替换为基本面 PIT 或慢速筹码变量",
+                "换用基本面 PIT 或慢速筹码变量（降换手不压缩分布）",
+                "CS_ZSCORE 截面秩变换（压制尾部不塌分布）",
+                "缩短信号窗口或 TS_QUANTILE 降翻转频率",
             ]
             return
         # P0-4 ICIR 预检（2026-09-12：run 42254d 中 2 次 submit_factor 死于
@@ -227,8 +232,8 @@ def _attach_yield_hints(result: dict[str, Any], expr: str, arguments: dict[str, 
             result["submit_decision_required"] = (
                 f"训练已过海选线（promising），但 ICIR={icir_f:.3f} < stage_one 门槛 {_icir_gate:.2f}——"
                 "调用 submit_factor 大概率被 stage_one 拦截（纯浪费算力）。请勿提交，改为升 ICIR："
-                "换窗（如 20→10/40）、平滑（TS_MEAN/TS_MEDIAN）、去极值压缩日度波动——IC 方向已对，"
-                "先让 IR 过线再交。"
+                "换窗（如 20→10/40）、去极值压缩日度波动、换用更高信噪比的数据面——IC 方向已对，"
+                "先让 IR 过线再交。注意：末位 EMA/TS_MEAN 平滑会压缩分布导致十分位塌陷，不建议用。"
             )
             return
         result["submit_decision_required"] = (
@@ -236,6 +241,27 @@ def _attach_yield_hints(result: dict[str, Any], expr: str, arguments: dict[str, 
             "①立即调用 submit_factor 走入库门槛（正交检查/审查/精筛会自动裁决）；"
             "②给出不提交的明确理由（正交顾虑/机制疑点/PIT 疑点），并以此指导下一轮变异方向。"
         )
+        # collapse_risk 预警：末位平滑算子压缩分布导致十分位塌陷
+        try:
+            from alphaagent.dsl.core.ast import terminal_smoothing, all_smoothing_ops
+            expr_str = str(arguments.get("multi_line_expr") or arguments.get("expr") or "")
+            if expr_str:
+                sm_ops = all_smoothing_ops(expr_str)
+                is_terminal = terminal_smoothing(expr_str)
+                if is_terminal:
+                    result["collapse_risk"] = "high"
+                    result["collapse_risk_hint"] = (
+                        f"末位平滑算子 {is_terminal} 压缩因子值分布，十分位 D1-D3/D8-D10 区分度不足——"
+                        "建议去掉末位平滑，改用 CS_ZSCORE/RANK 做截面连续化（不压缩分布）。"
+                    )
+                elif len(sm_ops) >= 2:
+                    result["collapse_risk"] = "medium"
+                    result["collapse_risk_hint"] = (
+                        f"表达式含 {len(sm_ops)} 个平滑算子（{', '.join(sm_ops[:3])}），"
+                        "分布压缩风险中等——若十分位区分度不足，考虑减少平滑层数。"
+                    )
+        except Exception:  # noqa: BLE001
+            pass
     except Exception:  # noqa: BLE001
         pass
 
@@ -255,17 +281,17 @@ def _ic_bar_from_rules(rules: Any) -> float | None:
 
 def _candidate_ic_bar(research_mode: str | None) -> float:
     """候选池 |IC| 准入线兜底（唯一真源：DEFAULT_RESEARCH_SPEC + 模式 override）。"""
-    try:
-        from alphaagent.factor.mining.research_spec import DEFAULT_RESEARCH_SPEC
-        from core.research_modes import RESEARCH_MODES
+    from alphaagent.factor.mining.research_spec import DEFAULT_RESEARCH_SPEC
+    from core.research_modes import RESEARCH_MODES
 
-        bar = float(DEFAULT_RESEARCH_SPEC["delivery_policy"]["candidate"]["min_abs_ic"])
+    bar = float(DEFAULT_RESEARCH_SPEC["delivery_policy"]["candidate"]["min_abs_ic"])
+    try:
         spec = RESEARCH_MODES.get(str(research_mode or "technical"))
         if spec is not None:
             bar = float(getattr(spec, "candidate_overrides", {}).get("min_abs_ic", bar))
         return bar
     except Exception:  # noqa: BLE001
-        return 0.020
+        return bar
 
 
 def _near_miss_verdict(metrics: dict[str, Any]) -> bool:
@@ -284,10 +310,14 @@ def _near_miss_verdict(metrics: dict[str, Any]) -> bool:
     th = _ic_bar_from_rules(metrics.get("screen_rules")) or _candidate_ic_bar(
         metrics.get("research_mode")
     )
+    from alphaagent.factor.mining.research_spec import DEFAULT_RESEARCH_SPEC
+    _default_ep = DEFAULT_RESEARCH_SPEC["evaluation_policy"]
+    _icir_soft = float(_default_ep.get("min_train_icir_soft", 0.2))
+    _cov_thr = float(_default_ep.get("min_train_coverage", 0.85))
     return bool(
         _NEAR_MISS_RATIO * th <= ic_f < th
-        and (icir_f is not None and icir_f > 0.2)
-        and (cov_f is not None and cov_f > 0.85)
+        and (icir_f is not None and icir_f > _icir_soft)
+        and (cov_f is not None and cov_f > _cov_thr)
     )
 
 
