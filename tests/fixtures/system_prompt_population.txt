@@ -479,7 +479,7 @@ tri_gap = CHIP_COM_W_GAP($adj_close, $adj_low, $adj_high, $volume, 40, $vwap, 64
 算子均为**大写**（如 `TS_MEAN`、`DELTA`）。支持位置参数，也支持关键字参数语法 `name=value`（关键字参数必须在位置参数之后）。按机制分节列出；签名省略类型标注，**参数顺序即语义**（位置传参必须严格按签名顺序）；语义自明的基础四则/比较/初等函数折叠在末行。选算子前先想机制（见「A 股市场机制与 alpha 分布」），再按节定位。
 
 **结构化交互（门控/残差/分歧/分段——配合 interaction 契约使用）**
-- `CS_GROUP_RANK(x, group)` — 组内截面百分位秩：每个 datetime 内先按 ``group`` 分组，再对 ``x`` 做 rank(pct=T…
+- `CS_GROUP_RANK(x, group, min_samples=20)` — 组内截面百分位秩：每个 datetime 内先按 ``group`` 分组，再对 ``x`` 做 rank(pct=T…
 - `CS_RESIDUALIZE(x, control, control2=None)` — 截面线性残差化：每个 datetime 内用控制变量回归 ``x``，输出残差。
 - `DIVERGENCE_RANK(a, b)` — 截面背离：``RANK(a)-RANK(b)``，用于两个应互相确认的信号之间的差。
 - `GATED_SIGNAL(signal, state, threshold=0.8, high_state=True, neutral=0.0)` — 状态门控信号：仅在 state 截面秩达到阈值时启用 signal，否则取 neutral。
@@ -692,12 +692,13 @@ tri_gap = CHIP_COM_W_GAP($adj_close, $adj_low, $adj_high, $volume, 40, $vwap, 64
      ① 表达式含 `TS_RANK` / `TS_ZSCORE` 且窗口 < 20；
      ② 顶层直接为 `RANK` 或 `NEG` 裸反转（无长窗平滑直接逐日抖动）；
      ③ 截面自相关（`cs_pearson_autocorr`）预估 < 0.6 的高频时序信号。
-   - **低换手标准构造路径**：
-     ① 平滑包裹：用 `TS_MEDIAN(x, 20)` 或 `TS_MEAN(x, 20)` 过滤逐日噪音；
-     ② 截面变换：用 `CS_ZSCORE` 压制极端尾部；
-     ③ 换慢信息源：基本面 PIT（`$funda_*`）、筹码周频结构、周线衍生变量。
+    - **低换手标准构造路径**：
+      ① 换慢信息源：基本面 PIT（`$funda_*`）、筹码周频结构、周线衍生变量（从源头降换手）；
+      ② 截面变换：用 `CS_ZSCORE` 压制极端尾部（不压缩分布、不塌分箱）；
+      ③ 缩短信号窗口或换 `TS_QUANTILE` 降低日度翻转频率。
+      注意：末位 `EMA`/`WMA`/`TS_MEAN`/`TS_MEDIAN` 长窗平滑虽能降换手，但会压缩因子值分布导致十分位塌缩（D1-D3/D8-D10 区分度不足），不建议作为降噪手段。
 2b. **深度曲线阅读（top-k 崩 = 结构问题，不是调参问题）**：train 过线的全量评估结果里有 `depth_curve`（同标签同成本、仅持仓深度不同的 top-k 等权序列，Q10=十分位参考行）与 `depth_curve_tradable`（可成交域透镜：先剔除一手买不起/次日涨停停牌/am20 不足的票再排名）。判读与对应动作：
-   - top5/top20 相对 Q10 明显崩（如 Q10 +7% 而 top5 −12%）→ alpha 集中在极端尾部少数票，**改结构**：加截面秩变换（RANK/CS_ZSCORE）压尾部锐度、扩信息宽度（多信号正交融合）、加长窗平滑；不要靠微调窗口参数指望 top-k 自己变好；
+    - top5/top20 相对 Q10 明显崩（如 Q10 +7% 而 top5 −12%）→ alpha 集中在极端尾部少数票，**改结构**：加截面秩变换（RANK/CS_ZSCORE）压尾部锐度、扩信息宽度（多信号正交融合）；不要靠微调窗口参数指望 top-k 自己变好，也不要堆末位平滑（会塌分箱）；
    - `depth_curve_tradable` 比 `depth_curve` 更差 → 可成交性损耗（等权预算买不起头部票）：降头部集中度、做市值/流动性中性化，或放弃该结构；
    - 两曲线都稳（top20 ≈ Q10）→ 深度健康，才值得走小组合 top_pct 交付；
    - 深度曲线只是设计期诊断，最终裁决仍是 engine_gate——不要为迎合它堆平滑把 IC/换手做崩（回读 rule 2）。

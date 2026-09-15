@@ -41,12 +41,23 @@ FAMILY_LABELS = {
     "other": "其他",
 }
 MOTIF_LABELS = {
+    # 细化后 labels
+    "window_shorten": "缩短窗口周期",
+    "window_extend": "延长窗口周期",
     "window_rescale": "调整窗口参数",
+    "feature_swap_price": "替换价量字段",
+    "feature_swap_funda": "替换基本面字段",
+    "feature_swap_chip": "替换筹码字段",
     "feature_swap": "替换输入字段",
+    "operator_swap_smoothing": "更换平滑算子",
+    "operator_swap_transform": "更换截面变换算子",
     "operator_substitute": "替换核心算子",
     "operator_swap": "替换核心算子",
-    "condition_gate": "加条件门控",
+    "composition_add_smoothing": "叠加平滑滤波",
+    "composition_add_normalize": "叠加截面归一化",
+    "composition_add_neutralize": "叠加截面中性化",
     "composition_add": "叠加外层修饰",
+    "condition_gate": "加条件门控",
     "normalize_change": "更换标准化方式",
     "decorrelation_add": "加去相关处理",
     "interaction_add": "新增交互/乘除项",
@@ -702,13 +713,25 @@ class RetrievalMixin:
             "仅当该行场景与你正要做的变异匹配时才生效。"
         )
         lines.append(
-            "档位含义：【禁止】= 一致失败且结论可靠，不得使用；【谨慎避开】= 失败为主，"
-            "按行尾指令处理；【优先尝试/优先采用】= 历史偏成功，可优先选。"
-            "父本桶 = 统计所基于的父本强弱（弱: |IC|<0.015，中: 0.015~0.025，强: ≥0.025），"
-            "在弱父本上变异只看弱父本行。"
+            "档位含义：【禁止】= 一致失败且结论可靠，附替代建议；【谨慎避开】= 失败为主，"
+            "建议换用替代方向；【优先尝试/优先采用】= 历史偏成功，附参考示例。"
         )
         focus_lines: list[str] = []
         other_lines: list[str] = []
+        
+        # 预先计算同族中表现较好（n>=2 且胜率较高）的替代 motif 字典: family -> list[motif]
+        family_success_motifs: dict[str, list[tuple[str, float]]] = {}
+        for r in rows:
+            f = str(r["family"] or "other")
+            m = str(r["motif"] or "other")
+            s, fl = self._weighted_counts(r)
+            tot = s + fl
+            if tot >= 2.0 and s > 0:
+                win_rate = s / tot
+                family_success_motifs.setdefault(f, []).append((m, win_rate))
+        for f in family_success_motifs:
+            family_success_motifs[f].sort(key=lambda x: x[1], reverse=True)
+
         for row in rows:
             family = str(row["family"] or "other")
             motif = str(row["motif"] or "other")
@@ -729,11 +752,27 @@ class RetrievalMixin:
                 continue
             fam_cn = FAMILY_LABELS.get(family, family)
             motif_cn = MOTIF_LABELS.get(motif, motif)
-            tag, action = tier_text[tier]
+            tag, default_action = tier_text[tier]
+
+            # 改造 D：使注入建议具备可操作性 (Actionable Guidance)
+            if "veto" in tier:
+                # 寻找同族其他高胜率替代方向
+                candidates = [
+                    MOTIF_LABELS.get(m, m)
+                    for m, wr in family_success_motifs.get(family, [])
+                    if m != motif and wr >= 0.4
+                ]
+                if candidates:
+                    action_str = f"替代方向：推荐换用「{'」/「'.join(candidates[:2])}」（同族历史成功率更高）"
+                else:
+                    action_str = "替代方向：建议更换信号族或换慢信息源，避免在此方向无效重复"
+            else:
+                action_str = f"{default_action}（保持长窗平滑以控制换手）"
+
             line = (
                 f"- 【{tag}】{fam_cn}类 × 「{motif_cn}」× {bucket_text.get(bucket, bucket)}："
                 f"成功 {s_w:.2g} / 失败 {f_w:.2g}（失败率 {f_w / (s_w + f_w):.0%}），置信 {conf:.0%}"
-                f" → {action}。"
+                f" → {action_str}。"
             )
             (focus_lines if family in focus_families else other_lines).append(line)
         lines.extend(focus_lines)
@@ -833,11 +872,16 @@ class RetrievalMixin:
         return families
 
     def _saturation_block(self) -> str:
-        """饱和度层注入：拥挤族警告 + 出过正信号且未拥挤族的定向建议。"""
+        """饱和度层注入：拥挤族警告 + 出过正信号且未拥挤族的定向建议。
+
+        2026-09-15：阈值从 0.6 降到 0.4——候选库 30 因子中 13 个末位平滑、
+        16 个含 ≥2 平滑算子，平滑变体堆积使"族拥挤"更早出现；0.6 太晚，
+        LLM 已经在拥挤空间里转了很久才收到警告。
+        """
         saturation = self.compute_saturation()
         crowded = {
             f: d for f, d in saturation.items()
-            if d.get("saturation_score", 0) > 0.6
+            if d.get("saturation_score", 0) > 0.4
         }
         if not crowded:
             return ""
@@ -853,7 +897,7 @@ class RetrievalMixin:
             )
         open_fams = [
             (f, d) for f, d in saturation.items()
-            if d.get("saturation_score", 0) <= 0.6 and d.get("n_promising", 0) > 0
+            if d.get("saturation_score", 0) <= 0.4 and d.get("n_promising", 0) > 0
         ]
         if open_fams:
             open_fams.sort(key=lambda x: (-x[1].get("n_promising", 0),

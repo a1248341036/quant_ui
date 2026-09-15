@@ -10,7 +10,8 @@ from __future__ import annotations
 #     uid = identity.factor_uid(factor_name) 确定性派生，回填按 factor_name 聚类
 # v6：verdict 语义修正——评估未产出（面板缺列/超时/参数错）从 rejected 分离为
 #     eval_error（"没算出来 ≠ 被否定"）；存量迁移把 rejected 中带 error 的条目重分类
-DATA_VERSION = "6"
+# v7：SSPM 编辑统计层重构——cells 按 9 大粗族与细化 motif 重聚合，提升每 cell 观测密度与信噪比
+DATA_VERSION = "7"
 
 # ── Verdict 分类 ──
 # near_miss（2026-09-05）：IC 达门槛 80%、ICIR/coverage 达标但未过线——
@@ -53,6 +54,21 @@ PARENT_ORIGIN_WEIGHT = {"explicit": 1.0, "implicit": 0.5}
 
 # 无效尝试（报错）入账失败观测的权重
 INVALID_WEIGHT = 0.5
+
+# 纯技术性失败模式：参数格式、DSL 解析、面板列缺失、预测格式等纯工程报错
+# 不代表量化经济机制或编辑方向失效，SSPM cell 统计时直接短路跳过，不计入失败观测
+TECHNICAL_ERROR_PATTERNS = frozenset({
+    "ToolArgumentsError",
+    "DSL_PARSE_ERROR",
+    "dsl_compile_failed",
+    "panel_column_missing",
+    "missing column",
+    "prediction_missing",
+    "prediction_invalid",
+    "prediction_check_error",
+    "Tool execution timed out",
+    "MemoryAdvisoryBlock",
+})
 
 # Verdict 权重（用于统计聚合）
 VERDICT_WEIGHT = {

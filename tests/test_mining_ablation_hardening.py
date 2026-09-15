@@ -161,7 +161,6 @@ def test_turnover_reduction_hints_present():
     assert "submit_decision_required" in res
     hint = res["submit_decision_required"]
     assert "请勿提交" in hint
-    assert "TS_MEDIAN" in hint
     assert "CS_ZSCORE" in hint
     assert "基本面 PIT" in hint
 

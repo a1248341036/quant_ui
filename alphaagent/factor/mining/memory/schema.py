@@ -408,7 +408,74 @@ class SchemaMixin:
         self._backfill_v3_conn(conn)
         self._backfill_factor_uid(conn)
         self._backfill_eval_error(conn)
+        self._migrate_cells_coarse(conn)
         conn.execute("INSERT OR REPLACE INTO store_meta(k, v) VALUES ('data_version', ?)", (DATA_VERSION,))
+
+    def _migrate_cells_coarse(self, conn: sqlite3.Connection) -> None:
+        """v7 迁移：将存量 memory_cells 表按 9 大粗族重新聚合合并，加权累加成功/失败数并合并残差序列。
+
+        幂等：如果已全为粗族则合并后结构保持不变。
+        """
+        from alphaagent.dsl.core.ast import classify_family_coarse
+
+        rows = conn.execute(
+            "SELECT family, motif, parent_bucket, explicit_s, explicit_f, implicit_s, implicit_f, residuals_json, updated_at "
+            "FROM memory_cells"
+        ).fetchall()
+        if not rows:
+            return
+
+        aggregated: dict[tuple[str, str, str], dict[str, Any]] = {}
+        for r in rows:
+            fam = classify_family_coarse(str(r["family"] or ""))
+            motif = str(r["motif"] or "other")
+            bucket = str(r["parent_bucket"] or "medium")
+            key = (fam, motif, bucket)
+            
+            try:
+                res_list = json.loads(r["residuals_json"] or "[]")
+                if not isinstance(res_list, list):
+                    res_list = []
+            except Exception:
+                res_list = []
+
+            if key not in aggregated:
+                aggregated[key] = {
+                    "explicit_s": float(r["explicit_s"] or 0.0),
+                    "explicit_f": float(r["explicit_f"] or 0.0),
+                    "implicit_s": float(r["implicit_s"] or 0.0),
+                    "implicit_f": float(r["implicit_f"] or 0.0),
+                    "residuals": list(res_list),
+                    "updated_at": r["updated_at"],
+                }
+            else:
+                agg = aggregated[key]
+                agg["explicit_s"] += float(r["explicit_s"] or 0.0)
+                agg["explicit_f"] += float(r["explicit_f"] or 0.0)
+                agg["implicit_s"] += float(r["implicit_s"] or 0.0)
+                agg["implicit_f"] += float(r["implicit_f"] or 0.0)
+                agg["residuals"].extend(res_list)
+                if r["updated_at"] and (not agg["updated_at"] or r["updated_at"] > agg["updated_at"]):
+                    agg["updated_at"] = r["updated_at"]
+
+        # 重建 cells 表内容
+        conn.execute("DELETE FROM memory_cells")
+        for (fam, motif, bucket), data in aggregated.items():
+            conn.execute(
+                """
+                INSERT INTO memory_cells (
+                    family, motif, parent_bucket,
+                    explicit_s, explicit_f, implicit_s, implicit_f,
+                    residuals_json, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    fam, motif, bucket,
+                    data["explicit_s"], data["explicit_f"], data["implicit_s"], data["implicit_f"],
+                    json.dumps(data["residuals"][-100:], ensure_ascii=False),
+                    data["updated_at"] or _now(),
+                ),
+            )
 
     def _backfill_eval_error(self, conn: sqlite3.Connection) -> None:
         """v6 回填：rejected 且带 error 的条目重分类为 eval_error（评估未产出）。

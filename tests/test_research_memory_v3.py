@@ -154,11 +154,11 @@ def test_implicit_fallback_weighted(tmp_path):
 def test_invalid_attempt_recorded_as_failure(tmp_path):
     store = ResearchMemoryStore(tmp_path / "m.db")
     store.record_tool_result(run_id="r1", row=_eval_row("eval_on_train_set", PARENT_EXPR, "vwap_dev_10", ic=0.020))
-    # 报错且无 IC → invalid 失败观测（权重 0.5，无 residual）
+    # 机制性失败报错（如 coverage_too_low）且无 IC → invalid 失败观测（权重 0.5，无 residual）
     entry = store.record_tool_result(
         run_id="r1",
         row=_eval_row(
-            "eval_on_train_set", CHILD_EXPR, "vwap_dev_bad", error="dsl_compile_failed: unknown op",
+            "eval_on_train_set", CHILD_EXPR, "vwap_dev_bad", error="coverage_too_low: factor coverage 0.3 < 0.85",
             extra_args={"parent_factor": "vwap_dev_10", "edit_note": "edit=window_rescale 10→40"},
         ),
     )
@@ -509,11 +509,11 @@ def test_v2_migration_rebuilds_cells(tmp_path):
         ).fetchone()[0]
     assert version == DATA_VERSION
     assert "parent_bucket" in cols and "implicit_s" in cols and "explicit_s" in cols
-    # 子代被隐式链接到父本并重建进 cells（legacy 全 implicit）
+    # 子代被隐式链接到父本并重建进 cells（legacy 全 implicit，细化 motif 为 window_extend）
     assert origin == "implicit"
     assert len(cell_rows) == 1
     row = cell_rows[0]
-    assert row["motif"] == "window_rescale" and row["parent_bucket"] == "medium"
+    assert row["motif"] == "window_extend" and row["parent_bucket"] == "medium"
     assert row["implicit_s"] == pytest.approx(0.5)  # legacy implicit 加权计数
     # residual = 0.024 − 0.020（无历史回退父本）
     assert json.loads(row["residuals_json"]) == pytest.approx([0.004])
@@ -582,7 +582,7 @@ def test_v1_legacy_db_migration(tmp_path):
     assert {"family", "stage_metrics_json", "parent_origin", "intended_motif", "edit_note"} <= cols
     assert origin == "implicit"
     assert cell_row is not None
-    assert cell_row["motif"] == "window_rescale" and cell_row["parent_bucket"] == "medium"
+    assert cell_row["motif"] == "window_extend" and cell_row["parent_bucket"] == "medium"
     assert cell_row["implicit_s"] == pytest.approx(0.5)
     assert json.loads(cell_row["residuals_json"]) == pytest.approx([0.004])
 

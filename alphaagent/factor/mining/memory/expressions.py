@@ -18,7 +18,8 @@ _KNOWN_OPERATORS = frozenset({
     "ts_mean", "ts_sum", "ts_std", "ts_var", "ts_median", "ts_max", "ts_min",
     "ts_rank", "ts_quantile", "ts_delta", "ts_delay", "ts_advance",
     "ts_corr", "ts_cov", "ts_regression", "ts_decay_linear", "ts_skewness",
-    "ts_kurtosis", "ts_arg_max", "ts_arg_min", "ts_pct_change",
+    "ts_kurtosis", "ts_arg_max", "ts_arg_min", "ts_pct_change", "ts_pctchange",
+    "ema", "wma", "sma", "dema", "tema",
     # 截面算子
     "cs_rank", "cs_zscore", "cs_winsorize", "cs_demean", "cs_quantile",
     "cs_residualize", "cs_neutralize",
@@ -52,15 +53,30 @@ _NUM_RE = re.compile(r"\b(\d+(?:\.\d+)?)\b")
 # ── 编辑 motif 定义 ──
 
 MOTIFS = (
-    "window_rescale",
-    "feature_swap",
-    "operator_substitute",
-    "operator_swap",
+    # 窗口细化
+    "window_shorten",
+    "window_extend",
+    "window_rescale",  # 兼容保留
+    # 字段替换细化
+    "feature_swap_price",
+    "feature_swap_funda",
+    "feature_swap_chip",
+    "feature_swap",    # 兼容保留
+    # 算子替换细化
+    "operator_swap_smoothing",
+    "operator_swap_transform",
+    "operator_swap",   # 兼容保留
+    "operator_substitute",  # 兼容保留
+    # 组合层细化
+    "composition_add_smoothing",
+    "composition_add_normalize",
+    "composition_add_neutralize",
+    "composition_add", # 兼容保留
+    # 结构/交互算子
     "condition_gate",
-    "composition_add",
-    "normalize_change",
-    "decorrelation_add",
     "interaction_add",
+    "decorrelation_add",
+    "normalize_change",
     "compound_edit",
     "other",
 )
@@ -132,23 +148,28 @@ def _tokens(*values: Any) -> list[str]:
 def _structure_fingerprint(expression: str) -> str:
     """计算表达式结构指纹：变量替换为 VAR，数字替换为 N，算子保留。
 
+    AST 优先（精确树拓扑归一化 + 变量回溯），解析失败回落 regex 版。
     示例::
         rank(subtract(ts_mean($close, 5), ts_mean($close, 20)))
         → hash("rank(subtract(ts_mean(VAR,N),ts_mean(VAR,N)))")
     """
     if not expression:
         return ""
+    # AST 优先：精确树拓扑归一化 + 变量回溯
+    try:
+        from alphaagent.dsl.core.ast import structure_fingerprint as _ast_fp
+        fp = _ast_fp(expression)
+        if fp:
+            return fp
+    except Exception:
+        pass
+    # 回落：regex 版
     text = str(expression).strip()
-    # 替换 $variable → VAR
     text = re.sub(r"\$[a-zA-Z_][a-zA-Z0-9_]*", "VAR", text)
-    # 替换 bare variables → VAR (只替换已知变量，避免误替换算子)
     for var in sorted(_KNOWN_VARIABLES, key=len, reverse=True):
         text = re.sub(rf"\b{re.escape(var)}\b", "VAR", text)
-    # 替换 funda_*/ff_*/pred_*/holder_*/dt_*/bt_* 前缀变量
     text = re.sub(r"\b(?:funda_|ff_|pred_|holder_|dt_|bt_)[a-zA-Z0-9_]+", "VAR", text)
-    # 替换数字 → N
     text = re.sub(r"\d+(?:\.\d+)?", "N", text)
-    # 规范化空格和换行
     text = re.sub(r"\s+", "", text)
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
@@ -191,6 +212,7 @@ def _parse_expression_structure(expression: str) -> dict[str, Any]:
             continue
         if name in _KNOWN_VARIABLES or name.startswith("funda_") or name.startswith("ff_") \
                 or name.startswith("pred_") or name.startswith("holder_") \
+                or name.startswith("chip_") or name.startswith("csr_") or name.startswith("crowd_") \
                 or name.startswith("dt_") or name.startswith("bt_"):
             if name not in seen_vars:
                 variables.append(name)
@@ -596,7 +618,11 @@ def _identify_edit_type(
 def extract_edit_motif(parent_expr: str, child_expr: str) -> str:
     """从父本→子本表达式对中提取编辑 motif 名称。
 
-    返回 MOTIFS 中的一个字符串。
+    改造 B 细化规则：
+    1. 窗口扩展 → window_extend, 窗口缩短 → window_shorten
+    2. 字段替换 → feature_swap_price / feature_swap_funda / feature_swap_chip
+    3. 算子替换 → operator_swap_smoothing / operator_swap_transform
+    4. 叠加外层修饰 → composition_add_smoothing / composition_add_normalize / composition_add_neutralize
     """
     parent_struct = _parse_expression_structure(parent_expr)
     child_struct = _parse_expression_structure(child_expr)
@@ -604,20 +630,56 @@ def extract_edit_motif(parent_expr: str, child_expr: str) -> str:
     if edit is None:
         return "other"
     et = edit["edit_type"]
-    # 映射 _identify_edit_type 的 edit_type 到 MOTIFS
-    if et in ("window_extend", "window_shrink", "window_change"):
+    detail = edit.get("detail", {})
+
+    # 1. 窗口参数细化
+    if et == "window_extend":
+        return "window_extend"
+    if et == "window_shrink":
+        return "window_shorten"
+    if et == "window_change":
+        changes = detail.get("changes", [])
+        if changes:
+            if all(c.get("direction") == "extend" for c in changes):
+                return "window_extend"
+            if all(c.get("direction") == "shrink" for c in changes):
+                return "window_shorten"
         return "window_rescale"
+
+    # 2. 字段替换细化
     if et == "variable_replace":
-        return "feature_swap"
+        to_vars = [str(v).lower() for v in detail.get("to", [])]
+        if any(v.startswith(("funda_", "fin_", "$funda_", "$fin_")) for v in to_vars):
+            return "feature_swap_funda"
+        if any(v.startswith(("chip_", "$chip_", "csr_", "$csr_")) for v in to_vars):
+            return "feature_swap_chip"
+        return "feature_swap_price"
+
+    # 3. 算子替换细化
     if et == "operator_swap":
+        from_ops = {str(op).lower() for op in detail.get("from", [])}
+        to_ops = {str(op).lower() for op in detail.get("to", [])}
+        smoothing_set = {"ema", "wma", "ts_mean", "sma", "dema", "tema", "ts_median"}
+        transform_set = {"rank", "zscore", "cs_rank", "cs_zscore", "quantile", "cs_quantile"}
+        if (from_ops & smoothing_set) or (to_ops & smoothing_set):
+            return "operator_swap_smoothing"
+        if (from_ops & transform_set) or (to_ops & transform_set):
+            return "operator_swap_transform"
         return "operator_swap"
+
+    # 4. 外层修饰叠加细化
     if et == "composition_add":
-        # 如果新增了 if_else/cond 算子，归为 condition_gate
-        detail = edit.get("detail", {})
-        new_ops = set(detail.get("new_operators", []))
-        if new_ops & {"if_else", "cond"}:
+        new_ops = {str(op).lower() for op in detail.get("new_operators", [])}
+        if new_ops & {"if_else", "cond", "gated_signal", "piecewise_state"}:
             return "condition_gate"
+        if new_ops & {"neutralize", "cs_neutralize", "residualize", "cs_residualize"}:
+            return "composition_add_neutralize"
+        if new_ops & {"rank", "zscore", "cs_rank", "cs_zscore", "winsorize", "cs_winsorize"}:
+            return "composition_add_normalize"
+        if new_ops & {"ema", "wma", "ts_mean", "sma", "ts_median"}:
+            return "composition_add_smoothing"
         return "composition_add"
+
     if et == "normalize_change":
         return "normalize_change"
     if et == "decorrelation_add":
@@ -666,15 +728,25 @@ def motif_from_note(edit_note: str) -> str | None:
 def classify_family_ex(factor_name: str, expression: str) -> tuple[str, set[str]]:
     """分类到信号族，返回 (family, facets)。
 
+    AST 优先（按信号根算子/列分类），解析失败回落 keyword 版。
     facets 跨数据源组 ≥2 面（is_cross_group_fusion）→ family = 面对组合键
     （如 基本面×价量面），融合因子在记忆桶/饱和度中按融合对聚合；
-    否则走 _FAMILY_RULES 细粒度规则（单面/同组多面行为与历史一致）。
+    否则走 AST 信号根分类或 _FAMILY_RULES 细粒度规则。
     facets 无论是否融合都返回，供 facets_json 与检索亲和使用。
     """
     text = (str(factor_name or "") + " " + str(expression or "")).lower()
     facets = expr_facets(text)
     if is_cross_group_fusion(facets):
         return fusion_family_key(facets), facets
+    # AST 优先：按信号根算子/列分类
+    try:
+        from alphaagent.dsl.core.ast import classify_family_ast
+        ast_family = classify_family_ast(expression)
+        if ast_family and ast_family != "other":
+            return ast_family, facets
+    except Exception:
+        pass
+    # 回落：keyword 版
     for family, keywords in _FAMILY_RULES.items():
         if any(kw in text for kw in keywords):
             return family, facets

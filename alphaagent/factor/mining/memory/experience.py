@@ -75,10 +75,23 @@ class ExperienceMixin:
         - 成败按 explicit/implicit 分列计权：explicit 1.0 / implicit 0.5 / invalid 0.5
         - invalid 尝试只记失败，无 residual
         """
-        from .constants import INVALID_WEIGHT, PARENT_ORIGIN_WEIGHT, POSITIVE_VERDICTS
+        from .constants import (
+            INVALID_WEIGHT,
+            PARENT_ORIGIN_WEIGHT,
+            POSITIVE_VERDICTS,
+            TECHNICAL_ERROR_PATTERNS,
+        )
+        from alphaagent.dsl.core.ast import classify_family_coarse
 
         if not parent_id:
             return
+
+        # 改造 C：纯技术性失败（语法报错/列缺失/参数异常等）不计入 cell，避免污染失败率
+        if error:
+            err_str = str(error)
+            if any(pattern in err_str for pattern in TECHNICAL_ERROR_PATTERNS):
+                return
+
         parent_row = conn.execute(
             "SELECT metrics_json FROM memory_entries WHERE id = ?", (parent_id,)
         ).fetchone()
@@ -87,7 +100,11 @@ class ExperienceMixin:
         parent_metrics = json.loads(parent_row["metrics_json"] or "{}")
         parent_ic = _safe_float(parent_metrics.get("ic"))
         bucket = _parent_bucket(parent_ic)
-        family = entry.get("family") or "other"
+        
+        # 改造 A：SSPM cells 使用 9 大粗族聚合
+        raw_family = entry.get("family") or "other"
+        facets = entry.get("facets") or []
+        family = classify_family_coarse(raw_family, facets=facets, expression=entry.get("expression") or "")
         motif = intended_motif or "other"
         child_ic = _safe_float(entry.get("metrics", {}).get("ic"))
 
