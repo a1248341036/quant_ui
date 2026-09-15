@@ -2361,9 +2361,10 @@ def GATED_SIGNAL(
     if not signal.index.equals(state.index):
         raise ValueError("GATED_SIGNAL: signal 与 state 须同索引")
     q = float(threshold)
-    if not (0.5 <= q <= 1.0):
+    if not (0.5 <= q <= 0.85):
         raise ValueError(
-            "GATED_SIGNAL threshold 须在 [0.5, 1.0]；"
+            f"GATED_SIGNAL threshold 须在 [0.5, 0.85]（当前 {q}）；"
+            "threshold > 0.85 会导致截面激活率 < 15%，大面积常数 neutral 将引发十分位分箱塌缩。"
             "启用低状态组请用 high_state=false（如启用秩最低 20% → threshold=0.8, high_state=false）"
         )
     want_high = bool(high_state)
@@ -2409,6 +2410,11 @@ def PIECEWISE_STATE(
     lo_q, hi_q = float(low_q), float(high_q)
     if not (0.0 <= lo_q < hi_q <= 1.0):
         raise ValueError("PIECEWISE_STATE 要求 0 <= low_q < high_q <= 1")
+    if hi_q - lo_q > 0.70:
+        raise ValueError(
+            f"PIECEWISE_STATE 中间常数区占比过大 ({hi_q - lo_q:.2f} > 0.70)；"
+            "中间样本全部置 mid_value 会引发截面等频分箱严重塌缩，建议缩小中间区区间（例如 low_q=0.2, high_q=0.8）"
+        )
     ranks = RANK(state).iloc[:, 0].to_numpy(dtype=float, copy=False)
     sig = _first_series(signal).to_numpy(dtype=float, copy=False)
     out = np.full(len(signal), float(mid_value), dtype=np.float32)

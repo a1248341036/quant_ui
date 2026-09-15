@@ -338,6 +338,17 @@ class DeliveryChecker:
                 f"avg_daily_side_turnover={float(turnover):.2f} > {max_t:.2f} "
                 f"(组合日单边换手过高，实盘不可交付)"
             )
+
+        # 分箱塌缩防御（2026-09-15，decile_collapse_spec）：
+        # 拦截因门控/稀疏填0常数簇导致的等频分箱塌缩（有效组数不足或塌缩天数过高）
+        dml = metrics_train.get("decile_mean_label")
+        if isinstance(dml, (list, dict)):
+            n_bins = len(dml)
+            if n_bins < 8:
+                reasons.append(f"decile_bins={n_bins} < 8 (等频十分位严重塌缩，极端组失真不可信)")
+        collapse_ratio = qp.get("collapse_ratio") if isinstance(qp, dict) else None
+        if collapse_ratio is not None and np.isfinite(float(collapse_ratio)) and float(collapse_ratio) > 0.30:
+            reasons.append(f"decile_collapse_ratio={float(collapse_ratio):.2f} > 0.30 (截面常数簇扎堆导致分箱频繁塌缩)")
         return StageResult(passed=len(reasons) == 0, fail_reasons=reasons)
 
     def stage_one_val_retention(

@@ -207,6 +207,20 @@ def materialize_entries(
         if ratio < min_finite_ratio:
             dropped.append({"name": entry.name, "library": entry.library, "reason": f"coverage={ratio:.3f}"})
             continue
+
+        # 离散度与分箱塌缩防御（2026-09-15，decile_collapse_spec §6.4）：
+        # 截面抽样检查唯一有效值数，常数簇占比过大（唯一值过少）的二值化伪信号剔除
+        finite_vals = values[np.isfinite(values)]
+        if len(finite_vals) >= 200:
+            sample = finite_vals[::max(1, len(finite_vals) // 2000)]
+            if len(sample) >= 50 and len(np.unique(sample)) < 20:
+                dropped.append({
+                    "name": entry.name,
+                    "library": entry.library,
+                    "reason": f"low_discreteness: unique~{len(np.unique(sample))}<20 (常数簇过密分箱塌缩)",
+                })
+                continue
+
         kept.append((entry, values))
     return kept, dropped
 
