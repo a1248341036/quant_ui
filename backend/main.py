@@ -92,11 +92,12 @@ async def no_cache_html(request: Request, call_next):
 
 
 # ---------- 公网访问门禁（经 Cloudflare Tunnel 暴露时使用） ----------
-# 浏览器访问：未授权渲染内置登录页，输对密码种 HttpOnly Cookie（一年免输）；
+# 浏览器访问：未授权渲染内置登录页，输对密码种 HttpOnly Cookie（有效期 7 天）；
 # 非 HTML 客户端（API/curl）：维持 401 JSON。?key= 查询参数兼容保留。
 # 优先读 QUANT_UI_ACCESS_KEY，兼容读取 .env 中的 QUANT_UI_PASSWORD 作为密码口令
 _ACCESS_KEY = os.environ.get("QUANT_UI_ACCESS_KEY") or os.environ.get("QUANT_UI_PASSWORD", "")
 _ACCESS_COOKIE = "qk"
+_ACCESS_MAX_AGE = 7 * 24 * 3600  # 一周免输
 _GATE_LOGIN_PATH = "/_gate/login"
 
 
@@ -171,7 +172,7 @@ async def access_gate(request: Request, call_next):
         response.set_cookie(
             _ACCESS_COOKIE,
             _ACCESS_KEY,
-            max_age=365 * 24 * 3600,
+            max_age=_ACCESS_MAX_AGE,
             httponly=True,
             samesite="lax",
         )
@@ -189,7 +190,7 @@ async def access_gate(request: Request, call_next):
             resp.set_cookie(
                 _ACCESS_COOKIE,
                 _ACCESS_KEY,
-                max_age=365 * 24 * 3600,
+                max_age=_ACCESS_MAX_AGE,
                 httponly=True,
                 samesite="lax",
             )
