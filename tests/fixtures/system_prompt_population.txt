@@ -479,7 +479,7 @@ tri_gap = CHIP_COM_W_GAP($adj_close, $adj_low, $adj_high, $volume, 40, $vwap, 64
 算子均为**大写**（如 `TS_MEAN`、`DELTA`）。支持位置参数，也支持关键字参数语法 `name=value`（关键字参数必须在位置参数之后）。按机制分节列出；签名省略类型标注，**参数顺序即语义**（位置传参必须严格按签名顺序）；语义自明的基础四则/比较/初等函数折叠在末行。选算子前先想机制（见「A 股市场机制与 alpha 分布」），再按节定位。
 
 **结构化交互（门控/残差/分歧/分段——配合 interaction 契约使用）**
-- `CS_GROUP_RANK(x, group, min_samples=20)` — 组内截面百分位秩：每个 datetime 内先按 ``group`` 分组，再对 ``x`` 做 rank(pct=T…
+- `CS_GROUP_RANK(x, group)` — 组内截面百分位秩：每个 datetime 内先按 ``group`` 分组，再对 ``x`` 做 rank(pct=T…
 - `CS_RESIDUALIZE(x, control, control2=None)` — 截面线性残差化：每个 datetime 内用控制变量回归 ``x``，输出残差。
 - `DIVERGENCE_RANK(a, b)` — 截面背离：``RANK(a)-RANK(b)``，用于两个应互相确认的信号之间的差。
 - `GATED_SIGNAL(signal, state, threshold=0.8, high_state=True, neutral=0.0)` — 状态门控信号：仅在 state 截面秩达到阈值时启用 signal，否则取 neutral。

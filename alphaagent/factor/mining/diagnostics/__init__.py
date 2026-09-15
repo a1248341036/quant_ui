@@ -291,7 +291,7 @@ class TurnoverDiagnostic(BaseDiagnostic):
 
 
 class IcirDiagnostic(BaseDiagnostic):
-    """ICIR 预检诊断（防止盲目提交被 stage_one 拦截）。"""
+    """ICIR 预检诊断（防止盲目提交被 stage_one 拦截，含 P1-4 月度波动归因）。"""
 
     name = "icir_gate"
 
@@ -301,8 +301,28 @@ class IcirDiagnostic(BaseDiagnostic):
 
         gate = DeliveryCriteria.defaults().candidate.min_icir
         if ctx.abs_icir is not None and ctx.abs_icir < gate:
+            # P1-4 波动来源归因：分析月度 IC 稳健性 / 反转月份
+            attribution_text = ""
+            monthly = (
+                ctx.result.get("monthly_corr_robustness")
+                or ctx.metrics.get("monthly_corr_robustness")
+                or {}
+            )
+            if isinstance(monthly, dict):
+                try:
+                    pos_ratio = monthly.get("positive_ratio")
+                    neg_months = monthly.get("negative_months")
+                    if pos_ratio is not None and float(pos_ratio) < 0.60:
+                        attribution_text = (
+                            f"（波动归因：月度正相关比例仅 {float(pos_ratio):.0%}，方向不稳定）"
+                        )
+                    elif neg_months:
+                        attribution_text = f"（波动归因：存在反转月份 {str(neg_months)[:40]} 拖累信噪比）"
+                except (TypeError, ValueError):
+                    pass
+
             msg = (
-                f"训练已过海选线（promising），但 ICIR={ctx.abs_icir:.3f} < stage_one 门槛 {gate:.2f}——"
+                f"训练已过海选线（promising），但 ICIR={ctx.abs_icir:.3f} < stage_one 门槛 {gate:.2f}{attribution_text}——"
                 "调用 submit_factor 大概率被 stage_one 拦截（纯浪费算力）。请勿提交，改为升 ICIR："
                 "换窗（如 20→10/40）、去极值压缩日度波动、换用更高信噪比的数据面——IC 方向已对，"
                 "先让 IR 过线再交。注意：末位 EMA/TS_MEAN 平滑会压缩分布导致十分位塌陷，不建议用。"
@@ -315,6 +335,59 @@ class IcirDiagnostic(BaseDiagnostic):
                 priority=80,
                 extra_fields={"submit_decision_required": msg},
             )
+        return None
+
+
+class AntiHomogenizationDiagnostic(BaseDiagnostic):
+    """同质化探索熔断器 (P1-7 Anti-Homogenization Circuit Breaker)。
+
+    检测当前 run 中是否连续 >=3 次在同结构上微调平滑算子且换手率持续未降破 0.50。
+    触发熔断硬告警，阻断大模型无脑试 WMA/EMA 窗口的死循环，强迫切换信号源/结构。
+    """
+
+    name = "anti_homogenization"
+
+    def evaluate(self, ctx: DiagnosticContext) -> DiagnosticOpinion | None:
+        expr = ctx.expr or str(ctx.arguments.get("multi_line_expr") or "")
+        if not expr or not ctx.recent_signatures:
+            return None
+
+        try:
+            from alphaagent.dsl.core.ast import all_smoothing_ops, structure_fingerprint
+
+            current_has_sm = bool(all_smoothing_ops(expr))
+            if not current_has_sm:
+                return None
+            current_fp = structure_fingerprint(expr)
+
+            # 同质化判定：连续 >=3 次均为「同结构指纹 + 含平滑 + 换手 > 0.50」
+            consecutive_smoothing_high_turnover = 0
+            for item in reversed(ctx.recent_signatures):
+                if isinstance(item, dict):
+                    t = item.get("turnover")
+                    has_sm = item.get("has_smoothing")
+                    fp = item.get("fingerprint")
+                    if has_sm and (t is not None and t > 0.50) and fp == current_fp:
+                        consecutive_smoothing_high_turnover += 1
+                    else:
+                        break
+
+            if consecutive_smoothing_high_turnover >= 3:
+                msg = (
+                    f"⚠️ 同质化探索熔断警告：已连续 {consecutive_smoothing_high_turnover} 次在同结构上微调平滑算子降低换手，"
+                    "但换手率始终高于 0.50 门槛！实证表明：平滑无法改变信号源本身的高频本质，继续微调窗口纯属浪费算力。"
+                    "请立即停止参数微调，改换慢速数据源（如基本面 PIT 或周频筹码）或彻底更换信号根结构。"
+                )
+                return DiagnosticOpinion(
+                    source=self.name,
+                    opinion_type="block_submit",
+                    title="同质化平滑调参熔断",
+                    message=msg,
+                    priority=88,  # 高于普通换手诊断，优先提醒熔断
+                    extra_fields={"homogenization_breaker_warning": msg},
+                )
+        except Exception:
+            pass
         return None
 
 
@@ -376,6 +449,7 @@ class DiagnosticMediator:
     def __init__(self, diagnostics: list[BaseDiagnostic] | None = None) -> None:
         self.diagnostics = diagnostics or [
             PitSuspicionDiagnostic(),
+            AntiHomogenizationDiagnostic(),
             TurnoverDiagnostic(),
             IcirDiagnostic(),
             NearMissDiagnostic(),
@@ -469,12 +543,18 @@ class DiagnosticMediator:
 
 
 def apply_diagnostics_to_result(
-    result: dict[str, Any], expr: str, arguments: dict[str, Any], session: Any | None = None
+    result: dict[str, Any],
+    expr: str,
+    arguments: dict[str, Any],
+    session: Any | None = None,
+    recent_evals: list[dict[str, Any]] | None = None,
 ) -> None:
     """门面入口：构建上下文，执行仲裁，回写进 result 字典。"""
     try:
         ctx = DiagnosticContext.from_eval_result(result, expr, arguments)
         ctx.session = session
+        if recent_evals:
+            ctx.recent_signatures = recent_evals
         mediator = DiagnosticMediator()
         fields = mediator.arbitrate(ctx)
         result.update(fields)

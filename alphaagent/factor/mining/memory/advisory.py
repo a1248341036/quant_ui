@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+from collections import OrderedDict
 from typing import Any
 
 from .calibration import _apv_gate, _eq7_confidence
@@ -58,9 +59,9 @@ _ADVISORY_CACHE_MAXSIZE = 512
 class AdvisoryMixin:
     """评估前 advisory（硬提醒）与查询/管理接口。"""
 
-    def _get_advisory_cache(self) -> dict[tuple[str, str | None], tuple[float, dict[str, Any] | None]]:
+    def _get_advisory_cache(self) -> OrderedDict[tuple[str, str | None, str | None], tuple[float, dict[str, Any] | None]]:
         if not hasattr(self, "_advisory_cache"):
-            self._advisory_cache = {}
+            self._advisory_cache = OrderedDict()
         return self._advisory_cache
 
     def clear_advisory_cache(self) -> None:
@@ -100,7 +101,11 @@ class AdvisoryMixin:
         if cache_key in cache:
             cached_ts, cached_val = cache[cache_key]
             if now - cached_ts < _ADVISORY_CACHE_TTL:
+                # 命中即移动到末尾（刷新 LRU 活跃度，P2-2）
+                cache.move_to_end(cache_key)
                 return cached_val
+            else:
+                cache.pop(cache_key, None)
 
         findings: list[dict[str, Any]] = []
         family = classify_family("", expression)
@@ -224,9 +229,9 @@ class AdvisoryMixin:
                 self._edit_veto_findings(conn, family, motif, findings)
 
         res = {"advisories": findings, "blocked": False} if findings else None
-        if len(cache) >= _ADVISORY_CACHE_MAXSIZE:
-            # 清除一半过期或早的
-            cache.clear()
+        # 超限时按 LRU 淘汰最久未命中的条目（OrderedDict 首端 = 最久未用，P2-2）
+        while len(cache) >= _ADVISORY_CACHE_MAXSIZE:
+            cache.popitem(last=False)
         cache[cache_key] = (now, res)
         return res
 

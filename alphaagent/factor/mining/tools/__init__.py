@@ -53,6 +53,8 @@ class FactorEvalTools(_DispatchMixin, _AnalysisMixin):
         merged_op.update({k: v for k, v in (operator_policy or {}).items() if v is not None})
         merged_op["blacklist"] = tuple(str(n).upper() for n in (merged_op.get("blacklist") or ()))
         self.operator_policy = merged_op
+        # 最近评估历史（记录 fingerprint + turnover + 是否含平滑算子），供 P1-7 同质化熔断器使用
+        self._recent_evals: list[dict[str, Any]] = []
 
 
 __all__ = [

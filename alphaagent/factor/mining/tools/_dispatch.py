@@ -118,10 +118,16 @@ _TURNOVER_ADVISORY_REDLINE = 0.4
 _TURNOVER_GATE_LIMIT = DeliveryCriteria.defaults().candidate.max_avg_daily_side_turnover
 
 
-def _attach_yield_hints(result: dict[str, Any], expr: str, arguments: dict[str, Any], session: Any | None = None) -> None:
+def _attach_yield_hints(
+    result: dict[str, Any],
+    expr: str,
+    arguments: dict[str, Any],
+    session: Any | None = None,
+    recent_evals: list[dict[str, Any]] | None = None,
+) -> None:
     """按评估结果注入产出率提示（委托给独立的诊断与仲裁引擎）。"""
     from alphaagent.factor.mining.diagnostics import apply_diagnostics_to_result
-    apply_diagnostics_to_result(result, expr, arguments, session=session)
+    apply_diagnostics_to_result(result, expr, arguments, session=session, recent_evals=recent_evals)
 
 
 def _ic_bar_from_rules(rules: Any) -> float | None:
@@ -312,6 +318,27 @@ class _DispatchMixin:
             result["operator_signatures"] = {name: _slim_signature(ns[name]) for name in used[:8]}
             result["error"] = err + "（正确签名见 operator_signatures 字段——按参数顺序传参修正后重试）"
         except Exception:  # noqa: BLE001 — 自愈是增益信息，绝不改变失败语义
+            pass
+
+    def _record_eval_signature(self, result: dict[str, Any], expr: str) -> None:
+        """记录最近一次训练评估的结构指纹 / 换手 / 是否含平滑，供 P1-7 熔断器消费。"""
+        try:
+            from alphaagent.dsl.core.ast import all_smoothing_ops, structure_fingerprint
+
+            qp = (result.get("metrics") or {}).get("quantile_portfolio") or {}
+            t_val = qp.get("avg_daily_side_turnover")
+            sig: dict[str, Any] = {
+                "fingerprint": structure_fingerprint(expr),
+                "turnover": float(t_val) if t_val is not None else None,
+                "has_smoothing": bool(all_smoothing_ops(expr)),
+            }
+            recent = getattr(self, "_recent_evals", None)
+            if recent is None:
+                return
+            recent.append(sig)
+            if len(recent) > 10:
+                recent.pop(0)
+        except Exception:  # noqa: BLE001 — 观测失败不影响评估
             pass
 
     def _memory_gate(self, expr: str, arguments: dict[str, Any]) -> Any:
@@ -570,7 +597,8 @@ class _DispatchMixin:
                 if self.cognition_policy.get("prediction_check_enabled", True):
                     _attach_prediction_check(result, arguments.get("prediction"), ic=ic, decile_rows=decile_rows)
                 session_obj = self.service.sessions.get(self.session_id) if (self.service and hasattr(self.service, "sessions")) else None
-                _attach_yield_hints(result, expr, arguments, session=session_obj)
+                _attach_yield_hints(result, expr, arguments, session=session_obj, recent_evals=getattr(self, "_recent_evals", None))
+                self._record_eval_signature(result, expr)
                 if self.cognition_policy.get("ablation_check_enabled", True):
                     self._attach_ablation(expr, arguments, profile_id=profile_id, result=result)
                 pred_block = self._prediction_gate("evaluate_factor", arguments, result)
@@ -627,7 +655,8 @@ class _DispatchMixin:
                 if self.cognition_policy.get("ablation_check_enabled", True):
                     self._attach_ablation(expr, arguments, profile_id="train_screen", result=result)
                 session_obj = self.service.sessions.get(self.session_id) if (self.service and hasattr(self.service, "sessions")) else None
-                _attach_yield_hints(result, expr, arguments, session=session_obj)
+                _attach_yield_hints(result, expr, arguments, session=session_obj, recent_evals=getattr(self, "_recent_evals", None))
+                self._record_eval_signature(result, expr)
                 pred_block = self._prediction_gate("eval_on_train_set", arguments, result)
                 if pred_block is not None:
                     return pred_block
