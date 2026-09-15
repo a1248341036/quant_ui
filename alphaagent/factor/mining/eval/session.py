@@ -8,6 +8,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from alphaagent.data.panel import load_panel, slice_panel
@@ -27,6 +28,39 @@ class StockEvalSession:
     _split_cache: dict[str, pd.DataFrame] = field(default_factory=dict, repr=False)
     _split_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     factor_cache: FactorValueCache = field(default_factory=get_default_cache, repr=False)
+    _column_autocorr_cache: dict[str, float] = field(default_factory=dict, repr=False)
+
+    def get_column_autocorr(self, col: str, default_val: float = 0.5) -> float:
+        """获取列的截面一阶自相关（优先读会话级缓存，缺失则现算一次并缓存）。"""
+        col = str(col).lstrip("$")
+        if col in self._column_autocorr_cache:
+            return self._column_autocorr_cache[col]
+        # 基础常用列的先验基线（秒级命中避免开销）
+        _KNOWN_BASE_AUTOCORRS = {
+            "close": 0.95, "adj_close": 0.95, "open": 0.94, "adj_open": 0.94,
+            "high": 0.94, "adj_high": 0.94, "low": 0.94, "adj_low": 0.94,
+            "vwap": 0.95, "adj_vwap": 0.95, "volume": 0.28, "amount": 0.32,
+            "turnover": 0.30, "ret": -0.05, "returns": -0.05,
+            "float_cap": 0.99, "total_cap": 0.99,
+        }
+        if col in _KNOWN_BASE_AUTOCORRS:
+            val = _KNOWN_BASE_AUTOCORRS[col]
+            self._column_autocorr_cache[col] = val
+            return val
+        if self.panel is not None and col in self.panel.columns:
+            try:
+                from alphaagent.factor.metrics._core import pearson_autocorr
+                # 取 100 天样本快速计算截面自相关
+                s = self.panel[col].dropna()
+                val = float(pearson_autocorr(s.to_numpy())) if len(s) > 100 else default_val
+                if not (np.isfinite(val)):
+                    val = default_val
+            except Exception:
+                val = default_val
+        else:
+            val = default_val
+        self._column_autocorr_cache[col] = val
+        return val
 
     def get_split_panel(self, split: str) -> tuple[pd.DataFrame, str, str]:
         """返回 (panel_slice, start, end)。"""

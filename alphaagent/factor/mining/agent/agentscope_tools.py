@@ -629,13 +629,9 @@ def build_factor_eval_toolkit(
         if dup is not None:
             ic_txt = f"{dup['ic']:+.4f}" if isinstance(dup.get("ic"), (int, float)) else "N/A"
             content = (
-                f"⛔ 重复评估拦截：该表达式与历史条目 {dup['factor_name']} 逐字相同"
-                f"（{str(dup['updated_at'])[:10]}，verdict={dup['verdict']}，IC={ic_txt}），"
-                "评估结果不会改变，已跳过本次执行。\n"
-                "正确动作：①以其为父本做显式变异（parent_factor="
-                f"{dup['factor_name']} + edit_note 说明改动点）；"
-                "②若要推进，直接对它调用 submit_factor 走入库门槛；"
-                "③若认为历史结论已过时，改用因子实验室人工复核。"
+                f"⛔ 重复评估拦截：与历史条目 {dup['factor_name']} 逐字相同"
+                f"（{str(dup['updated_at'])[:10]}，verdict={dup['verdict']}，IC={ic_txt}），已跳过。\n"
+                "行动建议：以其为父本做显式变异（填 parent_factor/edit_note）；或若指标达标且换手合规直接 submit。"
             )
             return ToolChunk(content=[TextBlock(text=content)])
 

@@ -26,19 +26,24 @@ from .expressions import (
 
 # 注入文本自解释化：信号族 / 编辑类型的中文展开（缺省回退原文）
 FAMILY_LABELS = {
-    "volume": "量价/成交量",
+    # 9 大粗族中文展开
+    "momentum_reversal": "动量/反转",
     "volatility": "波动率",
+    "volume_liquidity": "量能/流动性",
+    "correlation": "量价相关",
+    "chip": "筹码分布",
+    "fundamental": "基本面",
+    "interaction": "复合交互/条件",
+    "vwap": "VWAP 偏离",
+    "other": "其他",
+    # 细族兼容回退
+    "volume": "量价/成交量",
     "momentum": "动量",
     "reversal": "反转",
-    "vwap": "VWAP 偏离",
     "gap_overnight": "隔夜跳空",
-    "chip": "筹码分布",
     "liquidity": "流动性",
-    "fundamental": "基本面",
-    "correlation": "量价相关",
     "breadth": "市场宽度",
     "sentiment": "情绪",
-    "other": "其他",
 }
 MOTIF_LABELS = {
     # 细化后 labels
@@ -754,7 +759,8 @@ class RetrievalMixin:
             motif_cn = MOTIF_LABELS.get(motif, motif)
             tag, default_action = tier_text[tier]
 
-            # 改造 D：使注入建议具备可操作性 (Actionable Guidance)
+            # 改造 D & P2-1：使注入建议具备可操作性 + 样本量门槛防误导
+            n_tot = s_w + f_w
             if "veto" in tier:
                 # 寻找同族其他高胜率替代方向
                 candidates = [
@@ -762,12 +768,14 @@ class RetrievalMixin:
                     for m, wr in family_success_motifs.get(family, [])
                     if m != motif and wr >= 0.4
                 ]
-                if candidates:
+                if n_tot < 5.0:
+                    action_str = "样本量较小（n<5），仅供避坑参考；若机制确有逻辑仍可探索"
+                elif candidates:
                     action_str = f"替代方向：推荐换用「{'」/「'.join(candidates[:2])}」（同族历史成功率更高）"
                 else:
                     action_str = "替代方向：建议更换信号族或换慢信息源，避免在此方向无效重复"
             else:
-                action_str = f"{default_action}（保持长窗平滑以控制换手）"
+                action_str = default_action
 
             line = (
                 f"- 【{tag}】{fam_cn}类 × 「{motif_cn}」× {bucket_text.get(bucket, bucket)}："

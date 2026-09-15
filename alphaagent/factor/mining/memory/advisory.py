@@ -200,13 +200,16 @@ class AdvisoryMixin:
                     when = str(pos_row["updated_at"] or "")[:10]
                     metrics_txt = ("，" + "，".join(metric_bits)) if metric_bits else ""
                     fail_txt = f"，未晋升原因：{fail}" if fail else ""
+                    action_advice = (
+                        "若当前换手/ICIR未过门槛请勿盲目提交，建议先降噪重构；若已全面达标建议直接 submit 走入库门槛；"
+                        "或以其为父本做显式变异（parent_factor=该历史因子 + edit_note 说明改动点）。"
+                    )
                     findings.append({
                         "kind": "duplicate_prior_result",
                         "message": (
                             f"该表达式结构与历史条目重复：{name}（{when}，verdict={pos_row['verdict']}"
                             f"{metrics_txt}，已评估 {int(pos_row['attempts'])} 次{fail_txt}）。"
-                            "同结构已测出过信号，勿原样重测，建议直接 submit 走入库门槛核查晋升卡点；"
-                            "或以其为父本做显式变异（parent_factor=该历史因子 + edit_note 说明改动点）。"
+                            f"同结构已测出过信号，勿原样重测：{action_advice}"
                         ),
                         "prior_factor": name,
                         "prior_verdict": str(pos_row["verdict"]),

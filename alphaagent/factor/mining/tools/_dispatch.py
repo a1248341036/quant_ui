@@ -118,126 +118,10 @@ _TURNOVER_ADVISORY_REDLINE = 0.4
 _TURNOVER_GATE_LIMIT = DeliveryCriteria.defaults().candidate.max_avg_daily_side_turnover
 
 
-def _attach_yield_hints(result: dict[str, Any], expr: str, arguments: dict[str, Any]) -> None:
-    """按评估结果注入产出率提示（LLM 可见；内部调用，异常全吞）。
-
-    - P0-1 promising 强制决策：训练过线的因子必须立即 submit 或给出不提交理由
-      （2026-09-05 记忆分析：201 个 promising 中 93 个无 candidate_id，断在 LLM 决策）；
-    - P0-2 near_miss：IC 达门槛 80% 且未过线 → 建议窗口微调或直接推 val；
-    - P1-4 PIT 警戒：train |IC| ≥ 0.045 → 财务阶梯函数/PIT 伪影嫌疑（先核查再谈提交）。
-    """
-    try:
-        # 兼容两种响应 shape：引擎原生（eval_profile，metrics 在顶层）与
-        # eval_train/两段式的格式化响应（metrics 在 summary 下）。
-        # 2026-09-06 修复：此前只读引擎 shape，eval_on_train_set 与两段式
-        # 路径的 near_miss/pit 提示拿不到数据而静默失效。
-        cs = ((result.get("metrics") or {}).get("cross_sectional_core")
-              or {k: v for k, v in (result.get("summary") or {}).items()
-                  if k in ("ic", "icir", "rank_ic", "factor_coverage")})
-        ic = cs.get("ic")
-        icir = cs.get("icir")
-        cov = cs.get("factor_coverage", cs.get("coverage"))
-        try:
-            ic_f = abs(float(ic)) if ic is not None else None
-        except (TypeError, ValueError):
-            ic_f = None
-        passed = result.get("passed")
-        if passed is None:
-            rules = result.get("screen_rules")
-            if isinstance(rules, list) and rules:
-                passed = all(bool(r.get("passed")) for r in rules)
-        if not passed:
-            if ic_f is not None and ic_f >= _PIT_SUSPICION_IC:
-                result["pit_warning"] = (
-                    f"训练 |IC|={ic_f:.4f} 异常高（≥0.045）——财务/慢标签因子的 train IC 虚高"
-                    "通常来自阶梯函数语义陷阱或 PIT 泄漏（实测该类因子 val 保留率极低）。"
-                    "提交前先核查：①因子是否只用披露日之前的数据；②窗口对齐是否引入未来函数；"
-                    "③建议直接 eval_on_val_set 看真实保留比，勿按 train IC 定预期。"
-                )
-                return
-            # P0-2 near_miss：IC 达两档门槛 80% 线、ICIR/coverage 达标但未过线
-            try:
-                # 与海选门槛同口径用 |ICIR|（abs_gte）——负 IC 因子（NEG 变换前）
-                # 原始 icir 为负，此前 >0.2 判断使负向因子永远拿不到 near_miss 提示
-                icir_f = abs(float(icir)) if icir is not None else None
-                cov_f = float(cov) if cov is not None else None
-            except (TypeError, ValueError):
-                icir_f = cov_f = None
-            # near_miss 门槛直接取"实际未过的屏幕规则"期望值（档位/override 同源，
-            # 不再硬编码）：规则缺失时回落候选池准入线。
-            _nm_th = _ic_bar_from_rules(result.get("screen_rules")) or _candidate_ic_bar(
-                result.get("research_mode")
-            )
-            if (
-                ic_f is not None and _NEAR_MISS_RATIO * _nm_th <= ic_f < _nm_th
-                and icir_f is not None and icir_f > 0.2
-                and cov_f is not None and cov_f > 0.85
-            ):
-                result["near_miss_hint"] = (
-                    f"接近海选线（|IC|={ic_f:.4f}，ICIR={icir_f:.3f}，coverage={cov_f:.2f}）——"
-                    "差临门一脚，不建议放弃。两个低成本动作："
-                    "①窗口微调后重评（如 20→10/40、平滑 3→5，注意传 parent_factor/edit_note）；"
-                    "②若机制置信度高，直接 eval_on_val_set 验证方向保留性。"
-                )
-            return
-        if result.get("split") != "train":
-            return
-        # P0-3 换手预检（2026-09-12：run f7fa3d11caa2 中 16 次 submit_factor
-        # 死于 StageOneDeliveryCheckError 换手超标——prompt rule 2 的 0.4 红线
-        # 在评估结果可见时才被 LLM 真正遵守；把超标事实写进 promising 提示，
-        # 让"不要提交"有数据支撑，省掉一次注定失败的 submit + 一轮重思考）。
-        qp = (result.get("metrics") or {}).get("quantile_portfolio") or {}
-        turnover = qp.get("avg_daily_side_turnover") if isinstance(qp, dict) else None
-        try:
-            turnover_f = float(turnover) if turnover is not None else None
-        except (TypeError, ValueError):
-            turnover_f = None
-        if turnover_f is not None and turnover_f > _TURNOVER_ADVISORY_REDLINE:
-            # prompt rule 2 的 0.4 是建议红线；stage_one 换手硬门槛是
-            # _TURNOVER_GATE_LIMIT（delivery_criteria 单一真源）——建议红线与
-            # 硬门槛之间的区间不会被 stage_one 硬拦，但历史 26/30 候选最终
-            # 仍止步精筛/engine_gate，提示口径必须分开，避免误导 LLM。
-            if turnover_f >= _TURNOVER_GATE_LIMIT:
-                gate_line = f"必被 stage_one 换手硬门槛拦截（>{_TURNOVER_GATE_LIMIT:.2f}）"
-            else:
-                gate_line = f"超建议红线（{_TURNOVER_ADVISORY_REDLINE:.2f}），且此区间多半止步精筛/engine_gate"
-            result["submit_decision_required"] = (
-                f"训练已过海选线，但日单边换手 {turnover_f:.2f} 超标——{gate_line}，"
-                "调用 submit_factor 纯浪费算力。请勿提交：推荐 3 种降噪路径改造后再评："
-                "①用 TS_MEDIAN(x, 20) 或 TS_MEAN(x, 20) 包裹原信号进行长窗平滑；"
-                "②外层加 CS_ZSCORE(x) 压制极端尾部与日度排名抖动；"
-                "③换用慢信息源（如基本面 PIT 数据 $funda_*$、筹码周频变量）替代高频价格反转。"
-            )
-            result["turnover_reduction_hints"] = [
-                "TS_MEDIAN(x, 20) 或 TS_MEAN(x, 20) 长窗平滑",
-                "CS_ZSCORE 截面秩变换",
-                "替换为基本面 PIT 或慢速筹码变量",
-            ]
-            return
-        # P0-4 ICIR 预检（2026-09-12：run 42254d 中 2 次 submit_factor 死于
-        # StageOneDeliveryCheckError:icir——IC 过线但 ICIR 不足 0.30，白交一次
-        # submit + 一轮重思考。把实际 ICIR 与 stage_one 门槛写进 promising 提示，
-        # ICIR 未达时引导先升 ICIR（换窗/平滑）再交，而不是必拦的提交。）
-        try:
-            icir_f = abs(float(icir)) if icir is not None else None
-        except (TypeError, ValueError):
-            icir_f = None
-        _icir_gate = DeliveryCriteria.defaults().candidate.min_icir
-        if icir_f is not None and icir_f < _icir_gate:
-            result["submit_decision_required"] = (
-                f"训练已过海选线（promising），但 ICIR={icir_f:.3f} < stage_one 门槛 {_icir_gate:.2f}——"
-                "调用 submit_factor 大概率被 stage_one 拦截（纯浪费算力）。请勿提交，改为升 ICIR："
-                "换窗（如 20→10/40）、平滑（TS_MEAN/TS_MEDIAN）、去极值压缩日度波动——IC 方向已对，"
-                "先让 IR 过线再交。"
-            )
-            return
-        result["submit_decision_required"] = (
-            "训练已过海选线（promising）。两个动作二选一，不得沉默跳过："
-            "①立即调用 submit_factor 走入库门槛（正交检查/审查/精筛会自动裁决）；"
-            "②给出不提交的明确理由（正交顾虑/机制疑点/PIT 疑点），并以此指导下一轮变异方向。"
-        )
-    except Exception:  # noqa: BLE001
-        pass
+def _attach_yield_hints(result: dict[str, Any], expr: str, arguments: dict[str, Any], session: Any | None = None) -> None:
+    """按评估结果注入产出率提示（委托给独立的诊断与仲裁引擎）。"""
+    from alphaagent.factor.mining.diagnostics import apply_diagnostics_to_result
+    apply_diagnostics_to_result(result, expr, arguments, session=session)
 
 
 def _ic_bar_from_rules(rules: Any) -> float | None:
@@ -685,7 +569,8 @@ class _DispatchMixin:
                 ic, decile_rows = _engine_decile(result)
                 if self.cognition_policy.get("prediction_check_enabled", True):
                     _attach_prediction_check(result, arguments.get("prediction"), ic=ic, decile_rows=decile_rows)
-                _attach_yield_hints(result, expr, arguments)
+                session_obj = self.service.sessions.get(self.session_id) if (self.service and hasattr(self.service, "sessions")) else None
+                _attach_yield_hints(result, expr, arguments, session=session_obj)
                 if self.cognition_policy.get("ablation_check_enabled", True):
                     self._attach_ablation(expr, arguments, profile_id=profile_id, result=result)
                 pred_block = self._prediction_gate("evaluate_factor", arguments, result)
@@ -741,7 +626,8 @@ class _DispatchMixin:
                     _attach_prediction_check(result, arguments.get("prediction"), ic=ic, decile_rows=decile_rows)
                 if self.cognition_policy.get("ablation_check_enabled", True):
                     self._attach_ablation(expr, arguments, profile_id="train_screen", result=result)
-                _attach_yield_hints(result, expr, arguments)
+                session_obj = self.service.sessions.get(self.session_id) if (self.service and hasattr(self.service, "sessions")) else None
+                _attach_yield_hints(result, expr, arguments, session=session_obj)
                 pred_block = self._prediction_gate("eval_on_train_set", arguments, result)
                 if pred_block is not None:
                     return pred_block

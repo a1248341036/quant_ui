@@ -45,7 +45,7 @@ class MiningConfig:
     min_tool_call_rounds_before_allow_stop: int = 3
     factorlib_path: Path | None = None
     enable_submit: bool = True  # 始终启用，已移除关闭开关
-    enable_reviewer: bool = True
+    enable_reviewer: bool = False  # 2026-09-15 重构：默认关闭（实测 26/26 全 revise 空转且拖慢 180s，显式开启才跑）
     research_spec: dict[str, Any] | None = None
     focus_facets: list[str] | None = None
     """数据面聚焦（跨面融合）：用户在前端多选的面名（FACET_DEFS 键）。
