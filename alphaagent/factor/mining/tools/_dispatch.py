@@ -203,9 +203,16 @@ def _attach_yield_hints(result: dict[str, Any], expr: str, arguments: dict[str, 
                 gate_line = f"超建议红线（{_TURNOVER_ADVISORY_REDLINE:.2f}），且此区间多半止步精筛/engine_gate"
             result["submit_decision_required"] = (
                 f"训练已过海选线，但日单边换手 {turnover_f:.2f} 超标——{gate_line}，"
-                "调用 submit_factor 纯浪费算力。请勿提交：改为结构降噪（TS_MEDIAN/TS_MEAN ≥20 长窗平滑、RANK/CS_ZSCORE 截面秩变换"
-                "压尾部锐度、换慢信息源），或放弃该结构换信号族。"
+                "调用 submit_factor 纯浪费算力。请勿提交：推荐 3 种降噪路径改造后再评："
+                "①用 TS_MEDIAN(x, 20) 或 TS_MEAN(x, 20) 包裹原信号进行长窗平滑；"
+                "②外层加 CS_ZSCORE(x) 压制极端尾部与日度排名抖动；"
+                "③换用慢信息源（如基本面 PIT 数据 $funda_*$、筹码周频变量）替代高频价格反转。"
             )
+            result["turnover_reduction_hints"] = [
+                "TS_MEDIAN(x, 20) 或 TS_MEAN(x, 20) 长窗平滑",
+                "CS_ZSCORE 截面秩变换",
+                "替换为基本面 PIT 或慢速筹码变量",
+            ]
             return
         # P0-4 ICIR 预检（2026-09-12：run 42254d 中 2 次 submit_factor 死于
         # StageOneDeliveryCheckError:icir——IC 过线但 ICIR 不足 0.30，白交一次
@@ -436,13 +443,14 @@ class _DispatchMixin:
         blocked = None
         if getattr(self.memory_store, "hard_block_duplicates", False):
             for item in advisory.get("advisories", []):
-                if item.get("kind") == "duplicate_known_dead_end":
+                if item.get("kind") == "duplicate_known_dead_end" and not item.get("exempt_from_block", False):
                     blocked = {
                         "ok": False,
                         "error": f"memory_blocked_duplicate: {item.get('message', '')}",
                         "error_type": "MemoryAdvisoryBlock",
                         "memory_advisory": advisory,
                     }
+                    break
         try:
             kinds = [item.get("kind") for item in advisory.get("advisories", [])]
             if blocked is not None:

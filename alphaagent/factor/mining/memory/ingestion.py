@@ -3,9 +3,12 @@
 
 from __future__ import annotations
 
+import atexit
 import hashlib
 import json
+import queue
 import sqlite3
+import threading
 from typing import Any
 
 from .calibration import _parent_bucket
@@ -26,6 +29,73 @@ from .expressions import (
 
 class IngestionMixin:
     """研究证据入库：显式/隐式父本解析、cells 更新和编辑观测入账。"""
+
+    # ── 异步批量落盘工作池 ──
+
+    def _ensure_async_writer(self) -> None:
+        if getattr(self, "_write_queue", None) is not None:
+            return
+        self._write_queue: queue.Queue[tuple[Any, ...]] = queue.Queue()
+        self._writer_stop = threading.Event()
+        self._writer_thread = threading.Thread(
+            target=self._writer_loop,
+            name="ResearchMemoryWriter",
+            daemon=True,
+        )
+        self._writer_thread.start()
+        atexit.register(self.flush_writes)
+
+    def _writer_loop(self) -> None:
+        while not self._writer_stop.is_set():
+            try:
+                item = self._write_queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+
+            batch = [item]
+            while len(batch) < 8:
+                try:
+                    batch.append(self._write_queue.get_nowait())
+                except queue.Empty:
+                    break
+
+            try:
+                self._flush_batch_to_db(batch)
+            except Exception:
+                pass
+            finally:
+                for _ in batch:
+                    self._write_queue.task_done()
+
+    def _flush_batch_to_db(self, batch: list[tuple[Any, ...]]) -> None:
+        if not batch:
+            return
+        with self._open() as conn:
+            for item in batch:
+                fn, args, kwargs = item
+                try:
+                    fn(conn, *args, **kwargs)
+                except Exception:
+                    pass
+
+    def flush_writes(self, timeout: float = 5.0) -> None:
+        """等待后台写入队列全部落盘。"""
+        q = getattr(self, "_write_queue", None)
+        if q is not None:
+            try:
+                q.join()
+            except Exception:
+                pass
+
+    def close(self) -> None:
+        """关闭存储并刷新所有待处理写入。"""
+        self.flush_writes()
+        stop = getattr(self, "_writer_stop", None)
+        if stop is not None:
+            stop.set()
+        thread = getattr(self, "_writer_thread", None)
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=2.0)
 
     # ── 入库主流程 ──
 
@@ -210,7 +280,7 @@ class IngestionMixin:
         else:
             entry["created_at"] = entry["updated_at"]
 
-        with self._open() as conn:
+        def _write_task(conn: sqlite3.Connection) -> None:
             self._write_entry(conn, entry)
             # v3-lite: 入账 cells（显式/隐式加权 + 同桶残差）
             self._update_cell(
@@ -221,6 +291,24 @@ class IngestionMixin:
                 verdict=verdict,
                 error=error,
             )
+            # Phase 2/4: 记录编辑模式（历史兼容）
+            if parent_id and struct.get("fingerprint"):
+                try:
+                    self._record_edit_pattern_from_parent(
+                        parent_id=parent_id,
+                        child_id=signature,
+                        child_expression=expression,
+                        child_struct=struct,
+                        child_metrics=entry["metrics"],
+                    )
+                except Exception:
+                    pass
+
+        self._ensure_async_writer()
+        self._write_queue.put((_write_task, (), {}))
+        if hasattr(self, "clear_advisory_cache"):
+            self.clear_advisory_cache()
+
         log_step(
             "memory.record",
             f"{factor_name} verdict={verdict}",
@@ -230,19 +318,6 @@ class IngestionMixin:
             fail_code=failure_code,
             attempts=entry["attempts"],
         )
-
-        # Phase 2/4: 记录编辑模式（历史兼容）
-        if parent_id and struct.get("fingerprint"):
-            try:
-                self._record_edit_pattern_from_parent(
-                    parent_id=parent_id,
-                    child_id=signature,
-                    child_expression=expression,
-                    child_struct=struct,
-                    child_metrics=entry["metrics"],
-                )
-            except Exception:
-                pass
 
         return entry
 

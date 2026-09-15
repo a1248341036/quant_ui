@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -203,6 +204,10 @@ class SchemaMixin:
 
     @contextmanager
     def _open(self):
+        writer_thread = getattr(self, "_writer_thread", None)
+        if writer_thread is not None and threading.current_thread() != writer_thread:
+            if hasattr(self, "flush_writes"):
+                self.flush_writes()
         conn = sqlite3.connect(str(self.path), timeout=30)
         try:
             conn.row_factory = sqlite3.Row

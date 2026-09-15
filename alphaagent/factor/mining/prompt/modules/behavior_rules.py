@@ -4,7 +4,15 @@
 RAW = """### 行为准则
 
 1. **经济直觉先行 + 预测必填**：每个 `evaluate_factor` / `eval_on_train_set` 调用前，在思维链中先写出 50 字以内经济直觉（标准见第一层，违反即跳过），并随调用传 `prediction`（缺失会记账警告、累计 3 次拦截——每次都带上，别依赖宽限）。结果中的 `prediction_check` 优先于门槛阅读：verdict=contradicted（被证伪）→ 换机制或放弃，禁止对被证伪结构做参数变异。`submit_factor` 的 `comment` 中必须包含经济直觉全文。
-2. **换手红线（硬约束）**：`evaluate_factor` 结果里的 `quantile_portfolio.avg_daily_side_turnover`（日单边换手）**> 0.4 的候选不要调用 `submit_factor`**——历史数据 26/30 个候选因此止步 stage_two/engine_gate，纯浪费算力。设计期就选低换手结构：CS_ 截面排序类、长窗口平滑（TS_MEDIAN/TS_MEAN ≥20）、慢信息源（基本面 PIT、筹码周频结构）；避免逐日 rank-reversal 式信号（自相关 <0.6 的 TS_ 时序因子大概率高换手）。
+2. **换手红线（硬约束）与设计期自检清单**：`evaluate_factor` 结果里的 `quantile_portfolio.avg_daily_side_turnover`（日单边换手）**> 0.4 的候选不要调用 `submit_factor`**——消融实验与历史数据证明绝大多数候选均因此止步 stage_one/engine_gate，纯浪费算力。
+   - **设计期高换手自检清单（命中任一条即预判高换手，需先降噪，勿直接提交）**：
+     ① 表达式含 `TS_RANK` / `TS_ZSCORE` 且窗口 < 20；
+     ② 顶层直接为 `RANK` 或 `NEG` 裸反转（无长窗平滑直接逐日抖动）；
+     ③ 截面自相关（`cs_pearson_autocorr`）预估 < 0.6 的高频时序信号。
+   - **低换手标准构造路径**：
+     ① 平滑包裹：用 `TS_MEDIAN(x, 20)` 或 `TS_MEAN(x, 20)` 过滤逐日噪音；
+     ② 截面变换：用 `CS_ZSCORE` 压制极端尾部；
+     ③ 换慢信息源：基本面 PIT（`$funda_*`）、筹码周频结构、周线衍生变量。
 2b. **深度曲线阅读（top-k 崩 = 结构问题，不是调参问题）**：train 过线的全量评估结果里有 `depth_curve`（同标签同成本、仅持仓深度不同的 top-k 等权序列，Q10=十分位参考行）与 `depth_curve_tradable`（可成交域透镜：先剔除一手买不起/次日涨停停牌/am20 不足的票再排名）。判读与对应动作：
    - top5/top20 相对 Q10 明显崩（如 Q10 +7% 而 top5 −12%）→ alpha 集中在极端尾部少数票，**改结构**：加截面秩变换（RANK/CS_ZSCORE）压尾部锐度、扩信息宽度（多信号正交融合）、加长窗平滑；不要靠微调窗口参数指望 top-k 自己变好；
    - `depth_curve_tradable` 比 `depth_curve` 更差 → 可成交性损耗（等权预算买不起头部票）：降头部集中度、做市值/流动性中性化，或放弃该结构；

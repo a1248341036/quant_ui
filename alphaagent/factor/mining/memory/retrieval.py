@@ -191,8 +191,14 @@ class RetrievalMixin:
             m = e.get("metrics") if isinstance(e.get("metrics"), dict) else {}
             ic = m.get("ic") if m else None
             abs_ic = abs(float(ic)) if isinstance(ic, (int, float)) else 0.0
+            turnover = m.get("avg_daily_side_turnover") if m else None
+            try:
+                # 2026-09-15 优化：高换手因子（>0.45）降权排后，优先向 LLM 推荐低换手正向父本
+                high_turnover_penalty = 1 if turnover is not None and float(turnover) > 0.45 else 0
+            except (TypeError, ValueError):
+                high_turnover_penalty = 0
             fam = str(e.get("family") or "other")
-            ranked.append(((tier.get(str(e.get("verdict")), 9), -abs_ic), e, fam))
+            ranked.append(((tier.get(str(e.get("verdict")), 9), high_turnover_penalty, -abs_ic), e, fam))
         ranked.sort(key=lambda t: t[0])
         # 家族按其最优条目的全局排名排序；同族轮转（先各家一条，再补第二条）
         fam_order: list[str] = []
@@ -1060,14 +1066,9 @@ class RetrievalMixin:
         facet_scope: set[str] | None = None,
         facet_required: set[str] | None = None,
     ) -> str:
-        """构建注入上下文。显示顺序：经验 → 编辑先验 → 饱和度 → 多样性 → 证据。
-
-        v3 预算策略（2026-08-30 起）：核心块（经验、编辑先验）始终保留；
-        次级块按 证据 > 饱和度 > 多样性 的优先级用剩余预算填充——证据块承载
-        具体死路因子清单，不再被尾部一刀切截掉。所有截断均在行边界。
-        2026-09-01 预算分段：经验块膨胀后曾把证据块挤出注入（检索 0 条），
-        证据块保底 reserve = min(900, 总预算/3)，核心块用剩余预算。
-        """
+        """构建注入上下文。显示顺序：经验 → 编辑先验 → 饱和度 → 多样性 → 证据。"""
+        if hasattr(self, "flush_writes"):
+            self.flush_writes()
         max_inject_chars = self.max_inject_chars if max_inject_chars is None else int(max_inject_chars)
         # 预算分段（2026-09-01）：经验块膨胀后曾把证据块整个挤出注入（"检索 0 条"），
         # 证据块保底 reserve = min(900, 总预算/3)，核心块（经验+编辑先验）用剩余预算。

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from typing import Any
 
 from .calibration import _apv_gate, _eq7_confidence
@@ -50,9 +51,22 @@ _RECENT_SORT_EXPRS: dict[str, str] = {
 _POSITIVE_VERDICTS = sorted(POSITIVE_VERDICTS)
 _POSITIVE_PH = ",".join("?" * len(_POSITIVE_VERDICTS))
 
+_ADVISORY_CACHE_TTL = 60.0
+_ADVISORY_CACHE_MAXSIZE = 512
+
 
 class AdvisoryMixin:
     """评估前 advisory（硬提醒）与查询/管理接口。"""
+
+    def _get_advisory_cache(self) -> dict[tuple[str, str | None], tuple[float, dict[str, Any] | None]]:
+        if not hasattr(self, "_advisory_cache"):
+            self._advisory_cache = {}
+        return self._advisory_cache
+
+    def clear_advisory_cache(self) -> None:
+        """清空 advisory 缓存（写入或测试重置时调用）。"""
+        if hasattr(self, "_advisory_cache"):
+            self._advisory_cache.clear()
 
     # ── 评估前 advisory ──
 
@@ -62,10 +76,9 @@ class AdvisoryMixin:
         返回 None（无提醒）或 {"advisories": [...], "blocked": False}。
         - duplicate_known_dead_end：同结构指纹负证据累计 ≥2 次尝试（同表达式重试，
           或同骨架换窗口/参数的多个变体）→ 已知死路，`hard_block_duplicates=True`
-          时由调用方（tools.dispatch）升级为拦截；
+          时由调用方（tools.dispatch）升级为拦截；过线豁免条目 exempt_from_block=True 不硬拦；
         - duplicate_prior_result：同结构指纹曾有正向结果（promising/入库）→ 重复劳动
-          提醒（历史条目名/verdict/IC/未晋升原因），仅提醒、永不拦截——正向重复说明
-          结构出过信号，正确动作是变异或核查晋升卡点，而非机械重测；
+          提醒（历史条目名/verdict/IC/未晋升原因），仅提醒、永不拦截——建议直接 submit 走入库门槛；
         - edit_veto：意向编辑 APV 双门否决。
         """
         if not expression:
@@ -73,8 +86,17 @@ class AdvisoryMixin:
         expression = str(expression).strip()
         if not expression:
             return None
-        findings: list[dict[str, Any]] = []
+
         fingerprint = _structure_fingerprint(expression)
+        cache_key = (fingerprint or expression, edit_note)
+        cache = self._get_advisory_cache()
+        now = time.monotonic()
+        if cache_key in cache:
+            cached_ts, cached_val = cache[cache_key]
+            if now - cached_ts < _ADVISORY_CACHE_TTL:
+                return cached_val
+
+        findings: list[dict[str, Any]] = []
         family = classify_family("", expression)
         with self._open() as conn:
             # ① 指纹负证据：同一结构指纹的已否定条目累计 ≥2 次尝试 → 已知死路。
@@ -88,7 +110,7 @@ class AdvisoryMixin:
                     f"""
                     SELECT 1 FROM memory_entries
                     WHERE structure_fingerprint = ?
-                      AND verdict IN ({_POSITIVE_PH})
+                      AND (verdict IN ({_POSITIVE_PH}) OR verdict = 'promising')
                     LIMIT 1
                     """,
                     (fingerprint, *_POSITIVE_VERDICTS),
@@ -126,6 +148,7 @@ class AdvisoryMixin:
                             f"该表达式结构与历史死路相同：同构已评估 {int(agg['n_tries'])} 次"
                             f"{scope}{latest}（{reason}），不建议继续同构重复评估。"
                         ),
+                        "exempt_from_block": False,
                     })
 
             # ①b 指纹正证据：同结构曾有正向 verdict（promising/入库）→ 重复劳动提醒。
@@ -139,7 +162,7 @@ class AdvisoryMixin:
                            COUNT(*) OVER () AS n_positive
                     FROM memory_entries
                     WHERE structure_fingerprint = ?
-                      AND verdict IN ({_POSITIVE_PH})
+                      AND (verdict IN ({_POSITIVE_PH}) OR verdict = 'promising')
                     ORDER BY updated_at DESC LIMIT 1
                     """,
                     (fingerprint, *_POSITIVE_VERDICTS),
@@ -161,13 +184,14 @@ class AdvisoryMixin:
                         "message": (
                             f"该表达式结构与历史条目重复：{name}（{when}，verdict={pos_row['verdict']}"
                             f"{metrics_txt}，已评估 {int(pos_row['attempts'])} 次{fail_txt}）。"
-                            "同结构已测出过正向结果，勿原样重测："
-                            "以其为父本做显式变异（parent_factor=该历史因子），或核查其未晋升原因后决定。"
+                            "同结构已测出过信号，勿原样重测，建议直接 submit 走入库门槛核查晋升卡点；"
+                            "或以其为父本做显式变异（parent_factor=该历史因子 + edit_note 说明改动点）。"
                         ),
                         "prior_factor": name,
                         "prior_verdict": str(pos_row["verdict"]),
                         "prior_updated_at": pos_row["updated_at"],
                         "n_prior_positive": int(pos_row["n_positive"]),
+                        "exempt_from_block": True,
                     })
 
             # ② 意向编辑 APV：从 edit_note 解析 motif，查 cells 统计否决
@@ -175,9 +199,12 @@ class AdvisoryMixin:
             if motif and motif != "other":
                 self._edit_veto_findings(conn, family, motif, findings)
 
-        if not findings:
-            return None
-        return {"advisories": findings, "blocked": False}
+        res = {"advisories": findings, "blocked": False} if findings else None
+        if len(cache) >= _ADVISORY_CACHE_MAXSIZE:
+            # 清除一半过期或早的
+            cache.clear()
+        cache[cache_key] = (now, res)
+        return res
 
     def exact_duplicate_prior(self, expression: str | None) -> dict[str, Any] | None:
         """精确重复检查：同结构指纹且表达式逐字相同的最新**正向**历史条目。
@@ -318,6 +345,8 @@ class AdvisoryMixin:
 
         返回 (entries, total)。
         """
+        if hasattr(self, "flush_writes"):
+            self.flush_writes()
         case_parts = " ".join(
             f"WHEN '{v}' THEN {rank}" for v, rank in VERDICT_ORDER.items()
         )

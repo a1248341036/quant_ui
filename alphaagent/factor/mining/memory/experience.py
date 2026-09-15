@@ -685,7 +685,7 @@ class ExperienceMixin:
                         f"|IC|={abs(best_ic):.4f}（{direction}）。"
                         + (f"该成功结构为跨面融合（触及 {'、'.join(sorted(facets))}），"
                            "跨面组合拥挤度低，可在同构不同面上继续复制。" if fusion else "")
-                        + f"优先照抄模板骨架、只换参数/修饰算子，在邻近空间继续探索。"
+                        + "优先照抄模板骨架、只换参数/修饰算子，并在邻近空间继续探索（保持长窗平滑以维持低换手）。"
                     )
                     examples = [
                         ex for nm, _, ex, _ in members
