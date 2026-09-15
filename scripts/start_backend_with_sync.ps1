@@ -28,19 +28,19 @@ Start-Sleep -Seconds 1
 
 # --- Launch both services as child processes so they share the console ---
 
-# Quant UI backend (port 17891)
-$backendArgs = @("-m", "uvicorn", "backend.main:app", "--host", "127.0.0.1", "--port", "17891")
-$backend = Start-Process -FilePath $python -ArgumentList $backendArgs -WorkingDirectory $root -NoNewWindow -PassThru
-
-# --- Load .env for TUSHARE_TOKEN / TUSHARE_URL (no hardcoded secrets) ---
+# --- Load .env for TUSHARE_TOKEN / TUSHARE_URL / QUANT_UI_PASSWORD / ACCESS_KEY (no hardcoded secrets) ---
 $EnvFile = Join-Path $root ".env"
 if (Test-Path $EnvFile) {
-    Get-Content $EnvFile | Where-Object { $_ -match '^\s*(TUSHARE_TOKEN|TUSHARE_URL)\s*=' } | ForEach-Object {
+    Get-Content $EnvFile | Where-Object { $_ -match '^\s*(TUSHARE_TOKEN|TUSHARE_URL|QUANT_UI_PASSWORD|QUANT_UI_ACCESS_KEY)\s*=' } | ForEach-Object {
         $kv = $_ -split '=', 2
         $name = $kv[0].Trim(); $val = $kv[1].Trim().Trim('"').Trim("'")
         Set-Item -Path "Env:$name" -Value $val
     }
 }
+
+# Quant UI backend (port 17891)
+$backendArgs = @("-m", "uvicorn", "backend.main:app", "--host", "127.0.0.1", "--port", "17891")
+$backend = Start-Process -FilePath $python -ArgumentList $backendArgs -WorkingDirectory $root -NoNewWindow -PassThru
 
 # CNE dashboard (port 8787)
 $cneDir = Join-Path $root "CNEquity"
