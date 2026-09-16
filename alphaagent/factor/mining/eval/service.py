@@ -71,6 +71,15 @@ def _engine_result_to_legacy(raw: dict[str, Any]) -> dict[str, Any]:
             "depth_curve_tradable": qp.get("depth_curve_tradable"),
             "tradable_domain": qp.get("tradable_domain"),
         }
+    # 换手透传：LLM 需要看到 avg_daily_side_turnover 才能遵守换手红线
+    # （behavior_rules rule 2 要求检查该字段，但此前 evaluate 结果不透传，
+    #  导致 LLM 盲目提交高换手因子被 stage_one 反复拦截）
+    if isinstance(qp, dict):
+        _turnover_out = out.setdefault("quantile_portfolio", {})
+        if qp.get("avg_daily_side_turnover") is not None:
+            _turnover_out["avg_daily_side_turnover"] = qp.get("avg_daily_side_turnover")
+        if qp.get("avg_rebalance_side_turnover") is not None:
+            _turnover_out["avg_rebalance_side_turnover"] = qp.get("avg_rebalance_side_turnover")
     if raw.get("by_month") is not None:
         out["by_month"] = raw["by_month"]
     if raw.get("by_symbol") is not None:

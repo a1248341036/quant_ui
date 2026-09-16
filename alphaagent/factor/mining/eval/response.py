@@ -172,6 +172,13 @@ def format_eval_response(
                 "budget_per_name": td.get("budget_per_name"),
                 "affordable_max_price": td.get("affordable_max_price"),
             }
+        # 换手透传：LLM 需要看到 avg_daily_side_turnover 才能遵守换手红线
+        # （behavior_rules rule 2 要求检查该字段，但此前 evaluate 结果不透传，
+        #  导致 LLM 盲目提交高换手因子被 stage_one 反复拦截）
+        if qp.get("avg_daily_side_turnover") is not None:
+            out["avg_daily_side_turnover"] = _round_float4(qp.get("avg_daily_side_turnover"))
+        if qp.get("avg_rebalance_side_turnover") is not None:
+            out["avg_rebalance_side_turnover"] = _round_float4(qp.get("avg_rebalance_side_turnover"))
         if out.get("depth_curve"):
             out["depth_note"] = (
                 "同标签同成本，仅持仓深度不同（k=每期等权只数；Q10=十分位参考行）。"
