@@ -28,6 +28,41 @@ from alphaagent.factor.mining.schemas import SessionCreateRequest
 from alphaagent.factor.mining.service import StockEvalService
 from alphaagent.factor.mining.agentscope_tools import build_factor_eval_toolkit, context_to_openai_messages
 from alphaagent.factor.mining.cli_stream import MiningStreamObserver, stream_to_cli
+
+# 2026-09-16：宽松版压缩摘要 schema。agentscope 默认 SummarySchema 全字段必填，
+# LLM 压缩时偶尔漏 task_overview 等字段 → pydantic ValidationError → run 崩溃。
+# 全字段可选 + 空串默认，漏字段时降级为缺省摘要，压缩不阻断挖掘。
+_LENIENT_SUMMARY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "task_overview": {
+            "type": "string",
+            "description": "The user's core request and success criteria.",
+            "default": "",
+        },
+        "current_state": {
+            "type": "string",
+            "description": "What has been completed so far.",
+            "default": "",
+        },
+        "important_discoveries": {
+            "type": "string",
+            "description": "Technical constraints, decisions, errors encountered.",
+            "default": "",
+        },
+        "next_steps": {
+            "type": "string",
+            "description": "Specific actions needed to complete the task.",
+            "default": "",
+        },
+        "context_to_preserve": {
+            "type": "string",
+            "description": "User preferences, domain-specific details, promises.",
+            "default": "",
+        },
+    },
+    "required": [],
+}
 from alphaagent.factor.mining.infra.provider_compat import ProviderSafeChatModel
 from alphaagent.factor.mining.infra.usage_capture import UsageBridge
 from alphaagent.factor.mining.config import MiningConfig
@@ -67,6 +102,24 @@ def _is_transport_error(exc: BaseException) -> bool:
     while cur is not None and id(cur) not in seen:
         seen.add(id(cur))
         if type(cur).__name__ in _RETRYABLE_ERROR_NAMES:
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
+def _is_compression_error(exc: BaseException) -> bool:
+    """判断异常是否为上下文压缩失败（LLM 结构化摘要漏字段 → pydantic
+    ValidationError，或 summary_template.format 缺 key → KeyError）。
+
+    压缩失败不应终结 run：压缩只是把旧段浓缩成摘要，失败 = 上下文不压缩，
+    run 仍可继续（代价是 input 继续膨胀）。调用方应把 trigger_ratio 抬到
+    接近上限跳过本轮压缩后重试，避免重试再次触发压缩死循环。
+    """
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if type(cur).__name__ in ("ValidationError", "KeyError"):
             return True
         cur = cur.__cause__ or cur.__context__
     return False
@@ -190,6 +243,10 @@ async def create_mining_agent(
             trigger_ratio=0.5,
             reserve_ratio=0.15,
             tool_result_limit=5000,
+            # 2026-09-16 修复：默认 SummarySchema 全字段必填，LLM 压缩时偶尔漏
+            # task_overview 等字段 → pydantic ValidationError → 整个 run 崩溃。
+            # 改为全字段可选 + 空串默认，漏字段时降级为缺省摘要，压缩不阻断挖掘。
+            summary_schema=_LENIENT_SUMMARY_SCHEMA,
         ),
     )
 
@@ -317,6 +374,7 @@ async def run_factor_mining_agentscope(
             edit_prior_recommend_conf=float(memory_policy.get("edit_prior_recommend_conf") or EDIT_PRIOR_RECOMMEND_CONF_DEFAULT),
             edit_prior_veto_conf=float(memory_policy.get("edit_prior_veto_conf") or EDIT_PRIOR_VETO_CONF_DEFAULT),
             suggest_slots=int(memory_policy.get("suggest_slots") if memory_policy.get("suggest_slots") is not None else 2),
+            enable_advisory_cache=bool(memory_policy.get("enable_advisory_cache", True)),
         )
         if research_memory_path is not None and _memory_enabled
         else None
@@ -601,6 +659,11 @@ async def run_factor_mining_agentscope(
             max_expression_chars=int(policy.get("max_expression_chars", 320)),
             enable_factor_retrieval=bool(policy.get("enable_factor_retrieval", False)),
             enable_edit_patterns=bool(policy.get("enable_edit_patterns", False)),
+            enable_experience_block=bool(policy.get("enable_experience_block", True)),
+            enable_saturation_block=bool(policy.get("enable_saturation_block", True)),
+            enable_yield_block=bool(policy.get("enable_yield_block", True)),
+            enable_diversity_block=bool(policy.get("enable_diversity_block", True)),
+            enable_structure_stats_block=bool(policy.get("enable_structure_stats_block", True)),
             recent_batch=None if focus else [
                 {"expression": r.get("expression")}
                 for r in tool_call_rows[-8:]
@@ -746,6 +809,7 @@ async def run_factor_mining_agentscope(
                         run_id=log_dir.name,
                         row=row,
                         run_freq_context=run_freq_context,
+                        enable_sspm_write=bool(memory_policy.get("enable_sspm_write", True)),
                     )
                 tool_call_rows.append(
                     {
@@ -908,6 +972,29 @@ async def run_factor_mining_agentscope(
                     )
                     await asyncio.sleep(min(30, 5 * transport_attempts))
                     continue
+                # 2026-09-16：上下文压缩失败（LLM 结构化摘要漏字段 → pydantic
+                # ValidationError / summary_template.format KeyError）不应终结 run。
+                # 压缩只是把旧段浓缩成摘要，失败 = 上下文不压缩，run 仍可继续
+                # （代价是 input 继续膨胀）。把 trigger_ratio 抬到接近上限跳过
+                # 本轮压缩后重试，避免重试再次触发压缩死循环。
+                if _is_compression_error(exc):
+                    _emit(
+                        "compression_skipped",
+                        {
+                            "turn": outer_turn,
+                            "error_type": type(exc).__name__,
+                            "error": str(exc)[:300],
+                        },
+                    )
+                    log_step(
+                        "compression_skipped",
+                        f"turn={outer_turn} err={type(exc).__name__}",
+                    )
+                    try:
+                        agent.context_config.trigger_ratio = 0.89
+                    except Exception:  # noqa: BLE001 — 改配置失败不阻断
+                        pass
+                    continue
                 end_reason = "error"
                 _emit(
                     "session_error",
@@ -1060,7 +1147,9 @@ async def run_factor_mining_agentscope(
             pending = "\n".join(reflection_lines)
 
             # ── 批次蒸馏：FactorMiner 式经验记忆（成功模式/禁忌方向/洞察）──
-            if memory_store is not None:
+            # 组件消融 M11（enable_distill=False）：跳过 form_memory + distill_batch_experience，
+            # 验证经验蒸馏是否真实驱动了经验块注入质量。
+            if memory_store is not None and bool(memory_policy.get("enable_distill", True)):
                 batch_for_form = []
                 for r in tool_call_rows:
                     if r.get("turn") != outer_turn - 1:

@@ -1114,12 +1114,22 @@ class RetrievalMixin:
         max_expression_chars: int | None = None,
         enable_factor_retrieval: bool = False,
         enable_edit_patterns: bool = False,
+        enable_experience_block: bool = True,
+        enable_saturation_block: bool = True,
+        enable_yield_block: bool = True,
+        enable_diversity_block: bool = True,
+        enable_structure_stats_block: bool = True,
         recent_batch: list[dict[str, Any]] | None = None,
         max_inject_chars: int | None = None,
         facet_scope: set[str] | None = None,
         facet_required: set[str] | None = None,
     ) -> str:
-        """构建注入上下文。显示顺序：经验 → 编辑先验 → 饱和度 → 多样性 → 证据。"""
+        """构建注入上下文。显示顺序：经验 → 编辑先验 → 饱和度 → 多样性 → 证据。
+
+        组件级消融开关（2026-09-16，memory component ablation spec §二.4）：
+        enable_experience_block / enable_saturation_block / enable_yield_block /
+        enable_diversity_block / enable_structure_stats_block 控制对应块是否注入。
+        """
         if hasattr(self, "flush_writes"):
             self.flush_writes()
         max_inject_chars = self.max_inject_chars if max_inject_chars is None else int(max_inject_chars)
@@ -1128,7 +1138,7 @@ class RetrievalMixin:
         # 交互结构命中率块（2026-09-06）：与证据块同享保底预留——块小但每轮都要
         # 在场（矫正交互模式惯性），放次级预算会被证据块挤掉而失去意义。
         # 预算过小时（块 > 25% 预算）自动退出，不挤占核心块。
-        struct_block = self._structure_stats_block()
+        struct_block = self._structure_stats_block() if enable_structure_stats_block else ""
         struct_len = (len(struct_block) + 2) if struct_block else 0
         if struct_len and 0 < max_inject_chars < struct_len * 4:
             struct_block, struct_len = "", 0
@@ -1156,9 +1166,10 @@ class RetrievalMixin:
 
         # 核心块：无条件保留（超预算时行边界截断）
         core: list[str] = []
-        exp_block = self._experience_block(facet_scope, facet_required)
-        if exp_block:
-            core.append(exp_block)
+        if enable_experience_block:
+            exp_block = self._experience_block(facet_scope, facet_required)
+            if exp_block:
+                core.append(exp_block)
         if enable_edit_patterns:
             edit_block = self._edit_prior_block(focus_families)
             if edit_block:
@@ -1195,13 +1206,13 @@ class RetrievalMixin:
             )
             if factor_block:
                 secondary.append((0, factor_block))
-        sat_block = self._saturation_block()
+        sat_block = self._saturation_block() if enable_saturation_block else ""
         if sat_block:
             secondary.append((1, sat_block))
-        yield_block = self._yield_block()
+        yield_block = self._yield_block() if enable_yield_block else ""
         if yield_block:
             secondary.append((2, yield_block))
-        div_block = self._diversity_block(recent_batch)
+        div_block = self._diversity_block(recent_batch) if enable_diversity_block else ""
         if div_block:
             secondary.append((3, div_block))
 

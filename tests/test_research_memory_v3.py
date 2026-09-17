@@ -421,8 +421,9 @@ def test_tool_dispatch_memory_gate_block(tmp_path):
 
     class _FakeStore:
         hard_block_duplicates = True
+        enable_advisory_cache = True
 
-        def advisory_for(self, expr, edit_note=None):
+        def advisory_for(self, expr, edit_note=None, enable_advisory_cache=True):
             return {"advisories": [{"kind": "duplicate_known_dead_end", "message": "死路"}], "blocked": False}
 
     tools = FactorEvalTools(service=None, session_id="s", memory_store=_FakeStore())

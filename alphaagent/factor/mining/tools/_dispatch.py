@@ -346,7 +346,11 @@ class _DispatchMixin:
         if self.memory_store is None:
             return None
         try:
-            advisory = self.memory_store.advisory_for(str(expr or ""), edit_note=arguments.get("edit_note"))
+            advisory = self.memory_store.advisory_for(
+                str(expr or ""),
+                edit_note=arguments.get("edit_note"),
+                enable_advisory_cache=bool(getattr(self.memory_store, "enable_advisory_cache", True)),
+            )
         except Exception:
             return None
         if not advisory:

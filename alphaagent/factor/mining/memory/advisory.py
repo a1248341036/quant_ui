@@ -77,6 +77,7 @@ class AdvisoryMixin:
         *,
         edit_note: str | None = None,
         current_run_id: str | None = None,
+        enable_advisory_cache: bool = True,
     ) -> dict[str, Any] | None:
         """评估前硬提醒通道（v3：指纹负证据 / 指纹正证据 / 意向编辑 APV 双门）。默认只提醒不拦截。
 
@@ -87,6 +88,9 @@ class AdvisoryMixin:
         - duplicate_prior_result：同结构指纹曾有正向结果（promising/入库）→ 重复劳动
           提醒（历史条目名/verdict/IC/未晋升原因），仅提醒、永不拦截——建议直接 submit 走入库门槛；
         - edit_veto：意向编辑 APV 双门否决。
+
+        组件消融 M12（enable_advisory_cache=False）：每次评估直查库，跳过 LRU 缓存，
+        验证 advisory 缓存对吞吐的贡献。
         """
         if not expression:
             return None
@@ -98,14 +102,15 @@ class AdvisoryMixin:
         cache_key = (fingerprint or expression, edit_note, current_run_id)
         cache = self._get_advisory_cache()
         now = time.monotonic()
-        if cache_key in cache:
-            cached_ts, cached_val = cache[cache_key]
-            if now - cached_ts < _ADVISORY_CACHE_TTL:
-                # 命中即移动到末尾（刷新 LRU 活跃度，P2-2）
-                cache.move_to_end(cache_key)
-                return cached_val
-            else:
-                cache.pop(cache_key, None)
+        if enable_advisory_cache:
+            if cache_key in cache:
+                cached_ts, cached_val = cache[cache_key]
+                if now - cached_ts < _ADVISORY_CACHE_TTL:
+                    # 命中即移动到末尾（刷新 LRU 活跃度，P2-2）
+                    cache.move_to_end(cache_key)
+                    return cached_val
+                else:
+                    cache.pop(cache_key, None)
 
         findings: list[dict[str, Any]] = []
         family = classify_family("", expression)
@@ -229,10 +234,11 @@ class AdvisoryMixin:
                 self._edit_veto_findings(conn, family, motif, findings)
 
         res = {"advisories": findings, "blocked": False} if findings else None
-        # 超限时按 LRU 淘汰最久未命中的条目（OrderedDict 首端 = 最久未用，P2-2）
-        while len(cache) >= _ADVISORY_CACHE_MAXSIZE:
-            cache.popitem(last=False)
-        cache[cache_key] = (now, res)
+        if enable_advisory_cache:
+            # 超限时按 LRU 淘汰最久未命中的条目（OrderedDict 首端 = 最久未用，P2-2）
+            while len(cache) >= _ADVISORY_CACHE_MAXSIZE:
+                cache.popitem(last=False)
+            cache[cache_key] = (now, res)
         return res
 
     def exact_duplicate_prior(self, expression: str | None) -> dict[str, Any] | None:

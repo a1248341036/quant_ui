@@ -180,6 +180,17 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
         "include_expression": True,
         "enable_factor_retrieval": True,    # v2 混合检索（BM25+族亲和+多样性去重），结论已数据化
         "enable_edit_patterns": True,       # v2 (family×motif) 残差单元 + APV 否决，含统计门控
+        # 组件级消融开关（2026-09-16，memory component ablation spec §二.4）：
+        # 与 enable_factor_retrieval / enable_edit_patterns 并列，逐个控制注入/写入组件。
+        # 默认全 True 不改行为；消融实验按 arm 关闭对应开关。
+        "enable_experience_block": True,    # 经验块（成功模式/禁忌方向，core 注入）
+        "enable_saturation_block": True,    # 饱和度块（拥挤警告，secondary 优先级 1）
+        "enable_yield_block": True,         # 产出率块（族产出率统计，secondary 优先级 2）
+        "enable_diversity_block": True,     # 多样性块（面覆盖警告，secondary 优先级 3）
+        "enable_structure_stats_block": True,  # 结构命中率块（交互结构过线率，core 预留）
+        "enable_sspm_write": True,          # SSPM 编辑统计写入（memory_cells 残差更新）
+        "enable_distill": True,             # 经验蒸馏（distill_batch_experience / form_memory）
+        "enable_advisory_cache": True,      # advisory 查询 LRU 缓存（False = 每次评估查库）
         # v3-lite：AlphaMemo 校准 + 硬提醒通道
         # 重复探索硬闸（2026-09-15 优化）：默认 False。仅对同表达式逐字重复（exact_duplicate_prior）
         # 才硬拦，结构级重复（同骨架但不同参数/窗口）只提醒不硬拦，避免误伤过线 promising 因子。
@@ -370,6 +381,18 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
     memory["include_expression"] = _require_bool(memory.get("include_expression"), "memory_policy.include_expression")
     memory["enable_factor_retrieval"] = _require_bool(memory.get("enable_factor_retrieval"), "memory_policy.enable_factor_retrieval")
     memory["enable_edit_patterns"] = _require_bool(memory.get("enable_edit_patterns"), "memory_policy.enable_edit_patterns")
+    # 组件级消融开关（2026-09-16，memory component ablation spec §二.4）
+    for _key in (
+        "enable_experience_block",
+        "enable_saturation_block",
+        "enable_yield_block",
+        "enable_diversity_block",
+        "enable_structure_stats_block",
+        "enable_sspm_write",
+        "enable_distill",
+        "enable_advisory_cache",
+    ):
+        memory[_key] = _require_bool(memory.get(_key), f"memory_policy.{_key}")
     # v3-lite
     memory["hard_block_duplicates"] = _require_bool(memory.get("hard_block_duplicates"), "memory_policy.hard_block_duplicates")
     memory["max_inject_chars"] = int(_bounded_number(memory.get("max_inject_chars"), "memory_policy.max_inject_chars", 0, 20000))
