@@ -112,6 +112,7 @@ class IngestionMixin:
         run_id: str,
         row: dict[str, Any],
         run_freq_context: dict[str, Any] | None = None,
+        enable_sspm_write: bool = True,
     ) -> dict[str, Any] | None:
         name = str(row.get("name") or "")
         if name not in {"evaluate_factor", "eval_on_train_set", "eval_on_val_set", "submit_factor"}:
@@ -293,26 +294,29 @@ class IngestionMixin:
         def _write_task(conn: sqlite3.Connection) -> None:
             self._write_entry(conn, entry_snapshot)
             # v3-lite: 入账 cells（显式/隐式加权 + 同桶残差）
-            self._update_cell(
-                conn, entry_snapshot, struct,
-                parent_id=parent_id,
-                parent_origin=parent_origin,
-                intended_motif=intended_motif,
-                verdict=verdict,
-                error=error,
-            )
-            # Phase 2/4: 记录编辑模式（历史兼容）
-            if parent_id and struct.get("fingerprint"):
-                try:
-                    self._record_edit_pattern_from_parent(
-                        parent_id=parent_id,
-                        child_id=signature,
-                        child_expression=expression,
-                        child_struct=struct,
-                        child_metrics=entry_snapshot["metrics"],
-                    )
-                except Exception:
-                    pass
+            # 组件消融 M10（enable_sspm_write=False）：只写条目不更新编辑统计，
+            # 验证 SSPM 编辑统计是否真实驱动了编辑先验/APV 的质量。
+            if enable_sspm_write:
+                self._update_cell(
+                    conn, entry_snapshot, struct,
+                    parent_id=parent_id,
+                    parent_origin=parent_origin,
+                    intended_motif=intended_motif,
+                    verdict=verdict,
+                    error=error,
+                )
+                # Phase 2/4: 记录编辑模式（历史兼容）
+                if parent_id and struct.get("fingerprint"):
+                    try:
+                        self._record_edit_pattern_from_parent(
+                            parent_id=parent_id,
+                            child_id=signature,
+                            child_expression=expression,
+                            child_struct=struct,
+                            child_metrics=entry_snapshot["metrics"],
+                        )
+                    except Exception:
+                        pass
 
         self._ensure_async_writer()
         self._write_queue.put((_write_task, (), {}))
