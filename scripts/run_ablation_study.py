@@ -90,6 +90,42 @@ def get_arm_spec_overrides(arm_name: str) -> dict[str, Any]:
             "GATED_SIGNAL", "PIECEWISE_STATE", "DIVERGENCE_RANK",
             "CS_GROUP_RANK", "CS_RESIDUALIZE", "IF_THEN_ELSE"
         ]
+    # ── Prompt 模块单模块消融（docs/specs/alphaagent_prompt_module_ablation_spec.md）──
+    # P1a~P5a：excluded_modules 单模块剥离（其余 16 个全保留）
+    elif arm_name == "P1a_core_identity":
+        spec.setdefault("prompt_policy", {})["excluded_modules"] = ["core_identity"]
+    elif arm_name == "P2a_strategy_tracks":
+        spec.setdefault("prompt_policy", {})["excluded_modules"] = ["strategy_tracks"]
+    elif arm_name == "P2b_behavior_rules":
+        spec.setdefault("prompt_policy", {})["excluded_modules"] = ["behavior_rules"]
+    elif arm_name == "P3a_delivery_interface":
+        spec.setdefault("prompt_policy", {})["excluded_modules"] = ["delivery_interface"]
+    elif arm_name == "P3b_tool_contracts":
+        spec.setdefault("prompt_policy", {})["excluded_modules"] = ["tool_contracts"]
+    elif arm_name == "P3c_delivery_submission":
+        spec.setdefault("prompt_policy", {})["excluded_modules"] = ["delivery_submission"]
+    elif arm_name == "P4a_data_calibration":
+        spec.setdefault("prompt_policy", {})["excluded_modules"] = ["data_calibration"]
+    elif arm_name == "P4b_market_mechanisms":
+        spec.setdefault("prompt_policy", {})["excluded_modules"] = ["market_mechanisms"]
+    elif arm_name == "P4c_multi_period":
+        spec.setdefault("prompt_policy", {})["excluded_modules"] = ["multi_period"]
+    elif arm_name == "P4d_operator_catalog":
+        spec.setdefault("prompt_policy", {})["excluded_modules"] = ["operator_catalog"]
+    elif arm_name == "P4e_neutralization_guide":
+        spec.setdefault("prompt_policy", {})["excluded_modules"] = ["neutralization_guide"]
+    elif arm_name == "P4f_ic_robustness":
+        spec.setdefault("prompt_policy", {})["excluded_modules"] = ["ic_robustness"]
+    elif arm_name == "P5a_tool_examples":
+        spec.setdefault("prompt_policy", {})["excluded_modules"] = ["tool_examples"]
+    # P6a：价量字段族消融（纯 prompt 层，数据加载不动）——只注入价量/量能/筹码/拥挤
+    # 行情组字段族，基本面/事件/资金等字段族全部隐藏（field_family_scope 白名单）。
+    elif arm_name == "P6a_price_only_fields":
+        spec.setdefault("prompt_policy", {})["field_family_scope"] = [
+            "adj_", "close", "open", "high", "low", "ret", "vwap",
+            "volume", "amount", "turnover", "chip_", "crowd_",
+            "float_cap", "tot_cap", "is_trade", "not_st", "industry_sw_l1",
+        ]
     else:
         raise ValueError(f"未知消融 arm 名称: {arm_name}")
 
@@ -101,8 +137,10 @@ def run_single_arm(
     output_base: Path,
     max_turns: int = 5,
     user_message: str = "挖掘稳健低换手的量价/筹码日频截面多因子",
+    repeat_idx: int = 0,
 ) -> Path:
-    arm_dir = output_base / arm_name
+    # 重复实验：输出目录带 _repN 后缀（N 从 1 起），记忆快照仍按 arm 名共享
+    arm_dir = output_base / (f"{arm_name}_rep{repeat_idx}" if repeat_idx > 0 else arm_name)
     arm_dir.mkdir(parents=True, exist_ok=True)
     spec = get_arm_spec_overrides(arm_name)
     spec_path = arm_dir / "research_spec.json"
@@ -135,7 +173,8 @@ def run_single_arm(
         "--log-dir", str(arm_dir),
         "--research-memory-file", str(arm_mem),
         "--no-fundamentals",
-        "--test-end", "2026-09-11",
+        # 盲测段纪律：不传 --test-end，用默认动态解析（数据源最新交易日）。
+        # 挖掘循环只看到 train/val 段，2025 起为锁定盲测段（见 alphaagent_mining_ablation_spec.md）。
     ]
 
     print(f"\n========================================================")
@@ -195,7 +234,11 @@ def evaluate_arm_candidates_blind_test(arm_dir: Path) -> dict[str, Any]:
 
 
 def generate_ablation_summary(study_dir: Path) -> None:
-    """遍历 study 目录下的所有 arm，生成统一对比表格与 CSV。"""
+    """遍历 study 目录下的所有 arm，生成统一对比表格与 CSV。
+
+    重复实验（arm_repN 目录）按 arm 名聚合：输出均值 ± 标准差，
+    满足统计纪律"每组 ≥3 次重复，报告均值 ± 波动范围"。
+    """
     arm_dirs = [d for d in study_dir.iterdir() if d.is_dir() and not d.name.startswith("_")]
     if not arm_dirs:
         print("未找到有效实验组数据。")
@@ -211,8 +254,10 @@ def generate_ablation_summary(study_dir: Path) -> None:
             sm = sc.get("summary", {})
             fn = sc.get("funnel", {})
             cg = sc.get("cognition", {})
+            # 重复目录（arm_repN）归并到 arm 名；首轮（无后缀）保持原名
+            base = d.name.rsplit("_rep", 1)[0] if "_rep" in d.name else d.name
             records.append({
-                "Arm": sc.get("run_id") or d.name,
+                "Arm": base,
                 "Turns": sm.get("total_turns", 0),
                 "Throughput": sm.get("eval_throughput", 0),
                 "Attempts": fn.get("unique_train_evaluated", 0),
@@ -234,8 +279,25 @@ def generate_ablation_summary(study_dir: Path) -> None:
 
     import pandas as pd
     df = pd.DataFrame(records)
+    # 按 arm 聚合：均值 ± 标准差（重复数 >1 时）
+    num_cols = [c for c in df.columns if c != "Arm"]
+    agg = df.groupby("Arm")[num_cols].agg(["mean", "std", "count"])
+    agg.columns = ["_".join(c).rstrip("_") for c in agg.columns]
+    agg = agg.reset_index()
+    # 生成可读列：mean ± std（std 为 0 或 NaN 时只显示 mean）
+    for c in num_cols:
+        mean_c, std_c, cnt_c = f"{c}_mean", f"{c}_std", f"{c}_count"
+        if mean_c in agg.columns:
+            agg[f"{c}±"] = agg.apply(
+                lambda r: (
+                    f"{r[mean_c]:.2f}±{r[std_c]:.2f}"
+                    if r[cnt_c] > 1 and pd.notna(r[std_c]) and r[std_c] > 0
+                    else f"{r[mean_c]:.2f}"
+                ),
+                axis=1,
+            )
     csv_out = study_dir / "ablation_summary.csv"
-    df.to_csv(csv_out, index=False, encoding="utf-8-sig")
+    agg.to_csv(csv_out, index=False, encoding="utf-8-sig")
 
     print("\n" + "=" * 90)
     print(f"【AlphaAgent 消融实验综合量化对比大表】(保存至 {csv_out.name})")
@@ -243,16 +305,16 @@ def generate_ablation_summary(study_dir: Path) -> None:
     fmt_str = f"{'{:<18}':<18} | {'{:<5}':<5} | {'{:<10}':<10} | {'{:<8}':<8} | {'{:<8}':<8} | {'{:<8}':<8} | {'{:<10}':<10} | {'{:<10}':<10}"
     print(fmt_str.format("Arm 实验组", "轮次", "评估吞吐", "训练尝试", "入候选池", "正式入库", "海选过线%", "Gate存活%"))
     print("-" * 90)
-    for r in records:
+    for _, r in agg.iterrows():
         print(fmt_str.format(
             r["Arm"],
-            r["Turns"],
-            f"{r['Throughput']:.2f}/m",
-            r["Attempts"],
-            r["CandStored"],
-            r["ProdStored"],
-            f"{r['StageOneYield%']:.1f}%",
-            f"{r['GateSurvival%']:.1f}%",
+            f"{r['Turns_mean']:.0f}",
+            f"{r['Throughput_mean']:.2f}/m",
+            f"{r['Attempts_mean']:.0f}",
+            f"{r['CandStored_mean']:.0f}",
+            f"{r['ProdStored_mean']:.0f}",
+            f"{r['StageOneYield%_mean']:.1f}%",
+            f"{r['GateSurvival%_mean']:.1f}%",
         ))
     print("=" * 90)
 
@@ -262,6 +324,7 @@ def main() -> int:
     parser.add_argument("--arms", type=str, default="control,A1_no_memory,B1_minimal_prompt,C1_no_prediction",
                         help="逗号分隔的消融组名称（可选: control, A1_no_memory, A2_pos_only, B1_minimal_prompt, B2_no_mechanisms, C1_no_prediction, C2_no_ablation, D1_free_search, D2_simple_ops）")
     parser.add_argument("--max-turns", type=int, default=5, help="每个消融组的对话轮次限制（默认 5 轮快速体检）")
+    parser.add_argument("--repeats", type=int, default=1, help="每个消融组的重复次数（统计纪律要求 ≥3；输出目录带 _repN 后缀）")
     parser.add_argument("--out-dir", type=str, default=None, help="实验产物保存目录（默认 artifacts/ablation_<ts>）")
     parser.add_argument("--report-dir", type=str, default=None, help="仅汇总指定目录的消融大表并退出")
     args = parser.parse_args()
@@ -275,13 +338,15 @@ def main() -> int:
     study_dir.mkdir(parents=True, exist_ok=True)
 
     target_arms = [a.strip() for a in args.arms.split(",") if a.strip()]
-    print(f"开始执行消融实验套件: {target_arms} (共 {len(target_arms)} 组)")
+    repeats = max(1, args.repeats)
+    print(f"开始执行消融实验套件: {target_arms} (共 {len(target_arms)} 组 × {repeats} 次重复)")
 
     for arm in target_arms:
-        try:
-            run_single_arm(arm, study_dir, max_turns=args.max_turns)
-        except Exception as e:
-            print(f"Arm [{arm}] 执行失败: {e}", file=sys.stderr)
+        for rep in range(1, repeats + 1):
+            try:
+                run_single_arm(arm, study_dir, max_turns=args.max_turns, repeat_idx=rep)
+            except Exception as e:
+                print(f"Arm [{arm}] 重复 {rep} 执行失败: {e}", file=sys.stderr)
 
     generate_ablation_summary(study_dir)
     return 0

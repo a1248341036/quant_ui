@@ -348,10 +348,19 @@ def render(ctx) -> str:  # noqa: ANN001
         """字段族注入判定：聚焦生效时只注入勾选面，未聚焦时全量（老行为）。"""
         return not scope or face in scope
 
+    # 消融白名单（field_family_scope）：非空时只注入列名命中白名单前缀的字段族。
+    # 仅影响字段族区块，行情变量表与数据加载不受影响（P6a 价量字段族消融用）。
+    scope_prefixes = getattr(ctx, "field_family_scope", None)
+
+    def _family_allowed(prefixes: tuple[str, ...]) -> bool:
+        if scope_prefixes is None:
+            return True
+        return any(p in scope_prefixes for p in prefixes)
+
     funda_effective = ctx.include_fundamentals and (
         cols is None or any(c.startswith("funda_") for c in cols)
-    )
-    ff_available = (cols is None or all(c in cols for c in FF_PANEL_COLUMNS)) and _want("资金面")
+    ) and _family_allowed(("funda_",))
+    ff_available = (cols is None or all(c in cols for c in FF_PANEL_COLUMNS)) and _want("资金面") and _family_allowed(("ff_",))
     ff_rows = _FF_FIELD_ROWS_MD if ff_available else ""
     ff_advice = _FF_ADVICE_MD if ff_available else ""
     funda_block = _FUNDAMENTAL_SECTION_MD if funda_effective else _FUNDAMENTAL_DISABLED_MD
@@ -360,23 +369,23 @@ def render(ctx) -> str:  # noqa: ANN001
 
     # 事件/披露字段族：按 panel 实际列 + 聚焦面逐块拼接（插件缺数据时对应块不注入）
     event_blocks: list[str] = []
-    if (cols is None or any(c.startswith("pred_") for c in cols)) and _want("业绩面"):
+    if (cols is None or any(c.startswith("pred_") for c in cols)) and _want("业绩面") and _family_allowed(("pred_",)):
         event_blocks.append(_PRED_SECTION_MD)
-    if (cols is None or any(c.startswith("holder_") for c in cols)) and _want("股东面"):
+    if (cols is None or any(c.startswith("holder_") for c in cols)) and _want("股东面") and _family_allowed(("holder_",)):
         event_blocks.append(_HOLDER_SECTION_MD)
-    if (cols is None or any(c in cols for c in EVENT_FACE_PANEL_COLUMNS)) and _want("事件面"):
+    if (cols is None or any(c in cols for c in EVENT_FACE_PANEL_COLUMNS)) and _want("事件面") and _family_allowed(("dt_", "bt_")):
         event_blocks.append(_EVENT_FACES_SECTION_MD)
-    if (cols is None or any(c in cols for c in MARGIN_PANEL_COLUMNS)) and _want("两融面"):
+    if (cols is None or any(c in cols for c in MARGIN_PANEL_COLUMNS)) and _want("两融面") and _family_allowed(("mgn_",)):
         event_blocks.append(_MARGIN_SECTION_MD)
-    if (cols is None or any(c in cols for c in INST_PANEL_COLUMNS)) and _want("机构面"):
+    if (cols is None or any(c in cols for c in INST_PANEL_COLUMNS)) and _want("机构面") and _family_allowed(("inst_",)):
         event_blocks.append(_INSTITUTIONAL_SECTION_MD)
-    if (cols is None or any(c in cols for c in TH_PANEL_COLUMNS)) and _want("股东集中面"):
+    if (cols is None or any(c in cols for c in TH_PANEL_COLUMNS)) and _want("股东集中面") and _family_allowed(("th_",)):
         event_blocks.append(_TOP_HOLDERS_SECTION_MD)
-    if (cols is None or any(c in cols for c in EXPRESS_PANEL_COLUMNS)) and _want("业绩面"):
+    if (cols is None or any(c in cols for c in EXPRESS_PANEL_COLUMNS)) and _want("业绩面") and _family_allowed(("exp_",)):
         event_blocks.append(_EXPRESS_SECTION_MD)
-    if (cols is None or any(c in cols for c in DISCLOSURE_PANEL_COLUMNS)) and _want("披露面"):
+    if (cols is None or any(c in cols for c in DISCLOSURE_PANEL_COLUMNS)) and _want("披露面") and _family_allowed(("ds_",)):
         event_blocks.append(_DISCLOSURE_SECTION_MD)
-    if (cols is None or any(c in cols for c in DIVIDEND_PANEL_COLUMNS)) and _want("分红面"):
+    if (cols is None or any(c in cols for c in DIVIDEND_PANEL_COLUMNS)) and _want("分红面") and _family_allowed(("div_",)):
         event_blocks.append(_DIVIDEND_SECTION_MD)
 
     variables = (
