@@ -6,8 +6,16 @@ $ErrorActionPreference = "Continue"
 # scheduled-task pwsh has no console and falls back to the GBK code page,
 # which mojibake'd every Chinese line in the log (2026-09-04).
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$env:TUSHARE_TOKEN = "6cc06f993ea2f04821a8b05a0ac3a75a3512ade625da24a1f0f4718d"
-$env:TUSHARE_URL   = "https://t.xiaodefa.top/"
+
+# --- Load Tushare credentials from .env (no hardcoded secrets) ---
+$EnvFile = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) ".env"
+if (Test-Path $EnvFile) {
+    Get-Content $EnvFile | Where-Object { $_ -match '^\s*(TUSHARE_TOKEN|TUSHARE_URL)\s*=' } | ForEach-Object {
+        $kv = $_ -split '=', 2
+        $name = $kv[0].Trim(); $val = $kv[1].Trim().Trim('"').Trim("'")
+        Set-Item -Path "Env:$name" -Value $val
+    }
+}
 $env:PYTHONIOENCODING = "utf-8"
 $Cne    = "D:\Quant\quant_ui\.venv\Scripts\cne.exe"
 $Config = "D:\Quant\quant_ui\CNEquity\configs\cnequity.quant_dataset.toml"
