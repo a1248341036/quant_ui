@@ -20,6 +20,7 @@ from alphaagent.factor.metrics import (
     daily_long_short_series,
     monthly_ic_robustness,
 )
+from alphaagent.factor.metrics.st_mask import mask_values as mask_st_values
 from alphaagent.factor.metrics.decay import (
     decay_horizons_for,
     ic_histogram,
@@ -129,6 +130,11 @@ class EvaluationEngine:
             point = time.perf_counter()
             values = align_series_to_panel(raw, panel)
             factor = pd.Series(values, index=panel.index, name=factor_name, dtype=np.float32)
+            # ST（风险警示板）剔除：只对因子值置 NaN，不动 panel/label（默认开启，
+            # ALPHA_ST_MASK=0 关闭；数据源不可用时 fail-open 原样返回）。
+            factor = mask_st_values(
+                factor, panel, asset_type=getattr(session.ctx, "asset_type", None)
+            )
             # label 名义持有期（label_20d → 20）：供组合回测指标按持有期采样复利
             label_digits = "".join(ch for ch in str(label_col) if ch.isdigit())
             context = EvaluationContext(

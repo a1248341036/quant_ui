@@ -19,6 +19,7 @@ from alphaagent.factor.metrics import (
     evaluate_on_panel,
     factor_skew_kurtosis,
 )
+from alphaagent.factor.metrics.st_mask import mask_values as mask_st_values
 from alphaagent.factor.types import DEFAULT_INGEST_POLICY, IngestPolicy, IngestResult, MaterializeResult
 from alphaagent.factor.zoo import FactorStatus, FactorZoo, SimilarityMatrix
 
@@ -156,6 +157,9 @@ def compute_ingest_metrics(
         start=policy.eval_start,
         end=policy.eval_end,
     )
+    # ST 剔除（与评估引擎同一份掩码）：因子值在 ST 行置 NaN → 所有有限值掩码口径
+    # 自动排除这些样本。submit 的 train/val/盲测三段与全窗指标都经本函数，故三段一致。
+    eval_values = mask_st_values(eval_values, eval_panel)
     # label 名义持有期（label_20d → 20）：ICIR 按持有期重采样去重叠、超额年化
     # 按持有期缩放，避免长持有期因子指标虚高。label_1d 时 hold=1 退化为原行为。
     label_digits = "".join(ch for ch in str(policy.label_col) if ch.isdigit())
@@ -187,6 +191,8 @@ def compute_ingest_metrics(
     metrics["kurt"] = kurt
     metrics["eval_start"] = policy.eval_start
     metrics["eval_end"] = policy.eval_end
+    # finite_ratio 描述**落库因子值**的覆盖率（不含 ST 剔除口径）；门槛用的
+    # factor_coverage（evaluate_on_panel 产出）已是剔除 ST 后的口径。
     metrics["finite_ratio"] = metric_coverage(stored_values)
     return metrics
 

@@ -106,6 +106,11 @@ def screen_expr(expr: str, panel: pd.DataFrame, label_col: str, *, min_pairs: in
 
     values = align_series_to_panel(out, panel)
     factor = pd.Series(values, index=panel.index, name="cand", dtype=np.float32)
+    # ST 剔除：群体筛的 IC/coverage 口径与主评估引擎一致
+    from alphaagent.factor.metrics.st_mask import mask_values as _st_mask_values
+
+    factor = _st_mask_values(factor, panel)
+    values = factor.to_numpy(dtype=np.float32, copy=False)
     label = panel[label_col]
     # label 名义持有期（label_20d → 20）：ICIR 按持有期重采样去重叠，避免虚高
     label_digits = "".join(ch for ch in str(label_col) if ch.isdigit())

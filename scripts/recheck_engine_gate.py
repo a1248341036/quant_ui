@@ -105,6 +105,10 @@ def main() -> int:
         try:
             out = eval_factor(meta["expr"], panel)
             values = out.reindex(panel.index).to_numpy(dtype=np.float64) if hasattr(out, "reindex") else None
+            # ST 剔除：与 submit 的 engine_gate 同口径（否则复核结论与准入结论不可比）
+            from alphaagent.factor.metrics.st_mask import mask_values as _st_mask_values
+
+            values = _st_mask_values(values, panel)
         except Exception as exc:  # noqa: BLE001
             report[factor_id] = {"ok": False, "error": f"dsl_eval_failed: {exc}"}
             print(f"[recheck] {factor_id}: dsl_eval_failed ({time.perf_counter()-t_factor:.0f}s)", flush=True)

@@ -412,6 +412,14 @@ class FactorSubmitService:
             lo_pct, hi_pct = float(stage_one_policy.clip_pct[0]), float(stage_one_policy.clip_pct[1])
             cand_values, _ = clip_values(cand_values, lower_pct=lo_pct, upper_pct=hi_pct)
         values_by_key = pd.Series(cand_values, index=panel.index)
+        # ST 剔除（与评估引擎/入库指标同一份掩码）：**只用于指标口径**——组合回测、
+        # 引擎回测、val 多头超额在剔除 ST 后的横截面上计算（与 train/val/盲测三段
+        # 的 IC 口径一致）；落库值（values_by_key → canonical）与相似度抽样保持原值，
+        # 不改动因子库产物。ingest 指标走 compute_ingest_metrics 内部同名掩码。
+        from alphaagent.factor.metrics.st_mask import mask_values as _st_mask_values
+
+        metric_values = _st_mask_values(cand_values, panel)
+        metric_series = pd.Series(metric_values, index=panel.index, dtype=np.float32)
         values_fp = hashlib.sha1(
             np.ascontiguousarray(cand_values, dtype=np.float32).tobytes()
         ).hexdigest()
@@ -442,7 +450,7 @@ class FactorSubmitService:
         qp_holding_days = max(1, int(label_digits) if label_digits else 1)
         t_qp = time.perf_counter()
         qp_metrics = quantile_portfolio_metrics(
-            pd.Series(cand_values, index=panel.index), panel[ctx.label_col],
+            metric_series, panel[ctx.label_col],
             n_groups=10, cost_bps=0.0, holding_days=qp_holding_days,
             depth_ks=(5, 10, 20, 50, 100),
         )
@@ -461,7 +469,7 @@ class FactorSubmitService:
                 min_am20_yuan=_gate_tc.GATE_MIN_AM20_YUAN,
             )
             _lens = quantile_portfolio_metrics(
-                pd.Series(cand_values, index=panel.index), panel[ctx.label_col],
+                metric_series, panel[ctx.label_col],
                 n_groups=10, cost_bps=0.0, holding_days=qp_holding_days,
                 depth_ks=(5, 10, 20, 50, 100),
                 eligibility=_mask.to_numpy(dtype=bool), depth_only=True,
@@ -483,7 +491,7 @@ class FactorSubmitService:
         # 多头组合，详情页并排展示"样本内 vs 盲测"的收益落差，杜绝只看样本内误判。
         portfolio_by_segment: dict[str, Any] = {}
         try:
-            factor_series = pd.Series(cand_values, index=panel.index)
+            factor_series = metric_series
             dt_level = panel.index.get_level_values("datetime")
             label_series = panel[ctx.label_col]
             for _seg, (_s, _e) in {
@@ -613,7 +621,7 @@ class FactorSubmitService:
             if label_col in panel.columns:
                 dt_level = panel.index.get_level_values("datetime")
                 val_rows = (dt_level >= pd.Timestamp(ctx.val_start)) & (dt_level <= pd.Timestamp(ctx.val_end))
-                f_val = pd.Series(cand_values, index=panel.index)[val_rows]
+                f_val = metric_series[val_rows]
                 l_val = panel[label_col][val_rows]
                 if len(f_val) > 0:
                     dir_sign = 1 if float(metrics_train.get("ic") or 0.0) >= 0 else -1
@@ -708,7 +716,7 @@ class FactorSubmitService:
                 if int(_mask.sum()) == 0:
                     continue
                 _seg_qp = quantile_portfolio_metrics(
-                    pd.Series(cand_values, index=panel.index)[_mask],
+                    metric_series[_mask],
                     panel[ctx.label_col][_mask],
                     n_groups=10, cost_bps=0.0, holding_days=qp_holding_days,
                 )
@@ -828,10 +836,11 @@ class FactorSubmitService:
         if isinstance(engine_gate_cfg, dict) and engine_gate_cfg.get("enabled"):
             from alphaagent.factor.mining.engine_gate import run_engine_gate
             ic_sign = 1 if float(metrics.get("ic") or 0.0) >= 0 else -1
-            # 会话域回测：cand_values 与 session panel 行序一一对应。
+            # 会话域回测：metric_values 与 session panel 行序一一对应（ST 已置 NaN，
+            # 引擎不选入组合，与统计口径一致）。
             engine_gate_result = run_engine_gate(
                 panel,
-                cand_values,
+                metric_values,
                 val_start=ctx.val_start,
                 val_end=ctx.val_end,
                 direction=ic_sign,
@@ -977,7 +986,7 @@ class FactorSubmitService:
                     ic_sign = 1 if float(metrics.get("ic") or 0.0) >= 0 else -1
                     test_gate = run_engine_gate(
                         panel,
-                        cand_values,
+                        metric_values,
                         val_start=test_start,
                         val_end=test_end,
                         direction=ic_sign,
