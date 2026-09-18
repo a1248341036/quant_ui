@@ -77,6 +77,11 @@ export const agentStore = reactive({
     focus_facets: [],
     // 调仓频率（交付门禁）：'' = 自动（随档位默认 + LLM 按评估证据自选）
     rebalance_freq: '',
+    // 板块过滤（per-run 覆盖 QUANT_EXCLUDE_*）：
+    // 北交所默认剔除（50 万+24 个月准入），科创/创业板默认包含。
+    exclude_bse: true,
+    exclude_kechuang: false,
+    exclude_chinext: false,
   },
 
   // 数据面多选选项（与 alphaagent/factor/mining/memory/expressions.py FACET_DEFS 对齐）

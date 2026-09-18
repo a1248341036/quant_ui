@@ -71,6 +71,13 @@ class StartRequest(BaseModel):
     reasoning_effort: str | None = Field(default=None, pattern="^(none|low|medium|high|xhigh)$")
     # 兼容保留：显式传入优先于自动推断；前端不再展示模式下拉。
     research_mode: str | None = None
+    # 板块过滤（per-run 覆盖环境变量 QUANT_EXCLUDE_*）：
+    # - exclude_bse 默认 True（北交所 50 万+24 个月准入，与环境变量默认一致）
+    # - exclude_kechuang / exclude_chinext 默认 False（科创/创业板默认包含）
+    # 前端挖掘表单复选框控制；None = 不覆盖，沿用进程环境变量。
+    exclude_bse: bool | None = True
+    exclude_kechuang: bool | None = False
+    exclude_chinext: bool | None = False
     research_spec: dict[str, Any] = Field(default_factory=build_default_research_spec)
 
 

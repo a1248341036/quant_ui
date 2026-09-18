@@ -267,6 +267,12 @@
                 >{{ f.label }}</button>
               </div>
             </div>
+            <div v-if="agent.agentMode==='research'" class="board-filter-panel" title="板块过滤：剔除后该板块股票不参与因子评估与入库（投资者准入要求）">
+              <span class="board-filter-label">剔除板块</span>
+              <label class="board-check"><input type="checkbox" v-model="agent.form.exclude_bse" :disabled="agent.agentBusy"> 北交所</label>
+              <label class="board-check"><input type="checkbox" v-model="agent.form.exclude_kechuang" :disabled="agent.agentBusy"> 科创板</label>
+              <label class="board-check"><input type="checkbox" v-model="agent.form.exclude_chinext" :disabled="agent.agentBusy"> 创业板</label>
+            </div>
             <div class="composer-actions">
               <button v-if="agent.agentMode==='research'" class="spec-toggle" :class="{ active: agent.showResearchSpec }" :disabled="agent.agentBusy" @click="agent.showResearchSpec = !agent.showResearchSpec">研究规范</button>
               <button v-if="agent.agentMode==='research' && !agent.current" class="spec-toggle quick-start-btn" :disabled="agent.agentBusy" @click="agent.startDefaultResearch" title="使用默认研究规范和提示词立即启动">▶ 默认研究</button>

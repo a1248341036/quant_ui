@@ -684,6 +684,17 @@ def start_run(
     env = os.environ.copy()
     env.setdefault("ALPHA_LLM_PROVIDER", "codex")
     env.setdefault("PYTHONIOENCODING", "utf-8")
+    # 板块过滤 per-run 覆盖：前端复选框 → 子进程环境变量 QUANT_EXCLUDE_*
+    #（core/data/panel.py 与 cnequity.py 读这些变量做股票池过滤）。
+    # None = 不覆盖（沿用后端进程已有的环境变量默认）。
+    for _field, _envname in (
+        ("exclude_bse", "QUANT_EXCLUDE_BSE"),
+        ("exclude_kechuang", "QUANT_EXCLUDE_KECHUANG"),
+        ("exclude_chinext", "QUANT_EXCLUDE_CHINEXT"),
+    ):
+        _val = params.get(_field)
+        if _val is not None:
+            env[_envname] = "1" if _val else "0"
     run = AgentRun(
         run_id=run_id,
         command=command,
@@ -949,6 +960,15 @@ def _respawn_in_place(parent: AgentRun, content: str) -> AgentRun:
     env = os.environ.copy()
     env.setdefault("ALPHA_LLM_PROVIDER", "codex")
     env.setdefault("PYTHONIOENCODING", "utf-8")
+    # 板块过滤 per-run 覆盖（与 start_run 同口径，继承父 run 的 params）。
+    for _field, _envname in (
+        ("exclude_bse", "QUANT_EXCLUDE_BSE"),
+        ("exclude_kechuang", "QUANT_EXCLUDE_KECHUANG"),
+        ("exclude_chinext", "QUANT_EXCLUDE_CHINEXT"),
+    ):
+        _val = params.get(_field)
+        if _val is not None:
+            env[_envname] = "1" if _val else "0"
     run = AgentRun(
         run_id=parent.run_id,
         command=command,

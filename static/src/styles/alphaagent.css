@@ -678,6 +678,34 @@ textarea.lab-input { resize:vertical; font:12px/1.5 var(--font-mono); }
 .facet-hint { font-size: 11px; color: var(--text-dim, #8a93a6); }
 .facet-hint.fusion { color: var(--accent, #5b8cff); }
 
+.board-filter-panel {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 2px 2px 4px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: rgb(255 255 255 / .015);
+}
+.board-filter-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim, #8a93a6);
+  flex: none;
+}
+.board-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-dim, #8a93a6);
+  cursor: pointer;
+}
+.board-check input { cursor: pointer; }
+.board-check:has(input:checked) { color: var(--text, #d6dbe7); }
+
 /* ── 研究总结 数据面列（2026-09-03）── */
 .summary-facets { white-space: nowrap; font-size: 11px; }
 .summary-facet-text { color: var(--text-dim, #8a93a6); }
