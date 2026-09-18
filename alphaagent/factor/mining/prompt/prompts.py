@@ -55,11 +55,16 @@ def build_system_prompt(
     - ``"deliver"``：交付阶段，全量 + 交付模块。
     """
     cols = frozenset(panel_columns) if panel_columns is not None else None
+    # 消融白名单：research_spec.prompt_policy.field_family_scope（P6a 价量字段族消融）
+    pp = (research_spec or {}).get("prompt_policy") or {}
+    family_scope_raw = pp.get("field_family_scope")
+    family_scope = frozenset(family_scope_raw) if family_scope_raw else None
     ctx = PromptContext(
         label_col=label_col,
         include_operator_catalog=include_operator_catalog,
         include_fundamentals=include_fundamentals,
         panel_columns=cols,
+        field_family_scope=family_scope,
         asset_type=asset_type,
         research_spec=research_spec,
         population_max=population_max,

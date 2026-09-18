@@ -116,6 +116,45 @@ def test_price_only_disables_field_family_modules():
     assert "（本次未注入算子清单）" in text
 
 
+def test_field_family_scope_whitelist():
+    """P6a 价量字段族消融：field_family_scope 白名单只注入价量族，数据加载不动。
+
+    panel 含全量列（基本面/事件/资金/两融等），但白名单只放行价量/量能/筹码/拥挤
+    行情组前缀 → 其余字段族区块全部隐藏；行情变量表（$close/$volume 等）保留。
+    """
+    cols = [
+        "open", "high", "low", "close", "adj_open", "adj_high", "adj_low",
+        "adj_close", "volume", "amount", "turnover", "vwap", "adj_vwap", "ret",
+        "float_cap", "tot_cap", "is_trade", "not_st", "industry_sw_l1",
+        "funda_roe", "funda_ocfps", "pred_direction", "holder_count",
+        "ff_main_net", "mgn_ratio", "dt_net_buy", "exp_net_profit",
+        "ds_days_since_actual", "div_cash_div", "label_1d",
+    ]
+    scope = [
+        "adj_", "close", "open", "high", "low", "ret", "vwap",
+        "volume", "amount", "turnover", "chip_", "crowd_",
+        "float_cap", "tot_cap", "is_trade", "not_st", "industry_sw_l1",
+    ]
+    text = build_system_prompt(
+        include_operator_catalog=True,
+        label_col="label_1d",
+        include_fundamentals=True,
+        panel_columns=cols,
+        research_spec={"prompt_policy": {"field_family_scope": scope}},
+    )
+    # 价量/量能行情变量保留
+    assert "$adj_close" in text and "$volume" in text and "$float_cap" in text
+    # 非价量字段族全部隐藏
+    for hidden in ("$funda_roe", "$pred_direction", "$holder_count",
+                   "$ff_main_net", "$mgn_ratio", "$dt_net_buy",
+                   "$exp_net_profit", "$ds_days_since_actual", "$div_cash_div"):
+        assert hidden not in text, f"{hidden} 应被 field_family_scope 隐藏"
+    # 无 required_empty（data_fields 仍渲染行情变量表）
+    from alphaagent.factor.mining.prompts import last_assembly_report
+    row = next(r for r in last_assembly_report if r["module"] == "data_fields")
+    assert row["required_empty"] is False and row["chars"] > 0
+
+
 def test_population_and_extra_mount():
     text = build_system_prompt(**_CASES["population"])
     assert "propose_population" in text

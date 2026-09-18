@@ -256,6 +256,11 @@ def render(ctx) -> str:  # noqa: ANN001
         ctx.panel_columns is None
         or any(c.startswith("funda_") for c in ctx.panel_columns)
     )
+    # 消融白名单（field_family_scope）：白名单不含 funda_ 时隐藏基本面示例，
+    # 与 data_fields 的字段族裁剪保持一致（P6a 价量字段族消融）。
+    scope_prefixes = getattr(ctx, "field_family_scope", None)
+    if scope_prefixes is not None and "funda_" not in scope_prefixes:
+        funda_effective = False
     return _tool_call_examples_section(
         include_fundamentals=funda_effective,
         focus_facets=getattr(ctx, "focus_facets", ()),

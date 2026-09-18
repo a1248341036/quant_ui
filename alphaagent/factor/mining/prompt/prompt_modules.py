@@ -37,6 +37,10 @@ class PromptContext:
     include_fundamentals: bool = True
     # panel 加载后的真实列集合；None 表示未知（保持旧静态行为：字段族全注入）
     panel_columns: frozenset[str] | None = None
+    # 字段族注入白名单（消融用）：None = 全量注入（默认）；非空 = 只注入列名
+    # 命中白名单前缀的字段族（如 {"funda_", "pred_"} 之外的族全部隐藏）。
+    # 仅影响 data_fields 模块的字段族区块，行情变量表与数据加载不受影响。
+    field_family_scope: frozenset[str] | None = None
     # 资产类型文案（'stock'/'etf'）
     asset_type: str = "stock"
     # 每模式研究规范（delivery gates / 数据面聚焦 / prompt_policy 均从这里读）
