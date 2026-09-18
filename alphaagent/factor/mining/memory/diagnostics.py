@@ -112,12 +112,17 @@ def _rebuild_conclusion(name: str, result: dict[str, Any], metrics: dict[str, An
     icir_str = f"ICIR={icir:+.3f}" if icir is not None else "ICIR=N/A"
     cov_str = f"Coverage={coverage:.2f}" if coverage is not None else ""
 
-    if is_val and (result.get("sign_check", {}).get("matches_expected_sign") is not False) and abs(ic or 0) >= 0.015:
+    from alphaagent.factor.mining.research_spec import DEFAULT_RESEARCH_SPEC
+    _ep = DEFAULT_RESEARCH_SPEC["evaluation_policy"]
+    _th = float(_ep["min_train_abs_ic"])
+    _icir_soft = float(_ep.get("min_train_icir_soft", 0.2))
+    _cov = float(_ep["min_train_coverage"])
+    _val_abs_ic = float(_ep["min_val_abs_ic"])
+
+    if is_val and (result.get("sign_check", {}).get("matches_expected_sign") is not False) and abs(ic or 0) >= _val_abs_ic:
         return "validated", f"训练外验证通过：{ic_str} {icir_str} {cov_str}。方向一致且有可用相关性，可在相邻但不重复的机制上扩展。"
-    # 2026-09-11 起海选线对齐 0.020（观察池口径，与 CandidateCriteria.min_abs_ic 同步，
-    # 两档统一）：0.015~0.020 区间不再授予 promising（正向 verdict 会驱动记忆与
-    # 父本策略向其倾斜）。ICIR 仍用宽松线 0.2（原设计：IC 跟门槛、ICIR 只作稳定性软线）。
-    if abs(ic or 0) >= 0.020 and (icir or 0) > 0.2 and (coverage or 0) > 0.85:
+    # 海选线从真源 evaluation_policy 继承
+    if abs(ic or 0) >= _th and (icir or 0) > _icir_soft and (coverage or 0) > _cov:
         return "promising", f"训练阶段有潜力：{ic_str} {icir_str} {cov_str}。优先进行训练外验证或独立性改造。"
     return "weak", f"指标不足：{ic_str} {icir_str} {cov_str}。除非改变变量、经济机制或处理方式，否则不要机械重试。"
 

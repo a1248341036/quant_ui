@@ -25,7 +25,7 @@ from core import trading_config
 
 @dataclass(frozen=True)
 class CandidateCriteria:
-    """候选池（海选）统计门槛：观察池口径（2026-09-11 第二版）。
+    """候选池（海选）统计门槛：观察池口径（2026-09-11 第二版）【唯一真源】。
 
     进池线回到晋升线之下半档（0.020/0.28 vs 精筛 0.025/0.30）——池子承担
     "三段都有真信号的结构"存档 + ML 样本源，正式库质量由精筛线单独把守；
@@ -35,22 +35,22 @@ class CandidateCriteria:
     样本外保留比下限（方向反转直接拦截）。
     """
 
-    min_abs_ic: float = 0.020
-    min_icir: float = 0.28
-    min_coverage: float = 0.85
-    max_abs_corr: float = 0.5
-    min_cs_autocorr: float = 0.18
-    min_val_ic_retention: float = 0.5
-    min_val_abs_ic: float = 0.012
+    min_abs_ic: float = 0.020  # 【唯一真源】
+    min_icir: float = 0.28  # 【唯一真源】
+    min_coverage: float = 0.85  # 【唯一真源】
+    max_abs_corr: float = 0.5  # 【唯一真源】
+    min_cs_autocorr: float = 0.18  # 【唯一真源】
+    min_val_ic_retention: float = 0.5  # 【唯一真源】
+    min_val_abs_ic: float = 0.012  # 【唯一真源】
     # 组合可交易性预检（2026-08-29）：日单边换手 >50% 的候选在 stage_one 直接拒，
     # 不再等 stage_two/engine_gate 才拦截（历史数据：30 个候选 26 个日换手>50%，
     # 全部止步 stage_two/engine_gate，浪费大量评估算力）。
-    max_avg_daily_side_turnover: float = 0.5
+    max_avg_daily_side_turnover: float = 0.5  # 【唯一真源】
 
 
 @dataclass(frozen=True)
 class ProductionCriteria:
-    """正式库精筛统计门槛：双窗口（train+val）口径，2026-08 重构。
+    """正式库精筛统计门槛：双窗口（train+val）口径，2026-08 重构【唯一真源】。
 
     统计族双窗口各自达标（混合窗口会稀释 val 衰减）；val 多头端毛值超额
     （方向自适应十分组，复利年化）为 2026-08 审计发现的 IC 盲区补丁：
@@ -65,8 +65,8 @@ class ProductionCriteria:
       净值裁决。
     """
 
-    min_train_abs_ic: float = 0.025
-    min_train_icir: float = 0.30
+    min_train_abs_ic: float = 0.025  # 【唯一真源】
+    min_train_icir: float = 0.30  # 【唯一真源】
     min_val_abs_ic: float = 0.015
     min_val_ic_retention: float = 0.50  # 2026-08-29 从 0.60 下调：最强因子 train 太好（IC 0.046）反被 0.56<0.60 惩罚
     min_val_long_excess: float = 0.0

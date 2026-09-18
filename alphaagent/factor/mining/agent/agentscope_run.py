@@ -211,6 +211,8 @@ async def create_mining_agent(
     interaction_policy: dict[str, Any] | None = None,
     usage_bridge: UsageBridge | None = None,
 ) -> Agent:
+    from alphaagent.factor.mining.agent.agentscope_tools import set_runtime_config
+    set_runtime_config(config)
     toolkit = build_factor_eval_toolkit(
         factor_tools,
         max_workers=config.max_tool_workers,
@@ -1253,6 +1255,11 @@ async def run_factor_mining_agentscope(
     train_by_expr = {r.get("expression_sha256"): r for r in tool_call_rows if _is_train_eval(r)}
     val_by_expr = {r.get("expression_sha256"): r for r in tool_call_rows if _is_val_eval(r)}
     matched_audits: list[dict[str, Any]] = []
+    _ep = ((config.research_spec or {}).get("evaluation_policy") or {})
+    from alphaagent.factor.mining.research_spec import DEFAULT_RESEARCH_SPEC
+    _default_ep = DEFAULT_RESEARCH_SPEC["evaluation_policy"]
+    _train_thr = float(_ep.get("min_train_abs_ic", _default_ep["min_train_abs_ic"]))
+    _val_thr = float(_ep.get("min_val_abs_ic", _default_ep["min_val_abs_ic"]))
     for expr_hash in sorted(train_by_expr.keys() & val_by_expr.keys()):
         train_metrics = train_by_expr[expr_hash].get("metrics", {})
         val_metrics = val_by_expr[expr_hash].get("metrics", {})
@@ -1266,7 +1273,7 @@ async def run_factor_mining_agentscope(
                 "ic_gap": round(train_ic - val_ic, 8),
                 "ic_retention": round(val_ic / train_ic, 6) if train_ic else None,
                 "sign_match": (train_ic == 0 or val_ic == 0 or (train_ic > 0) == (val_ic > 0)),
-                "overfit_suspected": bool(train_ic and abs(train_ic) >= 0.015 and (not val_ic or abs(val_ic) < 0.01 or (train_ic > 0) != (val_ic > 0))),
+                "overfit_suspected": bool(train_ic and abs(train_ic) >= _train_thr and (not val_ic or abs(val_ic) < _val_thr or (train_ic > 0) != (val_ic > 0))),
             })
     overfit_suspected = any(row["overfit_suspected"] for row in matched_audits)
     # P0-1 收尾审计（2026-09-05）：训练过线（promising）却未提交的因子汇总——

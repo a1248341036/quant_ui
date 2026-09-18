@@ -142,6 +142,7 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
         # 避免"评估过线但提交即拒"的算力浪费；晋升线（0.025/0.30）在 delivery_policy。
         "min_train_abs_ic": 0.020,
         "min_train_icir": 0.28,
+        "min_train_icir_soft": 0.2,  # verdict 判定用宽松线（不跟候选门槛 0.28）
         "min_train_coverage": 0.85,
         "min_val_abs_ic": 0.012,
         "min_val_ic_retention_ratio": 0.5,
@@ -320,8 +321,9 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
     evaluation = _require_dict(spec.get("evaluation_policy"), "evaluation_policy")
     for key in ("min_train_abs_ic", "min_val_abs_ic"):
         evaluation[key] = _bounded_number(evaluation.get(key), f"evaluation_policy.{key}", 0, 1)
-    for key in ("min_train_icir",):
-        evaluation[key] = _bounded_number(evaluation.get(key), f"evaluation_policy.{key}", -10, 20)
+    for key in ("min_train_icir", "min_train_icir_soft"):
+        if key in evaluation:
+            evaluation[key] = _bounded_number(evaluation.get(key), f"evaluation_policy.{key}", -10, 20)
     evaluation["min_train_coverage"] = _bounded_number(evaluation.get("min_train_coverage"), "evaluation_policy.min_train_coverage", 0, 1)
     evaluation["min_val_ic_retention_ratio"] = _bounded_number(evaluation.get("min_val_ic_retention_ratio"), "evaluation_policy.min_val_ic_retention_ratio", 0, 2)
     evaluation["require_sign_consistency"] = _require_bool(evaluation.get("require_sign_consistency"), "evaluation_policy.require_sign_consistency")

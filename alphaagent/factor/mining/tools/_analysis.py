@@ -144,12 +144,17 @@ class _AnalysisMixin:
 
         rule_results = result.get("rule_results", [])
         passed = result.get("passed")
+        from alphaagent.factor.mining.research_spec import DEFAULT_RESEARCH_SPEC
+        _ep = DEFAULT_RESEARCH_SPEC["evaluation_policy"]
+        _default_ic = float(_ep["min_train_abs_ic"])
+        _default_icir = float(_ep["min_train_icir"])
+        _default_cov = float(_ep["min_train_coverage"])
         if passed is None:
             ic_thr, icir_thr, cov_thr = _AnalysisMixin._rule_thresholds(result)
             passed = bool(
-                ic is not None and abs(ic) >= (ic_thr or 0.020)
-                and icir is not None and icir > (icir_thr or 0.28)
-                and coverage is not None and coverage > (cov_thr or 0.85)
+                ic is not None and abs(ic) >= (ic_thr or _default_ic)
+                and icir is not None and icir > (icir_thr or _default_icir)
+                and coverage is not None and coverage > (cov_thr or _default_cov)
             )
 
         tips: list[str] = []
@@ -168,11 +173,11 @@ class _AnalysisMixin:
                     tips.append(f"❌ {metric}={actual:.4f} 未达 {op} {expected}")
             else:
                 ic_thr, icir_thr, cov_thr = _AnalysisMixin._rule_thresholds(result)
-                if ic is not None and abs(ic) < (ic_thr or 0.020):
-                    tips.append(f"IC={ic:+.4f} 偏低（需 |IC|≥{ic_thr or 0.020}），信号太弱或方向有误。")
-                if icir is not None and icir < (icir_thr or 0.28):
-                    tips.append(f"ICIR={icir:+.3f} 偏低（需≥{icir_thr or 0.28}），IC 日间波动太大，考虑平滑(TS_MEAN/EMA)或换窗口。")
-                if coverage is not None and coverage < (cov_thr or 0.85):
+                if ic is not None and abs(ic) < (ic_thr or _default_ic):
+                    tips.append(f"IC={ic:+.4f} 偏低（需 |IC|≥{ic_thr or _default_ic}），信号太弱或方向有误。")
+                if icir is not None and icir < (icir_thr or _default_icir):
+                    tips.append(f"ICIR={icir:+.3f} 偏低（需≥{icir_thr or _default_icir}），IC 日间波动太大，考虑平滑(TS_MEAN/EMA)或换窗口。")
+                if coverage is not None and coverage < (cov_thr or _default_cov):
                     tips.append(f"Coverage={coverage:.3f} 偏低，因子缺失太多，检查数据条件或放宽过滤。")
 
         # 月度稳健性诊断
@@ -245,12 +250,17 @@ class _AnalysisMixin:
             expr = ""
         split = result.get("split", "")
         passed = result.get("passed")
+        from alphaagent.factor.mining.research_spec import DEFAULT_RESEARCH_SPEC
+        _ep = DEFAULT_RESEARCH_SPEC["evaluation_policy"]
+        _default_ic = float(_ep["min_train_abs_ic"])
+        _default_icir = float(_ep["min_train_icir"])
+        _default_cov = float(_ep["min_train_coverage"])
         if passed is None:
             ic_thr, icir_thr, cov_thr = _AnalysisMixin._rule_thresholds(result)
             passed = bool(
-                ic is not None and abs(ic) >= (ic_thr or 0.020)
-                and icir is not None and icir > (icir_thr or 0.28)
-                and coverage is not None and coverage > (cov_thr or 0.85)
+                ic is not None and abs(ic) >= (ic_thr or _default_ic)
+                and icir is not None and icir > (icir_thr or _default_icir)
+                and coverage is not None and coverage > (cov_thr or _default_cov)
             )
 
         # 记录到批次历史
