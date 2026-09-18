@@ -1,6 +1,6 @@
 # 数据集目录
 
-cnequity 交付 **65 个注册数据集**：55 个原生 curated/derived 数据集，另有 10 个外部桥接（`external`）。原生数据按选股用途分为 L0–L8 九类；外部桥接同样进入查询、catalog 和 dashboard，但物理文件和字段契约由对应 adapter 管理。日内数据集 `minute_bars` / `minute_bars_5m` 默认关闭，需在 `[minute_bars]` 显式开启；分笔 `trade_ticks` 同样默认关闭，开关在**独立的** `[trade_ticks]`。
+cnequity 交付 **66 个注册数据集**：56 个原生 curated/derived 数据集，另有 10 个外部桥接（`external`）。原生数据按选股用途分为 L0–L8 九类；外部桥接同样进入查询、catalog 和 dashboard，但物理文件和字段契约由对应 adapter 管理。日内数据集 `minute_bars` / `minute_bars_5m` 默认关闭，需在 `[minute_bars]` 显式开启；分笔 `trade_ticks` 同样默认关闭，开关在**独立的** `[trade_ticks]`。
 
 权威字段定义：[schema.md](schema.md)。逐源限制：[sources.md](sources.md)。
 
@@ -14,7 +14,7 @@ cnequity 交付 **65 个注册数据集**：55 个原生 curated/derived 数据�
 
 | 层次 | 说明 | 代表数据集 |
 |------|------|------------|
-| **L0** 基础参考 | Universe、日历、交易状态 | instruments, trading_calendar, trading_status |
+| **L0** 基础参考 | Universe、日历、交易状态 | instruments, trading_calendar, trading_status, stock_st |
 | **L1** 行情 | 未复权价量 + 复权因子 + 可选分钟/分笔/商品 + 退市形态 | daily_bars, index_bars, minute_bars*, minute_bars_5m*, trade_ticks*, commodity_bars*, adj_factors, delisting_events |
 | **L2** 公司事件 | 除权除息、公告、预约披露 | corporate_actions, announcement_index, earnings_disclosure_schedule |
 | **L3** 基本面 | 财报、估值、一致预期 | financial_statement_items, valuation_metrics, analyst_consensus |
@@ -176,6 +176,7 @@ bars_15m = (
 | instruments | —（单文件 merge） | symbol | by_date | — | tdx_protocol | EM 补 list_date；baostock 回填退市股（`cne backfill instruments`）；merge 保留退市 |
 | trading_calendar | trade_date | trade_date | by_date | ✓ | exchange_calendar | 种子 CSV 2016–2027 |
 | trading_status | trade_date（按月） | symbol, trade_date | by_date | ✓ | eastmoney | baostock ST 回填；派生停牌写月分区 |
+| stock_st | trade_date（按月） | symbol, trade_date | by_date | ✓ | tushare | 风险警示板（ST/*ST）逐日名单；区间调用 + offset 分页，全历史回填约 2~3 分钟（对比 trading_status 的 baostock 逐票扫 ~11 小时）；供因子评估的样本域掩码 |
 | instruments_external | —（单文件） | adapter contract | by_date | — | pg_parquet | 只读股票主数据快照 |
 | trading_calendar_external | trade_date（按年） | adapter contract | by_date | — | pg_parquet | 只读交易日历 |
 | namechange | start_date（按年） | adapter contract | by_date | — | pg_parquet | 只读证券更名历史 |

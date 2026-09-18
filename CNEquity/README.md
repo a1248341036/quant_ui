@@ -72,6 +72,7 @@ CNEquity 从 A 股开始，解决的是一件很具体的事：把分散在不�
 | `instruments` | 证券主数据 | tdx_protocol | baostock | 可回补 | core |
 | `trading_calendar` | 交易日历 | tdx_protocol | exchange | 可回补 | core |
 | `trading_status` | 交易状态（停复牌/ST） | tdx_protocol | eastmoney | 可回补 | core |
+| `stock_st` | 风险警示板（ST/*ST）逐日名单 | tushare | — | 可回补 | core |
 | **L1 · 行情** | | | | | |
 | `adj_factors` | 复权因子 | sina | — | 可回补 | — |
 | `commodity_bars` ○ | 商品期货主连 | sina | eastmoney | 可回补 | macro_risk |

@@ -655,6 +655,19 @@ NAMECHANGE_SCHEMA = {
     "source": pl.Utf8,
 }
 
+# 风险警示板逐日名单（Tushare stock_st）：一行 = 某交易日某票处于 ST/*ST。
+# 语义是"当日名单"，未出现的票即当日非 ST（无显式 normal 负证据行）。
+STOCKST_SCHEMA = {
+    "symbol": pl.Utf8,
+    "name": pl.Utf8,
+    "trade_date": pl.Date,
+    "type": pl.Utf8,
+    "type_name": pl.Utf8,
+    "data_version": pl.Utf8,
+    "fetched_at": FETCHED_AT_DTYPE,
+    "source": pl.Utf8,
+}
+
 DIVIDEND_SCHEMA = {
     "symbol": pl.Utf8,
     "end_date": pl.Date,
@@ -1245,6 +1258,7 @@ SHAREFLOATEXTERNAL_SCHEMA = {
 
 DATASET_SCHEMAS = {
     "namechange": NAMECHANGE_SCHEMA,
+    "stock_st": STOCKST_SCHEMA,
     "dividend": DIVIDEND_SCHEMA,
     "balancesheet": BALANCESHEET_SCHEMA,
     "income": INCOME_SCHEMA,
@@ -1389,6 +1403,7 @@ PRIMARY_KEYS = {
     "dividend": ["symbol", "end_date", "div_proc"],
     "share_float_external": ["symbol", "ann_date"],
     "namechange": ["symbol", "start_date"],
+    "stock_st": ["symbol", "trade_date"],
     "forecast": ["symbol", "ann_date", "end_date"],
     "express": ["symbol", "end_date"],
     "stk_surv": ["symbol", "surv_date"],

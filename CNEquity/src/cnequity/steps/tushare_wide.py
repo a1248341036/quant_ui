@@ -39,7 +39,7 @@ import polars as pl
 
 from cnequity.config import Config
 from cnequity.domain.datasets import should_fetch
-from cnequity.domain.schemas import data_version_for, with_provenance
+from cnequity.domain.schemas import PRIMARY_KEYS, data_version_for, with_provenance
 from cnequity.orchestrator.registry import register_step
 from cnequity.storage import StagingWriter
 from cnequity.storage.state import StateStore
@@ -138,6 +138,116 @@ def _calendar_days(start: date, end: date) -> list[date]:
     return days
 
 
+# 中间件单次返回上限。实测 `stock_st` / `namechange`：请求 limit=1000 得 1000 行、
+# limit=100 得 100 行，且**从窗口末端往回**返回——因此区间拉取必须按 offset 翻页
+# 到底，只取首页会在历史回填时静默截断（只剩最近 1000 行）。
+_TUSHARE_PAGE_LIMIT = 1000
+# 单窗口翻页保险丝（= 10 万行）。中间件对 offset 有硬上限：实测 offset=100000 可用、
+# 120000 报「参数校验失败, offset」，所以长窗口必须先按年切分再翻页。
+_MAX_PAGES_PER_WINDOW = 100
+# 超过这个跨度就按自然年切窗。一年约 4 万行 ≈ 40 页，窗内 offset 上限 4 万，安全。
+_PAGE_WINDOW_DAYS = 366
+
+
+def _date_windows(start: date, end: date) -> list[tuple[date, date]]:
+    """把 ``[start, end]`` 切成不超过 ``_PAGE_WINDOW_DAYS`` 的窗口（按自然年对齐）。
+
+    短窗口（日更的 1~30 天）原样返回一个窗口，调用次数与单次拉取一致。
+    """
+    if (end - start).days <= _PAGE_WINDOW_DAYS:
+        return [(start, end)]
+    windows: list[tuple[date, date]] = []
+    cursor = start
+    while cursor <= end:
+        boundary = min(date(cursor.year + 1, 1, 1) - timedelta(days=1), end)
+        windows.append((cursor, boundary))
+        cursor = boundary + timedelta(days=1)
+    return windows
+
+
+def _fetch_window_paged(
+    pro,
+    api: str,
+    *,
+    interval: float,
+    start: date,
+    end: date,
+    page_limit: int,
+) -> pl.DataFrame:
+    """单窗口内按 ``offset`` 翻页，直到**连续两次**取到空页。
+
+    不能一见空页就收工：源端会偶发返回空页（实测 2016→2026 全历史回填在 2024
+    窗口第 28 页返回了空，若就此停止会静默丢掉 2024-01-02..02-22 共 32 个交易日
+    的 ST 名单）。也不能见"页不满"就收工，同理。代价是每个窗口多一次确认调用。
+    """
+    from cnequity.external.tushare_fetch import _fetch_with_retry
+
+    frames: list[pl.DataFrame] = []
+    offset = 0
+    empty_streak = 0
+    for _ in range(_MAX_PAGES_PER_WINDOW):
+        page = _fetch_with_retry(
+            pro,
+            api,
+            interval=interval,
+            start_date=_ts_date(start),
+            end_date=_ts_date(end),
+            offset=offset,
+            limit=page_limit,
+        )
+        if page is None or page.is_empty():
+            empty_streak += 1
+            if empty_streak >= 2:
+                break
+            continue
+        empty_streak = 0
+        frames.append(page)
+        offset += page_limit
+    else:
+        logger.warning(
+            "%s: 窗口 %s..%s 分页达上限 %d 页仍未取完，结果可能不完整",
+            api,
+            start.isoformat(),
+            end.isoformat(),
+            _MAX_PAGES_PER_WINDOW,
+        )
+    return pl.concat(frames) if frames else pl.DataFrame()
+
+
+def _fetch_range_paged(
+    pro,
+    api: str,
+    *,
+    interval: float,
+    start: date,
+    end: date,
+    page_limit: int = _TUSHARE_PAGE_LIMIT,
+) -> pl.DataFrame:
+    """按年切窗 + 窗内 ``offset`` 翻页，拉取区间全量。
+
+    回填全历史（如 stock_st 2016→今约 44 万行）需要约 440 次调用——单次只能拿
+    1000 行且 offset 有上限，所以既不能只取首页，也不能在一个窗口里一路翻到底。
+    """
+    windows = _date_windows(start, end)
+    if len(windows) > 1:
+        logger.info(
+            "%s: %s..%s 跨 %d 天，按年切 %d 个窗口翻页",
+            api,
+            start.isoformat(),
+            end.isoformat(),
+            (end - start).days,
+            len(windows),
+        )
+    frames = [
+        _fetch_window_paged(
+            pro, api, interval=interval, start=w_start, end=w_end, page_limit=page_limit
+        )
+        for w_start, w_end in windows
+    ]
+    non_empty = [frame for frame in frames if not frame.is_empty()]
+    return pl.concat(non_empty) if non_empty else pl.DataFrame()
+
+
 # ─── Strategy 1: Full-market ann_date batch ───────────────────────────
 
 
@@ -210,16 +320,18 @@ def _make_date_range_step(
 ) -> Callable:
     """Fetch all rows in a date window via ``pro.api(start_date=..., end_date=...)``.
 
-    Single API call for the entire incremental window.  Used for APIs that
-    support full-market date-range queries (e.g. namechange).
+    Pages the window with ``offset``/``limit`` (the middleware caps a single
+    response at 1000 rows and returns from the window end backwards, so the
+    first page alone is a silent truncation on deep windows).  Daily windows
+    return less than one page and therefore still cost a single call.
+    Used for APIs that support full-market date-range queries (e.g. namechange,
+    stock_st).
     """
 
     @register_step(dataset, group=group, depends_on=depends_on, parallelizable=False)
     def step(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
         if not config.external_tushare_wide_token and not os.environ.get("TUSHARE_TOKEN"):
             return {"status": "warning", "dataset": dataset, "error": "tushare_token not configured"}
-
-        from cnequity.external.tushare_fetch import _fetch_with_retry
 
         state = StateStore(config.meta_root)
         watermark = state.get_date(dataset)
@@ -235,6 +347,11 @@ def _make_date_range_step(
 
         start = watermark + timedelta(days=1) if watermark else trade_date - timedelta(days=30)
         end = trade_date
+        if getattr(config, "_backfill", False):
+            # `cne backfill <dataset> --start/--end` 必须显式吃这两个参数：旧实现只看
+            # watermark，回填退化成"最近 30 天"，历史永远拉不进来（策略 2 的缺口）。
+            start = getattr(config, "_backfill_start", None) or start
+            end = getattr(config, "_backfill_end", None) or end
 
         logger.info(
             "%s: fetching date-range %s..%s",
@@ -243,12 +360,18 @@ def _make_date_range_step(
 
         pro = _get_pro(config)
         interval = config.external_tushare_wide_interval
-        raw = _fetch_with_retry(
-            pro, api, interval=interval,
-            start_date=_ts_date(start), end_date=_ts_date(end),
-        )
+        raw = _fetch_range_paged(pro, api, interval=interval, start=start, end=end)
 
         combined = raw if raw is not None else pl.DataFrame()
+        if not combined.is_empty():
+            if "ts_code" in combined.columns:
+                combined = combined.rename({"ts_code": "symbol"})
+            pk = PRIMARY_KEYS.get(dataset)
+            if pk and all(col in combined.columns for col in pk):
+                before = combined.height
+                combined = combined.unique(subset=list(pk), keep="last")
+                if combined.height != before:
+                    logger.info("%s: 分页去重 %d → %d 行", dataset, before, combined.height)
         result = _finalize_and_write(combined, dataset, run_id, trade_date, config)
 
         state.set_date(dataset, trade_date)
@@ -449,6 +572,12 @@ _make_ann_date_step("stk_surv",            api="stk_surv",      depends_on=["ins
 
 # L2 corporate events — full-market date-range batch
 _make_date_range_step("namechange", api="namechange", depends_on=["instruments"], group="events")
+
+# L0 风险警示板（ST/*ST）逐日全市场名单 —— 历史 ST 的 Tushare 源。
+# 与 trading_status 的分工：trading_status 是引擎/门禁在用的逐票状态（历史回填
+# 走 baostock 逐票扫），stock_st 是"当日哪些票在风险警示板"的全市场名单，一次
+# 区间调用即可回填全历史（2016→今约 440 页 / 2~3 分钟），供因子评估的样本域掩码。
+_make_date_range_step("stock_st", api="stock_st", depends_on=["instruments"], group="core")
 
 # L3 earnings forecast / express — skip (middleware limitation)
 # The Tushare middleware (t.xiaodefa.top) does not support efficient

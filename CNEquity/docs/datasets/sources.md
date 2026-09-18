@@ -43,6 +43,18 @@
 | 频率 | 每日 |
 | 主键 | (symbol, trade_date) |
 
+#### stock_st
+
+| 项 | 值 |
+|------|-------|
+| 分组 | core@16:00 |
+| 主源 | tushare（中间件 `stock_st`：按 `start_date`/`end_date` 全市场区间查询） |
+| 备源 | — |
+| 频率 | 每日增量；`cne backfill stock_st --start 2016-01-01` 一次回填全历史 |
+| 主键 | (symbol, trade_date) |
+| 语义 | 一行 = 某交易日某票处于风险警示板（`type`/`type_name` 原样保留）；未出现的票即当日非 ST，**无显式 normal 负证据行** |
+| 已知限制 | 中间件单次返回上限 1000 行且从窗口末端往回返回，必须 `offset`/`limit` 翻页到底（step 已内建）；与 `trading_status` 是两个源，历史 ST 口径以 `stock_st` 为挖掘侧掩码、`trading_status` 为引擎门禁 |
+
 #### daily_bars
 
 | 项 | 值 |

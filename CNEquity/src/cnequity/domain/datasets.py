@@ -897,6 +897,20 @@ _SPECS = [
         watermark=False,
         description="曾用名变更",
     ),
+    # L0 风险警示板名单（Tushare stock_st，逐日全市场）。与 trading_status 的分工：
+    # trading_status 是逐票状态（引擎门禁用，历史靠 baostock 逐票回填、单票一次调用）；
+    # stock_st 是"当日哪些票在风险警示板"，一次区间调用即可回填全历史，供因子评估
+    # 的样本域掩码使用。required=False：它是辅助 ST 源，不进 CNE 历史有效性准入门，
+    # 避免给 audit/verify 新增覆盖面要求。
+    DatasetSpec(
+        "stock_st",
+        primary_source="tushare",
+        tier="L0",
+        partition_col="trade_date",
+        partition_granularity="month",
+        required=False,
+        description="风险警示板（ST/*ST）逐日名单",
+    ),
     # L1 bars — ETF / fund daily bars from Tushare fund_daily.
     # Native curated datasets: the dedicated etf_bars/fund_bars steps fetch
     # via Tushare fund_daily and write to curated, independent of daily_bars.
