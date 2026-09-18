@@ -33,6 +33,11 @@ class FailoverDatasetSpec:
     price_tolerance_bps: float = 10.0
 
 
+# 历史 ST 证据（trading_status 的 ST 回填）允许的来源。scope/receipt 会记录来源，
+# 覆盖率校验只认白名单里的来源，避免拼错的源名被当成"另一份有效证据"。
+ST_BACKFILL_SOURCES: tuple[str, ...] = ("baostock", "tushare")
+
+
 @dataclass
 class Config:
     data_root: Path
@@ -99,6 +104,12 @@ class Config:
     # baostock free-API pacing (full-market history sweeps).
     baostock_batch_size: int = 20
     baostock_batch_rest_seconds: float = 120.0
+    # 历史 ST 证据（trading_status 的 ST 回填）来源。写入行的 source 列，并决定
+    # 覆盖率 receipt 的归属：
+    #   "baostock" —— 逐票 isST，一票一次调用；免费层限速下全 A 约 11 小时。
+    #   "tushare"  —— 中间件 stock_st 按日全市场名单，整窗约 440 次调用 / ~15 分钟。
+    # 由 ``[datasets.trading_status] st_backfill_source`` 配置。
+    trading_status_st_backfill_source: str = "baostock"
     universe_default: str = "all_a"
     daily_waves: list[WaveConfig] = field(default_factory=list)
     schedule_groups: dict[str, ScheduleGroup] = field(default_factory=dict)
@@ -259,6 +270,19 @@ def load_config(path: str | Path) -> Config:
         else:
             dataset_enabled[name] = bool(val)
 
+    # trading_status 的 ST 回填源（[datasets.trading_status] st_backfill_source）。
+    # 只接受白名单，避免把拼错的源名写进 coverage receipt 的 scope 里。
+    trading_status_st_backfill_source = "baostock"
+    trading_status_block = raw.get("datasets", {}).get("trading_status")
+    if isinstance(trading_status_block, dict) and trading_status_block.get("st_backfill_source"):
+        candidate = str(trading_status_block["st_backfill_source"]).strip().lower()
+        if candidate not in ST_BACKFILL_SOURCES:
+            raise ValueError(
+                f"[datasets.trading_status] st_backfill_source={candidate!r} 不在白名单 "
+                f"{ST_BACKFILL_SOURCES} 内"
+            )
+        trading_status_st_backfill_source = candidate
+
     announcement_raw = raw.get("announcement_index", {})
     announcement_index_source = (
         str(announcement_raw["source"]) if announcement_raw.get("source") else None
@@ -407,6 +431,7 @@ def load_config(path: str | Path) -> Config:
         eastmoney_timeout_sec=eastmoney_timeout_sec,
         baostock_batch_size=baostock_batch_size,
         baostock_batch_rest_seconds=baostock_batch_rest_seconds,
+        trading_status_st_backfill_source=trading_status_st_backfill_source,
         universe_default=str(raw.get("universe", {}).get("default", "all_a")),
         daily_waves=daily_waves,
         schedule_groups=schedule_groups,

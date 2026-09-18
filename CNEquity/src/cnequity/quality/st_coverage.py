@@ -21,6 +21,7 @@ from typing import Any
 import polars as pl
 
 from cnequity.config import Config
+from cnequity.config.loader import ST_BACKFILL_SOURCES
 from cnequity.domain.symbols import is_all_a_symbol, is_cdr_symbol, parse_symbol
 from cnequity.query.canonical import dedupe_by_primary_key, dedupe_lazy_by_primary_key
 from cnequity.query.parquet_scan import collect_parquet_root, scan_parquet_files
@@ -123,13 +124,14 @@ def build_st_scope(
     end: date,
     *,
     universe: str,
+    source: str = "baostock",
 ) -> dict[str, Any]:
     if start > end:
         raise ValueError(f"ST evidence window is inverted: {start} > {end}")
     resolved = sorted(set(symbols))
     identity = {
         "evidence_version": ST_EVIDENCE_VERSION,
-        "source": "baostock",
+        "source": source,
         "universe": universe,
         "start": start.isoformat(),
         "end": end.isoformat(),
@@ -243,9 +245,10 @@ def _st_row_counts(
     *,
     staging_run_id: str | None = None,
 ) -> dict[str, int]:
-    """Count persisted Baostock facts in curated plus one resumable run."""
+    """Count persisted ST facts of this scope's source in curated plus one resumable run."""
     if not symbols:
         return {}
+    source = str(scope.get("source") or "baostock")
     files = list((config.curated_root / "trading_status").rglob("*.parquet"))
     if staging_run_id:
         from cnequity.storage import StagingWriter
@@ -265,10 +268,10 @@ def _st_row_counts(
         ),
     )
     if "source" in schema:
-        frame = frame.filter(pl.col("source") == "baostock")
-    # Count only distinct Baostock facts. Filter the evidence owner first: a
-    # same-PK EastMoney snapshot must not erase the Baostock row from this
-    # source-specific coverage claim before canonicalization.
+        frame = frame.filter(pl.col("source") == source)
+    # Count only distinct facts of this source. Filter the evidence owner first: a
+    # same-PK EastMoney snapshot must not erase the ST row from this source-specific
+    # coverage claim before canonicalization.
     frame = dedupe_lazy_by_primary_key(frame, "trading_status")
     counts = frame.group_by("symbol").len().collect()
     return {row["symbol"]: int(row["len"]) for row in counts.iter_rows(named=True)}
@@ -430,7 +433,7 @@ def st_evidence_coverage_report(
         scope, scope_start, scope_end = parsed
         if scope.get("evidence_version") != ST_EVIDENCE_VERSION:
             continue
-        if scope.get("source") != "baostock" or scope.get("universe") != "all_a":
+        if scope.get("source") not in ST_BACKFILL_SOURCES or scope.get("universe") != "all_a":
             continue
         covered_symbols = set(receipt.get("completed_symbols", []))
         if not symbols or not set(symbols) <= covered_symbols:

@@ -42,6 +42,8 @@
 | 备源 | eastmoney |
 | 频率 | 每日 |
 | 主键 | (symbol, trade_date) |
+| 历史 ST 来源 | `[datasets.trading_status] st_backfill_source`：`baostock`（默认，逐票 `isST`，全 A ≈ 11 小时）或 `tushare`（中间件 `stock_st` 按日全市场名单，整窗 ≈ 15 分钟）。写入行的 `source` 列并决定覆盖率 receipt 的 `scope.source`，换源后需重跑一次 `cne backfill trading_status` |
+| 已知限制 | 日更快照只有**当日** ST 名单（EastMoney），历史必须靠回填；`cne audit` 的 `trading_status_coverage_start` 报的就是这个缺口 |
 
 #### stock_st
 

@@ -357,13 +357,20 @@ def _resolve_explicit_st_symbols(config: Config, raw: list[str]) -> list[str]:
 
 
 def _backfill_trading_status_st(config: Config, trade_date: date, run_id: str) -> dict:
-    """Persist complete historical ST/normal evidence from Baostock.
+    """Persist complete historical ST/normal evidence for ``trading_status``.
+
+    两个回填源（``[datasets.trading_status] st_backfill_source``，见
+    ``config.ST_BACKFILL_SOURCES``）：
+
+    - ``baostock``：逐票 ``isST``，一票一次调用覆盖整窗；免费层限速下全 A ≈ 11 小时。
+    - ``tushare``：中间件 ``stock_st`` 按日全市场名单，整窗一次查询 + 翻页 ≈ 15 分钟。
+      零行标的同样是有效证据（整窗全市场名单里没有它）。
 
     Completion is an exact versioned scope, not inferred from row presence. The
     old sparse-ST checkpoint is deliberately ignored because it marked never-ST
     names complete without storing their negative evidence.
     """
-    from cnequity.adapters.baostock.st_history import fetch_st_history
+    source = str(getattr(config, "trading_status_st_backfill_source", "baostock") or "baostock")
 
     start = getattr(config, "_backfill_start", None) or BACKFILL_START
     end = getattr(config, "_backfill_end", None) or trade_date
@@ -380,7 +387,7 @@ def _backfill_trading_status_st(config: Config, trade_date: date, run_id: str) -
                 universe = [symbol for symbol in universe if symbol in bars]
         universe_name = "all_a"
 
-    scope = build_st_scope(universe, start, end, universe=universe_name)
+    scope = build_st_scope(universe, start, end, universe=universe_name, source=source)
     checkpoint = load_st_checkpoint(config, scope)
     completed = reusable_st_checkpoint_symbols(config, checkpoint, run_id)
     evidence_rows = {
@@ -404,25 +411,39 @@ def _backfill_trading_status_st(config: Config, trade_date: date, run_id: str) -
             "note": "all symbols already have ST evidence for this exact scope",
         }
 
+    if source == "tushare":
+        # 全市场名单源：整窗一次拉取，chunk 只用于分批落盘与逐段记账（不是逐票请求）。
+        from cnequity.external.tushare_stock_st import fetch_st_history as fetch_tushare_st
+
+        market = fetch_tushare_st(start, end, config=config)
+    else:
+        from cnequity.adapters.baostock.st_history import fetch_st_history
+
+        market = None
+
     rows_read = 0
     rows_written = 0
     for offset in range(0, len(todo), _ST_BACKFILL_CHUNK):
         batch = todo[offset : offset + _ST_BACKFILL_CHUNK]
         is_last_batch = offset + len(batch) >= len(todo)
-        df, failed = fetch_st_history(
-            batch,
-            start,
-            end,
-            config=config,
-            rest_after_batch=not is_last_batch,
-        )
+        if market is not None:
+            df = market.filter(pl.col("symbol").is_in(batch))
+            failed: list[str] = []
+        else:
+            df, failed = fetch_st_history(
+                batch,
+                start,
+                end,
+                config=config,
+                rest_after_batch=not is_last_batch,
+            )
         if not df.is_empty():
             chunk = write_fetched(
                 config,
                 run_id,
                 "trading_status",
                 df,
-                source="baostock",
+                source=source,
                 batch_id=f"batch-{offset:05d}",
             )
             rows_read += int(chunk.get("rows_read", 0))
@@ -478,10 +499,10 @@ def _backfill_trading_status_st(config: Config, trade_date: date, run_id: str) -
         finding = {
             "dataset": "trading_status",
             "severity": "warning",
-            "code": "baostock_st_backfill_incomplete",
+            "code": f"{source}_st_backfill_incomplete",
             "message": (
                 f"{len(unresolved)}/{len(universe)} symbols remain unresolved in "
-                "Baostock ST evidence; re-run the same scoped backfill to resume."
+                f"{source} ST evidence; re-run the same scoped backfill to resume."
             ),
         }
         result.setdefault("context_updates", {})["audit_findings"] = [finding]

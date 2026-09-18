@@ -17,6 +17,7 @@ import cnequity.steps  # noqa: F401  — 触发 step 注册
 from cnequity.config import Config
 from cnequity.domain import schemas
 from cnequity.domain.datasets import get_dataset
+from cnequity.external import tushare_fetch as tf
 from cnequity.orchestrator.registry import get_step
 from cnequity.steps import tushare_wide as tw
 
@@ -76,9 +77,9 @@ def test_fetch_range_paged_walks_until_short_page(monkeypatch):
     def fake_fetch(pro, api, interval=0.0, **kw):
         calls.append(kw)
         if kw["offset"] == 0:
-            return _page(0, tw._TUSHARE_PAGE_LIMIT)
-        if kw["offset"] == tw._TUSHARE_PAGE_LIMIT:
-            return _page(tw._TUSHARE_PAGE_LIMIT, 5)
+            return _page(0, tf.TUSHARE_PAGE_LIMIT)
+        if kw["offset"] == tf.TUSHARE_PAGE_LIMIT:
+            return _page(tf.TUSHARE_PAGE_LIMIT, 5)
         return pl.DataFrame()
 
     monkeypatch.setattr("cnequity.external.tushare_fetch._fetch_with_retry", fake_fetch)
@@ -88,9 +89,9 @@ def test_fetch_range_paged_walks_until_short_page(monkeypatch):
         object(), "stock_st", interval=0.0, start=date(2024, 1, 1), end=date(2024, 6, 28)
     )
 
-    assert out.height == tw._TUSHARE_PAGE_LIMIT + 5
-    assert [c["offset"] for c in calls][:2] == [0, tw._TUSHARE_PAGE_LIMIT]
-    assert calls[0]["limit"] == tw._TUSHARE_PAGE_LIMIT
+    assert out.height == tf.TUSHARE_PAGE_LIMIT + 5
+    assert [c["offset"] for c in calls][:2] == [0, tf.TUSHARE_PAGE_LIMIT]
+    assert calls[0]["limit"] == tf.TUSHARE_PAGE_LIMIT
     assert calls[0]["start_date"] == "20240101"
 
 
@@ -102,12 +103,12 @@ def test_transient_empty_page_does_not_truncate_the_window(monkeypatch):
         off = kw["offset"]
         per_offset[off] = per_offset.get(off, 0) + 1
         if off == 0:
-            return _page(0, tw._TUSHARE_PAGE_LIMIT)  # 满页
-        if off == tw._TUSHARE_PAGE_LIMIT:
+            return _page(0, tf.TUSHARE_PAGE_LIMIT)  # 满页
+        if off == tf.TUSHARE_PAGE_LIMIT:
             # 第 1 次空（偶发），第 2 次仍有数据 → 必须继续翻页
             if per_offset[off] == 1:
                 return pl.DataFrame()
-            return _page(tw._TUSHARE_PAGE_LIMIT, 40)
+            return _page(tf.TUSHARE_PAGE_LIMIT, 40)
         return pl.DataFrame()  # 更深处才是真的取完
 
     monkeypatch.setattr("cnequity.external.tushare_fetch._fetch_with_retry", fake_fetch)
@@ -116,8 +117,8 @@ def test_transient_empty_page_does_not_truncate_the_window(monkeypatch):
         object(), "stock_st", interval=0.0, start=date(2024, 1, 1), end=date(2024, 6, 28)
     )
 
-    assert out.height == tw._TUSHARE_PAGE_LIMIT + 40
-    assert per_offset[tw._TUSHARE_PAGE_LIMIT] == 2  # 空页被重取过一次
+    assert out.height == tf.TUSHARE_PAGE_LIMIT + 40
+    assert per_offset[tf.TUSHARE_PAGE_LIMIT] == 2  # 空页被重取过一次
 
 
 def test_fetch_range_paged_splits_long_windows_by_year(monkeypatch):
@@ -147,7 +148,7 @@ def test_fetch_range_paged_splits_long_windows_by_year(monkeypatch):
         span = date.fromisoformat(
             f"{end_s[:4]}-{end_s[4:6]}-{end_s[6:]}"
         ) - date.fromisoformat(f"{start_s[:4]}-{start_s[4:6]}-{start_s[6:]}")
-        assert span.days <= tw._PAGE_WINDOW_DAYS
+        assert span.days <= tf.TUSHARE_PAGE_WINDOW_DAYS
 
 
 def test_fetch_range_paged_single_page_costs_one_confirm_call(monkeypatch):
@@ -167,7 +168,7 @@ def test_fetch_range_paged_single_page_costs_one_confirm_call(monkeypatch):
     )
 
     assert out.height == 173
-    assert [c["offset"] for c in calls] == [0, tw._TUSHARE_PAGE_LIMIT, tw._TUSHARE_PAGE_LIMIT]
+    assert [c["offset"] for c in calls] == [0, tf.TUSHARE_PAGE_LIMIT, tf.TUSHARE_PAGE_LIMIT]
 
 
 # ─── 回填窗口 ─────────────────────────────────────────────────────────
@@ -177,7 +178,7 @@ def test_step_honors_backfill_window(cfg, monkeypatch):
     """`cne backfill stock_st --start/--end` 必须真拉历史窗口，而不是最近 30 天。"""
     seen: dict = {}
 
-    def fake_paged(pro, api, *, interval, start, end, page_limit=tw._TUSHARE_PAGE_LIMIT):
+    def fake_paged(pro, api, *, interval, start, end, page_limit=tf.TUSHARE_PAGE_LIMIT):
         seen.update(api=api, start=start, end=end)
         return _page(0, 3)
 
@@ -198,7 +199,7 @@ def test_step_daily_window_is_incremental(cfg, monkeypatch):
     """非回填模式保持增量语义：watermark+1 → trade_date。"""
     seen: dict = {}
 
-    def fake_paged(pro, api, *, interval, start, end, page_limit=tw._TUSHARE_PAGE_LIMIT):
+    def fake_paged(pro, api, *, interval, start, end, page_limit=tf.TUSHARE_PAGE_LIMIT):
         seen.update(start=start, end=end)
         return _page(0, 1)
 
@@ -217,7 +218,7 @@ def test_step_daily_window_is_incremental(cfg, monkeypatch):
 def test_step_dedupes_pages_on_primary_key(cfg, monkeypatch):
     """分页边界重叠（源端往回返回时可能重复）必须按 PK 去重后才入 staging。"""
 
-    def fake_paged(pro, api, *, interval, start, end, page_limit=tw._TUSHARE_PAGE_LIMIT):
+    def fake_paged(pro, api, *, interval, start, end, page_limit=tf.TUSHARE_PAGE_LIMIT):
         return pl.concat([_page(0, 3), _page(0, 3)])
 
     monkeypatch.setattr(tw, "_fetch_range_paged", fake_paged)

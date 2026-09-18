@@ -16,12 +16,121 @@ import logging
 import os
 import tempfile
 import time
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import polars as pl
 
 logger = logging.getLogger(__name__)
+
+# ── 区间查询分页（全市场日期区间接口共用）────────────────────────────
+# 中间件单次返回上限。实测 `stock_st` / `namechange`：请求 limit=1000 得 1000 行、
+# limit=100 得 100 行，且**从窗口末端往回**返回——因此区间拉取必须按 offset 翻页
+# 到底，只取首页会在历史回填时静默截断（只剩最近 1000 行）。
+TUSHARE_PAGE_LIMIT = 1000
+# 单窗口翻页保险丝（= 10 万行）。中间件对 offset 有硬上限：实测 offset=100000 可用、
+# 120000 报「参数校验失败, offset」，所以长窗口必须先按年切分再翻页。
+TUSHARE_MAX_PAGES_PER_WINDOW = 100
+# 超过这个跨度就按自然年切窗。一年约 4 万行 ≈ 40 页，窗内 offset 上限 4 万，安全。
+TUSHARE_PAGE_WINDOW_DAYS = 366
+
+
+def tushare_date_windows(start: date, end: date) -> list[tuple[date, date]]:
+    """把 ``[start, end]`` 切成不超过 ``TUSHARE_PAGE_WINDOW_DAYS`` 的窗口（按自然年对齐）。
+
+    短窗口（日更的 1~30 天）原样返回一个窗口，调用次数与单次拉取一致。
+    """
+    if (end - start).days <= TUSHARE_PAGE_WINDOW_DAYS:
+        return [(start, end)]
+    windows: list[tuple[date, date]] = []
+    cursor = start
+    while cursor <= end:
+        boundary = min(date(cursor.year + 1, 1, 1) - timedelta(days=1), end)
+        windows.append((cursor, boundary))
+        cursor = boundary + timedelta(days=1)
+    return windows
+
+
+def _fetch_window_paged(
+    pro,
+    api: str,
+    *,
+    interval: float,
+    start: date,
+    end: date,
+    page_limit: int,
+) -> pl.DataFrame:
+    """单窗口内按 ``offset`` 翻页，直到**连续两次**取到空页。
+
+    不能一见空页就收工：源端会偶发返回空页（实测 2016→2026 全历史回填在 2024
+    窗口第 28 页返回了空，若就此停止会静默丢掉 2024-01-02..02-22 共 32 个交易日
+    的 ST 名单）。也不能见"页不满"就收工，同理。代价是每个窗口多一次确认调用。
+    """
+    frames: list[pl.DataFrame] = []
+    offset = 0
+    empty_streak = 0
+    for _ in range(TUSHARE_MAX_PAGES_PER_WINDOW):
+        page = _fetch_with_retry(
+            pro,
+            api,
+            interval=interval,
+            start_date=_ts_date(start),
+            end_date=_ts_date(end),
+            offset=offset,
+            limit=page_limit,
+        )
+        if page is None or page.is_empty():
+            empty_streak += 1
+            if empty_streak >= 2:
+                break
+            continue
+        empty_streak = 0
+        frames.append(page)
+        offset += page_limit
+    else:
+        logger.warning(
+            "%s: 窗口 %s..%s 分页达上限 %d 页仍未取完，结果可能不完整",
+            api,
+            start.isoformat(),
+            end.isoformat(),
+            TUSHARE_MAX_PAGES_PER_WINDOW,
+        )
+    return pl.concat(frames) if frames else pl.DataFrame()
+
+
+def fetch_range_paged(
+    pro,
+    api: str,
+    *,
+    interval: float,
+    start: date,
+    end: date,
+    page_limit: int = TUSHARE_PAGE_LIMIT,
+) -> pl.DataFrame:
+    """按年切窗 + 窗内 ``offset`` 翻页，拉取区间全量。
+
+    回填全历史（如 stock_st 2016→今约 44 万行）需要约 440 次调用——单次只能拿
+    1000 行且 offset 有上限，所以既不能只取首页，也不能在一个窗口里一路翻到底。
+    """
+    windows = tushare_date_windows(start, end)
+    if len(windows) > 1:
+        logger.info(
+            "%s: %s..%s 跨 %d 天，按年切 %d 个窗口翻页",
+            api,
+            start.isoformat(),
+            end.isoformat(),
+            (end - start).days,
+            len(windows),
+        )
+    frames = [
+        _fetch_window_paged(
+            pro, api, interval=interval, start=w_start, end=w_end, page_limit=page_limit
+        )
+        for w_start, w_end in windows
+    ]
+    non_empty = [frame for frame in frames if not frame.is_empty()]
+    return pl.concat(non_empty) if non_empty else pl.DataFrame()
+
 
 # Column order matching the existing quant_dataset wide-table layout.
 WIDE_COLUMNS = [
