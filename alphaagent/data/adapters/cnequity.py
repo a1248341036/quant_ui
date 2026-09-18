@@ -498,6 +498,9 @@ def load_panel_from_cne(
     if not universe_mask and asset_type == "stock":
         cached = _find_cached_panel(start, end, include_fundamentals, focus)
         if cached is not None and not cached.empty:
+            # 旧缓存面板带预建的全 NaN is_trade/not_st 列（历史 bug 产物）：命中时
+            # 就地补齐，无需 +schema 版本强制重建数 GB 缓存（只改内存副本）。
+            _enrich_trade_flags(cached)
             return cached
 
     registry = get_registry()
@@ -556,20 +559,57 @@ def load_panel_from_cne(
 
 
 def _enrich_trade_flags(panel: pd.DataFrame) -> None:
-    """就地补充 is_trade / not_st 列（如果缺失）。
+    """就地补充 is_trade / is_st / not_st 列。
 
-    这些列由 core 插件的列映射提供 is_st，但需要额外计算：
-    - is_trade = volume > 0
-    - not_st = 1 - is_st
+    - ``is_trade`` = volume > 0（停牌/无成交为 0）；
+    - ``is_st`` / ``not_st`` = 该 (trade_date, symbol) 是否在 CNE curated
+      ``stock_st``（风险警示板唯一真源，已与 baostock 逐日 isST 对账）成员表内；
+      数据集不可用时回落 ``1 - panel["is_st"]``（fail-open）。
+
+    **判定必须是「缺列或整列 NaN」而非「缺列」**：panel 由 ``_finalize_panel`` 按
+    OUTPUT_COLUMNS 预建了 is_trade/not_st 两列（全 NaN），旧实现只判缺列 → 恒跳过
+    计算，两列永远是 NaN，而挖掘系统提示词的字段表把 ``$is_trade``/``$not_st``
+    列为可用字段（等于教 LLM 用一个坏字段）。
     """
-    if "is_trade" not in panel.columns and "volume" in panel.columns:
+    if "volume" in panel.columns and _column_all_nan(panel, "is_trade"):
         panel["is_trade"] = (panel["volume"].fillna(0) > 0).astype("int8")
 
-    if "not_st" not in panel.columns and "is_st" in panel.columns:
-        # CNE is_st: 1=ST, 0=正常 → not_st = 1 - is_st
-        panel["not_st"] = (1 - panel["is_st"].fillna(0).astype(int)).astype("int8")
-    elif "not_st" not in panel.columns:
-        panel["not_st"] = pd.Series(1, index=panel.index, dtype="int8")
+    st_flags = _st_flags(panel)
+    if st_flags is not None:
+        # ST 真源可用：is_st/not_st 无条件按 stock_st 重写（同一真源，避免两列互相矛盾）
+        panel["is_st"] = st_flags
+        panel["not_st"] = (1 - st_flags).astype("int8")
+    elif _column_all_nan(panel, "not_st"):
+        # 数据集不可用：回落 CNE is_st 口径（fail-open，绝不因 ST 数据源失败而中断建面板）
+        if "is_st" in panel.columns:
+            # CNE is_st: 1=ST, 0=正常 → not_st = 1 - is_st
+            panel["not_st"] = (1 - panel["is_st"].fillna(0).astype(int)).astype("int8")
+        else:
+            panel["not_st"] = pd.Series(1, index=panel.index, dtype="int8")
+
+
+def _column_all_nan(panel: pd.DataFrame, column: str) -> bool:
+    """列缺失或整列 NaN（预建空列）→ True（需要计算填充）。"""
+    if column not in panel.columns:
+        return True
+    try:
+        return bool(pd.isna(panel[column]).all())
+    except Exception:  # noqa: BLE001 — 无法判定时按"已有值"处理，不覆盖
+        return False
+
+
+def _st_flags(panel: pd.DataFrame) -> "pd.Series | None":
+    """风险警示板标记（1=ST / 0=非 ST）；数据源不可用时返回 None（fail-open）。"""
+    try:
+        from alphaagent.factor.metrics.st_mask import st_row_mask
+
+        mask = st_row_mask(panel)
+    except Exception as exc:  # noqa: BLE001 — 面板构建绝不因 ST 数据源失败而中断
+        logger.warning("ST 标记计算失败（%s: %s），回落 panel is_st", type(exc).__name__, exc)
+        return None
+    if mask is None:
+        return None
+    return pd.Series(mask.astype("int8"), index=panel.index)
 
 
 def is_cne_source(panel_path: str | Path | None) -> bool:
