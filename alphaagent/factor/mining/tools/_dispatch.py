@@ -325,8 +325,12 @@ class _DispatchMixin:
         try:
             from alphaagent.dsl.core.ast import all_smoothing_ops, structure_fingerprint
 
+            # evaluate 返回扁平结构（format_eval_response 输出），换手在顶层；
+            # 兼容引擎原生 metrics.quantile_portfolio 形状
             qp = (result.get("metrics") or {}).get("quantile_portfolio") or {}
             t_val = qp.get("avg_daily_side_turnover")
+            if t_val is None:
+                t_val = result.get("avg_daily_side_turnover")
             sig: dict[str, Any] = {
                 "fingerprint": structure_fingerprint(expr),
                 "turnover": float(t_val) if t_val is not None else None,

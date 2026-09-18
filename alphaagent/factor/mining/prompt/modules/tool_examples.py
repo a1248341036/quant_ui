@@ -163,6 +163,33 @@ def _tool_call_examples_section(
     )
     examples.append(
         {
+            "name": "eval_on_train_set",
+            "arguments": {
+                "multi_line_expr": "vol_ratio = DIVIDE(TS_STD($ret, 5), TS_STD($ret, 20))\nCS_ZSCORE(CS_WINSORIZE(vol_ratio, 0.01, 0.99))",
+                "factor_name": "vol_ratio_short_long",
+            },
+        }
+    )
+    examples.append(
+        {
+            "name": "eval_on_train_set",
+            "arguments": {
+                "multi_line_expr": "pv_corr = TS_CORR($volume, $adj_close, 20)\nCS_ZSCORE(CS_WINSORIZE(pv_corr, 0.01, 0.99))",
+                "factor_name": "volume_price_corr20",
+            },
+        }
+    )
+    examples.append(
+        {
+            "name": "eval_on_train_set",
+            "arguments": {
+                "multi_line_expr": "chip = CHIP_ENTROPY($adj_close, $adj_low, $adj_high, $volume, $float_cap, 60)\nCS_ZSCORE(CS_WINSORIZE(chip, 0.01, 0.99))",
+                "factor_name": "chip_entropy60",
+            },
+        }
+    )
+    examples.append(
+        {
             "name": "submit_factor",
             "arguments": {
                 "multi_line_expr": "ma20 = TS_MEAN($adj_close, 20)\nSUBTRACT($adj_close, ma20)",
@@ -195,7 +222,9 @@ def _tool_call_examples_section(
         dims = "动量、周线偏离、基本面残差、门控反转" if include_fundamentals else "动量、周线偏离、门控反转"
     note = (
         f"上表为同轮并行 `eval_on_train_set` 示例（{dims}）。"
-        "建议每轮 3～5 条并行；仅当 train 有满意候选时，偶尔对少数 factor 做 val 抽检。"
+        "建议每轮 12~20 条并行（与 delivery_interface 的 12~20 次一致，"
+        "并行度越高吞吐越高——每批 tool_calls 越多，LLM 推理等待占比越低）；"
+        "仅当 train 有满意候选时，偶尔对少数 factor 做 val 抽检。"
         + submit_note
     )
     return (

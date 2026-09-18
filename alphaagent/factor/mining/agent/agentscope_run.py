@@ -1383,7 +1383,7 @@ async def run_factor_mining_agentscope(
     # 自动生成 scorecard.json
     try:
         from alphaagent.factor.mining.run_metrics import generate_scorecard
-        generate_scorecard(config.run_id, log_dir, summary_dict=summary)
+        generate_scorecard(log_dir.name, log_dir, summary_dict=summary)
     except Exception as exc:  # noqa: BLE001
         log_step("scorecard", "error", error=str(exc)[:200], level=logging.ERROR)
 
