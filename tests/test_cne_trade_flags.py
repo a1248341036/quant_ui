@@ -139,3 +139,44 @@ def test_column_all_nan_helper() -> None:
     assert _column_all_nan(frame, "a") is True
     assert _column_all_nan(frame, "b") is False
     assert _column_all_nan(frame, "missing") is True
+
+
+def test_cached_panel_hit_heals_nan_flags(tmp_path, monkeypatch, st_dataset) -> None:
+    """磁盘缓存命中的旧面板（带全 NaN 标记列）在读取时就地补齐，且不改写缓存文件。"""
+    import json
+
+    import alphaagent.data.adapters.cnequity as cne
+
+    dates = pd.bdate_range("2024-01-02", periods=4)
+    inst = ["000001.SZ", "000002.SZ", "510300.SH"]
+    index = pd.MultiIndex.from_product([dates, inst], names=["datetime", "instrument"])
+    cached_panel = pd.DataFrame(
+        {
+            "adj_close": 1.0, "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0,
+            "amount": 1.0, "turnover_rate": 1.0, "float_cap": 1.0,
+            "volume": np.tile([1.0e5, 0.0, 5.0e4], len(dates)),
+            "is_st": np.nan, "is_trade": np.nan, "not_st": np.nan,
+        },
+        index=index,
+    )
+    monkeypatch.setattr(cne, "_CACHE_ROOT", tmp_path)
+    start, end, inc = "2024-01-01", "2024-01-05", False
+    path = cne._cache_path(start, end, inc, "all")
+    cached_panel.reset_index().to_parquet(path, index=False)
+    cne._meta_path(path).write_text(
+        json.dumps({"schema": cne._CACHE_SCHEMA_VERSION, "signature": "all",
+                    "include_fundamentals": inc, "rows": len(cached_panel),
+                    "columns": cached_panel.shape[1]}),
+        encoding="utf-8",
+    )
+    st_mask.clear_cache()
+
+    out = cne.load_panel_from_cne(start=start, end=end, include_fundamentals=inc, asset_type="stock")
+
+    assert len(out) == len(cached_panel)
+    assert out["is_trade"].notna().all() and out["not_st"].notna().all()
+    assert out["is_st"].notna().all()
+    expected = _expected_st_flag(out.sort_index())
+    assert np.array_equal(out.sort_index()["is_st"].to_numpy(dtype=int), expected)
+    # 缓存文件本身保持原样（治愈只发生内存副本，不触发数 GB 重建）
+    assert pd.read_parquet(path)["is_trade"].isna().all()
