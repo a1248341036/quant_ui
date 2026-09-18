@@ -29,11 +29,28 @@ DATA_SOURCE = os.getenv("QUANT_DATA_SOURCE", "cne").strip().lower()
 # 全面迁移 CNE 数据源：QUANT_USE_CNE=1 时，日线读取优先走 CNE reader，
 # 失败自动回退旧路径（panel.parquet / 年度 parquet），不影响可用性。
 _USE_CNE = os.getenv("QUANT_USE_CNE", "").strip().lower() in ("1", "true", "yes", "on")
-_panel_codes_cache: set | None = None
+_panel_codes_cache: tuple[str, set] | None = None
 
 # 信号因子最长只看 60 个交易日（ma_cross20_60），
 # 保留 800 个自然日（约 550 个交易日）足够覆盖全部滚动窗口。
 SIGNAL_LOOKBACK_DAYS = int(os.getenv("QUANT_SIGNAL_LOOKBACK_DAYS", "800"))
+
+# 北交所代码前缀（92 新代码段 + 83/87/43 存量段）。
+# 北交所股票有 50 万 + 24 个月投资者准入要求，默认从回测/信号/股票池排除。
+# 需要包含北交所时设 QUANT_EXCLUDE_BSE=0（或 false/no/off）。
+BSE_PREFIXES = ("92", "83", "87", "43")
+
+
+def _is_bse_code(code: str) -> bool:
+    """判断 6 位代码是否属于北交所。"""
+    return str(code).zfill(6).startswith(BSE_PREFIXES)
+
+
+def _exclude_bse_enabled() -> bool:
+    """北交所过滤开关（QUANT_EXCLUDE_BSE，默认开启）。"""
+    return os.getenv("QUANT_EXCLUDE_BSE", "1").strip().lower() not in (
+        "0", "false", "no", "off"
+    )
 
 # CNEquity quant_dataset 日频按年存放：data/quant_dataset/YYYY/YYYY/day/stock_daily.parquet
 _CNE_DAILY_GLOB = str(QUANT_DATASET_DIR / "*" / "*" / "day" / "stock_daily.parquet")
@@ -195,6 +212,9 @@ def _panel_sql_where(start: str | None, end: str | None,
         marks = ", ".join(["?"] * len(six))
         conds.append(f"code IN ({marks})")
         params.extend(six)
+    elif _exclude_bse_enabled():
+        # 未显式指定股票池且开关开启时排除北交所（92/83/87/43 前缀）
+        conds.append("NOT (code LIKE '92%' OR code LIKE '83%' OR code LIKE '87%' OR code LIKE '43%')")
     return (" AND ".join(conds) if conds else "1=1"), params
 
 
@@ -286,9 +306,13 @@ def _load_panel_pg_parquet(start: str | None = None, end: str | None = None,
         ts_filter = f" AND ts_code IN ({marks})"
         params = ts_codes
     file_list = ", ".join(f"'{f}'" for f in files)
+    # 未显式指定股票池且开关开启时排除北交所（92/83/87/43 前缀）
+    bse_filter = ""
+    if not codes and _exclude_bse_enabled():
+        bse_filter = " AND NOT (ts_code LIKE '92%' OR ts_code LIKE '83%' OR ts_code LIKE '87%' OR ts_code LIKE '43%')"
     sql = (
         f"SELECT {col_list} FROM read_parquet([{file_list}]) "
-        f"WHERE trade_date >= ? AND trade_date <= ?{ts_filter}"
+        f"WHERE trade_date >= ? AND trade_date <= ?{ts_filter}{bse_filter}"
     )
     import duckdb
     con = duckdb.connect()
@@ -406,8 +430,10 @@ def load_signal_panel(codes: list[str], end: str | None = None) -> pd.DataFrame:
 def load_panel_codes() -> set[str]:
     """轻量返回股票面板全部代码（不加载整张面板），用于构建股票池。"""
     global _panel_codes_cache
-    if _panel_codes_cache is not None:
-        return _panel_codes_cache
+    # 缓存键含北交所开关状态：开关切换后自动重建，避免返回错误口径的股票池
+    cache_key = ("bse0" if _exclude_bse_enabled() else "bse1")
+    if _panel_codes_cache is not None and _panel_codes_cache[0] == cache_key:
+        return _panel_codes_cache[1]
     codes: set[str] = set()
     if DATA_SOURCE in ("cne", "pg", "pg_parquet"):
         try:
@@ -415,6 +441,8 @@ def load_panel_codes() -> set[str]:
             if latest is not None:
                 df = pd.read_parquet(latest, columns=["ts_code"])
                 codes = {str(c)[:6].zfill(6) for c in df["ts_code"]}
+                if _exclude_bse_enabled():
+                    codes = {c for c in codes if not _is_bse_code(c)}
         except Exception:
             codes = set()
     if not codes:
@@ -422,7 +450,9 @@ def load_panel_codes() -> set[str]:
         if path.exists():
             codes = set(pd.read_parquet(path, columns=["code"])
                         ["code"].astype(str).str.zfill(6).unique())
-    _panel_codes_cache = codes
+            if _exclude_bse_enabled():
+                codes = {c for c in codes if not _is_bse_code(c)}
+    _panel_codes_cache = (cache_key, codes)
     return codes
 
 

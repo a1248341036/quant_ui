@@ -208,7 +208,12 @@ def build_codes(universe: str, exclude_kechuang: bool,
         panel_codes = load_panel_codes()
     codes &= panel_codes
     if exclude_kechuang:
+        # 排除科创板/创业板（300/301/688/689）
         codes = {c for c in codes if not c.startswith(("300", "301", "688", "689"))}
+    # 北交所过滤开关（QUANT_EXCLUDE_BSE，默认开启，与 core.data.panel 同口径）
+    if os.getenv("QUANT_EXCLUDE_BSE", "1").strip().lower() not in ("0", "false", "no", "off"):
+        codes = {c for c in codes
+                 if not c.startswith(("92", "83", "87", "43"))}
     return sorted(codes)
 
 
