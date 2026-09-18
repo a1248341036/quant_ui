@@ -116,6 +116,15 @@ class StockEvalService:
             engine_gate_policy=getattr(req, "engine_gate_policy", None),
         )
         session = self.sessions.create(ctx)
+        # 板块口径一致性检测：面板开关与因子库建库口径不一致时警告（不阻断）
+        try:
+            from alphaagent.factor.zoo.consistency import warn_if_inconsistent
+            from alphaagent.factor.mining.submit import default_factorlib_path
+
+            lib = default_factorlib_path(Path(__file__).resolve().parents[3])
+            warn_if_inconsistent(lib)
+        except Exception:  # noqa: BLE001  检测失败不阻断会话创建
+            pass
         cols = list(session.panel.columns[:12])
         return SessionCreateResponse(
             session_id=session.session_id,

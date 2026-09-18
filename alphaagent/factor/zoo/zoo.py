@@ -92,6 +92,13 @@ class FactorZoo:
         if verify_hash:
             verify_index_hash(manifest, index)
         catalog = FactorCatalog(paths.factors_parquet)
+        # 板块口径一致性检测：面板开关与建库时不一致时警告（不阻断）
+        try:
+            from alphaagent.factor.zoo.consistency import warn_if_inconsistent
+
+            warn_if_inconsistent(paths.root)
+        except Exception:  # noqa: BLE001  检测失败不阻断打开
+            pass
         return cls(paths, manifest, index, catalog)
 
     def _ensure_sample_summary_files(self) -> None:

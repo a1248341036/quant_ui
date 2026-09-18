@@ -52,6 +52,35 @@ logger = logging.getLogger(__name__)
 # 标识符：panel_path == CNE_SOURCE 时走 adapter
 CNE_SOURCE = "cne://"
 
+# 板块过滤开关（与 core.data.panel 同口径）：
+# - QUANT_EXCLUDE_BSE 默认开启（北交所 50 万 + 24 个月准入）
+# - QUANT_EXCLUDE_KECHUANG / QUANT_EXCLUDE_CHINEXT 默认关闭
+def _env_flag(name: str, default: str) -> bool:
+    return os.environ.get(name, default).strip().lower() not in (
+        "0", "false", "no", "off"
+    )
+
+
+def _exclude_bse_enabled() -> bool:
+    return _env_flag("QUANT_EXCLUDE_BSE", "1")
+
+
+def _exclude_kechuang_enabled() -> bool:
+    return _env_flag("QUANT_EXCLUDE_KECHUANG", "0")
+
+
+def _exclude_chinext_enabled() -> bool:
+    return _env_flag("QUANT_EXCLUDE_CHINEXT", "0")
+
+
+def _board_filter_flag() -> str:
+    """三板块开关状态摘要（用于缓存 key，开关切换后缓存自然失效）。"""
+    return "|".join([
+        "bse1" if _exclude_bse_enabled() else "bse0",
+        "kc1" if _exclude_kechuang_enabled() else "kc0",
+        "cyb1" if _exclude_chinext_enabled() else "cyb0",
+    ])
+
 # 磁盘面板缓存：构建好的 panel 落盘 parquet，避免每次评估都重算 30-70s。
 # key = (start, end, include_fundamentals, schema_version)，不含数据湖 watermark：
 # 历史固定区间永远命中（不需要因 watermark 每天变化而重建累积文件）。
@@ -64,7 +93,8 @@ _CNE_STATE_FILE = (
 )
 # 缓存格式/构建逻辑版本：代码变更影响 panel 内容时 +1 强制全部重建
 # v5: arrow 数值列改为无 null 写入（恢复零拷贝 mmap 共享）+ 数据面按需裁剪列族
-_CACHE_SCHEMA_VERSION = 5  # v5: zero-copy arrow + facet column pruning
+# v6: 股票 panel 排除北交所（92/83/87/43 前缀，投资者准入要求）
+_CACHE_SCHEMA_VERSION = 6  # v6: zero-copy arrow + facet column pruning + exclude BSE
 # 缓存文件数上限（全量面板 parquet+arrow ≈ 6GB，聚焦面板 ≈ 0.3-2.6GB）。
 # 小磁盘服务器可用 ALPHA_PANEL_CACHE_MAX_FILES 调小（代价：切换数据面组合时重建）。
 _CACHE_MAX_FILES = max(2, int(os.environ.get("ALPHA_PANEL_CACHE_MAX_FILES", "8") or 8))
@@ -234,8 +264,10 @@ def _cache_path(
 ) -> Path:
     """由参数 + schema 版本 + 数据面签名生成写入路径（同一组合稳定复用同一文件）。"""
     mk = "-".join(str(x or "all") for x in (start, end))
+    # 板块过滤开关参与 key：开关切换后缓存自然失效，避免命中错误口径的面板
+    board_flag = _board_filter_flag()
     key = hashlib.sha256(
-        f"{mk}|{include_fundamentals}|v{_CACHE_SCHEMA_VERSION}".encode("utf-8")
+        f"{mk}|{include_fundamentals}|{board_flag}|v{_CACHE_SCHEMA_VERSION}".encode("utf-8")
     ).hexdigest()[:16]
     # 文件名带 schema 版本前缀 + 数据面签名：_find_cached_panel 只认当前版本与
     # 同签名的缓存，版本/面组合变更后旧缓存自然失效（文件数由 _CACHE_MAX_FILES 淘汰）
@@ -290,6 +322,9 @@ def _find_cached_panel(
             if str(meta.get("signature") or "") != want_sig:
                 continue
             if bool(meta.get("include_fundamentals")) != bool(include_fundamentals):
+                continue
+            # 板块过滤开关状态必须一致，否则命中错误口径的面板
+            if str(meta.get("board_filter") or "") != _board_filter_flag():
                 continue
             try:
                 # arrow mmap 快路径：与 parquet 同 key 的 .arrow 存在即优先
@@ -525,6 +560,24 @@ def load_panel_from_cne(
     # 补充 core 插件特有的衍生标记列（is_trade, not_st）
     _enrich_trade_flags(panel)
 
+    # 股票 panel 按开关排除板块（北交所/科创板/创业板，投资者准入要求）。
+    # 开关：QUANT_EXCLUDE_BSE 默认开启，QUANT_EXCLUDE_KECHUANG /
+    # QUANT_EXCLUDE_CHINEXT 默认关闭。
+    if asset_type == "stock" and len(panel) > 0:
+        inst = panel.index.get_level_values("instrument").astype(str)
+        excluded: list[str] = []
+        if _exclude_bse_enabled():
+            excluded += ["92", "83", "87", "43"]
+        if _exclude_kechuang_enabled():
+            excluded += ["688", "689"]
+        if _exclude_chinext_enabled():
+            excluded += ["300", "301"]
+        if excluded:
+            mask = inst.str.startswith(tuple(excluded))
+            if mask.any():
+                logger.info("CNE adapter: 排除板块 %d 行", int(mask.sum()))
+                panel = panel.loc[~mask]
+
     # 数据面裁剪：只保留聚焦范围列 + 核心行情/标签/交付依赖列（全量请求不裁剪）
     if allowed is not None:
         before = panel.shape[1]
@@ -541,6 +594,7 @@ def load_panel_from_cne(
                 "signature": sig,
                 "focus_facets": focus,
                 "include_fundamentals": bool(include_fundamentals),
+                "board_filter": _board_filter_flag(),
                 "start": start,
                 "end": end,
                 "columns": int(panel.shape[1]),

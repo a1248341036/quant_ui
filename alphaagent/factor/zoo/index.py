@@ -272,6 +272,9 @@ def init_library(
 
     index.save(paths)
 
+    # 建库时的板块过滤口径（与 core.data.panel 同源），供后续一致性检测
+    from alphaagent.data.adapters.cnequity import _board_filter_flag
+
     manifest = LibraryManifest(
         dataset=dataset,
         bar_interval=bar_interval,
@@ -284,6 +287,7 @@ def init_library(
         extra={
             "panel_path": panel_path_str,
             "base_interval": bar_interval,
+            "board_filter": _board_filter_flag(),
         },
     )
     paths.manifest.write_text(
