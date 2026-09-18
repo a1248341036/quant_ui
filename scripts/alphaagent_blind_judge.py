@@ -94,6 +94,10 @@ def judge_expression(expr: str, panel: pd.DataFrame, label: pd.Series, bounds: d
     t0 = time.perf_counter()
     s = eval_factor(expr, panel)
     s = s.reindex(panel.index) if not s.index.equals(panel.index) else s
+    # ST 剔除：与 submit 盲测终审同口径（评估横截面不含风险警示板）
+    from alphaagent.factor.metrics.st_mask import mask_values as _st_mask_values
+
+    s = _st_mask_values(s, panel)
     dts = panel.index.get_level_values("datetime")
     ic = daily_spearman_ic(
         s.to_numpy(dtype=np.float64), label.to_numpy(dtype=np.float64), dts

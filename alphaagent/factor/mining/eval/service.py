@@ -276,6 +276,12 @@ class StockEvalService:
 
             out = eval_factor(multi_line_expr, panel)
             values = out.reindex(panel.index).to_numpy(dtype=np.float64)
+            # ST 剔除：与 submit 的 engine_gate 同口径（预演不能比终审宽）
+            from alphaagent.factor.metrics.st_mask import mask_values as _st_mask_values
+
+            values = _st_mask_values(
+                values, panel, asset_type=getattr(session.ctx, "asset_type", None)
+            )
             cs = (result.get("metrics") or {}).get("cross_sectional_core") or {}
             ic = cs.get("ic")
             if ic is None:

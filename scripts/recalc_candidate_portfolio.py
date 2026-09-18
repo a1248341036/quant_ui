@@ -58,6 +58,10 @@ for fid, e, holding in abnormal:
     try:
         raw = eval_factor(expr, panel)
         values = raw.reindex(panel.index)
+        # ST 剔除：与 submit 的组合指标同口径（否则回写值与准入值不可比）
+        from alphaagent.factor.metrics.st_mask import mask_values as _st_mask_values
+
+        values = _st_mask_values(values, panel)
         qp = quantile_portfolio_metrics(
             pd.Series(values, index=panel.index), panel[lc],
             n_groups=10, cost_bps=0.0, holding_days=holding,
