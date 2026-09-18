@@ -41,6 +41,7 @@ from cnequity.quality.unit_checks import (
 )
 from cnequity.query.parquet_scan import dataset_has_parquet, scan_parquet_root
 from cnequity.query.universe import (
+    coverage_end_date,
     coverage_start_date,
     st_coverage_start,
     trading_status_coverage_start,
@@ -255,8 +256,11 @@ def _collect_lake_findings(
     ts_start = trading_status_coverage_start(config)
     if ts_start is not None:
         bars_start = coverage_start_date(config, "daily_bars")
+        # 问"bar 窗口"就要用 bar 数据的末日，而不是 trade_date=今天：今天的数据要等
+        # 收盘后 daily run 才落地，拿今天去要求 ST 凭证只会每天假报一次缺口。
+        bars_end = coverage_end_date(config, "daily_bars") or trade_date
         observed_st_start = st_coverage_start(config)
-        evidence = st_evidence_coverage_report(config, bars_start, trade_date)
+        evidence = st_evidence_coverage_report(config, bars_start, bars_end)
         if evidence["verified"]:
             message = (
                 "trading_status has complete versioned ST/normal evidence for "

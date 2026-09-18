@@ -25,6 +25,7 @@ from cnequity.domain.symbols import (
 )
 from cnequity.orchestrator.registry import register_step
 from cnequity.quality.st_coverage import (
+    ST_COVERAGE_CLAIM,
     ST_EVIDENCE_VERSION,
     build_st_scope,
     current_st_universe,
@@ -507,3 +508,149 @@ def _backfill_trading_status_st(config: Config, trade_date: date, run_id: str) -
         }
         result.setdefault("context_updates", {})["audit_findings"] = [finding]
     return result
+
+
+# ─── ST 证据的每日续签（daily run 内，不再重扫十年）────────────────────
+
+
+def _st_evidence_covered_through(checkpoint: dict, scope_start: date) -> date:
+    """旧证据实际覆盖到的最后一天（没有该字段的旧 checkpoint 退化为 min-1）。"""
+    raw = checkpoint.get("evidence_covered_through") or (checkpoint.get("scope") or {}).get("end")
+    try:
+        if raw is not None:
+            return date.fromisoformat(str(raw))
+    except ValueError:
+        pass
+    return scope_start - timedelta(days=1)
+
+
+@register_step("trading_status_st", group="core", depends_on=["stock_st"], parallelizable=False)
+def step_trading_status_st(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
+    """把 daily run 当天已入库的 ``stock_st`` 名单续进 ``trading_status`` 的 ST 证据。
+
+    分工：``trading_status`` 的 ST 历史由 ``cne backfill trading_status`` 一次性建立
+    （tushare 源整窗回填）；本步每天只补"上次证据覆盖日 → ``stock_st`` 最新日期"这一
+    段（通常 1 天、百余行），随后按扩展后的窗口重签覆盖率凭证，因此 receipt 的 ``end``
+    随 daily run 自动推进——不需要外挂调度，也不再重拉 10 年。
+
+    只在 ``st_backfill_source == "tushare"`` 时生效（数据直接取自 ``stock_st``，
+    不再打源站）；baostock 源逐票扫太慢，不适用每日续签。
+    """
+    source = str(getattr(config, "trading_status_st_backfill_source", "baostock") or "baostock")
+    if source != "tushare":
+        return {
+            "rows_read": 0,
+            "rows_written": 0,
+            "status": "success",
+            "note": (
+                f"ST 证据源为 {source}；每日续签只在 tushare 源下运行"
+                "（baostock 请用 `cne backfill trading_status`）"
+            ),
+        }
+
+    stock_root = config.curated_root / "stock_st"
+    stock_files = list(stock_root.rglob("*.parquet")) if stock_root.exists() else []
+    # 本步在 core 组内紧跟 stock_st、且在同一轮 compact 之前运行，所以必须把当前
+    # run 的 staging 也读进来，否则只能看到昨天已合并的名单（差一天）。
+    from cnequity.storage import StagingWriter
+
+    stock_files.extend(StagingWriter(config.staging_root).list_run_files("stock_st", run_id))
+    if not stock_files:
+        return {
+            "rows_read": 0,
+            "rows_written": 0,
+            "status": "warning",
+            "error": "stock_st 无分区数据，无法续签 ST 证据",
+        }
+
+    universe = current_st_universe(config)
+    if not universe:
+        return {
+            "rows_read": 0,
+            "rows_written": 0,
+            "status": "warning",
+            "error": "instruments/daily_bars 不可读，无法确定 ST 证据 scope",
+        }
+
+    from cnequity.query.parquet_scan import scan_parquet_files
+
+    frame = scan_parquet_files(stock_files)
+    latest = frame.select(pl.col("trade_date").max()).collect().item()
+    if latest is None:
+        return {
+            "rows_read": 0,
+            "rows_written": 0,
+            "status": "warning",
+            "error": "stock_st 无可解析的 trade_date",
+        }
+
+    start = getattr(config, "_backfill_start", None) or BACKFILL_START
+    if latest < start:
+        return {"rows_read": 0, "rows_written": 0, "status": "success", "note": "stock_st 尚无窗口内数据"}
+
+    scope = build_st_scope(universe, start, latest, universe="all_a", source="tushare")
+    checkpoint = load_st_checkpoint(config, scope, allow_end_extension=True)
+    covered_through = _st_evidence_covered_through(checkpoint, start)
+
+    new_rows = pl.DataFrame()
+    if latest > covered_through:
+        new_rows = (
+            frame.filter(
+                pl.col("trade_date") > pl.lit(covered_through),
+                pl.col("symbol").is_in(universe),
+            )
+            .select(
+                pl.col("symbol").cast(pl.Utf8),
+                pl.col("trade_date").cast(pl.Date),
+                pl.lit(True).alias("is_trading"),
+                pl.lit("st").alias("status"),
+            )
+            .unique(subset=["symbol", "trade_date"], keep="last")
+            .collect()
+        )
+
+    rows_written = 0
+    if not new_rows.is_empty():
+        written = write_fetched(
+            config,
+            run_id,
+            "trading_status",
+            new_rows,
+            source="tushare",
+            batch_id=f"st-evidence-{latest.isoformat()}",
+        )
+        rows_written = int(written.get("rows_written", 0))
+
+    # 记账：旧累计 + 本段新增；名单里没有的标的即"窗口内从未 ST"，记 0 条证据。
+    evidence = {
+        symbol: int(count)
+        for symbol, count in (checkpoint.get("evidence_rows_by_symbol") or {}).items()
+        if symbol in set(universe)
+    }
+    if not new_rows.is_empty():
+        for row in new_rows.group_by("symbol").len().iter_rows(named=True):
+            evidence[row["symbol"]] = evidence.get(row["symbol"], 0) + int(row["len"])
+
+    checkpoint.update(
+        {
+            "schema_version": 1,
+            "claim": ST_COVERAGE_CLAIM,
+            "scope": scope,
+            "status": "complete",
+            "completed_symbols": sorted(universe),
+            "evidence_rows_by_symbol": {symbol: int(evidence.get(symbol, 0)) for symbol in universe},
+            "unresolved_symbols": [],
+            "evidence_covered_through": latest.isoformat(),
+            "completion_run_id": run_id,
+        }
+    )
+    path = write_st_checkpoint(config, checkpoint)
+    return {
+        "rows_read": int(new_rows.height),
+        "rows_written": rows_written,
+        "coverage_pending_compact": True,
+        "scope_id": scope["scope_id"],
+        "evidence_covered_through": latest.isoformat(),
+        "extended_from": covered_through.isoformat(),
+        "checkpoint": str(path),
+    }

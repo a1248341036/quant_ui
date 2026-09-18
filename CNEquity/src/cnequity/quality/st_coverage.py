@@ -155,12 +155,23 @@ def st_checkpoint_path(config: Config, scope_id: str) -> Path:
     )
 
 
-def load_st_checkpoint(config: Config, scope: dict[str, Any]) -> dict[str, Any]:
+def load_st_checkpoint(
+    config: Config,
+    scope: dict[str, Any],
+    *,
+    allow_end_extension: bool = False,
+) -> dict[str, Any]:
     """Load only an exact v2 scope; legacy sparse-ST markers are invalid.
 
     Version 1 marked never-ST symbols complete without persisting their normal
     rows. Reusing it would claim evidence that does not exist, so migration is
     intentionally a clean resweep rather than a metadata rewrite.
+
+    ``allow_end_extension`` additionally accepts a checkpoint whose window is a
+    **prefix** of the requested one (same source/universe/start, older end), so
+    a daily refresh can extend the evidence instead of re-sweeping ten years.
+    Only the incremental caller may pass it: the generic backfill would otherwise
+    inherit symbols as complete without fetching the newly added days.
     """
     path = st_checkpoint_path(config, str(scope["scope_id"]))
     if not path.exists():
@@ -186,8 +197,17 @@ def load_st_checkpoint(config: Config, scope: dict[str, Any]) -> dict[str, Any]:
                 continue
             if any(
                 previous_scope.get(key) != scope.get(key)
-                for key in ("evidence_version", "source", "start", "end")
+                for key in ("evidence_version", "source", "universe")
             ):
+                continue
+            if previous_scope.get("start") != scope.get("start"):
+                continue
+            previous_end = previous_scope.get("end")
+            if allow_end_extension:
+                # 前缀窗口：旧证据覆盖到 previous_end，调用方负责补 (previous_end, scope.end]
+                if not isinstance(previous_end, str) or previous_end > str(scope.get("end")):
+                    continue
+            elif previous_end != scope.get("end"):
                 continue
             completed = set(candidate.get("completed_symbols", [])) & current_symbols
             candidates.append((len(completed), candidate_path.stat().st_mtime, candidate))
@@ -214,6 +234,8 @@ def load_st_checkpoint(config: Config, scope: dict[str, Any]) -> dict[str, Any]:
                 "completed_symbols": completed,
                 "evidence_rows_by_symbol": evidence_rows,
                 "unresolved_symbols": unresolved,
+                # 旧证据实际覆盖到的日期（前缀复用时调用方据此补增量）
+                "evidence_covered_through": previous_end,
                 "inherited_from_scope_id": previous.get("scope", {}).get("scope_id"),
             }
         return {

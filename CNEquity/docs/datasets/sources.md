@@ -43,6 +43,7 @@
 | 频率 | 每日 |
 | 主键 | (symbol, trade_date) |
 | 历史 ST 来源 | `[datasets.trading_status] st_backfill_source`：`baostock`（默认，逐票 `isST`，全 A ≈ 11 小时）或 `tushare`（中间件 `stock_st` 按日全市场名单，整窗 ≈ 15 分钟）。写入行的 `source` 列并决定覆盖率 receipt 的 `scope.source`，换源后需重跑一次 `cne backfill trading_status` |
+| 证据续签 | core@16:00 的 `trading_status_st` 步（`depends_on=["stock_st"]`）：把当日已入库的 `stock_st` 名单续进 ST 证据，并按扩展后的窗口重签 receipt——只在 `st_backfill_source="tushare"` 时生效，每天百余行、秒级，因此 receipt 的 `end` 随 daily run 自动推进，不需要外挂调度 |
 | 已知限制 | 日更快照只有**当日** ST 名单（EastMoney），历史必须靠回填；`cne audit` 的 `trading_status_coverage_start` 报的就是这个缺口 |
 
 #### stock_st

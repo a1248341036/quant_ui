@@ -266,7 +266,7 @@ steps = ["compact", "derive_adj_factors", "derive_industry_index", "audit"]
 [job.daily.groups.core]
 at = "16:00"
 steps = [
-  "instruments", "trading_calendar", "trading_status", "stock_st",
+  "instruments", "trading_calendar", "trading_status", "stock_st", "trading_status_st",
   "corporate_actions", "daily_bars", "index_bars",
   "compact", "derive_adj_factors", "derive_industry_index",
 ]
