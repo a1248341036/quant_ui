@@ -35,10 +35,15 @@ _panel_codes_cache: tuple[str, set] | None = None
 # 保留 800 个自然日（约 550 个交易日）足够覆盖全部滚动窗口。
 SIGNAL_LOOKBACK_DAYS = int(os.getenv("QUANT_SIGNAL_LOOKBACK_DAYS", "800"))
 
-# 北交所代码前缀（92 新代码段 + 83/87/43 存量段）。
-# 北交所股票有 50 万 + 24 个月投资者准入要求，默认从回测/信号/股票池排除。
-# 需要包含北交所时设 QUANT_EXCLUDE_BSE=0（或 false/no/off）。
+# 板块代码前缀与过滤开关。
+# 各板块投资者准入要求不同，回测/信号/股票池默认口径：
+# - 北交所（92/83/87/43）：50 万 + 24 个月，默认排除（QUANT_EXCLUDE_BSE=1）
+# - 科创板（688/689）：50 万 + 24 个月，默认包含（QUANT_EXCLUDE_KECHUANG=0）
+# - 创业板（300/301）：10 万 + 24 个月，默认包含（QUANT_EXCLUDE_CHINEXT=0）
+# 开关值：1/true/yes/on = 排除，0/false/no/off = 包含。
 BSE_PREFIXES = ("92", "83", "87", "43")
+KECHUANG_PREFIXES = ("688", "689")
+CHINEXT_PREFIXES = ("300", "301")
 
 
 def _is_bse_code(code: str) -> bool:
@@ -46,11 +51,46 @@ def _is_bse_code(code: str) -> bool:
     return str(code).zfill(6).startswith(BSE_PREFIXES)
 
 
+def _is_kechuang_code(code: str) -> bool:
+    """判断 6 位代码是否属于科创板。"""
+    return str(code).zfill(6).startswith(KECHUANG_PREFIXES)
+
+
+def _is_chinext_code(code: str) -> bool:
+    """判断 6 位代码是否属于创业板。"""
+    return str(code).zfill(6).startswith(CHINEXT_PREFIXES)
+
+
+def _env_flag(name: str, default: str) -> bool:
+    """读环境变量布尔开关（1/true/yes/on=True，0/false/no/off=False）。"""
+    return os.getenv(name, default).strip().lower() not in ("0", "false", "no", "off")
+
+
 def _exclude_bse_enabled() -> bool:
     """北交所过滤开关（QUANT_EXCLUDE_BSE，默认开启）。"""
-    return os.getenv("QUANT_EXCLUDE_BSE", "1").strip().lower() not in (
-        "0", "false", "no", "off"
-    )
+    return _env_flag("QUANT_EXCLUDE_BSE", "1")
+
+
+def _exclude_kechuang_enabled() -> bool:
+    """科创板过滤开关（QUANT_EXCLUDE_KECHUANG，默认关闭）。"""
+    return _env_flag("QUANT_EXCLUDE_KECHUANG", "0")
+
+
+def _exclude_chinext_enabled() -> bool:
+    """创业板过滤开关（QUANT_EXCLUDE_CHINEXT，默认关闭）。"""
+    return _env_flag("QUANT_EXCLUDE_CHINEXT", "0")
+
+
+def _excluded_code_mask(codes: set[str]) -> set[str]:
+    """按当前开关过滤掉应排除的板块代码。"""
+    out = set(codes)
+    if _exclude_bse_enabled():
+        out = {c for c in out if not _is_bse_code(c)}
+    if _exclude_kechuang_enabled():
+        out = {c for c in out if not _is_kechuang_code(c)}
+    if _exclude_chinext_enabled():
+        out = {c for c in out if not _is_chinext_code(c)}
+    return out
 
 # CNEquity quant_dataset 日频按年存放：data/quant_dataset/YYYY/YYYY/day/stock_daily.parquet
 _CNE_DAILY_GLOB = str(QUANT_DATASET_DIR / "*" / "*" / "day" / "stock_daily.parquet")
@@ -212,9 +252,18 @@ def _panel_sql_where(start: str | None, end: str | None,
         marks = ", ".join(["?"] * len(six))
         conds.append(f"code IN ({marks})")
         params.extend(six)
-    elif _exclude_bse_enabled():
-        # 未显式指定股票池且开关开启时排除北交所（92/83/87/43 前缀）
-        conds.append("NOT (code LIKE '92%' OR code LIKE '83%' OR code LIKE '87%' OR code LIKE '43%')")
+    else:
+        # 未显式指定股票池时按开关排除板块（北交所/科创板/创业板）
+        excluded: list[str] = []
+        if _exclude_bse_enabled():
+            excluded += ["92", "83", "87", "43"]
+        if _exclude_kechuang_enabled():
+            excluded += ["688", "689"]
+        if _exclude_chinext_enabled():
+            excluded += ["300", "301"]
+        if excluded:
+            like = " OR ".join(f"code LIKE '{p}%'" for p in excluded)
+            conds.append(f"NOT ({like})")
     return (" AND ".join(conds) if conds else "1=1"), params
 
 
@@ -306,13 +355,22 @@ def _load_panel_pg_parquet(start: str | None = None, end: str | None = None,
         ts_filter = f" AND ts_code IN ({marks})"
         params = ts_codes
     file_list = ", ".join(f"'{f}'" for f in files)
-    # 未显式指定股票池且开关开启时排除北交所（92/83/87/43 前缀）
-    bse_filter = ""
-    if not codes and _exclude_bse_enabled():
-        bse_filter = " AND NOT (ts_code LIKE '92%' OR ts_code LIKE '83%' OR ts_code LIKE '87%' OR ts_code LIKE '43%')"
+    # 未显式指定股票池时按开关排除板块（北交所/科创板/创业板）
+    board_filter = ""
+    if not codes:
+        excluded: list[str] = []
+        if _exclude_bse_enabled():
+            excluded += ["92", "83", "87", "43"]
+        if _exclude_kechuang_enabled():
+            excluded += ["688", "689"]
+        if _exclude_chinext_enabled():
+            excluded += ["300", "301"]
+        if excluded:
+            like = " OR ".join(f"ts_code LIKE '{p}%'" for p in excluded)
+            board_filter = f" AND NOT ({like})"
     sql = (
         f"SELECT {col_list} FROM read_parquet([{file_list}]) "
-        f"WHERE trade_date >= ? AND trade_date <= ?{ts_filter}{bse_filter}"
+        f"WHERE trade_date >= ? AND trade_date <= ?{ts_filter}{board_filter}"
     )
     import duckdb
     con = duckdb.connect()
@@ -430,8 +488,12 @@ def load_signal_panel(codes: list[str], end: str | None = None) -> pd.DataFrame:
 def load_panel_codes() -> set[str]:
     """轻量返回股票面板全部代码（不加载整张面板），用于构建股票池。"""
     global _panel_codes_cache
-    # 缓存键含北交所开关状态：开关切换后自动重建，避免返回错误口径的股票池
-    cache_key = ("bse0" if _exclude_bse_enabled() else "bse1")
+    # 缓存键含板块过滤开关状态：开关切换后自动重建，避免返回错误口径的股票池
+    cache_key = "|".join([
+        "bse1" if _exclude_bse_enabled() else "bse0",
+        "kc1" if _exclude_kechuang_enabled() else "kc0",
+        "cyb1" if _exclude_chinext_enabled() else "cyb0",
+    ])
     if _panel_codes_cache is not None and _panel_codes_cache[0] == cache_key:
         return _panel_codes_cache[1]
     codes: set[str] = set()
@@ -441,8 +503,7 @@ def load_panel_codes() -> set[str]:
             if latest is not None:
                 df = pd.read_parquet(latest, columns=["ts_code"])
                 codes = {str(c)[:6].zfill(6) for c in df["ts_code"]}
-                if _exclude_bse_enabled():
-                    codes = {c for c in codes if not _is_bse_code(c)}
+                codes = _excluded_code_mask(codes)
         except Exception:
             codes = set()
     if not codes:
@@ -450,8 +511,7 @@ def load_panel_codes() -> set[str]:
         if path.exists():
             codes = set(pd.read_parquet(path, columns=["code"])
                         ["code"].astype(str).str.zfill(6).unique())
-            if _exclude_bse_enabled():
-                codes = {c for c in codes if not _is_bse_code(c)}
+            codes = _excluded_code_mask(codes)
     _panel_codes_cache = (cache_key, codes)
     return codes
 

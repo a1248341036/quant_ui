@@ -210,10 +210,18 @@ def build_codes(universe: str, exclude_kechuang: bool,
     if exclude_kechuang:
         # 排除科创板/创业板（300/301/688/689）
         codes = {c for c in codes if not c.startswith(("300", "301", "688", "689"))}
-    # 北交所过滤开关（QUANT_EXCLUDE_BSE，默认开启，与 core.data.panel 同口径）
-    if os.getenv("QUANT_EXCLUDE_BSE", "1").strip().lower() not in ("0", "false", "no", "off"):
-        codes = {c for c in codes
-                 if not c.startswith(("92", "83", "87", "43"))}
+    # 板块过滤开关（与 core.data.panel 同口径）：
+    # QUANT_EXCLUDE_BSE 默认开启（北交所 50 万+24 个月准入）
+    # QUANT_EXCLUDE_KECHUANG / QUANT_EXCLUDE_CHINEXT 默认关闭
+    def _flag(name: str, default: str) -> bool:
+        return os.getenv(name, default).strip().lower() not in ("0", "false", "no", "off")
+
+    if _flag("QUANT_EXCLUDE_BSE", "1"):
+        codes = {c for c in codes if not c.startswith(("92", "83", "87", "43"))}
+    if _flag("QUANT_EXCLUDE_KECHUANG", "0"):
+        codes = {c for c in codes if not c.startswith(("688", "689"))}
+    if _flag("QUANT_EXCLUDE_CHINEXT", "0"):
+        codes = {c for c in codes if not c.startswith(("300", "301"))}
     return sorted(codes)
 
 
