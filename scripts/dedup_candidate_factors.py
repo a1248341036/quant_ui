@@ -51,8 +51,10 @@ def _load_panel() -> pd.DataFrame:
     # Tushare 宽表 amount=千元、vol=手、circ_mv/total_mv=万元 → Panel 契约
     # amount=元、volume=股、float_cap/tot_cap=元。
     # 本脚本绕过插件直接 cne_load，必须在此对齐，否则 adj_vwap 恒为正确值 1/10。
-    df["amount"] = df["amount"] * 1000.0
-    df["vol"] = df["vol"] * 100.0
+    if "amount" in df.columns:
+        df["amount"] = df["amount"] * 1000.0
+    if "vol" in df.columns:
+        df["vol"] = df["vol"] * 100.0
     if "circ_mv" in df.columns:
         df["circ_mv"] = df["circ_mv"] * 10000.0
     if "total_mv" in df.columns:

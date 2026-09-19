@@ -36,12 +36,13 @@ def _raw_wide() -> pd.DataFrame:
 
 @pytest.fixture(autouse=True)
 def _fake_cne_load(monkeypatch):
-    """替换 cnequity.query.reader.load 返回原始宽表，绕过真实 CNE 数据湖。"""
+    """替换 cnequity.query.reader.load：stock_daily_wide 返回原始宽表，其余数据集返回空表。"""
     import polars as pl
     import cnequity.query.reader as reader
 
     def fake_load(dataset, *, start=None, end=None, config=None):
-        assert dataset == "stock_daily_wide"
+        if dataset != "stock_daily_wide":
+            return pl.DataFrame()
         return pl.from_pandas(_raw_wide())
 
     monkeypatch.setattr(reader, "load", fake_load)

@@ -24,7 +24,7 @@
 3. **流动性下限**
    engine_gate 把 ``am20 < min_am20_yuan`` 的打分置 NaN；执行层另要求
    ``turnover > 0``。am20 口径同 ``core.panel_schema.alpha_panel_to_engine_frame``
-   （amount 千元 ×1000 → 元，按票 ``rolling(20, min_periods=5)`` 均值）。
+   （panel amount 已是元，×1 不换算，按票 ``rolling(20, min_periods=5)`` 均值）。
 
 成本：掩码按 (面板索引身份, 参数) 缓存（weakref + is 校验，防 id 复用误命中）。
 同一 session 内每次评估共用同一份掩码，首次构建付一次成本，之后摊销为 0。
