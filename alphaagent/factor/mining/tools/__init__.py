@@ -33,6 +33,7 @@ class FactorEvalTools(_DispatchMixin, _AnalysisMixin):
         focus_facets: tuple[str, ...] | list[str] | None = None,
         cognition_policy: dict[str, Any] | None = None,
         operator_policy: dict[str, Any] | None = None,
+        homogenization_policy: dict[str, Any] | None = None,
     ) -> None:
         self.service = service
         self.session_id = session_id
@@ -53,7 +54,14 @@ class FactorEvalTools(_DispatchMixin, _AnalysisMixin):
         merged_op.update({k: v for k, v in (operator_policy or {}).items() if v is not None})
         merged_op["blacklist"] = tuple(str(n).upper() for n in (merged_op.get("blacklist") or ()))
         self.operator_policy = merged_op
-        # 最近评估历史（记录 fingerprint + turnover + 是否含平滑算子），供 P1-7 同质化熔断器使用
+        # 同质化平滑变体动态熔断（research_spec.homogenization_policy）
+        # enabled=True（默认）：连续 max_consecutive 次同一信号算子族+套平滑 → 拦截评估
+        self.homogenization_policy: dict[str, Any] = {
+            "enabled": True,
+            "max_consecutive": 3,
+        }
+        self.homogenization_policy.update({k: v for k, v in (homogenization_policy or {}).items() if v is not None})
+        # 最近评估历史（记录 fingerprint + turnover + 是否含平滑算子 + 信号算子族），供熔断器使用
         self._recent_evals: list[dict[str, Any]] = []
 
 

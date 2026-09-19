@@ -325,6 +325,7 @@ async def run_factor_mining_agentscope(
         focus_facets=getattr(config, "focus_facets", None),
         cognition_policy=(config.research_spec or {}).get("cognition_policy"),
         operator_policy=(config.research_spec or {}).get("operator_policy"),
+        homogenization_policy=(config.research_spec or {}).get("homogenization_policy"),
     )
     system_prompt = build_system_prompt(
         include_operator_catalog=include_operator_catalog,
@@ -390,6 +391,7 @@ async def run_factor_mining_agentscope(
         focus_facets=getattr(config, "focus_facets", None),
         cognition_policy=(config.research_spec or {}).get("cognition_policy"),
         operator_policy=(config.research_spec or {}).get("operator_policy"),
+        homogenization_policy=(config.research_spec or {}).get("homogenization_policy"),
     )
     system_prompt = build_system_prompt(
         include_operator_catalog=include_operator_catalog,
