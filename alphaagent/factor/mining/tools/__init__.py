@@ -63,7 +63,11 @@ class FactorEvalTools(_DispatchMixin, _AnalysisMixin):
             "window_size": 10,
         }
         self.homogenization_policy.update({k: v for k, v in (homogenization_policy or {}).items() if v is not None})
-        # 最近评估历史（记录 fingerprint + turnover + 是否含平滑算子 + 信号算子族），供熔断器使用
+        # 最近评估历史（记录 fingerprint + turnover + 是否含平滑算子 + 信号算子族），供熔断器使用。
+        # 上限与 window_size 联动（≥ window_size * 2，下限 20），防 window_size 超配时
+        # recent_evals 静默截断窗口导致熔断器实际窗口比配置小。
+        _ws = int(self.homogenization_policy.get("window_size", 10) or 10)
+        self._recent_evals_cap: int = max(20, _ws * 2)
         self._recent_evals: list[dict[str, Any]] = []
 
 

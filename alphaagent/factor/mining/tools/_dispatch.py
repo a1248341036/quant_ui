@@ -342,8 +342,10 @@ class _DispatchMixin:
             if recent is None:
                 return
             recent.append(sig)
-            # 上限 20（≥window_size 默认 10 的 2 倍余量），供滑动窗口熔断器消费
-            if len(recent) > 20:
+            # 上限与 window_size 联动（__init__ 里算好 _recent_evals_cap = max(20, window_size*2)），
+            # 防 window_size 超配时 recent_evals 静默截断窗口
+            cap = getattr(self, "_recent_evals_cap", 20)
+            if len(recent) > cap:
                 recent.pop(0)
         except Exception:  # noqa: BLE001 — 观测失败不影响评估
             pass
