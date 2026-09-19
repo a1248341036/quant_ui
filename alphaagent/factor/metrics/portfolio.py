@@ -86,6 +86,8 @@ def quantile_portfolio_metrics(
     depth_ks: Sequence[int] | None = None,
     eligibility=None,
     depth_only: bool = False,
+    buffer_ratio: float = 0.0,
+    no_trade_band: float = 0.0,
     _day_slices=None,
     _fast_equal_freq_codes=None,
 ) -> dict[str, Any]:
@@ -115,6 +117,18 @@ def quantile_portfolio_metrics(
       gross_excess_ann, net_excess_ann, sharpe_net, mdd_net,
       avg_rebalance_turnover, cost_annual_pp}，末行 ``k=Q{n_groups}`` 为十分位
       参考行（直接取主口径序列，保证与 top_group_* 逐位一致）。
+
+    P1 换手降低（2026-09 新增，均为追加键，默认 0.0 向后兼容）：
+    - ``buffer_ratio``：buffer zone 比例（M = round(N × buffer_ratio)）。调仓日
+      老持仓落在 top-(N+M)（最高组 + 次高组）内则保留，空缺从最高组按得分补足。
+      默认 0.0 = 严格按 top 组选，行为与历史一致。spec §4.1 默认 0.5。
+    - ``no_trade_band``：no-trade band 阈值。调仓日成员变化比例 ≤ band 时不调
+      （换手=0，沿用老持仓收益），视为价格漂移范围内的微调。默认 0.0 = 总是调。
+      spec §4.2 默认 0.15。
+    - 输出键 ``avg_rebalance_side_turnover_raw``（无 buffer/band 原始换手）、
+      ``avg_rebalance_side_turnover_buffered_banded``（buffer+band 后换手）、
+      ``turnover_reduction_pp``（换手降低百分点）。``avg_daily_side_turnover``
+      与 ``avg_rebalance_side_turnover`` 保持原口径（因子层门槛继续用原口径）。
 
     返回键（供 profile rules 引用）:
       - top_group_annualized_return / top_group_annualized_excess_return
@@ -224,7 +238,9 @@ def quantile_portfolio_metrics(
     nav_annualization = annualization_factor / hold
     day_index = -1
     nav_prev_members: set | None = None
+    nav_prev_members_raw: set | None = None  # 严格 top 组跟踪（raw 口径）
     nav_turnover_sum = 0.0
+    nav_turnover_sum_raw = 0.0  # 无 buffer/band 的原始 nav 换手（对比口径）
     nav_n_days = 0
     daily_prev_members: set | None = None
     daily_turnover_sum = 0.0
@@ -362,11 +378,36 @@ def quantile_portfolio_metrics(
 
         members = set(names[long_mask_arr].tolist())
 
+        # ── P1-1 Buffer Zone：老持仓在 top-(N+M) 内则保留，空缺从 top-N 补足 ──
+        # N = len(top 组)，M = round(N * buffer_ratio)。buffer 扩展到次高组
+        # （long_bin ± 1），老持仓落在次高组也保留，空缺从最高组按得分补。
+        # buffer_ratio=0 时 members_buffered == members（向后兼容）。
+        members_buffered = members
+        if buffer_ratio > 0.0 and nav_prev_members is not None and k >= 2:
+            n_top = len(members)
+            m_buf = int(round(n_top * float(buffer_ratio)))
+            if m_buf > 0:
+                # 扩展候选：最高组 + 次高组（buffer 区）
+                buf_bin = long_bin - 1 if direction >= 0 else long_bin + 1
+                if 0 <= buf_bin < k:
+                    buf_mask = b == buf_bin
+                    if buf_mask.any():
+                        buf_names = set(names[buf_mask].tolist())
+                        # 老持仓 ∩ (top + buffer) 保留
+                        kept = nav_prev_members & (members | buf_names)
+                        # 空缺从 top-N（最高组）补足，按原 members 顺序
+                        deficit = n_top - len(kept)
+                        if deficit > 0:
+                            refill = list(members - kept)[:deficit]
+                            kept = kept | set(refill)
+                        members_buffered = kept if len(kept) > 0 else members
+
         def _bin_mean(idx: int) -> float:
             sel = b == idx
             return float(ret[sel].mean()) if sel.any() else float("nan")
 
-        long_ret = float(ret[long_mask_arr].mean())
+        # long_ret 用 buffer 后的实际持仓成员计算（buffer 保留的票可能不在最高组）
+        long_ret = float(ret[np.isin(names, list(members_buffered))].mean()) if members_buffered else float("nan")
         universe_ret = float(ret.mean())
         high_ret, low_ret = _bin_mean(k - 1), _bin_mean(0)
         if np.isfinite(high_ret) and np.isfinite(low_ret):
@@ -391,13 +432,34 @@ def quantile_portfolio_metrics(
             n_days += 1
             continue
 
+        # ── P1-2 No-Trade Band：成员变化比例 ≤ band 则不调（换手=0，沿用老持仓）──
+        # no_trade_band=0 时总是调（向后兼容）。band 基于"成员变化比例"
+        # （等权组合下 ≈ 权重偏离），变化 ≤ band 视为价格漂移范围内的微调，不交易。
         if nav_prev_members is None:
             nav_side = 1.0  # 建仓：单边买入
+            nav_members_today = members_buffered
         else:
-            changed = len(members - nav_prev_members) / max(len(members), 1)
-            nav_side = 2.0 * changed  # 双边
+            changed_ratio = len(members_buffered - nav_prev_members) / max(len(members_buffered), 1)
+            if no_trade_band > 0.0 and changed_ratio <= no_trade_band:
+                # band 内不调：换手=0，净值用老持仓收益
+                nav_side = 0.0
+                nav_members_today = nav_prev_members
+                # long_ret 重算为老持仓当日收益
+                old_ret = ret[np.isin(names, list(nav_prev_members))]
+                long_ret = float(old_ret.mean()) if len(old_ret) > 0 else long_ret
+            else:
+                nav_side = 2.0 * changed_ratio  # 双边
+                nav_members_today = members_buffered
+        # raw 口径：无 buffer/band 的原始换手（用严格 top 组 members）
+        if nav_prev_members_raw is None:
+            nav_side_raw = 1.0
+        else:
+            changed_raw = len(members - nav_prev_members_raw) / max(len(members), 1)
+            nav_side_raw = 2.0 * changed_raw
+        nav_turnover_sum_raw += nav_side_raw
+        nav_prev_members_raw = members
         nav_turnover_sum += nav_side
-        nav_prev_members = members
+        nav_prev_members = nav_members_today
         day_cost = cost_bps / 10_000.0 * nav_side
 
         net.append(long_ret - day_cost)
@@ -497,8 +559,18 @@ def quantile_portfolio_metrics(
         "holding_days": hold,
         # 日频换手：口径与历史一致（stage_one 换手门的输入）
         "avg_daily_side_turnover": round(daily_turnover_sum / max(n_days, 1), 4),
-        # 调仓日换手（每 hold 个交易日一次的真实调仓成本）
-        "avg_rebalance_side_turnover": round(nav_turnover_sum / max(nav_n_days, 1), 4),
+        # 调仓日换手（每 hold 个交易日一次的真实调仓成本）——原口径（无 buffer/band）
+        # 因子层门槛（stage_one/two）继续用此口径，buffer/band 只影响信息性字段 + 净值序列
+        "avg_rebalance_side_turnover": round(nav_turnover_sum_raw / max(nav_n_days, 1), 4),
+        # ── P1-1/P1-2 buffer zone + no-trade band 信息性字段 ──
+        # buffer_ratio=0 且 no_trade_band=0 时，buffered/banded == raw == rebalance（向后兼容）
+        "buffer_ratio": float(buffer_ratio),
+        "no_trade_band": float(no_trade_band),
+        "avg_rebalance_side_turnover_raw": round(nav_turnover_sum_raw / max(nav_n_days, 1), 4),
+        "avg_rebalance_side_turnover_buffered_banded": round(nav_turnover_sum / max(nav_n_days, 1), 4),
+        "turnover_reduction_pp": round(
+            (nav_turnover_sum_raw - nav_turnover_sum) / max(nav_n_days, 1), 4
+        ),
         "n_rebalances": int(nav_n_days),
         "n_days": int(n_days),
         "top_group_annualized_return": _compound_ann(net),

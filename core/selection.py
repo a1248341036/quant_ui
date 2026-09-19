@@ -144,11 +144,17 @@ class PortfolioBuilder:
         candidates,
         scores,
         market_adx=None,
+        buffer_keep: set[int] | None = None,
+        buffer_ratio: float = 0.0,
     ) -> tuple[list[int], dict[int, float]]:
         """选股流水线唯一入口：门控 → 排名计数 → 等权 → 弱市叠加。
 
         candidates/scores 为同序数组（scores 对应候选的因子值）。
         返回 (chosen_list, targets)；无票过门控时返回 ([], {})。
+
+        buffer_keep/buffer_ratio（P1-1 Buffer Zone，spec §4.1）：老持仓在 top-(N+M) 内
+        则保留，空缺从严格 top-N 补足。buffer_keep 为老持仓 code_idx 集合，
+        buffer_ratio=0.0 或 buffer_keep=None 时退化为严格 top-N（向后兼容）。
         """
         cand = np.asarray(candidates)
         sc = np.asarray(scores, dtype=float)
@@ -161,6 +167,30 @@ class PortfolioBuilder:
             policy.top_n, policy.count_mode, policy.pct,
             policy.min_positions, policy.max_positions,
         )
+        # ── P1-1 Buffer Zone：老持仓在 top-(N+M) 内则保留 ──
+        if buffer_keep and buffer_ratio > 0.0 and chosen:
+            long_n = len(chosen)
+            m_buf = int(round(long_n * float(buffer_ratio)))
+            if m_buf > 0:
+                # 重算 top-(N+M) 全序（与 rank_select 同序：argsort + ascending）
+                order = np.argsort(g_scores, kind="mergesort")
+                if not policy.ascending:
+                    order = order[::-1]
+                ordered_all = [int(gated[o]) for o in order]
+                buf_zone = set(ordered_all[:long_n + m_buf])
+                # 老持仓在 top-(N+M) 内的都保留（按全序排序，高分优先）。
+                # 注意：必须遍历 ordered_all 而非 chosen——chosen 是 top-N，
+                # 老持仓里排名 N+1~N+M 的票在 buf_zone 内但不在 chosen，需拉回来。
+                old_in_buffer = [k for k in ordered_all
+                                 if k in buffer_keep and k in buf_zone]
+                deficit = long_n - len(old_in_buffer)
+                if deficit > 0:
+                    # 从严格 top-N 补足不在 old_in_buffer 的
+                    refill = [k for k in ordered_all[:long_n]
+                              if k not in old_in_buffer]
+                    chosen = old_in_buffer + refill[:deficit]
+                else:
+                    chosen = old_in_buffer[:long_n]
         targets = self.equal_weights(chosen)
         scale = policy.scale_for_regime(market_adx)
         if scale != 1.0 and targets:

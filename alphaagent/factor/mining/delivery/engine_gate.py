@@ -42,6 +42,13 @@ def run_engine_gate(
     engine_frame 可传入缓存的 panel_to_engine_frame 输出，多频率复评时避免重复变换。
     """
     policy = policy or {}
+    # 合并 EngineGateCriteria 默认值：旧 spec 文件无 buffer_ratio/no_trade_band 等新字段，
+    # 用默认值回落保证 P1-3 默认启用（预演与终审同口径）。
+    from alphaagent.factor.mining.delivery.delivery_criteria import EngineGateCriteria
+    _eg_default = EngineGateCriteria()
+    for _f in ("buffer_ratio", "no_trade_band"):
+        if _f not in policy:
+            policy[_f] = getattr(_eg_default, _f)
     from core.assets import get_execution_profile
     from core.engine import run_backtest
 
@@ -89,6 +96,9 @@ def run_engine_gate(
             max_participation=float(policy.get("max_participation", trading_config.GATE_MAX_PARTICIPATION)),
             selection_mode=selection_mode,
             selection_pct=selection_pct,
+            # P1-3 buffer zone + no-trade band（spec §4.3，默认 0.5/0.15）
+            buffer_ratio=float(policy.get("buffer_ratio", 0.0) or 0.0),
+            no_trade_band=float(policy.get("no_trade_band", 0.0) or 0.0),
         )
         result = run_backtest(
             engine_frame,

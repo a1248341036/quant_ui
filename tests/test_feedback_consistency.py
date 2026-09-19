@@ -102,7 +102,11 @@ def test_pit_warning_only_for_fundamentals():
 
 
 def test_turnover_attribution_with_session_cache():
-    """P1-1 & P1-6 验证：利用会话级自相关基线缓存快速归因换手主要来源。"""
+    """P1-1 & P1-6 验证：利用会话级自相关基线缓存快速归因换手主要来源。
+
+    P0-prereq-1 更新：归因文本格式从"自相关偏低 0.15"改为"ρ_f=0.15"，
+    且所有区间都输出归因（不再只在 <0.6 时输出），并结构化到 extra_fields。
+    """
     class FakeSession:
         def get_column_autocorr(self, col: str) -> float:
             # 模拟 volume 抖动剧烈 (0.15)，close 稳定 (0.95)
@@ -127,7 +131,92 @@ def test_turnover_attribution_with_session_cache():
     op = diag.evaluate(ctx)
     assert op is not None
     assert "$volume" in op.message
-    assert "自相关偏低 0.15" in op.message
+    assert "ρ_f=0.15" in op.message
+    # P0-prereq-1：结构化字段
+    assert op.extra_fields["worst_col_name"] == "volume"
+    assert op.extra_fields["worst_col_autocorr"] == 0.15
+    assert op.extra_fields["worst_col_tier"] == "high_freq"
+    assert op.extra_fields["col_autocorrs"]["volume"] == 0.15
+    assert op.extra_fields["col_autocorrs"]["close"] == 0.95
+
+
+def test_turnover_attribution_structured_all_ranges():
+    """P0-prereq-1 验证：worst_col 自相关在所有区间（<0.6 / [0.6,0.85] / ≥0.85）都结构化输出。"""
+    class FakeSession:
+        def __init__(self, corrs: dict[str, float]):
+            self._corrs = corrs
+
+        def get_column_autocorr(self, col: str) -> float:
+            # 与生产 session.get_column_autocorr 契约一致：永远返回 float，
+            # 不存在的 col 回退 default_val=0.5（而非 None）。
+            return self._corrs.get(col, 0.5)
+
+    # 区间 1：ρ_f < 0.6（高频抖动）
+    ctx_high = DiagnosticContext(
+        expr="RANK($volume)",
+        result={"ok": True, "split": "train"},
+        arguments={},
+        passed=True,
+        ic=0.025, abs_ic=0.025, icir=0.32, abs_icir=0.32, coverage=0.95,
+        turnover=0.88,
+        session=FakeSession({"volume": 0.15}),
+    )
+    op_high = TurnoverDiagnostic().evaluate(ctx_high)
+    assert op_high is not None
+    assert op_high.extra_fields["worst_col_autocorr"] == 0.15
+    assert op_high.extra_fields["worst_col_tier"] == "high_freq"
+    assert "<0.6" in op_high.message
+
+    # 区间 2：ρ_f ∈ [0.6, 0.85]（中频）
+    ctx_mid = DiagnosticContext(
+        expr="RANK($close)",
+        result={"ok": True, "split": "train"},
+        arguments={},
+        passed=True,
+        ic=0.025, abs_ic=0.025, icir=0.32, abs_icir=0.32, coverage=0.95,
+        turnover=0.55,
+        session=FakeSession({"close": 0.72}),
+    )
+    op_mid = TurnoverDiagnostic().evaluate(ctx_mid)
+    assert op_mid is not None
+    assert op_mid.extra_fields["worst_col_autocorr"] == 0.72
+    assert op_mid.extra_fields["worst_col_tier"] == "mid"
+    assert "0.6~0.85" in op_mid.message
+
+    # 区间 3：ρ_f ≥ 0.85（慢源，换手高来自变换层）
+    ctx_slow = DiagnosticContext(
+        expr="RANK(TS_PCTCHANGE($close, 5))",
+        result={"ok": True, "split": "train"},
+        arguments={},
+        passed=True,
+        ic=0.025, abs_ic=0.025, icir=0.32, abs_icir=0.32, coverage=0.95,
+        turnover=0.52,
+        session=FakeSession({"close": 0.95}),
+    )
+    op_slow = TurnoverDiagnostic().evaluate(ctx_slow)
+    assert op_slow is not None
+    assert op_slow.extra_fields["worst_col_autocorr"] == 0.95
+    assert op_slow.extra_fields["worst_col_tier"] == "slow"
+    assert "≥0.85" in op_slow.message
+
+
+def test_turnover_attribution_no_session():
+    """P0-prereq-1 反向验证：无 session 时归因字段为 None/空，不报错。"""
+    ctx = DiagnosticContext(
+        expr="RANK($close)",
+        result={"ok": True, "split": "train"},
+        arguments={},
+        passed=True,
+        ic=0.025, abs_ic=0.025, icir=0.32, abs_icir=0.32, coverage=0.95,
+        turnover=0.88,
+        session=None,
+    )
+    op = TurnoverDiagnostic().evaluate(ctx)
+    assert op is not None
+    assert op.extra_fields["worst_col_name"] is None
+    assert op.extra_fields["worst_col_autocorr"] is None
+    assert op.extra_fields["worst_col_tier"] is None
+    assert op.extra_fields["col_autocorrs"] == {}
 
 
 def test_feedback_synthesizer_fields():

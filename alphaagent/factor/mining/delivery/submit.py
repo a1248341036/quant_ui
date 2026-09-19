@@ -832,6 +832,13 @@ class FactorSubmitService:
         # 随候选/正式记录落库，候选库与正式库展示口径统一；裁决本身仍在
         # stage_two 之后执行（回测计算前移，不改变准入顺序）。
         engine_gate_cfg = (self.delivery_policy.get("production") or {}).get("engine_gate")
+        # 合并 EngineGateCriteria 默认值（buffer_ratio/no_trade_band 等新字段在旧 spec
+        # 文件中不存在，用 criteria 默认值回落，保证 P1-3 默认启用）
+        if not isinstance(engine_gate_cfg, dict) or "buffer_ratio" not in engine_gate_cfg:
+            eg_default = self.criteria.engine_gate_dict()
+            if isinstance(engine_gate_cfg, dict):
+                eg_default.update(engine_gate_cfg)
+            engine_gate_cfg = eg_default
         engine_gate_result: dict[str, Any] | None = None
         if isinstance(engine_gate_cfg, dict) and engine_gate_cfg.get("enabled"):
             from alphaagent.factor.mining.engine_gate import run_engine_gate
