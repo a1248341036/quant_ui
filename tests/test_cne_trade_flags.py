@@ -165,7 +165,8 @@ def test_cached_panel_hit_heals_nan_flags(tmp_path, monkeypatch, st_dataset) -> 
     cached_panel.reset_index().to_parquet(path, index=False)
     cne._meta_path(path).write_text(
         json.dumps({"schema": cne._CACHE_SCHEMA_VERSION, "signature": "all",
-                    "include_fundamentals": inc, "rows": len(cached_panel),
+                    "include_fundamentals": inc, "board_filter": cne._board_filter_flag(),
+                    "rows": len(cached_panel),
                     "columns": cached_panel.shape[1]}),
         encoding="utf-8",
     )

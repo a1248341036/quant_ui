@@ -43,11 +43,8 @@ _CACHE: "OrderedDict[tuple, tuple]" = OrderedDict()
 _CACHE_LOCK = threading.Lock()
 _CACHE_MAX = 8
 
-_AMOUNT_CNE_TO_ENGINE = 1000.0  # 与 core.panel_schema 同源常量（千元 → 元）
-
-
 def _am20_yuan_wide(panel: pd.DataFrame) -> pd.DataFrame | None:
-    """按票 20 日均成交额（元）宽表，口径同 core.panel_schema（千元 ×1000）。
+    """按票 20 日均成交额（元）宽表，口径同 core.panel_schema（panel amount 已是元）。
 
     用宽表向量化 rolling（等价于引擎按票 groupby rolling：NaN 日不计入均值、
     窗口按市场交易日推进；停牌缺失日的窗口语义差异对 5e6 元量级的流动性下限
@@ -55,7 +52,7 @@ def _am20_yuan_wide(panel: pd.DataFrame) -> pd.DataFrame | None:
     """
     if "amount" not in panel.columns:
         return None
-    amount_w = _wide(panel, "amount").astype(np.float64, copy=False) * _AMOUNT_CNE_TO_ENGINE
+    amount_w = _wide(panel, "amount").astype(np.float64, copy=False)
     return amount_w.rolling(20, min_periods=5).mean()
 
 

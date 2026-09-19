@@ -4,7 +4,7 @@
 
 1. AlphaAgent panel（CNE 数据源直出）
    - 索引：MultiIndex(datetime, instrument)
-   - amount：CNE stock_daily_wide 原始口径，单位千元
+   - amount：元（stock_daily_wide 插件已在 load() 出口把 Tushare 千元归一化为元）
    - turnover_rate：tushare 口径，百分数（0.4289 = 0.4289%）
    列集见 alphaagent/core/types.py 的 OUTPUT_COLUMNS。
 
@@ -30,9 +30,15 @@ import numpy as np
 import pandas as pd
 
 # ── 单位换算常量（唯一事实来源）───────────────────────────────────────
-AMOUNT_CNE_TO_ENGINE = 1000.0      # CNE/Tushare amount 千元 → 引擎元
+# AMOUNT_CNE_TO_ENGINE 保留 1000.0：core/tushare_client.py 等直接拉 Tushare
+# 原始宽表（amount 千元）的独立链路用它换算为元。
+# AlphaAgent panel 的 amount 已是元——stock_daily_wide 插件
+# （alphaagent/data/adapters/plugins/stock_daily_wide.py）在 load() 出口把
+# Tushare 千元/手/万元归一化为元/股/元，故 alpha_panel_to_engine_frame 的
+# stock 路径 ×1 不换算（见该函数内 amount_mult 逻辑）。
+AMOUNT_CNE_TO_ENGINE = 1000.0      # Tushare 原始 amount 千元 → 元（独立拉取链路用）
 AMOUNT_TEN_THOUSAND_TO_ENGINE = 10000.0  # 腾讯行情 amount 万元 → 引擎元
-AMOUNT_ETF_TO_ENGINE = 1.0         # ETF panel amount 已是元（腾讯 qfq 口径）→ 引擎元 ×1
+AMOUNT_ETF_TO_ENGINE = 1.0         # ETF panel amount 已是元（腾讯 qfq 口径）→ 引擎元 ×1（文档性常量，转换函数已统一 ×1）
 TURNOVER_PERCENT_TO_RATIO = 100.0  # turnover_rate 百分数 → 小数比例
 
 
@@ -64,7 +70,7 @@ ALPHA_CNE_PANEL_SPEC = PanelSpec(
                       "turnover_rate", "volume"),
     index=("datetime", "instrument"),
     units={"open": "元", "close": "元", "high": "元", "low": "元",
-           "amount": "千元", "turnover_rate": "%"},
+           "amount": "元", "turnover_rate": "%"},
 )
 
 
@@ -106,10 +112,10 @@ def alpha_panel_to_engine_frame(
     """AlphaAgent panel → core.engine.run_backtest 长表（纯内存）。
 
     口径：
-    - stock：amount 千元 → 元（×1000）。引擎参与率预算按元计算，不复权原始
-      千元口径会让预算缩水 1000 倍 → 大面积“现金不足”拒单。
+    - stock：amount 已是元（stock_daily_wide 插件出口归一化），×1 不换算。
+      引擎参与率预算按元计算。
     - etf：amount 已是元（腾讯 qfq 口径，见 etf_panel.parquet），×1 不换算；
-      切勿按 stock 千元口径乘 1000，否则 1.2 亿元会被误放大 1000 倍。
+      切勿按旧 stock 千元口径乘 1000，否则 1.2 亿元会被误放大 1000 倍。
     - turnover_rate：百分数 → 比例（/100），与 core/data.py 引擎面板口径一致。
     - am20/turn20 按 code 滚动 20 日均值现算（与 _finalize_stock_df 同 min_periods）。
 
@@ -124,11 +130,10 @@ def alpha_panel_to_engine_frame(
     if df["date"].isna().any():
         raise ValueError("alpha_panel_invalid_datetime")
 
-    amount_mult = (
-        AMOUNT_ETF_TO_ENGINE
-        if asset_type == "etf"
-        else AMOUNT_CNE_TO_ENGINE
-    )
+    # stock/etf panel amount 均为元（插件出口归一化），×1 不换算。
+    # 注意：不要用 AMOUNT_CNE_TO_ENGINE（1000.0）——那是给直接拉 Tushare
+    # 原始千元口径的独立链路（core/tushare_client.py）用的，panel 已归一化。
+    amount_mult = 1.0
     amount = pd.to_numeric(df["amount"], errors="coerce") * amount_mult
     if "turnover_rate" in df.columns:
         turnover = (pd.to_numeric(df["turnover_rate"], errors="coerce")

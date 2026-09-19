@@ -18,7 +18,8 @@ from core.panel_schema import (
 def _alpha_panel(*, n_days: int = 6) -> pd.DataFrame:
     """合成 AlphaAgent 面板：2 只股票 × n_days 交易日。
 
-    amount 单位千元、turnover_rate 单位 %（CNE/tushare 口径）。
+    amount 单位元（stock_daily_wide 插件出口已归一化）、turnover_rate 单位 %
+    （tushare 口径）。
     """
     dates = pd.bdate_range("2026-01-05", periods=n_days)
     inst = ["000001.SZ"] * n_days + ["600000.SH"] * n_days
@@ -29,7 +30,7 @@ def _alpha_panel(*, n_days: int = 6) -> pd.DataFrame:
         "low": np.linspace(9.9, 10.9, n),
         "close": np.linspace(10.1, 11.1, n),
         "volume": np.full(n, 1000.0),
-        "amount": np.tile(np.linspace(100.0, 600.0, n_days), 2),  # 千元
+        "amount": np.tile(np.linspace(100.0, 600.0, n_days), 2),  # 元
         "turnover_rate": np.tile(np.linspace(0.4, 0.9, n_days), 2),  # %
         "adjfactor": np.ones(n),
     }, index=pd.MultiIndex.from_arrays(
@@ -61,8 +62,10 @@ def test_engine_validation_rejects_missing_columns():
 
 def test_conversion_units():
     out = alpha_panel_to_engine_frame(_alpha_panel(n_days=6))
-    # amount 千元 → 元
-    assert out["amount"].iloc[0] == pytest.approx(100.0 * AMOUNT_CNE_TO_ENGINE)
+    # amount 已是元（插件出口归一化），stock 路径 ×1 不换算
+    assert out["amount"].iloc[0] == pytest.approx(100.0)
+    # AMOUNT_CNE_TO_ENGINE 保留 1000.0 供直接拉 Tushare 原始千元的独立链路用
+    assert AMOUNT_CNE_TO_ENGINE == 1000.0
     # turnover % → 比例
     assert out["turnover"].iloc[0] == pytest.approx(0.4 / TURNOVER_PERCENT_TO_RATIO)
     # 输出列与顺序
@@ -81,8 +84,8 @@ def test_conversion_rolling_columns():
     a20 = out[out["code"] == "000001.SZ"]["am20"].to_numpy()
     assert np.isnan(a20[:4]).all()
     assert np.isfinite(a20[4]).all()
-    # 第 5 个元素 = 前 5 天 amount 均值（千元→元后）
-    expected = np.mean(np.linspace(100.0, 500.0, 5)) * AMOUNT_CNE_TO_ENGINE
+    # 第 5 个元素 = 前 5 天 amount 均值（已是元，×1）
+    expected = np.mean(np.linspace(100.0, 500.0, 5))
     assert a20[4] == pytest.approx(expected)
 
 

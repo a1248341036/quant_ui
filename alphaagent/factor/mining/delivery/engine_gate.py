@@ -3,7 +3,7 @@
 数据全部在内存中变换：AlphaAgent panel (datetime, instrument) → 旧引擎长表
 (date, code, open/high/low/close, turnover, am20, turn20)。不产生任何磁盘中间表。
 
-单位换算（amount 千元→元、turnover_rate %→比例）与列契约统一由
+单位换算（amount 已是元、turnover_rate %→比例）与列契约统一由
 core.panel_schema 负责，本模块不再重复实现。
 """
 from __future__ import annotations
@@ -30,8 +30,9 @@ def run_engine_gate(
 ) -> dict[str, Any]:
     """验证集窗口的旧引擎 TopN 回测门禁（完整 T+1/涨跌停/停牌/整手约束）。
 
-    asset_type 决定单位换算（stock：amount 千元→元；etf：amount 已是元）与
-    回测执行规则（ETF 用 ETF_PROFILE：免涨跌停、低佣金、价差/最低佣金单独设）。
+    asset_type 决定回测执行规则（stock 用股票 profile；etf 用 ETF_PROFILE：
+    免涨跌停、低佣金、价差/最低佣金单独设）。amount 单位换算由
+    core.panel_schema 统一处理（stock/etf panel amount 均为元）。
     policy 来自 ResearchSpec delivery_policy.production.engine_gate：
     {enabled, selection_mode, selection_pct, top_n, freq, capital,
      slippage_bps, max_participation, min_am20_yuan, min_excess_annual,
