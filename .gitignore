@@ -68,3 +68,12 @@ crushes/
 
 # Design specifications and local working docs
 docs/specs/
+docs/*_spec.md
+docs/jq_compat_*.md
+
+# Backup / build artifacts
+static/dist.bak-*/
+CNEquity/configs/*.bak-*
+
+# External review tooling output
+codefree-code-review/
