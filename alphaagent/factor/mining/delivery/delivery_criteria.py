@@ -99,6 +99,12 @@ class EngineGateCriteria:
     max_drawdown: float = trading_config.GATE_MAX_DRAWDOWN
     min_daily_overlap: float = trading_config.GATE_MIN_DAILY_OVERLAP
     min_invested_ratio: float = trading_config.GATE_MIN_INVESTED_RATIO
+    # ── P1 换手降低（2026-09，spec §4.3）──
+    # buffer_ratio=0.5 + no_trade_band=0.15 默认启用，让 engine_gate 用更接近
+    # 实盘的换手口径裁决（buffer zone 保留老持仓 + band 拦截微调）。
+    # 因子层门槛（stage_one/two）继续用原口径换手，两层分离。
+    buffer_ratio: float = 0.5
+    no_trade_band: float = 0.15
 
 
 @dataclass(frozen=True)

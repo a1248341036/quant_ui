@@ -259,12 +259,13 @@ def quantile_portfolio_metrics(factor, label, *, time_level="datetime",
                                n_groups=10, min_stocks=30, cost_bps=15.0,
                                annualization_factor=252.0, direction=None,
                                holding_days=1, depth_ks=None, eligibility=None,
-                               depth_only=False):
+                               depth_only=False, buffer_ratio=0.0, no_trade_band=0.0):
     return _qpm_raw(factor, label, time_level=time_level, n_groups=n_groups,
                    min_stocks=min_stocks, cost_bps=cost_bps,
                    annualization_factor=annualization_factor, direction=direction,
                    holding_days=holding_days, depth_ks=depth_ks,
                    eligibility=eligibility, depth_only=depth_only,
+                   buffer_ratio=buffer_ratio, no_trade_band=no_trade_band,
                    _day_slices=_DSLICE(), _fast_equal_freq_codes=_FCODE())
 
 

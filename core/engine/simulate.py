@@ -165,11 +165,26 @@ def _simulate(cfg, prep: dict, fctx: dict) -> dict:
                     market_adx = (float(np.nanmedian(adx_mat[sig]))
                                   if (selection_policy.regime_adx is not None
                                       and adx_mat is not None) else None)
+                    # P1-1 Buffer Zone：老持仓在 top-(N+M) 内则保留
+                    buf_ratio = float(getattr(cfg, "buffer_ratio", 0.0) or 0.0)
+                    buf_keep = set(positions.keys()) if buf_ratio > 0.0 else None
                     chosen_list, sel_targets = portfolio_builder.build_targets(
-                        selection_policy, cand, scores, market_adx)
+                        selection_policy, cand, scores, market_adx,
+                        buffer_keep=buf_keep, buffer_ratio=buf_ratio)
                     targets.update(sel_targets)
                     if chosen_list:
                         last_chosen = [codes_used[k] for k in chosen_list]
+
+                # ── P1-2 No-Trade Band：权重偏离 ≤ band 则不调（沿用老持仓）──
+                band = float(getattr(cfg, "no_trade_band", 0.0) or 0.0)
+                skip_rebalance = False
+                if band > 0.0 and positions and chosen_list:
+                    old_members = set(positions.keys())
+                    new_members = set(chosen_list)
+                    # 等权组合下权重偏离 ≈ 成员变化比例
+                    changed = len(new_members - old_members) / max(len(new_members), 1)
+                    if changed <= band:
+                        skip_rebalance = True
 
                 pv = _portfolio_value(sig)
                 signal_d = dates[sig].date().isoformat()
@@ -179,26 +194,37 @@ def _simulate(cfg, prep: dict, fctx: dict) -> dict:
                 buy_amt = 0.0
                 sell_amt = 0.0
 
-                executed = execution_adapter.execute_targets(
-                    cash, positions, targets, chosen_list, pv, am_thr, sig, t,
-                    max_weight=max_weight,
-                )
-                cash, positions = executed.cash, executed.positions
-                buy_amt, sell_amt = executed.buy_amount, executed.sell_amount
-                bought_codes = executed.bought_codes
-                sold_codes = executed.sold_codes
-                trades_detail.extend(executed.trades_detail)
-                rejections.extend(executed.rejections)
+                if skip_rebalance:
+                    # band 内不调：沿用老持仓，换手记 0
+                    trades.append({
+                        "date": dates[t],
+                        "signal_date": dates[sig],
+                        "num_hold": int(sum(1 for v in positions.values() if v > 0)),
+                        "turnover": 0.0,
+                        "bought": "",
+                        "sold": "",
+                    })
+                else:
+                    executed = execution_adapter.execute_targets(
+                        cash, positions, targets, chosen_list, pv, am_thr, sig, t,
+                        max_weight=max_weight,
+                    )
+                    cash, positions = executed.cash, executed.positions
+                    buy_amt, sell_amt = executed.buy_amount, executed.sell_amount
+                    bought_codes = executed.bought_codes
+                    sold_codes = executed.sold_codes
+                    trades_detail.extend(executed.trades_detail)
+                    rejections.extend(executed.rejections)
 
-                turn = (buy_amt + sell_amt) / 2.0 / pv if pv else 0.0
-                trades.append({
-                    "date": dates[t],
-                    "signal_date": dates[sig],
-                    "num_hold": int(sum(1 for v in positions.values() if v > 0)),
-                    "turnover": float(turn),
-                    "bought": ",".join(bought_codes[:12]),
-                    "sold": ",".join(sold_codes[:12]),
-                })
+                    turn = (buy_amt + sell_amt) / 2.0 / pv if pv else 0.0
+                    trades.append({
+                        "date": dates[t],
+                        "signal_date": dates[sig],
+                        "num_hold": int(sum(1 for v in positions.values() if v > 0)),
+                        "turnover": float(turn),
+                        "bought": ",".join(bought_codes[:12]),
+                        "sold": ",".join(sold_codes[:12]),
+                    })
 
             eq = _record_holdings(t, cash, positions)
             nav[t] = eq / capital
@@ -309,10 +335,43 @@ def _simulate(cfg, prep: dict, fctx: dict) -> dict:
                         ordered_sel = np.asarray(ordered, dtype=int)
                         if len(ordered_sel) >= min_cand:
                             chosen = ordered_sel[:long_n]
-                            long_stuck = float(np.maximum(hold[cant_sell], 0).sum()) if len(cant_sell) else 0.0
-                            remain_long = 1.0 - long_stuck
-                            new_hold[chosen] = remain_long / len(chosen)
-                            last_chosen = [codes_used[int(c)] for c in chosen]
+                            # ── P1-1 Buffer Zone：老持仓在 top-(N+M) 内则保留 ──
+                            buf_ratio = float(getattr(cfg, "buffer_ratio", 0.0) or 0.0)
+                            if buf_ratio > 0.0 and not long_short:
+                                m_buf = int(round(long_n * buf_ratio))
+                                if m_buf > 0 and len(ordered_sel) >= long_n:
+                                    buf_zone = ordered_sel[:long_n + m_buf]
+                                    old_holdings = np.where(hold > 0)[0]
+                                    kept = np.intersect1d(old_holdings, buf_zone, assume_unique=False)
+                                    # 保留的老持仓中，cant_sell 的（停牌不能卖）自然保留
+                                    kept = np.setdiff1d(kept, cant_sell, assume_unique=False)
+                                    deficit = long_n - len(kept)
+                                    if deficit > 0:
+                                        # 从严格 top-N 补足不在 kept 的
+                                        refill_pool = np.setdiff1d(ordered_sel[:long_n], kept, assume_unique=False)
+                                        refill = refill_pool[:deficit]
+                                        chosen = np.concatenate([kept, refill]).astype(int)
+                                    else:
+                                        chosen = kept[:long_n].astype(int)
+                            # ── P1-2 No-Trade Band：权重偏离 ≤ band 则不调 ──
+                            band = float(getattr(cfg, "no_trade_band", 0.0) or 0.0)
+                            if band > 0.0 and not long_short and (hold > 0).any():
+                                old_members = np.where(hold > 0)[0]
+                                # 等权组合下权重偏离 ≈ 成员变化比例
+                                changed = len(np.setdiff1d(chosen, old_members)) / max(len(chosen), 1)
+                                if changed <= band:
+                                    # band 内不调：沿用老持仓
+                                    new_hold = hold.copy()
+                                    last_chosen = [codes_used[int(c)] for c in old_members]
+                                    # 跳过下面的 chosen 赋值
+                                    long_stuck = float(np.maximum(hold[cant_sell], 0).sum()) if len(cant_sell) else 0.0
+                                    # 标记跳过
+                                    chosen = None
+                            if chosen is not None:
+                                long_stuck = float(np.maximum(hold[cant_sell], 0).sum()) if len(cant_sell) else 0.0
+                                remain_long = 1.0 - long_stuck
+                                new_hold[chosen] = remain_long / len(chosen)
+                                last_chosen = [codes_used[int(c)] for c in chosen]
                             if long_short:
                                 shorts = ordered_sel[-short_count:]
                                 short_stuck = float(np.maximum(-hold[cant_sell], 0).sum()) if len(cant_sell) else 0.0

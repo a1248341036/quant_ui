@@ -62,6 +62,13 @@ class BacktestConfig:
     min_positions: int = 1
     max_positions: int | None = None
     min_score: float | None = None
+    # ── P1 换手降低（2026-09 新增，默认 0.0 向后兼容）──
+    # buffer_ratio：buffer zone 比例（M = round(long_n × buffer_ratio)）。
+    # 调仓日老持仓落在 top-(N+M) 内则保留，空缺从 top-N 补足。默认 0.0 = 严格 top-N。
+    # no_trade_band：no-trade band 阈值。调仓日权重偏离 ≤ band 时不调（沿用老持仓）。
+    # 默认 0.0 = 总是调。等权组合下权重偏离 ≈ 成员变化比例。
+    buffer_ratio: float = 0.0
+    no_trade_band: float = 0.0
     execution_profile: AssetExecutionProfile | None = None
     share_classes: dict[str, str] | None = None
     spread_bps: float | None = None
@@ -144,6 +151,8 @@ def run_backtest(
     screener_min_ic: float = 0.02,
     screener_max_corr: float = 0.7,
     screener_factors: list[str] | None = None,
+    buffer_ratio: float = 0.0,
+    no_trade_band: float = 0.0,
 ) -> dict:
     """事件驱动回测：T+1、一手 100 股、费用、可承载性过滤。
 
@@ -214,5 +223,7 @@ def run_backtest(
         screener_min_ic=screener_min_ic,
         screener_max_corr=screener_max_corr,
         screener_factors=screener_factors,
+        buffer_ratio=buffer_ratio,
+        no_trade_band=no_trade_band,
     )
     return run_backtest_config(cfg)
