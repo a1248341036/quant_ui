@@ -150,8 +150,8 @@ def test_run_engine_gate_passes_buffer_band(panel):
     mi_panel["datetime"] = pd.to_datetime(mi_panel["date"].values)
     mi_panel["instrument"] = mi_panel["code"]
     mi_panel = mi_panel.drop(columns=["date", "code"]).set_index(["datetime", "instrument"])
-    # amount 千元 → 元（与 alpha_panel_to_engine_frame stock 口径一致）
-    mi_panel["amount"] = mi_panel["amount"] * 1000.0
+    # conftest panel amount 已是元（rng.uniform(5e7, 2e8)），与 main 的
+    # alpha_panel_to_engine_frame stock 口径一致（amount_mult=1.0），不再 ×1000。
     # turnover 百分数 → 比例
     mi_panel["turnover_rate"] = mi_panel["turnover"] / 100.0
 
