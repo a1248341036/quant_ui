@@ -48,15 +48,8 @@
     影线/形态几何 `WICK_EFFICIENCY`/`KLINE_GEOMETRY`、量钟 `VOLUME_CLOCK_VPIN`、量价互信息
     `MUTUAL_INFO_LAG`、排列熵 `TS_PERMUTATION_ENTROPY`、缺口 `PRICE_GAP_*`、分型 `TS_LAST_*FRACTAL`、
     趋势非参数度量 `TS_TREND_RANK`。冷门算子只是低相关性的候选载体，**不能替代机制三问**。
-  - **冷门算子鼓励（软引导，非硬约束）**：每轮 D 轨 ≥6 条新族中，**建议至少 1 条**使用以下冷门算子族之一
-    作为核心信号源（不是外层中性化/平滑套壳）：`CROWD_SHARE`/`CROWD_MEAN_RATIO`/`CROWD_CONTRAST`/
-    `CROWD_RANK_WEIGHTED`（拥挤度）、`PRICE_GAP_SIZE`/`PRICE_GAP_FILL`/`PRICE_GAP_EVENT`（跳空缺口）、
-    `TS_LAST_TOPFRACTAL`/`TS_LAST_BOTTOMFRACTAL`/`TS_LAST_ARGTOPFRACTAL`/`TS_LAST_ARGBOTTOMFRACTAL`（缠论分型）、
-    `CHIP_COM_W_GAP`/`CHIP_PEAK_SHARPNESS`（筹码缺口/锐度）、`WICK_EFFICIENCY`/`KLINE_GEOMETRY`（影线/几何）、
-    `VOLUME_CLOCK_VPIN`/`MUTUAL_INFO_LAG`/`TS_PERMUTATION_ENTROPY`/`TS_TREND_RANK`（量钟/互信息/熵/趋势）。
-    历史统计：这些算子使用率 <2%，但都有清晰经济机制（见「A 股市场机制」§4b）——
-    拥挤回吐、缺口回补、分型转折、筹码压力、影线压力、量价信息流。每轮注入的"算子使用分布"块
-    会实时统计已用算子频次并推荐低频冷门算子——按分布引导走，不要扎堆在少数算子上。
+    每轮注入的"算子使用分布"块会实时统计已用算子频次并推荐低频冷门算子——按分布引导走，
+    不要扎堆在少数算子上。
 - **新族晋级**：新族因子 |IC| ≥ 0.02 即成为新父本，纳入 A/B/C 轨深耕；连续 3 个新族 IC < 0.01 → 该机制记入负证据，本轮再换一个机制。
 - **禁止低级信号叠加（硬约束）**：D 轨表达式顶层**禁止**使用 `ADD(RANK(x), RANK(y))` 或 `SUBTRACT(RANK(x), RANK(y))` 这种"两个独立信号简单加减"的形式——这只是把两个弱信号拼在一起，没有经济机制上的交互。如果确实需要融合多个信息源，必须使用**至少一层结构化交互算子**：门控 `GATED_SIGNAL`、组内排名 `CS_GROUP_RANK`、残差化 `CS_RESIDUALIZE`、背离 `DIVERGENCE_RANK`、分段状态 `PIECEWISE_STATE`、时序相关 `TS_CORR`/`TS_RANKCORR`、必要条件 `IF_THEN_ELSE`。例外：`ADD(x, RANK(y))` 中 x 本身已经是复合结构（如 `CS_RESIDUALIZE(...)` 输出）时不在此列——拦截的是"两个裸 RANK/TS_ 信号直接相加"。
 - **单机制深度优先**：鼓励在单一信息源上构建多层算子链（如 `TS_PCTCHANGE → CS_ZSCORE → CS_NEUTRALIZE → TS_DECAY`），而非拼接多个浅层信号。单机制深度因子有更清晰的因果链条，且与已有因子正交性更好。
