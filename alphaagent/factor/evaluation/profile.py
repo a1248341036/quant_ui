@@ -74,6 +74,16 @@ def default_evaluation_profiles() -> dict[str, EvaluationProfile]:
             transforms=_BASE_TRANSFORMS,
             metrics=({"plugin": "cross_sectional_core"},),
         ),
+        # 换手率预筛 profile：lite 过线后、全量之前单独跑，只算 quantile_portfolio
+        # 的 avg_daily_side_turnover（depth_ks=[] 关掉深度曲线、tradable_domain=False
+        # 关掉可成交域透镜第二路调用，只保留主口径 ~2-3s）。换手率 > 0.5 直接短路，
+        # 省掉全量 fmb/monthly/long_short 等剩余 ~7s 诊断件。实测 lite 过线因子 89%
+        # 换手率 > 0.5，此预筛能短路绝大多数全量评估。
+        "train_screen_turnover": EvaluationProfile(
+            "train_screen_turnover", "train",
+            transforms=_BASE_TRANSFORMS,
+            metrics=({"plugin": "quantile_portfolio", "params": {"groups": 10, "cost_bps": 0.0, "depth_ks": [], "tradable_domain": False}},),
+        ),
         "validation": EvaluationProfile(
             "validation", "val",
             transforms=_BASE_TRANSFORMS, metrics=_BASE_METRICS,

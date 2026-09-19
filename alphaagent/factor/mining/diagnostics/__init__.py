@@ -94,6 +94,11 @@ class DiagnosticContext:
         # 永远为 None，换手率诊断器（要求 ctx.passed）从不触发。
         if passed_val is None and result.get("screen_stage") == "full":
             passed_val = True
+        # 2026-09-19 换手率预筛：screen_stage="turnover_rejected" 意味着 lite 已过线
+        # 但换手率 > 0.5 被预筛短路，此时 passed=True（lite 过线），让换手率诊断器
+        # 触发 block_submit 给 LLM "请勿提交" 反馈。
+        if passed_val is None and result.get("screen_stage") == "turnover_rejected":
+            passed_val = True
 
         return cls(
             expr=expr or "",
