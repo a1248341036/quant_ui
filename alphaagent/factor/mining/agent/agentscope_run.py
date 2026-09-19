@@ -668,11 +668,13 @@ async def run_factor_mining_agentscope(
             enable_yield_block=bool(policy.get("enable_yield_block", True)),
             enable_diversity_block=bool(policy.get("enable_diversity_block", True)),
             enable_structure_stats_block=bool(policy.get("enable_structure_stats_block", True)),
+            enable_operator_diversity_block=bool(policy.get("enable_operator_diversity_block", True)),
             recent_batch=None if focus else [
                 {"expression": r.get("expression")}
                 for r in tool_call_rows[-8:]
                 if r.get("expression")
             ] or None,
+            all_attempts=tool_call_rows or None,
             facet_scope=facet_scope,
             facet_required=facet_required,
         )

@@ -24,6 +24,56 @@ from .expressions import (
     FACET_DEFS,
 )
 
+# ── 算子分布软引导（_operator_diversity_block 用）──
+# 套壳算子（中性化/平滑/标准化/分组工具）：每个因子都套一层，频次虚高，
+# 不参与"信号算子分布"判断。
+_SHELL_OPS = frozenset({
+    "LOG", "CS_RESIDUALIZE", "CS_WINSORIZE", "CS_ZSCORE", "CS_DEMEAN",
+    "CS_NEUTRALIZE", "CS_RANK", "RANK", "NEG", "ABS", "SIGN",
+    "WMA", "EMA", "TS_MEAN", "SMA", "TS_MEDIAN", "TS_DECAY_LINEAR",
+    "CS_BUCKET", "CS_GROUP_RANK",
+})
+
+# 冷门算子清单（与 strategy_tracks.py D 轨 + market_mechanisms.py §4b 对齐）：
+# 历史使用率 <2%，都有清晰经济机制。软引导优先推荐这些。
+_COLD_OPS = frozenset({
+    "CROWD_SHARE", "CROWD_MEAN_RATIO", "CROWD_CONTRAST", "CROWD_RANK_WEIGHTED",
+    "PRICE_GAP_SIZE", "PRICE_GAP_FILL", "PRICE_GAP_EVENT",
+    "TS_LAST_TOPFRACTAL", "TS_LAST_BOTTOMFRACTAL",
+    "TS_LAST_ARGTOPFRACTAL", "TS_LAST_ARGBOTTOMFRACTAL",
+    "CHIP_COM_W_GAP", "CHIP_PEAK_SHARPNESS",
+    "WICK_EFFICIENCY", "KLINE_GEOMETRY",
+    "VOLUME_CLOCK_VPIN", "MUTUAL_INFO_LAG",
+    "TS_PERMUTATION_ENTROPY", "TS_TREND_RANK",
+    "CHIP_PEAK_LOC", "CHIP_MASS_ASYM", "CHIP_ENTROPY",
+})
+
+# 冷门算子一句话机制提示（注入时附上，降低 LLM 编三问的门槛）
+_COLD_OP_HINT = {
+    "CROWD_SHARE": "拥挤度：散户/游资集中涌入某维度，拥挤峰值后回吐",
+    "CROWD_MEAN_RATIO": "拥挤度：成交权重在环境桶的集中度",
+    "CROWD_CONTRAST": "拥挤度：高低环境桶的成交对比",
+    "CROWD_RANK_WEIGHTED": "拥挤度：按排名加权的拥挤度",
+    "PRICE_GAP_SIZE": "跳空缺口幅度：信息冲击的极端形式",
+    "PRICE_GAP_FILL": "缺口回补进度：经典均值回归来源",
+    "PRICE_GAP_EVENT": "缺口事件计数：累积跳空势能",
+    "TS_LAST_TOPFRACTAL": "缠论顶分型：顶分型确认后趋势反转概率升高",
+    "TS_LAST_BOTTOMFRACTAL": "缠论底分型：底分型确认后反弹概率升高",
+    "TS_LAST_ARGTOPFRACTAL": "距顶分型距离：距顶越近压力越大",
+    "TS_LAST_ARGBOTTOMFRACTAL": "距底分型距离：距底越远超跌反弹势能越大",
+    "CHIP_COM_W_GAP": "筹码峰与现价缺口：套牢盘压力位距离",
+    "CHIP_PEAK_SHARPNESS": "筹码峰锐度：锐峰=主力持仓稳定，钝峰=筹码分散",
+    "WICK_EFFICIENCY": "影线效率：上影线=日内冲高回落压力",
+    "KLINE_GEOMETRY": "K线几何：实体与影线的形态结构",
+    "VOLUME_CLOCK_VPIN": "量钟VPIN：知情交易概率，量价分歧信号",
+    "MUTUAL_INFO_LAG": "量价互信息：量价滞后相关性",
+    "TS_PERMUTATION_ENTROPY": "排列熵：序列复杂度/随机性",
+    "TS_TREND_RANK": "趋势非参数度量：秩-based 趋势强度",
+    "CHIP_PEAK_LOC": "筹码峰位置：套牢盘/支撑位定位",
+    "CHIP_MASS_ASYM": "筹码质量不对称：上下方筹码失衡",
+    "CHIP_ENTROPY": "筹码熵：筹码分布集中度",
+}
+
 # 注入文本自解释化：信号族 / 编辑类型的中文展开（缺省回退原文）
 FAMILY_LABELS = {
     # 9 大粗族中文展开
@@ -1101,6 +1151,78 @@ class RetrievalMixin:
         ]
         return "\n".join(lines)
 
+    # ── 算子分布软引导（全量尝试统计，非硬约束）──
+
+    def _operator_diversity_block(
+        self, all_attempts: list[dict[str, Any]] | None = None
+    ) -> str:
+        """算子分布软引导：统计全量已评估尝试的信号算子频次，注入分布 + 低频冷门算子推荐。
+
+        与 _diversity_block（数据面覆盖，近 8 次）正交：本块看全量信号算子分布，
+        纯软引导不拦截。注入条件：总评估 ≥20 且 Top3 信号算子集中度 ≥50%（扎堆才注入）。
+        """
+        if not all_attempts:
+            return ""
+        # 收集所有成功评估的表达式
+        exprs = [
+            str(r.get("expression") or "")
+            for r in all_attempts
+            if r.get("expression") and r.get("ok")
+        ]
+        if len(exprs) < 20:
+            return ""
+        # 统计信号算子频次（排除套壳算子）
+        signal_counter: Counter[str] = Counter()
+        for e in exprs:
+            for op in expression_ops(e):
+                op_u = op.upper()
+                if op_u not in _SHELL_OPS:
+                    signal_counter[op_u] += 1
+        total_signal = sum(signal_counter.values())
+        if total_signal == 0:
+            return ""
+        # Top3 集中度
+        top3 = signal_counter.most_common(3)
+        top3_count = sum(c for _, c in top3)
+        top3_pct = top3_count / total_signal
+        if top3_pct < 0.50:
+            return ""  # 已经够分散，不注入
+        # 构建分布文本
+        dist_lines = []
+        for op, cnt in signal_counter.most_common(8):
+            pct = round(cnt / total_signal * 100, 1)
+            tag = " [冷门]" if op in _COLD_OPS else ""
+            dist_lines.append(f"  {op} {cnt}次({pct}%){tag}")
+        # 低频/未用冷门算子（按使用次数升序，取前 8 个）
+        cold_status = []
+        for op in sorted(_COLD_OPS, key=lambda o: signal_counter.get(o, 0)):
+            cnt = signal_counter.get(op, 0)
+            if cnt > 0 and cnt / total_signal >= 0.03:
+                continue  # 已经用得不少（≥3%），不再推荐
+            hint = _COLD_OP_HINT.get(op, "")
+            cold_status.append((op, cnt, hint))
+            if len(cold_status) >= 8:
+                break
+        if not cold_status:
+            return ""  # 冷门算子都用了，不注入
+        lines = [
+            "",
+            "### 算子使用分布（本轮软引导，非硬约束）",
+            f"已评估 {len(exprs)} 次，信号算子分布（Top8，排除中性化/平滑套壳）：",
+            *dist_lines,
+            f"Top3 信号算子占 {round(top3_pct * 100)}%——探索扎堆在少数算子上。",
+            "",
+            "低频/未用冷门算子（历史使用率 <2%，都有清晰经济机制，见「A 股市场机制」§4b）：",
+        ]
+        for op, cnt, hint in cold_status:
+            usage = f"{cnt}次" if cnt > 0 else "从未用过"
+            lines.append(f"  {op}（{usage}）——{hint}")
+        lines.append(
+            "本轮优先尝试上述低频算子，打破扎堆。选机制→匹配算子→补全三问。"
+            "这不是硬性配额，但分布越均匀，探索广度越高，撞到低拥挤 alpha 的概率越大。"
+        )
+        return "\n".join(lines)
+
     # ── 主入口 ──
 
     def context_for(
@@ -1119,7 +1241,9 @@ class RetrievalMixin:
         enable_yield_block: bool = True,
         enable_diversity_block: bool = True,
         enable_structure_stats_block: bool = True,
+        enable_operator_diversity_block: bool = True,
         recent_batch: list[dict[str, Any]] | None = None,
+        all_attempts: list[dict[str, Any]] | None = None,
         max_inject_chars: int | None = None,
         facet_scope: set[str] | None = None,
         facet_required: set[str] | None = None,
@@ -1215,6 +1339,13 @@ class RetrievalMixin:
         div_block = self._diversity_block(recent_batch) if enable_diversity_block else ""
         if div_block:
             secondary.append((3, div_block))
+        op_div_block = (
+            self._operator_diversity_block(all_attempts)
+            if enable_operator_diversity_block
+            else ""
+        )
+        if op_div_block:
+            secondary.append((4, op_div_block))
 
         kept: list[str] = []
         for _, text in sorted(secondary, key=lambda p: p[0]):
