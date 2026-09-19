@@ -4,6 +4,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from alphaagent.dsl.core.ast import parse_ast, _parse_var_table
+
 # 检测顶层 ADD/SUBTRACT(RANK(x), RANK(y)) 且 x/y 均为简单 TS_/$field 变换（无结构化交互算子）。
 # 例外：如果某个操作数本身含 CS_RESIDUALIZE / CS_NEUTRALIZE / GATED_SIGNAL / CS_GROUP_RANK /
 # DIVERGENCE_RANK / PIECEWISE_STATE / IF_THEN_ELSE / TS_CORR / TS_RANKCORR 等结构化算子，则放行。
@@ -119,6 +121,92 @@ _AUX_FIELDS = frozenset({
 })
 
 
+def _ast_signal_fingerprint(expr: str) -> str:
+    """基于 AST 的信号根指纹（归一化结构字符串）。
+
+    比 _signal_fingerprint（正则版）更精确：按真实树拓扑递归归一化，无误匹配。
+    核心改进：先剥掉外层归一化/平滑/基础运算包装，只对**信号根子树**算指纹。
+    这样 CS_ZSCORE(CS_WINSORIZE(WMA(dev,5))) 与 CS_ZSCORE(NEG(WMA(dev,5))) 都剥到 dev，
+    指纹相同——它们本质是同一个 vwap 反转信号根，只是归一化层排列不同。
+
+    归一化规则：
+    - 外层归一化（CS_ZSCORE/CS_WINSORIZE/RANK/CS_RESIDUALIZE/...）→ 剥掉
+    - 外层平滑（WMA/EMA/TS_MEAN/...）→ 剥掉（信号根在平滑之下）
+    - 外层基础运算（NEG/ABS）→ 剥掉（符号/绝对值不改信号本质）
+    - 信号根子树：数字 → N，$ 字段保留原名（辅助字段 → AUX），中间变量回溯，
+      平滑算子统一成 SMOOTH（让换平滑算子的变体指纹相同）
+
+    返回归一化结构字符串。空串表示解析失败（回落到正则版）。
+
+    示例：
+      CS_ZSCORE(WMA(dev,5)) where dev=SUBTRACT($adj_close,$adj_vwap)
+        → 剥 CS_ZSCORE+WMA → 信号根 = SUBTRACT($adj_close,$adj_vwap)
+        → "(SUBTRACT,$adj_close,$adj_vwap)"
+      CS_ZSCORE(NEG(WMA(dev,10))) 同 dev
+        → 剥 CS_ZSCORE+NEG+WMA → 信号根 = SUBTRACT($adj_close,$adj_vwap)
+        → "(SUBTRACT,$adj_close,$adj_vwap)"  ← 同指纹，熔断
+      CS_ZSCORE(WMA(overnight,6)) where overnight=SUBTRACT($adj_open,DELAY($adj_close,1))
+        → 信号根 = SUBTRACT($adj_open,(DELAY,$adj_close,N))
+        → "(SUBTRACT,$adj_open,(DELAY,$adj_close,N))"  ← 字段不同，不熔断
+    """
+    if not expr:
+        return ""
+    ast = parse_ast(expr)
+    if ast is None:
+        return ""
+    var_table = _parse_var_table(expr) if "\n" in expr else {}
+
+    def _resolve_var(node):
+        """回溯中间变量到赋值表达式的 AST。"""
+        seen: set[str] = set()
+        while node is not None and node.type == "var" and node.value in var_table:
+            if node.value in seen:
+                return None
+            seen.add(node.value)
+            node = parse_ast(var_table[node.value])
+        return node
+
+    # 剥外层归一化/平滑/基础运算（NEG/ABS），找信号根子树
+    _STRIP_OPS = _NORMALIZE_OPS | _SMOOTHING_OPS | {"NEG", "ABS"}
+    signal_node = ast
+    while signal_node is not None and signal_node.is_call() and signal_node.op.upper() in _STRIP_OPS:
+        signal_node = signal_node.args[0] if signal_node.args else None
+        signal_node = _resolve_var(signal_node)
+    if signal_node is None:
+        return ""
+
+    def _norm(node) -> str:
+        if node is None:
+            return ""
+        if node.type == "num":
+            return "N"
+        if node.type == "var":
+            # 回溯中间变量（var_table 里的 key 是无 $ 前缀的变量名）
+            if var_table and node.value in var_table:
+                sub = parse_ast(var_table[node.value])
+                if sub is not None:
+                    return _norm(sub)
+            # 剩余 var 节点都是 $ 字段（parse_ast 把 $adj_close 存成 value='adj_close'）
+            # 保留字段名以区分信号源（$adj_vwap vs $adj_open），辅助字段归一成 AUX
+            val = "$" + node.value
+            return "AUX" if val.lower() in _AUX_FIELDS else val
+        if node.type == "call":
+            op = node.op.upper()
+            # 平滑算子统一替换成 SMOOTH（信号根子树内部的平滑也算同族变体）
+            if op in _SMOOTHING_OPS:
+                op = "SMOOTH"
+            parts = [op] + [_norm(a) for a in node.args]
+            return "(" + ",".join(parts) + ")"
+        if node.type == "binop":
+            parts = [node.op] + [_norm(a) for a in node.args]
+            return "(" + ",".join(parts) + ")"
+        if node.type == "unary":
+            return "(" + node.op + "," + _norm(node.args[0]) + ")"
+        return node.type
+
+    return _norm(signal_node)
+
+
 def _signal_fingerprint(expr: str) -> tuple[frozenset[str], frozenset[str]]:
     """提取表达式的信号根指纹（核心信号算子集合, 信号字段集合）。
 
@@ -185,10 +273,18 @@ def _homogenization_block(
         return None
     if not _has_smoothing(expr):
         return None
-    current_sig = _signal_fingerprint(expr)
-    # 信号根为空（无核心算子且无字段）→ 不参与熔断，避免误伤
-    if not current_sig[0] and not current_sig[1]:
-        return None
+    # 优先用 AST 指纹（精确嵌套结构 + 平滑算子统一 + 字段名保留），
+    # 解析失败回落到正则版 _signal_fingerprint
+    current_ast = _ast_signal_fingerprint(expr)
+    if current_ast:
+        current_sig: Any = current_ast
+        sig_kind = "ast"
+    else:
+        current_sig = _signal_fingerprint(expr)
+        # 信号根为空（无核心算子且无字段）→ 不参与熔断，避免误伤
+        if not current_sig[0] and not current_sig[1]:
+            return None
+        sig_kind = "regex"
 
     consecutive = 0
     for item in reversed(recent_evals):
@@ -196,20 +292,31 @@ def _homogenization_block(
             break
         if not item.get("has_smoothing"):
             break
+        # 优先比对 AST 指纹，其次比对正则指纹
+        prev_ast = item.get("signal_fingerprint_ast")
         prev_sig = item.get("signal_fingerprint")
-        if isinstance(prev_sig, tuple) and prev_sig == current_sig:
+        matched = False
+        if sig_kind == "ast" and isinstance(prev_ast, str) and prev_ast:
+            matched = prev_ast == current_sig
+        elif sig_kind == "regex" and isinstance(prev_sig, tuple):
+            matched = prev_sig == current_sig
+        if matched:
             consecutive += 1
         else:
             break
 
     if consecutive >= max_consecutive:
-        ops_str = ", ".join(sorted(current_sig[0])) or "(无核心算子)"
-        fields_str = ", ".join(sorted(current_sig[1])) or "(无字段)"
+        if sig_kind == "ast":
+            sig_desc = current_sig[:200]
+        else:
+            ops_str = ", ".join(sorted(current_sig[0])) or "(无核心算子)"
+            fields_str = ", ".join(sorted(current_sig[1])) or "(无字段)"
+            sig_desc = f"算子: {ops_str}; 字段: {fields_str}"
         return {
             "ok": False,
             "error": (
                 f"homogenization_smoothing_block: 已连续 {consecutive} 次在相同信号根"
-                f"（算子: {ops_str}; 字段: {fields_str}）上套平滑算子做变体。"
+                f"（{sig_desc}）上套平滑算子做变体。"
                 f"平滑只降换手不改信号本质，继续微调窗口纯属浪费算力。"
                 f"请更换信号根结构（换数据源/换核心算子/换机制），不要再用同一信号根+平滑。"
                 f"不要再用同一信号族+平滑。"

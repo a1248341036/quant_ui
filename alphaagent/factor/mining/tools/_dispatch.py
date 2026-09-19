@@ -27,7 +27,7 @@ from ._schemas import (
     _SUBMIT_PARAMETERS,
     _VAL_PARAMETERS,
 )
-from ._prefilter import _is_naive_signal_addition, _signal_fingerprint, _homogenization_block
+from ._prefilter import _is_naive_signal_addition, _signal_fingerprint, _ast_signal_fingerprint, _homogenization_block
 
 
 _PREDICTION_SOFT_LIMIT = 3
@@ -336,6 +336,7 @@ class _DispatchMixin:
                 "turnover": float(t_val) if t_val is not None else None,
                 "has_smoothing": bool(all_smoothing_ops(expr)),
                 "signal_fingerprint": _signal_fingerprint(expr),
+                "signal_fingerprint_ast": _ast_signal_fingerprint(expr),
             }
             recent = getattr(self, "_recent_evals", None)
             if recent is None:
@@ -584,7 +585,7 @@ class _DispatchMixin:
             )
             if homo_block is not None:
                 try:
-                    log_step("homogenization.block", f"signal_fingerprint={_signal_fingerprint(expr)} consecutive>=homo_policy.max_consecutive")
+                    log_step("homogenization.block", f"signal_fingerprint_ast={_ast_signal_fingerprint(expr)} consecutive>=homo_policy.max_consecutive")
                 except Exception:
                     pass
                 return homo_block
@@ -656,7 +657,7 @@ class _DispatchMixin:
         )
         if homo_block is not None:
             try:
-                log_step("homogenization.block", f"signal_fingerprint={_signal_fingerprint(expr)} tool={name}")
+                log_step("homogenization.block", f"signal_fingerprint_ast={_ast_signal_fingerprint(expr)} tool={name}")
             except Exception:
                 pass
             return homo_block
@@ -775,7 +776,7 @@ class _DispatchMixin:
         )
         if homo_block is not None:
             try:
-                log_step("homogenization.block", f"signal_fingerprint={_signal_fingerprint(str(expr or ''))} tool=submit_factor")
+                log_step("homogenization.block", f"signal_fingerprint_ast={_ast_signal_fingerprint(str(expr or ''))} tool=submit_factor")
             except Exception:
                 pass
             return homo_block

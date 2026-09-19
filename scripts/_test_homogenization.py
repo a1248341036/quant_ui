@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from alphaagent.factor.mining.tools._prefilter import (
     _signal_fingerprint,
     _signal_ops_fingerprint,
+    _ast_signal_fingerprint,
     _has_smoothing,
     _homogenization_block,
 )
@@ -106,8 +107,10 @@ CS_ZSCORE(sm)
     ]
     # 构造 recent_evals：前 3 次同族（换窗口）
     sig = _signal_fingerprint(exprs[0])
+    sig_ast = _ast_signal_fingerprint(exprs[0])
     recent = [
-        {"fingerprint": f"fp{i}", "turnover": 0.3, "has_smoothing": True, "signal_fingerprint": sig}
+        {"fingerprint": f"fp{i}", "turnover": 0.3, "has_smoothing": True,
+         "signal_fingerprint": sig, "signal_fingerprint_ast": sig_ast}
         for i in range(3)
     ]
     # 第 4 次同族 → 连续 3 次在 recent 里 → 触发
@@ -127,8 +130,10 @@ sm = WMA(overnight, 6)
 CS_ZSCORE(sm)
 """
     sig = _signal_fingerprint(expr)
+    sig_ast = _ast_signal_fingerprint(expr)
     recent = [
-        {"fingerprint": f"fp{i}", "turnover": 0.3, "has_smoothing": True, "signal_fingerprint": sig}
+        {"fingerprint": f"fp{i}", "turnover": 0.3, "has_smoothing": True,
+         "signal_fingerprint": sig, "signal_fingerprint_ast": sig_ast}
         for i in range(3)
     ]
     block = _homogenization_block(expr, recent, max_consecutive=3, enabled=True)
@@ -141,7 +146,9 @@ def test_homogenization_block_no_smoothing():
     """不含平滑 → 不拦截。"""
     expr = "RANK(CHIP_MASS_ASYM($adj_close, $adj_low, $adj_high, $volume, 30, $float_cap))"
     recent = [
-        {"fingerprint": "fp1", "turnover": 0.3, "has_smoothing": True, "signal_fingerprint": _signal_fingerprint("WMA(CHIP_MASS_ASYM($adj_close,1),5)")},
+        {"fingerprint": "fp1", "turnover": 0.3, "has_smoothing": True,
+         "signal_fingerprint": _signal_fingerprint("WMA(CHIP_MASS_ASYM($adj_close,1),5)"),
+         "signal_fingerprint_ast": _ast_signal_fingerprint("WMA(CHIP_MASS_ASYM($adj_close,1),5)")},
     ]
     block = _homogenization_block(expr, recent, max_consecutive=3, enabled=True)
     assert block is None, "当前表达式不含平滑，不应拦截"
@@ -160,8 +167,14 @@ overnight = DIVIDE(SUBTRACT($adj_open, DELAY($adj_close, 1)), DELAY($adj_close, 
 sm = WMA(overnight, 6)
 CS_ZSCORE(sm)
 """)
+    sig_overnight_ast = _ast_signal_fingerprint("""
+overnight = DIVIDE(SUBTRACT($adj_open, DELAY($adj_close, 1)), DELAY($adj_close, 1))
+sm = WMA(overnight, 6)
+CS_ZSCORE(sm)
+""")
     recent = [
-        {"fingerprint": f"fp{i}", "turnover": 0.3, "has_smoothing": True, "signal_fingerprint": sig_overnight}
+        {"fingerprint": f"fp{i}", "turnover": 0.3, "has_smoothing": True,
+         "signal_fingerprint": sig_overnight, "signal_fingerprint_ast": sig_overnight_ast}
         for i in range(3)
     ]
     block = _homogenization_block(expr_vwap, recent, max_consecutive=3, enabled=True)
@@ -177,8 +190,10 @@ sm = WMA(chip, 5)
 CS_ZSCORE(sm)
 """
     sig = _signal_fingerprint(expr)
+    sig_ast = _ast_signal_fingerprint(expr)
     recent = [
-        {"fingerprint": f"fp{i}", "turnover": 0.3, "has_smoothing": True, "signal_fingerprint": sig}
+        {"fingerprint": f"fp{i}", "turnover": 0.3, "has_smoothing": True,
+         "signal_fingerprint": sig, "signal_fingerprint_ast": sig_ast}
         for i in range(3)
     ]
     block = _homogenization_block(expr, recent, max_consecutive=3, enabled=False)
@@ -194,9 +209,12 @@ sm = WMA(chip, 5)
 CS_ZSCORE(sm)
 """
     sig = _signal_fingerprint(expr)
+    sig_ast = _ast_signal_fingerprint(expr)
     recent = [
-        {"fingerprint": "fp1", "turnover": 0.3, "has_smoothing": True, "signal_fingerprint": sig},
-        {"fingerprint": "fp2", "turnover": 0.4, "has_smoothing": True, "signal_fingerprint": sig},
+        {"fingerprint": "fp1", "turnover": 0.3, "has_smoothing": True,
+         "signal_fingerprint": sig, "signal_fingerprint_ast": sig_ast},
+        {"fingerprint": "fp2", "turnover": 0.4, "has_smoothing": True,
+         "signal_fingerprint": sig, "signal_fingerprint_ast": sig_ast},
     ]
     block = _homogenization_block(expr, recent, max_consecutive=3, enabled=True)
     assert block is None, "连续 2 次 < 3，不应拦截"
@@ -211,10 +229,14 @@ sm = WMA(chip, 5)
 CS_ZSCORE(sm)
 """
     sig = _signal_fingerprint(expr)
+    sig_ast = _ast_signal_fingerprint(expr)
     recent = [
-        {"fingerprint": "fp1", "turnover": 0.3, "has_smoothing": True, "signal_fingerprint": sig},
-        {"fingerprint": "fp2", "turnover": 0.4, "has_smoothing": False, "signal_fingerprint": sig},  # 中断
-        {"fingerprint": "fp3", "turnover": 0.5, "has_smoothing": True, "signal_fingerprint": sig},
+        {"fingerprint": "fp1", "turnover": 0.3, "has_smoothing": True,
+         "signal_fingerprint": sig, "signal_fingerprint_ast": sig_ast},
+        {"fingerprint": "fp2", "turnover": 0.4, "has_smoothing": False,
+         "signal_fingerprint": sig, "signal_fingerprint_ast": sig_ast},  # 中断
+        {"fingerprint": "fp3", "turnover": 0.5, "has_smoothing": True,
+         "signal_fingerprint": sig, "signal_fingerprint_ast": sig_ast},
     ]
     block = _homogenization_block(expr, recent, max_consecutive=3, enabled=True)
     assert block is None, "中间被不含平滑的评估中断，不应拦截"
