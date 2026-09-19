@@ -22,6 +22,7 @@ SEP_BEFORE = "\n\n"
 
 def render(ctx) -> str:  # noqa: ANN001
     spec = ctx.research_spec
+    batch_size = getattr(ctx, "max_tool_calls_per_round", 8) or 8
     return f"""# 因子构建接口
 
 ## 你的目标
@@ -33,10 +34,10 @@ def render(ctx) -> str:  # noqa: ANN001
 **【会话完成条件】** 挖掘会话的正式交付方式是调用 **`submit_factor`**。统计门槛（第一阶段）通过即写入候选池（`candidate_stored=true`），视为成功交付候选因子。正式库（`stored=true`）需同时通过统计精筛与 engine_gate 净值回测。**只要 train+val 评估有潜力且换手合规的因子，就应该调用 `submit_factor` 提交候选池**。仅完成 train/val 评估、口头总结或停在「建议入库」**不算交付**。查重失败时根据返回意见改写后再提交。
 
 - 会话已配置 train/val 日期与 label 列；工具结果中不再重复这些配置。
-- 每一轮：优先并行调用 **12~20 次** **`evaluate_factor(profile_id="train_screen")`**，用不同 `multi_line_expr` 探多条假设；train 上通过 profile rules 后，以 **`validation`** 和必要时 **`size_neutral_validation`** profile 检验泛化与风险调整。profile 是冻结的，不得临时修改其 transform、metric 或规则。validation 后 `FactorReviewer` 会给出新颖性审查意见，**仅供参考改进方向，不阻断提交**；只要 train+val 统计达标就应调用 `submit_factor`。
+- 每一轮：优先充分利用并发槽位（建议并发 **{batch_size} 次** **`evaluate_factor(profile_id="train_screen")`**），用不同 `multi_line_expr` 探多条假设；train 上通过 profile rules 后，以 **`validation`** 和必要时 **`size_neutral_validation`** profile 检验泛化与风险调整。profile 是冻结的，不得临时修改其 transform、metric 或规则。validation 后 `FactorReviewer` 会给出新颖性审查意见，**仅供参考改进方向，不阻断提交**；只要 train+val 统计达标就应调用 `submit_factor`。
 - 默认 **`include_detail_tables`: false**；需要按月/分品种明细时再设为 **true**。
 
 请遵循：
-- **相关性 + 鲁棒性双目标**；筛选用 **`abs(summary.ic)`** 与 **`abs(summary.rank_ic)`**；**负 IC 是有效负向 alpha**，不是错误。
+- **相关性 + 鲁棒性双目标**；筛选用 **`abs(summary.ic)`** 与 **`abs(summary.rank_ic)`**；**负 IC 是有效负向 alpha**（注：调用 `submit_factor` 提交前若仍为负向 alpha，必须顶层套 `NEG()` 转为正多头，以确保 engine_gate 净值回测买入高分端正确做多盈利）。
 - **中间变量命名**：蛇形英文名（如 `ma_w_dev`），避免 `x`、`tmp`。
 - 若 `ok` 为 false，修正 DSL 或列名。"""

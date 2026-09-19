@@ -27,7 +27,7 @@ from ._schemas import (
     _SUBMIT_PARAMETERS,
     _VAL_PARAMETERS,
 )
-from ._prefilter import _is_naive_signal_addition
+from ._prefilter import _is_naive_signal_addition, _signal_fingerprint, _ast_signal_fingerprint, _homogenization_block
 
 
 _PREDICTION_SOFT_LIMIT = 3
@@ -321,7 +321,7 @@ class _DispatchMixin:
             pass
 
     def _record_eval_signature(self, result: dict[str, Any], expr: str) -> None:
-        """记录最近一次训练评估的结构指纹 / 换手 / 是否含平滑，供 P1-7 熔断器消费。"""
+        """记录最近一次训练评估的结构指纹 / 换手 / 是否含平滑 / 信号根指纹，供熔断器消费。"""
         try:
             from alphaagent.dsl.core.ast import all_smoothing_ops, structure_fingerprint
 
@@ -335,6 +335,8 @@ class _DispatchMixin:
                 "fingerprint": structure_fingerprint(expr),
                 "turnover": float(t_val) if t_val is not None else None,
                 "has_smoothing": bool(all_smoothing_ops(expr)),
+                "signal_fingerprint": _signal_fingerprint(expr),
+                "signal_fingerprint_ast": _ast_signal_fingerprint(expr),
             }
             recent = getattr(self, "_recent_evals", None)
             if recent is None:
@@ -573,6 +575,20 @@ class _DispatchMixin:
                              "（GATED_SIGNAL / CS_RESIDUALIZE / DIVERGENCE_RANK / CS_GROUP_RANK / TS_CORR 等）。",
                     "error_type": "NaiveSignalAdditionBlock",
                 }
+            # 同质化平滑变体动态熔断：连续 N 次同一信号算子族+套平滑 → 拦截评估
+            homo_policy = getattr(self, "homogenization_policy", None) or {}
+            homo_block = _homogenization_block(
+                expr,
+                getattr(self, "_recent_evals", None),
+                max_consecutive=int(homo_policy.get("max_consecutive", 3)),
+                enabled=bool(homo_policy.get("enabled", True)),
+            )
+            if homo_block is not None:
+                try:
+                    log_step("homogenization.block", f"signal_fingerprint_ast={_ast_signal_fingerprint(expr)} consecutive>=homo_policy.max_consecutive")
+                except Exception:
+                    pass
+                return homo_block
             gate = self._memory_gate(expr, arguments)
             if isinstance(gate, dict) and gate.get("ok") is False:
                 return gate
@@ -631,6 +647,20 @@ class _DispatchMixin:
                          "（GATED_SIGNAL / CS_RESIDUALIZE / DIVERGENCE_RANK / CS_GROUP_RANK / TS_CORR 等）。",
                 "error_type": "NaiveSignalAdditionBlock",
             }
+        # 同质化平滑变体动态熔断（eval_on_train_set / eval_on_val_set 共用）
+        homo_policy = getattr(self, "homogenization_policy", None) or {}
+        homo_block = _homogenization_block(
+            expr,
+            getattr(self, "_recent_evals", None),
+            max_consecutive=int(homo_policy.get("max_consecutive", 3)),
+            enabled=bool(homo_policy.get("enabled", True)),
+        )
+        if homo_block is not None:
+            try:
+                log_step("homogenization.block", f"signal_fingerprint_ast={_ast_signal_fingerprint(expr)} tool={name}")
+            except Exception:
+                pass
+            return homo_block
 
         factor_name = arguments.get("factor_name") or "expr"
         include_detail = bool(arguments.get("include_detail_tables", False))
@@ -735,6 +765,21 @@ class _DispatchMixin:
                 "error": "comment_required_non_empty_string",
                 "error_type": "ToolArgumentsError",
             }
+
+        # 同质化平滑变体动态熔断（提交前同样拦截，防 LLM 绕过评估直接提交）
+        homo_policy = getattr(self, "homogenization_policy", None) or {}
+        homo_block = _homogenization_block(
+            str(expr or ""),
+            getattr(self, "_recent_evals", None),
+            max_consecutive=int(homo_policy.get("max_consecutive", 3)),
+            enabled=bool(homo_policy.get("enabled", True)),
+        )
+        if homo_block is not None:
+            try:
+                log_step("homogenization.block", f"signal_fingerprint_ast={_ast_signal_fingerprint(str(expr or ''))} tool=submit_factor")
+            except Exception:
+                pass
+            return homo_block
 
         gate = self._memory_gate(str(expr or ""), arguments)
         if isinstance(gate, dict) and gate.get("ok") is False:

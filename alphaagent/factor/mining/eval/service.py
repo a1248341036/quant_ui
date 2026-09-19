@@ -28,6 +28,15 @@ def _eval_lite_enabled() -> bool:
     return (os.environ.get("ALPHA_EVAL_LITE") or "").strip() != "0"
 
 
+def _turnover_prescreen_enabled() -> bool:
+    """换手率预筛开关（默认开）；``ALPHA_EVAL_TURNOVER_PRESCREEN=0`` 关闭。
+
+    lite 过线后单独跑 quantile_portfolio 取换手率，> 0.5 直接短路不跑全量。
+    实测 lite 过线因子 89% 换手率 > 0.5，此预筛省掉绝大多数全量评估。
+    """
+    return (os.environ.get("ALPHA_EVAL_TURNOVER_PRESCREEN") or "").strip() != "0"
+
+
 def _engine_result_to_legacy(raw: dict[str, Any]) -> dict[str, Any]:
     """把 EvaluationEngine 结果映射回旧 split 评估契约（format_eval_response 输入）。
 
@@ -228,6 +237,36 @@ class StockEvalService:
                 if m["plugin"] != "cross_sectional_core"
             ]
             return resp
+        # 换手率预筛（2026-09-19）：lite 过线后单独跑 quantile_portfolio 取换手率，
+        # > 0.5 直接短路（stage_one 换手硬门槛必拦），省掉全量 fmb/monthly/
+        # long_short 等剩余诊断件。实测 lite 过线因子 89% 换手率 > 0.5，此预筛
+        # 短路绝大多数全量评估。ALPHA_EVAL_TURNOVER_PRESCREEN=0 关闭退回全量。
+        if _turnover_prescreen_enabled():
+            raw_to = self.evaluation_engine.evaluate(
+                session,
+                profile_id="train_screen_turnover",
+                multi_line_expr=req.multi_line_expr,
+                factor_name=req.factor_name,
+                label_quantile_n=req.label_quantile_n,
+                include_detail_tables=False,
+                include_charts=False,
+            )
+            if raw_to.get("ok"):
+                qp = (raw_to.get("metrics") or {}).get("quantile_portfolio") or {}
+                turnover_val = qp.get("avg_daily_side_turnover") if isinstance(qp, dict) else None
+                if turnover_val is not None and float(turnover_val) > 0.5:
+                    # 换手超标短路：用 lite 的 core 指标 + 换手率组装响应，
+                    # 标记 screen_stage="turnover_rejected" 让 LLM 看到换手反馈
+                    legacy = _engine_result_to_legacy(raw_lite)
+                    resp = format_eval_response(legacy, expected_sign=None)
+                    resp["screen_stage"] = "turnover_rejected"
+                    resp["avg_daily_side_turnover"] = float(turnover_val)
+                    resp["avg_rebalance_side_turnover"] = qp.get("avg_rebalance_side_turnover")
+                    resp["skipped_diagnostics"] = [
+                        m["plugin"] for m in self.evaluation_engine.profile("train_screen").metrics
+                        if m["plugin"] not in ("cross_sectional_core", "quantile_portfolio")
+                    ]
+                    return resp
         raw_full = self.evaluation_engine.evaluate(
             session,
             profile_id="train_screen",

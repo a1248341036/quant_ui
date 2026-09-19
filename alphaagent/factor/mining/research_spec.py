@@ -188,6 +188,7 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
         "enable_saturation_block": True,    # 饱和度块（拥挤警告，secondary 优先级 1）
         "enable_yield_block": True,         # 产出率块（族产出率统计，secondary 优先级 2）
         "enable_diversity_block": True,     # 多样性块（面覆盖警告，secondary 优先级 3）
+        "enable_operator_diversity_block": True,  # 算子分布软引导（secondary 优先级 4）
         "enable_structure_stats_block": True,  # 结构命中率块（交互结构过线率，core 预留）
         "enable_sspm_write": True,          # SSPM 编辑统计写入（memory_cells 残差更新）
         "enable_distill": True,             # 经验蒸馏（distill_batch_experience / form_memory）

@@ -65,8 +65,8 @@ _CATALOG_GROUPS: list[tuple[str, Callable[[str], bool]]] = [
 ]
 
 _FOLD_SUMMARY = (
-    "- 基础四则/比较/初等函数（语义自明，直用）："
-    "`ADD/SUBTRACT/MULTIPLY/DIVIDE(df1, df2)` 逐元素四则；"
+    "- 基础运算/比较/初等函数（语义自明，直用）："
+    "`ADD/SUBTRACT/DIVIDE(df1, df2)` 逐元素运算（注意：默认禁止特征间使用 MULTIPLY 乘法，交互请改用 GATED_SIGNAL / CS_GROUP_RANK / CS_RESIDUALIZE 等结构化算子）；"
     "`GT/LT/GE/LE/EQ/NE(df1, df2)` 比较得 0/1 面板；`AND/OR` 组合布尔；"
     "`MAXIMUM/MINIMUM/MAX/MIN(x, y, z=None)` 逐元素极值（支持标量广播）；"
     "`ABS/SIGN/LOG/EXP/POW/SQRT/INV/NEG(df)` 初等函数；"

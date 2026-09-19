@@ -325,6 +325,7 @@ async def run_factor_mining_agentscope(
         focus_facets=getattr(config, "focus_facets", None),
         cognition_policy=(config.research_spec or {}).get("cognition_policy"),
         operator_policy=(config.research_spec or {}).get("operator_policy"),
+        homogenization_policy=(config.research_spec or {}).get("homogenization_policy"),
     )
     system_prompt = build_system_prompt(
         include_operator_catalog=include_operator_catalog,
@@ -336,6 +337,7 @@ async def run_factor_mining_agentscope(
         research_spec=config.research_spec,
         asset_type=ctx.asset_type,
         focus_facets=getattr(config, "focus_facets", None),
+        max_tool_calls_per_round=config.max_tool_calls_per_round,
     )
 
     log_dir = Path(log_dir)
@@ -390,6 +392,7 @@ async def run_factor_mining_agentscope(
         focus_facets=getattr(config, "focus_facets", None),
         cognition_policy=(config.research_spec or {}).get("cognition_policy"),
         operator_policy=(config.research_spec or {}).get("operator_policy"),
+        homogenization_policy=(config.research_spec or {}).get("homogenization_policy"),
     )
     system_prompt = build_system_prompt(
         include_operator_catalog=include_operator_catalog,
@@ -401,6 +404,7 @@ async def run_factor_mining_agentscope(
         research_spec=config.research_spec,
         asset_type=ctx.asset_type,
         focus_facets=getattr(config, "focus_facets", None),
+        max_tool_calls_per_round=config.max_tool_calls_per_round,
     )
 
     # Windows 控制台默认 GBK：模型/工具输出含 emoji 时会中断会话，统一转 UTF-8 容错。
@@ -666,11 +670,13 @@ async def run_factor_mining_agentscope(
             enable_yield_block=bool(policy.get("enable_yield_block", True)),
             enable_diversity_block=bool(policy.get("enable_diversity_block", True)),
             enable_structure_stats_block=bool(policy.get("enable_structure_stats_block", True)),
+            enable_operator_diversity_block=bool(policy.get("enable_operator_diversity_block", True)),
             recent_batch=None if focus else [
                 {"expression": r.get("expression")}
                 for r in tool_call_rows[-8:]
                 if r.get("expression")
             ] or None,
+            all_attempts=tool_call_rows or None,
             facet_scope=facet_scope,
             facet_required=facet_required,
         )
@@ -743,6 +749,7 @@ async def run_factor_mining_agentscope(
                 asset_type=ctx.asset_type,
                 focus_facets=getattr(config, "focus_facets", None),
                 prompt_phase=_phase,
+                max_tool_calls_per_round=config.max_tool_calls_per_round,
             )
             if hasattr(agent, "_system_prompt"):
                 agent._system_prompt = _new_prompt
@@ -1056,12 +1063,19 @@ async def run_factor_mining_agentscope(
                 icir_str = f"{icir:+.3f}" if icir is not None else "N/A"
                 reflection_lines.append(f"  [{status}] {r.get('factor_name','?')}: IC={ic_str} ICIR={icir_str}")
             # 同质化检测
+            repeat_fams: set[str] = set()
             exprs_this_turn = [r.get("expression_sha256") for r in turn_rows if r.get("expression_sha256")]
             if exprs_this_turn:
                 from collections import Counter
                 common = Counter(exprs_this_turn).most_common(1)[0]
                 if common[1] >= 2:
                     reflection_lines.append("⚠ 警告: 本轮有重复表达式！请在下一轮尝试完全不同的信号维度。")
+                    for r in turn_rows:
+                        if r.get("expression_sha256") == common[0]:
+                            fn = str(r.get("factor_name", "")).lower()
+                            for dim in ("vwap", "reversal", "momentum", "volume", "volatility", "chip", "overnight", "gap"):
+                                if dim in fn:
+                                    repeat_fams.add(dim)
             # IC 趋势
             all_ics = [r.get("metrics", {}).get("ic") for r in tool_call_rows if r.get("metrics", {}).get("ic") is not None]
             if len(all_ics) >= 3:
@@ -1110,11 +1124,14 @@ async def run_factor_mining_agentscope(
                         int(memory_store.suggest_slots),
                         facet_scope=facet_allowed_scope(_focus_faces) if _focus_faces else None,
                         facet_required=_focus_faces or None,
+                        excluded_families=repeat_fams or None,
                     )
                 except Exception:
                     recs = []
                 if recs:
                     reflection_lines.append("")
+                    if repeat_fams:
+                        reflection_lines.append(f"（注：已自动排除重复探索的 {', '.join(sorted(repeat_fams))} 族，以下推荐其它未拥挤方向）")
                     reflection_lines.append(
                         f"## 本轮记忆推荐（前 {len(recs)} 个评估名额请优先用于以下方向，"
                         f"evaluate_factor 调用时必须带 parent_factor + edit_note）"

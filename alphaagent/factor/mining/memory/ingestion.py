@@ -32,6 +32,27 @@ class IngestionMixin:
     """研究证据入库：显式/隐式父本解析、cells 更新和编辑观测入账。"""
 
     # ── 异步批量落盘工作池 ──
+    # 进程级注册表：按 db 规范路径记录所有活跃 writer 队列，使跨实例的
+    # flush_writes/_open 能等待同库的待写队列落盘（修复 fresh 实例读不到
+    # 原实例异步写入的竞态——test_persist_roundtrip）。
+    _ACTIVE_WRITERS: dict[str, set["IngestionMixin"]] = {}
+    _WRITERS_LOCK = threading.Lock()
+
+    @classmethod
+    def _register_writer(cls, store: "IngestionMixin") -> None:
+        key = str(store.path)
+        with cls._WRITERS_LOCK:
+            cls._ACTIVE_WRITERS.setdefault(key, set()).add(store)
+
+    @classmethod
+    def _unregister_writer(cls, store: "IngestionMixin") -> None:
+        key = str(store.path)
+        with cls._WRITERS_LOCK:
+            bucket = cls._ACTIVE_WRITERS.get(key)
+            if bucket and store in bucket:
+                bucket.discard(store)
+                if not bucket:
+                    cls._ACTIVE_WRITERS.pop(key, None)
 
     def _ensure_async_writer(self) -> None:
         if getattr(self, "_write_queue", None) is not None:
@@ -45,6 +66,7 @@ class IngestionMixin:
         )
         self._writer_thread.start()
         atexit.register(self.flush_writes)
+        self._register_writer(self)
 
     def _writer_loop(self) -> None:
         while not self._writer_stop.is_set():
@@ -86,17 +108,26 @@ class IngestionMixin:
                     log_step("memory.async_write_item_error", f"err={item_exc}")
 
     def flush_writes(self, timeout: float = 5.0) -> None:
-        """等待后台写入队列全部落盘。"""
-        q = getattr(self, "_write_queue", None)
-        if q is not None:
-            try:
-                q.join()
-            except Exception:
-                pass
+        """等待后台写入队列全部落盘。
+
+        跨实例：flush 同库（按 path）所有活跃 writer 队列，确保新建的
+        只读实例也能读到原实例的异步写入。
+        """
+        key = str(self.path)
+        with self._WRITERS_LOCK:
+            peers = list(self._ACTIVE_WRITERS.get(key, ()))
+        for peer in peers:
+            q = getattr(peer, "_write_queue", None)
+            if q is not None:
+                try:
+                    q.join()
+                except Exception:
+                    pass
 
     def close(self) -> None:
         """关闭存储并刷新所有待处理写入。"""
         self.flush_writes()
+        self._unregister_writer(self)
         stop = getattr(self, "_writer_stop", None)
         if stop is not None:
             stop.set()

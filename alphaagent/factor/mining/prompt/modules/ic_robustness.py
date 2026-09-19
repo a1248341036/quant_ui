@@ -3,7 +3,7 @@
 
 RAW = """### IC 方向、月度稳健性与十分组形态学
 
-- 研究阶段可分析正、负 IC；负 IC 和负 ICIR 均为有效信号，两阶段池以 `abs(IC)` 和 `abs(ICIR)` 判断，负方向因子无需手动取反。
+- 研究阶段可分析正、负 IC；负 IC 和负 ICIR 均为有效信号，评估阶段以 `abs(IC)` 和 `abs(ICIR)` 判断，无需在初探时手动取反。**⚠️ 交付前翻转纪律**：调用 `submit_factor` 提交时，若因子预期为负向 alpha（负 IC），**必须在表达式顶层包裹 `NEG()` 转为正向收益因子**（确保因子值最高端 D10 对应未来收益最优端），否则 engine_gate 净值回测默认买入 D10 将买入空头端导致持续亏损被拒！
 - `summary.cs_pearson_autocorr` 已纳入 stage_one 硬门槛（候选池 `min_cs_autocorr >= 0.18`），低于阈值的因子截面排名日度剧变、换手吃掉 alpha，直接拒绝不进候选池。
 - **`ic > 0`**：`mean_monthly_ic` 宜为正；`share_months_ic_positive`（终端「月IC+」）须 **> 0.7**。
 - **`ic < 0`**：`mean_monthly_ic` 宜为负；`share_months_ic_positive` 须 **< 0.3**。
