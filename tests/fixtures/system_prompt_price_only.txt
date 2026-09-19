@@ -48,6 +48,15 @@
     影线/形态几何 `WICK_EFFICIENCY`/`KLINE_GEOMETRY`、量钟 `VOLUME_CLOCK_VPIN`、量价互信息
     `MUTUAL_INFO_LAG`、排列熵 `TS_PERMUTATION_ENTROPY`、缺口 `PRICE_GAP_*`、分型 `TS_LAST_*FRACTAL`、
     趋势非参数度量 `TS_TREND_RANK`。冷门算子只是低相关性的候选载体，**不能替代机制三问**。
+  - **冷门算子配额（硬约束）**：每轮 D 轨 ≥6 条新族中，**至少 1 条**必须使用以下冷门算子族之一
+    作为核心信号源（不是外层中性化/平滑套壳）：`CROWD_SHARE`/`CROWD_MEAN_RATIO`/`CROWD_CONTRAST`/
+    `CROWD_RANK_WEIGHTED`（拥挤度）、`PRICE_GAP_SIZE`/`PRICE_GAP_FILL`/`PRICE_GAP_EVENT`（跳空缺口）、
+    `TS_LAST_TOPFRACTAL`/`TS_LAST_BOTTOMFRACTAL`/`TS_LAST_ARGTOPFRACTAL`/`TS_LAST_ARGBOTTOMFRACTAL`（缠论分型）、
+    `CHIP_COM_W_GAP`/`CHIP_PEAK_SHARPNESS`（筹码缺口/锐度）、`WICK_EFFICIENCY`/`KLINE_GEOMETRY`（影线/几何）、
+    `VOLUME_CLOCK_VPIN`/`MUTUAL_INFO_LAG`/`TS_PERMUTATION_ENTROPY`/`TS_TREND_RANK`（量钟/互信息/熵/趋势）。
+    历史统计：这些算子使用率 <2%，但都有清晰经济机制（见「A 股市场机制」§4b）——
+    拥挤回吐、缺口回补、分型转折、筹码压力、影线压力、量价信息流。配额目的是打破
+    "只挑能编故事的几个算子"的惯性。配额不达标 = 该轮 D 轨按无效，须补齐冷门算子候选。
 - **新族晋级**：新族因子 |IC| ≥ 0.02 即成为新父本，纳入 A/B/C 轨深耕；连续 3 个新族 IC < 0.01 → 该机制记入负证据，本轮再换一个机制。
 - **禁止低级信号叠加（硬约束）**：D 轨表达式顶层**禁止**使用 `ADD(RANK(x), RANK(y))` 或 `SUBTRACT(RANK(x), RANK(y))` 这种"两个独立信号简单加减"的形式——这只是把两个弱信号拼在一起，没有经济机制上的交互。如果确实需要融合多个信息源，必须使用**至少一层结构化交互算子**：门控 `GATED_SIGNAL`、组内排名 `CS_GROUP_RANK`、残差化 `CS_RESIDUALIZE`、背离 `DIVERGENCE_RANK`、分段状态 `PIECEWISE_STATE`、时序相关 `TS_CORR`/`TS_RANKCORR`、必要条件 `IF_THEN_ELSE`。例外：`ADD(x, RANK(y))` 中 x 本身已经是复合结构（如 `CS_RESIDUALIZE(...)` 输出）时不在此列——拦截的是"两个裸 RANK/TS_ 信号直接相加"。
 - **单机制深度优先**：鼓励在单一信息源上构建多层算子链（如 `TS_PCTCHANGE → CS_ZSCORE → CS_NEUTRALIZE → TS_DECAY`），而非拼接多个浅层信号。单机制深度因子有更清晰的因果链条，且与已有因子正交性更好。
@@ -286,6 +295,28 @@ alpha 的来源只有一种：**错误定价 + 套利受限**。设计因子前�
 公告/龙虎榜/涨停带来的注意力高峰后，定价过度反应随后回吐；低覆盖、低流动性股票的
 错误定价存续更久（无人套利），但变现成本也更高——alpha 与容量天然负相关，评估时看
 `quantile_portfolio` 的换手与成本后净值，不要只看 IC。
+
+**4b. 冷门算子的经济机制示例（写不出三问时先看这里）**
+以下算子历史使用率 <2%，但都有清晰的经济机制。选机制 → 匹配算子 → 补全三问：
+- **`CROWD_SHARE` / `CROWD_MEAN_RATIO` / `CROWD_CONTRAST` / `CROWD_RANK_WEIGHTED`**（拥挤度）：
+  机制 = 散户/游资集中涌入某维度（换手、成交额）形成拥挤交易，拥挤峰值后均值回吐。
+  错边方 = 追涨跟风盘；套利受限 = T+1 + 涨跌停封板锁住流动性；观测 = 窗口内成交权重
+  在某个环境桶（如高换手股）的集中度。`CROWD_SHARE($turnover, $amount, 20, "high", 0.8)`
+  = 近 20 日高换手股的成交额占比，占比越高拥挤越极端，后续回吐越深。
+- **`PRICE_GAP_SIZE` / `PRICE_GAP_FILL` / `PRICE_GAP_EVENT`**（跳空缺口）：
+  机制 = 隔夜/开盘跳空是信息冲击的极端形式，缺口回补是经典均值回归来源。
+  错边方 = 跳空追价的情绪盘；套利受限 = T+1 无法日内回补 + 缺口位有心理锚定；
+  观测 = 跳空幅度（`PRICE_GAP_SIZE`）、回补进度（`PRICE_GAP_FILL`）、缺口事件计数
+  （`PRICE_GAP_EVENT`）。未回补缺口越多，累积回补势能越大。
+- **`TS_LAST_TOPFRACTAL` / `TS_LAST_BOTTOMFRACTAL` / `TS_LAST_ARGTOPFRACTAL`**（缠论分型）：
+  机制 = 顶/底分型是趋势转折的非参数确认信号，分型确认后趋势反转概率升高。
+  错边方 = 趋势末端追入的惯性盘；套利受限 = 分型需 3 根 K 线确认，确认时已错过极值；
+  观测 = 距上一个顶/底分型的距离（`TS_LAST_ARGTOPFRACTAL` 返回距今 bar 数）。
+  距顶分型越近 → 顶部压力越近；距底分型越远 → 底部支撑越远（超跌反弹势能积蓄）。
+- **`CHIP_COM_W_GAP`**（筹码峰与现价缺口）：筹码峰位置与现价的缺口 = 套牢盘压力位距离。
+  机制 = 现价上方筹码峰 = 套牢盘，现价越接近筹码峰解套抛压越大；缺口越大抛压越轻。
+- **`CHIP_PEAK_SHARPNESS`**（筹码峰锐度）：锐峰 = 成本高度集中（主力持仓），钝峰 = 筹码分散。
+  锐峰股的筹码结构稳定，钝峰股易受散户进出扰动。
 
 **5. 使用纪律**
 以上每条都是可证伪假设而非公理：设计时写进 `prediction`（预期形态/强侧/证伪条件），
