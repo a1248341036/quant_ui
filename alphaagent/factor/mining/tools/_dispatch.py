@@ -342,7 +342,8 @@ class _DispatchMixin:
             if recent is None:
                 return
             recent.append(sig)
-            if len(recent) > 10:
+            # 上限 20（≥window_size 默认 10 的 2 倍余量），供滑动窗口熔断器消费
+            if len(recent) > 20:
                 recent.pop(0)
         except Exception:  # noqa: BLE001 — 观测失败不影响评估
             pass
@@ -575,17 +576,18 @@ class _DispatchMixin:
                              "（GATED_SIGNAL / CS_RESIDUALIZE / DIVERGENCE_RANK / CS_GROUP_RANK / TS_CORR 等）。",
                     "error_type": "NaiveSignalAdditionBlock",
                 }
-            # 同质化平滑变体动态熔断：连续 N 次同一信号算子族+套平滑 → 拦截评估
+            # 同质化平滑变体动态熔断：滑动窗口内同根+套平滑累计 N 次 → 拦截评估
             homo_policy = getattr(self, "homogenization_policy", None) or {}
             homo_block = _homogenization_block(
                 expr,
                 getattr(self, "_recent_evals", None),
                 max_consecutive=int(homo_policy.get("max_consecutive", 3)),
+                window_size=int(homo_policy.get("window_size", 10)),
                 enabled=bool(homo_policy.get("enabled", True)),
             )
             if homo_block is not None:
                 try:
-                    log_step("homogenization.block", f"signal_fingerprint_ast={_ast_signal_fingerprint(expr)} consecutive>=homo_policy.max_consecutive")
+                    log_step("homogenization.block", f"signal_fingerprint_ast={_ast_signal_fingerprint(expr)} same_root_smooth>=homo_policy.max_consecutive")
                 except Exception:
                     pass
                 return homo_block
@@ -653,6 +655,7 @@ class _DispatchMixin:
             expr,
             getattr(self, "_recent_evals", None),
             max_consecutive=int(homo_policy.get("max_consecutive", 3)),
+            window_size=int(homo_policy.get("window_size", 10)),
             enabled=bool(homo_policy.get("enabled", True)),
         )
         if homo_block is not None:
@@ -772,6 +775,7 @@ class _DispatchMixin:
             str(expr or ""),
             getattr(self, "_recent_evals", None),
             max_consecutive=int(homo_policy.get("max_consecutive", 3)),
+            window_size=int(homo_policy.get("window_size", 10)),
             enabled=bool(homo_policy.get("enabled", True)),
         )
         if homo_block is not None:

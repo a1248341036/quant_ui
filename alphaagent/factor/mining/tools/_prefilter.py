@@ -245,15 +245,17 @@ def _homogenization_block(
     recent_evals: list[dict[str, Any]] | None,
     *,
     max_consecutive: int = 3,
+    window_size: int = 10,
     enabled: bool = True,
 ) -> dict[str, Any] | None:
-    """同质化平滑变体预检：连续 ≥max_consecutive 次"同一信号根+含平滑"→ 拦截评估。
+    """同质化平滑变体预检：滑动窗口内 ≥max_consecutive 次"同一信号根+含平滑"→ 拦截评估。
 
     判定逻辑（动态，不针对具体信号）：
     1. 当前表达式含平滑算子；
     2. 提取当前表达式的信号根指纹（核心算子集合 + 引用字段集合）；
-    3. 从最近评估倒序遍历，统计连续"信号根指纹相同 + 含平滑"的次数；
-    4. 连续次数 ≥ max_consecutive → 返回拦截 result（ok=False）。
+    3. 从最近评估倒序遍历最近 window_size 条，统计"信号根指纹相同 + 含平滑"的次数
+       （不因中间夹了其他根/非平滑条目而中断——防 LLM 换根轮换绕过熔断器）；
+    4. 同根累计次数 ≥ max_consecutive → 返回拦截 result（ok=False）。
 
     信号根指纹 = (核心信号算子, 引用字段)。vwap 反转和隔夜因子字段不同 → 不会互相误判；
     同族参数变体（换 WMA 窗口）字段相同 → 熔断。
@@ -266,7 +268,8 @@ def _homogenization_block(
     参数：
         expr: 当前表达式
         recent_evals: 最近评估签名列表（_record_eval_signature 记录的 dict）
-        max_consecutive: 连续同质化次数阈值（默认 3）
+        max_consecutive: 窗口内同根累计次数阈值（默认 3）
+        window_size: 滑动窗口大小（默认 10，只统计最近 N 次评估）
         enabled: 开关（research_spec.homogenization_policy.enabled）
     """
     if not enabled or not expr or not recent_evals:
@@ -286,12 +289,13 @@ def _homogenization_block(
             return None
         sig_kind = "regex"
 
-    consecutive = 0
-    for item in reversed(recent_evals):
+    # 滑动窗口内同根累计：不因中间夹了其他根/非平滑条目而中断
+    count = 0
+    for item in reversed(recent_evals[-window_size:]):
         if not isinstance(item, dict):
-            break
+            continue
         if not item.get("has_smoothing"):
-            break
+            continue
         # 优先比对 AST 指纹，其次比对正则指纹
         prev_ast = item.get("signal_fingerprint_ast")
         prev_sig = item.get("signal_fingerprint")
@@ -301,11 +305,9 @@ def _homogenization_block(
         elif sig_kind == "regex" and isinstance(prev_sig, tuple):
             matched = prev_sig == current_sig
         if matched:
-            consecutive += 1
-        else:
-            break
+            count += 1
 
-    if consecutive >= max_consecutive:
+    if count >= max_consecutive:
         if sig_kind == "ast":
             sig_desc = current_sig[:200]
         else:
@@ -315,8 +317,8 @@ def _homogenization_block(
         return {
             "ok": False,
             "error": (
-                f"homogenization_smoothing_block: 已连续 {consecutive} 次在相同信号根"
-                f"（{sig_desc}）上套平滑算子做变体。"
+                f"homogenization_smoothing_block: 最近 {window_size} 次评估中已有 {count} 次"
+                f"在相同信号根（{sig_desc}）上套平滑算子做变体。"
                 f"平滑只降换手不改信号本质，继续微调窗口纯属浪费算力。"
                 f"请更换信号根结构（换数据源/换核心算子/换机制），不要再用同一信号根+平滑。"
                 f"不要再用同一信号族+平滑。"
