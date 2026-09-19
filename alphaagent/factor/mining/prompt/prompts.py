@@ -41,6 +41,7 @@ def build_system_prompt(
     asset_type: str = "stock",
     focus_facets: list[str] | tuple[str, ...] | None = None,
     prompt_phase: str = "full",
+    max_tool_calls_per_round: int = 8,
 ) -> str:
     """按模块注册表装配系统提示词；返回最终文本。
 
@@ -70,6 +71,7 @@ def build_system_prompt(
         population_max=population_max,
         focus_facets=tuple(focus_facets or ()),
         prompt_phase=prompt_phase,
+        max_tool_calls_per_round=max_tool_calls_per_round,
         extra={"extra_instructions": extra_instructions or ""},
     )
 

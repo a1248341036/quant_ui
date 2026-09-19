@@ -108,7 +108,7 @@ def _scoped_fallback_examples(focus: list[str], panel_columns) -> list[dict]:
 
 
 def _tool_call_examples_section(
-    *, include_fundamentals: bool = True, focus_facets=None, panel_columns=None
+    *, include_fundamentals: bool = True, focus_facets=None, panel_columns=None, batch_size: int = 8
 ) -> str:
     examples = [
         {
@@ -222,7 +222,7 @@ def _tool_call_examples_section(
         dims = "动量、周线偏离、基本面残差、门控反转" if include_fundamentals else "动量、周线偏离、门控反转"
     note = (
         f"上表为同轮并行 `eval_on_train_set` 示例（{dims}）。"
-        "建议每轮 12~20 条并行（与 delivery_interface 的 12~20 次一致，"
+        f"建议每轮充分利用并发槽位（建议并发 {batch_size} 次，与当前配置一致，"
         "并行度越高吞吐越高——每批 tool_calls 越多，LLM 推理等待占比越低）；"
         "仅当 train 有满意候选时，偶尔对少数 factor 做 val 抽检。"
         + submit_note
@@ -261,8 +261,10 @@ def render(ctx) -> str:  # noqa: ANN001
     scope_prefixes = getattr(ctx, "field_family_scope", None)
     if scope_prefixes is not None and "funda_" not in scope_prefixes:
         funda_effective = False
+    batch_size = getattr(ctx, "max_tool_calls_per_round", 8) or 8
     return _tool_call_examples_section(
         include_fundamentals=funda_effective,
         focus_facets=getattr(ctx, "focus_facets", ()),
         panel_columns=ctx.panel_columns,
+        batch_size=batch_size,
     )

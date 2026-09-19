@@ -43,6 +43,8 @@ def _label_section_markdown(label_col: str, *, include_fundamentals: bool = True
             "| 价量（OHLC / `$ret` / `$volume` / 筹码等） | `label_1d_close_to_close` |",
             "",
             "本次会话已配置为上表「本次」行；勿在 tool 参数中切换 label。",
+            "",
+            "**实盘调仓与持有期协调提示**：若回测调仓频率为 `weekly`（默认），因持有 5 日，纯 1d 短脉冲反转在周度调仓下会产生极高换手（>0.50）；应构建中慢长窗结构（如背离、筹码峰距离、资金积累），使信号兼具 1d 灵敏度与 5d 延续性。",
         ]
     )
     if label_col.startswith("label_") and "d_close_to_close" in label_col and label_col not in (

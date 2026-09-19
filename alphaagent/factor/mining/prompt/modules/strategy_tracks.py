@@ -41,7 +41,7 @@ _TRACK_D = """## 第二层：探索 × 变异双轨策略（Explore × Exploit�
 
 搜索 = **新族开拓（D 轨，探索）** 与 **父本变异（A/B/C 轨，深耕）** 两条轨道并行，禁止所有候选都挤在单轨：
 
-### 轨道 D：新族开拓（每轮 12~20 条候选中**至少一半（≥6 条）**，主轨道）
+### 轨道 D：新族开拓（每轮建议并发候选中**至少一半（≥{half_batch} 条）**，主轨道）
 
 - **D 新族**：一个研究记忆中尚无正/负证据的**信号机制**——不是任何既有父本的变体，核心信息源或经济机制与已评估因子不同。
 - 新族同样必须先写 50 字经济直觉因果链，禁止无机制的随机算子拼装。
@@ -75,10 +75,11 @@ _TRACK_ABC = """
 
 1. **锁定父本**：从研究记忆中已验证的因子（见下方"长期研究记忆"段）选择 ICIR 绝对值最高、**且 val 保留比 ≥ 0.8 或已 approve/入库** 的 1-2 个作为父本。衰减严重（保留比 < 0.65）或被 reviewer 判 revise 的因子**不得作为父本**——变异它只会复制同样的衰减。
 2. **变异饱和冻结**：研究记忆中同一信号族已有 ≥3 条评估记录（无论正负）→ 该族变异冻结，本轮只能以 D 新族开拓新机制。变体堆积不产生新信息。
-2. **三种合法变异**：
-   - **A. 参数变异**：保持父本算子结构不变，替换窗口/分位参数（如 TS_MEAN(…, 20) → TS_MEAN(…, 40)）
-   - **B. 算子变异**：替换核心运算符但不变信息源（如 DIVIDE → CS_RANK，TS_STD → TS_VAR）
-   - **C. 修饰变异**：在父本外层叠加衰减/平滑/中性化（如 TS_DECAY(父本, 5)、CS_NEUTRALIZE(父本, 行业)）
+2. **三种合法变异（严禁同信号根纯调平滑参数）**：
+   - **A. 参数变异**：保持父本算子结构不变，按机制周期假设替换窗口（如按月度与季度假设调整，严禁就近步长微调）
+   - **B. 算子变异**：替换核心运算符（如 DIVIDE 比值改为 CS_RESIDUALIZE 残差化，剥离规模/流动性偏差）
+   - **C. 修饰变异**：在父本外层叠加截面中性化或规范化（如 CS_NEUTRALIZE(父本, 行业)）
+   ⚠️ **红线警示**：在同一信号根上反复微调平滑参数（如 EMA5→EMA8→EMA10）属于非法同质化，会被 AST 熔断器直接拦截！合法变异必须带来机制或信息源的增量。
 3. **父本声明（A/B/C 轨必填）**：变异候选调用 `evaluate_factor` / `eval_on_train_set` / `eval_on_val_set` / `submit_factor` 时必须传 `parent_factor`（父本因子逻辑名）与 `edit_note`（意向编辑，固定格式 `edit=<motif> <参数变化>`，motif 取 `window_rescale`（参数变异）/ `operator_substitute`（算子变异）/ `normalization_change`（修饰变异），如 `edit=window_rescale 10→20`）。comment 中保留一句变异说明。
    - 工具返回的 `memory_advisory` 是研究记忆的硬提醒（同结构死路 / 编辑方向被否决）：**命中后必须换方向**；无视提醒重复提交只会积累更多负证据。"""
 
@@ -178,11 +179,13 @@ evaluate_factor(
 # ── 第三层：正交预判（探索阶段裁掉） ──
 _LAYER3 = """
 
-## 第三层：正交预判（Orthogonality Guard）
+## 第三层：正交预判与分层准入门槛（Orthogonality Guard）
 
-系统会在 DSL 求值前自动检查新因子与因子库中已有因子的截面 Spearman 相关性。如果与任何已有因子的相关性 > 0.7，因子会被自动拦截并返回冗余诊断。因此：
-- 你应主动设计与已有因子**不同信息源**的因子，而不仅是改参数。
-- 当收到"Too Redundant"预审拦截时，需改变原始变量或核心算子族，而非微调参数。
+系统采用三级截面相关性阶梯严格控制冗余，注意区分不同阶段的判定阈值：
+1. **DSL 求值防爆拦截线（Spearman > 0.70）**：在 `evaluate_factor` 评估前预审，与已有因子相关性 > 0.70 直接拦截计算，避免无效算力消耗。
+2. **候选池准入门槛（Pearson < 0.50）**：`submit_factor` 第一阶段，因子与正式库已有因子最大截面相关必须 < 0.50，否则拒绝入候选池。
+3. **正式库精选晋升线（Pearson < 0.40）**：第二阶段最终交付，与正式库已有因子相关性必须 < 0.40。
+因此，不要满足于低于 0.70，应从根源上设计与已有因子**不同信息源/不同机制**的因子，才能最终通过 < 0.50 和 < 0.40 的准入门槛。
 
 """
 
@@ -201,7 +204,11 @@ SEP_BEFORE = "\n\n"
 
 
 def render(ctx) -> str:  # noqa: ANN001
+    batch = getattr(ctx, "max_tool_calls_per_round", 8) or 8
+    half_batch = max(1, batch // 2)
     phase = getattr(ctx, "prompt_phase", "full")
-    if phase == "explore":
-        return RAW_EXPLORE
-    return RAW
+    template = RAW_EXPLORE if phase == "explore" else RAW
+    return (
+        template.replace("{batch}", str(batch))
+        .replace("{half_batch}", str(half_batch))
+    )

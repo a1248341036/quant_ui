@@ -579,6 +579,7 @@ class RetrievalMixin:
         *,
         facet_scope: set[str] | None = None,
         facet_required: set[str] | None = None,
+        excluded_families: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         """按 cells 残差×置信度给 (family, motif) 出题，附族内最优父本。
 
@@ -615,6 +616,28 @@ class RetrievalMixin:
             cell["f_w"] += f_w
             cell["residuals"].extend(residuals)
 
+        # 族级饱和度与历史过线率统计（D2/D3 门控支持）
+        saturation = self.compute_saturation()
+        zero_yield_fams: set[str] = set()
+        try:
+            with self._open() as conn:
+                zrows = conn.execute(
+                    """
+                    SELECT COALESCE(NULLIF(family, ''), 'other') AS fam,
+                           COUNT(*) AS n,
+                           SUM(CASE WHEN verdict IN ('promising','validated',
+                                                     'candidate_approved','production_approved')
+                                    THEN 1 ELSE 0 END) AS n_pass
+                    FROM memory_entries
+                    GROUP BY fam HAVING n >= 30
+                    """
+                ).fetchall()
+                for zr in zrows:
+                    if int(zr["n_pass"] or 0) == 0:
+                        zero_yield_fams.add(str(zr["fam"]))
+        except Exception:
+            pass
+
         scored: list[dict[str, Any]] = []
         for (family, motif), cell in agg.items():
             if not cell["residuals"]:
@@ -634,9 +657,16 @@ class RetrievalMixin:
         picks: list[dict[str, Any]] = []
         seen_families: set[str] = set()
         for cand in scored:
-            if cand["family"] in seen_families:
+            fam = cand["family"]
+            if fam in seen_families or (excluded_families and fam in excluded_families):
                 continue
-            parent = self._best_family_parent(cand["family"])
+            # D2 核心对齐：饱和度 > 0.4 的拥挤族不再主动推荐微调
+            if saturation.get(fam, {}).get("saturation_score", 0.0) > 0.4:
+                continue
+            # D3 核心对齐：历史高频零产出族不再推荐
+            if fam in zero_yield_fams:
+                continue
+            parent = self._best_family_parent(fam)
             if parent is None:
                 continue
             if facet_scope and not _facets_in_scope(
@@ -646,23 +676,25 @@ class RetrievalMixin:
             picks.append({
                 **cand,
                 **parent,
-                "family_cn": FAMILY_LABELS.get(cand["family"], cand["family"]),
+                "family_cn": FAMILY_LABELS.get(fam, fam),
                 "motif_cn": MOTIF_LABELS.get(cand["motif"], cand["motif"]),
                 "reason": (
                     f"历史 {cand['n']} 次该编辑平均残差 {cand['delta']:+.4f}、"
                     f"置信 {cand['conf']:.0%}"
                 ),
             })
-            seen_families.add(cand["family"])
+            seen_families.add(fam)
             if len(picks) >= k:
                 return picks
 
-        # 回退：无可用正 cells → 出过正信号且未拥挤的族级推荐
-        saturation = self.compute_saturation()
+        # 回退：无可用正 cells → 出过正信号且未拥挤的族级推荐（阈值统一为 <= 0.4）
         open_fams = sorted(
             (
                 (f, d) for f, d in saturation.items()
-                if d.get("saturation_score", 0) <= 0.6 and d.get("n_promising", 0) > 0
+                if d.get("saturation_score", 0) <= 0.4
+                and d.get("n_promising", 0) > 0
+                and (not excluded_families or f not in excluded_families)
+                and f not in zero_yield_fams
             ),
             key=lambda x: (-x[1].get("n_promising", 0), x[1].get("saturation_score", 0)),
         )
@@ -787,6 +819,8 @@ class RetrievalMixin:
         for f in family_success_motifs:
             family_success_motifs[f].sort(key=lambda x: x[1], reverse=True)
 
+        saturation = self.compute_saturation()
+
         for row in rows:
             family = str(row["family"] or "other")
             motif = str(row["motif"] or "other")
@@ -805,6 +839,16 @@ class RetrievalMixin:
                 tier = "soft_veto"
             if not tier:
                 continue
+
+            # D1 核心对齐：拥挤饱和族抑制正向推荐，防止与饱和度警告同框对冲
+            fam_sat = saturation.get(family, {}).get("saturation_score", 0.0)
+            if fam_sat > 0.4 and "recommend" in tier:
+                if tier == "soft_recommend":
+                    continue
+                tier_is_crowded = True
+            else:
+                tier_is_crowded = False
+
             fam_cn = FAMILY_LABELS.get(family, family)
             motif_cn = MOTIF_LABELS.get(motif, motif)
             tag, default_action = tier_text[tier]
@@ -824,6 +868,8 @@ class RetrievalMixin:
                     action_str = f"替代方向：推荐换用「{'」/「'.join(candidates[:2])}」（同族历史成功率更高）"
                 else:
                     action_str = "替代方向：建议更换信号族或换慢信息源，避免在此方向无效重复"
+            elif tier_is_crowded:
+                action_str = f"{default_action}（注：{fam_cn}族当前处于饱和拥挤区，优先跨族创新）"
             else:
                 action_str = default_action
 

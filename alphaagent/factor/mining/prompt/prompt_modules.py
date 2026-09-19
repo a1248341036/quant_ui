@@ -51,6 +51,8 @@ class PromptContext:
     focus_facets: tuple[str, ...] = ()
     # 分阶段动态注入：full=全量(默认), explore=探索, deepen=深耕, deliver=交付
     prompt_phase: str = "full"
+    # 每轮允许的最大并发工具调用数（与运行时对齐）
+    max_tool_calls_per_round: int = 8
     extra: dict[str, Any] = field(default_factory=dict)
 
 
