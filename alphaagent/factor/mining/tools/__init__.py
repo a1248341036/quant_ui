@@ -55,13 +55,19 @@ class FactorEvalTools(_DispatchMixin, _AnalysisMixin):
         merged_op["blacklist"] = tuple(str(n).upper() for n in (merged_op.get("blacklist") or ()))
         self.operator_policy = merged_op
         # 同质化平滑变体动态熔断（research_spec.homogenization_policy）
-        # enabled=True（默认）：连续 max_consecutive 次同一信号算子族+套平滑 → 拦截评估
+        # enabled=True（默认）：滑动窗口内同根+套平滑累计 max_consecutive 次 → 拦截评估
+        # 2026-09-19：从"连续同根"改为"滑动窗口内同根累计"，防 LLM 换根轮换绕过
         self.homogenization_policy: dict[str, Any] = {
             "enabled": True,
             "max_consecutive": 3,
+            "window_size": 10,
         }
         self.homogenization_policy.update({k: v for k, v in (homogenization_policy or {}).items() if v is not None})
-        # 最近评估历史（记录 fingerprint + turnover + 是否含平滑算子 + 信号算子族），供熔断器使用
+        # 最近评估历史（记录 fingerprint + turnover + 是否含平滑算子 + 信号算子族），供熔断器使用。
+        # 上限与 window_size 联动（≥ window_size * 2，下限 20），防 window_size 超配时
+        # recent_evals 静默截断窗口导致熔断器实际窗口比配置小。
+        _ws = int(self.homogenization_policy.get("window_size", 10) or 10)
+        self._recent_evals_cap: int = max(20, _ws * 2)
         self._recent_evals: list[dict[str, Any]] = []
 
 
