@@ -182,3 +182,102 @@ def test_run_engine_gate_passes_buffer_band(panel):
     # 应正常运行（不因 buffer/band 报错）
     assert "passed" in res
     assert "metrics" in res
+
+
+# ── buffer zone 严格降换手（review 2026-09-19：原 test_buffer_band_reduces_turnover
+#    用 <= 无法检测 selection.py:build_targets 的 buffer bug——chosen⊂buf_zone 恒 True，
+#    kept=top-N∩老持仓，没把 top-(N+1~M)∩老持仓拉回。修复后补严格 < 测试。）──
+
+
+def test_build_targets_buffer_pulls_back_old_in_buf_zone():
+    """build_targets buffer zone 单元测试：老持仓跌出 top-N 但在 top-(N+M) 内应被拉回。
+
+    构造确定性场景：
+    - 5 只票，top_n=2，buffer_ratio=0.5 → M=1，buf_zone=top-3
+    - 期1: scores=[5,4,3,2,1] → top-2={0,1}
+    - 期2: scores=[5,3,4,2,1] → rank: 0>2>1>3>4, top-2={0,2}, buf_zone={0,2,1}
+      老持仓 1 跌到 rank3，在 buf_zone 内 → 应被拉回，chosen 应含 1
+    - 无 buffer 时 chosen=[0,2]（1 被踢出）
+    - 有 buffer 时 chosen=[0,1]（1 被拉回，0 也在 top-2 补足）
+    """
+    from core.selection import PortfolioBuilder, SelectionPolicy
+
+    builder = PortfolioBuilder(codes=[f"c{i}" for i in range(5)])
+    policy = SelectionPolicy(
+        top_n=2, ascending=False, min_positions=2, max_positions=2,
+    )
+
+    # 期1: 建仓 top-2={0,1}
+    cand1 = np.array([0, 1, 2, 3, 4])
+    sc1 = np.array([5.0, 4.0, 3.0, 2.0, 1.0])
+    chosen1, _ = builder.build_targets(policy, cand1, sc1)
+    assert chosen1 == [0, 1], f"期1 top-2 应为 [0,1], got {chosen1}"
+
+    # 期2: 老持仓={0,1}, 票1跌到rank3但在buf_zone top-3内
+    cand2 = np.array([0, 1, 2, 3, 4])
+    sc2 = np.array([5.0, 3.0, 4.0, 2.0, 1.0])  # rank: 0>2>1>3>4
+    chosen2_no_buf, _ = builder.build_targets(policy, cand2, sc2)
+    assert chosen2_no_buf == [0, 2], f"期2 无buffer 应为 [0,2], got {chosen2_no_buf}"
+
+    chosen2_buf, _ = builder.build_targets(
+        policy, cand2, sc2, buffer_keep={0, 1}, buffer_ratio=0.5,
+    )
+    # 老持仓 1 在 buf_zone 内应被拉回，0 也在 top-2 内保留
+    assert 1 in chosen2_buf, f"buffer 应拉回老持仓 1, got {chosen2_buf}"
+    assert 0 in chosen2_buf, f"top-2 的 0 应保留, got {chosen2_buf}"
+    assert 2 not in chosen2_buf, f"buffer 拉回 1 后 2 应被挤出, got {chosen2_buf}"
+    assert len(chosen2_buf) == 2, f"应保持 top_n=2, got {chosen2_buf}"
+
+
+def test_buffer_only_strictly_reduces_engine_turnover():
+    """buffer_ratio=0.5 + no_trade_band=0.0 时，引擎回测换手应严格 < 原始换手。
+
+    review 2026-09-19：原 test_buffer_band_reduces_turnover 断言 <=（允许持平），
+    无法检测 buffer bug（bug 下 buffer 与无 buffer 换手完全一致）。
+    本测试用 8 只票 + 构造因子确保老持仓有票跌出 top-N 但在 top-(N+M) 内，
+    断言严格 <。
+    """
+    # 8 只票，top_n=2，buffer_ratio=0.5 → M=1，buf_zone=top-3
+    # 构造因子：让 top-2 成员在月度调仓时显著轮换，老持仓常跌到 rank3
+    rng = np.random.default_rng(7)
+    n_days = 120
+    dates = pd.bdate_range("2024-01-02", periods=n_days)
+    codes_local = [f"S{i:03d}" for i in range(8)]
+    frames = []
+    for c in codes_local:
+        base = 10.0 + int(c[-1])
+        close = base * np.cumprod(1.0 + rng.normal(0, 0.02, n_days))
+        open_ = close * (1 + rng.normal(0, 0.005, n_days))
+        high = np.maximum(open_, close) * (1 + abs(rng.normal(0, 0.004, n_days)))
+        low = np.minimum(open_, close) * (1 - abs(rng.normal(0, 0.004, n_days)))
+        amount = rng.uniform(1e8, 5e8, n_days)
+        turnover = rng.uniform(0.5, 5.0, n_days)
+        volume = amount / close
+        frames.append(pd.DataFrame({
+            "date": dates, "code": c, "open": open_, "high": high, "low": low,
+            "close": close, "turnover": turnover, "amount": amount,
+            "turn20": pd.Series(turnover).rolling(20, min_periods=15).mean().values,
+            "am20": pd.Series(amount).rolling(20, min_periods=15).mean().values,
+            "volume": volume,
+        }))
+    panel_local = pd.concat(frames, ignore_index=True)
+
+    # 用 20 日动量作因子（月度调仓时头部常轮换）
+    res_raw = run_backtest(
+        panel=panel_local, codes=codes_local, factor="mom20", ascending=False,
+        start=dates[0].date().isoformat(), end=dates[-1].date().isoformat(),
+        capital=1_000_000, top_n=2, freq="monthly",
+    )
+    res_buf = run_backtest(
+        panel=panel_local, codes=codes_local, factor="mom20", ascending=False,
+        start=dates[0].date().isoformat(), end=dates[-1].date().isoformat(),
+        capital=1_000_000, top_n=2, freq="monthly",
+        buffer_ratio=0.5, no_trade_band=0.0,  # 只开 buffer，不开 band
+    )
+    raw_turn = float(res_raw["trades"]["turnover"].sum())
+    buf_turn = float(res_buf["trades"]["turnover"].sum())
+    # 严格 < ：buffer zone 应至少在一个调仓日拉回老持仓，降低换手
+    assert buf_turn < raw_turn - 1e-9, (
+        f"buffer only should strictly reduce turnover: "
+        f"buf={buf_turn} >= raw={raw_turn}"
+    )

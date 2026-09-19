@@ -178,15 +178,19 @@ class PortfolioBuilder:
                     order = order[::-1]
                 ordered_all = [int(gated[o]) for o in order]
                 buf_zone = set(ordered_all[:long_n + m_buf])
-                kept = [k for k in chosen if k in buffer_keep and k in buf_zone]
-                # 保留的老持仓中，停牌不能卖的由 execute_targets 处理，这里不剔除
-                deficit = long_n - len(kept)
+                # 老持仓在 top-(N+M) 内的都保留（按全序排序，高分优先）。
+                # 注意：必须遍历 ordered_all 而非 chosen——chosen 是 top-N，
+                # 老持仓里排名 N+1~N+M 的票在 buf_zone 内但不在 chosen，需拉回来。
+                old_in_buffer = [k for k in ordered_all
+                                 if k in buffer_keep and k in buf_zone]
+                deficit = long_n - len(old_in_buffer)
                 if deficit > 0:
-                    # 从严格 top-N（chosen 原序）补足不在 kept 的
-                    refill = [k for k in chosen if k not in kept]
-                    chosen = kept + refill[:deficit]
+                    # 从严格 top-N 补足不在 old_in_buffer 的
+                    refill = [k for k in ordered_all[:long_n]
+                              if k not in old_in_buffer]
+                    chosen = old_in_buffer + refill[:deficit]
                 else:
-                    chosen = kept[:long_n]
+                    chosen = old_in_buffer[:long_n]
         targets = self.equal_weights(chosen)
         scale = policy.scale_for_regime(market_adx)
         if scale != 1.0 and targets:

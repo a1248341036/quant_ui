@@ -276,11 +276,11 @@ class TurnoverDiagnostic(BaseDiagnostic):
                 try:
                     import re
                     cols = re.findall(r"\$([a-zA-Z_][a-zA-Z0-9_]*)", ctx.expr or "")
-                    col_autocorrs = {
-                        c: float(ctx.session.get_column_autocorr(c))
-                        for c in set(cols)
-                        if ctx.session.get_column_autocorr(c) is not None
-                    }
+                    col_autocorrs = {}
+                    for c in set(cols):
+                        v = ctx.session.get_column_autocorr(c)
+                        if v is not None:
+                            col_autocorrs[c] = float(v)
                     if col_autocorrs:
                         worst_col_name, worst_col_autocorr = min(
                             col_autocorrs.items(), key=lambda x: x[1]

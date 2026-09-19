@@ -146,8 +146,10 @@ def test_turnover_attribution_structured_all_ranges():
         def __init__(self, corrs: dict[str, float]):
             self._corrs = corrs
 
-        def get_column_autocorr(self, col: str) -> float | None:
-            return self._corrs.get(col)
+        def get_column_autocorr(self, col: str) -> float:
+            # 与生产 session.get_column_autocorr 契约一致：永远返回 float，
+            # 不存在的 col 回退 default_val=0.5（而非 None）。
+            return self._corrs.get(col, 0.5)
 
     # 区间 1：ρ_f < 0.6（高频抖动）
     ctx_high = DiagnosticContext(
