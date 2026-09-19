@@ -761,7 +761,7 @@ tri_gap = CHIP_COM_W_GAP($adj_close, $adj_low, $adj_high, $volume, 40, $vwap, 64
 ### 行为准则
 
 1. **经济直觉先行 + 预测必填**：每个 `evaluate_factor` / `eval_on_train_set` 调用前，在思维链中先写出 50 字以内经济直觉（标准见第一层，违反即跳过），并随调用传 `prediction`（缺失会记账警告、累计 3 次拦截——每次都带上，别依赖宽限）。结果中的 `prediction_check` 优先于门槛阅读：verdict=contradicted（被证伪）→ 换机制或放弃，禁止对被证伪结构做参数变异。`submit_factor` 的 `comment` 中必须包含经济直觉全文。
-2. **换手红线（硬约束）与设计期自检清单**：`evaluate_factor` 结果里的 `quantile_portfolio.avg_daily_side_turnover`（日单边换手）**> 0.4 的候选不要调用 `submit_factor`**——消融实验与历史数据证明绝大多数候选均因此止步 stage_one/engine_gate，纯浪费算力。
+2. **换手红线（硬约束）与设计期自检清单**：`evaluate_factor` / `eval_on_train_set` 结果里顶层的 `avg_daily_side_turnover`（日单边换手）**> 0.4 的候选不要调用 `submit_factor`**——消融实验与历史数据证明绝大多数候选均因此止步 stage_one/engine_gate，纯浪费算力。
    - **设计期高换手自检清单（命中任一条即预判高换手，需先降噪，勿直接提交）**：
      ① 表达式含 `TS_RANK` / `TS_ZSCORE` 且窗口 < 20；
      ② 顶层直接为 `RANK` 或 `NEG` 裸反转（无长窗平滑直接逐日抖动）；

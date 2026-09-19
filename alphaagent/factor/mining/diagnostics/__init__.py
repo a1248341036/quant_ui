@@ -68,8 +68,16 @@ class DiagnosticContext:
         except (TypeError, ValueError):
             cov_f = None
 
-        qp = metrics.get("quantile_portfolio") or {}
-        turnover_val = qp.get("avg_daily_side_turnover") if isinstance(qp, dict) else None
+        # 换手率：优先从顶层取（format_eval_response 后的结构，权威值），
+        # 回退到 metrics.quantile_portfolio（引擎原始结构）。
+        # 2026-09-19 修复：此前只从 metrics.quantile_portfolio 取，但
+        # apply_diagnostics_to_result 收到的是 format_eval_response 后的 result，
+        # 换手率在顶层 avg_daily_side_turnover，导致 ctx.turnover 永远为 None，
+        # 换手率诊断器从不触发。
+        turnover_val = result.get("avg_daily_side_turnover")
+        if turnover_val is None:
+            qp = metrics.get("quantile_portfolio") or {}
+            turnover_val = qp.get("avg_daily_side_turnover") if isinstance(qp, dict) else None
         try:
             turnover_f = float(turnover_val) if turnover_val is not None else None
         except (TypeError, ValueError):
@@ -80,6 +88,12 @@ class DiagnosticContext:
         rule_list = rules if isinstance(rules, list) else []
         if passed_val is None and rule_list:
             passed_val = all(bool(r.get("passed")) for r in rule_list)
+        # 2026-09-19 修复：两段式海选下，screen_stage="full" 意味着 lite 已过线
+        # 才跑全量 profile，此时 passed=True。此前格式化后的 result 既无 passed
+        # 也无 screen_rules（仅 lite 未过线时才有 screen_rules），导致 ctx.passed
+        # 永远为 None，换手率诊断器（要求 ctx.passed）从不触发。
+        if passed_val is None and result.get("screen_stage") == "full":
+            passed_val = True
 
         return cls(
             expr=expr or "",
