@@ -266,31 +266,56 @@ class TurnoverDiagnostic(BaseDiagnostic):
             else:
                 gate_line = f"超建议红线（{self._REDLINE:.2f}），且此区间多半止步精筛/engine_gate"
 
-            # P1-1 动态换手来源归因
+            # P1-1 动态换手来源归因（P0-prereq-1：结构化输出 worst_col 自相关，去掉 <0.6 输出门槛）
             attribution_text = ""
+            worst_col_name: str | None = None
+            worst_col_autocorr: float | None = None
+            worst_col_tier: str | None = None  # high_freq / mid / slow
+            col_autocorrs: dict[str, float] = {}
             if ctx.session is not None and hasattr(ctx.session, "get_column_autocorr"):
                 try:
                     import re
                     cols = re.findall(r"\$([a-zA-Z_][a-zA-Z0-9_]*)", ctx.expr or "")
-                    col_corrs = {c: ctx.session.get_column_autocorr(c) for c in set(cols)}
-                    if col_corrs:
-                        worst_col = min(col_corrs.items(), key=lambda x: x[1])
-                        if worst_col[1] < 0.6:
-                            attribution_text = f"（诊断分析：换手主要源于 ${worst_col[0]} 日度自相关偏低 {worst_col[1]:.2f} 引起剧烈翻转）"
+                    col_autocorrs = {
+                        c: float(ctx.session.get_column_autocorr(c))
+                        for c in set(cols)
+                        if ctx.session.get_column_autocorr(c) is not None
+                    }
+                    if col_autocorrs:
+                        worst_col_name, worst_col_autocorr = min(
+                            col_autocorrs.items(), key=lambda x: x[1]
+                        )
+                        # 分档（与 prompt rule 2 归因驱动流程对齐）
+                        if worst_col_autocorr < 0.6:
+                            worst_col_tier = "high_freq"
+                            tier_hint = "<0.6 高频抖动需换源或换 @1w"
+                        elif worst_col_autocorr < 0.85:
+                            worst_col_tier = "mid"
+                            tier_hint = "0.6~0.85 中频优先信号积分"
+                        else:
+                            worst_col_tier = "slow"
+                            tier_hint = "≥0.85 慢源，换手高来自变换层敏感，换 CS_ZSCORE/RANK 或加长窗"
+                        # 所有区间都输出归因文本（不再只在 <0.6 时输出）
+                        attribution_text = (
+                            f"（诊断归因：换手主要源于 ${worst_col_name} 日度自相关 "
+                            f"ρ_f={worst_col_autocorr:.2f}（tier={worst_col_tier}）；{tier_hint}）"
+                        )
                 except Exception:
                     pass
 
             msg = (
                 f"训练已过海选线，但日单边换手 {ctx.turnover:.2f} 超标——{gate_line}{attribution_text}，"
                 "调用 submit_factor 纯浪费算力。请勿提交：推荐降噪路径："
-                "①换用慢信息源（如基本面 PIT 数据 $funda_*$、筹码周频变量）替代高频抖动变量；"
-                "②外层加 CS_ZSCORE(x) 压制极端尾部与日度排名抖动（不压缩分布）；"
-                "③缩短信号窗口或换 TS_QUANTILE 降低日度翻转频率。"
-                "注意：末位 EMA/WMA/TS_MEAN 平滑会压缩因子值分布导致十分位塌陷，不建议盲目堆叠平滑。"
+                "①换用慢信息源（如基本面 PIT 数据 $funda_*$、筹码周频变量、$adj_close@1w 周线衍生）替代高频抖动变量；"
+                "②信号积分 F'=λ·F+(1-λ)·DELAY(F,1)（λ∈[0.3,0.8]，比末位 EMA 不塌分布）；"
+                "③外层加 CS_ZSCORE(x) 或 RANK(x) 压制极端尾部与日度排名抖动（不压缩分布）；"
+                "④缩短信号窗口或换 TS_QUANTILE 降低日度翻转频率。"
+                "注意：末位 EMA/WMA/TS_MEAN 长窗平滑会压缩因子值分布导致十分位塌陷，不建议盲目堆叠平滑。"
             )
             hints = [
-                "换用基本面 PIT 或慢速筹码变量（降换手不压缩分布）",
-                "CS_ZSCORE 截面秩变换（压制尾部不塌分布）",
+                "换用基本面 PIT 或慢速筹码变量或 @1w 周线衍生（降换手不压缩分布）",
+                "信号积分 λ·F+(1-λ)·DELAY(F,1)（比末位 EMA 不塌分布）",
+                "CS_ZSCORE 或 RANK 截面变换（压制尾部不塌分布）",
                 "缩短信号窗口或 TS_QUANTILE 降翻转频率",
             ]
             return DiagnosticOpinion(
@@ -304,6 +329,11 @@ class TurnoverDiagnostic(BaseDiagnostic):
                     "submit_decision_required": msg,
                     "turnover_reduction_hints": hints,
                     "submit_suppressed": True,  # P0-1 标记让下游 advisory 知晓
+                    # P0-prereq-1：结构化归因字段，供 prompt rule 2 "先读归因再选手段" 引用
+                    "worst_col_autocorr": worst_col_autocorr,
+                    "worst_col_name": worst_col_name,
+                    "worst_col_tier": worst_col_tier,
+                    "col_autocorrs": col_autocorrs,
                 },
             )
         return None
