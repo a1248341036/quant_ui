@@ -94,7 +94,9 @@ _CNE_STATE_FILE = (
 # 缓存格式/构建逻辑版本：代码变更影响 panel 内容时 +1 强制全部重建
 # v5: arrow 数值列改为无 null 写入（恢复零拷贝 mmap 共享）+ 数据面按需裁剪列族
 # v6: 股票 panel 排除北交所（92/83/87/43 前缀，投资者准入要求）
-_CACHE_SCHEMA_VERSION = 6  # v6: zero-copy arrow + facet column pruning + exclude BSE
+# v7: stock_daily_wide 单位归一化（amount 千元→元、vol 手→股、circ_mv/total_mv
+#     万元→元），vwap 从 1/10 修正为正确元/股口径
+_CACHE_SCHEMA_VERSION = 7  # v7: zero-copy arrow + facet column pruning + exclude BSE + unit normalization
 # 缓存文件数上限（全量面板 parquet+arrow ≈ 6GB，聚焦面板 ≈ 0.3-2.6GB）。
 # 小磁盘服务器可用 ALPHA_PANEL_CACHE_MAX_FILES 调小（代价：切换数据面组合时重建）。
 _CACHE_MAX_FILES = max(2, int(os.environ.get("ALPHA_PANEL_CACHE_MAX_FILES", "8") or 8))

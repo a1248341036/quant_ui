@@ -3,6 +3,17 @@
 这是 priority=0 的核心插件，提供 OHLCV + adjfactor + 估值 + 标记列，
 决定 Panel 的 (datetime, instrument) 行索引。
 
+**单位归一化（2026-09-19 修复）**：Tushare 宽表原始口径为
+``amount`` 千元、``vol`` 手、``circ_mv``/``total_mv`` 万元。本插件在
+``load()`` 出口统一换算为 Panel 契约口径（``amount`` 元、``volume`` 股、
+``float_cap``/``tot_cap`` 元），与 ETF 插件（etf_bars，已是元/股）对齐，
+使 ``build_panel_from_hq`` 的 ``vwap = amount / volume`` 得到正确的元/股。
+
+修复前 ``vwap`` 恒为正确值的 1/10（千元/手），``vwap/close`` 恒等于 0.1；
+比值型因子（``$adj_close/$adj_vwap``）因量纲相消不受影响，但直接使用
+``$vwap`` 绝对值的算子（CROWD_MEAN_RATIO / CHIP_COM_W_GAP 等）输入整体
+偏小 10 倍。
+
 加新数据源时无需修改本文件——只需在 plugins/ 下新建另一个 .py 即可。
 """
 
@@ -103,4 +114,16 @@ def load(
 
     pdf = df.to_pandas()
     logger.info("CNE load: %s rows=%d cols=%d", dataset, len(pdf), pdf.shape[1])
+
+    # 单位归一化：Tushare 宽表 amount=千元、vol=手、circ_mv/total_mv=万元
+    # → Panel 契约 amount=元、volume=股、float_cap/tot_cap=元。
+    # 换算后 vwap = amount/volume 才是正确的元/股（修复前恒为 1/10）。
+    if "amount" in pdf.columns:
+        pdf["amount"] = pdf["amount"] * 1000.0
+    if "vol" in pdf.columns:
+        pdf["vol"] = pdf["vol"] * 100.0
+    if "circ_mv" in pdf.columns:
+        pdf["circ_mv"] = pdf["circ_mv"] * 10000.0
+    if "total_mv" in pdf.columns:
+        pdf["total_mv"] = pdf["total_mv"] * 10000.0
     return pdf
