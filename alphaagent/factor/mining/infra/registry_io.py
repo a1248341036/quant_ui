@@ -39,6 +39,22 @@ def derive_freq_from_label_col(label_col: str | None) -> tuple[str | None, str |
     return ("fundamental", "monthly") if int(m.group(1)) >= 10 else ("technical", "weekly")
 
 
+def derive_label_from_freq(freq: str) -> str:
+    """调仓频率 → 对齐 label（三对齐核心映射）。
+
+    与 derive_freq_from_label_col 互为逆映射（近似）：
+    - derive_freq_from_label_col("label_5d_close_to_close") → ("technical", "weekly")
+    - derive_label_from_freq("weekly") → "label_5d_close_to_close"
+
+    参见 docs/specs/alphaagent_freq_label_alignment_spec_v1.md
+    """
+    return {
+        "daily": "label_1d_open_to_open",
+        "weekly": "label_5d_close_to_close",
+        "monthly": "label_20d_close_to_close",
+    }.get(str(freq).lower(), "label_1d_open_to_open")
+
+
 def load_mining_registry(path: Path) -> dict[str, Any]:
     path = Path(path)
     if not path.is_file():

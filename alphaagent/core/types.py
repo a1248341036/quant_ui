@@ -50,6 +50,7 @@ OUTPUT_COLUMNS = [
     "adj_vwap",
     "label_1d_close_to_close",
     "label_1d_open_to_open",
+    "label_5d_close_to_close",
     "label_10d_close_to_close",
     "label_20d_close_to_close",
 ]

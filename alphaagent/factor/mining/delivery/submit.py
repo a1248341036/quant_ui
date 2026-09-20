@@ -583,7 +583,7 @@ class FactorSubmitService:
             }
             return payload
 
-        gate_reasons = self.checker.stage_one_stats(metrics_train).fail_reasons
+        gate_reasons = self.checker.stage_one_stats(metrics_train, rebalance_freq=chosen_freq).fail_reasons
         log_step(
             "submit.stage_one_stats",
             name,

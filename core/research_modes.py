@@ -58,6 +58,12 @@ RESEARCH_MODES: dict[str, ResearchModeSpec] = {
             "请自主挖掘A股日频价量因子，先训练集评估，再验证集检验；"
             "只有通过验证和去重门槛的因子才提交。"
         ),
+        # 放开调仓频率白名单：默认 GATE_FREQ=weekly，但允许 LLM/用户显式覆盖
+        # daily/weekly/monthly（三对齐 spec：alphaagent_freq_label_alignment_spec_v1.md）。
+        engine_gate_overrides={
+            "freq": "weekly",
+            "allowed_freqs": ("daily", "weekly", "monthly"),
+        },
     ),
     "fundamental": ResearchModeSpec(
         mode_id="fundamental",
@@ -107,6 +113,69 @@ RESEARCH_MODES: dict[str, ResearchModeSpec] = {
             "freq": "monthly",           # technical weekly → monthly
             "min_excess_annual": 0.02,   # technical 0.03 → 0.02
             "min_excess_sharpe": 0.4,    # technical 0.5 → 0.4
+            "allowed_freqs": ("daily", "weekly", "monthly"),
+        },
+    ),
+    # ── 三对齐子档位（2026-09-20，freq_label_alignment_spec_v1.md）──
+    # label 持有期 = 调仓频率持有期；快/中/慢信号分轨，各走对应 label + freq + 门槛。
+    "technical_daily": ResearchModeSpec(
+        mode_id="technical_daily",
+        label="日线技术·日频",
+        hint="快信号（ρ_f<0.6）：1d 反转/vwap 偏离/跳空，label_1d + daily 调仓",
+        recommended_label_col="label_1d_open_to_open",
+        signal_families=("volume_price", "volatility", "momentum_reversal"),
+        forbidden_families=("pure_size",),
+        needs_fundamentals=False,
+        candidate_dir="candidate_main",
+        production_dir="production_main",
+        default_user_message=(
+            "请自主挖掘A股日频快信号因子（1d 反转/跳空/vwap 偏离类），"
+            "daily 调仓路径，先训练集评估，再验证集检验；"
+            "只有通过验证和去重门槛的因子才提交。"
+        ),
+        engine_gate_overrides={
+            "freq": "daily",
+            "allowed_freqs": ("daily",),
+        },
+    ),
+    "technical_weekly": ResearchModeSpec(
+        mode_id="technical_weekly",
+        label="日线技术·周频",
+        hint="中信号（ρ_f 0.6~0.85）：量价背离/筹码/VPIN，label_5d + weekly 调仓",
+        recommended_label_col="label_5d_close_to_close",
+        signal_families=("volume_price", "volatility", "chip", "momentum_reversal"),
+        forbidden_families=("pure_size",),
+        needs_fundamentals=False,
+        candidate_dir="candidate_main",
+        production_dir="production_main",
+        default_user_message=(
+            "请自主挖掘A股日频中信号因子（量价背离/筹码/VPIN 类），"
+            "weekly 调仓路径，先训练集评估，再验证集检验；"
+            "只有通过验证和去重门槛的因子才提交。"
+        ),
+        engine_gate_overrides={
+            "freq": "weekly",
+            "allowed_freqs": ("weekly",),
+        },
+    ),
+    "technical_monthly": ResearchModeSpec(
+        mode_id="technical_monthly",
+        label="日线技术·月频",
+        hint="慢信号（ρ_f≥0.85）：长动量/慢反转，label_20d + monthly 调仓",
+        recommended_label_col="label_20d_close_to_close",
+        signal_families=("volume_price", "volatility", "momentum_reversal"),
+        forbidden_families=("pure_size",),
+        needs_fundamentals=False,
+        candidate_dir="candidate_main",
+        production_dir="production_main",
+        default_user_message=(
+            "请自主挖掘A股日频慢信号因子（长动量/慢反转类），"
+            "monthly 调仓路径，先训练集评估，再验证集检验；"
+            "只有通过验证和去重门槛的因子才提交。"
+        ),
+        engine_gate_overrides={
+            "freq": "monthly",
+            "allowed_freqs": ("monthly",),
         },
     ),
 }
@@ -124,7 +193,12 @@ def mode_ids() -> list[str]:
 
 
 def ui_options() -> list[dict]:
-    """前端研究模式按钮/因子库类别/保存下拉共享的选项。"""
+    """前端研究模式按钮/因子库类别/保存下拉共享的选项。
+
+    仅返回顶层档位（technical/fundamental）；三对齐子档（technical_daily/
+    weekly/monthly）是内部档位，由 infer_research_mode 依据 rebalance_freq
+    自动选用，不暴露给前端下拉（避免污染 UI）。
+    """
     return [
         {
             "value": spec.mode_id,
@@ -135,6 +209,7 @@ def ui_options() -> list[dict]:
             "needs_fundamentals": spec.needs_fundamentals,
         }
         for spec in RESEARCH_MODES.values()
+        if not spec.mode_id.startswith("technical_")
     ]
 
 
@@ -148,12 +223,20 @@ def ui_options() -> list[dict]:
 _SLOW_FACETS: frozenset[str] = frozenset({"基本面", "股东面", "机构面", "股东集中面"})
 
 
-def infer_research_mode(focus_facets: list[str] | tuple[str, ...] | None) -> str:
-    """按数据面多选自动推断研究档位（mode_id：technical/fundamental）。
+def infer_research_mode(
+    focus_facets: list[str] | tuple[str, ...] | None,
+    rebalance_freq: str | None = None,
+) -> str:
+    """按数据面多选自动推断研究档位（mode_id：technical/fundamental/technical_*）。
 
     纯函数，前后端共享。空/未选 → technical（原默认行为不变）。
+    显式传入 rebalance_freq（daily/weekly/monthly）时，价量面走对应三对齐子档
+    （technical_daily/weekly/monthly，label 持有期与调仓频率对齐，见
+    docs/specs/alphaagent_freq_label_alignment_spec_v1.md）；基本面面仍走 fundamental。
     """
     facets = {str(f).strip() for f in (focus_facets or []) if str(f).strip()}
     if facets & _SLOW_FACETS:
         return "fundamental"
+    if rebalance_freq in ("daily", "weekly", "monthly"):
+        return f"technical_{rebalance_freq}"
     return "technical"

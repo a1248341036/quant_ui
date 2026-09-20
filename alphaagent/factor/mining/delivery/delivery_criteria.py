@@ -17,7 +17,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from typing import Any
 
 from core import trading_config
@@ -46,6 +46,18 @@ class CandidateCriteria:
     # 不再等 stage_two/engine_gate 才拦截（历史数据：30 个候选 26 个日换手>50%，
     # 全部止步 stage_two/engine_gate，浪费大量评估算力）。
     max_avg_daily_side_turnover: float = 0.5  # 【唯一真源】
+    # 按调仓频率分档的换手门槛（2026-09-20，freq_label_alignment_spec_v1.md）
+    # 语义：avg_daily_side_turnover 是信号日频稳定性（与调仓频率无关），
+    # 不同 freq 下"信号抖 + 低频调仓" → 实际调仓换手成本可控 → 门槛放宽。
+    # 起点值基于 run 2 实证（turnover=0.15 的 weekly 因子 IC 差一点过线，
+    # 说明 0.50 对 weekly 偏严），最终宽度以 walk-forward 净超额最优为准。
+    # engine_gate 仍用真实调仓换手算净值兜底（门槛放宽只放行进 stage_two，
+    # 不是放水）。
+    turnover_thresholds_by_freq: dict[str, float] = field(default_factory=lambda: {
+        "daily": 0.50,
+        "weekly": 0.65,
+        "monthly": 0.80,
+    })
 
 
 @dataclass(frozen=True)

@@ -8,6 +8,7 @@ Tushare 客户端
 
 from __future__ import annotations
 
+import logging
 import os
 import random
 import time
@@ -20,6 +21,7 @@ from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parents[2]
 ENV_FILE = ROOT / ".env"
+log = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
@@ -73,6 +75,17 @@ def _read_token() -> str:
     load_dotenv(ENV_FILE)
     token = os.getenv("TUSHARE_TOKEN", "")
     return token.strip().strip('"').strip("'")
+
+
+def _read_url() -> str:
+    """从 .env 或环境变量读取 Tushare 代理 URL。
+
+    默认返回空串（走 tushare 官方地址）；仅在显式配置 TUSHARE_URL 时才覆盖为
+    自定义代理地址，避免把第三方代理地址硬编码进代码。
+    """
+    load_dotenv(ENV_FILE)
+    url = os.getenv("TUSHARE_URL", "")
+    return url.strip().strip('"').strip("'")
 
 
 def _is_retryable(exc: Exception) -> bool:
@@ -147,6 +160,14 @@ def get_pro():
         )
     timeout = int(_config["timeout"])
     pro = ts.pro_api(token, timeout=timeout)
+    url = _read_url()
+    if url:
+        if hasattr(pro, "_DataApi__http_url"):
+            pro._DataApi__http_url = url
+        else:
+            # SDK 版本变更时私有属性名可能变化，记录警告但不阻断
+            logging.getLogger(__name__).warning(
+                "Tushare SDK has no _DataApi__http_url attribute; proxy URL %s not applied", url)
     max_retries = int(_config["max_retries"])
     if max_retries <= 0:
         return pro

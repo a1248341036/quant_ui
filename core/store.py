@@ -112,10 +112,10 @@ def save_fund_panel(panel: pd.DataFrame) -> None:
 def save_csv(df: pd.DataFrame, path: Path) -> None:
     ensure_dir()
     # lineterminator="\n": pandas defaults to os.linesep on Windows, and
-    # to_csv already emits "\r\n" inside the string, so _atomic_write_text
+    # to_csv already emits "\r\n" inside the string, so atomic_write_text
     # (text mode) would double every carriage return ("\r\r\n") and poison
     # the last column name for downstream readers.
-    _atomic_write_text(path, df.to_csv(index=False, lineterminator="\n"))
+    atomic_write_text(path, df.to_csv(index=False, lineterminator="\n"))
 
 
 def save_meta(extra: dict | None = None) -> None:

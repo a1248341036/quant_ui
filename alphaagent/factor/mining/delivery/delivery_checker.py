@@ -325,18 +325,24 @@ class DeliveryChecker:
             "test_metrics": test_metrics,
         })
 
-    def stage_one_stats(self, metrics_train: dict[str, Any]) -> StageResult:
-        """海选统计 + 换手可行性（train-only 口径）+ 组合换手预检。"""
+    def stage_one_stats(self, metrics_train: dict[str, Any], *, rebalance_freq: str = "daily") -> StageResult:
+        """海选统计 + 换手可行性（train-only 口径）+ 组合换手预检。
+
+        rebalance_freq 由 submit 入口的 chosen_freq 透传，
+        不从 metrics_train 取（quantile_portfolio_metrics 返回无此字段）。
+        """
         reasons: list[str] = []
         for stage in self.stage_one:
             reasons.extend(stage.run({"metrics": metrics_train}).fail_reasons)
         qp = metrics_train.get("quantile_portfolio") or {}
         turnover = qp.get("avg_daily_side_turnover") if isinstance(qp, dict) else None
-        max_t = self.criteria.candidate.max_avg_daily_side_turnover
+        # 按 freq 分档取门槛；未匹配时回落到 max_avg_daily_side_turnover
+        thresholds = self.criteria.candidate.turnover_thresholds_by_freq or {}
+        max_t = thresholds.get(rebalance_freq, self.criteria.candidate.max_avg_daily_side_turnover)
         if turnover is not None and np.isfinite(float(turnover)) and float(turnover) > max_t:
             reasons.append(
                 f"avg_daily_side_turnover={float(turnover):.2f} > {max_t:.2f} "
-                f"(组合日单边换手过高，实盘不可交付)"
+                f"(rebalance_freq={rebalance_freq}, 组合日单边换手过高，实盘不可交付)"
             )
 
         # 分箱塌缩防御（2026-09-15，decile_collapse_spec）：

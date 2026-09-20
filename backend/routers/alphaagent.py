@@ -122,7 +122,7 @@ def start(req: StartRequest) -> dict[str, Any]:
     if mode is None:
         from core.research_modes import infer_research_mode
 
-        mode = infer_research_mode(req.focus_facets)
+        mode = infer_research_mode(req.focus_facets, req.rebalance_freq)
     payload = req.model_dump()
     payload["research_mode"] = mode
     # pydantic 的 default_factory 总会填充 technical 默认 spec，无法用 None 判断。

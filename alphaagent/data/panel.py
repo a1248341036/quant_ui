@@ -25,7 +25,9 @@ DEFAULT_PANEL_PATH = PANEL_PATH
 _SLICE_VIEW_ENABLED = os.environ.get("ALPHA_PANEL_SLICE_VIEW", "1") not in {"0", "false", "False"}
 
 # label_{N}d_close_to_close：T+1 收盘 → T+(N+1) 收盘
-CLOSE_TO_CLOSE_LABEL_HOLD_DAYS = (1, 10, 20)
+# 5 = weekly 调仓对齐档（technical_weekly 子档，持有 5 个交易日），详见
+# docs/specs/alphaagent_freq_label_alignment_spec_v1.md
+CLOSE_TO_CLOSE_LABEL_HOLD_DAYS = (1, 5, 10, 20)
 
 
 def close_to_close_label_name(hold_days: int) -> str:
