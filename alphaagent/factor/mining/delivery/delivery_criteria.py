@@ -336,7 +336,7 @@ class DeliveryCriteria:
         ) if sc.enabled else ""
         stage_one = (
             "第一阶段（候选登记，预筛池口径）："
-            f"`abs(IC) >= {c.min_abs_ic}`、`ICIR > {c.min_icir}`、"
+            f"`abs(IC) >= {c.min_abs_ic}`、`abs(ICIR) >= {c.min_icir}`、"
             f"`Coverage > {_pct(c.min_coverage)}`、"
             f"`cs_autocorr >= {c.min_cs_autocorr}`、"
             f"`val abs(IC) >= {c.min_val_abs_ic}`、"

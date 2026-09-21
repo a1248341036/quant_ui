@@ -94,6 +94,7 @@ SEP_BEFORE = "\n\n---\n\n"
 def render(ctx) -> str:  # noqa: ANN001
     crit = DeliveryCriteria.from_spec(getattr(ctx, "research_spec", None))
     max_turnover = crit.candidate.max_avg_daily_side_turnover
+    # diagnostics 诊断预警线（非交付硬门），与 diagnostics._REDLINE 对齐
     diag_turnover = 0.40
     text = RAW.replace("{max_turnover}", str(max_turnover))
     text = text.replace("{diag_turnover}", str(diag_turnover))

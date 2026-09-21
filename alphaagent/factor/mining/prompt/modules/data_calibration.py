@@ -46,10 +46,6 @@ def _label_section_markdown(label_col: str, *, include_fundamentals: bool = True
             "",
             "本次会话已配置为上表「本次」行；勿在 tool 参数中切换 label。",
             "",
-            f"> **本会话 label 已固定为 `{label_col}`**。",
-            f"> 上表「价量推荐 `label_1d_close_to_close`」为通用建议，**本会话不适用**——"
-            f"勿在 tool 参数中切换 label，评估口径以本会话配置为准。",
-            "",
             f"**实盘调仓与持有期协调**：weekly 调仓持有 5 日，纯 1d 短脉冲反转会因周度调仓产生极高换手而被拒，应构建中慢长窗结构（背离、筹码峰距离、资金积累）使信号兼具 1d 灵敏度与 5d 延续性。换手硬门槛为 `avg_daily_side_turnover <= {mt}`，降换手完整规则见行为准则「换手红线」节。",
         ]
     )
@@ -112,6 +108,4 @@ def render(ctx) -> str:  # noqa: ANN001
 
 {mls_block}
 
-{label_block}""".replace(
-        "{min_cs_autocorr}", str(min_cs_autocorr)
-    )
+{label_block}"""
