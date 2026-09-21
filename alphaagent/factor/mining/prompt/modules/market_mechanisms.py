@@ -6,8 +6,6 @@
 已知实证陷阱（含本平台实测数据）。所有结论都要求被 prediction_check 持续复核。
 """
 
-from alphaagent.factor.mining.delivery_criteria import DeliveryCriteria
-
 NAME = "market_mechanisms"
 TITLE = "A 股市场机制与 alpha 分布"
 ORDER = 55
@@ -92,6 +90,4 @@ alpha 的来源只有一种：**错误定价 + 套利受限**。设计因子前�
 
 
 def render(ctx) -> str:  # noqa: ANN001
-    crit = DeliveryCriteria.from_spec(getattr(ctx, "research_spec", None))
-    max_turnover = crit.candidate.max_avg_daily_side_turnover
-    return RAW.replace("{max_turnover}", str(max_turnover))
+    return RAW
