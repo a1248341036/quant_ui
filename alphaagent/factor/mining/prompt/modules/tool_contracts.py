@@ -26,7 +26,7 @@ def render(ctx) -> str:  # noqa: ANN001
 共用参数（eval）：`multi_line_expr`（必填）、`factor_name`、`include_detail_tables`、`label_quantile_n`（默认 10，0 则不输出分位桶）。
 `evaluate_factor` / `eval_on_train_set` 必须传 **`prediction`**（可证伪预测：`expected_shape` + `expected_strong_side` + `expected_sign`，可选 `falsifier`）。缺失不会立刻拦截，但结果会带 `prediction_warning` 记账（累计 3 次升级拦截）——每次都带上，别依赖宽限。
 
-**`submit_factor` 参数**：`multi_line_expr`、`factor_name`（蛇形英文名）、`comment`（必填，描述因子经济含义与结构）。
+**`submit_factor` 参数**：`multi_line_expr`、`factor_name`（蛇形英文名）、`comment`（必填，描述因子经济含义与结构）、`rebalance_freq`（调仓频率 `daily`/`weekly`/`monthly`，缺省 daily；须与 engine_gate 档位一致，交付门槛按此频率判定）。
 
 **`submit_factor` 返回字段**：`stored`（正式库成功）、`candidate_stored`（宽松池成功）、`metrics`（含 `long_group_annual_excess_return`、`winsorized_ic`、`winsorized_abs_ic_decay`）、`delivery_check.stage_one`、`delivery_check.stage_two`、相似度、候选/正式 registry 路径与失败原因。
 
@@ -45,6 +45,7 @@ def render(ctx) -> str:  # noqa: ANN001
 | `prediction_check` | 自动预测对账：`verdict`（confirmed/partial/contradicted/unverifiable）+ `expected` vs `actual`（实际形态/强侧/spearman/D1/D10）+ `message`。**contradicted = 机制错误，换机制或放弃，不要调参重试** |
 | `ablation_check` | 门控/条件类表达式且契约含 `base_expr` 时自动返回：`base_ic` vs `full_ic`、`verdict`（added_value/destroyed_value/flipped_signal/neutral）、`message` |
 | `ablation_hint` | 门控类表达式但未传 `base_expr` 时的提醒——补上重跑才能确认门控增量 |
+| `turnover_diagnostics` | 仅当 `avg_daily_side_turnover` 超过预警线（0.40）时返回：`worst_col_autocorr`（最差列日度自相关 ρ_f）、`worst_col_name`（最差列名）、`worst_col_tier`（high_freq/mid/slow 分档）。用于定位换手超标根因并指导降换手 |
 | `by_month` / `by_symbol` | 仅 `include_detail_tables=true` |
 """
 

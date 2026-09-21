@@ -17,7 +17,8 @@ def test_no_multiply_in_direct_operators():
     # 算子列表中应该明确提示 MULTIPLY 禁用，基础四则不应裸写 MULTIPLY(df1, df2) 直用
     assert "ADD/SUBTRACT/MULTIPLY/DIVIDE(df1, df2)` 逐元素四则" not in prompt
     assert "ADD/SUBTRACT/DIVIDE(df1, df2)` 逐元素运算" in prompt
-    assert "默认禁止 MULTIPLY" in prompt
+    # 实际措辞：operator 说明行写 "默认禁止特征间使用 MULTIPLY 乘法"
+    assert "默认禁止特征间使用 MULTIPLY" in prompt
 
 
 def test_batch_size_parameterized_in_prompt():
@@ -31,7 +32,8 @@ def test_batch_size_parameterized_in_prompt():
     )
     assert "12~20 条" not in prompt_8
     assert "12~20 次" not in prompt_8
-    assert "≥4 条" in prompt_8 or "≥4" in prompt_8
+    # 实际措辞：D 轨标题写 "若本轮提交 8 条则至少 4 条为 D 轨"
+    assert "至少 4 条" in prompt_8 or "4 条" in prompt_8
 
     prompt_16 = build_system_prompt(
         include_operator_catalog=False,
@@ -39,7 +41,7 @@ def test_batch_size_parameterized_in_prompt():
         asset_type="stock",
         max_tool_calls_per_round=16,
     )
-    assert "≥8 条" in prompt_16 or "≥8" in prompt_16
+    assert "至少 8 条" in prompt_16 or "8 条" in prompt_16
 
 
 def test_turnover_threshold_aligned():
@@ -50,8 +52,10 @@ def test_turnover_threshold_aligned():
         research_spec=spec,
         asset_type="stock",
     )
-    assert "avg_daily_side_turnover <= 0.50" in prompt
-    assert "设计目标建议控制在 `<= 0.40`" in prompt
+    # 动态渲染：str(0.5)='0.5'、str(0.4)='0.4'（DeliveryCriteria 默认值），非硬编码 0.50/0.40
+    assert "avg_daily_side_turnover <= 0.5" in prompt
+    # behavior_rules 中 0.4 带反引号渲染
+    assert "`0.4` 为 diagnostics 诊断预警线" in prompt
 
 
 def test_orthogonality_tiers_clarified():
@@ -63,9 +67,10 @@ def test_orthogonality_tiers_clarified():
         asset_type="stock",
     )
     assert "三级截面相关性阶梯" in prompt
+    # 0.70 = DSL 防爆线（硬编码）；0.5/0.4 = 动态渲染 str(0.5)/str(0.4)
     assert "0.70" in prompt
-    assert "0.50" in prompt
-    assert "0.40" in prompt
+    assert "0.5" in prompt
+    assert "0.4" in prompt
 
 
 def test_negative_ic_delivery_reversal():

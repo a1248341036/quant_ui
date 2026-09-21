@@ -148,7 +148,7 @@ def _tool_call_examples_section(
         {
             "name": "eval_on_train_set",
             "arguments": {
-                "multi_line_expr": "base = NEG(TS_PCTCHANGE($adj_close, 5))\nstate = RANK(DIVIDE(TS_MEAN($amount, 20), LOG($float_cap)))\nGATED_SIGNAL(base, state, 0.8, true, 0)",
+                "multi_line_expr": "base = NEG(TS_PCTCHANGE($adj_close, 5))\nstate = RANK(DIVIDE(TS_MEAN($amount, 20), LOG($float_cap)))\nCS_ZSCORE(GATED_SIGNAL(base, state, 0.8, true, 0))",
                 "factor_name": "reversal_high_liquidity_gate",
                 "interaction": {
                     "interaction_type": "gated_signal",
@@ -176,6 +176,14 @@ def _tool_call_examples_section(
             "arguments": {
                 "multi_line_expr": "pv_corr = TS_CORR($volume, $adj_close, 20)\nCS_ZSCORE(CS_WINSORIZE(pv_corr, 0.01, 0.99))",
                 "factor_name": "volume_price_corr20",
+                "interaction": {
+                    "interaction_type": "rolling_relation",
+                    "base_signal": "$adj_close",
+                    "condition_signal": "$volume",
+                    "economic_mechanism": "量价相关性反映趋势确认或主力对倒，高相关时动量持续性更强",
+                    "expected_subgroup_pattern": {"high_corr": "信号增强", "low_corr": "信号弱化"},
+                    "ablation_required": True
+                }
             },
         }
     )
@@ -183,7 +191,7 @@ def _tool_call_examples_section(
         {
             "name": "eval_on_train_set",
             "arguments": {
-                "multi_line_expr": "chip = CHIP_ENTROPY($adj_close, $adj_low, $adj_high, $volume, $float_cap, 60)\nCS_ZSCORE(CS_WINSORIZE(chip, 0.01, 0.99))",
+                "multi_line_expr": "chip = CHIP_ENTROPY($adj_close, $adj_low, $adj_high, $volume, 60, $float_cap)\nCS_ZSCORE(CS_WINSORIZE(chip, 0.01, 0.99))",
                 "factor_name": "chip_entropy60",
             },
         }

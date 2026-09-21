@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
 """模块 10 · ic_robustness：IC 方向、月度稳健性与十分组形态学判读。原文精确切片。"""
 
+from alphaagent.factor.mining.delivery_criteria import DeliveryCriteria
+
 RAW = """### IC 方向、月度稳健性与十分组形态学
 
 - 研究阶段可分析正、负 IC；负 IC 和负 ICIR 均为有效信号，评估阶段以 `abs(IC)` 和 `abs(ICIR)` 判断，无需在初探时手动取反。**⚠️ 交付前翻转纪律**：调用 `submit_factor` 提交时，若因子预期为负向 alpha（负 IC），**必须在表达式顶层包裹 `NEG()` 转为正向收益因子**（确保因子值最高端 D10 对应未来收益最优端），否则 engine_gate 净值回测默认买入 D10 将买入空头端导致持续亏损被拒！
-- `summary.cs_pearson_autocorr` 已纳入 stage_one 硬门槛（候选池 `min_cs_autocorr >= 0.18`），低于阈值的因子截面排名日度剧变、换手吃掉 alpha，直接拒绝不进候选池。
+- `summary.cs_pearson_autocorr` 已纳入 stage_one 硬门槛（候选池 `min_cs_autocorr >= {min_cs_autocorr}`），低于阈值的因子截面排名日度剧变、换手吃掉 alpha，直接拒绝不进候选池。
 - **`ic > 0`**：`mean_monthly_ic` 宜为正；`share_months_ic_positive`（终端「月IC+」）须 **> 0.7**。
 - **`ic < 0`**：`mean_monthly_ic` 宜为负；`share_months_ic_positive` 须 **< 0.3**。
 - **十分组形态学 `decile_mean_label`**（全样本等频，D1=因子最低、D10=因子最高）。
@@ -36,4 +38,5 @@ PHASES = frozenset({"explore", "deepen", "deliver", "full"})
 
 
 def render(ctx) -> str:  # noqa: ANN001
-    return RAW
+    crit = DeliveryCriteria.from_spec(getattr(ctx, "research_spec", None))
+    return RAW.replace("{min_cs_autocorr}", str(crit.candidate.min_cs_autocorr))
