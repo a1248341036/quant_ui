@@ -6,6 +6,8 @@
 - deepen/deliver/full：完整三层枷锁（含 A/B/C 轨变异 + 研究记忆阅读 + 正交预判）
 """
 
+from alphaagent.factor.mining.delivery_criteria import DeliveryCriteria
+
 # ── 第一层：经济直觉强制 ──
 _LAYER1 = """# 理性枷锁（三条硬性约束，违反即跳过本轮）
 
@@ -32,7 +34,6 @@ _LAYER1 = """# 理性枷锁（三条硬性约束，违反即跳过本轮）
 
 **好的经济直觉示例**（可直接用于 comment 字段）：
 - ✅ "上方筹码峰（CHIP_PEAK_LOC）是套牢盘压力位；价格回撤越深，距压力位越远，上方卖压越小，后续反弹弹性越大。用 NEG(TS_PCTCHANGE) 量化回撤深度，与筹码峰位置做交互。"
-- ✅ "隔夜跳空反映非交易时段信息冲击；VWAP 偏离反映日内主力的成本基准。两者背离时，隔夜信息被日内交易消化但未完全定价，次日开盘存在修正空间。"
 
 """
 
@@ -41,7 +42,7 @@ _TRACK_D = """## 第二层：探索 × 变异双轨策略（Explore × Exploit�
 
 搜索 = **新族开拓（D 轨，探索）** 与 **父本变异（A/B/C 轨，深耕）** 两条轨道并行，禁止所有候选都挤在单轨：
 
-### 轨道 D：新族开拓（每轮建议并发候选中**至少一半（≥{half_batch} 条）**，主轨道）
+### 轨道 D：新族开拓（主轨道；若本轮提交 {batch} 条则至少 {half_batch} 条为 D 轨，少于 {batch} 条则至少一半为 D 轨）
 
 - **D 新族**：一个研究记忆中尚无正/负证据的**信号机制**——不是任何既有父本的变体，核心信息源或经济机制与已评估因子不同。
 - 新族同样必须先写 50 字经济直觉因果链，禁止无机制的随机算子拼装。
@@ -60,7 +61,7 @@ _TRACK_D = """## 第二层：探索 × 变异双轨策略（Explore × Exploit�
     趋势非参数度量 `TS_TREND_RANK`。冷门算子只是低相关性的候选载体，**不能替代机制三问**。
     每轮注入的"算子使用分布"块会实时统计已用算子频次并推荐低频冷门算子——按分布引导走，
     不要扎堆在少数算子上。
-- **新族晋级**：新族因子 |IC| ≥ 0.02 即成为新父本，纳入 A/B/C 轨深耕；连续 3 个新族 IC < 0.01 → 该机制记入负证据，本轮再换一个机制。
+- **新族晋级**：新族因子 |IC| ≥ {min_abs_ic} 即成为新父本，纳入 A/B/C 轨深耕；连续 3 个新族 IC < 0.01 → 该机制记入负证据，本轮再换一个机制。
 - **禁止低级信号叠加（硬约束）**：D 轨表达式顶层**禁止**使用 `ADD(RANK(x), RANK(y))` 或 `SUBTRACT(RANK(x), RANK(y))` 这种"两个独立信号简单加减"的形式——这只是把两个弱信号拼在一起，没有经济机制上的交互。如果确实需要融合多个信息源，必须使用**至少一层结构化交互算子**：门控 `GATED_SIGNAL`、组内排名 `CS_GROUP_RANK`、残差化 `CS_RESIDUALIZE`、背离 `DIVERGENCE_RANK`、分段状态 `PIECEWISE_STATE`、时序相关 `TS_CORR`/`TS_RANKCORR`、必要条件 `IF_THEN_ELSE`。例外：`ADD(x, RANK(y))` 中 x 本身已经是复合结构（如 `CS_RESIDUALIZE(...)` 输出）时不在此列——拦截的是"两个裸 RANK/TS_ 信号直接相加"。
 - **单机制深度优先**：鼓励在单一信息源上构建多层算子链（如 `TS_PCTCHANGE → CS_ZSCORE → CS_NEUTRALIZE → TS_DECAY`），而非拼接多个浅层信号。单机制深度因子有更清晰的因果链条，且与已有因子正交性更好。
 - **条件化前先消融**：门控/条件结构（GATED_SIGNAL / IF_THEN_ELSE / PIECEWISE_STATE / CS_GROUP_RANK）默认是"基信号 × 状态过滤"——
@@ -113,12 +114,15 @@ _INTERACTION = """
 ## 第二层补充：多因子交互必须先选机制，再写公式
 
 **⚠️ 硬性规则：只要表达式中出现以下任何算子名（包括作为中间变量的一部分），
-就必须在调用 `evaluate_factor` / `submit_factor` 时同时传入 `interaction` 参数。**
+就必须随调用传入 `interaction` 契约参数（推荐显式传，漏传系统会尝试自动补全并给出 warning，但仍可能因机制缺失被 Reviewer 打回）。**
 
-触发拦截的算子：`MULTIPLY`, `TS_CORR`, `TS_COV`, `TS_RANKCORR`, `MUTUAL_INFO_LAG`,
+触发契约要求的算子：`MULTIPLY`, `TS_CORR`, `TS_COV`, `TS_RANKCORR`, `MUTUAL_INFO_LAG`,
 `GATED_SIGNAL`, `CS_GROUP_RANK`, `CS_RESIDUALIZE`, `DIVERGENCE_RANK`, `PIECEWISE_STATE`, `IF_THEN_ELSE`。
 
-**未传 `interaction` 参数 → 工具直接拦截，不会执行表达式，返回错误信息。**
+**未传 `interaction` 契约时的系统行为**：
+- 表达式**不含**任何上述算子 → 契约被忽略（不拦截）；
+- 表达式含上述算子但**未传契约** → 系统自动补全契约（按末位算子推断类型、从表达式列推断信号、机制标记为占位），返回 warning 提醒下次显式传；
+- 表达式含 `MULTIPLY` 且**未声明 `multiplication` 契约** → **直接拦截**，不执行表达式（唯一硬拦截情形）。
 
 interaction 契约格式：
 
@@ -166,15 +170,15 @@ evaluate_factor(
 | `rolling_relation` | 两个变量的时序关系本身有信息 | `TS_RANKCORR(x, y, 20)` |
 | `piecewise_state` | 主信号在不同状态下方向不同 | `PIECEWISE_STATE(base, state, 0.2, 0.8, 1, -1, 0)` |
 | `necessary_condition_signal` | 满足必要条件才启用信号 | 条件面板 + `IF_THEN_ELSE(condition, base, 0)` |
-| ~~`multiplication`~~ | **默认禁用**：仅当 ResearchSpec 显式放开时可用 | 须完整消融且组合优于最强单腿 |
+| `multiplication` | 放大器（默认拦截）：仅当 ResearchSpec 显式放开时可用 | 须完整消融且组合优于最强单腿 |
 
-**默认禁止 MULTIPLY 乘法交互**：本仓库默认不允许任何形式的算子相乘（含带契约的乘法），
-`MULTIPLY` 会被直接拦截。需要表达放大、抑制、条件依赖或状态切换时，一律改用结构化交互：
+**MULTIPLY 乘法交互规则**：未声明 `interaction_type='multiplication'` 契约的 `MULTIPLY`
+会被**直接拦截**（唯一硬拦截）。当 ResearchSpec 的 `interaction_policy.allowed_interaction_types`
+显式包含 `"multiplication"` 时，已声明乘法契约的 `MULTIPLY` 放行，但必须完成
+base-only / condition-only / combined 三组消融并证明组合优于最强单腿；"两个 zscore 相乘"永远不算经济创新。
+需要表达放大、抑制、条件依赖或状态切换时，一律优先改用结构化交互：
 门控 `GATED_SIGNAL`、组内排名 `CS_GROUP_RANK`、残差化 `CS_RESIDUALIZE`、背离 `DIVERGENCE_RANK`、
-分段状态 `PIECEWISE_STATE` 或必要条件 `IF_THEN_ELSE`。
-仅当本次 ResearchSpec 的 `interaction_policy.allowed_interaction_types` 显式包含
-`"multiplication"` 时才可使用，且必须提供 base-only / condition-only / combined 完整消融，
-并证明组合优于最强单腿；"两个 zscore 相乘"永远不算经济创新。"""
+分段状态 `PIECEWISE_STATE` 或必要条件 `IF_THEN_ELSE`。"""
 
 # ── 第三层：正交预判（探索阶段裁掉） ──
 _LAYER3 = """
@@ -182,10 +186,10 @@ _LAYER3 = """
 ## 第三层：正交预判与分层准入门槛（Orthogonality Guard）
 
 系统采用三级截面相关性阶梯严格控制冗余，注意区分不同阶段的判定阈值：
-1. **DSL 求值防爆拦截线（Spearman > 0.70）**：在 `evaluate_factor` 评估前预审，与已有因子相关性 > 0.70 直接拦截计算，避免无效算力消耗。
-2. **候选池准入门槛（Pearson < 0.50）**：`submit_factor` 第一阶段，因子与正式库已有因子最大截面相关必须 < 0.50，否则拒绝入候选池。
-3. **正式库精选晋升线（Pearson < 0.40）**：第二阶段最终交付，与正式库已有因子相关性必须 < 0.40。
-因此，不要满足于低于 0.70，应从根源上设计与已有因子**不同信息源/不同机制**的因子，才能最终通过 < 0.50 和 < 0.40 的准入门槛。
+1. **DSL 求值防爆拦截线（Spearman > 0.70）**：在 `evaluate_factor` 评估前预审，与已有因子相关性 > 0.70 直接拦截计算，避免无效算力消耗。（此 0.70 为 DSL 防爆线，非交付门槛）
+2. **候选池准入门槛（Pearson < {candidate_corr}）**：`submit_factor` 第一阶段，因子与正式库已有因子最大截面相关必须 < {candidate_corr}，否则拒绝入候选池。
+3. **正式库精选晋升线（Pearson < {production_corr}）**：第二阶段最终交付，与正式库已有因子相关性必须 < {production_corr}。
+因此，不要满足于低于 0.70，应从根源上设计与已有因子**不同信息源/不同机制**的因子，才能最终通过 < {candidate_corr} 和 < {production_corr} 的准入门槛。
 
 """
 
@@ -208,7 +212,10 @@ def render(ctx) -> str:  # noqa: ANN001
     half_batch = max(1, batch // 2)
     phase = getattr(ctx, "prompt_phase", "full")
     template = RAW_EXPLORE if phase == "explore" else RAW
-    return (
-        template.replace("{batch}", str(batch))
-        .replace("{half_batch}", str(half_batch))
-    )
+    crit = DeliveryCriteria.from_spec(getattr(ctx, "research_spec", None))
+    text = template.replace("{batch}", str(batch))
+    text = text.replace("{half_batch}", str(half_batch))
+    text = text.replace("{min_abs_ic}", str(crit.candidate.min_abs_ic))
+    text = text.replace("{candidate_corr}", str(crit.candidate.max_abs_corr))
+    text = text.replace("{production_corr}", str(crit.production.max_abs_corr))
+    return text

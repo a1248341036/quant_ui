@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """模块 04 · data_calibration：数据与评估口径 + MLS-FMB 门槛 + label 说明。"""
 
+from alphaagent.factor.mining.delivery_criteria import DeliveryCriteria
 from alphaagent.factor.mining.mls_thresholds import mls_fmb_thresholds_markdown
 from alphaagent.factor.types import DEFAULT_LABEL_COL
 
@@ -12,7 +13,8 @@ _LABEL_DESCRIPTIONS: dict[str, str] = {
 }
 
 
-def _label_section_markdown(label_col: str, *, include_fundamentals: bool = True) -> str:
+def _label_section_markdown(label_col: str, *, include_fundamentals: bool = True, max_turnover: float = 0.5) -> str:
+    mt = str(max_turnover)
     desc = _LABEL_DESCRIPTIONS.get(label_col, "panel 内预计算的前瞻收益列")
     lines = [
         f"**本次会话 label 列：`{label_col}`** — {desc}。",
@@ -44,7 +46,11 @@ def _label_section_markdown(label_col: str, *, include_fundamentals: bool = True
             "",
             "本次会话已配置为上表「本次」行；勿在 tool 参数中切换 label。",
             "",
-            "**实盘调仓与持有期协调提示**：若回测调仓频率为 `weekly`（默认），因持有 5 日，纯 1d 短脉冲反转在周度调仓下会产生极高换手（>0.50）；应构建中慢长窗结构（如背离、筹码峰距离、资金积累），使信号兼具 1d 灵敏度与 5d 延续性。",
+            f"> **本会话 label 已固定为 `{label_col}`**。",
+            f"> 上表「价量推荐 `label_1d_close_to_close`」为通用建议，**本会话不适用**——"
+            f"勿在 tool 参数中切换 label，评估口径以本会话配置为准。",
+            "",
+            f"**实盘调仓与持有期协调**：weekly 调仓持有 5 日，纯 1d 短脉冲反转会因周度调仓产生极高换手而被拒，应构建中慢长窗结构（背离、筹码峰距离、资金积累）使信号兼具 1d 灵敏度与 5d 延续性。换手硬门槛为 `avg_daily_side_turnover <= {mt}`，降换手完整规则见行为准则「换手红线」节。",
         ]
     )
     if label_col.startswith("label_") and "d_close_to_close" in label_col and label_col not in (
@@ -77,9 +83,16 @@ PHASES = frozenset({"explore", "deepen", "deliver", "full"})
 
 def render(ctx) -> str:  # noqa: ANN001
     from alphaagent.factor.mining.context import asset_type_label
+    from alphaagent.factor.mining.delivery_criteria import DeliveryCriteria
+
+    crit = DeliveryCriteria.from_spec(getattr(ctx, "research_spec", None))
+    min_cs_autocorr = crit.candidate.min_cs_autocorr
+    max_turnover = crit.candidate.max_avg_daily_side_turnover
 
     mls_block = mls_fmb_thresholds_markdown(label_col=ctx.label_col)
-    label_block = _label_section_markdown(ctx.label_col, include_fundamentals=ctx.include_fundamentals)
+    label_block = _label_section_markdown(
+        ctx.label_col, include_fundamentals=ctx.include_fundamentals, max_turnover=max_turnover
+    )
     return f"""### 数据与评估口径
 
 本仓库为**{asset_type_label(ctx.asset_type)}日频 panel**：索引 `(datetime, instrument)`，主频 **1d**。
@@ -94,9 +107,11 @@ def render(ctx) -> str:  # noqa: ANN001
 | `summary.ic` | 逐日横截面 Pearson IC 的均值 |
 | `summary.icir` | IC / std(逐日 IC)，即 IC 信息比率 |
 | `summary.rank_ic` | 逐日横截面 Spearman Rank IC 的均值 |
-| `summary.cs_pearson_autocorr` | 逐日横截面 lag-1 Pearson 自相关均值：`corr_CS(f_t, f_{{t-1}})`，用于衡量因子排名日度延续性；当前为诊断指标，不是两阶段硬门槛 |
+| `summary.cs_pearson_autocorr` | 逐日横截面 lag-1 Pearson 自相关均值：`corr_CS(f_t, f_{{t-1}})`，用于衡量因子排名日度延续性；**stage_one 硬门槛**（`min_cs_autocorr >= {min_cs_autocorr}`），低于阈值直接拒绝 |
 | `summary.mls_fmb` | 逐日十分组 MLS-FMB：`mean_rho`（单调性）、`mean_ls`/`ir_ls_annual`（多空 IR）、`mls`（综合）、`nw_t_rho`/`nw_t_ls`（NW t） |
 
 {mls_block}
 
-{label_block}"""
+{label_block}""".replace(
+        "{min_cs_autocorr}", str(min_cs_autocorr)
+    )

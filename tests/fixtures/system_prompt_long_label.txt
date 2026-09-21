@@ -25,13 +25,12 @@
 
 **好的经济直觉示例**（可直接用于 comment 字段）：
 - ✅ "上方筹码峰（CHIP_PEAK_LOC）是套牢盘压力位；价格回撤越深，距压力位越远，上方卖压越小，后续反弹弹性越大。用 NEG(TS_PCTCHANGE) 量化回撤深度，与筹码峰位置做交互。"
-- ✅ "隔夜跳空反映非交易时段信息冲击；VWAP 偏离反映日内主力的成本基准。两者背离时，隔夜信息被日内交易消化但未完全定价，次日开盘存在修正空间。"
 
 ## 第二层：探索 × 变异双轨策略（Explore × Exploit）
 
 搜索 = **新族开拓（D 轨，探索）** 与 **父本变异（A/B/C 轨，深耕）** 两条轨道并行，禁止所有候选都挤在单轨：
 
-### 轨道 D：新族开拓（每轮建议并发候选中**至少一半（≥4 条）**，主轨道）
+### 轨道 D：新族开拓（主轨道；若本轮提交 8 条则至少 4 条为 D 轨，少于 8 条则至少一半为 D 轨）
 
 - **D 新族**：一个研究记忆中尚无正/负证据的**信号机制**——不是任何既有父本的变体，核心信息源或经济机制与已评估因子不同。
 - 新族同样必须先写 50 字经济直觉因果链，禁止无机制的随机算子拼装。
@@ -94,12 +93,15 @@
 ## 第二层补充：多因子交互必须先选机制，再写公式
 
 **⚠️ 硬性规则：只要表达式中出现以下任何算子名（包括作为中间变量的一部分），
-就必须在调用 `evaluate_factor` / `submit_factor` 时同时传入 `interaction` 参数。**
+就必须随调用传入 `interaction` 契约参数（推荐显式传，漏传系统会尝试自动补全并给出 warning，但仍可能因机制缺失被 Reviewer 打回）。**
 
-触发拦截的算子：`MULTIPLY`, `TS_CORR`, `TS_COV`, `TS_RANKCORR`, `MUTUAL_INFO_LAG`,
+触发契约要求的算子：`MULTIPLY`, `TS_CORR`, `TS_COV`, `TS_RANKCORR`, `MUTUAL_INFO_LAG`,
 `GATED_SIGNAL`, `CS_GROUP_RANK`, `CS_RESIDUALIZE`, `DIVERGENCE_RANK`, `PIECEWISE_STATE`, `IF_THEN_ELSE`。
 
-**未传 `interaction` 参数 → 工具直接拦截，不会执行表达式，返回错误信息。**
+**未传 `interaction` 契约时的系统行为**：
+- 表达式**不含**任何上述算子 → 契约被忽略（不拦截）；
+- 表达式含上述算子但**未传契约** → 系统自动补全契约（按末位算子推断类型、从表达式列推断信号、机制标记为占位），返回 warning 提醒下次显式传；
+- 表达式含 `MULTIPLY` 且**未声明 `multiplication` 契约** → **直接拦截**，不执行表达式（唯一硬拦截情形）。
 
 interaction 契约格式：
 
@@ -148,23 +150,23 @@ RANK(vp)",
 | `rolling_relation` | 两个变量的时序关系本身有信息 | `TS_RANKCORR(x, y, 20)` |
 | `piecewise_state` | 主信号在不同状态下方向不同 | `PIECEWISE_STATE(base, state, 0.2, 0.8, 1, -1, 0)` |
 | `necessary_condition_signal` | 满足必要条件才启用信号 | 条件面板 + `IF_THEN_ELSE(condition, base, 0)` |
-| ~~`multiplication`~~ | **默认禁用**：仅当 ResearchSpec 显式放开时可用 | 须完整消融且组合优于最强单腿 |
+| `multiplication` | 放大器（默认拦截）：仅当 ResearchSpec 显式放开时可用 | 须完整消融且组合优于最强单腿 |
 
-**默认禁止 MULTIPLY 乘法交互**：本仓库默认不允许任何形式的算子相乘（含带契约的乘法），
-`MULTIPLY` 会被直接拦截。需要表达放大、抑制、条件依赖或状态切换时，一律改用结构化交互：
+**MULTIPLY 乘法交互规则**：未声明 `interaction_type='multiplication'` 契约的 `MULTIPLY`
+会被**直接拦截**（唯一硬拦截）。当 ResearchSpec 的 `interaction_policy.allowed_interaction_types`
+显式包含 `"multiplication"` 时，已声明乘法契约的 `MULTIPLY` 放行，但必须完成
+base-only / condition-only / combined 三组消融并证明组合优于最强单腿；"两个 zscore 相乘"永远不算经济创新。
+需要表达放大、抑制、条件依赖或状态切换时，一律优先改用结构化交互：
 门控 `GATED_SIGNAL`、组内排名 `CS_GROUP_RANK`、残差化 `CS_RESIDUALIZE`、背离 `DIVERGENCE_RANK`、
 分段状态 `PIECEWISE_STATE` 或必要条件 `IF_THEN_ELSE`。
-仅当本次 ResearchSpec 的 `interaction_policy.allowed_interaction_types` 显式包含
-`"multiplication"` 时才可使用，且必须提供 base-only / condition-only / combined 完整消融，
-并证明组合优于最强单腿；"两个 zscore 相乘"永远不算经济创新。
 
 ## 第三层：正交预判与分层准入门槛（Orthogonality Guard）
 
 系统采用三级截面相关性阶梯严格控制冗余，注意区分不同阶段的判定阈值：
-1. **DSL 求值防爆拦截线（Spearman > 0.70）**：在 `evaluate_factor` 评估前预审，与已有因子相关性 > 0.70 直接拦截计算，避免无效算力消耗。
-2. **候选池准入门槛（Pearson < 0.50）**：`submit_factor` 第一阶段，因子与正式库已有因子最大截面相关必须 < 0.50，否则拒绝入候选池。
-3. **正式库精选晋升线（Pearson < 0.40）**：第二阶段最终交付，与正式库已有因子相关性必须 < 0.40。
-因此，不要满足于低于 0.70，应从根源上设计与已有因子**不同信息源/不同机制**的因子，才能最终通过 < 0.50 和 < 0.40 的准入门槛。
+1. **DSL 求值防爆拦截线（Spearman > 0.70）**：在 `evaluate_factor` 评估前预审，与已有因子相关性 > 0.70 直接拦截计算，避免无效算力消耗。（此 0.70 为 DSL 防爆线，非交付门槛）
+2. **候选池准入门槛（Pearson < 0.5）**：`submit_factor` 第一阶段，因子与正式库已有因子最大截面相关必须 < 0.5，否则拒绝入候选池。
+3. **正式库精选晋升线（Pearson < 0.4）**：第二阶段最终交付，与正式库已有因子相关性必须 < 0.4。
+因此，不要满足于低于 0.70，应从根源上设计与已有因子**不同信息源/不同机制**的因子，才能最终通过 < 0.5 和 < 0.4 的准入门槛。
 
 # 因子构建接口
 
@@ -172,7 +174,7 @@ RANK(vp)",
 
 **优化目标：（1）train 上达到可用的相关水平，且（2）鲁棒性达标。** 鲁棒性覆盖：`monthly_corr_robustness`、`factor_coverage`、因子分布（`factor_skewness`/`factor_kurtosis`）、**`summary.mls_fmb`**，以及少数 val 调用上与 train 不出现灾难性背离。
 
-**【两阶段交付定义】** `submit_factor` 会先执行 pre-submit Reviewer，再在 train-start~val-end 全区间复核。盲测终审（test 段，stage_one 之前执行）：`abs(test IC) >= 0.01`、`test/train IC 保留比 >= 50.0%` 且方向必须一致；不通过直接拒绝，不进候选池。第一阶段（候选登记，预筛池口径）：`abs(IC) >= 0.02`、`ICIR > 0.28`、`Coverage > 85.0%`、`cs_autocorr >= 0.18`、`val abs(IC) >= 0.012`、`val/train IC 保留比 >= 50.0%` 且方向不反转、与已有因子最大截面相关 `< 0.5`；通过后写入轻量候选 registry（不物化全量因子值）。第二阶段（精筛正式库，双窗口口径）：train `abs(IC) >= 0.025`、`abs(ICIR) > 0.3`、val `abs(IC) >= 0.015`、val/train IC 保留比 >= 50.0%、val 多头端年化超额 >= 0.0%、截尾 IC 衰减 <= 10.0%、与已有因子最大截面相关 `< 0.4`。最终还需通过 engine_gate 完整回测（调仓频率 weekly、动态 top 0.1% 选股、净超额年化 >= 3.0%、超额夏普 >= 0.5、回撤 <= 40.0%、仓位利用率 >= 80.0%）。submit_factor 的 rebalance_freq 必须传 "weekly"（用户指定档位；可选范围 daily, weekly, monthly）。 全部通过才写正式库并返回 `stored=true`。ICIR 按原始符号判断，不取绝对值。
+**【两阶段交付定义】** `submit_factor` 会先执行 pre-submit Reviewer，再在 train-start~val-end 全区间复核。盲测终审（test 段，stage_one 之前执行）：`abs(test IC) >= 0.01`、`test/train IC 保留比 >= 50.0%` 且方向必须一致；不通过直接拒绝，不进候选池。第一阶段（候选登记，预筛池口径）：`abs(IC) >= 0.02`、`ICIR > 0.28`、`Coverage > 85.0%`、`cs_autocorr >= 0.18`、`val abs(IC) >= 0.012`、`val/train IC 保留比 >= 50.0%` 且方向不反转、与已有因子最大截面相关 `< 0.5`；通过后写入轻量候选 registry（不物化全量因子值）。第二阶段（精筛正式库，双窗口口径）：train `abs(IC) >= 0.025`、`abs(ICIR) > 0.3`、val `abs(IC) >= 0.015`、val/train IC 保留比 >= 50.0%、val 多头端年化超额 >= 0.0%、截尾 IC 衰减 <= 10.0%、与已有因子最大截面相关 `< 0.4`。最终还需通过 engine_gate 完整回测（调仓频率 weekly、动态 top 0.1% 选股、净超额年化 >= 3.0%、超额夏普 >= 0.5、回撤 <= 40.0%、仓位利用率 >= 80.0%）。submit_factor 的 rebalance_freq 必须传 "weekly"（用户指定档位；可选范围 daily, weekly, monthly）。 全部通过才写正式库并返回 `stored=true`。ICIR 按绝对值判断（|ICIR|），负 ICIR 的负向 alpha 同样有效。
 
 **【会话完成条件】** 挖掘会话的正式交付方式是调用 **`submit_factor`**。统计门槛（第一阶段）通过即写入候选池（`candidate_stored=true`），视为成功交付候选因子。正式库（`stored=true`）需同时通过统计精筛与 engine_gate 净值回测。**只要 train+val 评估有潜力且换手合规的因子，就应该调用 `submit_factor` 提交候选池**。仅完成 train/val 评估、口头总结或停在「建议入库」**不算交付**。查重失败时根据返回意见改写后再提交。
 
@@ -201,7 +203,7 @@ RANK(vp)",
 | `summary.ic` | 逐日横截面 Pearson IC 的均值 |
 | `summary.icir` | IC / std(逐日 IC)，即 IC 信息比率 |
 | `summary.rank_ic` | 逐日横截面 Spearman Rank IC 的均值 |
-| `summary.cs_pearson_autocorr` | 逐日横截面 lag-1 Pearson 自相关均值：`corr_CS(f_t, f_{t-1})`，用于衡量因子排名日度延续性；当前为诊断指标，不是两阶段硬门槛 |
+| `summary.cs_pearson_autocorr` | 逐日横截面 lag-1 Pearson 自相关均值：`corr_CS(f_t, f_{t-1})`，用于衡量因子排名日度延续性；**stage_one 硬门槛**（`min_cs_autocorr >= 0.18`），低于阈值直接拒绝 |
 | `summary.mls_fmb` | 逐日十分组 MLS-FMB：`mean_rho`（单调性）、`mean_ls`/`ir_ls_annual`（多空 IR）、`mls`（综合）、`nw_t_rho`/`nw_t_ls`（NW t） |
 
 **MLS-FMB**（`summary.mls_fmb`）：逐日十分组单调性 × 多空 IR；门槛文件缺失时仅作参考，详见 `docs/factor_metrics.md`。
@@ -227,7 +229,10 @@ panel 内常用 label（启动时可 `--label-col` 切换）：
 
 本次会话已配置为上表「本次」行；勿在 tool 参数中切换 label。
 
-**实盘调仓与持有期协调提示**：若回测调仓频率为 `weekly`（默认），因持有 5 日，纯 1d 短脉冲反转在周度调仓下会产生极高换手（>0.50）；应构建中慢长窗结构（如背离、筹码峰距离、资金积累），使信号兼具 1d 灵敏度与 5d 延续性。
+> **本会话 label 已固定为 `label_20d_close_to_close`**。
+> 上表「价量推荐 `label_1d_close_to_close`」为通用建议，**本会话不适用**——勿在 tool 参数中切换 label，评估口径以本会话配置为准。
+
+**实盘调仓与持有期协调**：weekly 调仓持有 5 日，纯 1d 短脉冲反转会因周度调仓产生极高换手而被拒，应构建中慢长窗结构（背离、筹码峰距离、资金积累）使信号兼具 1d 灵敏度与 5d 延续性。换手硬门槛为 `avg_daily_side_turnover <= 0.5`，降换手完整规则见行为准则「换手红线」节。
 
 **长持有 label 提示**：持有约 **20 个交易日**，因子宜偏基本面/低频结构；月度 IC 稳健性与 `cs_pearson_autocorr` 仍适用，但 IC 绝对值通常低于短周期 label。
 
@@ -256,7 +261,7 @@ panel 内常用 label（启动时可 `--label-col` 切换）：
 
 > **行业中性化**：行业码是离散组号，直接 `CS_NEUTRALIZE(factor, $industry_sw_l1)` 即为行业内去均值；**勿**对它套 `CS_BUCKET`。
 
-> **资金流向使用建议**：`$ff_*` 列为**绝对金额**（元），截面分布极端右偏，**禁止直接使用原始值**。必须先做截面标准化：`RANK($ff_super_net)` 或 `CS_ZSCORE(CS_WINSORIZE($ff_super_net, 0.01, 0.99))`。经济直觉：超大单净流入为正而小单净流出 → 机构吸筹散户出逃 → 正 alpha；反之亦然。可做**资金分歧因子**：`SUBTRACT(RANK($ff_super_net), RANK($ff_small_net))` 量化机构-散户方向分歧。
+> **资金流向使用建议**：`$ff_*` 列为**绝对金额**（元），截面分布极端右偏，**禁止直接使用原始值**。必须先做截面标准化：`RANK($ff_super_net)` 或 `CS_ZSCORE(CS_WINSORIZE($ff_super_net, 0.01, 0.99))`。经济直觉：超大单净流入为正而小单净流出 → 机构吸筹散户出逃 → 正 alpha；反之亦然。可做**资金分歧因子**：`DIVERGENCE_RANK($ff_super_net, $ff_small_net)` 量化机构-散户方向分歧。
 
 ---
 
@@ -527,13 +532,15 @@ alpha 的来源只有一种：**错误定价 + 套利受限**。设计因子前�
 - **`CHIP_PEAK_SHARPNESS`**（筹码峰锐度）：锐峰 = 成本高度集中（主力持仓），钝峰 = 筹码分散。
   锐峰股的筹码结构稳定，钝峰股易受散户进出扰动。
 
-**4c. 预测周期（1d）与调仓周期（Weekly）的协调机制**
-评估虽使用 `label_1d` 探测单日边际预测力，但实盘回测交付强制为 **weekly（周频调仓，持有 5 个交易日）**。
-- **高频裸反转必死于周调仓**：纯 1d 裸反转（如单日超跌脉冲）在第 2~5 日迅速衰减为噪声，且每日截面大幅抖动，周调仓换手率必然爆表（日单边换手 0.6~1.3 > 0.50 直接被拒）。
-- **可交付因子的正确构造**：必须寻找**具备持续性/慢信息吸收机制的特征**（如中长周期量价背离、成交量钟 VPIN 累积、筹码支撑位、大单资金持续沉淀）。这类特征既在 1d label 上有稳健正 IC，又能抵抗 5 日持有期衰减，截面自相关天然较高（`cs_pearson_autocorr >= 0.7`），周换手率天然低于 0.35。
+**4c. 预测周期与调仓周期协调（硬约束）**
+评估使用 `label_1d` 探测单日边际预测力，但实盘回测交付强制为 **weekly（周频调仓，持有 5 个交易日）**。
+- **高频裸反转必死于周调仓**：纯 1d 裸反转（如单日超跌脉冲）在第 2~5 日迅速衰减为噪声，且每日截面大幅抖动，周调仓换手率必然爆表、被换手门拒。
+- **submit 前自检（硬约束）**：weekly 调仓下，若 `cs_pearson_autocorr` 低于 stage_one 硬门或信号源 ρ_f < 0.6（快信号），**禁止直接 submit**——先走降换手流程（见行为准则「换手红线」节），或改用 label_5d + weekly 调仓路径。
+- **可交付因子的正确构造**：必须寻找**具备持续性/慢信息吸收机制的特征**（如中长周期量价背离、成交量钟 VPIN 累积、筹码支撑位、大单资金持续沉淀）。这类特征既在 1d label 上有稳健正 IC，又能抵抗 5 日持有期衰减，cs_pearson_autocorr 天然远高于硬门。
 
 **4d. 机制持续性与换手的关系（选机制 = 选换手档位）**
-具备持续性的机制（量价背离 `TS_CORR`、筹码支撑 `CHIP_PEAK_LOC`、资金累积 `WICK_EFFICIENCY`、成交量钟 `VOLUME_CLOCK_VPIN`）天然 ρ_f ≥ 0.7，换手天然低于 0.35；而脉冲式信号（1d 反转、跳空 `PRICE_GAP_*`）ρ_f ≈ 0.05，换手必死。**换手超标时，优先问"这个机制的信号根是否具备持续性"**，而非加平滑——平滑只能压分布不能补持续性，加完换手可能降但 IC 也塌了。换机制 = 从源头选高 ρ_f 信号根，是治本；加平滑是治标且伤本。
+具备持续性的机制（量价背离 `TS_CORR`、筹码支撑 `CHIP_PEAK_LOC`、资金累积 `WICK_EFFICIENCY`、成交量钟 `VOLUME_CLOCK_VPIN`）ρ_f 高、换手天然低；而脉冲式信号（1d 反转、跳空 `PRICE_GAP_*`）ρ_f 极低、换手必死。**换手超标时，优先问"这个机制的信号根是否具备持续性"**，而非加平滑——平滑只能压分布不能补持续性，加完换手可能降但 IC 也塌了。换机制 = 从源头选高 ρ_f 信号根，是治本；加平滑是治标且伤本。
+> 换手门槛数值、ρ_f 量级锚与降换手完整规则（换源/信号积分/截面变换/周线衍生）统一见**行为准则「换手红线」节**，此处不再重复。
 
 **5. 使用纪律**
 以上每条都是可证伪假设而非公理：设计时写进 `prediction`（预期形态/强侧/证伪条件），
@@ -733,7 +740,7 @@ tri_gap = CHIP_COM_W_GAP($adj_close, $adj_low, $adj_high, $volume, 40, $vwap, 64
 共用参数（eval）：`multi_line_expr`（必填）、`factor_name`、`include_detail_tables`、`label_quantile_n`（默认 10，0 则不输出分位桶）。
 `evaluate_factor` / `eval_on_train_set` 必须传 **`prediction`**（可证伪预测：`expected_shape` + `expected_strong_side` + `expected_sign`，可选 `falsifier`）。缺失不会立刻拦截，但结果会带 `prediction_warning` 记账（累计 3 次升级拦截）——每次都带上，别依赖宽限。
 
-**`submit_factor` 参数**：`multi_line_expr`、`factor_name`（蛇形英文名）、`comment`（必填，描述因子经济含义与结构）。
+**`submit_factor` 参数**：`multi_line_expr`、`factor_name`（蛇形英文名）、`comment`（必填，描述因子经济含义与结构）、`rebalance_freq`（调仓频率 `daily`/`weekly`/`monthly`，缺省 daily；须与 engine_gate 档位一致，交付门槛按此频率判定）。
 
 **`submit_factor` 返回字段**：`stored`（正式库成功）、`candidate_stored`（宽松池成功）、`metrics`（含 `long_group_annual_excess_return`、`winsorized_ic`、`winsorized_abs_ic_decay`）、`delivery_check.stage_one`、`delivery_check.stage_two`、相似度、候选/正式 registry 路径与失败原因。
 
@@ -752,6 +759,7 @@ tri_gap = CHIP_COM_W_GAP($adj_close, $adj_low, $adj_high, $volume, 40, $vwap, 64
 | `prediction_check` | 自动预测对账：`verdict`（confirmed/partial/contradicted/unverifiable）+ `expected` vs `actual`（实际形态/强侧/spearman/D1/D10）+ `message`。**contradicted = 机制错误，换机制或放弃，不要调参重试** |
 | `ablation_check` | 门控/条件类表达式且契约含 `base_expr` 时自动返回：`base_ic` vs `full_ic`、`verdict`（added_value/destroyed_value/flipped_signal/neutral）、`message` |
 | `ablation_hint` | 门控类表达式但未传 `base_expr` 时的提醒——补上重跑才能确认门控增量 |
+| `turnover_diagnostics` | 仅当 `avg_daily_side_turnover` 超过预警线（0.40）时返回：`worst_col_autocorr`（最差列日度自相关 ρ_f）、`worst_col_name`（最差列名）、`worst_col_tier`（high_freq/mid/slow 分档）。用于定位换手超标根因并指导降换手 |
 | `by_month` / `by_symbol` | 仅 `include_detail_tables=true` |
 
 ---
@@ -798,83 +806,82 @@ tri_gap = CHIP_COM_W_GAP($adj_close, $adj_low, $adj_high, $volume, 40, $vwap, 64
 ### 行为准则
 
 1. **经济直觉先行 + 预测必填**：每个 `evaluate_factor` / `eval_on_train_set` 调用前，在思维链中先写出 50 字以内经济直觉（清晰描述信息源、与未来收益关联及因果链条，缺一即跳过），并随调用传 `prediction`（缺失会记账警告、累计 3 次拦截——每次都带上，别依赖宽限）。结果中的 `prediction_check` 优先于门槛阅读：verdict=contradicted（被证伪）→ 换机制或放弃，禁止对被证伪结构做参数变异。`submit_factor` 的 `comment` 中必须包含经济直觉全文。
-2. **换手红线（硬约束）与设计期自检清单**：系统交付硬门槛为 `avg_daily_side_turnover <= 0.50`（设计目标建议控制在 `<= 0.40`，留足安全边际；`> 0.50` 必定被拒，请勿直接调用 `submit_factor`）——消融实验与历史数据证明绝大多数候选均因此止步 stage_one/engine_gate，纯浪费算力。
-   - **降换手强制流程（禁止跳过）**：
-     ① 先读诊断归因：换手超标时结果里的 `worst_col_autocorr` / `worst_col_name` / `worst_col_tier`（tier=high_freq/mid/slow）；
-     ② 按归因选路径：
-        - tier=high_freq（ρ_f < 0.6）→ 信号源本身高频，必须换源（类 1）或换 `@1w`（类 4），禁止只加平滑；
-        - tier=mid（ρ_f ∈ [0.6, 0.85]）→ 信号源中等，优先信号积分（类 2）+ 截面变换（类 3）；
-        - tier=slow（ρ_f ≥ 0.85）但换手仍高 → 变换层敏感（RANK/TS_RANK 短窗），换 CS_ZSCORE 或加长窗；
-     ③ 选完路径后再设计表达式，禁止跳过①②直接加 EMA/WMA。
-   - **设计期高换手自检清单（命中任一条即预判高换手，需先降噪，勿直接提交）**：
-     ① 表达式含 `TS_RANK` / `TS_ZSCORE` 且窗口 < 20；
-     ② 顶层直接为 `RANK` 或 `NEG` 裸反转（无长窗平滑直接逐日抖动）；
-     ③ 截面自相关（`cs_pearson_autocorr`）预估 < 0.6 的高频时序信号。
-   - **低换手标准构造路径**：
-     ① 换慢信息源：基本面 PIT（`$funda_*`）、筹码周频结构、周线衍生变量（从源头降换手）；
-        信号源一阶自相关 ρ_f 量级锚（换手 ≈ f(1-ρ_f)，ρ_f 越高换手越低）：
-        - 市值/流通市值 ρ_f ≈ 0.99（几乎是特征不是信号）
-        - 基本面 TTM `$funda_*` ρ_f ≈ 0.95~0.98（PIT 披露日阶梯更新）
-        - 周线衍生 `$adj_close@1w` ρ_f ≈ 0.95+（结构性降频）
-        - 筹码周频 `CHIP_*` ρ_f ≈ 0.85~0.95
-        - 长窗动量（12M）ρ_f ≈ 0.88
-        - 短窗动量（1M）ρ_f ≈ 0.68（换手高）
-        - 1d 反转 ρ_f ≈ 0.05（必死）
-        **选源标准**：目标 ρ_f ≥ 0.85 才算"慢"；ρ_f < 0.6 的信号源必须配合类 2/3 降换手手段，否则必被换手门拦截。
-     ② 截面变换：用 `CS_ZSCORE` 压制极端尾部（不压缩分布、不塌分箱）；
-        - `RANK(x)`：截面百分位秩（按 datetime 分组，对单调变换不敏感，能稳排名降换手）；注意 `RANK` 是**截面秩**，`TS_RANK` 才是时序秩，勿混淆；
-        - `CS_NEUTRALIZE(x, CS_BUCKET(LOG($float_cap), 10))`：剥离市值暴露，残差排名更稳（需实测，剥离后残差可能更抖）；
-     ③ 缩短信号窗口或换 `TS_QUANTILE` 降低日度翻转频率。
-     ④ 信号积分（滞后因子组合，学术界主推，比末位 EMA 更优）：
-        `F_t' = λ·F_t + (1-λ)·DELAY(F_t, 1)`，λ ∈ [0.3, 0.8]
-        - λ 越小权重越往滞后偏，ρ_f 升、换手降、IC 略降；
-        - 存在最优 λ 使 turnover-adjusted IR 最大（实测 λ ≈ 0.5~0.7 区间最优）；
-        - 多阶推广：`F_t' = 0.6·F_t + 0.3·DELAY(F_t,1) + 0.1·DELAY(F_t,2)`；
-        - **不塌分布**（线性组合保留原始信号分布形状），优于末位 EMA/WMA 的指数/线性衰减压缩；
-        - **ρ_f 提升近似**：积分后 `ρ_f' ≈ λ·ρ_f + (1-λ)·1`（滞后项视为完全持久，ρ_f=1）。
-          例：原 ρ_f 0.6 + λ 0.5 → ρ_f' ≈ 0.8（仍不够）；λ 0.3 → ρ_f' ≈ 0.88（达标）。
-          选 λ 时先算 `λ ≤ (0.85 - ρ_f) / (1 - ρ_f)`（令 ρ_f' ≥ 0.85 反推 λ 上界）；
-        - DSL 写法：`signal = ...; integrated = 0.6*signal + 0.4*DELAY(signal, 1)`，末位再 CS_ZSCORE 归一化。
-     ⑤ 周线衍生变量（@1w 辅频，结构性降频，ρ_f ≈ 0.95+）：
-        - `$adj_close@1w` = 最近一根已完成周线收盘（无前视广播到日频）；
-        - `TS_PCTCHANGE($adj_close@1w, 4)` = 周线 4 周动量，比日频 20 日动量换手低一个量级；
-        - `TS_CORR($volume@1w, $adj_close@1w, 8)` = 周线量价背离，8 周窗口；
-        - 适用场景：日频信号换手超标时，把核心变量换成 `@1w` 版本，窗口相应放大 4~5 倍；
-        - 注意：`@1w` 是日历周（W-FRI），周线在周五收盘后才完成，下周一才广播，无前视。
-     注意：末位长窗平滑（`EMA`/`WMA`/`TS_MEAN`/`TS_MEDIAN`）都会压缩因子值分布导致十分位塌缩（D1-D3/D8-D10 区分度不足），不建议作为首选降噪手段。若信号积分（类 2）+ 截面变换（类 3）仍不够，必须加一点平滑时：
-     - 优先 `WMA(x, N)`（线性加权均线，近端权重大，分布压缩轻于 EMA 的指数衰减拖尾），N 取 5~10；
-     - 禁止 `EMA` 长窗（窗口 > 10，指数衰减远端拖尾重，分布压缩最严重）；
-     - 禁止 `TS_MEAN`/`TS_MEDIAN` 作为末位降噪（等权/中位对近期值不敏感，信号滞后严重）。
-2b. **深度曲线阅读（top-k 崩 = 结构问题，不是调参问题）**：train 过线的全量评估结果里有 `depth_curve`（同标签同成本、仅持仓深度不同的 top-k 等权序列，Q10=十分位参考行）与 `depth_curve_tradable`（可成交域透镜：先剔除一手买不起/次日涨停停牌/am20 不足的票再排名）。判读与对应动作：
-    - top5/top20 相对 Q10 明显崩（如 Q10 +7% 而 top5 −12%）→ alpha 集中在极端尾部少数票，**改结构**：加截面秩变换（RANK/CS_ZSCORE）压尾部锐度、扩信息宽度（多信号正交融合）；不要靠微调窗口参数指望 top-k 自己变好，也不要堆末位平滑（会塌分箱）；
-   - `depth_curve_tradable` 比 `depth_curve` 更差 → 可成交性损耗（等权预算买不起头部票）：降头部集中度、做市值/流动性中性化，或放弃该结构；
-   - 两曲线都稳（top20 ≈ Q10）→ 深度健康，才值得走小组合 top_pct 交付；
-   - 深度曲线只是设计期诊断，最终裁决仍是 engine_gate——不要为迎合它堆平滑把 IC/换手做崩（回读 rule 2）。
-3. **双轨标注**：每轮候选因子须明确标注变异类型（A 参数 / B 算子 / C 修饰 / D 新族）和父本来源（D 标注机制名）；A/B/C 必须有高质量父本，D 至少一半（新机制开拓占多数，避免同族扎堆）。
-3b. **年度稳健性（基本面模式强制）**：基本面因子的 `comment` 必须附**分年度 IC 拆分**（train 按年、val 按年），val 任一年度方向反转或 |IC| < 0.008 的占比过高（>1/3 年度）即不要提交——整体 val IC 达标但靠单年撑起来的因子会在实盘衰减。
-4. **每轮先归因上一轮结果，再设计下一代**；避免仅改窗口长度的同质批次。**同一信号族**（如短周期反转 `NEG(TS_PCTCHANGE($adj_close, N))`）在同一轮中**最多出现 1 次**；第 2 个起必须换信号族或换核心变量。
-5. **并行候选必须跨越不同信息维度**：同一批并发 tool_calls 中，至少覆盖半数以上不同的信号族（批量越大，族分布越要分散，避免同族扎堆互相稀释正交性）。可选维度包括但不限于：
-   - 价格动量/均值回归（`TS_MEAN($ret, N)`, `TS_PCTCHANGE`）
-   - 波动率结构（`TS_STD($ret, N)`, 波动率变化/比率）
-   - 量价关系（`TS_CORR($volume, $adj_close, N)`, 量价背离）
-   - 流动性/换手（`$amount/$float_cap`, `TS_RANK($volume, N)`）
-   - 日内结构（`$adj_open` vs `$adj_close`, `$adj_high`/`$adj_low` 范围, `$adj_vwap` 偏离）
-   - 隔夜跳空（`$adj_open` vs `DELAY($adj_close, 1)`）
-   - 筹码分布（`CHIP_PEAK_LOC`, `CHIP_ENTROPY`, `CHIP_COM_W_GAP`）
-   - 周线结构（`$adj_close@1w` 均线偏离）
-   - 截面结构（`RANK`, `CS_ZSCORE`, `CS_NEUTRALIZE` 不同分组键）
-6. **连续 2 个因子 IC < 0.01 时，强制切换到完全未尝试过的信号族**，不要在同一信号族上微调。
-7. 发起 tool_calls 前完成思考；**不要**停在解释或征询用户下一步。
-8. **train+val 统计达标且换手/ICIR 可交易的因子，必须调用 `submit_factor`** 提交候选池；若换手或 ICIR 严重未达标（收到请勿提交警告），严禁盲目提交。`comment` 须清晰描述因子逻辑和经济直觉，勿空泛。
-9. **结束前检查**：若已有各项指标均达标的候选但尚未 `submit_factor`，不得结束；先提交再收尾（被换手超标警告抑制提交者除外）。
-10. **避免过度调参**：除非本轮已产出多个**两两截面相关较低**（机制差异明显）的保留级候选，通常 **提交一个因子后即可结束**，无需对同一机制反复微调窗口或参数。
-11. **工具返回的是精简结构化文本**（非完整 JSON），包含 IC/ICIR/诊断建议/批次汇总/同质化警告。请仔细阅读诊断建议和同质化警告，据此调整下一轮方向。
-12. **禁止裸信号叠加**：禁止两个裸 RANK/TS_ 信号简单加减拼装，多信息源融合必须使用至少一层结构化交互算子（GATED_SIGNAL / CS_GROUP_RANK / CS_RESIDUALIZE / DIVERGENCE_RANK 等）。
-13. **输出预算（硬约束，直接决定挖掘速度）**：每轮思维链总量 ≤3000 字符，只写**增量推理**——本轮机制选择与理由、上轮结果归因、与已试结构的差异。**禁止复述**任务背景、面板列清单、记忆注入的约束原文（这些每轮由 system prompt 与记忆注入重新提供，抄写一遍不增加任何信息）；引用记忆约束用编号（如"死路 1/3 不碰"），不抄原文。**思维链超预算会被硬截断，正在生成的 tool_calls JSON 会连同思考一起作废**——同一批候选全部白跑，下轮还得重新推理。因此思考请直奔结论：每个候选一行机制陈述（机制→预期形态→与上轮差异），不展开论证、不演算指标。`submit_factor` 的 `comment` 按固定槽位紧凑填写（机制→结构→预测对账→消融/年度佐证→统计结论），单条 ≤800 字符，禁止重写思维链中已有内容；rule 1 的经济直觉全文（≤50 字）与 3b 的分年度 IC 数字行计入槽位内。
-14. **防分箱塌缩红线（硬约束）**：严禁生成导致截面常数簇扎堆、等频分箱严重塌缩（有效组数 < 8）的二值化伪因子：
-    - 使用 `GATED_SIGNAL` / `PIECEWISE_STATE` / `IF_THEN_ELSE` 等门控状态算子后，**末位必须包裹 `CS_ZSCORE` 或 `RANK` 进行截面连续化平滑**，严禁门控后直接裸输出；
-    - 门控激活比例不得低于 20%（`threshold <= 0.8`），严禁极端门控将绝大部分截面置零；
-    - 稀疏基本面/事件字段严禁用 `FILLNA(..., 0)` 直接填 0 排序，避免制造低端人工密集常数簇。
+2. **换手红线（硬约束）与设计期自检清单**：系统交付硬门槛为 `avg_daily_side_turnover <= 0.5`（`0.4` 为 diagnostics 诊断预警线，非交付硬门：超过即应主动降换手；`> 0.5` 必定被拒，请勿直接调用 `submit_factor`）——消融实验与历史数据证明绝大多数候选均因此止步 stage_one/engine_gate，纯浪费算力。
+    - **降换手强制流程（禁止跳过）**：
+      ① 先读诊断归因：换手超标时结果里的 `worst_col_autocorr` / `worst_col_name` / `worst_col_tier`（tier=high_freq/mid/slow）；
+      ② 按归因选路径：
+         - tier=high_freq（ρ_f < 0.6）→ 信号源本身高频，必须换源（类 1）或换 `@1w`（类 5），禁止只加平滑；
+         - tier=mid（ρ_f ∈ [0.6, 0.85]）→ 信号源中等，优先信号积分（类 2）+ 截面变换（类 3）；
+         - tier=slow（ρ_f ≥ 0.85）但换手仍高 → 变换层敏感（RANK/TS_RANK 短窗），换 CS_ZSCORE 或加长窗；
+      ③ 选完路径后再设计表达式，禁止跳过①②直接加 EMA/WMA。
+    - **设计期高换手自检清单（命中任一条即预判高换手，需先降噪，勿直接提交）**：
+      ① 表达式含 `TS_RANK` / `TS_ZSCORE` 且窗口 < 20；
+      ② 顶层直接为 `RANK` 或 `NEG` 裸反转（无长窗平滑直接逐日抖动）；
+      ③ 截面自相关（`cs_pearson_autocorr`）预估 < 0.6 的高频时序信号。
+    - **低换手标准构造路径**：
+      ① 换慢信息源：筹码周频结构、周线衍生变量、资金沉淀（从源头选高 ρ_f 信号根）；
+         信号源一阶自相关 ρ_f 量级锚（换手 ≈ f(1-ρ_f)，ρ_f 越高换手越低）：
+         - 市值/流通市值 ρ_f ≈ 0.99（几乎是特征不是信号）
+         - 周线衍生 `$adj_close@1w` ρ_f ≈ 0.95+（结构性降频）
+         - 筹码周频 `CHIP_*` ρ_f ≈ 0.85~0.95
+         - 长窗动量（12M）ρ_f ≈ 0.88
+         - 短窗动量（1M）ρ_f ≈ 0.68（换手高）
+         - 1d 反转 ρ_f ≈ 0.05（必死）
+         **选源标准**：目标 ρ_f ≥ 0.85 才算"慢"；ρ_f < 0.6 的信号源必须配合类 2/3 降换手手段，否则必被换手门拦截。
+      ② 截面变换：用 `CS_ZSCORE` 压制极端尾部（不压缩分布、不塌分箱）；
+         - `RANK(x)`：截面百分位秩（按 datetime 分组，对单调变换不敏感，能稳排名降换手）；注意 `RANK` 是**截面秩**，`TS_RANK` 才是时序秩，勿混淆；
+         - `CS_NEUTRALIZE(x, CS_BUCKET(LOG($float_cap), 10))`：剥离市值暴露，残差排名更稳（需实测，剥离后残差可能更抖）；
+      ③ 避免短窗，改用长窗/周线/分位/信号积分降低日度翻转频率（短窗 = 高翻转 = 高换手）。
+      ④ 信号积分（滞后因子组合，学术界主推，比末位 EMA 更优）：
+         `F_t' = λ·F_t + (1-λ)·DELAY(F_t, 1)`，λ ∈ [0.3, 0.8]
+         - λ 越小权重越往滞后偏，ρ_f 升、换手降、IC 略降；
+         - **λ 选取视目标**：换手门槛优先时用公式反推上界 `λ ≤ (0.85 - ρ_f) / (1 - ρ_f)`（保证 ρ_f' ≥ 0.85）；IR 最优时允许 λ ≈ 0.5~0.7（此时 ρ_f' 可能略低于 0.85），但需 `avg_daily_side_turnover` 实测达标。
+         - 多阶推广：`F_t' = 0.6·F_t + 0.3·DELAY(F_t,1) + 0.1·DELAY(F_t,2)`；
+         - **不塌分布**（线性组合保留原始信号分布形状），优于末位 EMA/WMA 的指数/线性衰减压缩；
+         - **ρ_f 提升近似**：积分后 `ρ_f' ≈ λ·ρ_f + (1-λ)·1`（滞后项视为完全持久，ρ_f=1）。
+           例：原 ρ_f 0.6 + λ 0.5 → ρ_f' ≈ 0.8（仍不够）；λ 0.3 → ρ_f' ≈ 0.88（达标）。
+         - DSL 写法：`signal = ...; integrated = 0.6*signal + 0.4*DELAY(signal, 1)`，末位再 CS_ZSCORE 归一化。
+           > 标量乘（如 `0.6*signal`）豁免 MULTIPLY 拦截——MULTIPLY 拦截仅针对"两个因子信号相乘"（如 `factor_a * factor_b`），标量系数加权不触发。写法：`ADD(0.6*signal, 0.4*DELAY(signal, 1))`。
+      ⑤ 周线衍生变量（@1w 辅频，结构性降频，ρ_f ≈ 0.95+）：
+         - `$adj_close@1w` = 最近一根已完成周线收盘（无前视广播到日频）；
+         - `TS_PCTCHANGE($adj_close@1w, 4)` = 周线 4 周动量，比日频 20 日动量换手低一个量级；
+         - `TS_CORR($volume@1w, $adj_close@1w, 8)` = 周线量价背离，8 周窗口；
+         - 适用场景：日频信号换手超标时，把核心变量换成 `@1w` 版本，窗口相应放大 4~5 倍；
+         - 注意：`@1w` 是日历周（W-FRI），周线在周五收盘后才完成，下周一才广播，无前视。
+      注意：末位长窗平滑（`EMA`/`WMA`/`TS_MEAN`/`TS_MEDIAN`）都会压缩因子值分布导致十分位塌缩（D1-D3/D8-D10 区分度不足），不建议作为首选降噪手段。若信号积分（类 2）+ 截面变换（类 3）仍不够，必须加一点平滑时：
+      - 优先 `WMA(x, N)`（线性加权均线，近端权重大，分布压缩轻于 EMA 的指数衰减拖尾），N 取 5~10；
+      - 禁止 `EMA` 长窗（窗口 > 10，指数衰减远端拖尾重，分布压缩最严重）；
+      - 禁止 `TS_MEAN`/`TS_MEDIAN` 作为末位降噪（等权/中位对近期值不敏感，信号滞后严重）。
+ 2b. **深度曲线阅读（top-k 崩 = 结构问题，不是调参问题）**：train 过线的全量评估结果里有 `depth_curve`（同标签同成本、仅持仓深度不同的 top-k 等权序列，Q10=十分位参考行）与 `depth_curve_tradable`（可成交域透镜：先剔除一手买不起/次日涨停停牌/am20 不足的票再排名）。判读与对应动作：
+     - top5/top20 相对 Q10 明显崩（如 Q10 +7% 而 top5 −12%）→ alpha 集中在极端尾部少数票，**改结构**：加截面秩变换（RANK/CS_ZSCORE）压尾部锐度、扩信息宽度（多信号正交融合）；不要靠微调窗口参数指望 top-k 自己变好，也不要堆末位平滑（会塌分箱）；
+    - `depth_curve_tradable` 比 `depth_curve` 更差 → 可成交性损耗（等权预算买不起头部票）：降头部集中度、做市值/流动性中性化，或放弃该结构；
+    - 两曲线都稳（top20 ≈ Q10）→ 深度健康，才值得走小组合 top_pct 交付；
+    - 深度曲线只是设计期诊断，最终裁决仍是 engine_gate——不要为迎合它堆平滑把 IC/换手做崩（回读 rule 2）。
+ 3. **双轨标注**：每轮候选因子须明确标注变异类型（A 参数 / B 算子 / C 修饰 / D 新族）和父本来源（D 标注机制名）；A/B/C 必须有高质量父本，D 至少一半（新机制开拓占多数，避免同族扎堆）。
+ 3b. **年度稳健性（基本面模式强制）**：基本面因子的 `comment` 必须附**分年度 IC 拆分**（train 按年、val 按年），val 任一年度方向反转或 |IC| < 0.008 的占比过高（>1/3 年度）即不要提交——整体 val IC 达标但靠单年撑起来的因子会在实盘衰减。
+ 4. **每轮先归因上一轮结果，再设计下一代**；避免仅改窗口长度的同质批次。**同一信号族**（如短周期反转 `NEG(TS_PCTCHANGE($adj_close, N))`）在同一轮中**最多出现 1 次**；第 2 个起必须换信号族或换核心变量。
+ 5. **并行候选必须跨越不同信息维度**：同一批并发 tool_calls 中，至少覆盖半数以上不同的信号族（批量越大，族分布越要分散，避免同族扎堆互相稀释正交性）。可选维度包括但不限于：
+    - 价格动量/均值回归（`TS_MEAN($ret, N)`, `TS_PCTCHANGE`）
+    - 波动率结构（`TS_STD($ret, N)`, 波动率变化/比率）
+    - 量价关系（`TS_CORR($volume, $adj_close, N)`, 量价背离）
+    - 流动性/换手（`$amount/$float_cap`, `TS_RANK($volume, N)`）
+    - 日内结构（`$adj_open` vs `$adj_close`, `$adj_high`/`$adj_low` 范围, `$adj_vwap` 偏离）
+    - 隔夜跳空（`$adj_open` vs `DELAY($adj_close, 1)`）
+    - 筹码分布（`CHIP_PEAK_LOC`, `CHIP_ENTROPY`, `CHIP_COM_W_GAP`）
+    - 周线结构（`$adj_close@1w` 均线偏离）
+    - 截面结构（`RANK`, `CS_ZSCORE`, `CS_NEUTRALIZE` 不同分组键）
+ 6. **连续 2 个因子 IC < 0.01 时，强制切换到完全未尝试过的信号族**，不要在同一信号族上微调。
+ 7. 发起 tool_calls 前完成思考；**不要**停在解释或征询用户下一步。
+ 8. **train+val 统计达标且换手/ICIR 可交易的因子，必须调用 `submit_factor`** 提交候选池；若换手或 ICIR 严重未达标（收到请勿提交警告），严禁盲目提交。`comment` 须清晰描述因子逻辑和经济直觉，勿空泛。
+ 9. **结束前检查**：若已有各项指标均达标的候选但尚未 `submit_factor`，不得结束；先提交再收尾（被换手超标警告抑制提交者除外）。
+ 10. **避免过度调参**：除非本轮已产出多个**两两截面相关较低**（机制差异明显）的保留级候选，通常 **提交一个因子后即可结束**，无需对同一机制反复微调窗口或参数。
+ 11. **工具返回的是精简结构化文本**（非完整 JSON），包含 IC/ICIR/诊断建议/批次汇总/同质化警告。请仔细阅读诊断建议和同质化警告，据此调整下一轮方向。
+ 12. **禁止裸信号叠加**：禁止两个裸 RANK/TS_ 信号简单加减拼装，多信息源融合必须使用至少一层结构化交互算子（GATED_SIGNAL / CS_GROUP_RANK / CS_RESIDUALIZE / DIVERGENCE_RANK 等）。
+ 13. **输出预算（硬约束，直接决定挖掘速度）**：每轮思维链总量 ≤3000 字符，只写**增量推理**——本轮机制选择与理由、上轮结果归因、与已试结构的差异。**禁止复述**任务背景、面板列清单、记忆注入的约束原文（这些每轮由 system prompt 与记忆注入重新提供，抄写一遍不增加任何信息）；引用记忆约束用编号（如"死路 1/3 不碰"），不抄原文。**思维链超预算会被硬截断，正在生成的 tool_calls JSON 会连同思考一起作废**——同一批候选全部白跑，下轮还得重新推理。因此思考请直奔结论：每个候选一行机制陈述（机制→预期形态→与上轮差异），不展开论证、不演算指标。`submit_factor` 的 `comment` 按固定槽位紧凑填写（机制→结构→预测对账→消融/年度佐证→统计结论），单条 ≤800 字符，禁止重写思维链中已有内容；rule 1 的经济直觉全文（≤50 字）与 3b 的分年度 IC 数字行计入槽位内。
+ 14. **防分箱塌缩红线（硬约束）**：严禁生成导致截面常数簇扎堆、等频分箱严重塌缩（有效组数 < 8）的二值化伪因子：
+     - 使用 `GATED_SIGNAL` / `PIECEWISE_STATE` / `IF_THEN_ELSE` 等门控状态算子后，**末位必须包裹 `CS_ZSCORE` 或 `RANK` 进行截面连续化平滑**，严禁门控后直接裸输出；
+     - 门控激活比例不得低于 20%（`threshold <= 0.8`），严禁极端门控将绝大部分截面置零；
+     - 稀疏基本面/事件字段严禁用 `FILLNA(..., 0)` 直接填 0 排序，避免制造低端人工密集常数簇。
 
 ---
 
@@ -920,7 +927,7 @@ tri_gap = CHIP_COM_W_GAP($adj_close, $adj_low, $adj_high, $volume, 40, $vwap, 64
   {
     "name": "eval_on_train_set",
     "arguments": {
-      "multi_line_expr": "base = NEG(TS_PCTCHANGE($adj_close, 5))\nstate = RANK(DIVIDE(TS_MEAN($amount, 20), LOG($float_cap)))\nGATED_SIGNAL(base, state, 0.8, true, 0)",
+      "multi_line_expr": "base = NEG(TS_PCTCHANGE($adj_close, 5))\nstate = RANK(DIVIDE(TS_MEAN($amount, 20), LOG($float_cap)))\nCS_ZSCORE(GATED_SIGNAL(base, state, 0.8, true, 0))",
       "factor_name": "reversal_high_liquidity_gate",
       "interaction": {
         "interaction_type": "gated_signal",
@@ -946,13 +953,24 @@ tri_gap = CHIP_COM_W_GAP($adj_close, $adj_low, $adj_high, $volume, 40, $vwap, 64
     "name": "eval_on_train_set",
     "arguments": {
       "multi_line_expr": "pv_corr = TS_CORR($volume, $adj_close, 20)\nCS_ZSCORE(CS_WINSORIZE(pv_corr, 0.01, 0.99))",
-      "factor_name": "volume_price_corr20"
+      "factor_name": "volume_price_corr20",
+      "interaction": {
+        "interaction_type": "rolling_relation",
+        "base_signal": "$adj_close",
+        "condition_signal": "$volume",
+        "economic_mechanism": "量价相关性反映趋势确认或主力对倒，高相关时动量持续性更强",
+        "expected_subgroup_pattern": {
+          "high_corr": "信号增强",
+          "low_corr": "信号弱化"
+        },
+        "ablation_required": true
+      }
     }
   },
   {
     "name": "eval_on_train_set",
     "arguments": {
-      "multi_line_expr": "chip = CHIP_ENTROPY($adj_close, $adj_low, $adj_high, $volume, $float_cap, 60)\nCS_ZSCORE(CS_WINSORIZE(chip, 0.01, 0.99))",
+      "multi_line_expr": "chip = CHIP_ENTROPY($adj_close, $adj_low, $adj_high, $volume, 60, $float_cap)\nCS_ZSCORE(CS_WINSORIZE(chip, 0.01, 0.99))",
       "factor_name": "chip_entropy60"
     }
   },

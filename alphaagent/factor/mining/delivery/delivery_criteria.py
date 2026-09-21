@@ -364,5 +364,6 @@ class DeliveryCriteria:
         return (
             "`submit_factor` 会先执行 pre-submit Reviewer，再在 train-start~val-end 全区间复核。"
             + blind_test + screener_text + stage_one + stage_two + engine
-            + " 全部通过才写正式库并返回 `stored=true`。ICIR 按原始符号判断，不取绝对值。"
+            + " 全部通过才写正式库并返回 `stored=true`。"
+            "ICIR 按绝对值判断（|ICIR|），负 ICIR 的负向 alpha 同样有效。"
         )

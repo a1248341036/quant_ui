@@ -18,7 +18,7 @@ _FF_ADVICE_MD = (
     "**禁止直接使用原始值**。必须先做截面标准化：`RANK($ff_super_net)` 或 "
     "`CS_ZSCORE(CS_WINSORIZE($ff_super_net, 0.01, 0.99))`。经济直觉：超大单净流入为正而小单净流出 "
     "→ 机构吸筹散户出逃 → 正 alpha；反之亦然。可做**资金分歧因子**："
-    "`SUBTRACT(RANK($ff_super_net), RANK($ff_small_net))` 量化机构-散户方向分歧。"
+    "`DIVERGENCE_RANK($ff_super_net, $ff_small_net)` 量化机构-散户方向分歧。"
 )
 
 FF_PANEL_COLUMNS = (
@@ -64,8 +64,8 @@ _FUNDAMENTAL_SECTION_MD = """### 基本面与披露日历（`build_panel --with-
 
 _FUNDAMENTAL_DISABLED_MD = (
     "### 基本面\n\n"
-    "**本次未载入基本面列**：请勿使用任何 `$funda_*` / `$funda_fs_*` 字段"
-    "（本会话仅提供价量/行情列，专注价量因子）。\n\n"
+    "**本次运行未载入基本面列**：请勿在表达式中使用任何 `$funda_*` / `$funda_fs_*` 字段"
+    "（当前数据面仅限价量/行情，专注价量因子挖掘）。\n\n"
     "> 行尾可写 `#` 注释；字符串内 `#` 保留。"
 )
 
