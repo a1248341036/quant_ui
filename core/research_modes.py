@@ -62,7 +62,7 @@ RESEARCH_MODES: dict[str, ResearchModeSpec] = {
         # daily/weekly/monthly（三对齐 spec：alphaagent_freq_label_alignment_spec_v1.md）。
         engine_gate_overrides={
             "freq": "weekly",
-            "allowed_freqs": ("daily", "weekly", "monthly"),
+            "allowed_freqs": ["daily", "weekly", "monthly"],
         },
     ),
     "fundamental": ResearchModeSpec(
@@ -113,7 +113,10 @@ RESEARCH_MODES: dict[str, ResearchModeSpec] = {
             "freq": "monthly",           # technical weekly → monthly
             "min_excess_annual": 0.02,   # technical 0.03 → 0.02
             "min_excess_sharpe": 0.4,    # technical 0.5 → 0.4
-            "allowed_freqs": ("daily", "weekly", "monthly"),
+            # list 而非 tuple：本 dict 会直接 update 进 research_spec，normalize
+            # 的 _string_list 校验要求 list（tuple 会让所有非 technical 档
+            # effective/build_run 链路 ValueError，2026-09-22 修复）
+            "allowed_freqs": ["daily", "weekly", "monthly"],
         },
     ),
     # ── 三对齐子档位（2026-09-20，freq_label_alignment_spec_v1.md）──
@@ -135,7 +138,7 @@ RESEARCH_MODES: dict[str, ResearchModeSpec] = {
         ),
         engine_gate_overrides={
             "freq": "daily",
-            "allowed_freqs": ("daily",),
+            "allowed_freqs": ["daily"],
         },
     ),
     "technical_weekly": ResearchModeSpec(
@@ -155,7 +158,7 @@ RESEARCH_MODES: dict[str, ResearchModeSpec] = {
         ),
         engine_gate_overrides={
             "freq": "weekly",
-            "allowed_freqs": ("weekly",),
+            "allowed_freqs": ["weekly"],
         },
     ),
     "technical_monthly": ResearchModeSpec(
@@ -175,7 +178,7 @@ RESEARCH_MODES: dict[str, ResearchModeSpec] = {
         ),
         engine_gate_overrides={
             "freq": "monthly",
-            "allowed_freqs": ("monthly",),
+            "allowed_freqs": ["monthly"],
         },
     ),
 }

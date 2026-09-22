@@ -125,6 +125,40 @@ def test_engine_gate_criteria_defaults():
     eg = EngineGateCriteria()
     assert eg.buffer_ratio == 0.5
     assert eg.no_trade_band == 0.15
+    # 执行换手硬门：裸构造为 None（由 DeliveryCriteria 派生填充）
+    assert eg.max_avg_daily_turnover is None
+
+
+def test_engine_gate_turnover_gate_derived():
+    """engine_gate 执行换手硬门：spec 层 None=未配置，消费点 fallback 分档值。
+
+    不在构造路径派生（物化的值会破坏 freq 覆盖后的按档 fallback）；
+    真实取值链：to_prompt_text gate_max_to / run_engine_gate 缺键回落，
+    均走 DeliveryCriteria.turnover_gate_limit（按 engine_gate.freq 分档）。
+    """
+    from alphaagent.factor.mining.delivery.delivery_criteria import DeliveryCriteria
+    from alphaagent.factor.mining.research_spec import default_research_spec
+
+    # 未显式配置 → None（裸默认 / from_spec / DEFAULT spec 三层一致）
+    assert DeliveryCriteria.defaults().engine_gate.max_avg_daily_turnover is None
+    assert (
+        DeliveryCriteria.from_spec(default_research_spec("technical"))
+        .engine_gate.max_avg_daily_turnover is None
+    )
+    assert (
+        default_research_spec("technical")["delivery_policy"]["production"]
+        ["engine_gate"].get("max_avg_daily_turnover") is None
+    )
+    # engine_gate_dict 不物化 None 键（保持 spec 干净、freq 联动）
+    assert "max_avg_daily_turnover" not in DeliveryCriteria.defaults().engine_gate_dict()
+    # 显式配置保留
+    spec2 = default_research_spec("technical")
+    spec2["delivery_policy"]["production"]["engine_gate"]["max_avg_daily_turnover"] = 0.42
+    assert DeliveryCriteria.from_spec(spec2).engine_gate.max_avg_daily_turnover == 0.42
+    # 消费点 fallback：prompt 渲染按 freq 分档（weekly → 0.65）
+    dc = DeliveryCriteria.from_spec(default_research_spec("technical"))
+    text = dc.to_prompt_text()
+    assert "日均执行换手 <= 0.65" in text
 
 
 def test_engine_gate_criteria_dict_includes_new_fields():
@@ -182,6 +216,49 @@ def test_run_engine_gate_passes_buffer_band(panel):
     # 应正常运行（不因 buffer/band 报错）
     assert "passed" in res
     assert "metrics" in res
+
+
+def test_run_engine_gate_high_turnover_gate(panel):
+    """执行换手硬门（2026-09-22）：diag avg_daily_turnover > 门槛 → high_turnover。"""
+    from alphaagent.factor.mining.delivery.engine_gate import run_engine_gate
+
+    mi_panel = panel.copy()
+    mi_panel["datetime"] = pd.to_datetime(mi_panel["date"].values)
+    mi_panel["instrument"] = mi_panel["code"]
+    mi_panel = mi_panel.drop(columns=["date", "code"]).set_index(["datetime", "instrument"])
+    mi_panel["turnover_rate"] = mi_panel["turnover"] / 100.0
+    close = mi_panel["close"]
+    mom20 = close.groupby(level="instrument").transform(lambda s: s.pct_change(20))
+    factor_values = mom20.to_numpy(dtype=np.float64)
+
+    base_policy = {
+        "enabled": True, "selection_mode": "top_n", "top_n": 2,
+        "freq": "monthly", "capital": 1_000_000,
+        "min_excess_annual": -1.0, "min_excess_sharpe": -1.0,
+        "max_drawdown": 1.0, "min_daily_overlap": 0.0, "min_invested_ratio": 0.0,
+    }
+
+    # 门槛 0.0：只要有可得的执行换手就必超 → high_turnover
+    res_block = run_engine_gate(
+        mi_panel, factor_values, val_start=START, val_end=END, direction=1,
+        policy={**base_policy, "max_avg_daily_turnover": 0.0},
+    )
+    assert "high_turnover" in res_block["fail_reasons"], res_block["fail_reasons"]
+    assert res_block["thresholds"]["max_avg_daily_turnover"] == 0.0
+
+    # 门槛 9.9：不因换手被拒
+    res_pass = run_engine_gate(
+        mi_panel, factor_values, val_start=START, val_end=END, direction=1,
+        policy={**base_policy, "max_avg_daily_turnover": 9.9},
+    )
+    assert "high_turnover" not in res_pass["fail_reasons"], res_pass["fail_reasons"]
+
+    # 缺键：回落 defaults 分档（weekly → 0.65），thresholds 记录
+    res_default = run_engine_gate(
+        mi_panel, factor_values, val_start=START, val_end=END, direction=1,
+        policy=dict(base_policy),
+    )
+    assert res_default["thresholds"]["max_avg_daily_turnover"] == 0.65
 
 
 # ── buffer zone 严格降换手（review 2026-09-19：原 test_buffer_band_reduces_turnover

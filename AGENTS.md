@@ -215,7 +215,10 @@ logs/factor_mining/ui/        # 每次 Web run 的 JSONL 轨迹 + run_meta.json 
 - **Reviewer 的 revise 是建议不是门槛**：与系统提示词"Reviewer 意见仅供参考改进方向，
   不阻断提交"一致；正式库准入的最终裁决是 stage_two 统计门槛 + engine_gate 净值回测。
 - **engine_gate 是实盘可交易性裁决**：weekly 调仓、净超额年化 ≥3%、超额夏普 ≥0.5、
-  回撤 ≤40%、持仓重叠 ≥50%、仓位利用率 ≥80%。统计 IC 高的因子若换手高（如日换手 69%、
+  回撤 ≤30%（2026-09-22 由 40% 收紧，绝对净值口径）、持仓重叠 ≥50%、仓位利用率 ≥80%、
+  日均执行换手 ≤ 分档值（2026-09-22 新增：diag avg_daily_turnover 超 candidate 分档
+  换手门即 fail_reasons=high_turnover；此前换手仅诊断不裁决 + slippage=0，引擎层对
+  换手零约束）。统计 IC 高的因子若换手高（如日换手 69%、
   周重叠 5.6%），实盘净超额会转负 —— engine_gate 正确拦截"统计有效但实盘亏钱"的假因子。
 
 ### 6. 候选因子库管理

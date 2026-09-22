@@ -111,6 +111,12 @@ class EngineGateCriteria:
     max_drawdown: float = trading_config.GATE_MAX_DRAWDOWN
     min_daily_overlap: float = trading_config.GATE_MIN_DAILY_OVERLAP
     min_invested_ratio: float = trading_config.GATE_MIN_INVESTED_RATIO
+    # 引擎执行换手硬门（2026-09-22）：diag 的 avg_daily_turnover（回测 trades
+    # 日均执行换手）不得超过本值，超过 → fail_reasons.append("high_turnover")。
+    # None = 由 DeliveryCriteria 派生为 candidate 的分档换手门（turnover_gate_limit，
+    # 同 engine_gate.freq），保证显式未配置时也有约束（旧 spec/tests 直传 policy
+    # 缺键时 engine_gate.py 回落 defaults 分档值）。
+    max_avg_daily_turnover: float | None = None
     # ── P1 换手降低（2026-09，spec §4.3）──
     # buffer_ratio=0.5 + no_trade_band=0.15 默认启用，让 engine_gate 用更接近
     # 实盘的换手口径裁决（buffer zone 保留老持仓 + band 拦截微调）。
@@ -208,6 +214,10 @@ class DeliveryCriteria:
 
     @classmethod
     def defaults(cls) -> "DeliveryCriteria":
+        # max_avg_daily_turnover 保持 None（"未显式配置"语义），不在构造路径派生：
+        # 派生值物化进 DEFAULT spec 后，freq 被覆盖为 daily 时物化的 0.65 会
+        # 赢过按档派生。消费点各自 fallback 到 turnover_gate_limit：
+        # to_prompt_text（gate_max_to）/ run_engine_gate（缺键回落）/ 各调用方。
         return cls()
 
     @classmethod
@@ -284,7 +294,9 @@ class DeliveryCriteria:
         # allowed_freqs 以 tuple 存储（frozen dataclass 默认），对外保持 list 与
         # research_spec 历史结构一致（JSON 序列化 / 调用方迭代均期望 list）。
         d["allowed_freqs"] = list(self.engine_gate.allowed_freqs)
-        return d
+        # None = 未显式配置，不进 spec（缺键才保留 freq 覆盖后的按档 fallback；
+        # 物化 None/派生值都会破坏 freq 联动，见 defaults() 注释）。
+        return {k: v for k, v in d.items() if v is not None}
 
     def screener_dict(self) -> dict[str, Any]:
         return dict((f.name, getattr(self.screener, f.name)) for f in fields(self.screener))
@@ -370,11 +382,17 @@ class DeliveryCriteria:
             f"截尾 IC 衰减 <= {_pct(p.max_winsorized_abs_ic_decay)}、"
             f"与已有因子最大截面相关 `< {p.max_abs_corr}`。"
         )
+        gate_max_to = (
+            eg.max_avg_daily_turnover
+            if eg.max_avg_daily_turnover is not None
+            else self.turnover_gate_limit
+        )
         engine = (
             f"最终还需通过 engine_gate 完整回测（调仓频率 {eg.freq}、"
             f"动态 top {_pct(eg.selection_pct)} 选股、净超额年化 >= "
             f"{_pct(eg.min_excess_annual)}、超额夏普 >= {eg.min_excess_sharpe}、"
-            f"回撤 <= {_pct(eg.max_drawdown)}、仓位利用率 >= {_pct(eg.min_invested_ratio)}）。"
+            f"回撤 <= {_pct(eg.max_drawdown)}、仓位利用率 >= {_pct(eg.min_invested_ratio)}、"
+            f"日均执行换手 <= {gate_max_to}）。"
             f"submit_factor 的 rebalance_freq 必须传 \"{eg.freq}\""
             f"（用户指定档位；可选范围 {', '.join(eg.allowed_freqs)}）。"
         )

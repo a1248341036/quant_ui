@@ -36,7 +36,8 @@ def run_engine_gate(
     policy 来自 ResearchSpec delivery_policy.production.engine_gate：
     {enabled, selection_mode, selection_pct, top_n, freq, capital,
      slippage_bps, max_participation, min_am20_yuan, min_excess_annual,
-     min_excess_sharpe, max_drawdown, min_daily_overlap, min_invested_ratio}
+     min_excess_sharpe, max_drawdown, min_daily_overlap, min_invested_ratio,
+     max_avg_daily_turnover}
     数值由 delivery_criteria.EngineGateCriteria 提供（唯一真源），
     本函数对缺失键仅回落 trading_config，不回落到散落的局部硬编码。
     engine_frame 可传入缓存的 panel_to_engine_frame 输出，多频率复评时避免重复变换。
@@ -44,11 +45,20 @@ def run_engine_gate(
     policy = policy or {}
     # 合并 EngineGateCriteria 默认值：旧 spec 文件无 buffer_ratio/no_trade_band 等新字段，
     # 用默认值回落保证 P1-3 默认启用（预演与终审同口径）。
-    from alphaagent.factor.mining.delivery.delivery_criteria import EngineGateCriteria
+    from alphaagent.factor.mining.delivery.delivery_criteria import (
+        DeliveryCriteria,
+        EngineGateCriteria,
+    )
     _eg_default = EngineGateCriteria()
     for _f in ("buffer_ratio", "no_trade_band"):
         if _f not in policy:
             policy[_f] = getattr(_eg_default, _f)
+    # 执行换手硬门缺键回落默认分档值（2026-09-22：engine_gate 此前对换手
+    # 零约束——诊断仅记录不裁决；显式未配置也必须有约束，否则旧 spec 绕过）。
+    # 注意回落走 turnover_gate_limit 而非 engine_gate.max_avg_daily_turnover：
+    # 后者在未派生的 defaults() 里是 None（spec 层不物化，见 defaults() 注释）。
+    if policy.get("max_avg_daily_turnover") is None:
+        policy["max_avg_daily_turnover"] = DeliveryCriteria.defaults().turnover_gate_limit
     from core.assets import get_execution_profile
     from core.engine import run_backtest
 
@@ -226,6 +236,16 @@ def run_engine_gate(
         avg_inv = diag.get("avg_invested_ratio")
         if avg_inv is None or not np.isfinite(float(avg_inv)) or float(avg_inv) < min_inv:
             reasons.append("execution_infeasible")
+
+    # 执行换手硬门（2026-09-22）：回测 trades 日均执行换手上限。此前换手
+    # 仅诊断记录不裁决（slippage=0 成本惩罚也≈0），engine_gate 对换手零约束。
+    # 数据缺失（无 trades/diag 异常）不拦，仅在值可得且超标时裁决。
+    max_avg_to = policy.get("max_avg_daily_turnover")
+    if max_avg_to is not None:
+        thresholds["max_avg_daily_turnover"] = float(max_avg_to)
+        avg_to = diag.get("avg_daily_turnover")
+        if avg_to is not None and np.isfinite(float(avg_to)) and float(avg_to) > float(max_avg_to):
+            reasons.append("high_turnover")
 
     return {
         "enabled": True,
