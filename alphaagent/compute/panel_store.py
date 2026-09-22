@@ -22,10 +22,11 @@ logger = logging.getLogger(__name__)
 class WorkerPanelStore:
     """Worker 进程内的 panel 管理器。"""
 
-    def __init__(self, max_cached: int = 2) -> None:
+    def __init__(self, max_cached: int = 2, max_splits_per_session: int = 8) -> None:
         self.max_cached = max_cached
+        self.max_splits_per_session = max_splits_per_session
         self._cache: OrderedDict[str, pd.DataFrame] = OrderedDict()
-        self._split_cache: dict[str, dict[str, pd.DataFrame]] = {}
+        self._split_cache: dict[str, OrderedDict[str, pd.DataFrame]] = {}
 
     def get_panel(self, session_key: str, spec: dict[str, Any]) -> pd.DataFrame:
         """根据 session_key 获取已加载/已映射的 panel，未命中则加载并缓存。"""
@@ -49,15 +50,18 @@ class WorkerPanelStore:
         start: str,
         end: str,
     ) -> pd.DataFrame:
-        """获取切片 panel（在 Worker 内存缓存切片）。"""
-        splits = self._split_cache.setdefault(session_key, {})
+        """获取切片 panel（在 Worker 内存缓存切片，按 session 独立 LRU 上限）。"""
+        splits = self._split_cache.setdefault(session_key, OrderedDict())
         split_key = f"{start}::{end}"
         if split_key in splits:
+            splits.move_to_end(split_key)
             return splits[split_key]
 
         full_panel = self.get_panel(session_key, spec)
         sliced = slice_panel(full_panel, start=start, end=end)
         splits[split_key] = sliced
+        if len(splits) > self.max_splits_per_session:
+            splits.popitem(last=False)
         return sliced
 
     def _load_panel_from_spec(self, spec: dict[str, Any]) -> pd.DataFrame:

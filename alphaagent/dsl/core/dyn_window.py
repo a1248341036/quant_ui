@@ -308,9 +308,6 @@ _DYN_OP_MAP = {
 # Numba 仅实现前四种；其余在无 C++ 时用 ``_roll_segment_py``
 _DYN_NUMBA_KINDS = frozenset({"min", "max", "sum", "mean"})
 
-# 兼容旧测试：仅含与 Numba 参考一致的四种动态 op
-_OP_MAP = {"min": 0, "max": 1, "sum": 2, "mean": 3}
-
 
 def _delay_segment_py(vals: np.ndarray, lags: np.ndarray) -> np.ndarray:
     """逐元素动态滞后（与 ``shift_dynamic`` 无 Numba 分支同语义）；供测试与 C++ 对照。"""

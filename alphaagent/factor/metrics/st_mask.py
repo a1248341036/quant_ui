@@ -94,10 +94,27 @@ def dataset_dir() -> Path | None:
 
     默认路径不存在时尝试从 CNE 运行时配置 ``[data].root`` 推导（数据湖可被
     配置迁移到别处）；都不可用返回 ``None``（调用方 fail-open）。
+
+    ``ALPHA_ST_MASK_PATH`` 仅接受仓库内 ``CNEquity`` 数据目录（白名单），
+    防止环境变量被注入任意路径读取 parquet。
     """
     env = os.environ.get("ALPHA_ST_MASK_PATH")
     if env and str(env).strip():
-        return Path(str(env).strip())
+        cand = Path(str(env).strip())
+        root = _repo_root() / "CNEquity"
+        try:
+            cand_resolved = cand.resolve()
+            root_resolved = root.resolve()
+        except OSError:
+            cand_resolved = cand.absolute()
+            root_resolved = root.absolute()
+        if cand_resolved == root_resolved or root_resolved in cand_resolved.parents:
+            return cand
+        logger.warning(
+            "ST 掩码：ALPHA_ST_MASK_PATH=%s 不在仓库 CNEquity 白名单内，忽略该路径",
+            env,
+        )
+        return None
 
     root = _repo_root() / "CNEquity"
     default = root / "data" / "quant_dataset" / "_cnequity" / "curated" / DATASET
@@ -194,6 +211,11 @@ def _build_mask(index: pd.MultiIndex, membership: _Membership) -> np.ndarray:
     if not cand.any():
         return mask
     codes = membership.symbols.get_indexer(inst[cand].to_numpy())
+    # 防御：symbols 含重复时 get_indexer 只返回首个位置，复合键会错配。
+    # 正常路径 _load_membership 已 unique()，此处仅防外部构造的 membership。
+    if not membership.symbols.is_unique:
+        logger.warning("ST 掩码：membership.symbols 含重复代码，跳过 ST 剔除（fail-open）")
+        return mask
     key = codes.astype(np.int64) * _KEY_SHIFT + day[cand]
     mask[cand] = membership.keys.get_indexer(key) >= 0
     return mask

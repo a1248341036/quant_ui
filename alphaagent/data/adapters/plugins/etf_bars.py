@@ -70,18 +70,13 @@ def load(
 
     返回的 DataFrame 包含原始列名（未映射），注册中心负责列名转换。
     """
-    from cnequity.config import load_config
     from cnequity.query.reader import load as cne_load
 
-    root = Path(cne_root) if cne_root else _CNE_ROOT
-    cfg_path = Path(cne_config) if cne_config else _CNE_CONFIG
+    from alphaagent.data.adapters.plugins._pitlib import load_cne_config
 
-    old = Path.cwd()
-    try:
-        os.chdir(root)
-        cfg = load_config(cfg_path)
-    finally:
-        os.chdir(old)
+    cfg = load_cne_config(
+        cne_root, cne_config, default_root=_CNE_ROOT, default_config=_CNE_CONFIG
+    )
 
     logger.info("CNE load: dataset=%s start=%s end=%s", dataset, start, end)
     df = cne_load(dataset, start=start, end=end, config=cfg)

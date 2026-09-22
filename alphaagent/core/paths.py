@@ -23,4 +23,3 @@ CONFIGS_DIR = ROOT / "configs"
 FACTOR_REGISTRY_EXAMPLE = CONFIGS_DIR / "factors" / "registry.example.json"
 MLS_FMB_PERCENTILES_PATH = FACTORZOO_DIR / "mls_fmb_percentiles.json"
 MINING_REGISTRY_PATH = FACTORZOO_DIR / "mining_delivered_registry.json"
-MINING_EXPR_DIR = FACTOR_EXPR_DIR

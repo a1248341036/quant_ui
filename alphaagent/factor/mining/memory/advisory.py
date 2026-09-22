@@ -179,7 +179,7 @@ class AdvisoryMixin:
                             f"该表达式结构与历史死路相同：同构已评估 {int(agg['n_tries'])} 次"
                             f"{scope}{latest}（{reason}），不建议继续同构重复评估。"
                         ),
-                        "exempt_from_block": bool(curr_run_passed or has_positive),
+                        "exempt_from_block": bool(curr_run_passed),
                     })
 
             # ①b 指纹正证据：同结构曾有正向 verdict（promising/入库）→ 重复劳动提醒。

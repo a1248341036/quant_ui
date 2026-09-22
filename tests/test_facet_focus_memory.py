@@ -200,10 +200,10 @@ def test_facet_focus_single_facet_render():
 
 
 def test_facet_focus_in_assembly_report():
-    from alphaagent.factor.mining.prompts import build_system_prompt, last_assembly_report
+    from alphaagent.factor.mining.prompts import build_system_prompt_with_report
 
-    build_system_prompt(focus_facets=["基本面", "价量面"])
-    rows = {r["module"]: r for r in last_assembly_report}
+    _, report = build_system_prompt_with_report(focus_facets=["基本面", "价量面"])
+    rows = {r["module"]: r for r in report}
     assert rows["facet_focus"]["enabled"] is True
     assert rows["facet_focus"]["chars"] > 0
     # ORDER=135：排在 population_mode(130) 之后、extra_instructions(140) 之前

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from alphaagent.factor.mining.eval.context import _test_end_default
 from alphaagent.factor.types import (
     DEFAULT_LABEL_COL,
     DEFAULT_TEST_END,
@@ -13,13 +14,6 @@ from alphaagent.factor.types import (
     DEFAULT_VAL_END,
     DEFAULT_VAL_START,
 )
-
-
-def _test_end_default(asset_type: str = "stock") -> str:
-    """测试段右端默认：未显式传值时动态解析数据源最新交易日。"""
-    from alphaagent.factor.window_config import resolve_test_end
-
-    return resolve_test_end(asset_type=asset_type)
 
 
 @dataclass
@@ -40,10 +34,6 @@ class SessionCreateRequest:
     """数据面聚焦（用户勾选的面名）。非空时 panel 按面裁剪列族（省内存）。"""
     engine_gate_policy: dict | None = None
     """engine_gate 交付策略：train 过线因子自动附 val 窗口引擎预演（可交易口径）。"""
-
-    def resolved_test_end(self) -> str:
-        """解析后的测试段右端（None → 动态值）。"""
-        return self.test_end or _test_end_default(self.asset_type)
 
 
 @dataclass

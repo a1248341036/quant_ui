@@ -92,7 +92,6 @@ def build_timeframe_panel(
     target_interval: str = "1w",
     base_interval: str = "1d",
     columns: Optional[Iterable[str]] = None,
-    strict_complete_bars: bool = False,
 ) -> pd.DataFrame:
     """把日频 panel 聚合为更粗日历周期（1d / 1w）。"""
     if not isinstance(panel.index, pd.MultiIndex):
@@ -118,10 +117,6 @@ def build_timeframe_panel(
     df["__bucket__"] = _bucket_datetime(df["datetime"], target_rule)
 
     agg_map = {c: _aggregation_rule_for(c) for c in use_cols}
-
-    # 股票 1d→1w 不按固定交易日数过滤桶；strict 模式暂不启用
-    if strict_complete_bars and target_rule != "1w":
-        raise ValueError("股票 resample 暂不支持 strict_complete_bars")
 
     grouped = df.groupby(["instrument", "__bucket__"], sort=True).agg(agg_map)
 

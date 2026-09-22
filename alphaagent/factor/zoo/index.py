@@ -144,7 +144,10 @@ class RowIndex:
         if start is not None:
             mask &= dt >= pd.Timestamp(start)
         if end is not None:
-            mask &= dt < pd.Timestamp(end) + pd.Timedelta(days=1)
+            # end 归一化到当天 00:00 再 +1 天做右开边界：调用方传
+            # "2024-01-01 12:00" 这类带时间字符串时，不漂移到次日中午。
+            end_day = pd.Timestamp(end).normalize()
+            mask &= dt < end_day + pd.Timedelta(days=1)
         idx = self.rows.index[mask]
         if len(idx) == 0:
             return RowSlice(0, 0)

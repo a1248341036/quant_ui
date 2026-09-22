@@ -111,21 +111,29 @@ def load(
         & (pl.col("imp_ann_date") <= e)
         & (pl.col("ex_date") > pl.col("imp_ann_date"))
     )
-    rows: list[tuple] = []
-    for row in windows.iter_rows(named=True):
-        d = row["imp_ann_date"]
-        ex = row["ex_date"]
-        while d < ex:
-            rows.append((row["symbol"], d, (ex - d).days))
-            d += datetime.timedelta(days=1)
-    if rows:
+    if not windows.is_empty():
+        # 用 polars date_range 原生展开，避免 Python 逐日循环（全市场 ~112M 行）
         ex_windows = (
-            pl.DataFrame(
-                rows,
-                schema={"symbol": pl.Utf8, "trade_date": pl.Date, "_left": pl.Int32},
-                orient="row",
+            windows.with_columns(
+                pl.date_range(
+                    pl.col("imp_ann_date"),
+                    pl.col("ex_date") - datetime.timedelta(days=1),
+                    interval="1d",
+                    eager=True,
+                ).alias("_days")
             )
-            .rename({"symbol": "ts_code"})
+            .explode("_days")
+            .with_columns(
+                (pl.col("ex_date") - pl.col("_days"))
+                .dt.total_days()
+                .cast(pl.Int32)
+                .alias("_left")
+            )
+            .select(
+                pl.col("symbol").alias("ts_code"),
+                pl.col("_days").alias("trade_date"),
+                "_left",
+            )
             .filter(pl.col("trade_date") >= s)
         )
         base = base.join(

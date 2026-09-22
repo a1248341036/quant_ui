@@ -31,10 +31,14 @@ class TestPredictionCheckDisabled:
     """关闭预测对账后：不注入 prediction_check、缺失 prediction 不记账不拦截。"""
 
     def _tools(self):
+        # 本测试只验证 prediction 软门（C1 消融），不关心同质化熔断器：
+        # 循环 4 次同一表达式会触发 HomogenizationSmoothingBlock（2026-09-19
+        # 引入），与 prediction 缺失软门无关，故显式禁用。
         return FactorEvalTools(
             _ProfileServiceWithDeciles(),
             "session",
             cognition_policy={"prediction_check_enabled": False},
+            homogenization_policy={"enabled": False},
         )
 
     def test_evaluate_factor_no_prediction_check(self):

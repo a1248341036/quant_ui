@@ -1,6 +1,7 @@
 """股票 DSL 算子：时序算子 per instrument、截面算子 per datetime；Window 为整数固定窗或单列 DataFrame 动态窗/滞后。"""
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable, Union
 
 import numpy as np
@@ -33,6 +34,8 @@ from .ops_kit import (
     per_instrument_unary as _ts_unary_accel,
     series_from_group as _series_from_group,
 )
+
+logger = logging.getLogger(__name__)
 
 # TS_CROSS_* 第二 operand 可为与之对齐的面板单列，或与 ADD 二元算子一致的 Python / NumPy 标量（按 x 索引广播）
 TsCrossOperand = Union[pd.DataFrame, int, float, np.integer, np.floating]
@@ -112,7 +115,6 @@ def _ts_agg_fixed_accel(df: pd.DataFrame, window: int, kind: str, ddof: int = 1)
 def _ts_agg(
     df: pd.DataFrame,
     window: Window,
-    agg_fixed: Callable[[int], pd.DataFrame],
     *,
     dyn_kind: str,
     ddof: int = 1,
@@ -326,7 +328,8 @@ def WMA(df: pd.DataFrame, p: int = 20) -> pd.DataFrame:
 
 
 def SMA(df: pd.DataFrame, m: Optional[float] = None, n: Optional[float] = None) -> pd.DataFrame:
-    """SMA(df,m) 滚动均线；SMA(df,m,n) 为 alpha=n/m 的 ewm。"""
+    """SMA(df,m) 滚动均线；SMA(df,m,n) 为 alpha=m/n 的 ewm（对齐 TDX/Wilder 约定：
+    权重在前、周期在后，递归式 Y=(M*X+(N-M)*Y')/N）。"""
     if isinstance(m, (int, float)) and m is not None and n is None:
         w = int(m)
         fast = _ts_unary_fast(df, lambda v: _accel.roll_fixed(v, w, "mean"))
@@ -341,7 +344,9 @@ def SMA(df: pd.DataFrame, m: Optional[float] = None, n: Optional[float] = None) 
         return _gb_instrument(df).transform(lambda x: _sma_mean(_series_from_group(x)))
     if m is None or n is None:
         raise ValueError("SMA 请使用 SMA(df, m) 指定整数均线周期，或提供 (m,n) 自定义递推")
-    alpha = float(n) / float(m)
+    alpha = float(m) / float(n)
+    if not 0.0 < alpha <= 1.0:
+        raise ValueError(f"SMA 权重/周期 alpha={alpha:.4f} 超出 (0,1]，请检查 (m,n) 参数顺序")
     return _gb_instrument(df).transform(lambda x: x.ewm(alpha=alpha, adjust=False).mean())
 
 
@@ -452,9 +457,6 @@ def TS_MIN(df: pd.DataFrame, window: Window) -> pd.DataFrame:
     return _ts_agg(
         df,
         window,
-        lambda w: _gb_instrument(df).transform(
-            lambda x: x.rolling(w, min_periods=1).min()
-        ),
         dyn_kind="min",
     )
 
@@ -464,9 +466,6 @@ def TS_MAX(df: pd.DataFrame, window: Window) -> pd.DataFrame:
     return _ts_agg(
         df,
         window,
-        lambda w: _gb_instrument(df).transform(
-            lambda x: x.rolling(w, min_periods=1).max()
-        ),
         dyn_kind="max",
     )
 
@@ -476,9 +475,6 @@ def TS_MEAN(df: pd.DataFrame, window: Window) -> pd.DataFrame:
     return _ts_agg(
         df,
         window,
-        lambda w: _gb_instrument(df).transform(
-            lambda x: x.rolling(w, min_periods=1).mean()
-        ),
         dyn_kind="mean",
     )
 
@@ -488,9 +484,6 @@ def TS_SUM(df: pd.DataFrame, window: Window) -> pd.DataFrame:
     return _ts_agg(
         df,
         window,
-        lambda w: _gb_instrument(df).transform(
-            lambda x: x.rolling(w, min_periods=1).sum()
-        ),
         dyn_kind="sum",
     )
 
@@ -501,9 +494,6 @@ def TS_PROD(df: pd.DataFrame, window: Window) -> pd.DataFrame:
     return _ts_agg(
         df,
         window,
-        lambda w: _gb_instrument(df).transform(
-            lambda x: x.rolling(w, min_periods=1).sum()
-        ),
         dyn_kind="prod",
     )
 
@@ -513,9 +503,6 @@ def TS_STD(df: pd.DataFrame, window: Window) -> pd.DataFrame:
     return _ts_agg(
         df,
         window,
-        lambda w: _gb_instrument(df).transform(
-            lambda x: x.rolling(w, min_periods=1).std()
-        ),
         dyn_kind="std",
         ddof=1,
     )
@@ -526,9 +513,6 @@ def TS_VAR(df: pd.DataFrame, window: Window, ddof: int = 1) -> pd.DataFrame:
     return _ts_agg(
         df,
         window,
-        lambda w: _gb_instrument(df).transform(
-            lambda x: x.rolling(w, min_periods=1).var(ddof=ddof)
-        ),
         dyn_kind="var",
         ddof=ddof,
     )
@@ -539,9 +523,6 @@ def TS_MEDIAN(df: pd.DataFrame, window: Window) -> pd.DataFrame:
     return _ts_agg(
         df,
         window,
-        lambda w: _gb_instrument(df).transform(
-            lambda x: x.rolling(w, min_periods=1).median()
-        ),
         dyn_kind="median",
     )
 
@@ -551,9 +532,6 @@ def TS_RANK(df: pd.DataFrame, window: Window) -> pd.DataFrame:
     return _ts_agg(
         df,
         window,
-        lambda w: _gb_instrument(df).transform(
-            lambda x: x.rolling(w, min_periods=1).rank(pct=True)
-        ),
         dyn_kind="rank_pct",
     )
 
@@ -563,9 +541,6 @@ def TS_SKEW(df: pd.DataFrame, window: Window) -> pd.DataFrame:
     return _ts_agg(
         df,
         window,
-        lambda w: _gb_instrument(df).transform(
-            lambda x: x.rolling(w, min_periods=1).skew()
-        ),
         dyn_kind="skew",
     )
 
@@ -576,9 +551,6 @@ def TS_KURT(df: pd.DataFrame, window: Window) -> pd.DataFrame:
     return _ts_agg(
         df,
         window,
-        lambda w: _gb_instrument(df).transform(
-            lambda x: x.rolling(w, min_periods=1).kurt()
-        ),
         dyn_kind="kurt",
     )
 
@@ -2569,8 +2541,8 @@ def rolling_beta(df1_group: pd.DataFrame, df2_vec: np.ndarray, p: int) -> pd.Ser
             residual=False,
         )
         return pd.Series(out, index=df1_group.index, dtype=np.float32)
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("rolling_beta: Numba roll_ols 回退逐窗 lstsq: %s", exc)
     out = np.full(n, np.nan)
     for i in range(p - 1, n):
         yy = y.iloc[i - p + 1 : i + 1].to_numpy()
@@ -2641,8 +2613,8 @@ def rolling_residuals(df1_group: pd.DataFrame, x: np.ndarray, p: int) -> pd.Seri
             residual=True,
         )
         return pd.Series(out, index=df1_group.index, dtype=np.float32)
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("rolling_residuals: Numba roll_ols 回退逐窗 lstsq: %s", exc)
     out = np.full(n, np.nan)
     for i in range(p - 1, n):
         yy = y.iloc[i - p + 1 : i + 1].to_numpy()

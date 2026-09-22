@@ -47,7 +47,9 @@ class FactorCatalog:
     def get(self, factor_id: str) -> FactorMeta | None:
         if self._df.empty:
             return None
-        hit = self._df[self._df["factor_id"] == factor_id]
+        # factor_id 列可能是 int64（历史 parquet），统一按 str 比较（与
+        # append/list_factor_ids 同口径，避免 int64 vs str 永不命中）。
+        hit = self._df[self._df["factor_id"].astype(str) == str(factor_id)]
         if hit.empty:
             return None
         row = hit.iloc[0]

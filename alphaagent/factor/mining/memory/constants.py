@@ -47,6 +47,14 @@ EDIT_PRIOR_HARD_CONF_DEFAULT = 0.7
 EDIT_PRIOR_RECOMMEND_CONF_DEFAULT = 0.4
 EDIT_PRIOR_VETO_CONF_DEFAULT = 0.3
 
+# ── near_miss 判定阈值（单一真源）──
+# schema._classify 与 tools/_dispatch._near_miss_verdict 共用，避免两处硬编码漂移。
+# IC 达门槛的 80%、ICIR/coverage 达标但未过线 → near_miss（2026-09-05 记忆分析：
+# technical 档 239 个 near-miss 因子直接进死档，无二次机会）
+NEAR_MISS_IC_RATIO = 0.8
+NEAR_MISS_ICIR_SOFT = 0.2
+NEAR_MISS_COVERAGE = 0.85
+
 # ── 起源权重 ──
 # explicit 父本（LLM 明确声明变异轨）权重 1.0
 # implicit 父本（结构相似度自动链接）权重 0.5

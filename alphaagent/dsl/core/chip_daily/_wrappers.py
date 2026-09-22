@@ -18,6 +18,13 @@ from ._kernels import (
 )
 
 
+def _check_same_length(arrays: list[np.ndarray]) -> None:
+    n = arrays[0].shape[0]
+    for a in arrays[1:]:
+        if a.shape[0] != n:
+            raise ValueError("chip daily arrays must have the same length")
+
+
 def roll_chip_metric_daily(
     close: np.ndarray,
     volume: np.ndarray,
@@ -40,10 +47,7 @@ def roll_chip_metric_daily(
         high.astype(np.float32, copy=False),
         aux.astype(np.float32, copy=False),
     ]
-    n = arrays[0].shape[0]
-    for a in arrays[1:]:
-        if a.shape[0] != n:
-            raise ValueError("chip daily arrays must have the same length")
+    _check_same_length(arrays)
     return roll_chip_metric_daily_numba(
         arrays[0], arrays[1], arrays[2], arrays[3], arrays[4],
         int(window), int(nbins), int(op_id), int(mid),
@@ -63,12 +67,16 @@ def roll_chip_peak_sharpness_daily(
 ) -> np.ndarray:
     impl = chip_peak_sharpness_impl_id(implementation)
     mid = chip_method_id(method)
-    return roll_chip_peak_sharpness_daily_numba(
+    arrays = [
         close.astype(np.float32, copy=False),
         volume.astype(np.float32, copy=False),
         low.astype(np.float32, copy=False),
         high.astype(np.float32, copy=False),
         aux.astype(np.float32, copy=False),
+    ]
+    _check_same_length(arrays)
+    return roll_chip_peak_sharpness_daily_numba(
+        arrays[0], arrays[1], arrays[2], arrays[3], arrays[4],
         int(window), int(nbins), int(impl), int(mid),
     )
 
@@ -88,12 +96,16 @@ def roll_chip_bimodal_daily(
 ) -> np.ndarray:
     impl = chip_bimodal_impl_id(implementation)
     mid = chip_method_id(method)
-    return roll_chip_bimodal_daily_numba(
+    arrays = [
         close.astype(np.float32, copy=False),
         volume.astype(np.float32, copy=False),
         low.astype(np.float32, copy=False),
         high.astype(np.float32, copy=False),
         aux.astype(np.float32, copy=False),
+    ]
+    _check_same_length(arrays)
+    return roll_chip_bimodal_daily_numba(
+        arrays[0], arrays[1], arrays[2], arrays[3], arrays[4],
         int(window), int(nbins), int(impl), int(mid), float(lambda_scale),
     )
 
@@ -113,7 +125,7 @@ def roll_chip_wass_dist_daily(
 ) -> np.ndarray:
     impl = chip_wass_implementation_id(implementation)
     mid = chip_method_id(method)
-    return roll_chip_wass_dist_daily_numba(
+    arrays = [
         close.astype(np.float32, copy=False),
         volume.astype(np.float32, copy=False),
         low.astype(np.float32, copy=False),
@@ -122,5 +134,10 @@ def roll_chip_wass_dist_daily(
         wa.astype(np.int64, copy=False),
         wb.astype(np.int64, copy=False),
         rho.astype(np.int64, copy=False),
+    ]
+    _check_same_length(arrays)
+    return roll_chip_wass_dist_daily_numba(
+        arrays[0], arrays[1], arrays[2], arrays[3], arrays[4],
+        arrays[5], arrays[6], arrays[7],
         int(nbins), int(impl), int(mid),
     )

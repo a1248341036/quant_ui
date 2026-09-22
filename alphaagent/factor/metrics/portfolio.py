@@ -167,16 +167,7 @@ def quantile_portfolio_metrics(
     high_minus_low: list[float] = []
     grp_sum: dict[int, float] = {}
     grp_cnt: dict[int, int] = {}
-
-    prev_members: set | None = None
-    turnover_sum = 0.0
     n_days = 0
-    daily_prev_members: set | None = None
-    daily_turnover_sum = 0.0
-    nav_prev_members: set | None = None
-    nav_turnover_sum = 0.0
-    nav_n_days = 0
-    _ = prev_members, turnover_sum  # 已由 daily_*/nav_* 双轨累计承担（见下）
 
     f_arr_all = factor.to_numpy(dtype=np.float64, copy=False)
     l_arr_all = label_f64(label)

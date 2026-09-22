@@ -8,10 +8,10 @@ from pathlib import Path
 from typing import Any
 
 from alphaagent.factor.evaluation.rules import evaluate_rules
-from alphaagent.factor.mining.context import StockEvalContext
-from alphaagent.factor.mining.env_settings import resolve_max_parallel_eval
-from alphaagent.factor.mining.response import format_eval_response
-from alphaagent.factor.mining.schemas import (
+from alphaagent.factor.mining.eval.context import StockEvalContext, _test_end_default
+from alphaagent.factor.mining.eval.env_settings import resolve_max_parallel_eval
+from alphaagent.factor.mining.eval.response import format_eval_response
+from alphaagent.factor.mining.eval.schemas import (
     EvalProfileRequest,
     EvalTrainRequest,
     EvalValRequest,
@@ -20,7 +20,7 @@ from alphaagent.factor.mining.schemas import (
 )
 from alphaagent.factor.evaluation.engine import EvaluationEngine
 from alphaagent.factor.evaluation.profile import EvaluationProfile, default_evaluation_profiles
-from alphaagent.factor.mining.session import SessionStore, StockEvalSession
+from alphaagent.factor.mining.eval.session import SessionStore, StockEvalSession
 
 
 def _eval_lite_enabled() -> bool:
@@ -138,7 +138,7 @@ class StockEvalService:
             val_start=req.val_start,
             val_end=req.val_end,
             test_start=req.test_start,
-            test_end=req.resolved_test_end(),
+            test_end=req.test_end or _test_end_default(req.asset_type),
             label_col=req.label_col,
             include_fundamentals=req.include_fundamentals,
             asset_type=req.asset_type,

@@ -46,8 +46,8 @@ def build_system_prompt(
     """按模块注册表装配系统提示词；返回最终文本。
 
     板块启用与否由运行时事实（panel 实际列、基本面开关、种群模式、数据面聚焦、
-    用户额外指令、分阶段注入策略）决定；装配报告（每模块 on/off + 字符数 + 占位符残留）写入
-    ``last_assembly_report``。
+    用户额外指令、分阶段注入策略）决定；装配报告（每模块 on/off + 字符数 + 占位符残留）
+    由 ``assemble_system_prompt`` 返回，需要时用 ``build_system_prompt_with_report`` 获取。
 
     ``prompt_phase`` 控制分阶段动态注入：
     - ``"full"``（默认）：全量装配，向后兼容；
@@ -55,6 +55,37 @@ def build_system_prompt(
     - ``"deepen"``：深耕阶段，恢复全部约束；
     - ``"deliver"``：交付阶段，全量 + 交付模块。
     """
+    text, _ = build_system_prompt_with_report(
+        include_operator_catalog=include_operator_catalog,
+        extra_instructions=extra_instructions,
+        label_col=label_col,
+        include_fundamentals=include_fundamentals,
+        panel_columns=panel_columns,
+        population_max=population_max,
+        research_spec=research_spec,
+        asset_type=asset_type,
+        focus_facets=focus_facets,
+        prompt_phase=prompt_phase,
+        max_tool_calls_per_round=max_tool_calls_per_round,
+    )
+    return text
+
+
+def build_system_prompt_with_report(
+    *,
+    include_operator_catalog: bool = True,
+    extra_instructions: str = "",
+    label_col: str = DEFAULT_LABEL_COL,
+    include_fundamentals: bool = True,
+    panel_columns: list[str] | None = None,
+    population_max: int = 0,
+    research_spec: dict[str, Any] | None = None,
+    asset_type: str = "stock",
+    focus_facets: list[str] | tuple[str, ...] | None = None,
+    prompt_phase: str = "full",
+    max_tool_calls_per_round: int = 8,
+) -> tuple[str, list[dict[str, Any]]]:
+    """装配系统提示词并返回 ``(text, module_report)``（无模块级可变全局）。"""
     cols = frozenset(panel_columns) if panel_columns is not None else None
     # 消融白名单：research_spec.prompt_policy.field_family_scope（P6a 价量字段族消融）
     pp = (research_spec or {}).get("prompt_policy") or {}
@@ -75,11 +106,9 @@ def build_system_prompt(
         extra={"extra_instructions": extra_instructions or ""},
     )
 
-    text, module_report = assemble_system_prompt(DEFAULT_MODULES, ctx)
-
-    last_assembly_report.clear()
-    last_assembly_report.extend(module_report)
-    return text
+    return assemble_system_prompt(DEFAULT_MODULES, ctx)
 
 
+# 兼容只读快照：最后一次 build 的装配报告（测试消费）。不再被 build 就地修改，
+# 避免并发 run 互相覆盖；新代码请用 build_system_prompt_with_report。
 last_assembly_report: list[dict[str, Any]] = []

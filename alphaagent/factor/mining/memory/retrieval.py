@@ -318,22 +318,9 @@ class RetrievalMixin:
                 "updated_at": row["updated_at"],
                 "attempts": row["attempts"],
             }
-        # 兼容退化布局：列错位
-        return {
-            "id": None,
-            "factor_name": row["id"],
-            "expression": row["factor_name"],
-            "conclusion": row["expression"],
-            "verdict": row["conclusion"],
-            "stage": row["verdict"],
-            "metrics": json.loads("{}"),
-            "failure_code": json.loads("{}"),
-            "fail_detail": row["failure_code"] if "failure_code" in row.keys() else None,
-            "family": row["fail_detail"] if "fail_detail" in row.keys() else None,
-            "facets": sorted(facets),
-            "updated_at": classify_family(row["factor_name"], row["expression"]),
-            "attempts": row["updated_at"],
-        }
+        # attempts 列由 _ensure_schema 迁移保证存在；此处不再保留字段错位的
+        # 退化布局兜底（一旦误入会产出 family/updated_at/attempts 类型错配的脏数据）。
+        raise ValueError("memory_entries 行缺少 attempts 列（schema 未迁移？）")
 
     @staticmethod
     def _hybrid_score(

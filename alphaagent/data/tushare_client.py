@@ -162,12 +162,21 @@ def get_pro():
     pro = ts.pro_api(token, timeout=timeout)
     url = _read_url()
     if url:
-        if hasattr(pro, "_DataApi__http_url"):
+        # 优先走公开 API（tushare 0.9.60+ 支持 set_token 后按 URL 请求）；
+        # 私有属性 _DataApi__http_url 仅作旧版 SDK 兜底，避免依赖内部命名 mangling。
+        setter = getattr(pro, "set_http_url", None)
+        if callable(setter):
+            try:
+                setter(url)
+            except Exception:  # noqa: BLE001
+                logging.getLogger(__name__).warning(
+                    "Tushare set_http_url failed; proxy URL %s not applied", url)
+        elif hasattr(pro, "_DataApi__http_url"):
             pro._DataApi__http_url = url
         else:
             # SDK 版本变更时私有属性名可能变化，记录警告但不阻断
             logging.getLogger(__name__).warning(
-                "Tushare SDK has no _DataApi__http_url attribute; proxy URL %s not applied", url)
+                "Tushare SDK has no set_http_url/_DataApi__http_url; proxy URL %s not applied", url)
     max_retries = int(_config["max_retries"])
     if max_retries <= 0:
         return pro

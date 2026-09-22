@@ -139,12 +139,14 @@ PLUGIN = DataSourcePlugin(
 
 
 def _read_curated(dataset: str) -> pl.DataFrame:
-    """扫描 curated/{dataset}/ 下所有 parquet 文件并合并。"""
+    """扫描 curated/{dataset}/ 下所有 parquet 文件并合并（复用 _pitlib 同口径读取）。"""
     root = _curated_root() / dataset
     files = sorted(root.rglob("*.parquet"))
     if not files:
         raise FileNotFoundError(f"CNE curated {dataset} 无 parquet 文件")
-    return pl.read_parquet(root, hive_partitioning=False)
+    from alphaagent.data.adapters.plugins._pitlib import read_curated
+
+    return read_curated(dataset)
 
 
 def _select_and_rename(df: pl.DataFrame, col_map: dict[str, str]) -> pl.DataFrame:

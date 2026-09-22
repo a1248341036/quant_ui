@@ -142,14 +142,14 @@ def _facet_allowed(focus_facets: Sequence[str] | None) -> set[str] | None:
     focus = [str(f) for f in (focus_facets or ()) if f]
     if not focus:
         return None
-    from alphaagent.factor.mining.memory.expressions import facet_allowed_scope
+    from alphaagent.factor.facets import facet_allowed_scope
 
     return facet_allowed_scope(focus)
 
 
 def _column_facets(column: str) -> set[str]:
-    """列名 → 所属数据面（延迟导入，避免 data 层硬依赖 mining 包）。"""
-    from alphaagent.factor.mining.memory.expressions import expr_facets
+    """列名 → 所属数据面（纯函数，无 mining 依赖）。"""
+    from alphaagent.factor.facets import expr_facets
 
     return expr_facets("$" + str(column))
 
@@ -395,9 +395,17 @@ def _purge_old_cache(keep: Path) -> None:
     try:
         if not _CACHE_ROOT.is_dir():
             return
+        # 排序键容错：文件可能在 glob 与 stat 之间被其他进程删除（多会话并发淘汰），
+        # 单个文件 stat 失败只跳过该文件，不让整个淘汰流程静默退出。
+        def _mtime(p: Path) -> float:
+            try:
+                return p.stat().st_mtime
+            except OSError:
+                return float("inf")
+
         files = sorted(
             (p for p in _CACHE_ROOT.glob("panel_*.parquet") if p != keep),
-            key=lambda p: p.stat().st_mtime,
+            key=_mtime,
         )
         while len(files) + 1 > _CACHE_MAX_FILES:  # +1 为刚写入的文件
             victim = files.pop(0)
@@ -435,6 +443,16 @@ def _save_cached_panel(
     "全量缓存服务聚焦请求"，避免 mmap fault 全量列页）。
     """
     try:
+        # 辅助插件加载失败（即使哨兵集合为空，聚焦裁剪场景）也拒绝落盘：
+        # 否则缺列面板被固化，后续请求持续命中残缺缓存。
+        failed_aux = panel.attrs.get("failed_aux_plugins") or []
+        if failed_aux:
+            logger.warning(
+                "CNE panel 构建时辅助插件加载失败 %s，本次不写缓存"
+                "（下次请求将重建；请检查对应插件加载日志）",
+                sorted(failed_aux),
+            )
+            return
         missing_sentinels = _missing_funda_sentinels(panel, expect_sentinels)
         if missing_sentinels:
             # 残缺面板不落盘：否则会被后续请求持续命中，缺列问题被固化数周。

@@ -14,7 +14,7 @@ import pandas as pd
 from alphaagent.data.panel import load_panel, slice_panel
 from alphaagent.factor.cache import FactorValueCache, get_default_cache
 from alphaagent.factor.mining.context import StockEvalContext
-from alphaagent.factor.evaluation.candidate import CandidateRegistry
+from alphaagent.factor.mining.eval.candidate import CandidateRegistry
 
 
 @dataclass

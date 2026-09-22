@@ -61,9 +61,10 @@ PLUGIN = DataSourcePlugin(
 
 def _read_events(name: str) -> pl.DataFrame:
     root = _curated_root() / name
-    if not sorted(root.rglob("*.parquet")):
+    files = sorted(root.rglob("*.parquet"))
+    if not files:
         raise FileNotFoundError(f"CNE curated {name} 无 parquet 文件")
-    return pl.read_parquet(root, hive_partitioning=False)
+    return pl.concat([pl.read_parquet(f) for f in files], how="vertical")
 
 
 def _stock_symbols() -> list[str]:

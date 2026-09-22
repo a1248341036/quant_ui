@@ -70,7 +70,7 @@ from alphaagent.factor.mining.infra.provider_compat import ProviderSafeChatModel
 from alphaagent.factor.mining.infra.usage_capture import UsageBridge
 from alphaagent.factor.mining.config import MiningConfig
 from alphaagent.factor.mining.console import ConsolePrinter, ensure_utf8_stream
-from alphaagent.factor.mining.loop import _NUDGE, _submit_record
+from alphaagent.factor.mining.agent.loop import NUDGE_MSG, submit_record
 from alphaagent.factor.mining.operators import list_operator_names
 from alphaagent.factor.mining.prompts import build_system_prompt
 from alphaagent.factor.mining.submit import FactorSubmitService, default_factorlib_path
@@ -88,7 +88,7 @@ from alphaagent.factor.evaluation.profile import resolve_profiles
 from core import factor_categories
 
 
-_NUDGE_MSG = _NUDGE
+_NUDGE_MSG = NUDGE_MSG
 
 # 可重试异常类型名（字符串匹配：兼容 httpx2/httpx/httpcore 的命名差异与异常包装）。
 # ToolJSONDecodeError（2026-09-11）：deepseek 偶发把 tool arguments JSON 截断
@@ -321,28 +321,6 @@ async def run_factor_mining_agentscope(
         delivery_policy=(config.research_spec or {}).get("delivery_policy"),
         similar_top_k=config.similar_top_k,
         overwrite=config.ingest_overwrite,
-    )
-
-    factor_tools = FactorEvalTools(
-        service,
-        session_resp.session_id,
-        submit_service=submit_service,
-        focus_facets=getattr(config, "focus_facets", None),
-        cognition_policy=(config.research_spec or {}).get("cognition_policy"),
-        operator_policy=(config.research_spec or {}).get("operator_policy"),
-        homogenization_policy=(config.research_spec or {}).get("homogenization_policy"),
-    )
-    system_prompt = build_system_prompt(
-        include_operator_catalog=include_operator_catalog,
-        extra_instructions=extra_instructions,
-        label_col=ctx.label_col,
-        include_fundamentals=ctx.include_fundamentals,
-        panel_columns=session_resp.available_columns,
-        population_max=config.population_max,
-        research_spec=config.research_spec,
-        asset_type=ctx.asset_type,
-        focus_facets=getattr(config, "focus_facets", None),
-        max_tool_calls_per_round=config.max_tool_calls_per_round,
     )
 
     log_dir = Path(log_dir)
@@ -854,7 +832,7 @@ async def run_factor_mining_agentscope(
                 )
                 if row.get("name") == "submit_factor":
                     submit_records.append(
-                        _submit_record(
+                        submit_record(
                             turn=outer_turn,
                             arguments_raw=row.get("arguments_raw"),
                             result=res,

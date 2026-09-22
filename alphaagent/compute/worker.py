@@ -13,6 +13,8 @@ import sys
 import time
 from typing import Any
 
+import numpy as np
+
 from alphaagent.compute.panel_store import WorkerPanelStore
 from alphaagent.compute.task import ComputeTask, TaskResult
 from alphaagent.factor.evaluation.engine import EvaluationEngine
@@ -21,6 +23,56 @@ from alphaagent.factor.evaluation.profile import default_evaluation_profiles
 logger = logging.getLogger(__name__)
 
 _POISON_PILL = "__WORKER_POISON_PILL__"
+
+
+class _MockSessionCtx:
+    """EvaluationEngine 所需的会话上下文壳（对齐 StockEvalContext 字段）。"""
+
+    def __init__(self, spec: dict[str, Any]):
+        from alphaagent.factor.window_config import (
+            DEFAULT_TRAIN_START,
+            DEFAULT_TRAIN_END,
+            DEFAULT_VAL_START,
+            DEFAULT_VAL_END,
+            DEFAULT_TEST_START,
+            resolve_test_end,
+        )
+
+        self.label_col = spec.get("label_col", "label_1d_open_to_open")
+        self.panel_path = spec.get("panel_path", "cne://")
+        self.train_start = spec.get("train_start", DEFAULT_TRAIN_START)
+        self.train_end = spec.get("train_end", DEFAULT_TRAIN_END)
+        self.val_start = spec.get("val_start", DEFAULT_VAL_START)
+        self.val_end = spec.get("val_end", DEFAULT_VAL_END)
+        self.test_start = spec.get("test_start", DEFAULT_TEST_START)
+        self.asset_type = spec.get("asset_type", "stock")
+        self.test_end = spec.get("test_end") or resolve_test_end(self.asset_type)
+        self.include_fundamentals = spec.get("include_fundamentals", True)
+
+    def split_range(self, split: str) -> tuple[str, str]:
+        if split == "train":
+            return self.train_start, self.train_end
+        elif split == "val":
+            return self.val_start, self.val_end
+        elif split == "test":
+            return self.test_start, self.test_end
+        return self.train_start, self.val_end
+
+
+class _MockSession:
+    """EvaluationEngine 所需的虚拟 Session 壳（对齐 StockEvalSession 接口）。"""
+
+    def __init__(self, p: Any, spec: dict[str, Any], store: WorkerPanelStore, skey: str):
+        self.panel = p
+        self.spec = spec
+        self.ctx = _MockSessionCtx(spec)
+        self.store = store
+        self.skey = skey
+
+    def get_split_panel(self, split: str):
+        start, end = self.ctx.split_range(split)
+        sliced = self.store.get_split_panel(self.skey, self.spec, start, end)
+        return sliced, start, end
 
 
 class ComputeWorker:
@@ -105,50 +157,6 @@ class ComputeWorker:
         # 获取 panel
         panel = self.panel_store.get_panel(session_key, panel_spec)
 
-        # 构造虚拟 Session 壳以供 EvaluationEngine 调用
-        from alphaagent.factor.window_config import (
-            DEFAULT_TRAIN_START,
-            DEFAULT_TRAIN_END,
-            DEFAULT_VAL_START,
-            DEFAULT_VAL_END,
-            DEFAULT_TEST_START,
-            resolve_test_end,
-        )
-
-        class _MockSessionCtx:
-            def __init__(self, spec: dict[str, Any]):
-                self.label_col = spec.get("label_col", "label_1d_open_to_open")
-                self.panel_path = spec.get("panel_path", "cne://")
-                self.train_start = spec.get("train_start", DEFAULT_TRAIN_START)
-                self.train_end = spec.get("train_end", DEFAULT_TRAIN_END)
-                self.val_start = spec.get("val_start", DEFAULT_VAL_START)
-                self.val_end = spec.get("val_end", DEFAULT_VAL_END)
-                self.test_start = spec.get("test_start", DEFAULT_TEST_START)
-                self.asset_type = spec.get("asset_type", "stock")
-                self.test_end = spec.get("test_end") or resolve_test_end(self.asset_type)
-                self.include_fundamentals = spec.get("include_fundamentals", True)
-
-            def split_range(self, split: str) -> tuple[str, str]:
-                if split == "train":
-                    return self.train_start, self.train_end
-                elif split == "val":
-                    return self.val_start, self.val_end
-                elif split == "test":
-                    return self.test_start, self.test_end
-                return self.train_start, self.val_end
-
-        class _MockSession:
-            def __init__(self, p: Any, spec: dict[str, Any], store: WorkerPanelStore, skey: str):
-                self.panel = p
-                self.ctx = _MockSessionCtx(spec)
-                self.store = store
-                self.skey = skey
-
-            def get_split_panel(self, split: str):
-                start, end = self.ctx.split_range(split)
-                sliced = self.store.get_split_panel(self.skey, panel_spec, start, end)
-                return sliced, start, end
-
         session = _MockSession(panel, panel_spec, self.panel_store, session_key)
 
         return self.evaluation_engine.evaluate(
@@ -165,7 +173,6 @@ class ComputeWorker:
         """执行 engine_gate 回测认证。"""
         from alphaagent.dsl import eval_factor
         from alphaagent.factor.mining.delivery.engine_gate import run_engine_gate
-        import numpy as np
 
         session_key = params["session_key"]
         panel_spec = params["panel_spec"]

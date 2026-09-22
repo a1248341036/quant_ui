@@ -135,8 +135,14 @@ class EvaluationEngine:
             factor = mask_st_values(
                 factor, panel, asset_type=getattr(session.ctx, "asset_type", None)
             )
-            # label 名义持有期（label_20d → 20）：供组合回测指标按持有期采样复利
-            label_digits = "".join(ch for ch in str(label_col) if ch.isdigit())
+            # label 名义持有期（label_20d → 20）：供组合回测指标按持有期采样复利。
+            # 只取第一个数字组：label_20d_5 的持有期是 20 而非 205。
+            label_digits = ""
+            for ch in str(label_col):
+                if ch.isdigit():
+                    label_digits += ch
+                elif label_digits:
+                    break
             context = EvaluationContext(
                 panel=panel, factor=factor, label=panel[label_col], profile=profile, factor_name=factor_name,
                 label_holding_days=max(1, int(label_digits) if label_digits else 1),
