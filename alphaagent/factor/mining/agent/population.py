@@ -185,6 +185,7 @@ def screen_population(
         ac = r.get("cs_pearson_autocorr")
         if ac is None or not np.isfinite(float(ac)) or float(ac) < autocorr_gate:
             reasons.append(f"autocorr<{autocorr_gate}")
+        icir = r.get("icir")
         from alphaagent.factor.mining.delivery.delivery_criteria import DeliveryCriteria
         _cc = DeliveryCriteria.defaults().candidate
         if icir is None or abs(float(icir)) <= _cc.min_icir:

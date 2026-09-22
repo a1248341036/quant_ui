@@ -22,7 +22,10 @@ from agentscope.state import AgentState
 from agentscope.workspace import LocalWorkspace
 
 from alphaagent.factor.mining.audit import build_manifest, canonical_hash
-from alphaagent.factor.mining.env_settings import resolve_max_parallel_eval
+from alphaagent.factor.mining.env_settings import (
+    resolve_max_parallel_eval,
+    resolve_turnover_gate_limit,
+)
 from alphaagent.factor.mining.infra.jsonutil import json_safe
 from alphaagent.factor.mining.schemas import SessionCreateRequest
 from alphaagent.factor.mining.service import StockEvalService
@@ -83,12 +86,6 @@ from alphaagent.factor.mining.research_memory import (
 )
 from alphaagent.factor.evaluation.profile import resolve_profiles
 from core import factor_categories
-
-
-def _turnover_gate_limit(config: MiningConfig) -> float:
-    """从 run 的 research_spec 取按 freq 分档的换手硬门（注入 eval 预筛层）。"""
-    from alphaagent.factor.mining.delivery.delivery_criteria import DeliveryCriteria
-    return DeliveryCriteria.from_spec(getattr(config, "research_spec", None)).turnover_gate_limit
 
 
 _NUDGE_MSG = _NUDGE
@@ -280,7 +277,7 @@ async def run_factor_mining_agentscope(
     service = service or StockEvalService(
         max_parallel_eval=resolve_max_parallel_eval(config.max_parallel_eval),
         profiles=resolve_profiles(config.research_spec),
-        turnover_gate_limit=_turnover_gate_limit(config),
+        turnover_gate_limit=resolve_turnover_gate_limit(config),
     )
     root = repo_root or _repo_root()
     ctx = config.eval

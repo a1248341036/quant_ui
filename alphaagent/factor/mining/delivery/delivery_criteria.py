@@ -267,11 +267,6 @@ class DeliveryCriteria:
         if isinstance(eg_raw.get("allowed_freqs"), (list, tuple)):
             eg_raw["allowed_freqs"] = tuple(eg_raw["allowed_freqs"])
         eg_obj = EngineGateCriteria(**eg_raw)
-        ps_raw = _fill(ParamStabilityCriteria(), ps)
-        # window_offsets 同理统一为 tuple[int, ...]（JSON 侧为 list）。
-        if isinstance(ps_raw.get("window_offsets"), (list, tuple)):
-            ps_raw["window_offsets"] = tuple(int(x) for x in ps_raw["window_offsets"])
-        ps_obj = ParamStabilityCriteria(**ps_raw)
         return cls(
             blind_test=blind_obj, screener=screener_obj,
             candidate=cand_obj, production=prod_obj, engine_gate=eg_obj,

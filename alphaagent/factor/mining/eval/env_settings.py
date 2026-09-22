@@ -29,3 +29,13 @@ def resolve_max_parallel_eval(override: int | None = None) -> int:
     if override is not None:
         return parse_max_parallel_eval(str(override))
     return parse_max_parallel_eval()
+
+
+def resolve_turnover_gate_limit(config: object) -> float:
+    """从 run 的 research_spec 取按 freq 分档的换手硬门（注入 eval 预筛层）。
+
+    单一实现（审计 F-066：agent/run.py 与 agentscope_run.py 曾各维护一份
+    逐字重复的私有 helper）；config 为 MiningConfig，duck-typed 取 research_spec。
+    """
+    from alphaagent.factor.mining.delivery.delivery_criteria import DeliveryCriteria
+    return DeliveryCriteria.from_spec(getattr(config, "research_spec", None)).turnover_gate_limit
