@@ -121,6 +121,11 @@ class TestEnginePreview:
         """集成：两段式 lite 过线 → 全量 → 预演附加到最终响应。"""
         import threading
 
+        # 本测试验证 lite→full→preview 主链路；关掉换手预筛的
+        # turnover profile 中间调用（2026-09-19 prescreen 默认开后
+        # 未同步本测试，导致 calls 序列断言 pre-existing 失败）
+        monkeypatch.setenv("ALPHA_EVAL_TURNOVER_PRESCREEN", "0")
+
         from alphaagent.factor.mining.eval.service import StockEvalService
         from alphaagent.factor.evaluation.profile import EvaluationProfile
 

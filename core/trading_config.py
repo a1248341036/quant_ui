@@ -57,8 +57,11 @@ GATE_MAX_PARTICIPATION: float = 0.10  # 门禁参与率
 GATE_MIN_AM20_YUAN: float = 5_000_000.0  # 门禁流动性下限
 GATE_MIN_EXCESS_ANNUAL: float = 0.03     # 净值超额年化下限（+3%）
 GATE_MIN_EXCESS_SHARPE: float = 0.5     # 超额夏普下限
-GATE_MAX_DRAWDOWN: float = 0.40         # 最大回撤上限
-GATE_MIN_DAILY_OVERLAP: float = 0.5     # 日换手稳定性下限
+GATE_MAX_DRAWDOWN: float = 0.30         # 最大回撤上限（2026-09-22 由 0.40 收紧：
+                                         # 绝对净值回撤口径，40% 只拦崩坏级策略，
+                                         # 30% 可拦 2024-02 微盘流动性危机型单月 -30% 暴露，
+                                         # 仍给正常熊市段(15~25%)留余量）
+GATE_MIN_DAILY_OVERLAP: float = 0.5     # 相邻调仓日 TopN 选股名单重叠率下限（非换手门槛）
 GATE_MIN_INVESTED_RATIO: float = 0.8    # 仓位利用率下限
 GATE_FREQ: str = "weekly"               # 门禁默认调仓频率
 
