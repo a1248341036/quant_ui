@@ -83,7 +83,8 @@ def render(ctx) -> str:  # noqa: ANN001
 
     crit = DeliveryCriteria.from_spec(getattr(ctx, "research_spec", None))
     min_cs_autocorr = crit.candidate.min_cs_autocorr
-    max_turnover = crit.candidate.max_avg_daily_side_turnover
+    # 换手硬门按调仓频率分档，与 delivery_checker 同口径（真源见 behavior_rules 同款注释）
+    max_turnover = crit.turnover_gate_limit
 
     mls_block = mls_fmb_thresholds_markdown(label_col=ctx.label_col)
     label_block = _label_section_markdown(

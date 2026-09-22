@@ -24,6 +24,12 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[4]
 
 
+def _turnover_gate_limit(config: MiningConfig) -> float:
+    """从 run 的 research_spec 取按 freq 分档的换手硬门（注入 eval 预筛层）。"""
+    from alphaagent.factor.mining.delivery.delivery_criteria import DeliveryCriteria
+    return DeliveryCriteria.from_spec(getattr(config, "research_spec", None)).turnover_gate_limit
+
+
 def run_factor_mining(
     config: MiningConfig,
     user_message: str,
@@ -39,6 +45,7 @@ def run_factor_mining(
 ) -> dict[str, Any]:
     service = service or StockEvalService(
         max_parallel_eval=resolve_max_parallel_eval(config.max_parallel_eval),
+        turnover_gate_limit=_turnover_gate_limit(config),
     )
     root = repo_root or _repo_root()
     ctx = config.eval

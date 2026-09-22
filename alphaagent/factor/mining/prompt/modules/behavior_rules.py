@@ -93,7 +93,9 @@ SEP_BEFORE = "\n\n---\n\n"
 
 def render(ctx) -> str:  # noqa: ANN001
     crit = DeliveryCriteria.from_spec(getattr(ctx, "research_spec", None))
-    max_turnover = crit.candidate.max_avg_daily_side_turnover
+    # 换手硬门按调仓频率分档（唯一真源见 DeliveryCriteria.turnover_gate_limit），
+    # 与 delivery_checker 同口径——固定 0.5 会让 weekly 档 0.65 对模型不可见
+    max_turnover = crit.turnover_gate_limit
     # diagnostics 诊断预警线（非交付硬门），与 diagnostics._REDLINE 对齐
     diag_turnover = 0.40
     text = RAW.replace("{max_turnover}", str(max_turnover))

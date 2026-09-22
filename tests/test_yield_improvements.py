@@ -80,13 +80,15 @@ class TestIcirPreflightHint:
 class TestTurnoverPreflightHint:
     """2026-09-12：run f7fa3d11caa2 中 16 次 submit_factor 死于 StageOne
     换手超标（0.57~1.20 > 0.50）——train 过线但换手超标时，promising 提示
-    必须改为"勿提交 + 降噪建议"，省掉一次注定失败的 submit。"""
+    必须改为"勿提交 + 降噪建议"，省掉一次注定失败的 submit。
+    2026-09-22 分档版：hard gate 按 engine_gate.freq 取 turnover_thresholds_by_freq
+    （defaults freq=weekly → 0.65），红线区间（0.40~硬门）措辞不得升格为禁令。"""
 
     def test_high_turnover_replaces_promising_hint(self):
-        r = _result(turnover=0.61)
+        r = _result(turnover=0.70)  # > weekly 分档硬门 0.65
         _attach_yield_hints(r, "expr", {})
         hint = r.get("submit_decision_required", "")
-        assert "0.61" in hint
+        assert "0.70" in hint
         assert "请勿提交" in hint
         assert "①立即调用 submit_factor" not in hint  # 不再给提交选项
 
@@ -104,21 +106,24 @@ class TestTurnoverPreflightHint:
         assert "请勿提交" not in r["submit_decision_required"]
 
     def test_advisory_band_distinguishes_hard_gate(self):
-        # 0.41~0.50 区间：超过建议红线(0.4)但未触 hard gate(0.5)——文案
-        # 不得谎称"必被 stage_one 拦截"，须区分口径。
+        # 0.41~硬门(0.65) 区间：超过建议红线(0.4)但未触 hard gate——文案
+        # 不得谎称"必被 stage_one 拦截"，也不得升格为"请勿提交"禁令
+        # （run ac54807ac194 实测：模型按过严口径自我审查放弃候选）。
         r = _result(turnover=0.45)
         _attach_yield_hints(r, "expr", {})
         hint = r["submit_decision_required"]
-        assert "请勿提交" in hint
+        assert "请勿提交" not in hint
         assert "建议红线" in hint
+        assert "提交前应先降换手" in hint
         assert "必被 stage_one" not in hint
 
     def test_at_hard_gate_explicit_block(self):
-        # 达到 hard gate(0.5) → 明确"必被 stage_one 拦截"
-        r = _result(turnover=0.50)
+        # 达到 hard gate(weekly 分档 0.65，>= 即拦) → 明确"必被 stage_one 拦截"
+        r = _result(turnover=0.65)
         _attach_yield_hints(r, "expr", {})
         hint = r["submit_decision_required"]
         assert "必被 stage_one" in hint
+        assert "请勿提交" in hint
 
 
 class TestNearMissHint:

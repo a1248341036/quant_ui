@@ -10,7 +10,7 @@ from alphaagent.factor.mining.memory.expressions import facet_scope_violation
 from alphaagent.factor.mining.schemas import EvalProfileRequest, EvalTrainRequest, EvalValRequest
 from alphaagent.factor.mining.service import StockEvalService
 from alphaagent.factor.mining.submit import FactorSubmitService
-from alphaagent.factor.mining.delivery.delivery_criteria import DeliveryCriteria
+
 from alphaagent.factor.mining.eval.prediction import (
     GATING_OP_RE,
     build_ablation_check,
@@ -115,7 +115,15 @@ _PIT_SUSPICION_IC = 0.045
 # 建议红线（prompt rule 2 同步配套）与 stage_one 换手硬门槛（delivery_criteria
 # 单一真源）——硬门槛动态读取，避免口径漂移；建议红线固定 0.4，保持保守提前量。
 _TURNOVER_ADVISORY_REDLINE = 0.4
-_TURNOVER_GATE_LIMIT = DeliveryCriteria.defaults().candidate.max_avg_daily_side_turnover
+
+
+def _turnover_gate_limit_of(tools: Any) -> float | None:
+    """取当前 run 的分档换手硬门（tools.submit_service.criteria.turnover_gate_limit）。
+
+    供 diagnostics 运行时诊断用——缺失时返回 None，诊断层回落 defaults 分档。
+    """
+    criteria = getattr(getattr(tools, "submit_service", None), "criteria", None)
+    return getattr(criteria, "turnover_gate_limit", None)
 
 
 def _attach_yield_hints(
@@ -124,10 +132,15 @@ def _attach_yield_hints(
     arguments: dict[str, Any],
     session: Any | None = None,
     recent_evals: list[dict[str, Any]] | None = None,
+    turnover_gate_limit: float | None = None,
 ) -> None:
     """按评估结果注入产出率提示（委托给独立的诊断与仲裁引擎）。"""
     from alphaagent.factor.mining.diagnostics import apply_diagnostics_to_result
-    apply_diagnostics_to_result(result, expr, arguments, session=session, recent_evals=recent_evals)
+    apply_diagnostics_to_result(
+        result, expr, arguments,
+        session=session, recent_evals=recent_evals,
+        turnover_gate_limit=turnover_gate_limit,
+    )
 
 
 def _ic_bar_from_rules(rules: Any) -> float | None:
@@ -625,7 +638,7 @@ class _DispatchMixin:
                 if self.cognition_policy.get("prediction_check_enabled", True):
                     _attach_prediction_check(result, arguments.get("prediction"), ic=ic, decile_rows=decile_rows)
                 session_obj = self.service.sessions.get(self.session_id) if (self.service and hasattr(self.service, "sessions")) else None
-                _attach_yield_hints(result, expr, arguments, session=session_obj, recent_evals=getattr(self, "_recent_evals", None))
+                _attach_yield_hints(result, expr, arguments, session=session_obj, recent_evals=getattr(self, "_recent_evals", None), turnover_gate_limit=_turnover_gate_limit_of(self))
                 self._record_eval_signature(result, expr)
                 if self.cognition_policy.get("ablation_check_enabled", True):
                     self._attach_ablation(expr, arguments, profile_id=profile_id, result=result)
@@ -698,7 +711,7 @@ class _DispatchMixin:
                 if self.cognition_policy.get("ablation_check_enabled", True):
                     self._attach_ablation(expr, arguments, profile_id="train_screen", result=result)
                 session_obj = self.service.sessions.get(self.session_id) if (self.service and hasattr(self.service, "sessions")) else None
-                _attach_yield_hints(result, expr, arguments, session=session_obj, recent_evals=getattr(self, "_recent_evals", None))
+                _attach_yield_hints(result, expr, arguments, session=session_obj, recent_evals=getattr(self, "_recent_evals", None), turnover_gate_limit=_turnover_gate_limit_of(self))
                 self._record_eval_signature(result, expr)
                 pred_block = self._prediction_gate("eval_on_train_set", arguments, result)
                 if pred_block is not None:

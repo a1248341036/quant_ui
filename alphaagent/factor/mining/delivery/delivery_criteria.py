@@ -300,6 +300,23 @@ class DeliveryCriteria:
             },
         }
 
+    # ── 换手硬门（按调仓频率分档，唯一真源） ──
+
+    @property
+    def turnover_gate_limit(self) -> float:
+        """按 ``engine_gate.freq`` 分档的换手硬门。
+
+        与 ``delivery_checker`` 同口径（checker 按 submit 传入的
+        ``rebalance_freq`` 取档，受 ``allowed_freqs`` 约束与 engine_gate.freq
+        一致或更窄）。prompt 渲染与 diagnostics 运行时诊断必须用本值，
+        否则固定 ``max_avg_daily_side_turnover`` 会让分档改动对模型不可见，
+        模型按更严值自我审查（2026-09-22 run ac54807ac194 实测：weekly 档
+        0.65 未进 prompt，模型按 0.5 算账放弃候选）。
+        """
+        return (self.candidate.turnover_thresholds_by_freq or {}).get(
+            self.engine_gate.freq, self.candidate.max_avg_daily_side_turnover
+        )
+
     # ── 提示词渲染 ──
 
     def to_prompt_text(self) -> str:

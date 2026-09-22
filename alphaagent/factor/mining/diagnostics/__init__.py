@@ -36,6 +36,9 @@ class DiagnosticContext:
     prediction_check: dict[str, Any] | None = None
     recent_signatures: list[str] = field(default_factory=list)
     session: Any | None = None
+    # 换手硬门（按 run 的 rebalance_freq 分档，调用方从 DeliveryCriteria 注入；
+    # None 时回落 defaults 的分档值）——固定 0.5 会把 weekly 0.65 档候选误告必死
+    turnover_gate_limit: float | None = None
 
     @classmethod
     def from_eval_result(
@@ -259,7 +262,11 @@ class TurnoverDiagnostic(BaseDiagnostic):
         if not ctx.passed or ctx.split != "train":
             return None
 
-        gate_limit = DeliveryCriteria.defaults().candidate.max_avg_daily_side_turnover
+        gate_limit = (
+            ctx.turnover_gate_limit
+            if ctx.turnover_gate_limit is not None
+            else DeliveryCriteria.defaults().turnover_gate_limit
+        )
         if ctx.turnover is not None and ctx.turnover > self._REDLINE:
             if ctx.turnover >= gate_limit:
                 gate_line = f"必被 stage_one 换手硬门槛拦截（>{gate_limit:.2f}）"
@@ -303,9 +310,16 @@ class TurnoverDiagnostic(BaseDiagnostic):
                 except Exception:
                     pass
 
+            if ctx.turnover >= gate_limit:
+                close_line = "调用 submit_factor 纯浪费算力。请勿提交：推荐降噪路径："
+            else:
+                # 红线区间（0.40 ~ 分档硬门）：在硬门内，措辞不得升格为禁令
+                close_line = (
+                    f"尚在交付硬门（{gate_limit:.2f}）内，但提交前应先降换手；推荐降噪路径："
+                )
             msg = (
                 f"训练已过海选线，但日单边换手 {ctx.turnover:.2f} 超标——{gate_line}{attribution_text}，"
-                "调用 submit_factor 纯浪费算力。请勿提交：推荐降噪路径："
+                + close_line +
                 "①换用慢信息源（如基本面 PIT 数据 $funda_*$、筹码周频变量、$adj_close@1w 周线衍生）替代高频抖动变量；"
                 "②信号积分 F'=λ·F+(1-λ)·DELAY(F,1)（λ∈[0.3,0.8]，比末位 EMA 不塌分布）；"
                 "③外层加 CS_ZSCORE(x) 或 RANK(x) 压制极端尾部与日度排名抖动（不压缩分布）；"
@@ -570,7 +584,15 @@ class DiagnosticMediator:
             verdict = "RESTRUCTURE_REQUIRED"
             if ctx.turnover is not None and ctx.turnover > 0.40:
                 bottleneck = "HIGH_TURNOVER"
-                guidance = f"日单边换手 {ctx.turnover:.2f} 严重超标，请勿直接提交；优先使用慢信息源或加 CS_ZSCORE 连续化降噪。"
+                _gate = (
+                    ctx.turnover_gate_limit
+                    if ctx.turnover_gate_limit is not None
+                    else DeliveryCriteria.defaults().turnover_gate_limit
+                )
+                guidance = (
+                    f"日单边换手 {ctx.turnover:.2f} 超建议红线 0.40（交付硬门 {_gate:.2f}），"
+                    "请先降换手至硬门内再提交；优先使用慢信息源或加 CS_ZSCORE 连续化降噪。"
+                )
             elif ctx.abs_icir is not None and ctx.abs_icir < 0.28:
                 bottleneck = "LOW_ICIR"
                 guidance = f"ICIR={ctx.abs_icir:.3f} 稳定性不足，建议去极值或换窗降低日度收益波动后再交。"
@@ -597,11 +619,13 @@ def apply_diagnostics_to_result(
     arguments: dict[str, Any],
     session: Any | None = None,
     recent_evals: list[dict[str, Any]] | None = None,
+    turnover_gate_limit: float | None = None,
 ) -> None:
     """门面入口：构建上下文，执行仲裁，回写进 result 字典。"""
     try:
         ctx = DiagnosticContext.from_eval_result(result, expr, arguments)
         ctx.session = session
+        ctx.turnover_gate_limit = turnover_gate_limit
         if recent_evals:
             ctx.recent_signatures = recent_evals
         mediator = DiagnosticMediator()

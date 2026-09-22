@@ -31,7 +31,8 @@ def _eval_lite_enabled() -> bool:
 def _turnover_prescreen_enabled() -> bool:
     """换手率预筛开关（默认开）；``ALPHA_EVAL_TURNOVER_PRESCREEN=0`` 关闭。
 
-    lite 过线后单独跑 quantile_portfolio 取换手率，> 0.5 直接短路不跑全量。
+    lite 过线后单独跑 quantile_portfolio 取换手率，> 分档硬门
+    （``self.turnover_gate_limit``，与 delivery_checker 同口径）直接短路不跑全量。
     实测 lite 过线因子 89% 换手率 > 0.5，此预筛省掉绝大多数全量评估。
     """
     return (os.environ.get("ALPHA_EVAL_TURNOVER_PRESCREEN") or "").strip() != "0"
@@ -105,11 +106,22 @@ class StockEvalService:
         sessions: SessionStore | None = None,
         max_parallel_eval: int | None = None,
         profiles: dict[str, EvaluationProfile] | None = None,
+        turnover_gate_limit: float | None = None,
     ) -> None:
         self.sessions = sessions or SessionStore()
         self.max_parallel_eval = resolve_max_parallel_eval(max_parallel_eval)
         self._eval_semaphore = threading.Semaphore(self.max_parallel_eval)
         self.evaluation_engine = EvaluationEngine(profiles or default_evaluation_profiles())
+        # 换手预筛阈值：由调用方从 run 的 research_spec 按 freq 分档注入
+        # （DeliveryCriteria.turnover_gate_limit）；None 回落 defaults 分档。
+        # 预筛是省算力的短路优化、不是准入门——阈值必须与 checker 硬门同口径，
+        # 否则分档后 0.5~0.65（weekly）的候选在海选被拦，永远到不了 full/stage_one。
+        from alphaagent.factor.mining.delivery.delivery_criteria import DeliveryCriteria
+        self.turnover_gate_limit = (
+            turnover_gate_limit
+            if turnover_gate_limit is not None
+            else DeliveryCriteria.defaults().turnover_gate_limit
+        )
 
     def create_session(self, req: SessionCreateRequest) -> SessionCreateResponse:
         from alphaagent.data.adapters.cnequity import CNE_SOURCE
@@ -237,10 +249,11 @@ class StockEvalService:
                 if m["plugin"] != "cross_sectional_core"
             ]
             return resp
-        # 换手率预筛（2026-09-19）：lite 过线后单独跑 quantile_portfolio 取换手率，
-        # > 0.5 直接短路（stage_one 换手硬门槛必拦），省掉全量 fmb/monthly/
-        # long_short 等剩余诊断件。实测 lite 过线因子 89% 换手率 > 0.5，此预筛
-        # 短路绝大多数全量评估。ALPHA_EVAL_TURNOVER_PRESCREEN=0 关闭退回全量。
+        # 换手率预筛（2026-09-19，2026-09-22 改分档）：lite 过线后单独跑
+        # quantile_portfolio 取换手率，> 分档硬门（self.turnover_gate_limit，
+        # 与 delivery_checker 同口径，注入见 ctor）直接短路，省掉全量 fmb/
+        # monthly/long_short 等剩余诊断件。实测 lite 过线因子 89% 换手率
+        # > 0.5，此预筛短路绝大多数全量评估。ALPHA_EVAL_TURNOVER_PRESCREEN=0 关闭退回全量。
         if _turnover_prescreen_enabled():
             raw_to = self.evaluation_engine.evaluate(
                 session,
@@ -254,7 +267,7 @@ class StockEvalService:
             if raw_to.get("ok"):
                 qp = (raw_to.get("metrics") or {}).get("quantile_portfolio") or {}
                 turnover_val = qp.get("avg_daily_side_turnover") if isinstance(qp, dict) else None
-                if turnover_val is not None and float(turnover_val) > 0.5:
+                if turnover_val is not None and float(turnover_val) > self.turnover_gate_limit:
                     # 换手超标短路：用 lite 的 core 指标 + 换手率组装响应，
                     # 标记 screen_stage="turnover_rejected" 让 LLM 看到换手反馈
                     legacy = _engine_result_to_legacy(raw_lite)

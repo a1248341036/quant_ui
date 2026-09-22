@@ -45,17 +45,31 @@ def test_batch_size_parameterized_in_prompt():
 
 
 def test_turnover_threshold_aligned():
-    """S4: 行为准则中换手率硬红线必须明确与系统 0.50 门槛对齐。"""
+    """S4（2026-09-22 分档版）: 换手硬红线按 engine_gate.freq 分档渲染，与 delivery_checker 零漂移。
+
+    technical 档默认 weekly → 0.65；显式 daily → 0.50。固定渲染 0.5 会让
+    weekly 档对模型不可见（run ac54807ac194 实测模型按 0.5 自我审查）。
+    """
     spec = default_research_spec("technical")
     prompt = build_system_prompt(
         include_operator_catalog=False,
         research_spec=spec,
         asset_type="stock",
     )
-    # 动态渲染：str(0.5)='0.5'、str(0.4)='0.4'（DeliveryCriteria 默认值），非硬编码 0.50/0.40
-    assert "avg_daily_side_turnover <= 0.5" in prompt
-    # behavior_rules 中 0.4 带反引号渲染
+    # weekly 档（technical 默认）：渲染分档值 0.65
+    assert "avg_daily_side_turnover <= 0.65" in prompt
+    # behavior_rules 中 0.4 带反引号渲染（预警线固定，不随 freq 分档）
     assert "`0.4` 为 diagnostics 诊断预警线" in prompt
+
+    # daily 档显式覆盖：渲染 0.5
+    spec_daily = default_research_spec("technical")
+    spec_daily["delivery_policy"]["production"]["engine_gate"]["freq"] = "daily"
+    prompt_daily = build_system_prompt(
+        include_operator_catalog=False,
+        research_spec=spec_daily,
+        asset_type="stock",
+    )
+    assert "avg_daily_side_turnover <= 0.5" in prompt_daily
 
 
 def test_orthogonality_tiers_clarified():
