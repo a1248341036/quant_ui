@@ -176,9 +176,8 @@ evaluate_factor(
 会被**直接拦截**（唯一硬拦截）。当 ResearchSpec 的 `interaction_policy.allowed_interaction_types`
 显式包含 `"multiplication"` 时，已声明乘法契约的 `MULTIPLY` 放行，但必须完成
 base-only / condition-only / combined 三组消融并证明组合优于最强单腿；"两个 zscore 相乘"永远不算经济创新。
-需要表达放大、抑制、条件依赖或状态切换时，一律优先改用结构化交互：
-门控 `GATED_SIGNAL`、组内排名 `CS_GROUP_RANK`、残差化 `CS_RESIDUALIZE`、背离 `DIVERGENCE_RANK`、
-分段状态 `PIECEWISE_STATE` 或必要条件 `IF_THEN_ELSE`。"""
+需要表达放大、抑制、条件依赖或状态切换时，一律优先改用结构化交互
+（清单见上方「禁止低级信号叠加」规则的结构化交互算子列表）。"""
 
 # ── 第三层：正交预判（探索阶段裁掉） ──
 _LAYER3 = """

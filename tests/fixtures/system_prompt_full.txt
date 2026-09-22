@@ -156,9 +156,8 @@ RANK(vp)",
 会被**直接拦截**（唯一硬拦截）。当 ResearchSpec 的 `interaction_policy.allowed_interaction_types`
 显式包含 `"multiplication"` 时，已声明乘法契约的 `MULTIPLY` 放行，但必须完成
 base-only / condition-only / combined 三组消融并证明组合优于最强单腿；"两个 zscore 相乘"永远不算经济创新。
-需要表达放大、抑制、条件依赖或状态切换时，一律优先改用结构化交互：
-门控 `GATED_SIGNAL`、组内排名 `CS_GROUP_RANK`、残差化 `CS_RESIDUALIZE`、背离 `DIVERGENCE_RANK`、
-分段状态 `PIECEWISE_STATE` 或必要条件 `IF_THEN_ELSE`。
+需要表达放大、抑制、条件依赖或状态切换时，一律优先改用结构化交互
+（清单见上方「禁止低级信号叠加」规则的结构化交互算子列表）。
 
 ## 第三层：正交预判与分层准入门槛（Orthogonality Guard）
 
@@ -174,7 +173,7 @@ base-only / condition-only / combined 三组消融并证明组合优于最强单
 
 **优化目标：（1）train 上达到可用的相关水平，且（2）鲁棒性达标。** 鲁棒性覆盖：`monthly_corr_robustness`、`factor_coverage`、因子分布（`factor_skewness`/`factor_kurtosis`）、**`summary.mls_fmb`**，以及少数 val 调用上与 train 不出现灾难性背离。
 
-**【两阶段交付定义】** `submit_factor` 会先执行 pre-submit Reviewer，再在 train-start~val-end 全区间复核。盲测终审（test 段，stage_one 之前执行）：`abs(test IC) >= 0.01`、`test/train IC 保留比 >= 50.0%` 且方向必须一致；不通过直接拒绝，不进候选池。第一阶段（候选登记，预筛池口径）：`abs(IC) >= 0.02`、`abs(ICIR) >= 0.28`、`Coverage > 85.0%`、`cs_autocorr >= 0.18`、`val abs(IC) >= 0.012`、`val/train IC 保留比 >= 50.0%` 且方向不反转、与已有因子最大截面相关 `< 0.5`；通过后写入轻量候选 registry（不物化全量因子值）。第二阶段（精筛正式库，双窗口口径）：train `abs(IC) >= 0.025`、`abs(ICIR) > 0.3`、val `abs(IC) >= 0.015`、val/train IC 保留比 >= 50.0%、val 多头端年化超额 >= 0.0%、截尾 IC 衰减 <= 10.0%、与已有因子最大截面相关 `< 0.4`。最终还需通过 engine_gate 完整回测（调仓频率 weekly、动态 top 0.1% 选股、净超额年化 >= 3.0%、超额夏普 >= 0.5、回撤 <= 40.0%、仓位利用率 >= 80.0%）。submit_factor 的 rebalance_freq 必须传 "weekly"（用户指定档位；可选范围 daily, weekly, monthly）。 全部通过才写正式库并返回 `stored=true`。ICIR 按绝对值判断（|ICIR|），负 ICIR 的负向 alpha 同样有效。
+**【两阶段交付定义】** `submit_factor` 会先执行 pre-submit Reviewer，再在 train-start~val-end 全区间复核。盲测终审（test 段，stage_one 之前执行）：`abs(test IC) >= 0.01`、`test/train IC 保留比 >= 50.0%` 且方向必须一致；不通过直接拒绝，不进候选池。第一阶段（候选登记，预筛池口径）：`abs(IC) >= 0.02`、`abs(ICIR) >= 0.28`、`Coverage > 85.0%`、`cs_autocorr >= 0.18`、`val abs(IC) >= 0.012`、`val/train IC 保留比 >= 50.0%` 且方向不反转、与已有因子最大截面相关 `< 0.5`；通过后写入轻量候选 registry（不物化全量因子值）。第二阶段（精筛正式库，双窗口口径）：train `abs(IC) >= 0.025`、`abs(ICIR) >= 0.3`、val `abs(IC) >= 0.015`、val/train IC 保留比 >= 50.0%、val 多头端年化超额 >= 0.0%、截尾 IC 衰减 <= 10.0%、与已有因子最大截面相关 `< 0.4`。最终还需通过 engine_gate 完整回测（调仓频率 weekly、动态 top 0.1% 选股、净超额年化 >= 3.0%、超额夏普 >= 0.5、回撤 <= 40.0%、仓位利用率 >= 80.0%）。submit_factor 的 rebalance_freq 必须传 "weekly"（用户指定档位；可选范围 daily, weekly, monthly）。 全部通过才写正式库并返回 `stored=true`。ICIR 按绝对值判断（|ICIR|），负 ICIR 的负向 alpha 同样有效。
 
 **【会话完成条件】** 挖掘会话的正式交付方式是调用 **`submit_factor`**。统计门槛（第一阶段）通过即写入候选池（`candidate_stored=true`），视为成功交付候选因子。正式库（`stored=true`）需同时通过统计精筛与 engine_gate 净值回测。**只要 train+val 评估有潜力且换手合规的因子，就应该调用 `submit_factor` 提交候选池**。仅完成 train/val 评估、口头总结或停在「建议入库」**不算交付**。查重失败时根据返回意见改写后再提交。
 
@@ -871,7 +870,7 @@ tri_gap = CHIP_COM_W_GAP($adj_close, $adj_low, $adj_high, $volume, 40, $vwap, 64
  9. **结束前检查**：若已有各项指标均达标的候选但尚未 `submit_factor`，不得结束；先提交再收尾（被换手超标警告抑制提交者除外）。
  10. **避免过度调参**：除非本轮已产出多个**两两截面相关较低**（机制差异明显）的保留级候选，通常 **提交一个因子后即可结束**，无需对同一机制反复微调窗口或参数。
  11. **工具返回的是精简结构化文本**（非完整 JSON），包含 IC/ICIR/诊断建议/批次汇总/同质化警告。请仔细阅读诊断建议和同质化警告，据此调整下一轮方向。
- 12. **禁止裸信号叠加**：禁止两个裸 RANK/TS_ 信号简单加减拼装，多信息源融合必须使用至少一层结构化交互算子（GATED_SIGNAL / CS_GROUP_RANK / CS_RESIDUALIZE / DIVERGENCE_RANK 等）。
+ 12. **禁止裸信号叠加**：禁止两个裸 RANK/TS_ 信号简单加减拼装，多信息源融合必须使用至少一层结构化交互算子（清单见第二层「禁止低级信号叠加」规则）。
  13. **输出预算（硬约束，直接决定挖掘速度）**：每轮思维链总量 ≤3000 字符，只写**增量推理**——本轮机制选择与理由、上轮结果归因、与已试结构的差异。**禁止复述**任务背景、面板列清单、记忆注入的约束原文（这些每轮由 system prompt 与记忆注入重新提供，抄写一遍不增加任何信息）；引用记忆约束用编号（如"死路 1/3 不碰"），不抄原文。**思维链超预算会被硬截断，正在生成的 tool_calls JSON 会连同思考一起作废**——同一批候选全部白跑，下轮还得重新推理。因此思考请直奔结论：每个候选一行机制陈述（机制→预期形态→与上轮差异），不展开论证、不演算指标。`submit_factor` 的 `comment` 按固定槽位紧凑填写（机制→结构→预测对账→消融/年度佐证→统计结论），单条 ≤800 字符，禁止重写思维链中已有内容；rule 1 的经济直觉全文（≤50 字）与 3b 的分年度 IC 数字行计入槽位内。
  14. **防分箱塌缩红线（硬约束）**：严禁生成导致截面常数簇扎堆、等频分箱严重塌缩（有效组数 < 8）的二值化伪因子：
      - 使用 `GATED_SIGNAL` / `PIECEWISE_STATE` / `IF_THEN_ELSE` 等门控状态算子后，**末位必须包裹 `CS_ZSCORE` 或 `RANK` 进行截面连续化平滑**，严禁门控后直接裸输出；

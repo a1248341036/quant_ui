@@ -346,7 +346,7 @@ class DeliveryCriteria:
         )
         stage_two = (
             "第二阶段（精筛正式库，双窗口口径）："
-            f"train `abs(IC) >= {p.min_train_abs_ic}`、`abs(ICIR) > {p.min_train_icir}`、"
+            f"train `abs(IC) >= {p.min_train_abs_ic}`、`abs(ICIR) >= {p.min_train_icir}`、"
             f"val `abs(IC) >= {p.min_val_abs_ic}`、"
             f"val/train IC 保留比 >= {_pct(p.min_val_ic_retention)}、"
             f"val 多头端年化超额 >= {_pct(p.min_val_long_excess)}、"
