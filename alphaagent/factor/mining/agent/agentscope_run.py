@@ -7,6 +7,7 @@ import gzip
 import hashlib
 import json
 import logging
+import os
 import sys
 import traceback
 from datetime import datetime, timezone
@@ -347,6 +348,10 @@ async def run_factor_mining_agentscope(
     )
     # v3-lite：记忆策略参数（research_spec.memory_policy）注入存储构造
     memory_policy = (config.research_spec or {}).get("memory_policy") or {}
+    # env 紧急开关：ALPHA_MEMORY_HARD_BLOCK_DUPLICATES=0 临时关闭死路硬拦（不改代码回滚）
+    _hard_block_env = os.environ.get("ALPHA_MEMORY_HARD_BLOCK_DUPLICATES")
+    if _hard_block_env is not None:
+        memory_policy["hard_block_duplicates"] = _hard_block_env.lower() in ("1", "true", "yes")
     # 总开关（消融 A1）：enabled=False → 零记忆探索（等价 research_memory_path=None），
     # 默认 True 不改行为；CLI 传空 memory 路径关闭时同样得到 None。
     _memory_enabled = bool(memory_policy.get("enabled", True))

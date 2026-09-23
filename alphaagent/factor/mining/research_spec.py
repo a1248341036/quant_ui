@@ -189,9 +189,11 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
         "enable_distill": True,             # 经验蒸馏（distill_batch_experience / form_memory）
         "enable_advisory_cache": True,      # advisory 查询 LRU 缓存（False = 每次评估查库）
         # v3-lite：AlphaMemo 校准 + 硬提醒通道
-        # 重复探索硬闸（2026-09-15 优化）：默认 False。仅对同表达式逐字重复（exact_duplicate_prior）
-        # 才硬拦，结构级重复（同骨架但不同参数/窗口）只提醒不硬拦，避免误伤过线 promising 因子。
-        "hard_block_duplicates": False,
+        # 重复探索硬闸（2026-09-23 从 False 上调为 True）：963 次评估 46% 重复（320 次死路重复
+        # 全提醒不拦，LLM 可无视）。仅对 duplicate_known_dead_end（同结构指纹负证据累计 ≥2 次
+        # 且全历史无正向）硬拦；duplicate_prior_result 永不硬拦（exempt_from_block=True）只提醒。
+        # env ALPHA_MEMORY_HARD_BLOCK_DUPLICATES=0 可临时关闭。
+        "hard_block_duplicates": True,
         "max_inject_chars": 2400,           # 注入块总预算，超限按 编辑先验>经验>多样性>证据 截断
         "apv_tau_c": 0.35,                  # APV 双门 1：置信阈值（Eq.7 置信）
         "apv_tau_v": 0.80,                  # APV 双门 2：失败 Beta 后验阈值
