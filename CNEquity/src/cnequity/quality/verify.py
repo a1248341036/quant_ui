@@ -480,6 +480,12 @@ def verify_lake(
         if not is_dataset_enabled(name, config):
             logger.info("verify: %s is disabled in config; skipping coverage checks", name)
             continue
-        watermark = state.get_date(name) if spec.watermark else None
+        # Sparse event feeds (watermark=False) have no per-day freshness
+        # contract, so their watermark is not read. Periodic cadences
+        # (monthly/quarterly) DO have a freshness contract — the watermark is
+        # the only mark available because _covered_days returns nothing for
+        # non-session-dense layouts — so read it and let max_staleness_days
+        # (35/100) judge staleness against the cadence.
+        watermark = state.get_date(name) if (spec.watermark or spec.cadence in ("monthly", "quarterly")) else None
         out.extend(verify_dataset(config, spec, anchor=anchor, watermark=watermark))
     return out
