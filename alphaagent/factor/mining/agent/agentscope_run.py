@@ -381,6 +381,7 @@ async def run_factor_mining_agentscope(
         cognition_policy=(config.research_spec or {}).get("cognition_policy"),
         operator_policy=(config.research_spec or {}).get("operator_policy"),
         homogenization_policy=(config.research_spec or {}).get("homogenization_policy"),
+        run_id=log_dir.name,
     )
     system_prompt = build_system_prompt(
         include_operator_catalog=include_operator_catalog,

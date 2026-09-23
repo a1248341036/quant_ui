@@ -374,6 +374,7 @@ class _DispatchMixin:
             advisory = self.memory_store.advisory_for(
                 str(expr or ""),
                 edit_note=arguments.get("edit_note"),
+                current_run_id=getattr(self, "run_id", None),
                 enable_advisory_cache=bool(getattr(self.memory_store, "enable_advisory_cache", True)),
             )
         except Exception:
