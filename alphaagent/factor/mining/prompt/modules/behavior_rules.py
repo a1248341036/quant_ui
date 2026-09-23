@@ -40,8 +40,8 @@ RAW = """### 行为准则
          - **不塌分布**（线性组合保留原始信号分布形状），优于末位 EMA/WMA 的指数/线性衰减压缩；
          - **ρ_f 提升近似**：积分后 `ρ_f' ≈ λ·ρ_f + (1-λ)·1`（滞后项视为完全持久，ρ_f=1）。
            例：原 ρ_f 0.6 + λ 0.5 → ρ_f' ≈ 0.8（仍不够）；λ 0.3 → ρ_f' ≈ 0.88（达标）。
-         - DSL 写法：`signal = ...; integrated = 0.6*signal + 0.4*DELAY(signal, 1)`，末位再 CS_ZSCORE 归一化。
-           > 标量乘（如 `0.6*signal`）豁免 MULTIPLY 拦截——MULTIPLY 拦截仅针对"两个因子信号相乘"（如 `factor_a * factor_b`），标量系数加权不触发。写法：`ADD(0.6*signal, 0.4*DELAY(signal, 1))`。
+         - DSL 写法：`signal = ...; integrated = SIGNAL_BLEND(signal, 0.6)`（内部即 `0.6*signal + 0.4*DELAY(signal, 1)`），末位再 CS_ZSCORE 归一化；多阶推广可自行叠加 `DELAY(F, 2)` 项。
+           > 标量乘（如 `0.6*signal`）豁免 MULTIPLY 拦截——MULTIPLY 拦截仅针对"两个因子信号相乘"（如 `factor_a * factor_b`），标量系数加权不触发。手写等价式：`ADD(0.6*signal, 0.4*DELAY(signal, 1))`。
       ⑤ 周线衍生变量（@1w 辅频，结构性降频，ρ_f ≈ 0.95+）：
          - `$adj_close@1w` = 最近一根已完成周线收盘（无前视广播到日频）；
          - `TS_PCTCHANGE($adj_close@1w, 4)` = 周线 4 周动量，比日频 20 日动量换手低一个量级；

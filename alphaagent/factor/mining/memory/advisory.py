@@ -82,9 +82,10 @@ class AdvisoryMixin:
         """评估前硬提醒通道（v3：指纹负证据 / 指纹正证据 / 意向编辑 APV 双门）。默认只提醒不拦截。
 
         返回 None（无提醒）或 {"advisories": [...], "blocked": False}。
-        - duplicate_known_dead_end：同结构指纹负证据累计 ≥2 次尝试（同表达式重试，
-          或同骨架换窗口/参数的多个变体）→ 已知死路，`hard_block_duplicates=True`
-          时由调用方（tools.dispatch）升级为拦截；过线豁免条目 exempt_from_block=True 不硬拦；
+        - duplicate_known_dead_end：同结构指纹负证据累计 ≥dead_end_min_attempts 次尝试
+          （同表达式重试，或同骨架换窗口/参数的多个变体）→ 已知死路，
+          `hard_block_duplicates=True` 时由调用方（tools.dispatch）升级为拦截；
+          过线豁免条目 exempt_from_block=True 不硬拦；
         - duplicate_prior_result：同结构指纹曾有正向结果（promising/入库）→ 重复劳动
           提醒（历史条目名/verdict/IC/未晋升原因），仅提醒、永不拦截——建议直接 submit 走入库门槛；
         - edit_veto：意向编辑 APV 双门否决。
@@ -115,7 +116,7 @@ class AdvisoryMixin:
         findings: list[dict[str, Any]] = []
         family = classify_family("", expression)
         with self._open() as conn:
-            # ① 指纹负证据：同一结构指纹的已否定条目累计 ≥2 次尝试 → 已知死路。
+            # ① 指纹负证据：同一结构指纹的已否定条目累计 ≥dead_end_min_attempts 次尝试 → 已知死路。
             #    跨变体聚合：同骨架换窗口/参数刷出的 weak/revise_required 变体各自
             #    attempts=1，但同构已多轮失败、再测同构无新增信息，一并计入死路。
             #    双重过线豁免：
@@ -156,7 +157,10 @@ class AdvisoryMixin:
                     """,
                     (fingerprint,),
                 ).fetchone()
-                if agg and not has_positive and (int(agg["n_entries"]) >= 2 or int(agg["n_tries"]) >= 2):
+                if agg and not has_positive and (
+                    int(agg["n_entries"]) >= self.dead_end_min_attempts
+                    or int(agg["n_tries"]) >= self.dead_end_min_attempts
+                ):
                     row = conn.execute(
                         """
                         SELECT factor_name, verdict, fail_detail, attempts FROM memory_entries

@@ -233,6 +233,27 @@ def DELAY(df: pd.DataFrame, p: Window) -> pd.DataFrame:
     return _shift_fixed(df, _as_int_window(p))
 
 
+def SIGNAL_BLEND(df: pd.DataFrame, lam: float = 0.5) -> pd.DataFrame:
+    """信号积分（滞后因子组合）：``λ·F + (1-λ)·DELAY(F, 1)``。
+
+    降换手不塌分布：线性组合保留原信号分布形状，优于末位 EMA/WMA 的
+    指数/线性衰减压缩。λ ∈ [0, 1]；λ 越小权重越偏滞后，ρ_f 升、换手降、
+    IC 略降。换手门槛优先时取 ``λ ≤ (0.85 - ρ_f) / (1 - ρ_f)``（保证
+    积分后 ρ_f' ≥ 0.85）；IR 最优时 λ ≈ 0.5~0.7。多阶推广可自行叠加
+    ``DELAY(F, 2)`` 项。"""
+    lam = float(lam)
+    if not 0.0 <= lam <= 1.0:
+        raise ValueError(f"SIGNAL_BLEND λ={lam} 必须在 [0, 1] 内")
+    if lam == 1.0:
+        # 完全不加滞后：直接返回原信号（避免 0.0*NaN=NaN 污染首日）
+        return df.astype(np.float32) if hasattr(df, "astype") else df
+    if lam == 0.0:
+        return DELAY(df, 1)
+    lagged = DELAY(df, 1)
+    out = lam * df + (1.0 - lam) * lagged
+    return out.astype(np.float32)
+
+
 def TS_PCTCHANGE(df: pd.DataFrame, p: int = 1) -> pd.DataFrame:
     """相对 p 根前的涨跌幅；±inf 置 NaN。
     优先使用 C++ 加速，否则回退到 pandas。"""
@@ -2113,6 +2134,11 @@ def RANK(df: pd.DataFrame) -> pd.DataFrame:
     # groupby.rank 为 C 内核向量化，NaN 自动不参与
     out = ser.groupby(level="datetime", sort=False).rank(pct=True, method="average")
     return _out_frame(out.astype(np.float32), df)
+
+
+# CS_RANK 是 RANK 的截面语义别名：ast.py SMOOTHING_OPS / _prefilter 指纹 /
+# 记忆检索算子列表均引用该名，此前求值器无实现导致模型写出即 NameError。
+CS_RANK = RANK
 
 
 def CS_ZSCORE(df: pd.DataFrame, ddof: int = 1) -> pd.DataFrame:

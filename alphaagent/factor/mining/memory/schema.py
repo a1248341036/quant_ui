@@ -182,6 +182,7 @@ class SchemaMixin:
         eq7_kappa: float = EQ7_KAPPA_DEFAULT,
         max_inject_chars: int = 2400,
         hard_block_duplicates: bool = False,
+        dead_end_min_attempts: int = 3,
         edit_prior_hard_conf: float = EDIT_PRIOR_HARD_CONF_DEFAULT,
         edit_prior_recommend_conf: float = EDIT_PRIOR_RECOMMEND_CONF_DEFAULT,
         edit_prior_veto_conf: float = EDIT_PRIOR_VETO_CONF_DEFAULT,
@@ -197,6 +198,7 @@ class SchemaMixin:
         self.eq7_kappa = eq7_kappa
         self.max_inject_chars = int(max_inject_chars or 2400)
         self.hard_block_duplicates = bool(hard_block_duplicates)
+        self.dead_end_min_attempts = max(1, int(dead_end_min_attempts))
         self.edit_prior_hard_conf = float(edit_prior_hard_conf)
         self.edit_prior_recommend_conf = float(edit_prior_recommend_conf)
         self.edit_prior_veto_conf = float(edit_prior_veto_conf)
