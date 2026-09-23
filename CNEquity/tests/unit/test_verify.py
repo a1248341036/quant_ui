@@ -415,6 +415,51 @@ def test_is_stale_respects_retirement():
     assert is_stale("daily_bars", date(2026, 6, 1), ANCHOR) is True
 
 
+# --- periodic cadences -------------------------------------------------------
+# Quarterly datasets (balancesheet etc.) carry watermark=False because their
+# event rows are sparse, but they still have a freshness contract: the step
+# runs on a quarterly cadence and the watermark is the only mark available
+# (non-session-dense layouts return no covered days). verify_lake must read
+# that watermark and judge it against the cadence-matched tolerance (100d),
+# not silently skip the dataset forever.
+
+
+def test_verify_lake_reads_watermark_for_quarterly_cadence(tmp_path):
+    from cnequity.storage.state import StateStore
+
+    cfg = Config(data_root=tmp_path / "lake")
+    spec = DATASETS["balancesheet"]
+    assert spec.cadence == "quarterly"
+    assert spec.watermark is False
+    assert spec.max_staleness_days == 100
+
+    # A quarterly dataset has parquet on disk (so verify reaches the stale
+    # head check) but no session-dense covered days.
+    part = cfg.curated_root / "balancesheet" / "end_date=2026"
+    part.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame({"end_date": [date(2026, 6, 30)]}).write_parquet(part / "part-0.parquet")
+
+    # Watermark 128 days back — past the 100d quarterly tolerance.
+    StateStore(cfg.meta_root).set_date("balancesheet", date(2026, 4, 1))
+    gaps = verify_lake(cfg, anchor=ANCHOR, datasets=["balancesheet"])
+    stale = [g for g in gaps if g.kind == "stale"]
+    assert len(stale) == 1
+    assert stale[0].dataset == "balancesheet"
+
+
+def test_verify_lake_quarterly_within_tolerance_reports_nothing(tmp_path):
+    from cnequity.storage.state import StateStore
+
+    cfg = Config(data_root=tmp_path / "lake")
+    part = cfg.curated_root / "balancesheet" / "end_date=2026"
+    part.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame({"end_date": [date(2026, 6, 30)]}).write_parquet(part / "part-0.parquet")
+
+    # Watermark 67 days back — inside the 100d quarterly tolerance.
+    StateStore(cfg.meta_root).set_date("balancesheet", date(2026, 6, 1))
+    assert verify_lake(cfg, anchor=ANCHOR, datasets=["balancesheet"]) == []
+
+
 # --- the CLI repair loop -----------------------------------------------------
 
 

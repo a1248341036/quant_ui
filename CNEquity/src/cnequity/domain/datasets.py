@@ -473,6 +473,8 @@ _SPECS = [
         partition_granularity="quarter",
         watermark=False,
         cadence="quarterly",
+        # Quarterly cadence: day-based default tolerance would flag stale all quarter.
+        max_staleness_days=100,
         description="财报预约披露时间表",
     ),
     # L3 fundamentals
@@ -485,6 +487,8 @@ _SPECS = [
         watermark=False,
         pit=True,
         cadence="quarterly",
+        # Quarterly cadence: day-based default tolerance would flag stale all quarter.
+        max_staleness_days=100,
         description="财报长表（三大表科目）",
     ),
     # Shareholder structure — the dimensions the long-format statement table
@@ -508,6 +512,8 @@ _SPECS = [
         watermark=False,
         pit=True,
         cadence="quarterly",
+        # Quarterly cadence: day-based default tolerance would flag stale all quarter.
+        max_staleness_days=100,
         description="股本结构变动",
     ),
     DatasetSpec(
@@ -522,6 +528,8 @@ _SPECS = [
         watermark=False,
         pit=True,
         cadence="quarterly",
+        # Quarterly cadence: day-based default tolerance would flag stale all quarter.
+        max_staleness_days=100,
         description="股东户数",
     ),
     DatasetSpec(
@@ -542,6 +550,8 @@ _SPECS = [
         watermark=False,
         pit=True,
         cadence="quarterly",
+        # Quarterly cadence: day-based default tolerance would flag stale all quarter.
+        max_staleness_days=100,
         description="十大流通股东",
     ),
     DatasetSpec(
@@ -638,6 +648,8 @@ _SPECS = [
         partition_granularity="quarter",
         watermark=False,
         cadence="quarterly",
+        # Quarterly cadence: day-based default tolerance would flag stale all quarter.
+        max_staleness_days=100,
         description="机构持股汇总",
     ),
     # L5 structure
@@ -1050,6 +1062,8 @@ _SPECS = [
         watermark=False,
         pit=True,
         cadence="quarterly",
+        # Quarterly cadence: day-based default tolerance would flag stale all quarter.
+        max_staleness_days=100,
         description="资产负债表",
     ),
     DatasetSpec(
@@ -1062,6 +1076,8 @@ _SPECS = [
         watermark=False,
         pit=True,
         cadence="quarterly",
+        # Quarterly cadence: day-based default tolerance would flag stale all quarter.
+        max_staleness_days=100,
         description="利润表",
     ),
     DatasetSpec(
@@ -1074,6 +1090,8 @@ _SPECS = [
         watermark=False,
         pit=True,
         cadence="quarterly",
+        # Quarterly cadence: day-based default tolerance would flag stale all quarter.
+        max_staleness_days=100,
         description="现金流量表",
     ),
     DatasetSpec(
@@ -1086,6 +1104,8 @@ _SPECS = [
         watermark=False,
         pit=True,
         cadence="quarterly",
+        # Quarterly cadence: day-based default tolerance would flag stale all quarter.
+        max_staleness_days=100,
         description="财务指标",
     ),
     DatasetSpec(
@@ -1119,6 +1139,8 @@ _SPECS = [
         partition_granularity="year",
         watermark=False,
         cadence="quarterly",
+        # Quarterly cadence: day-based default tolerance would flag stale all quarter.
+        max_staleness_days=100,
         description="业绩报告口径",
     ),
     # L7 sentiment (Tushare curated — fetched by steps/tushare_wide.py)
