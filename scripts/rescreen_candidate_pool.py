@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """存量候选池按当前门槛重筛（soft-drop 或 --hard 硬删）。
 
-背景（2026-09-11，观察池口径）：进池线 = train |IC| ≥ 0.020 / |ICIR| > 0.28、
-val |IC| ≥ 0.012、盲测 |test IC| ≥ 0.010（外加保留比/方向/coverage/自相关/换手/
-相关性）；晋升线（精筛 0.025/0.30 + 引擎裁决）独立于此不动。本脚本把**当前**
-门槛回溯应用于存量候选，使池子与新准入策略一致：
+背景（2026-09-11 观察池口径，2026-09-23 第三版收紧）：进池线 = train |IC| ≥ 0.020 /
+|ICIR| > 0.28、val |IC| ≥ 0.015、val 多头端年化超额 ≥ 0、盲测 |test IC| ≥ 0.010
+（外加保留比/方向/coverage/自相关/换手/相关性）；晋升线（精筛 0.025/0.30 + 引擎裁决）
+独立于此不动。本脚本把**当前**门槛回溯应用于存量候选，使池子与新准入策略一致：
 
 - 门槛逐条目按 ``research_mode`` 选档，判定直接复用 ``DeliveryChecker``
   （提交路径同一套代码 = 零口径漂移）：盲测终审 / stage_one 统计 / val 保留比与
@@ -69,7 +69,8 @@ def _evidence(entry: dict) -> tuple[dict, dict, dict, dict]:
     qp = m.get("quantile_portfolio")
     if isinstance(qp, dict):
         train["quantile_portfolio"] = qp
-    val = {"ic": m.get("val_ic"), "n_days": m.get("n_days")}
+    val = {"ic": m.get("val_ic"), "n_days": m.get("n_days"),
+           "val_long_excess": m.get("val_long_excess")}
     test = {"ic": m.get("test_ic")}
     sim = entry.get("similarity") if isinstance(entry.get("similarity"), dict) else {}
     return train, val, test, sim
@@ -93,6 +94,8 @@ def _missing_fields(train: dict, val: dict, test: dict, sim: dict) -> list[str]:
         missing.append("val_ic")
     if test.get("ic") is None:
         missing.append("test_ic")
+    if val.get("val_long_excess") is None:
+        missing.append("val_long_excess")
     if sim.get("max_abs_corr") is None:
         missing.append("max_abs_corr")
     return missing
@@ -134,6 +137,16 @@ def rescreen(registry_path: Path, *, apply: bool, hard: bool = False) -> dict:
             ("corr", checker.stage_one_correlation(sim)),
         ):
             reasons.extend(f"{tag}:{_short_reason(r)}" for r in res.fail_reasons)
+        # val 多头端年化超额门槛（2026-09-23）：与 submit.py 候选池 gate 同口径
+        vle = val.get("val_long_excess")
+        vle_thr = checker.criteria.candidate.min_val_long_excess
+        try:
+            if vle is None or not float(vle) < float(vle_thr):
+                pass
+            else:
+                reasons.append(f"val:val_long_excess<{vle_thr}")
+        except (TypeError, ValueError):
+            reasons.append("val:val_long_excess_missing")
 
         if reasons:
             to_drop[fid] = reasons

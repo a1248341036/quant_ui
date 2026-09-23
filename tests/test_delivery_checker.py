@@ -34,7 +34,7 @@ def test_criteria_defaults_match_research_spec():
     assert cand["max_abs_corr"] == 0.5
     assert cand["min_cs_autocorr"] == 0.18
     assert cand["min_val_ic_retention"] == 0.5
-    assert cand["min_val_abs_ic"] == 0.012
+    assert cand["min_val_abs_ic"] == 0.015
 
     blind = criteria_dp["blind_test"]
     assert blind["min_ic_retention"] == 0.50
@@ -59,7 +59,7 @@ def test_criteria_from_spec_fills_missing_keys():
     })
     assert partial.candidate.min_abs_ic == 0.02
     assert partial.candidate.min_icir == 0.28  # 回落默认
-    assert partial.candidate.min_val_abs_ic == 0.012  # 回落默认（2026-09-11 新增）
+    assert partial.candidate.min_val_abs_ic == 0.015  # 回落默认（2026-09-23 从 0.012 上调）
     assert partial.production.min_train_abs_ic == 0.03
     assert partial.production.min_train_icir == 0.30
 
@@ -254,11 +254,11 @@ def test_fundamental_criteria_prompt_reflects_mode():
     c = DeliveryCriteria.from_spec(fund)
     assert c.candidate.min_abs_ic == 0.020  # 2026-09-11 与精筛对齐
     assert c.candidate.min_icir == 0.28
-    assert c.candidate.min_val_abs_ic == 0.012
+    assert c.candidate.min_val_abs_ic == 0.012  # fundamental override：慢因子量纲锚（保持 0.012）
     assert c.production.min_train_abs_ic == 0.020
     assert c.production.min_train_icir == 0.28
     assert c.engine_gate.freq == "monthly"
     assert c.engine_gate.min_excess_annual == 0.02
 
     text = c.to_prompt_text()
-    assert "0.012" in text and "0.2" in text and "monthly" in text
+    assert "0.012" in text and "0.28" in text and "monthly" in text
