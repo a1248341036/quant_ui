@@ -10,7 +10,7 @@ from typing import Any, Callable
 from agentscope.agent import Agent, ContextConfig, ReActConfig
 from agentscope.credential import OpenAICredential
 from agentscope.message import UserMsg
-from agentscope.model import OpenAIChatModel  # noqa: F401  (类型标注用)
+from agentscope.model import OpenAIChatModel
 
 from alphaagent.factor.mining.infra.provider_compat import ProviderSafeChatModel
 from agentscope.permission import PermissionContext, PermissionMode

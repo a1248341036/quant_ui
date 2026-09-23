@@ -19,6 +19,9 @@ def json_safe(value: Any) -> Any:
         return {k: json_safe(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
         return [json_safe(v) for v in value]
+    if hasattr(value, "tolist") and not isinstance(value, (str, bytes)):
+        # numpy 数组/标量：转 Python 原生类型后递归清洗
+        return json_safe(value.tolist())
     if isinstance(value, Real) and not isinstance(value, bool):
         return value if math.isfinite(float(value)) else None
     return value

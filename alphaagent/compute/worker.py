@@ -138,8 +138,6 @@ class ComputeWorker:
             return {"pong": True, "worker_id": self.worker_id, "pid": os.getpid()}
         elif task.task_type == "eval_factor":
             return self._exec_eval_factor(task.params)
-        elif task.task_type == "engine_gate":
-            return self._exec_engine_gate(task.params)
         else:
             raise ValueError(f"未知 task_type: {task.task_type}")
 
@@ -167,34 +165,6 @@ class ComputeWorker:
             label_quantile_n=label_quantile_n,
             include_detail_tables=include_detail_tables,
             include_charts=include_charts,
-        )
-
-    def _exec_engine_gate(self, params: dict[str, Any]) -> dict[str, Any]:
-        """执行 engine_gate 回测认证。"""
-        from alphaagent.dsl import eval_factor
-        from alphaagent.factor.mining.delivery.engine_gate import run_engine_gate
-
-        session_key = params["session_key"]
-        panel_spec = params["panel_spec"]
-        multi_line_expr = params["multi_line_expr"]
-        val_start = params["val_start"]
-        val_end = params["val_end"]
-        direction = params.get("direction", 1)
-        policy = params.get("policy")
-        asset_type = params.get("asset_type", "stock")
-
-        panel = self.panel_store.get_panel(session_key, panel_spec)
-        out = eval_factor(multi_line_expr, panel)
-        values = out.reindex(panel.index).to_numpy(dtype=np.float64)
-
-        return run_engine_gate(
-            panel,
-            values,
-            val_start=val_start,
-            val_end=val_end,
-            direction=direction,
-            policy=policy,
-            asset_type=asset_type,
         )
 
 

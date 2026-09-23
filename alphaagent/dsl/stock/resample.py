@@ -10,6 +10,7 @@ from typing import Iterable, Optional
 import numpy as np
 import pandas as pd
 
+from alphaagent.dsl.core.resample import _empty_panel, _safe_divide
 from alphaagent.dsl.stock.intervals import bar_interval_to_timedelta, normalize_bar_interval
 
 # 字段聚合规则（OHLCV + 股票扩展列）
@@ -54,23 +55,6 @@ def _aggregation_rule_for(col: str) -> str:
     if col in _AGG_LAST:
         return "last"
     return "last"
-
-
-def _safe_divide(num: pd.Series, den: pd.Series) -> pd.Series:
-    num_arr = pd.to_numeric(num, errors="coerce").to_numpy(dtype=float, copy=False)
-    den_arr = pd.to_numeric(den, errors="coerce").to_numpy(dtype=float, copy=False)
-    out = np.full(len(num_arr), np.nan, dtype=float)
-    mask = np.isfinite(num_arr) & np.isfinite(den_arr) & (den_arr != 0.0)
-    out[mask] = num_arr[mask] / den_arr[mask]
-    return pd.Series(out, index=num.index, dtype=float)
-
-
-def _empty_panel() -> pd.DataFrame:
-    return pd.DataFrame(
-        index=pd.MultiIndex.from_arrays(
-            [pd.DatetimeIndex([], name="datetime"), pd.Index([], name="instrument")]
-        )
-    )
 
 
 def _bucket_datetime(dt: pd.Series, interval: str) -> pd.Series:

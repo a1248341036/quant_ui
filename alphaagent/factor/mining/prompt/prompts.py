@@ -103,7 +103,7 @@ def build_system_prompt_with_report(
         focus_facets=tuple(focus_facets or ()),
         prompt_phase=prompt_phase,
         max_tool_calls_per_round=max_tool_calls_per_round,
-        extra={"extra_instructions": extra_instructions or ""},
+        extra_instructions=extra_instructions or "",
     )
 
     return assemble_system_prompt(DEFAULT_MODULES, ctx)

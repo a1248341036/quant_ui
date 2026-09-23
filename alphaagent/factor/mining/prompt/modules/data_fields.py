@@ -304,6 +304,7 @@ _SCOPED_VAR_VOLUME_ROWS_MD = """| `$volume` / `$amount` | 成交量 / 成交额 
 _SCOPED_VAR_NEUTRAL_ROWS_MD = """| `$float_cap` / `$tot_cap` | 流通 / 总市值 |
 | `$is_trade` / `$not_st` | 可交易 / 非 ST 标记 |
 | `$industry_sw_l1` | 申万一级行业**离散码**（严格 PIT，`--with-industry` 时才有）；仅用于分组，不做数值运算 |
+| `$industry_zx_l1` | 中信一级行业**离散码**（严格 PIT，`--with-industry` 时才有）；仅用于分组，不做数值运算 |
 """
 
 

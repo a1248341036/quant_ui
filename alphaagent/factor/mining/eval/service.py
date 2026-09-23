@@ -9,7 +9,7 @@ from typing import Any
 
 from alphaagent.factor.evaluation.rules import evaluate_rules
 from alphaagent.factor.mining.eval.context import StockEvalContext, _test_end_default
-from alphaagent.factor.mining.eval.env_settings import resolve_max_parallel_eval
+from alphaagent.factor.mining.eval.env_settings import parse_max_parallel_eval
 from alphaagent.factor.mining.eval.response import format_eval_response
 from alphaagent.factor.mining.eval.schemas import (
     EvalProfileRequest,
@@ -109,7 +109,7 @@ class StockEvalService:
         turnover_gate_limit: float | None = None,
     ) -> None:
         self.sessions = sessions or SessionStore()
-        self.max_parallel_eval = resolve_max_parallel_eval(max_parallel_eval)
+        self.max_parallel_eval = parse_max_parallel_eval(str(max_parallel_eval)) if max_parallel_eval is not None else parse_max_parallel_eval()
         self._eval_semaphore = threading.Semaphore(self.max_parallel_eval)
         self.evaluation_engine = EvaluationEngine(profiles or default_evaluation_profiles())
         # 换手预筛阈值：由调用方从 run 的 research_spec 按 freq 分档注入

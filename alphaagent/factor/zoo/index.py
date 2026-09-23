@@ -125,7 +125,6 @@ class RowIndex:
         self.rows = rows
         self.shards = shards
         self.sample_row_ids = sample_row_ids.astype(np.int64, copy=False)
-        self._by_shard = {s.shard_id: s for s in shards}
 
     @property
     def n_rows(self) -> int:
@@ -134,25 +133,6 @@ class RowIndex:
     @property
     def n_sample_rows(self) -> int:
         return len(self.sample_row_ids)
-
-    def shard_for_id(self, shard_id: str) -> TimeShard | None:
-        return self._by_shard.get(shard_id)
-
-    def row_slice_for_dates(self, start: str | None, end: str | None) -> RowSlice:
-        dt = pd.to_datetime(self.rows["datetime"], errors="coerce")
-        mask = pd.Series(True, index=self.rows.index)
-        if start is not None:
-            mask &= dt >= pd.Timestamp(start)
-        if end is not None:
-            # end 归一化到当天 00:00 再 +1 天做右开边界：调用方传
-            # "2024-01-01 12:00" 这类带时间字符串时，不漂移到次日中午。
-            end_day = pd.Timestamp(end).normalize()
-            mask &= dt < end_day + pd.Timedelta(days=1)
-        idx = self.rows.index[mask]
-        if len(idx) == 0:
-            return RowSlice(0, 0)
-        rows_hit = self.rows.loc[idx, "row_id"]
-        return RowSlice(int(rows_hit.min()), int(rows_hit.max()) + 1)
 
     def save(self, paths: FactorLibraryPaths) -> None:
         paths.index_dir.mkdir(parents=True, exist_ok=True)

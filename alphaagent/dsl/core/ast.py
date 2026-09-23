@@ -93,27 +93,6 @@ class ASTNode:
             return "(" + self.op + "," + self.args[0].subtree_hash(var_table) + ")"
         return self.type
 
-    def template(self) -> str:
-        """子树模板（数字替换为 {w1}/{w2}/...，变量保留 $ 前缀）。"""
-        counter = [0]
-
-        def _sub(node: ASTNode) -> str:
-            if node.type == "num":
-                counter[0] += 1
-                return f"{{w{counter[0]}}}"
-            if node.type == "var":
-                return node.value
-            if node.type == "call":
-                args_str = ",".join(_sub(a) for a in node.args)
-                return f"{node.op}({args_str})"
-            if node.type == "binop":
-                return f"({_sub(node.args[0])}{node.op}{_sub(node.args[1])})"
-            if node.type == "unary":
-                return f"{node.op}({_sub(node.args[0])})"
-            return node.type
-
-        return _sub(self)
-
 
 # ── 平滑 / 归一化 / 信号算子集合 ──
 
@@ -594,66 +573,6 @@ def structure_fingerprint(expression: str) -> str:
     var_table = _parse_var_table(expression)
     raw = ast.subtree_hash(var_table if var_table else None)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
-
-
-def fingerprint_dedup_check(
-    new_expression: str,
-    *,
-    candidate_entries: list[tuple[str, str, str]] | None = None,
-    production_entries: list[tuple[str, str, str]] | None = None,
-    exclude_factor_id: str | None = None,
-) -> dict[str, Any]:
-    """AST 指纹查重：检测新因子是否与候选库/正式库已有因子结构重复。
-
-    纯文本解析，不需要在 panel 上求值，比截面 Pearson 快几个数量级。
-    用于在 submit stage_one 拦截"同结构换参数"的批量变体。
-
-    参数:
-        new_expression: 新因子的 DSL 表达式
-        candidate_entries: [(factor_id, name, expr), ...] 候选库因子
-        production_entries: [(factor_id, name, expr), ...] 正式库因子
-        exclude_factor_id: 排除自身（更新场景）
-
-    返回::
-        {
-            "passed": bool,              # True = 无重复，放行
-            "duplicate_in": str,         # "candidate" / "production" / ""
-            "duplicate_factor_id": str,  # 重复的因子 ID
-            "duplicate_name": str,       # 重复的因子名
-            "fingerprint": str,          # 新因子指纹
-            "reason": str,               # 拦截原因（passed=False 时有值）
-        }
-    """
-    new_fp = structure_fingerprint(new_expression)
-    if not new_fp:
-        return {"passed": True, "duplicate_in": "", "duplicate_factor_id": "",
-                "duplicate_name": "", "fingerprint": "", "reason": ""}
-
-    for source, entries in (("production", production_entries), ("candidate", candidate_entries)):
-        if not entries:
-            continue
-        for fid, name, expr in entries:
-            if fid == exclude_factor_id:
-                continue
-            if not expr:
-                continue
-            old_fp = structure_fingerprint(expr)
-            if old_fp and old_fp == new_fp:
-                return {
-                    "passed": False,
-                    "duplicate_in": source,
-                    "duplicate_factor_id": fid,
-                    "duplicate_name": name,
-                    "fingerprint": new_fp,
-                    "reason": (
-                        f"ast_fingerprint_duplicate: 表达式结构与已有{source}库因子"
-                        f"'{name}'完全相同（指纹={new_fp}）——仅参数/变量不同的同构变体，"
-                        f"不产生新增信息。请换信号结构或换核心变量。"
-                    ),
-                }
-
-    return {"passed": True, "duplicate_in": "", "duplicate_factor_id": "",
-            "duplicate_name": "", "fingerprint": new_fp, "reason": ""}
 
 
 # -----------------------------------------------------------------------------

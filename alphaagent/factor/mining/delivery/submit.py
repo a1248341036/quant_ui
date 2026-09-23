@@ -71,21 +71,42 @@ def _candidate_registry_similarity(
     # 逐日截面 Pearson 相关均值（在 panel 的 MultiIndex 上直接计算，
     # 不依赖 cross_sectional_pearson_mean，因为后者需要 RowIndex 而非 MultiIndex）。
     def _panel_cs_pearson_mean(a: pd.Series, b: pd.Series, *, min_pairs: int = 30) -> float:
+        from alphaagent.factor.metrics import _day_slices
+
         vals: list[float] = []
-        for ts, a_sub in a.groupby(level="datetime", sort=False):
-            b_sub = b.xs(ts, level="datetime")
-            av = a_sub.to_numpy(dtype=np.float64)
-            bv = b_sub.to_numpy(dtype=np.float64)
-            mask = np.isfinite(av) & np.isfinite(bv)
-            if mask.sum() < min_pairs:
-                continue
-            av, bv = av[mask], bv[mask]
-            av = av - av.mean()
-            bv = bv - bv.mean()
-            denom = float(np.sqrt((av * av).sum() * (bv * bv).sum()))
-            if denom <= 0.0:
-                continue
-            vals.append(float((av * bv).sum() / denom))
+        slices = _day_slices(a.index)
+        if slices is not None:
+            bounds, day_vals = slices
+            av_all = a.to_numpy(dtype=np.float64)
+            bv_all = b.to_numpy(dtype=np.float64)
+            for st, en in zip(bounds[:-1].tolist(), bounds[1:].tolist()):
+                av = av_all[st:en]
+                bv = bv_all[st:en]
+                mask = np.isfinite(av) & np.isfinite(bv)
+                if mask.sum() < min_pairs:
+                    continue
+                av, bv = av[mask], bv[mask]
+                av = av - av.mean()
+                bv = bv - bv.mean()
+                denom = float(np.sqrt((av * av).sum() * (bv * bv).sum()))
+                if denom <= 0.0:
+                    continue
+                vals.append(float((av * bv).sum() / denom))
+        else:
+            for ts, a_sub in a.groupby(level="datetime", sort=False):
+                b_sub = b.xs(ts, level="datetime")
+                av = a_sub.to_numpy(dtype=np.float64)
+                bv = b_sub.to_numpy(dtype=np.float64)
+                mask = np.isfinite(av) & np.isfinite(bv)
+                if mask.sum() < min_pairs:
+                    continue
+                av, bv = av[mask], bv[mask]
+                av = av - av.mean()
+                bv = bv - bv.mean()
+                denom = float(np.sqrt((av * av).sum() * (bv * bv).sum()))
+                if denom <= 0.0:
+                    continue
+                vals.append(float((av * bv).sum() / denom))
         if not vals:
             return float("nan")
         return float(np.mean(vals))

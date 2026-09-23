@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
@@ -129,16 +130,14 @@ CASHFLOW_COLUMN_MAP: dict[str, str] = {
 }
 
 
+@dataclass(frozen=True)
 class StatementSpec:
     """一张财报表的拉取规格。"""
 
-    __slots__ = ("name", "api", "vip_api", "column_map")
-
-    def __init__(self, name: str, api: str, vip_api: str, column_map: dict[str, str]) -> None:
-        self.name = name
-        self.api = api
-        self.vip_api = vip_api
-        self.column_map = column_map
+    name: str
+    api: str
+    vip_api: str
+    column_map: dict[str, str]
 
     @property
     def api_fields(self) -> str:
@@ -192,6 +191,57 @@ def _dedupe_fina_raw(df: pd.DataFrame) -> pd.DataFrame:
     return out.groupby(["ts_code", "end_date"], as_index=False).tail(1)
 
 
+def _fetch_period_common(
+    *,
+    vip_api: str,
+    api: str,
+    fields: str,
+    period: str,
+    ts_codes: list[str] | None,
+    sleep_sec: float,
+    verbose: bool,
+    use_vip: bool,
+    dedupe,
+) -> pd.DataFrame:
+    """vip 全市场 / 逐股两分支的公共拉取骨架（fina_indicator 与三大表共用）。"""
+    pro = get_pro()
+
+    if use_vip:
+        if verbose:
+            print(f"  {vip_api} period={period}（全市场）")
+        raw = call_with_retry(
+            getattr(pro, vip_api),
+            period=period,
+            fields=fields,
+            label=f"{vip_api}_{period}",
+        )
+        time.sleep(sleep_sec)
+        return dedupe(raw)
+
+    if not ts_codes:
+        raise ValueError("无 VIP 权限时须指定 ts_codes（--no-vip 且 --universe）")
+
+    chunks: list[pd.DataFrame] = []
+    n = len(ts_codes)
+    for i, code in enumerate(ts_codes):
+        if verbose and (i == 0 or (i + 1) % 50 == 0 or i + 1 == n):
+            print(f"  {api} [{i + 1}/{n}] {code} period={period}")
+        part = call_with_retry(
+            getattr(pro, api),
+            ts_code=code,
+            period=period,
+            fields=fields,
+            label=f"{api}_{code}_{period}",
+        )
+        if part is not None and not part.empty:
+            chunks.append(part)
+        time.sleep(sleep_sec)
+
+    if not chunks:
+        return pd.DataFrame()
+    return dedupe(pd.concat(chunks, ignore_index=True))
+
+
 def fetch_fina_indicator_period(
     period: str,
     *,
@@ -205,46 +255,17 @@ def fetch_fina_indicator_period(
     use_vip=True 时用 ``fina_indicator_vip`` 拉**全市场**（每期 1 次请求，完整落盘）。
     use_vip=False 时按 ts_codes 逐股拉取（须指定股票列表）。
     """
-    period = _normalize_period(period)
-    pro = get_pro()
-
-    if use_vip:
-        if verbose:
-            print(f"  fina_indicator_vip period={period}（全市场）")
-        raw = call_with_retry(
-            pro.fina_indicator_vip,
-            period=period,
-            fields=FINA_INDICATOR_API_FIELDS,
-            label=f"fina_indicator_vip_{period}",
-        )
-        time.sleep(sleep_sec)
-        return _dedupe_fina_raw(raw)
-
-    if not ts_codes:
-        raise ValueError("无 VIP 权限时须指定 ts_codes（--no-vip 且 --universe）")
-
-    chunks: list[pd.DataFrame] = []
-    n = len(ts_codes)
-    for i, code in enumerate(ts_codes):
-        if verbose and (i == 0 or (i + 1) % 50 == 0 or i + 1 == n):
-            print(f"  fina_indicator [{i + 1}/{n}] {code} period={period}")
-        part = call_with_retry(
-            pro.fina_indicator,
-            ts_code=code,
-            period=period,
-            fields=FINA_INDICATOR_API_FIELDS,
-            label=f"fina_indicator_{code}_{period}",
-        )
-        if part is not None and not part.empty:
-            chunks.append(part)
-        time.sleep(sleep_sec)
-
-    if not chunks:
-        return pd.DataFrame()
-    non_empty = [c for c in chunks if not c.empty]
-    if not non_empty:
-        return pd.DataFrame()
-    return _dedupe_fina_raw(pd.concat(non_empty, ignore_index=True))
+    return _fetch_period_common(
+        vip_api="fina_indicator_vip",
+        api="fina_indicator",
+        fields=FINA_INDICATOR_API_FIELDS,
+        period=_normalize_period(period),
+        ts_codes=ts_codes,
+        sleep_sec=sleep_sec,
+        verbose=verbose,
+        use_vip=use_vip,
+        dedupe=_dedupe_fina_raw,
+    )
 
 
 def raw_fina_to_quarterly(raw: pd.DataFrame) -> pd.DataFrame:
@@ -276,44 +297,17 @@ def fetch_statement_period(
     use_vip=True 时用 ``*_vip`` 接口拉**全市场**（每期 1 次请求）。
     use_vip=False 时按 ts_codes 逐股拉取（须指定股票列表）。
     """
-    period = _normalize_period(period)
-    pro = get_pro()
-
-    if use_vip:
-        if verbose:
-            print(f"  {spec.vip_api} period={period}（全市场）")
-        raw = call_with_retry(
-            getattr(pro, spec.vip_api),
-            period=period,
-            fields=spec.api_fields,
-            label=f"{spec.vip_api}_{period}",
-        )
-        time.sleep(sleep_sec)
-        return _dedupe_statement_raw(raw)
-
-    if not ts_codes:
-        raise ValueError("无 VIP 权限时须指定 ts_codes（--no-vip 且 --universe）")
-
-    chunks: list[pd.DataFrame] = []
-    n = len(ts_codes)
-    for i, code in enumerate(ts_codes):
-        if verbose and (i == 0 or (i + 1) % 50 == 0 or i + 1 == n):
-            print(f"  {spec.api} [{i + 1}/{n}] {code} period={period}")
-        part = call_with_retry(
-            getattr(pro, spec.api),
-            ts_code=code,
-            period=period,
-            fields=spec.api_fields,
-            label=f"{spec.api}_{code}_{period}",
-        )
-        if part is not None and not part.empty:
-            chunks.append(part)
-        time.sleep(sleep_sec)
-
-    non_empty = [c for c in chunks if not c.empty]
-    if not non_empty:
-        return pd.DataFrame()
-    return _dedupe_statement_raw(pd.concat(non_empty, ignore_index=True))
+    return _fetch_period_common(
+        vip_api=spec.vip_api,
+        api=spec.api,
+        fields=spec.api_fields,
+        period=_normalize_period(period),
+        ts_codes=ts_codes,
+        sleep_sec=sleep_sec,
+        verbose=verbose,
+        use_vip=use_vip,
+        dedupe=_dedupe_statement_raw,
+    )
 
 
 def _dedupe_statement_raw(df: pd.DataFrame) -> pd.DataFrame:
@@ -527,8 +521,3 @@ def fetch_and_save_periods(
         print(f"季频缓存: {quarterly_path} shape={quarterly_acc.shape}")
         print(f"披露缓存: {disclosure_path} shape={disclosure_acc.shape}")
     return quarterly_acc, disclosure_acc
-
-
-def ensure_fundamental_dir() -> Path:
-    FUNDAMENTAL_DIR.mkdir(parents=True, exist_ok=True)
-    return FUNDAMENTAL_DIR

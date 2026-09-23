@@ -30,6 +30,8 @@ import pandas as pd
 
 from alphaagent.dsl.core.errors import MultiLineFactorEvalError
 from alphaagent.dsl.core.guard import (
+    _DOLLAR_REF_RE,
+    _strip_string_literals,
     find_blocked_columns,
     guard_enabled,
     wrap_lookahead_guard,
@@ -77,19 +79,6 @@ def referenced_column_names(multi_line_expr: str) -> List[str]:
     return out
 
 
-def prune_panel_to_referenced(
-    df: pd.DataFrame,
-    referenced: Optional[Sequence[str]] = None,
-) -> pd.DataFrame:
-    """裁剪面板到引用列（保持原索引/行序）。无引用列时返回原面板。"""
-    if referenced is None:
-        referenced = []
-    avail = [c for c in df.columns if str(c) in referenced]
-    if not avail:
-        return df
-    return df[avail]
-
-
 def _dollar_columns_aux(panel: Optional[pd.DataFrame], tag: str) -> List[str]:
     if panel is None or getattr(panel, "empty", True):
         return []
@@ -99,7 +88,6 @@ def _dollar_columns_aux(panel: Optional[pd.DataFrame], tag: str) -> List[str]:
 
 # ``$name@5m`` 等，捕获频率片段并归一化（跳过字面量后扫描）
 _DOLLAR_AT_REF_RE = re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*@([A-Za-z0-9_]+)\b")
-_DOLLAR_REF_RE = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)(?:@[A-Za-z0-9_]+)?")
 
 
 def collect_aux_intervals_from_expr(multi_line_expr: str) -> List[str]:
@@ -127,12 +115,6 @@ def _column_bindings(df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
 
 _IDENT_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
 _ASSIGN_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$")
-
-
-def _strip_string_literals(s: str) -> str:
-    out = re.sub(r"'[^']*'", "", s)
-    out = re.sub(r'"[^"]*"', "", out)
-    return out
 
 
 def _extract_identifier_refs(rhs: str, known: set) -> List[str]:

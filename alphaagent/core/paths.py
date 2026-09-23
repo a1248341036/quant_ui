@@ -20,6 +20,5 @@ RESEARCH_SPECS_DIR = ARTIFACTS_DIR / "alphaagent" / "research_specs"
 # 因子中台索引（派生物，可由 scripts/backfill_factor_uid.py 全量重建）
 FACTOR_INDEX_PATH = ARTIFACTS_DIR / "alphaagent" / "factor_index.db"
 CONFIGS_DIR = ROOT / "configs"
-FACTOR_REGISTRY_EXAMPLE = CONFIGS_DIR / "factors" / "registry.example.json"
 MLS_FMB_PERCENTILES_PATH = FACTORZOO_DIR / "mls_fmb_percentiles.json"
 MINING_REGISTRY_PATH = FACTORZOO_DIR / "mining_delivered_registry.json"

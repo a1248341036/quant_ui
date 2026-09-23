@@ -18,12 +18,12 @@ _GLOBAL_POOL: WorkerPoolManager | None = None
 _POOL_LOCK = threading.Lock()
 
 
-def get_global_worker_pool(num_workers: int | None = None) -> WorkerPoolManager:
+def get_global_worker_pool() -> WorkerPoolManager:
     """获取全局单例的 WorkerPoolManager。"""
     global _GLOBAL_POOL
     with _POOL_LOCK:
         if _GLOBAL_POOL is None:
-            _GLOBAL_POOL = WorkerPoolManager(num_workers=num_workers)
+            _GLOBAL_POOL = WorkerPoolManager()
         return _GLOBAL_POOL
 
 
@@ -80,34 +80,5 @@ class WorkerPoolClient:
             "include_detail_tables": include_detail_tables,
         }
         task = ComputeTask(task_type="eval_factor", params=params, priority=priority)
-        fut = self.manager.submit_task(task)
-        return fut.result(timeout=timeout)
-
-    def run_engine_gate(
-        self,
-        *,
-        session_key: str,
-        panel_spec: dict[str, Any],
-        multi_line_expr: str,
-        val_start: str,
-        val_end: str,
-        direction: int = 1,
-        policy: dict[str, Any] | None = None,
-        asset_type: str = "stock",
-        priority: int = 1,
-        timeout: float = 300.0,
-    ) -> dict[str, Any]:
-        """同步提交 engine_gate 任务并等待结果。"""
-        params = {
-            "session_key": session_key,
-            "panel_spec": panel_spec,
-            "multi_line_expr": multi_line_expr,
-            "val_start": val_start,
-            "val_end": val_end,
-            "direction": direction,
-            "policy": policy,
-            "asset_type": asset_type,
-        }
-        task = ComputeTask(task_type="engine_gate", params=params, priority=priority)
         fut = self.manager.submit_task(task)
         return fut.result(timeout=timeout)

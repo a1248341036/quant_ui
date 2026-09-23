@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from alphaagent.factor.mining.env_settings import (
-    resolve_max_parallel_eval,
+    parse_max_parallel_eval,
     resolve_turnover_gate_limit,
 )
 from alphaagent.factor.mining.schemas import SessionCreateRequest
@@ -15,7 +15,7 @@ from alphaagent.factor.mining.service import StockEvalService
 from alphaagent.factor.mining.config import MiningConfig
 from alphaagent.factor.mining.console import ConsolePrinter
 from alphaagent.factor.mining.loop import run_trajectory
-from alphaagent.factor.mining.operators import list_operator_names
+from alphaagent.factor.mining.prompt.operators import list_operator_names
 from alphaagent.factor.mining.prompts import build_system_prompt
 from alphaagent.factor.mining.submit import FactorSubmitService, default_factorlib_path
 from alphaagent.factor.mining.tools import FactorEvalTools
@@ -41,7 +41,7 @@ def run_factor_mining(
     repo_root: Path | None = None,
 ) -> dict[str, Any]:
     service = service or StockEvalService(
-        max_parallel_eval=resolve_max_parallel_eval(config.max_parallel_eval),
+        max_parallel_eval=parse_max_parallel_eval(str(config.max_parallel_eval)) if config.max_parallel_eval is not None else parse_max_parallel_eval(),
         turnover_gate_limit=resolve_turnover_gate_limit(config),
     )
     root = repo_root or _repo_root()

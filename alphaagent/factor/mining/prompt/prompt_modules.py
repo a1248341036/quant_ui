@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
@@ -53,7 +53,8 @@ class PromptContext:
     prompt_phase: str = "full"
     # 每轮允许的最大并发工具调用数（与运行时对齐）
     max_tool_calls_per_round: int = 8
-    extra: dict[str, Any] = field(default_factory=dict)
+    # 用户/系统注入的额外指令（extra_instructions 模块消费）
+    extra_instructions: str = ""
 
 
 @dataclass(frozen=True)

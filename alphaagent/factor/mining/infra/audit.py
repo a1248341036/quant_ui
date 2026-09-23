@@ -15,7 +15,7 @@ def canonical_hash(value: Any) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def file_hash(path: Path | str, *, limit_bytes: int | None = None) -> str | None:
+def file_hash(path: Path | str) -> str | None:
     if isinstance(path, str) and "://" in path:
         return None
     path = Path(path)
@@ -23,16 +23,11 @@ def file_hash(path: Path | str, *, limit_bytes: int | None = None) -> str | None
         return None
     digest = hashlib.sha256()
     with path.open("rb") as handle:
-        remaining = limit_bytes
         while True:
-            chunk = handle.read(1024 * 1024 if remaining is None else min(1024 * 1024, remaining))
+            chunk = handle.read(1024 * 1024)
             if not chunk:
                 break
             digest.update(chunk)
-            if remaining is not None:
-                remaining -= len(chunk)
-                if remaining <= 0:
-                    break
     return digest.hexdigest()
 
 

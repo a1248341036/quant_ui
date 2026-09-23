@@ -204,74 +204,31 @@ def _fetch_members_index_weight_at(
 
 
 def _fetch_members_index_weight_monthly(
-
     pro,
-
     index_code: str,
-
     start: str,
-
     end: str,
-
     *,
-
     sleep_sec: float = 0.35,
-
     verbose: bool = False,
-
 ) -> list[str]:
+    """pro.index_weight 按月快照循环（宽区间查询有 ~7000 行上限，会丢历史）。
 
+    复用 index_members.fetch_monthly_snapshots 的月快照循环，仅取成分并集。
     """
+    from alphaagent.data.index_members import fetch_monthly_snapshots
 
-    pro.index_weight 按月快照循环（宽区间查询有 ~7000 行上限，会丢历史）。
-
-    """
-
-    start_ts = pd.Timestamp(start)
-
-    end_ts = pd.Timestamp(end)
-
-    month_starts = pd.date_range(
-
-        start_ts.replace(day=1),
-
-        end_ts.replace(day=1),
-
-        freq="MS",
-
+    snapshots = fetch_monthly_snapshots(
+        pro,
+        index_code,
+        start,
+        end,
+        sleep_sec=sleep_sec,
+        verbose=verbose,
     )
-
-
-
-    seen: set[str] = set()
-
-    for i, m in enumerate(month_starts):
-
-        snap = min(m + pd.offsets.MonthEnd(0), end_ts)
-
-        if snap < start_ts:
-
-            continue
-
-        d = snap.strftime("%Y%m%d")
-
-        df = pro.index_weight(index_code=index_code, start_date=d, end_date=d)
-
-        if df is not None and not df.empty:
-
-            seen |= set(df["con_code"].dropna().astype(str))
-
-        if verbose and (i + 1) % 12 == 0:
-
-            print(f"    index_weight 进度 {i + 1}/{len(month_starts)} 月, 累计 {len(seen)} 只")
-
-        if sleep_sec > 0:
-
-            time.sleep(sleep_sec)
-
-
-
-    return sorted(seen)
+    if snapshots is None or snapshots.empty:
+        return []
+    return sorted(snapshots["instrument"].dropna().astype(str).unique())
 
 
 

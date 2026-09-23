@@ -115,9 +115,6 @@ from alphaagent.factor.mining.memory.constants import (
 # train 段 |IC| 高于此值且属财务/慢标签口径时提示 PIT 伪影嫌疑（实测
 # fundamental 档 train IC 0.06~0.08 的因子几乎全部 val 阵亡——阶梯函数语义陷阱）
 _PIT_SUSPICION_IC = 0.045
-# 建议红线（prompt rule 2 同步配套）与 stage_one 换手硬门槛（delivery_criteria
-# 单一真源）——硬门槛动态读取，避免口径漂移；建议红线固定 0.4，保持保守提前量。
-_TURNOVER_ADVISORY_REDLINE = 0.4
 
 
 def _turnover_gate_limit_of(tools: Any) -> float | None:

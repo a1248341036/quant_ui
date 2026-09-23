@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """模块 07 · operator_catalog：可用算子清单（机制分组 + 高频/聚焦分层瘦身）。"""
 
+from functools import lru_cache
+
 from alphaagent.dsl.catalog import operator_catalog_markdown
 
 NAME = "operator_catalog"
@@ -16,6 +18,20 @@ _FACET_FAMILY_PREFIXES: dict[str, tuple[str, ...]] = {
     "价量面": ("PRICE_", "WICK_", "KLINE_"),
     "量能面": ("VOLUME_", "MUTUAL_"),
 }
+
+
+@lru_cache(maxsize=8)
+def _catalog_markdown_cached(
+    focused_prefixes: tuple[str, ...],
+    excluded_prefixes: tuple[str, ...],
+    excluded_names: tuple[str, ...],
+) -> str:
+    return operator_catalog_markdown(
+        tier="full",
+        focused_prefixes=focused_prefixes,
+        excluded_prefixes=excluded_prefixes,
+        excluded_names=excluded_names,
+    )
 
 
 def _focused_prefixes(focus_facets) -> tuple[str, ...]:
@@ -59,11 +75,10 @@ def render(ctx) -> str:  # noqa: ANN001
 
     # 全量注入算子目录（全阶段带完整签名与说明，彻底消灭冷门算子认知盲区）
     catalog = (
-        operator_catalog_markdown(
-            tier="full",
-            focused_prefixes=focused,
-            excluded_prefixes=_excluded_prefixes(getattr(ctx, "focus_facets", ())),
-            excluded_names=blacklisted,
+        _catalog_markdown_cached(
+            focused,
+            _excluded_prefixes(getattr(ctx, "focus_facets", ())),
+            blacklisted,
         )
         if ctx.include_operator_catalog
         else "（本次未注入算子清单）"
