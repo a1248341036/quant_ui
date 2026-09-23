@@ -190,10 +190,14 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
         "enable_advisory_cache": True,      # advisory 查询 LRU 缓存（False = 每次评估查库）
         # v3-lite：AlphaMemo 校准 + 硬提醒通道
         # 重复探索硬闸（2026-09-23 从 False 上调为 True）：963 次评估 46% 重复（320 次死路重复
-        # 全提醒不拦，LLM 可无视）。仅对 duplicate_known_dead_end（同结构指纹负证据累计 ≥2 次
-        # 且全历史无正向）硬拦；duplicate_prior_result 永不硬拦（exempt_from_block=True）只提醒。
+        # 全提醒不拦，LLM 可无视）。仅对 duplicate_known_dead_end（同结构指纹负证据累计
+        # ≥dead_end_min_attempts 次且全历史无正向）硬拦；duplicate_prior_result 永不硬拦
+        # （exempt_from_block=True）只提醒。
         # env ALPHA_MEMORY_HARD_BLOCK_DUPLICATES=0 可临时关闭。
         "hard_block_duplicates": True,
+        # 指纹死路判定阈值：同结构负证据条目数或累计尝试次数 ≥ 该值（且全历史无正向）判死路。
+        # 2026-09-23 从硬编码 2 收口为配置（2 次偏敏感，默认上调为 3）。
+        "dead_end_min_attempts": 3,
         # OpenViking 冷路径长期记忆（2026-09-23 新增）：run 启动语义检索注入 system prompt、
         # run 结束写回摘要到 viking://resources/alphaagent/（代码硬编码 scope 隔离）。
         # 失败静默降级为纯 SQLite，不影响挖掘。
@@ -401,6 +405,7 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
         memory[_key] = _require_bool(memory.get(_key), f"memory_policy.{_key}")
     # v3-lite
     memory["hard_block_duplicates"] = _require_bool(memory.get("hard_block_duplicates"), "memory_policy.hard_block_duplicates")
+    memory["dead_end_min_attempts"] = int(_bounded_number(memory.get("dead_end_min_attempts"), "memory_policy.dead_end_min_attempts", 1, 20))
     memory["max_inject_chars"] = int(_bounded_number(memory.get("max_inject_chars"), "memory_policy.max_inject_chars", 0, 20000))
     memory["apv_tau_c"] = float(_bounded_number(memory.get("apv_tau_c"), "memory_policy.apv_tau_c", 0, 1))
     memory["apv_tau_v"] = float(_bounded_number(memory.get("apv_tau_v"), "memory_policy.apv_tau_v", 0, 1))

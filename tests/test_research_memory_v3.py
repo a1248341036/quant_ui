@@ -288,20 +288,30 @@ def test_same_bucket_baseline_uses_history(tmp_path):
 def test_advisory_duplicate_known_dead_end(tmp_path):
     store = ResearchMemoryStore(tmp_path / "m.db")
     expr = "TS_MEAN($adj_close, 5) + 0.5"
-    for i in range(2):
+    for i in range(3):
         store.record_tool_result(run_id=f"r{i}", row=_eval_row("eval_on_train_set", expr, f"weak_{i}", ic=0.005))
     advisory = store.advisory_for(expr)
     assert advisory is not None
     kinds = [a["kind"] for a in advisory["advisories"]]
     assert "duplicate_known_dead_end" in kinds
-    # attempts<2 不提醒
+    # 默认阈值 3：attempts<3 不提醒
     store2 = ResearchMemoryStore(tmp_path / "m2.db")
     store2.record_tool_result(run_id="r0", row=_eval_row("eval_on_train_set", expr, "weak_0", ic=0.005))
     assert store2.advisory_for(expr) is None
+    store3 = ResearchMemoryStore(tmp_path / "m3.db")
+    for i in range(2):
+        store3.record_tool_result(run_id=f"r{i}", row=_eval_row("eval_on_train_set", expr, f"weak_{i}", ic=0.005))
+    assert store3.advisory_for(expr) is None
+    # 阈值可配：dead_end_min_attempts=2 时 2 次即判死路
+    store4 = ResearchMemoryStore(tmp_path / "m4.db", dead_end_min_attempts=2)
+    for i in range(2):
+        store4.record_tool_result(run_id=f"r{i}", row=_eval_row("eval_on_train_set", expr, f"weak_{i}", ic=0.005))
+    kinds4 = [a["kind"] for a in store4.advisory_for(expr)["advisories"]]
+    assert "duplicate_known_dead_end" in kinds4
 
 
 def test_advisory_dead_end_aggregates_window_variants(tmp_path):
-    """同骨架换窗口的两个 weak 变体（各自 attempts=1）也聚合为指纹死路。"""
+    """同骨架换窗口的三个 weak 变体（各自 attempts=1）也聚合为指纹死路。"""
     store = ResearchMemoryStore(tmp_path / "m.db")
     store.record_tool_result(
         run_id="r1", row=_eval_row("eval_on_train_set", "TS_MEAN($adj_close, 5) + 0.5", "weak_a", ic=0.005)
@@ -309,12 +319,15 @@ def test_advisory_dead_end_aggregates_window_variants(tmp_path):
     store.record_tool_result(
         run_id="r2", row=_eval_row("eval_on_train_set", "TS_MEAN($adj_close, 9) + 0.5", "weak_b", ic=0.006)
     )
+    store.record_tool_result(
+        run_id="r3", row=_eval_row("eval_on_train_set", "TS_MEAN($adj_close, 13) + 0.5", "weak_c", ic=0.004)
+    )
     advisory = store.advisory_for("TS_MEAN($adj_close, 20) + 0.5")
     assert advisory is not None
     kinds = [a["kind"] for a in advisory["advisories"]]
     assert "duplicate_known_dead_end" in kinds
     item = next(a for a in advisory["advisories"] if a["kind"] == "duplicate_known_dead_end")
-    assert "2 个变体" in item["message"] and "2 次" in item["message"]
+    assert "3 个变体" in item["message"] and "3 次" in item["message"]
 
 
 def test_advisory_duplicate_prior_result(tmp_path):
@@ -385,9 +398,9 @@ def test_advisory_promising_rescued_from_hard_block(tmp_path):
         blocked = [a for a in adv2.get("advisories", []) if a.get("kind") == "duplicate_known_dead_end"]
         assert not blocked, "有正证据的指纹即使 hard_block=true 也不得判死路拦截"
 
-    # 对照：同一指纹只有失败变体、无任何正证据 → 仍判死路
+    # 对照：同一指纹只有失败变体、无任何正证据 → 仍判死路（默认阈值 3）
     store4 = ResearchMemoryStore(tmp_path / "m4.db", hard_block_duplicates=True)
-    for i in range(2):
+    for i in range(3):
         store4.record_tool_result(run_id=f"r{i}", row=_eval_row("eval_on_train_set", "TS_MEAN($adj_close, 15) + 0.2", f"dead_{i}", ic=0.005))
     adv4 = store4.advisory_for("TS_MEAN($adj_close, 20) + 0.4")
     dead4 = [a for a in adv4.get("advisories", []) if a.get("kind") == "duplicate_known_dead_end"]
@@ -423,7 +436,7 @@ def test_tool_dispatch_memory_gate_block(tmp_path):
         hard_block_duplicates = True
         enable_advisory_cache = True
 
-        def advisory_for(self, expr, edit_note=None, enable_advisory_cache=True):
+        def advisory_for(self, expr, edit_note=None, current_run_id=None, enable_advisory_cache=True):
             return {"advisories": [{"kind": "duplicate_known_dead_end", "message": "死路"}], "blocked": False}
 
     tools = FactorEvalTools(service=None, session_id="s", memory_store=_FakeStore())

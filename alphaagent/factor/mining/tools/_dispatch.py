@@ -27,7 +27,13 @@ from ._schemas import (
     _SUBMIT_PARAMETERS,
     _VAL_PARAMETERS,
 )
-from ._prefilter import _is_naive_signal_addition, _signal_fingerprint, _ast_signal_fingerprint, _homogenization_block
+from ._prefilter import (
+    _is_naive_signal_addition,
+    _signal_fingerprint,
+    _ast_signal_fingerprint,
+    _outer_transform_signature,
+    _homogenization_block,
+)
 
 
 _PREDICTION_SOFT_LIMIT = 3
@@ -350,6 +356,7 @@ class _DispatchMixin:
                 "has_smoothing": bool(all_smoothing_ops(expr)),
                 "signal_fingerprint": _signal_fingerprint(expr),
                 "signal_fingerprint_ast": _ast_signal_fingerprint(expr),
+                "outer_transform_signature": _outer_transform_signature(expr),
             }
             recent = getattr(self, "_recent_evals", None)
             if recent is None:
@@ -600,6 +607,7 @@ class _DispatchMixin:
                 max_consecutive=int(homo_policy.get("max_consecutive", 3)),
                 window_size=int(homo_policy.get("window_size", 10)),
                 enabled=bool(homo_policy.get("enabled", True)),
+                max_outer_variants=int(homo_policy.get("max_outer_variants", 6)),
             )
             if homo_block is not None:
                 try:
@@ -665,21 +673,25 @@ class _DispatchMixin:
                          "（GATED_SIGNAL / CS_RESIDUALIZE / DIVERGENCE_RANK / CS_GROUP_RANK / TS_CORR 等）。",
                 "error_type": "NaiveSignalAdditionBlock",
             }
-        # 同质化平滑变体动态熔断（eval_on_train_set / eval_on_val_set 共用）
-        homo_policy = getattr(self, "homogenization_policy", None) or {}
-        homo_block = _homogenization_block(
-            expr,
-            getattr(self, "_recent_evals", None),
-            max_consecutive=int(homo_policy.get("max_consecutive", 3)),
-            window_size=int(homo_policy.get("window_size", 10)),
-            enabled=bool(homo_policy.get("enabled", True)),
-        )
-        if homo_block is not None:
-            try:
-                log_step("homogenization.block", f"signal_fingerprint_ast={_ast_signal_fingerprint(expr)} tool={name}")
-            except Exception:
-                pass
-            return homo_block
+        # 同质化平滑变体动态熔断（eval_on_train_set / eval_on_val_set 共用）。
+        # val 验证不参与熔断：val 是同一因子的样本外验证，不是新变体探索，
+        # 不应被"同根变体过多"误伤（2026-09-23 实测 wma4_sz 的 val 被拦）。
+        if name != "eval_on_val_set":
+            homo_policy = getattr(self, "homogenization_policy", None) or {}
+            homo_block = _homogenization_block(
+                expr,
+                getattr(self, "_recent_evals", None),
+                max_consecutive=int(homo_policy.get("max_consecutive", 3)),
+                window_size=int(homo_policy.get("window_size", 10)),
+                enabled=bool(homo_policy.get("enabled", True)),
+                max_outer_variants=int(homo_policy.get("max_outer_variants", 6)),
+            )
+            if homo_block is not None:
+                try:
+                    log_step("homogenization.block", f"signal_fingerprint_ast={_ast_signal_fingerprint(expr)} tool={name}")
+                except Exception:
+                    pass
+                return homo_block
 
         factor_name = arguments.get("factor_name") or "expr"
         include_detail = bool(arguments.get("include_detail_tables", False))
@@ -793,6 +805,7 @@ class _DispatchMixin:
             max_consecutive=int(homo_policy.get("max_consecutive", 3)),
             window_size=int(homo_policy.get("window_size", 10)),
             enabled=bool(homo_policy.get("enabled", True)),
+            max_outer_variants=int(homo_policy.get("max_outer_variants", 6)),
         )
         if homo_block is not None:
             try:

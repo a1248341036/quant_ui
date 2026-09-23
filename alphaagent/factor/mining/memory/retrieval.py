@@ -31,7 +31,7 @@ _SHELL_OPS = frozenset({
     "LOG", "CS_RESIDUALIZE", "CS_WINSORIZE", "CS_ZSCORE", "CS_DEMEAN",
     "CS_NEUTRALIZE", "CS_RANK", "RANK", "NEG", "ABS", "SIGN",
     "WMA", "EMA", "TS_MEAN", "SMA", "TS_MEDIAN", "TS_DECAY_LINEAR",
-    "CS_BUCKET", "CS_GROUP_RANK",
+    "CS_BUCKET", "CS_GROUP_RANK", "SIGNAL_BLEND",
 })
 
 # 冷门算子清单（与 strategy_tracks.py D 轨 + market_mechanisms.py §4b 对齐）：
