@@ -79,6 +79,8 @@ class OVStore:
             abstract = str(h.get("abstract") or "")
             if not abstract:
                 continue
+            if len(abstract) > 220:  # 单条上限，防长文档撑爆注入预算
+                abstract = abstract[:220] + "…"
             block = f"- **{self._short_uri(uri)}**：{abstract}"
             if used + len(block) > budget:
                 break
@@ -96,6 +98,9 @@ class OVStore:
                     continue
                 uri = str(item.get("uri") or "")
                 if not uri.startswith(SCOPE):  # 防御：只接受 scope 内命中
+                    continue
+                # 排除隐藏文件（OpenViking 自动生成的 .overview.md 等目录概览，非真实记忆）
+                if "/." in uri or uri.rstrip("/").rsplit("/", 1)[-1].startswith("."):
                     continue
                 hits.append(item)
         hits.sort(key=lambda h: -float(h.get("score") or 0.0))
