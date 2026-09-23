@@ -13,6 +13,7 @@ from cnequity.adapters.eastmoney.clist import fetch_clist_pages
 from cnequity.adapters.eastmoney.common import _to_float, _to_int
 from cnequity.adapters.eastmoney.em_auth import EastMoneyClient
 from cnequity.domain.symbols import format_symbol, infer_exchange_from_code, is_all_a_symbol
+from cnequity.external.tushare_fetch import _fetch_with_retry, _get_pro
 
 logger = logging.getLogger(__name__)
 
@@ -182,13 +183,75 @@ def _fetch_board_rows(client: EastMoneyClient, fs: str, board_type: str) -> list
     return rows
 
 
+def _fetch_sector_fund_flow_tushare(
+    trade_date: date, *, config
+) -> pl.DataFrame:
+    """Fallback: board fund flow via Tushare ``moneyflow_ind_dc``.
+
+    Used when push2 clist (the primary path) is WAF-blocked. Tushare is a fully
+    independent source, so the fallback survives EastMoney egress blocks.
+
+    ``moneyflow_ind_dc`` returns EastMoney board flows with ``ts_code`` in
+    ``BK0420.DC`` form — the same board code family as the primary path's
+    ``f12`` (``BK0420``), so ``sector_code`` stays stable across sources.
+    ``content_type`` distinguishes 概念/行业/地域; only the first two map to
+    the dataset's concept/industry board types. Tushare has no board turnover
+    field, so ``turnover_pct`` is left null on this path.
+    """
+    pro = _get_pro(config)
+    raw = _fetch_with_retry(
+        pro,
+        "moneyflow_ind_dc",
+        interval=config.external_tushare_wide_interval,
+        trade_date=trade_date.strftime("%Y%m%d"),
+    )
+    if raw.is_empty():
+        return pl.DataFrame()
+    type_map = {"概念": "concept", "行业": "industry"}
+    rows: list[dict] = []
+    for row in raw.iter_rows(named=True):
+        btype = type_map.get(str(row.get("content_type") or "").strip())
+        if btype is None:
+            continue
+        ts_code = str(row.get("ts_code") or "").strip()
+        name = str(row.get("name") or "").strip()
+        if not ts_code or not name:
+            continue
+        # "BK0420.DC" -> "BK0420" (drop the .DC suffix to match primary f12).
+        sector_code = ts_code.split(".")[0]
+        rows.append(
+            {
+                "sector_code": sector_code,
+                "sector_name": name,
+                "board_type": btype,
+                "trade_date": trade_date,
+                "main_net_inflow": _to_float(row.get("net_amount")),
+                "change_pct": _to_float(row.get("pct_change")),
+                "turnover_pct": None,
+                "source": "tushare",
+            }
+        )
+    if not rows:
+        return pl.DataFrame()
+    return pl.DataFrame(rows).unique(subset=["sector_code", "trade_date"], keep="last")
+
+
 def fetch_sector_fund_flow(trade_date: date, *, config=None) -> pl.DataFrame:
     rows: list[dict] = []
     client_kwargs = {"config": config} if config is not None else {}
     with EastMoneyClient(**client_kwargs) as client:
-        boards = _fetch_board_rows(client, _CONCEPT_FS, "concept") + _fetch_board_rows(
-            client, _INDUSTRY_FS, "industry"
-        )
+        try:
+            boards = _fetch_board_rows(client, _CONCEPT_FS, "concept") + _fetch_board_rows(
+                client, _INDUSTRY_FS, "industry"
+            )
+        except Exception as exc:  # noqa: BLE001 — push2 clist WAF block
+            logger.warning(
+                "sector_fund_flow: push2 clist failed (%s); falling back to tushare moneyflow_ind_dc",
+                exc,
+            )
+            if config is None:
+                raise
+            return _fetch_sector_fund_flow_tushare(trade_date, config=config)
         for b in boards:
             item = b["item"]
             rows.append(
