@@ -43,14 +43,12 @@ def _curated_root() -> Path:
     if _curated_root_cache is not None:
         return _curated_root_cache
     try:
-        from cnequity.config import load_config
+        from alphaagent.data.adapters.plugins._pitlib import load_cne_config
 
-        old = Path.cwd()
-        try:
-            os.chdir(_CNE_ROOT)
-            cfg = load_config(_CNE_CONFIG)
-        finally:
-            os.chdir(old)
+        cfg = load_cne_config(
+            default_root=_CNE_ROOT,
+            default_config=_CNE_CONFIG,
+        )
         root = Path(cfg.curated_root)
         if root.is_dir():
             _curated_root_cache = root

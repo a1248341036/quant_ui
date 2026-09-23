@@ -9,8 +9,8 @@ SEP_BEFORE = "\n\n"
 
 
 def enabled(ctx) -> bool:  # noqa: ANN001
-    return bool(ctx.extra.get("extra_instructions", "").strip())
+    return bool(getattr(ctx, "extra_instructions", "").strip())
 
 
 def render(ctx) -> str:  # noqa: ANN001
-    return ctx.extra.get("extra_instructions", "").strip()
+    return getattr(ctx, "extra_instructions", "").strip()

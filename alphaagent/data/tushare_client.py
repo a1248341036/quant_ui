@@ -52,24 +52,6 @@ _config: dict[str, float | int] = {
 }
 
 
-def configure(
-    *,
-    max_retries: int | None = None,
-    timeout: int | None = None,
-    retry_base_delay: float | None = None,
-    retry_max_delay: float | None = None,
-) -> None:
-    """覆盖 Tushare 重试 / 超时配置（供 CLI 或脚本调用）。"""
-    if max_retries is not None:
-        _config["max_retries"] = max_retries
-    if timeout is not None:
-        _config["timeout"] = timeout
-    if retry_base_delay is not None:
-        _config["retry_base_delay"] = retry_base_delay
-    if retry_max_delay is not None:
-        _config["retry_max_delay"] = retry_max_delay
-
-
 def _read_token() -> str:
     """从 .env 或环境变量读取 token。"""
     load_dotenv(ENV_FILE)

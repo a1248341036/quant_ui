@@ -96,8 +96,10 @@ def render(ctx) -> str:  # noqa: ANN001
     # 换手硬门按调仓频率分档（唯一真源见 DeliveryCriteria.turnover_gate_limit），
     # 与 delivery_checker 同口径——固定 0.5 会让 weekly 档 0.65 对模型不可见
     max_turnover = crit.turnover_gate_limit
-    # diagnostics 诊断预警线（非交付硬门），与 diagnostics._REDLINE 对齐
-    diag_turnover = 0.40
+    # diagnostics 诊断预警线（非交付硬门），与 diagnostics.TurnoverDiagnostic._REDLINE 同源
+    from alphaagent.factor.mining.diagnostics import TurnoverDiagnostic
+
+    diag_turnover = str(TurnoverDiagnostic._REDLINE)
     text = RAW.replace("{max_turnover}", str(max_turnover))
     text = text.replace("{diag_turnover}", str(diag_turnover))
     return text

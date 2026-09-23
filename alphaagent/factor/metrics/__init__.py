@@ -129,7 +129,6 @@ from .decile import (  # noqa: E402
     _cross_section_decile_mean_labels as _cs_decile_raw,
     _compute_daily_decile_mean_labels as _compute_dml_raw,
     _iter_daily_decile_mean_labels as _iter_dml_raw,
-    daily_quantile_group_returns as _dqgr_raw,
     _round_label_mean,
 )
 from .ic import (  # noqa: E402
@@ -224,13 +223,6 @@ def _iter_daily_decile_mean_labels(factor, label, *, time_level="datetime",
                         _day_slices=_DSLICE(), _fast_equal_freq_codes=_FCODE())
 
 
-def daily_quantile_group_returns(factor, label, *, time_level="datetime",
-                                  n_groups=10, min_stocks=30):
-    return _dqgr_raw(factor, label, time_level=time_level, n_groups=n_groups,
-                    min_stocks=min_stocks, _day_slices=_DSLICE(),
-                    _fast_equal_freq_codes=_FCODE())
-
-
 def daily_decile_monotonicity_series(factor, label, *, time_level="datetime",
                                      n_deciles=10, min_stocks=30,
                                      min_deciles_for_rho=3, decile_means=None):
@@ -300,7 +292,6 @@ __all__ = [
     "_cross_section_decile_mean_labels",
     "_compute_daily_decile_mean_labels",
     "_iter_daily_decile_mean_labels",
-    "daily_quantile_group_returns",
     "_round_label_mean",
     # mls
     "newey_west_mean_tstat",

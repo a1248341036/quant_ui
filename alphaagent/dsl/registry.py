@@ -5,10 +5,9 @@ import importlib
 import importlib.util
 import os
 import re
-from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Callable, Iterator, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 _BUILTIN_MODULE = "alphaagent.dsl.core.operators"
 _OPERATOR_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
@@ -16,46 +15,6 @@ _OPERATOR_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
 class OperatorConflictError(ValueError):
     """扩展算子与内置或其他扩展同名。"""
-
-
-@dataclass(frozen=True)
-class OperatorMeta:
-    name: str
-    module: str
-    default_column: str = "close"
-    test_param: int = 20
-
-
-_REGISTRY: dict[str, OperatorMeta] = {}
-
-
-def register_operator(
-    name: str | None = None,
-    *,
-    default_column: str = "close",
-    test_param: int = 20,
-) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-    """装饰器：登记扩展算子元数据（供测试/文档发现）。"""
-
-    def deco(fn: Callable[..., Any]) -> Callable[..., Any]:
-        op_name = name or fn.__name__
-        if not _OPERATOR_NAME_RE.match(op_name):
-            raise ValueError(f"算子名须为大写下划线风格: {op_name!r}")
-        _REGISTRY[op_name] = OperatorMeta(
-            name=op_name,
-            module=fn.__module__,
-            default_column=default_column,
-            test_param=test_param,
-        )
-        return fn
-
-    return deco
-
-
-def iter_registered_operators(*, module: str | None = None) -> Iterator[OperatorMeta]:
-    for meta in _REGISTRY.values():
-        if module is None or meta.module == module:
-            yield meta
 
 
 def is_operator_name(name: str) -> bool:

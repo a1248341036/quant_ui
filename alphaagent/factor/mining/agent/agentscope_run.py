@@ -24,7 +24,7 @@ from agentscope.workspace import LocalWorkspace
 
 from alphaagent.factor.mining.audit import build_manifest, canonical_hash
 from alphaagent.factor.mining.env_settings import (
-    resolve_max_parallel_eval,
+    parse_max_parallel_eval,
     resolve_turnover_gate_limit,
 )
 from alphaagent.factor.mining.infra.jsonutil import json_safe
@@ -72,7 +72,7 @@ from alphaagent.factor.mining.infra.usage_capture import UsageBridge
 from alphaagent.factor.mining.config import MiningConfig
 from alphaagent.factor.mining.console import ConsolePrinter, ensure_utf8_stream
 from alphaagent.factor.mining.agent.loop import NUDGE_MSG, submit_record
-from alphaagent.factor.mining.operators import list_operator_names
+from alphaagent.factor.mining.prompt.operators import list_operator_names
 from alphaagent.factor.mining.prompts import build_system_prompt
 from alphaagent.factor.mining.submit import FactorSubmitService, default_factorlib_path
 from alphaagent.factor.mining.tools import FactorEvalTools
@@ -276,7 +276,7 @@ async def run_factor_mining_agentscope(
 ) -> dict[str, Any]:
     """AgentScope 版挖掘入口：与 run_factor_mining 配置一致，CLI 流式输出。"""
     service = service or StockEvalService(
-        max_parallel_eval=resolve_max_parallel_eval(config.max_parallel_eval),
+        max_parallel_eval=parse_max_parallel_eval(str(config.max_parallel_eval)) if config.max_parallel_eval is not None else parse_max_parallel_eval(),
         profiles=resolve_profiles(config.research_spec),
         turnover_gate_limit=resolve_turnover_gate_limit(config),
     )

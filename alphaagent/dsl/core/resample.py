@@ -194,69 +194,6 @@ def build_timeframe_panel(
     return grouped
 
 
-def build_60m_panel(
-    panel: pd.DataFrame,
-    *,
-    columns: Optional[Iterable[str]] = None,
-    base_interval: str = "1m",
-    strict_complete_bars: bool = False,
-) -> pd.DataFrame:
-    """把**主条行情**面板聚合为 60m 面板（按自然整点切桶）。
-
-    ``panel`` 的 bar 可以来自 1m、5m 等与数据集一致的任一格律；`datetime` 仍按根 bar
-    起点对齐。聚合规则见 ``build_timeframe_panel``（OHLCV 等按桶 first/max/min/last/sum）。
-
-    参数 ``base_interval`` 须与 ``panel`` 实际根周期一致。它**仅**在
-    ``strict_complete_bars=True`` 时参与「每桶是否凑满预期根数」的过滤；**当前默认**
-    ``strict_complete_bars=False`` 时，无论写成 ``1m`` 还是 ``5m``，聚合路径都只对行做
-    ``floor`` 到 60m 桶再 ``groupby``，**不因写错 base_interval 而改变数值**。
-
-    若主数据是 5m 而不是 1m，60m K 线是由 5m bar 聚出来的；与从底层 1m 再聚 60m 相比，
-    高低价等在理论上可能更粗（缺分钟内极值）。本仓库评估管线里应对 ``base_interval`` 与
-    数据集的 ``bar_interval`` 保持一致，以便日后若开启「整桶才保留」时语义正确。"""
-    return build_timeframe_panel(
-        panel,
-        target_interval="60m",
-        base_interval=base_interval,
-        columns=columns,
-        strict_complete_bars=strict_complete_bars,
-    )
-
-
-def resample_universe_long(
-    df: pd.DataFrame,
-    *,
-    target_interval: str,
-    base_interval: str = "1m",
-    strict_complete_bars: bool = False,
-    symbol_col: str = "dominant_id",
-) -> pd.DataFrame:
-    """把长表行情聚合到更粗粒度。
-
-    返回列仍为长表风格：至少包含 ``datetime`` 与 ``dominant_id``，便于直接写 parquet / sqlite。
-    """
-    if df is None or df.empty:
-        return pd.DataFrame(columns=["datetime", symbol_col])
-    if "datetime" not in df.columns:
-        raise ValueError("行情长表需含 datetime 列")
-    if symbol_col not in df.columns:
-        raise ValueError(f"行情长表需含 {symbol_col} 列")
-
-    frame = df.copy()
-    frame["instrument"] = frame[symbol_col].astype(str)
-    idx_cols = ["datetime", "instrument"]
-    feature_cols = [c for c in frame.columns if c not in idx_cols and c != symbol_col]
-    panel = frame.set_index(idx_cols)[feature_cols].sort_index()
-    out = build_timeframe_panel(
-        panel,
-        target_interval=target_interval,
-        base_interval=base_interval,
-        strict_complete_bars=strict_complete_bars,
-    )
-    long = out.reset_index().rename(columns={"instrument": symbol_col})
-    return long
-
-
 def broadcast_timeframe_to_main_freq(
     values: pd.DataFrame,
     target_index: pd.MultiIndex,
@@ -327,18 +264,7 @@ def broadcast_timeframe_to_main_freq(
     return out
 
 
-def broadcast_60m_to_main_freq(
-    values_60m: pd.DataFrame,
-    target_index: pd.MultiIndex,
-) -> pd.DataFrame:
-    """兼容旧名：等价于 ``broadcast_timeframe_to_main_freq(..., target_interval=\"60m\")``。"""
-    return broadcast_timeframe_to_main_freq(values_60m, target_index, "60m")
-
-
 __all__ = [
-    "broadcast_60m_to_main_freq",
     "broadcast_timeframe_to_main_freq",
-    "build_60m_panel",
     "build_timeframe_panel",
-    "resample_universe_long",
 ]

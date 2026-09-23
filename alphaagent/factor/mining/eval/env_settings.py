@@ -24,13 +24,6 @@ def parse_max_parallel_eval(raw: str | None = None) -> int:
     return value
 
 
-def resolve_max_parallel_eval(override: int | None = None) -> int:
-    """MiningConfig 显式值优先，否则读环境变量。"""
-    if override is not None:
-        return parse_max_parallel_eval(str(override))
-    return parse_max_parallel_eval()
-
-
 def resolve_turnover_gate_limit(config: object) -> float:
     """从 run 的 research_spec 取按 freq 分档的换手硬门（注入 eval 预筛层）。
 
