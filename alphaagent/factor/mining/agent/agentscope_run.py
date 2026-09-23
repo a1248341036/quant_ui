@@ -362,6 +362,7 @@ async def run_factor_mining_agentscope(
             apv_tau_v=float(memory_policy.get("apv_tau_v") or APV_TAU_V_DEFAULT),
             max_inject_chars=int(memory_policy.get("max_inject_chars") or 2400),
             hard_block_duplicates=bool(memory_policy.get("hard_block_duplicates") or False),
+            dead_end_min_attempts=int(memory_policy.get("dead_end_min_attempts") or 3),
             edit_prior_hard_conf=float(memory_policy.get("edit_prior_hard_conf") or EDIT_PRIOR_HARD_CONF_DEFAULT),
             edit_prior_recommend_conf=float(memory_policy.get("edit_prior_recommend_conf") or EDIT_PRIOR_RECOMMEND_CONF_DEFAULT),
             edit_prior_veto_conf=float(memory_policy.get("edit_prior_veto_conf") or EDIT_PRIOR_VETO_CONF_DEFAULT),
