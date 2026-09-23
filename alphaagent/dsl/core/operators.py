@@ -2115,6 +2115,11 @@ def RANK(df: pd.DataFrame) -> pd.DataFrame:
     return _out_frame(out.astype(np.float32), df)
 
 
+# CS_RANK 是 RANK 的截面语义别名：ast.py SMOOTHING_OPS / _prefilter 指纹 /
+# 记忆检索算子列表均引用该名，此前求值器无实现导致模型写出即 NameError。
+CS_RANK = RANK
+
+
 def CS_ZSCORE(df: pd.DataFrame, ddof: int = 1) -> pd.DataFrame:
     """截面标准化：``(x - mean) / std``（按 datetime 分组）。
 
