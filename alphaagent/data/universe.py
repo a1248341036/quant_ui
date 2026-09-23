@@ -566,21 +566,6 @@ def apply_is_st(df: pd.DataFrame, st_table: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-
-
-
-def mark_not_st(names: pd.Series) -> pd.Series:
-
-    """根据股票名称标记 not_st（1=非ST，0=ST）。仅作兼容/测试，生产请用 apply_is_st。"""
-
-    is_st = names.str.contains(r"ST", case=False, na=False)
-
-    return (~is_st).astype("int8")
-
-
-
-
-
 def filter_universe(df: pd.DataFrame, *, universe_mask: bool = True) -> pd.DataFrame:
 
     """过滤可交易、非 ST 样本（优先 is_st 日度标记）。"""

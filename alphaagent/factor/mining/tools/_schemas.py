@@ -38,7 +38,8 @@ _INTERACTION_PARAMETER: dict[str, Any] = {
 _PREDICTION_PARAMETER: dict[str, Any] = {
     "type": "object",
     "description": (
-        "评估前的可证伪预测（必填）：预期十分位形态、哪一端最强、IC 符号。"
+        "评估前的可证伪预测：预期十分位形态、哪一端最强、IC 符号。"
+        "train 评估必填；val 评估可选（传入时同样对账注入 prediction_check）。"
         "评估结果会自动对账注入 prediction_check；预期被证伪 = 机制错误，"
         "不是参数问题——被证伪的方向应放弃而不是调参重试。"
     ),

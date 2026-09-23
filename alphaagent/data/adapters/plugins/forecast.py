@@ -70,7 +70,7 @@ def load(
     files = sorted(root.rglob("*.parquet"))
     if not files:
         raise FileNotFoundError("CNE curated forecast 无 parquet 文件")
-    raw = pl.read_parquet(root, hive_partitioning=False)
+    raw = pl.concat([pl.read_parquet(f) for f in files], how="vertical")
 
     # 方向编码：优先用预告类型；type 缺失时按变动区间符号推断
     # （min/max 同号为正 → +1，同号为负 → -1，跨零/缺失 → None）

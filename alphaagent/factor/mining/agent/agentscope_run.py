@@ -7,6 +7,7 @@ import gzip
 import hashlib
 import json
 import logging
+import os
 import sys
 import traceback
 from datetime import datetime, timezone
@@ -22,7 +23,10 @@ from agentscope.state import AgentState
 from agentscope.workspace import LocalWorkspace
 
 from alphaagent.factor.mining.audit import build_manifest, canonical_hash
-from alphaagent.factor.mining.env_settings import resolve_max_parallel_eval
+from alphaagent.factor.mining.env_settings import (
+    resolve_max_parallel_eval,
+    resolve_turnover_gate_limit,
+)
 from alphaagent.factor.mining.infra.jsonutil import json_safe
 from alphaagent.factor.mining.schemas import SessionCreateRequest
 from alphaagent.factor.mining.service import StockEvalService
@@ -67,7 +71,7 @@ from alphaagent.factor.mining.infra.provider_compat import ProviderSafeChatModel
 from alphaagent.factor.mining.infra.usage_capture import UsageBridge
 from alphaagent.factor.mining.config import MiningConfig
 from alphaagent.factor.mining.console import ConsolePrinter, ensure_utf8_stream
-from alphaagent.factor.mining.loop import _NUDGE, _submit_record
+from alphaagent.factor.mining.agent.loop import NUDGE_MSG, submit_record
 from alphaagent.factor.mining.operators import list_operator_names
 from alphaagent.factor.mining.prompts import build_system_prompt
 from alphaagent.factor.mining.submit import FactorSubmitService, default_factorlib_path
@@ -85,13 +89,7 @@ from alphaagent.factor.evaluation.profile import resolve_profiles
 from core import factor_categories
 
 
-def _turnover_gate_limit(config: MiningConfig) -> float:
-    """从 run 的 research_spec 取按 freq 分档的换手硬门（注入 eval 预筛层）。"""
-    from alphaagent.factor.mining.delivery.delivery_criteria import DeliveryCriteria
-    return DeliveryCriteria.from_spec(getattr(config, "research_spec", None)).turnover_gate_limit
-
-
-_NUDGE_MSG = _NUDGE
+_NUDGE_MSG = NUDGE_MSG
 
 # 可重试异常类型名（字符串匹配：兼容 httpx2/httpx/httpcore 的命名差异与异常包装）。
 # ToolJSONDecodeError（2026-09-11）：deepseek 偶发把 tool arguments JSON 截断
@@ -280,7 +278,7 @@ async def run_factor_mining_agentscope(
     service = service or StockEvalService(
         max_parallel_eval=resolve_max_parallel_eval(config.max_parallel_eval),
         profiles=resolve_profiles(config.research_spec),
-        turnover_gate_limit=_turnover_gate_limit(config),
+        turnover_gate_limit=resolve_turnover_gate_limit(config),
     )
     root = repo_root or _repo_root()
     ctx = config.eval
@@ -326,28 +324,6 @@ async def run_factor_mining_agentscope(
         overwrite=config.ingest_overwrite,
     )
 
-    factor_tools = FactorEvalTools(
-        service,
-        session_resp.session_id,
-        submit_service=submit_service,
-        focus_facets=getattr(config, "focus_facets", None),
-        cognition_policy=(config.research_spec or {}).get("cognition_policy"),
-        operator_policy=(config.research_spec or {}).get("operator_policy"),
-        homogenization_policy=(config.research_spec or {}).get("homogenization_policy"),
-    )
-    system_prompt = build_system_prompt(
-        include_operator_catalog=include_operator_catalog,
-        extra_instructions=extra_instructions,
-        label_col=ctx.label_col,
-        include_fundamentals=ctx.include_fundamentals,
-        panel_columns=session_resp.available_columns,
-        population_max=config.population_max,
-        research_spec=config.research_spec,
-        asset_type=ctx.asset_type,
-        focus_facets=getattr(config, "focus_facets", None),
-        max_tool_calls_per_round=config.max_tool_calls_per_round,
-    )
-
     log_dir = Path(log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -372,6 +348,10 @@ async def run_factor_mining_agentscope(
     )
     # v3-lite：记忆策略参数（research_spec.memory_policy）注入存储构造
     memory_policy = (config.research_spec or {}).get("memory_policy") or {}
+    # env 紧急开关：ALPHA_MEMORY_HARD_BLOCK_DUPLICATES=0 临时关闭死路硬拦（不改代码回滚）
+    _hard_block_env = os.environ.get("ALPHA_MEMORY_HARD_BLOCK_DUPLICATES")
+    if _hard_block_env is not None:
+        memory_policy["hard_block_duplicates"] = _hard_block_env.lower() in ("1", "true", "yes")
     # 总开关（消融 A1）：enabled=False → 零记忆探索（等价 research_memory_path=None），
     # 默认 True 不改行为；CLI 传空 memory 路径关闭时同样得到 None。
     _memory_enabled = bool(memory_policy.get("enabled", True))
@@ -401,7 +381,28 @@ async def run_factor_mining_agentscope(
         cognition_policy=(config.research_spec or {}).get("cognition_policy"),
         operator_policy=(config.research_spec or {}).get("operator_policy"),
         homogenization_policy=(config.research_spec or {}).get("homogenization_policy"),
+        run_id=log_dir.name,
     )
+    # OpenViking 冷路径长期记忆：run 启动检索跨 session 策略教训，注入 system prompt。
+    # ov_store 实例保留到 run 结束复用（写回摘要 + 更新死路族）；失败静默，降级纯 SQLite。
+    ov_store = None
+    if bool((config.research_spec or {}).get("memory_policy", {}).get("enable_ov_long_term_memory", True)):
+        try:
+            from alphaagent.factor.mining.memory.ov_store import OVStore
+
+            _ov_mp = (config.research_spec or {}).get("memory_policy", {})
+            ov_store = OVStore(
+                endpoint=_ov_mp.get("ov_endpoint", "http://127.0.0.1:1933"),
+                inject_max_chars=int(_ov_mp.get("ov_inject_max_chars") or 2400),
+            )
+            ov_block = ov_store.retrieve_lessons(getattr(config, "focus_facets", None), research_mode, limit=5)
+            if ov_block:
+                log_step("ov_retrieve", f"chars={len(ov_block)}")
+                extra_instructions = (extra_instructions + "\n" + ov_block).strip() if extra_instructions else ov_block
+        except Exception as exc:  # noqa: BLE001
+            log_step("ov_retrieve", "error", error=str(exc)[:200], level=logging.ERROR)
+            ov_store = None
+
     system_prompt = build_system_prompt(
         include_operator_catalog=include_operator_catalog,
         extra_instructions=extra_instructions,
@@ -857,7 +858,7 @@ async def run_factor_mining_agentscope(
                 )
                 if row.get("name") == "submit_factor":
                     submit_records.append(
-                        _submit_record(
+                        submit_record(
                             turn=outer_turn,
                             arguments_raw=row.get("arguments_raw"),
                             result=res,
@@ -1421,6 +1422,26 @@ async def run_factor_mining_agentscope(
         production_stored=production_stored,
         usage_calls=usage_total.get("calls"),
     )
+
+    # OpenViking 冷路径长期记忆：run 结束写回摘要 + 更新死路族（失败静默）
+    if ov_store is not None:
+        try:
+            if ov_store.write_run_summary(log_dir.name, config.model, summary):
+                log_step("ov_summary", f"run={log_dir.name}")
+        except Exception as exc:  # noqa: BLE001
+            log_step("ov_summary", "error", error=str(exc)[:200], level=logging.ERROR)
+        try:
+            saturated: dict[str, str] = {}
+            if memory_store is not None:
+                for fam, info in memory_store.compute_saturation().items():
+                    score = float(info.get("saturation_score") or 0.0)
+                    if score > 0.4:
+                        saturated[fam] = f"饱和度 {score:.2f}"
+            if saturated:
+                ov_store.update_dead_families(list(saturated.keys()), details=saturated)
+                log_step("ov_dead_families", f"families={len(saturated)}")
+        except Exception as exc:  # noqa: BLE001
+            log_step("ov_dead_families", "error", error=str(exc)[:200], level=logging.ERROR)
 
     return {
         "session_id": session_resp.session_id,

@@ -22,7 +22,7 @@ from alphaagent.factor.mining.memory.retrieval import (
     _facets_in_scope,
 )
 from alphaagent.factor.mining.prompt.scope_filter import scrub_out_of_scope
-from alphaagent.factor.mining.prompts import build_system_prompt, last_assembly_report
+from alphaagent.factor.mining.prompts import build_system_prompt, build_system_prompt_with_report
 from alphaagent.factor.mining.research_memory import ResearchMemoryStore
 
 _COLS = [
@@ -141,14 +141,34 @@ class TestPromptScopeProjection:
     def test_tool_examples_synthesized_for_focus(self):
         """默认示例全越界被裁空时，按聚焦面代表列合成合规骨架——
         没有骨架时 LLM 会按先验拼纯价量结构（run 51e02d47a3f3 教训）。"""
-        _prompt(["业绩面", "量能面"])
-        row = next(r for r in last_assembly_report if r["module"] == "tool_examples")
+        _, report = build_system_prompt_with_report(
+            include_operator_catalog=True,
+            label_col="label_1d_open_to_close",
+            include_fundamentals=True,
+            panel_columns=_COLS,
+            population_max=0,
+            research_spec=None,
+            asset_type="stock",
+            focus_facets=["业绩面", "量能面"],
+            prompt_phase="full",
+        )
+        row = next(r for r in report if r["module"] == "tool_examples")
         assert row["chars"] > 0
         assert row["required_empty"] is False
 
     def test_tool_examples_empty_without_repr_faces(self):
-        _prompt(["筹码面"])
-        row = next(r for r in last_assembly_report if r["module"] == "tool_examples")
+        _, report = build_system_prompt_with_report(
+            include_operator_catalog=True,
+            label_col="label_1d_open_to_close",
+            include_fundamentals=True,
+            panel_columns=_COLS,
+            population_max=0,
+            research_spec=None,
+            asset_type="stock",
+            focus_facets=["筹码面"],
+            prompt_phase="full",
+        )
+        row = next(r for r in report if r["module"] == "tool_examples")
         assert row["chars"] == 0
         assert row["required_empty"] is False
 

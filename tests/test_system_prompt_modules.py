@@ -85,8 +85,9 @@ def test_system_prompt_matches_golden(name):
 
 
 def test_assembly_report_reports_modules():
-    build_system_prompt(**_CASES["full"])
-    from alphaagent.factor.mining.prompts import last_assembly_report
+    from alphaagent.factor.mining.prompts import build_system_prompt_with_report
+
+    _, last_assembly_report = build_system_prompt_with_report(**_CASES["full"])
 
     names = [row["module"] for row in last_assembly_report]
     assert "core_identity" in names and "behavior_rules" in names
@@ -150,8 +151,15 @@ def test_field_family_scope_whitelist():
                    "$exp_net_profit", "$ds_days_since_actual", "$div_cash_div"):
         assert hidden not in text, f"{hidden} 应被 field_family_scope 隐藏"
     # 无 required_empty（data_fields 仍渲染行情变量表）
-    from alphaagent.factor.mining.prompts import last_assembly_report
-    row = next(r for r in last_assembly_report if r["module"] == "data_fields")
+    from alphaagent.factor.mining.prompts import build_system_prompt_with_report
+    _, report = build_system_prompt_with_report(
+        include_operator_catalog=True,
+        label_col="label_1d",
+        include_fundamentals=True,
+        panel_columns=cols,
+        research_spec={"prompt_policy": {"field_family_scope": scope}},
+    )
+    row = next(r for r in report if r["module"] == "data_fields")
     assert row["required_empty"] is False and row["chars"] > 0
 
 
@@ -202,9 +210,9 @@ def test_disabled_module_not_rendered():
 
 def _phase_report(phase: str) -> tuple[str, list[dict]]:
     """在 full 场景参数下指定 prompt_phase 装配，返回 (text, report)。"""
-    text = build_system_prompt(**_CASES["full"], prompt_phase=phase)
-    from alphaagent.factor.mining.prompts import last_assembly_report
-    return text, list(last_assembly_report)
+    from alphaagent.factor.mining.prompts import build_system_prompt_with_report
+
+    return build_system_prompt_with_report(**_CASES["full"], prompt_phase=phase)
 
 
 def test_explore_disables_deepen_only_modules():

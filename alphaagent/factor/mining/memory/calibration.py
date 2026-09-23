@@ -6,6 +6,8 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from core.numutil import to_float
+
 from .constants import APV_TAU_C_DEFAULT, APV_TAU_V_DEFAULT, EQ7_KAPPA_DEFAULT
 
 
@@ -67,9 +69,6 @@ def _apv_gate(
     if conf > tau_c and pi_neg > tau_v:
         return True, pi_neg, pi_neg
     return False, pi_neg, pi_neg
-
-
-from core.numutil import to_float
 
 
 def _safe_float(value: Any) -> float | None:

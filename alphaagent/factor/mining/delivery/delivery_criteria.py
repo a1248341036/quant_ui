@@ -25,14 +25,15 @@ from core import trading_config
 
 @dataclass(frozen=True)
 class CandidateCriteria:
-    """候选池（海选）统计门槛：观察池口径（2026-09-11 第二版）【唯一真源】。
+    """候选池（海选）统计门槛：观察池口径（2026-09-23 第三版）【唯一真源】。
 
     进池线回到晋升线之下半档（0.020/0.28 vs 精筛 0.025/0.30）——池子承担
     "三段都有真信号的结构"存档 + ML 样本源，正式库质量由精筛线单独把守；
-    三段绝对门按各段噪声量纲折算（train 0.02 家族：val 0.012、盲测 0.010），
+    三段绝对门按各段噪声量纲折算（train 0.02 家族：val 0.015、盲测 0.010），
     统一数字不等于统一严格度（日频 IC 量纲 0.015~0.03、盲测段仅 ~410 天）；
     换手可行性硬门槛（低于阈值的因子截面排名日度剧变，不可交付）；
-    样本外保留比下限（方向反转直接拦截）。
+    样本外保留比下限（方向反转直接拦截）；
+    val 多头端年化超额须 ≥ 0（纯多头可交易性预检，与精筛同口径前移）。
     """
 
     min_abs_ic: float = 0.020  # 【唯一真源】
@@ -41,7 +42,10 @@ class CandidateCriteria:
     max_abs_corr: float = 0.5  # 【唯一真源】
     min_cs_autocorr: float = 0.18  # 【唯一真源】
     min_val_ic_retention: float = 0.5  # 【唯一真源】
-    min_val_abs_ic: float = 0.012  # 【唯一真源】
+    min_val_abs_ic: float = 0.015  # 【唯一真源】（2026-09-23 从 0.012 上调，与精筛对齐）
+    # val 段多头端年化超额下限（2026-09-23）：IC 为正 ≠ 多头组合赚钱，
+    # 纯多头可交易口径必须单独为正，与精筛 min_val_long_excess 同口径前移。
+    min_val_long_excess: float = 0.0  # 【唯一真源】
     # 组合可交易性预检（2026-08-29）：日单边换手 >50% 的候选在 stage_one 直接拒，
     # 不再等 stage_two/engine_gate 才拦截（历史数据：30 个候选 26 个日换手>50%，
     # 全部止步 stage_two/engine_gate，浪费大量评估算力）。
@@ -267,11 +271,6 @@ class DeliveryCriteria:
         if isinstance(eg_raw.get("allowed_freqs"), (list, tuple)):
             eg_raw["allowed_freqs"] = tuple(eg_raw["allowed_freqs"])
         eg_obj = EngineGateCriteria(**eg_raw)
-        ps_raw = _fill(ParamStabilityCriteria(), ps)
-        # window_offsets 同理统一为 tuple[int, ...]（JSON 侧为 list）。
-        if isinstance(ps_raw.get("window_offsets"), (list, tuple)):
-            ps_raw["window_offsets"] = tuple(int(x) for x in ps_raw["window_offsets"])
-        ps_obj = ParamStabilityCriteria(**ps_raw)
         return cls(
             blind_test=blind_obj, screener=screener_obj,
             candidate=cand_obj, production=prod_obj, engine_gate=eg_obj,
@@ -370,6 +369,7 @@ class DeliveryCriteria:
             f"`cs_autocorr >= {c.min_cs_autocorr}`、"
             f"`val abs(IC) >= {c.min_val_abs_ic}`、"
             f"`val/train IC 保留比 >= {_pct(c.min_val_ic_retention)}` 且方向不反转、"
+            f"`val 多头端年化超额 >= {_pct(c.min_val_long_excess)}`、"
             f"与已有因子最大截面相关 `< {c.max_abs_corr}`；"
             "通过后写入轻量候选 registry（不物化全量因子值）。"
         )

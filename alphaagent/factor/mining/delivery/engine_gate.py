@@ -42,7 +42,7 @@ def run_engine_gate(
     本函数对缺失键仅回落 trading_config，不回落到散落的局部硬编码。
     engine_frame 可传入缓存的 panel_to_engine_frame 输出，多频率复评时避免重复变换。
     """
-    policy = policy or {}
+    policy = dict(policy or {})  # 副本：缺键回落写回不得污染调用方传入的配置（审计 F-040）
     # 合并 EngineGateCriteria 默认值：旧 spec 文件无 buffer_ratio/no_trade_band 等新字段，
     # 用默认值回落保证 P1-3 默认启用（预演与终审同口径）。
     from alphaagent.factor.mining.delivery.delivery_criteria import (
@@ -172,7 +172,7 @@ def run_engine_gate(
         scores,
         top_n=top_n_fixed if selection_mode != "top_pct" else None,
         selection_pct=selection_pct_val,
-        rebalance=str(policy.get("freq", "daily")),
+        rebalance=str(policy.get("freq", trading_config.GATE_FREQ)),
     )
     min_overlap = float(policy.get("min_daily_overlap") or 0)
     thresholds["min_daily_overlap"] = min_overlap

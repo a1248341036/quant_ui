@@ -141,11 +141,16 @@ def _compute_daily_decile_mean_labels(
     if n == 0:
         return all_means
 
-    # 连续运行区间（datetime 层非递减）；否则回落 groupby
+    # 连续运行区间（datetime 层非递减）；否则回落 groupby。
+    # _day_slices 已确认排序时（非 None）无需重复 O(n) 单调扫描。
     dt_np = dts._values
-    sorted_ok = True
-    if len(dt_np) > 1 and not (dt_np[1:] >= dt_np[:-1]).all():
-        sorted_ok = False
+    if _day_slices is not None:
+        slices = _day_slices(factor.index, time_level)
+        sorted_ok = slices is not None
+    else:
+        sorted_ok = True
+        if len(dt_np) > 1 and not (dt_np[1:] >= dt_np[:-1]).all():
+            sorted_ok = False
     if not sorted_ok:
         for ts, f_sub in factor.groupby(level=time_level, sort=False):
             y_sub = label.xs(ts, level=time_level)

@@ -1,6 +1,11 @@
 # Direct AlphaAgent AgentScope mining dependencies.
 agentscope>=2.0.0
-openai>=1.0
+# openai pinned: openviking-sdk 安装会误升级 openai 3.x→2.54（破坏现有调用），固定 3.3.1
+openai==3.3.1
+
+# OpenViking 冷路径长期记忆（ov_store.py）。SDK 的 search/find/read/write 不依赖 openai 2.54，
+# 但安装时依赖解析会尝试升级 openai——故上方 pin 必须保留。
+openviking-sdk>=0.1.12
 
 # JIT compilation for chip-distribution operators (250x+ speedup).
 numba>=0.60

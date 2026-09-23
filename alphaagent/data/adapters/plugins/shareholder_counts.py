@@ -59,7 +59,7 @@ def load(
     files = sorted(root.rglob("*.parquet"))
     if not files:
         raise FileNotFoundError("CNE curated shareholder_counts 无 parquet 文件")
-    raw = pl.read_parquet(root, hive_partitioning=False)
+    raw = pl.concat([pl.read_parquet(f) for f in files], how="vertical")
 
     # PIT 锚点 = announce_date（公告日），缺公告日的记录用 count_date 兜底；
     # 原始列名 → 面板列名（holder_count_change_pct → holder_count_chg_pct 等）

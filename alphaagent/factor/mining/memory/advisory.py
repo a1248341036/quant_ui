@@ -179,7 +179,7 @@ class AdvisoryMixin:
                             f"该表达式结构与历史死路相同：同构已评估 {int(agg['n_tries'])} 次"
                             f"{scope}{latest}（{reason}），不建议继续同构重复评估。"
                         ),
-                        "exempt_from_block": bool(curr_run_passed or has_positive),
+                        "exempt_from_block": bool(curr_run_passed),
                     })
 
             # ①b 指纹正证据：同结构曾有正向 verdict（promising/入库）→ 重复劳动提醒。
@@ -214,10 +214,18 @@ class AdvisoryMixin:
                         "若当前换手/ICIR未过门槛请勿盲目提交，建议先降噪重构；若已全面达标建议直接 submit 走入库门槛；"
                         "或以其为父本做显式变异（parent_factor=该历史因子 + edit_note 说明改动点）。"
                     )
+                    # 同 run 内已评估过同构 → 事实前缀（依赖 current_run_id 传入，None 时为空串）
+                    curr_run_evaluated = False
+                    if current_run_id:
+                        curr_run_evaluated = bool(conn.execute(
+                            "SELECT 1 FROM memory_entries WHERE structure_fingerprint=? AND last_run_id=? LIMIT 1",
+                            (fingerprint, str(current_run_id)),
+                        ).fetchone())
+                    run_prefix = "本 run 内已测过同构，" if curr_run_evaluated else ""
                     findings.append({
                         "kind": "duplicate_prior_result",
                         "message": (
-                            f"该表达式结构与历史条目重复：{name}（{when}，verdict={pos_row['verdict']}"
+                            f"{run_prefix}该表达式结构与历史条目重复：{name}（{when}，verdict={pos_row['verdict']}"
                             f"{metrics_txt}，已评估 {int(pos_row['attempts'])} 次{fail_txt}）。"
                             f"同结构已测出过信号，勿原样重测：{action_advice}"
                         ),

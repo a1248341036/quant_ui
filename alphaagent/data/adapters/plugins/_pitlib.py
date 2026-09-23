@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import datetime
 import logging
-from typing import Iterable
+import os
+from pathlib import Path
+from typing import Any, Iterable
 
 import polars as pl
 
@@ -24,6 +26,30 @@ DEFAULT_START = datetime.date(2015, 1, 1)
 
 # PIT 状态回看窗口：窗口起点前的该天数内的事件会保留，作为网格首日的初始状态。
 PIT_LOOKBACK_DAYS = 800
+
+
+def load_cne_config(
+    cne_root: str | None = None,
+    cne_config: str | None = None,
+    *,
+    default_root: Path,
+    default_config: Path,
+) -> Any:
+    """加载 CNE config（chdir 到 CNE 根目录以兼容相对路径解析，随后恢复）。
+
+    供 stock_daily_wide / etf_bars / fund_flow 等插件复用，消除逐字复制的
+    chdir + load_config 样板。
+    """
+    from cnequity.config import load_config
+
+    root = Path(cne_root) if cne_root else default_root
+    cfg_path = Path(cne_config) if cne_config else default_config
+    old = Path.cwd()
+    try:
+        os.chdir(root)
+        return load_config(cfg_path)
+    finally:
+        os.chdir(old)
 
 
 def parse_window(
@@ -39,9 +65,18 @@ def parse_window(
 
 
 def read_curated(dataset: str) -> pl.DataFrame:
-    """读取整个 curated 数据集（与 fundamental 同口径，hive_partitioning=False）。"""
+    """读取整个 curated 数据集（与 fundamental 同口径，hive_partitioning=False）。
+
+    显式列出 parquet 文件逐个读取：避免 ``pl.read_parquet(root)`` 对目录的隐式
+    全量扫描（curated 目录异常残留碎片文件时可能把无关文件一并读入内存）。
+    """
     root = _curated_root() / dataset
-    return pl.read_parquet(root, hive_partitioning=False)
+    files = sorted(root.rglob("*.parquet"))
+    if not files:
+        raise FileNotFoundError(f"CNE curated {dataset} 无 parquet 文件")
+    if len(files) > 512:
+        raise ValueError(f"CNE curated {dataset} parquet 文件数异常（{len(files)}），拒绝全量读取")
+    return pl.concat([pl.read_parquet(f) for f in files], how="vertical")
 
 
 def weekdays_between(s: datetime.date, e: datetime.date) -> list[datetime.date]:

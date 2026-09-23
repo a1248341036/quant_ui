@@ -13,6 +13,7 @@ pathlib.Path.unlink/Path.rmdir），在删除动作落到 OS 之前检查目标�
 
 from __future__ import annotations
 
+import inspect
 import os
 import shutil
 import sys
@@ -81,10 +82,9 @@ def _caller_allowlisted() -> bool:
     if not allow:
         return False
     guard_self = _norm(__file__)
-    frame = sys._getframe(1)
-    while frame is not None:
-        file = frame.f_globals.get("__file__")
-        frame = frame.f_back
+    # 遍历完整调用栈（含 C 扩展/间接调用链），任一调用方模块命中白名单即放行
+    for frame in inspect.stack():
+        file = frame.frame.f_globals.get("__file__")
         if not file:
             continue
         norm = _norm(file)
@@ -149,7 +149,11 @@ def _wrap_path_method(orig: Callable) -> Callable:
 
 
 def install(protected_roots: Iterable[Path | str], allowlist: Iterable[str] = ()) -> None:
-    """激活守卫（幂等）：重复调用只更新保护区/白名单，不叠加包装。"""
+    """激活守卫（幂等）：重复调用只更新保护区/白名单，不叠加包装。
+
+    若外部代码在两次 install 之间还原了被 patch 的函数（_INSTALLED 仍为 True
+    但补丁已失效），重复调用会检测到并重新 patch，保证守卫不静默失效。
+    """
     global _INSTALLED
     _STATE["roots"] = sorted({_norm(r) for r in protected_roots})
     merged: list[str] = []
@@ -158,8 +162,18 @@ def install(protected_roots: Iterable[Path | str], allowlist: Iterable[str] = ()
         if entry and entry not in merged:
             merged.append(entry)
     _STATE["allow"] = merged
-    if _INSTALLED:
+
+    def _patches_intact() -> bool:
+        for obj, name, orig in _ORIGINALS:
+            if getattr(obj, name) is not orig:
+                return False
+        return True
+
+    if _INSTALLED and _patches_intact():
         return
+    if _INSTALLED:
+        # 补丁被外部还原：先清空记录再重新 patch，避免重复包装
+        _ORIGINALS.clear()
 
     for obj, name in ((os, "remove"), (os, "unlink"), (os, "rmdir"), (shutil, "rmtree")):
         orig = getattr(obj, name)

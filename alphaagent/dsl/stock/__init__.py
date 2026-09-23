@@ -4,15 +4,12 @@ from alphaagent.dsl.stock.intervals import (
     bar_interval_to_timedelta,
     normalize_bar_interval,
 )
-from alphaagent.dsl.stock.incremental import IncrementalWeekEngine, assert_incremental_matches_batch
 from alphaagent.dsl.stock.resample import (
     broadcast_timeframe_to_main_freq,
     build_timeframe_panel,
 )
 
 __all__ = [
-    "IncrementalWeekEngine",
-    "assert_incremental_matches_batch",
     "bar_interval_to_timedelta",
     "broadcast_timeframe_to_main_freq",
     "build_timeframe_panel",

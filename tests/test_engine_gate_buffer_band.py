@@ -218,6 +218,33 @@ def test_run_engine_gate_passes_buffer_band(panel):
     assert "metrics" in res
 
 
+def test_run_engine_gate_does_not_mutate_policy(panel):
+    """审计 F-040：缺键回落写回必须走副本，不得污染调用方传入的 policy。"""
+    from alphaagent.factor.mining.delivery.engine_gate import run_engine_gate
+
+    mi_panel = panel.copy()
+    mi_panel["datetime"] = pd.to_datetime(mi_panel["date"].values)
+    mi_panel["instrument"] = mi_panel["code"]
+    mi_panel = mi_panel.drop(columns=["date", "code"]).set_index(["datetime", "instrument"])
+    mi_panel["turnover_rate"] = mi_panel["turnover"] / 100.0
+    close = mi_panel["close"]
+    mom20 = close.groupby(level="instrument").transform(lambda s: s.pct_change(20))
+    factor_values = mom20.to_numpy(dtype=np.float64)
+
+    policy = {
+        "enabled": True, "selection_mode": "top_n", "top_n": 2,
+        "freq": "monthly", "capital": 1_000_000,
+        "min_excess_annual": -1.0, "min_excess_sharpe": -1.0,
+        "max_drawdown": 1.0, "min_daily_overlap": 0.0, "min_invested_ratio": 0.0,
+    }
+    before = dict(policy)
+    run_engine_gate(
+        mi_panel, factor_values, val_start=START, val_end=END, direction=1, policy=policy,
+    )
+    # 调用方 dict 不被就地写入回落默认键（buffer_ratio/no_trade_band/max_avg_daily_turnover）
+    assert policy == before, f"policy 被就地修改: {set(policy) - set(before)}"
+
+
 def test_run_engine_gate_high_turnover_gate(panel):
     """执行换手硬门（2026-09-22）：diag avg_daily_turnover > 门槛 → high_turnover。"""
     from alphaagent.factor.mining.delivery.engine_gate import run_engine_gate

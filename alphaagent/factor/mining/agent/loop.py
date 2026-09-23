@@ -13,7 +13,7 @@ from alphaagent.factor.mining.console import ConsolePrinter
 from alphaagent.factor.mining.infra.jsonutil import json_safe
 from alphaagent.factor.mining.tools import FactorEvalTools
 
-_NUDGE = (
+NUDGE_MSG = (
     "[local] 请继续推进，不要停在解释或征询下一步；"
     "请直接基于当前上下文发起原生 tool_calls（建议并行多条 evaluate_factor，profile_id=train_screen）。"
 )
@@ -66,7 +66,7 @@ def _parse_tool_arguments(arguments_raw: Any) -> dict[str, Any]:
     return arguments_raw if isinstance(arguments_raw, dict) else {}
 
 
-def _submit_record(*, turn: int, arguments_raw: Any, result: dict[str, Any]) -> dict[str, Any]:
+def submit_record(*, turn: int, arguments_raw: Any, result: dict[str, Any]) -> dict[str, Any]:
     args = _parse_tool_arguments(arguments_raw)
     return {
         "turn": turn,
@@ -186,7 +186,7 @@ def run_trajectory(
 
         if not msg.tool_calls:
             if tool_call_rounds < min_tool_call_rounds_before_allow_stop:
-                messages.append({"role": "user", "content": _NUDGE})
+                messages.append({"role": "user", "content": NUDGE_MSG})
                 _emit("nudge", {"turn": turn, "tool_call_rounds": tool_call_rounds})
                 continue
             _emit("session_end", {"turn": turn, "reason": "no_tool_calls"})
@@ -207,7 +207,7 @@ def run_trajectory(
                 {"turn": turn, "name": r["name"], "elapsed_seconds": r.get("elapsed_seconds"), "ok": res.get("ok")}
             )
             if r["name"] == "submit_factor":
-                submit_records.append(_submit_record(turn=turn, arguments_raw=r.get("arguments_raw"), result=res))
+                submit_records.append(submit_record(turn=turn, arguments_raw=r.get("arguments_raw"), result=res))
             messages.append(
                 {
                     "role": "tool",

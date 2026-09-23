@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import inspect
 import logging
 import os
 from dataclasses import dataclass, field
@@ -272,6 +273,7 @@ class PluginRegistry:
             raise RuntimeError("所有核心插件均返回空数据，无法构建 Panel")
 
         # 2. 加载辅助插件，左 join
+        failed_aux: list[str] = []
         for plugin in aux_plugins:
             logger.info("加载辅助插件 %s (dataset=%s)", plugin.name, plugin.dataset)
             try:
@@ -279,6 +281,7 @@ class PluginRegistry:
                                         cne_root=cne_root, cne_config=cne_config)
             except Exception as exc:
                 logger.warning("辅助插件 %s 加载失败: %s", plugin.name, exc)
+                failed_aux.append(plugin.name)
                 continue
             if raw is None or raw.empty:
                 logger.debug("辅助插件 %s 无数据，跳过", plugin.name)
@@ -289,6 +292,10 @@ class PluginRegistry:
         # 3. 构建衍生列 + Panel
         logger.info("所有插件加载完成，hq shape=%s, 列数=%d", hq.shape, hq.shape[1])
         panel = build_panel_from_hq(hq, universe_mask=universe_mask)
+        if failed_aux:
+            panel.attrs["failed_aux_plugins"] = failed_aux
+            logger.warning("辅助插件加载失败 %s，Panel 可能缺列（哨兵校验将拦截落盘）",
+                           failed_aux)
         logger.info("Panel 构建完成: shape=%s", panel.shape)
         return panel
 
@@ -315,11 +322,22 @@ class PluginRegistry:
         if cne_config is not None:
             kwargs["cne_config"] = str(cne_config)
 
+        # 静态探测 loader 是否接受 cne_root/cne_config 参数（避免用 TypeError
+        # 异常捕获做签名检测——loader 内部抛的 TypeError 会被误判为参数不兼容）
+        accepts_extra = True
         try:
+            sig = inspect.signature(loader)
+            accepts_extra = all(
+                p.name in sig.parameters
+                for p in ("cne_root", "cne_config")
+                if p in kwargs
+            )
+        except (TypeError, ValueError):
+            accepts_extra = False
+
+        if accepts_extra:
             return loader(plugin.dataset, start=start, end=end, **kwargs)
-        except TypeError:
-            # 插件 loader 可能不接受 cne_root/cne_config 参数
-            return loader(plugin.dataset, start=start, end=end)
+        return loader(plugin.dataset, start=start, end=end)
 
     @staticmethod
     def _apply_column_map(raw: pd.DataFrame, plugin: DataSourcePlugin) -> pd.DataFrame:

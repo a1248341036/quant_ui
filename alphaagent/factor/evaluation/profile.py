@@ -143,11 +143,16 @@ def resolve_profiles(spec: dict[str, Any] | None = None) -> dict[str, Evaluation
         raise ValueError("research_spec.evaluation_profiles_must_be_object")
     raw_defaults = {key: value.as_dict() for key, value in defaults.items()}
     evaluation = (spec or {}).get("evaluation_policy", {})
-    # 缺失键回落 canonical 默认（DEFAULT_RESEARCH_SPEC 唯一真源），避免本模块
-    # 出现第二份门槛数值；懒加载打破 research_spec ↔ profile 的模块级循环依赖。
-    from alphaagent.factor.mining.research_spec import DEFAULT_RESEARCH_SPEC
-    canonical_evaluation = DEFAULT_RESEARCH_SPEC["evaluation_policy"]
-    canonical_production = DEFAULT_RESEARCH_SPEC["delivery_policy"]["production"]
+    # 缺失键回落 canonical 默认（evaluation/defaults.py 单一真源，与
+    # research_spec.DEFAULT_RESEARCH_SPEC 同值），避免本模块出现第二份门槛数值，
+    # 也避免 evaluation → mining 的分层倒置。
+    from alphaagent.factor.evaluation.defaults import (
+        DEFAULT_EVALUATION_POLICY,
+        DEFAULT_PRODUCTION_THRESHOLDS,
+    )
+
+    canonical_evaluation = DEFAULT_EVALUATION_POLICY
+    canonical_production = DEFAULT_PRODUCTION_THRESHOLDS
     train_rules = [
         {"metric": "cross_sectional_core.ic", "op": "abs_gte", "value": evaluation.get("min_train_abs_ic", canonical_evaluation["min_train_abs_ic"])},
         {"metric": "cross_sectional_core.icir", "op": "abs_gte", "value": evaluation.get("min_train_icir", canonical_evaluation["min_train_icir"])},

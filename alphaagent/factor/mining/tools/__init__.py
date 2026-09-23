@@ -34,6 +34,7 @@ class FactorEvalTools(_DispatchMixin, _AnalysisMixin):
         cognition_policy: dict[str, Any] | None = None,
         operator_policy: dict[str, Any] | None = None,
         homogenization_policy: dict[str, Any] | None = None,
+        run_id: str | None = None,
     ) -> None:
         self.service = service
         self.session_id = session_id
@@ -41,6 +42,8 @@ class FactorEvalTools(_DispatchMixin, _AnalysisMixin):
         self._screener_config_dict = screener_config or {}
         # v3-lite：研究记忆硬提醒通道（None = 关闭）；hard_block_duplicates=True 时指纹死路直接拦截
         self.memory_store = memory_store
+        # 当前 run id（log_dir.name）：传给 advisory_for.current_run_id，供 run 内正向豁免判定
+        self.run_id = run_id
         # 数据面聚焦硬锁定（用户勾选；空 = 未启用，dispatch 不拦截）
         self.focus_facets = tuple(focus_facets or ())
         # 认知对账开关（research_spec.cognition_policy，消融 C1/C2）；缺省全开

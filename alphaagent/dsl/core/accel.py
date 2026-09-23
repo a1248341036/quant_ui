@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import importlib
+import logging
 import os
 from typing import Optional, Union
 
@@ -17,6 +18,8 @@ import numpy as np
 import pandas as pd
 
 from . import chip_daily as _chip_daily
+
+logger = logging.getLogger(__name__)
 
 _fam_accel = None  # type: ignore[misc]
 
@@ -1993,8 +1996,8 @@ def roll_kline_geometry(
                 w0,
                 eps_f,
             )
-        except Exception:
-            pass  # 回退 numpy SVD 路径
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("KLINE_GEOMETRY: Numba 内核回退 numpy SVD: %s", exc)
         for i in range(n):
             wi = w0 if w0 <= i + 1 else i + 1
             if wi < 2:

@@ -25,7 +25,7 @@ class ComputeTask:
     def __lt__(self, other: Any) -> bool:
         if not isinstance(other, ComputeTask):
             return NotImplemented
-        # 优先级高的排在前面（PriorityQueue 会优先弹出较小值，因此 priority 取负）
+        # 优先级高的排在前面（PriorityQueue 弹出最小元素，故 priority 大者视为更小）
         if self.priority != other.priority:
             return self.priority > other.priority
         return self.created_at < other.created_at

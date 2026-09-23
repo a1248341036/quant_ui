@@ -27,9 +27,11 @@ def _violating(expr: str, allowed: set[str], required: set[str]) -> list[str] | 
     """返回越界面列表；片段无列引用或完全合规 → None。
 
     - 触及勾选面及其隐含输入面之外的面 → 越界（整段裁掉）；
-    - 算子调用片段（含括号）只用了输入列、没触及任何勾选面 → 视为越界示例
-      （与工具层"必须触及勾选面"同口径，防止 LLM 照抄纯价量片段）；
-    - 裸列名提及（字段表行）不套用"必须触及"规则——CHIP_* 的输入列需要在表里可见。
+    - 算子调用片段（含 ``$`` 字段引用 + 非字段括号调用）只用了输入列、没触及
+      任何勾选面 → 视为越界示例（与工具层"必须触及勾选面"同口径，防止 LLM
+      照抄纯价量片段）；
+    - 裸列名提及（字段表行，如 ``$adj_close@1w``）不套用"必须触及"规则——
+      CHIP_* 的输入列需要在表里可见。
     """
     facets = expr_facets(expr)
     if not facets:
@@ -37,7 +39,11 @@ def _violating(expr: str, allowed: set[str], required: set[str]) -> list[str] | 
     outside = sorted(facets - allowed)
     if outside:
         return outside
-    if required and "(" in expr and not (facets & required):
+    # 仅对"算子调用片段"施加必须触及规则：含 $ 字段引用，且存在非字段括号调用
+    # （字段速记如 $adj_close@1w 无括号；字段表行内示例若含算子调用则仍按算子片段处理）。
+    has_field = "$" in expr
+    has_call = bool(re.search(r"[A-Za-z_][A-Za-z0-9_]*\s*\(", expr))
+    if required and has_field and has_call and not (facets & required):
         return sorted(facets)
     return None
 

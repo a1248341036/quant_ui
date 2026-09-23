@@ -848,8 +848,10 @@ class SchemaMixin:
             return "promising", f"训练阶段有潜力：{ic_str} {icir_str} {cov_str}。优先进行训练外验证或独立性改造。"
         # P0-2 near_miss（2026-09-05）：IC 达门槛 80%、ICIR/coverage 达标但未过线——
         # 不再直接记 weak 死档，给"窗口微调/推 val"的二次机会（记忆分析：technical
-        # 档 239 个 near-miss 无一获得二次评估）。
-        if abs(ic or 0) >= 0.8 * th and (icir or 0) > _icir_soft and (coverage or 0) > _cov:
+        # 档 239 个 near-miss 无一获得二次评估）。阈值单一真源在 constants.py。
+        from .constants import NEAR_MISS_COVERAGE, NEAR_MISS_ICIR_SOFT, NEAR_MISS_IC_RATIO
+
+        if abs(ic or 0) >= NEAR_MISS_IC_RATIO * th and (icir or 0) > NEAR_MISS_ICIR_SOFT and (coverage or 0) > NEAR_MISS_COVERAGE:
             return "near_miss", (
                 f"接近海选线：{ic_str} {icir_str} {cov_str}（IC 距 {th} 门槛 <20%）。"
                 "建议窗口微调后重评（传 parent_factor/edit_note），或机制置信度高时直接 eval_on_val_set。"

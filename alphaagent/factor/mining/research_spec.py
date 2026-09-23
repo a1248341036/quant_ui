@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from alphaagent.factor.evaluation.defaults import DEFAULT_EVALUATION_POLICY
 from alphaagent.factor.evaluation.profile import default_evaluation_profiles, resolve_profiles
 from alphaagent.factor.mining.interactions import INTERACTION_TYPES
 from alphaagent.core.paths import RESEARCH_SPECS_DIR
@@ -140,15 +141,9 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
     "evaluation_policy": {
         # 2026-09-11 观察池口径：评估屏幕线与 delivery 候选门（0.020/0.28）对齐，
         # 避免"评估过线但提交即拒"的算力浪费；晋升线（0.025/0.30）在 delivery_policy。
-        "min_train_abs_ic": 0.020,
-        "min_train_icir": 0.28,
-        "min_train_icir_soft": 0.2,  # verdict 判定用宽松线（不跟候选门槛 0.28）
-        "min_train_coverage": 0.85,
-        "min_val_abs_ic": 0.012,
-        "min_val_ic_retention_ratio": 0.5,
+        # 数值单一真源在 alphaagent.factor.evaluation.defaults（profile 编译规则同源）。
+        **DEFAULT_EVALUATION_POLICY,
         "require_sign_consistency": True,
-        # 换手率约束：因子排名日度自相关低于此值的候选不入池（高换手→高交易成本）
-        "min_cs_autocorr": 0.18,
     },
     "evaluation_profiles": _default_evaluation_profile_spec(),
     "review_policy": {
@@ -194,9 +189,17 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
         "enable_distill": True,             # 经验蒸馏（distill_batch_experience / form_memory）
         "enable_advisory_cache": True,      # advisory 查询 LRU 缓存（False = 每次评估查库）
         # v3-lite：AlphaMemo 校准 + 硬提醒通道
-        # 重复探索硬闸（2026-09-15 优化）：默认 False。仅对同表达式逐字重复（exact_duplicate_prior）
-        # 才硬拦，结构级重复（同骨架但不同参数/窗口）只提醒不硬拦，避免误伤过线 promising 因子。
-        "hard_block_duplicates": False,
+        # 重复探索硬闸（2026-09-23 从 False 上调为 True）：963 次评估 46% 重复（320 次死路重复
+        # 全提醒不拦，LLM 可无视）。仅对 duplicate_known_dead_end（同结构指纹负证据累计 ≥2 次
+        # 且全历史无正向）硬拦；duplicate_prior_result 永不硬拦（exempt_from_block=True）只提醒。
+        # env ALPHA_MEMORY_HARD_BLOCK_DUPLICATES=0 可临时关闭。
+        "hard_block_duplicates": True,
+        # OpenViking 冷路径长期记忆（2026-09-23 新增）：run 启动语义检索注入 system prompt、
+        # run 结束写回摘要到 viking://resources/alphaagent/（代码硬编码 scope 隔离）。
+        # 失败静默降级为纯 SQLite，不影响挖掘。
+        "enable_ov_long_term_memory": True,
+        "ov_endpoint": "http://127.0.0.1:1933",  # 本地 OpenViking HTTP 端点
+        "ov_inject_max_chars": 2400,          # OpenViking 注入块预算（对齐 max_inject_chars）
         "max_inject_chars": 2400,           # 注入块总预算，超限按 编辑先验>经验>多样性>证据 截断
         "apv_tau_c": 0.35,                  # APV 双门 1：置信阈值（Eq.7 置信）
         "apv_tau_v": 0.80,                  # APV 双门 2：失败 Beta 后验阈值

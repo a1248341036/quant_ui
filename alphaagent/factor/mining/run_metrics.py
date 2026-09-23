@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from alphaagent.core.atomicio import atomic_write_text
+from core.atomicio import atomic_write_text
 
 LLM_TOKENS_PER_SECOND = 55.0  # 生成速度估计，用于把输出 tokens 折算成墙钟分钟
 MIN_COMBOS_PER_DAY = 30  # 保留给未来逐日指标用；此处仅占位语义对齐

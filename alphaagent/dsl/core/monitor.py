@@ -83,8 +83,9 @@ class OperatorTimingContext:
             return
         n, t0 = self._call_stack.pop()
         if n != name:
-            # 防御：栈错位时尽量用最近帧
-            n, t0 = self._call_stack[-1] if self._call_stack else (name, t0)
+            # 栈错位（算子内抛异常等）：丢弃该样本，避免「栈顶帧名 × 被 pop 帧
+            # 起始时间」的错配污染计时统计
+            return
         dt = time.perf_counter() - t0
         st = self._stats[name]
         st["calls"] += 1
@@ -202,6 +203,7 @@ def read_accumulated(
     """读累计 JSONL，跨评估聚合 top 慢算子（供报表/前端）。"""
     p = Path(path) if path is not None else _PROFILING_LOG
     agg: dict[str, dict[str, Any]] = defaultdict(lambda: {"calls": 0, "total_s": 0.0, "records": 0})
+    total_records = 0
     try:
         if not p.is_file():
             return {"total_records": 0, "operators": {}}
@@ -209,6 +211,7 @@ def read_accumulated(
             line = line.strip()
             if not line:
                 continue
+            total_records += 1
             try:
                 rec = json.loads(line)
             except json.JSONDecodeError:
@@ -226,7 +229,7 @@ def read_accumulated(
         return {"total_records": 0, "operators": {}}
     top = sorted(agg.items(), key=lambda kv: -kv[1]["total_s"])[:top_k]
     return {
-        "total_records": sum(1 for _ in p.read_text(encoding="utf-8").splitlines()) if p.is_file() else 0,
+        "total_records": total_records,
         "operators": {
             name: {
                 "calls": st["calls"],

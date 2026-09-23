@@ -628,6 +628,16 @@ class FactorSubmitService:
                     val_metrics["val_long_excess"] = annualized_long_group_excess_return(
                         f_val, l_val, direction=dir_sign, holding_days=qp_holding_days
                     )
+                    # 候选池 val 多头端超额门槛（2026-09-23）：纯多头可交易性预检，
+                    # IC 为正不代表多头组合为正，val 段多头端年化超额必须 >= 阈值。
+                    vle = val_metrics.get("val_long_excess")
+                    if vle is not None and np.isfinite(float(vle)) \
+                            and float(vle) < float(self.criteria.candidate.min_val_long_excess):
+                        gate_reasons.append(
+                            f"val_long_excess={float(vle):.4f} < "
+                            f"{self.criteria.candidate.min_val_long_excess} "
+                            f"(val 段多头端年化超额不足，纯多头不可交付)"
+                        )
 
         similarity_report: dict[str, Any] | None = None
         candidate_similarity: dict[str, Any] | None = None

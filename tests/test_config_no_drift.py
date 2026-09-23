@@ -17,7 +17,7 @@ def test_core_thresholds_alignment():
     assert cc.min_abs_ic == ep["min_train_abs_ic"] == 0.020
     assert cc.min_icir == ep["min_train_icir"] == 0.28
     assert cc.min_coverage == ep["min_train_coverage"] == 0.85
-    assert cc.min_val_abs_ic == ep["min_val_abs_ic"] == 0.012
+    assert cc.min_val_abs_ic == ep["min_val_abs_ic"] == 0.015
     assert cc.min_val_ic_retention == ep["min_val_ic_retention_ratio"] == 0.5
 
     # Candidate vs delivery_policy

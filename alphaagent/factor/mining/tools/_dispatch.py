@@ -106,9 +106,12 @@ def _attach_prediction_check(result: dict[str, Any], prediction: Any, *, ic: Any
         pass
 
 
-# near_miss 阈值：IC 达门槛的 80% 即视为"接近海选线"（2026-09-05 记忆分析：
-# technical 档 239 个 near-miss 因子直接进死档，无二次机会）
-_NEAR_MISS_RATIO = 0.8
+# near_miss 阈值单一真源在 memory/constants.py（schema._classify 共用）
+from alphaagent.factor.mining.memory.constants import (
+    NEAR_MISS_COVERAGE,
+    NEAR_MISS_ICIR_SOFT,
+    NEAR_MISS_IC_RATIO,
+)
 # train 段 |IC| 高于此值且属财务/慢标签口径时提示 PIT 伪影嫌疑（实测
 # fundamental 档 train IC 0.06~0.08 的因子几乎全部 val 阵亡——阶梯函数语义陷阱）
 _PIT_SUSPICION_IC = 0.045
@@ -188,9 +191,9 @@ def _near_miss_verdict(metrics: dict[str, Any]) -> bool:
         metrics.get("research_mode")
     )
     return bool(
-        _NEAR_MISS_RATIO * th <= ic_f < th
-        and (icir_f is not None and icir_f > 0.2)
-        and (cov_f is not None and cov_f > 0.85)
+        NEAR_MISS_IC_RATIO * th <= ic_f < th
+        and (icir_f is not None and icir_f > NEAR_MISS_ICIR_SOFT)
+        and (cov_f is not None and cov_f > NEAR_MISS_COVERAGE)
     )
 
 
@@ -371,6 +374,7 @@ class _DispatchMixin:
             advisory = self.memory_store.advisory_for(
                 str(expr or ""),
                 edit_note=arguments.get("edit_note"),
+                current_run_id=getattr(self, "run_id", None),
                 enable_advisory_cache=bool(getattr(self.memory_store, "enable_advisory_cache", True)),
             )
         except Exception:

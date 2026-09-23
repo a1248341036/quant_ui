@@ -87,9 +87,15 @@ def chat_json(
             return json.loads(text)
         except Exception as exc:  # noqa: BLE001
             err = str(exc)
-            # 中转不支持 JSON mode → 降级普通调用
+            # 中转不支持 JSON mode → 降级普通调用（降级失败也按 retries 退避重试）
             if any(k in err for k in ("400", "422", "json_object", "response_format")):
-                return _chat_json_fallback(client, model, messages, max_tokens, temperature)
+                result = _chat_json_fallback(client, model, messages, max_tokens, temperature)
+                if result is not None:
+                    return result
+                if attempt < retries:
+                    sleep(3 * (attempt + 1))
+                    continue
+                return None
             # 429/超时 → 退避重试
             if attempt < retries and any(k in err for k in ("429", "Timeout", "timed out")):
                 sleep(3 * (attempt + 1))
