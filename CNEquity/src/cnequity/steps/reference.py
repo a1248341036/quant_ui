@@ -323,8 +323,15 @@ def step_trading_status(config: Config, trade_date: date, run_id: str, context: 
         return result
     # This adapter is an EastMoney current-state snapshot even though it is
     # exposed through the TDX facade. Preserve the actual evidence owner so
-    # downstream PIT precedence never mistakes it for exchange history.
-    df = with_provenance(df.drop("source", strict=False), source="eastmoney", data_version="v1")
+    # downstream PIT precedence never mistakes it for exchange history. The
+    # Tushare stock_st fallback (fetch_trading_status) stamps source=tushare
+    # on its rows; keep that so provenance stays honest.
+    source = "eastmoney"
+    if "source" in df.columns:
+        observed = set(df.get_column("source").drop_nulls().unique().to_list())
+        if observed == {"tushare"}:
+            source = "tushare"
+    df = with_provenance(df.drop("source", strict=False), source=source, data_version="v1")
     result = write_simple(config, run_id, "trading_status", df)
     if _findings:
         result["context_updates"] = {"audit_findings": _findings}
