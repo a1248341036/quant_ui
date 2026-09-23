@@ -120,6 +120,20 @@ _AUX_FIELDS = frozenset({
     "$industry_sw_l3", "$industry_em",
 })
 
+# 中性化键别名：外层变换签名里把常见中性化键归一成稳定短签名，
+# 使 CS_NEUTRALIZE(x, $float_cap) 与 CS_NEUTRALIZE(x, CS_BUCKET(LOG($float_cap), 10))
+# 视为同一中性化维度（市值），而市值 vs 行业视为不同维度。
+_AUX_KEY_ALIASES = {
+    "$float_cap": "cap",
+    "$industry_sw_l1": "ind_l1",
+    "$industry_sw_l2": "ind_l2",
+    "$industry_sw_l3": "ind_l3",
+    "$industry_em": "ind_em",
+}
+
+# 剥外层包装（归一化/平滑/符号）——信号根指纹与外层变换签名共用
+_STRIP_OPS = _NORMALIZE_OPS | _SMOOTHING_OPS | {"NEG", "ABS"}
+
 
 def _ast_signal_fingerprint(expr: str) -> str:
     """基于 AST 的信号根指纹（归一化结构字符串）。
@@ -167,7 +181,6 @@ def _ast_signal_fingerprint(expr: str) -> str:
         return node
 
     # 剥外层归一化/平滑/基础运算（NEG/ABS），找信号根子树
-    _STRIP_OPS = _NORMALIZE_OPS | _SMOOTHING_OPS | {"NEG", "ABS"}
     signal_node = ast
     while signal_node is not None and signal_node.is_call() and signal_node.op.upper() in _STRIP_OPS:
         signal_node = signal_node.args[0] if signal_node.args else None
@@ -205,6 +218,78 @@ def _ast_signal_fingerprint(expr: str) -> str:
         return node.type
 
     return _norm(signal_node)
+
+
+def _neutralize_key(node: Any) -> str:
+    """中性化键归一化：市值桶/行业/其他字段 → 稳定短签名。
+
+    处理 CS_NEUTRALIZE/CS_RESIDUALIZE/CS_GROUP_RANK 的第二参数：
+    - $float_cap / LOG($float_cap) / CS_BUCKET(LOG($float_cap), N) → "cap"
+    - $industry_sw_l1 → "ind_l1"（其余行业键同理）
+    - 其他 $ 字段 → 保留字段名；其他算子 → 算子名
+    """
+    if node is None:
+        return "none"
+    if node.type == "var":
+        val = "$" + node.value
+        return _AUX_KEY_ALIASES.get(val.lower(), val)
+    if node.type == "call":
+        op = node.op.upper()
+        # 剥掉市值桶/对数/延迟等包装，只留中性化键本体
+        if op in ("CS_BUCKET", "LOG", "DELAY", "NEG", "ABS") and node.args:
+            return _neutralize_key(node.args[0])
+        return op
+    if node.type == "num":
+        return "N"
+    return node.type
+
+
+def _outer_transform_signature(expr: str) -> str:
+    """信号根之上的变换链签名（从外到内），区分中性化/截面变换变体。
+
+    与 _ast_signal_fingerprint 互补：指纹只认信号根（剥掉所有外层变换），
+    本签名记录被剥掉的外层变换链。同根 + 同外层变换 = 参数微调（熔断）；
+    同根 + 不同外层变换（换中性化键/换截面变换）= 正交化探索（放行）。
+
+    示例（同一信号根 x）：
+      CS_NEUTRALIZE(CS_ZSCORE(CS_WINSORIZE(x, 0.01, 0.99)), CS_BUCKET(LOG($float_cap), 10))
+        → "CS_NEUTRALIZE:cap|CS_ZSCORE|CS_WINSORIZE"
+      CS_NEUTRALIZE(CS_ZSCORE(CS_WINSORIZE(x, 0.01, 0.99)), $industry_sw_l1)
+        → "CS_NEUTRALIZE:ind_l1|CS_ZSCORE|CS_WINSORIZE"  ← 与市值中性不同，不累计
+      RANK(CS_WINSORIZE(x, 0.01, 0.99))
+        → "RANK|CS_WINSORIZE"  ← 与 ZSCORE 变体不同，不累计
+      WMA(x, 8) 与 WMA(x, 4)（同外层）
+        → "SMOOTH" == "SMOOTH"  ← 同外层，换窗口仍累计熔断
+    """
+    if not expr:
+        return ""
+    ast = parse_ast(expr)
+    if ast is None:
+        return ""
+    var_table = _parse_var_table(expr) if "\n" in expr else {}
+
+    def _resolve_var(node):
+        seen: set[str] = set()
+        while node is not None and node.type == "var" and node.value in var_table:
+            if node.value in seen:
+                return None
+            seen.add(node.value)
+            node = parse_ast(var_table[node.value])
+        return node
+
+    parts: list[str] = []
+    node = ast
+    while node is not None and node.is_call() and node.op.upper() in _STRIP_OPS:
+        op = node.op.upper()
+        if op in _SMOOTHING_OPS:
+            parts.append("SMOOTH")
+        elif op in ("CS_NEUTRALIZE", "CS_RESIDUALIZE", "CS_GROUP_RANK") and len(node.args) >= 2:
+            parts.append(f"{op}:{_neutralize_key(node.args[1])}")
+        else:
+            parts.append(op)
+        node = node.args[0] if node.args else None
+        node = _resolve_var(node)
+    return "|".join(parts)
 
 
 def _signal_fingerprint(expr: str) -> tuple[frozenset[str], frozenset[str]]:
@@ -247,15 +332,20 @@ def _homogenization_block(
     max_consecutive: int = 3,
     window_size: int = 10,
     enabled: bool = True,
+    max_outer_variants: int = 6,
 ) -> dict[str, Any] | None:
-    """同质化平滑变体预检：滑动窗口内 ≥max_consecutive 次"同一信号根+含平滑"→ 拦截评估。
+    """同质化平滑变体预检：滑动窗口内 ≥max_consecutive 次"同一信号根+同外层变换+含平滑"→ 拦截评估。
 
     判定逻辑（动态，不针对具体信号）：
     1. 当前表达式含平滑算子；
-    2. 提取当前表达式的信号根指纹（核心算子集合 + 引用字段集合）；
-    3. 从最近评估倒序遍历最近 window_size 条，统计"信号根指纹相同 + 含平滑"的次数
-       （不因中间夹了其他根/非平滑条目而中断——防 LLM 换根轮换绕过熔断器）；
-    4. 同根累计次数 ≥ max_consecutive → 返回拦截 result（ok=False）。
+    2. 提取当前表达式的信号根指纹（核心算子集合 + 引用字段集合）与外层变换签名
+       （信号根之上的归一化/中性化/截面变换链）；
+    3. 从最近评估倒序遍历最近 window_size 条，统计"信号根指纹相同 + 外层变换签名相同
+       + 含平滑"的次数（不因中间夹了其他根/非平滑条目而中断——防 LLM 换根轮换绕过熔断器）；
+    4. 同根同外层累计次数 ≥ max_consecutive → 返回拦截 result（ok=False）。
+    5. 防绕过：同根但外层变换不同的变体（换中性化键/换截面变换）不累计，但计入变体
+       多样性；窗口内同根变体数 ≥ max_outer_variants → 同样拦截，防 LLM 用"换中性化键"
+       无限微调同一信号根。
 
     信号根指纹 = (核心信号算子, 引用字段)。vwap 反转和隔夜因子字段不同 → 不会互相误判；
     同族参数变体（换 WMA 窗口）字段相同 → 熔断。
@@ -268,9 +358,10 @@ def _homogenization_block(
     参数：
         expr: 当前表达式
         recent_evals: 最近评估签名列表（_record_eval_signature 记录的 dict）
-        max_consecutive: 窗口内同根累计次数阈值（默认 3）
+        max_consecutive: 窗口内同根同外层累计次数阈值（默认 3）
         window_size: 滑动窗口大小（默认 10，只统计最近 N 次评估）
         enabled: 开关（research_spec.homogenization_policy.enabled）
+        max_outer_variants: 同根外层变换变体多样性上限（默认 6，防换中性化键绕过）
     """
     if not enabled or not expr or not recent_evals:
         return None
@@ -288,9 +379,11 @@ def _homogenization_block(
         if not current_sig[0] and not current_sig[1]:
             return None
         sig_kind = "regex"
+    current_outer = _outer_transform_signature(expr)
 
     # 滑动窗口内同根累计：不因中间夹了其他根/非平滑条目而中断
     count = 0
+    outer_variants: set[str] = set()
     for item in reversed(recent_evals[-window_size:]):
         if not isinstance(item, dict):
             continue
@@ -304,8 +397,14 @@ def _homogenization_block(
             matched = prev_ast == current_sig
         elif sig_kind == "regex" and isinstance(prev_sig, tuple):
             matched = prev_sig == current_sig
-        if matched:
-            count += 1
+        if not matched:
+            continue
+        # 同根但外层变换不同 → 正交化探索（换中性化键/换截面变换），不累计
+        prev_outer = item.get("outer_transform_signature")
+        if prev_outer is not None and prev_outer != current_outer:
+            outer_variants.add(prev_outer)
+            continue
+        count += 1
 
     if count >= max_consecutive:
         if sig_kind == "ast":
@@ -327,6 +426,23 @@ def _homogenization_block(
                 f"（不塌分布，优于末位 EMA/WMA）；"
                 f"  ③ 截面变换 CS_ZSCORE/RANK 压尾部，不压缩分布。"
                 f"ρ_f<0.6 的高频源（如 1d 反转）降换手必丢 IC——直接换源，不要硬降。"
+            ),
+            "error_type": "HomogenizationSmoothingBlock",
+        }
+    if current_outer and len(outer_variants) + 1 > max_outer_variants:
+        if sig_kind == "ast":
+            sig_desc = current_sig[:200]
+        else:
+            ops_str = ", ".join(sorted(current_sig[0])) or "(无核心算子)"
+            fields_str = ", ".join(sorted(current_sig[1])) or "(无字段)"
+            sig_desc = f"算子: {ops_str}; 字段: {fields_str}"
+        return {
+            "ok": False,
+            "error": (
+                f"homogenization_smoothing_block: 同一信号根（{sig_desc}）在最近 {window_size} 次评估中"
+                f"已尝试 {len(outer_variants) + 1} 种外层变换变体（中性化键/截面变换），超过上限"
+                f" {max_outer_variants}。换中性化键/截面变换不改变信号根本质，继续在同一根上"
+                f"做正交化变体收益递减。请更换信号根结构（换数据源/换核心算子/换机制）。"
             ),
             "error_type": "HomogenizationSmoothingBlock",
         }
