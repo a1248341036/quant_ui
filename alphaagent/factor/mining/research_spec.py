@@ -194,6 +194,12 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
         # 且全历史无正向）硬拦；duplicate_prior_result 永不硬拦（exempt_from_block=True）只提醒。
         # env ALPHA_MEMORY_HARD_BLOCK_DUPLICATES=0 可临时关闭。
         "hard_block_duplicates": True,
+        # OpenViking 冷路径长期记忆（2026-09-23 新增）：run 启动语义检索注入 system prompt、
+        # run 结束写回摘要到 viking://resources/alphaagent/（代码硬编码 scope 隔离）。
+        # 失败静默降级为纯 SQLite，不影响挖掘。
+        "enable_ov_long_term_memory": True,
+        "ov_endpoint": "http://127.0.0.1:1933",  # 本地 OpenViking HTTP 端点
+        "ov_inject_max_chars": 2400,          # OpenViking 注入块预算（对齐 max_inject_chars）
         "max_inject_chars": 2400,           # 注入块总预算，超限按 编辑先验>经验>多样性>证据 截断
         "apv_tau_c": 0.35,                  # APV 双门 1：置信阈值（Eq.7 置信）
         "apv_tau_v": 0.80,                  # APV 双门 2：失败 Beta 后验阈值

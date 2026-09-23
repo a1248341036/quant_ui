@@ -383,6 +383,26 @@ async def run_factor_mining_agentscope(
         homogenization_policy=(config.research_spec or {}).get("homogenization_policy"),
         run_id=log_dir.name,
     )
+    # OpenViking 冷路径长期记忆：run 启动检索跨 session 策略教训，注入 system prompt。
+    # ov_store 实例保留到 run 结束复用（写回摘要 + 更新死路族）；失败静默，降级纯 SQLite。
+    ov_store = None
+    if bool((config.research_spec or {}).get("memory_policy", {}).get("enable_ov_long_term_memory", True)):
+        try:
+            from alphaagent.factor.mining.memory.ov_store import OVStore
+
+            _ov_mp = (config.research_spec or {}).get("memory_policy", {})
+            ov_store = OVStore(
+                endpoint=_ov_mp.get("ov_endpoint", "http://127.0.0.1:1933"),
+                inject_max_chars=int(_ov_mp.get("ov_inject_max_chars") or 2400),
+            )
+            ov_block = ov_store.retrieve_lessons(getattr(config, "focus_facets", None), research_mode, limit=5)
+            if ov_block:
+                log_step("ov_retrieve", f"chars={len(ov_block)}")
+                extra_instructions = (extra_instructions + "\n" + ov_block).strip() if extra_instructions else ov_block
+        except Exception as exc:  # noqa: BLE001
+            log_step("ov_retrieve", "error", error=str(exc)[:200], level=logging.ERROR)
+            ov_store = None
+
     system_prompt = build_system_prompt(
         include_operator_catalog=include_operator_catalog,
         extra_instructions=extra_instructions,
@@ -1402,6 +1422,26 @@ async def run_factor_mining_agentscope(
         production_stored=production_stored,
         usage_calls=usage_total.get("calls"),
     )
+
+    # OpenViking 冷路径长期记忆：run 结束写回摘要 + 更新死路族（失败静默）
+    if ov_store is not None:
+        try:
+            if ov_store.write_run_summary(log_dir.name, config.model, summary):
+                log_step("ov_summary", f"run={log_dir.name}")
+        except Exception as exc:  # noqa: BLE001
+            log_step("ov_summary", "error", error=str(exc)[:200], level=logging.ERROR)
+        try:
+            saturated: dict[str, str] = {}
+            if memory_store is not None:
+                for fam, info in memory_store.compute_saturation().items():
+                    score = float(info.get("saturation_score") or 0.0)
+                    if score > 0.4:
+                        saturated[fam] = f"饱和度 {score:.2f}"
+            if saturated:
+                ov_store.update_dead_families(list(saturated.keys()), details=saturated)
+                log_step("ov_dead_families", f"families={len(saturated)}")
+        except Exception as exc:  # noqa: BLE001
+            log_step("ov_dead_families", "error", error=str(exc)[:200], level=logging.ERROR)
 
     return {
         "session_id": session_resp.session_id,
