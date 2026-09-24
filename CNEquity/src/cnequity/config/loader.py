@@ -153,6 +153,13 @@ class Config:
     # friction is the point, because the cost is theirs to accept.
     trade_ticks_max_symbols: int = 200
     trade_ticks_fetch_workers: int = 4
+    # 集合竞价过程快照 (0x056A) — opt-in intraday capture like [minute_bars],
+    # but a separate switch: one request per symbol per day, and the source
+    # serves it from the money-flow host group (standard pool first, fallback
+    # to the dedicated hosts).
+    auction_series_enabled: bool = False
+    auction_series_scope: str = "watchlist"
+    auction_series_symbols: list[str] = field(default_factory=list)
     failover_enabled: bool = True
     failover_datasets: list[FailoverDatasetSpec] = field(default_factory=list)
     config_path: Path | None = None
@@ -362,6 +369,7 @@ def load_config(path: str | Path) -> Config:
 
     minute_raw = raw.get("minute_bars", {})
     ticks_raw = raw.get("trade_ticks", {})
+    auction_raw = raw.get("auction_series", {})
     init_raw = raw.get("job", {}).get("init", {})
     phases_block = init_raw.get("phases", init_raw)
     init_phases = list(phases_block.get("names", init_raw.get("names", [])))
@@ -455,6 +463,9 @@ def load_config(path: str | Path) -> Config:
         trade_ticks_symbols=list(ticks_raw.get("symbols", [])),
         trade_ticks_max_symbols=int(ticks_raw.get("max_symbols", 200)),
         trade_ticks_fetch_workers=int(ticks_raw.get("fetch_workers", 4)),
+        auction_series_enabled=bool(auction_raw.get("enabled", False)),
+        auction_series_scope=str(auction_raw.get("scope", "watchlist")),
+        auction_series_symbols=list(auction_raw.get("symbols", [])),
         failover_enabled=bool(failover_raw.get("enabled", True)),
         failover_datasets=failover_datasets,
         config_path=config_path,
@@ -529,6 +540,15 @@ def validate_config(cfg: Config) -> list[str]:
         errors.append("[trade_ticks].max_symbols must be >= 1")
     if cfg.trade_ticks_fetch_workers < 1:
         errors.append("[trade_ticks].fetch_workers must be >= 1")
+
+    auction_scope = (cfg.auction_series_scope or "").strip()
+    if auction_scope and auction_scope != "all" and auction_scope != "watchlist" and not auction_scope.startswith("index:"):
+        errors.append(
+            f"[auction_series].scope {auction_scope!r} is not understood "
+            "(expected 'all', 'watchlist', or 'index:<symbol>')"
+        )
+    if cfg.auction_series_enabled and auction_scope == "watchlist" and not cfg.auction_series_symbols:
+        errors.append("[auction_series].scope = 'watchlist' but symbols is empty")
 
     referenced: list[tuple[str, str]] = []
     for wave in cfg.daily_waves:

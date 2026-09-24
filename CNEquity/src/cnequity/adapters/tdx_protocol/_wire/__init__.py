@@ -6,7 +6,7 @@ sibling mootdx were last released in 2024 and are no longer maintained, and
 mootdx additionally drags in `py-mini-racer`, a compiled V8 binding this
 project has no use for.
 
-Only the five calls this project makes are kept, against tdxpy's 22. The
+Only the calls this project makes are kept, against tdxpy's 22. The
 extended market (`exhq`), local-file readers and the financial crawler are all
 dropped, as is the pandas dependency — the lake converts to polars anyway.
 
@@ -36,6 +36,12 @@ from cnequity.adapters.tdx_protocol._wire.parser.std.get_security_bars import (
 )
 from cnequity.adapters.tdx_protocol._wire.parser.std.get_security_count import (
     GetSecurityCountCmd,
+)
+from cnequity.adapters.tdx_protocol._wire.parser.std.get_auction_series import (
+    GetAuctionSeriesCmd,
+)
+from cnequity.adapters.tdx_protocol._wire.parser.std.get_capital_changes import (
+    GetCapitalChangesCmd,
 )
 from cnequity.adapters.tdx_protocol._wire.parser.std.get_security_list import GetSecurityList
 from cnequity.adapters.tdx_protocol._wire.parser.std.get_transaction_data import (
@@ -120,6 +126,28 @@ class TdxWireClient(BaseSocketClient):
     @last_ack_time
     def get_xdxr_info(self, market: int, code: str):
         cmd = GetXdXrInfo(self.client, lock=self.lock)
+        cmd.setParams(market, code)
+        return cmd.call_api()
+
+    @last_ack_time
+    def get_auction_series(
+        self,
+        market: int,
+        code: str,
+        date: int = 0,
+        mode: int = 3,
+        start: int = 0,
+        count: int = 500,
+    ):
+        """集合竞价过程快照 (0x056A); ``date`` is an int yyyymmdd, 0 = today."""
+        cmd = GetAuctionSeriesCmd(self.client, lock=self.lock)
+        cmd.setParams(market, code, int(date), int(mode), int(start), int(count))
+        return cmd.call_api()
+
+    @last_ack_time
+    def get_capital_changes(self, market: int, code: str):
+        """股本变迁 / 权息资料 (0x000F), all categories 1..15 with raw floats."""
+        cmd = GetCapitalChangesCmd(self.client, lock=self.lock)
         cmd.setParams(market, code)
         return cmd.call_api()
 

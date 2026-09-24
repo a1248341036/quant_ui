@@ -1,6 +1,6 @@
 # 数据集目录
 
-cnequity 交付 **66 个注册数据集**：56 个原生 curated/derived 数据集，另有 10 个外部桥接（`external`）。原生数据按选股用途分为 L0–L8 九类；外部桥接同样进入查询、catalog 和 dashboard，但物理文件和字段契约由对应 adapter 管理。日内数据集 `minute_bars` / `minute_bars_5m` 默认关闭，需在 `[minute_bars]` 显式开启；分笔 `trade_ticks` 同样默认关闭，开关在**独立的** `[trade_ticks]`。
+cnequity 交付 **68 个注册数据集**：58 个原生 curated/derived 数据集，另有 10 个外部桥接（`external`）。原生数据按选股用途分为 L0–L8 九类；外部桥接同样进入查询、catalog 和 dashboard，但物理文件和字段契约由对应 adapter 管理。日内数据集 `minute_bars` / `minute_bars_5m` 默认关闭，需在 `[minute_bars]` 显式开启；分笔 `trade_ticks` 同样默认关闭，开关在**独立的** `[trade_ticks]`；集合竞价 `auction_series` 默认关闭，开关在**独立的** `[auction_series]`。
 
 权威字段定义：[schema.md](schema.md)。逐源限制：[sources.md](sources.md)。
 
@@ -151,6 +151,20 @@ bars_15m = (
 )
 ```
 
+### `auction_series` 是什么
+
+**集合竞价过程快照**（0x056A）：开盘（09:15–09:25）与收盘（14:57–15:00）竞价期间主站的逐秒虚拟撮合快照，不是成交回报。每行含 `auction_time`（秒级）、`price`、`matched_volume`（虚拟匹配量）、`unmatched_volume` / `unmatched_direction`（未匹配量与方向，1=买 / -1=卖 / 0=平衡），`session` 区分 `open` / `close`。量纲与全湖一致为**股**（源端报手，adapter ×100）。
+
+三条必须知道的口径：
+
+| 项 | 实情 |
+|----|------|
+| 09:25 行 | 是**虚拟撮合快照**，不是正式成交；正式开盘价/量以 `daily_bars` 为准 |
+| 历史深度 | 请求可带日期，但**主站按主机保留**，不保证回补；按当日抓取，别当回填目标 |
+| 主站路由 | 源端把 0x056A 路由到**资金流向专用主站组**；本实现先试标准池，失败再落到专用组 |
+
+`[auction_series]` 默认 `scope = "watchlist"`：指数没有竞价过程，默认成 `index:` 会整组空返回。
+
 ---
 
 ## 溯源列（所有 curated 行）
@@ -194,6 +208,7 @@ bars_15m = (
 | index_bars | trade_date | symbol, trade_date, frequency | by_date | ✓ | tdx_protocol | |
 | minute_bars | trade_date | symbol, trade_date, bar_time, frequency | by_date | ✓ | tdx_protocol | 1m。**可选**，默认关；`[minute_bars]` 配置范围；**源端只有 95 个交易日**（见下「历史视野」）；全市场约 35MB/日；required=false |
 | minute_bars_5m | trade_date | symbol, trade_date, bar_time, frequency | by_date | ✓ | tdx_protocol | 5m。同上可选；**491 个交易日（约 2 年），是唯一有真历史的日内频率**；全市场约 6MB/日；required=false |
+| auction_series | trade_date | symbol, trade_date, auction_time | by_date | ✓ | tdx_protocol | 集合竞价过程快照（0x056A）。**可选**，默认关；`[auction_series]` 独立配置；开/收盘竞价逐秒虚拟撮合快照；**历史深度随主站**，按当日抓取；required=false |
 
 两个日内数据集共用一组质量检查：主键重复（通用 `pk_unique`）、时段外 bar、`trade_date` 与 `bar_time` 不一致、会话缺口，以及**与日频的成交量+成交额双向对账**。
 | trade_ticks | trade_date | symbol, trade_date, tick_seq | by_date | ✓ | tdx_protocol | 分笔。**可选**，默认关；`[trade_ticks]` 独立配置；**不是逐笔成交**（见下）；源端回溯至 **2024-01-02**；watchlist 200 只约 7MB/日；required=false |
@@ -214,6 +229,7 @@ bars_15m = (
 | 数据集 | 分区键 | 主键 | 语义 | 水位 | 主源 | 备注 |
 |--------|--------|------|------|------|------|------|
 | corporate_actions | ex_date（按年） | symbol, ex_date, action_type | by_date | ✓ | eastmoney（日更） | 回填：tdx_protocol；混粒度用 `cne repartition` |
+| capital_changes | event_date（按年） | symbol, event_date, category | by_date | ✓ | tdx_protocol | 股本变迁/权息资料（0x000F）全类别 1–15：除权除息/送配股上市/增发/回购/缩股/权证/重整调整；`corporate_actions` 的原始事件日志；无日期过滤，日更全市场扫描后按 event_date 过滤 |
 | announcement_index | announce_date | announcement_id | by_date PIT | ✓ | cninfo | `as_of` 过滤 |
 | earnings_disclosure_schedule | report_period | symbol, report_period | by_date | — | eastmoney | 预约披露时间表（RPT_PUBLIC_BS_APPOIN）；现值语义非 PIT：变更覆盖 scheduled_date（first_scheduled_date 保留首约，actual_date 披露后回填）；`cne backfill` 走 2016 起全报告期 |
 | dividend | end_date（按年） | adapter contract | by_date | — | pg_parquet | 只读分红事件宽表 |

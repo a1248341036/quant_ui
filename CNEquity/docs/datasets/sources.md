@@ -103,6 +103,17 @@
 写一个只能补一天的备源，只会制造「有 fallback」的错觉——真正需要 fallback 的场景（回填历史）它一天都补不了。
 所以 `failover` 不为 `trade_ticks` 登记备源：**单源即契约**，TDX 不可达时这个数据集就是拉不到。
 
+#### auction_series
+
+| 项 | 值 |
+|------|-------|
+| 分组 | intraday@18:45 |
+| 主源 | tdx_protocol（集合竞价命令 `0x056a`） |
+| 备源 | **无**。源端把 0x056A 路由到资金流向专用主站组；本实现先试标准池，失败再落到专用组（`AUCTION_FALLBACK_HOSTS`），但两者是同一份数据，不是独立备源 |
+| 频率 | 按需 / 手动（`cne run daily --group intraday`） |
+| 主键 | (symbol, trade_date, auction_time) |
+| 已知限制 | 请求可带日期，但**主站按主机保留历史**，不保证回补——按当日抓取，别当回填目标；指数无竞价过程，默认 `scope = "watchlist"` |
+
 #### commodity_bars
 
 | 项 | 值 |
@@ -126,6 +137,17 @@
 | 主键 | (symbol, ex_date, action_type) |
 | 输出 | manifest 元数据 `symbols_to_rebackfill` |
 | **已知缺口** | 已退市标的的历史除权除息几乎全缺——2026-08 实测 109/111 个「原始收益率与 hfq 复权收益率不符」的审计发现都是已退市标的（北交所 106 个 + 非北交所 3 个）。**两个源都直接验证过**：`tdx_protocol` 的 `xdxr()` 传对市场号（market=2）后对这批标的仍返回 0 条；`eastmoney` 的历史快照（`meta/source_snapshots/corporate_actions`，覆盖 2015-09-29 起）里这批标的同样一条没有。是两个源都不再对已从其在线标的列表里消失的证券提供除权除息历史，跟标的所在市场、代码前缀无关（92xxxx 前缀里未退市的 328 只覆盖率 96%，同样是 92 前缀但已退市的 1 只覆盖率 0）。baostock 的 `query_dividend_data` 直接拒绝北交所代码（`股票代码未标识sh或sz`），不能顶上。不是本项目的代码缺陷，也不是限流——是这两个源本身对已退市证券的历史除权数据保留策略。`cne audit` 把这批发现单独归为 `missing_corporate_action_delisted`（info 级，一条汇总），不再对仍在交易的标的发出的 `missing_corporate_action`（warning 级）掺在一起。另有「缩股/减资/合股」等股本重组，不属于本数据集的四类分红除权事件；复权收益核对会用 `share_structure.change_reason` 做二次解释，并记为 `adjustment_explained_by_share_structure`（info），避免把已记录的股本重组误报成缺失除权 |
+
+#### capital_changes
+
+| 项 | 值 |
+|------|-------|
+| 分组 | core@16:00 |
+| 主源 | tdx_protocol（股本变迁命令 `0x000f`，与 xdxr 同命令） |
+| 备源 | **无**。wire 无日期过滤，日更全市场扫描后按 `event_date` 过滤；TDX 不可达时该数据集当日为空 |
+| 频率 | 每日（全市场扫描，约 1 请求/标的） |
+| 主键 | (symbol, event_date, category) |
+| 已知限制 | 与 `corporate_actions` 同源同命令，**已退市标的的历史同样缺失**（见上）；类别 1 的字段是「每 10 股」口径，与 `corporate_actions` 的每股契约不同，混用前先看 [schema.md](schema.md) |
 
 #### adj_factors（derived）
 

@@ -207,6 +207,24 @@ max_symbols = 200
 # latency. Measured serial: 1.70 req/s.
 fetch_workers = 4
 
+[auction_series]
+# 集合竞价过程快照 (0x056A) — the opening (09:15-09:25) and closing
+# (14:57-15:00) auction process, second-level virtual-match snapshots. Off by
+# default and NOT on the daily waves, like [minute_bars]: one request per
+# symbol per day, and the source serves it from the money-flow host group
+# (standard pool first, dedicated hosts as fallback).
+#
+# HISTORY. The wire accepts a date, but how far back a host keeps auction
+# snapshots varies by host — treat it as a same-day capture, not a backfill
+# target. `cne run daily --group intraday` fetches the current trading day.
+enabled = false
+# "watchlist" — exactly the symbols listed below (the default: indices have no
+#   auction process, so an index default would fail empty).
+# "index:<symbol>" — that index's latest constituents.
+# "all" — the whole universe; opt in knowingly.
+scope = "watchlist"
+symbols = []
+
 [failover]
 enabled = true
 
@@ -267,7 +285,7 @@ steps = ["compact", "derive_adj_factors", "derive_industry_index", "audit"]
 at = "16:00"
 steps = [
   "instruments", "trading_calendar", "trading_status", "stock_st", "trading_status_st",
-  "corporate_actions", "daily_bars", "index_bars",
+  "corporate_actions", "capital_changes", "daily_bars", "index_bars",
   "compact", "derive_adj_factors", "derive_industry_index",
 ]
 
@@ -312,9 +330,11 @@ steps = ["institutional_holdings", "analyst_consensus",
 
 # Not scheduled by anything: `cne run daily --group intraday` only. Enable
 # [minute_bars] first, and read the horizon note there before expecting history.
+# [auction_series] rides the same group but has its own switch — enabling one
+# must not quietly enable the other.
 [job.daily.groups.intraday]
 at = "18:45"
-steps = ["minute_bars", "minute_bars_5m", "compact"]
+steps = ["minute_bars", "minute_bars_5m", "auction_series", "compact"]
 
 # Also unscheduled: `cne run daily --group ticks`. Its own group rather than a
 # fourth entry in `intraday` above, so that turning on minute bars cannot drag

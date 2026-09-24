@@ -81,10 +81,12 @@ CNEquity 从 A 股开始，解决的是一件很具体的事：把分散在不�
 | `index_bars` | 指数日线 | tdx_protocol | eastmoney | 可回补 | core |
 | `minute_bars` ○ | 1 分钟线 | tdx_protocol | — | 可回补 | intraday |
 | `minute_bars_5m` ○ | 5 分钟线 | tdx_protocol | — | 可回补 | intraday |
+| `auction_series` ○ | 集合竞价过程快照 | tdx_protocol | — | 可回补 | intraday |
 | `trade_ticks` ○ | 分笔快照 | tdx_protocol | — | 可回补 | ticks |
 | **L2 · 公司事件** | | | | | |
 | `announcement_index` | 公告索引 | cninfo | — | 可回补 | capital |
 | `corporate_actions` | 公司行为 | tdx_protocol | eastmoney | 可回补 | core |
+| `capital_changes` | 股本变迁/权息资料 | tdx_protocol | — | 可回补 | core |
 | `earnings_disclosure_schedule` | 业绩披露预约 | eastmoney | — | 可回补 | fundamentals |
 | **L3 · 基本面** | | | | | |
 | `analyst_consensus` | 分析师一致预期 | eastmoney | — | 仅当日 | research |

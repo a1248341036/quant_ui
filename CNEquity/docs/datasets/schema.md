@@ -22,9 +22,11 @@ cnequity 的 curated 数据集统一带溯源列，并声明明确主键。
 | daily_bars | `trade_date`（按日） |
 | index_bars | `trade_date`（按年） |
 | minute_bars / minute_bars_5m | `trade_date`（按日） |
+| auction_series | `trade_date`（按日） |
 | trade_ticks | `trade_date`（按日） |
 | trading_status | `trade_date`（按月） |
 | corporate_actions | `ex_date`（按年） |
+| capital_changes | `event_date`（按年） |
 | adj_factors | `trade_date`（按日） |
 | financial_statement_items | `report_period` |
 | industry_members | `as_of_date` |
@@ -42,8 +44,10 @@ cnequity 的 curated 数据集统一带溯源列，并声明明确主键。
 | daily_bars | `(symbol, trade_date)` |
 | index_bars | `(symbol, trade_date, frequency)` |
 | minute_bars / minute_bars_5m | `(symbol, trade_date, bar_time, frequency)` |
+| auction_series | `(symbol, trade_date, auction_time)` |
 | trade_ticks | `(symbol, trade_date, tick_seq)` |
 | corporate_actions | `(symbol, ex_date, action_type)` |
+| capital_changes | `(symbol, event_date, category)` |
 | adj_factors | `(symbol, trade_date, adjust_type)` |
 | fund_flow | `(symbol, trade_date)` |
 | northbound_holdings | `(symbol, trade_date, channel)` |
@@ -235,6 +239,28 @@ scripts/migrate_daily_bars_volume_v2.py --config configs/cnequity.toml --apply
 
 **容量。** 实测 1m 26.9 B/行、5m 23.9 B/行（zstd）。全市场 1m ≈ 35MB/日、**8.4 GB/年**；5m ≈ 6MB/日、**1.5 GB/年**（作为对照：现有全部日频数据 2001–2026 共 468MB）。默认 `scope = "index:000300.SH"` 约 300 只，1m ≈2MB/日、0.5GB/年。
 
+#### auction_series
+
+集合竞价过程快照（0x056A）。**可选**，默认关闭（`[auction_series].enabled = false`），**独立的**配置节，不搭 `[minute_bars]` 的车；step 挂在 `intraday` 组，`cne run daily --group intraday` 才跑。
+
+| 列 | 类型 | 说明 |
+|--------|------|-------|
+| symbol | string | |
+| trade_date | date | 分区列 |
+| auction_time | timestamp（naive） | **秒级**；`minute_of_day × 60 + second` 还原的当日墙钟 |
+| session | string | `open`（09:15–09:25）/ `close`（14:57–15:00） |
+| price | float64 | 虚拟撮合价，未复权 |
+| matched_volume | int64 | **股**。虚拟匹配量；源端报手，adapter ×100 |
+| unmatched_volume | int64 | **股**。未匹配量（`unmatched_signed` 的绝对值） |
+| unmatched_direction | int8 | 未匹配方向：`1` 买 / `-1` 卖 / `0` 平衡 |
+| source / data_version / fetched_at | | 溯源列 |
+
+**09:25 行是虚拟撮合快照，不是正式成交。** 正式开盘价/量与 `daily_bars` 对账时不要把它当成交。收盘竞价（14:57–15:00）同理，15:00 的撮合结果才是收盘价。
+
+**历史深度随主站。** 请求可带日期（`date=YYYYMMDD`），但主站按主机保留历史，不保证回补——按当日抓取，别当回填目标。源端把 0x056A 路由到**资金流向专用主站组**；本实现先试标准池，失败再落到专用组（`AUCTION_FALLBACK_HOSTS`）。
+
+**默认 `scope = "watchlist"`。** 指数没有竞价过程，默认成 `index:` 会整组空返回。
+
 #### commodity_bars
 
 国内商品期货**主力连续**日 K（东财主连）+ 窄口径外盘（新浪 COMEX 金 ``GC0.CMX``）。
@@ -281,6 +307,44 @@ scripts/migrate_daily_bars_volume_v2.py --config configs/cnequity.toml --apply
 > 总乘数正确，但送/转拆分仅在东财日更路径可区分。东财一条同时包含派息、送股、
 > 转增的方案会拆成多条 `(symbol, ex_date, action_type)` 记录，避免单一 `action_type`
 > 把其它分配分量置零。
+
+#### capital_changes
+
+股本变迁 / 权息资料（0x000F）——`corporate_actions` 背后的**原始事件日志**：保留全部类别 1–15 与四个 wire 字段，不做 `corporate_actions` 那种「只留除权除息、折算成每股」的归一。日更走全市场扫描后按 `event_date` 过滤（wire 无日期过滤），回填保留窗口内全部事件。
+
+| 列 | 类型 | 说明 |
+|--------|------|-------|
+| symbol | string | |
+| event_date | date | 事件日期（YYYYMMDD） |
+| category | int8 | 1–15，见下表 |
+| category_name | string | 类别名（源端口径） |
+| c1 | float64 | 字段 1，单位随类别（见下） |
+| c2 | float64 | 字段 2 |
+| c3 | float64 | 字段 3 |
+| c4 | float64 | 字段 4 |
+| source / data_version / fetched_at | | 溯源列 |
+
+**类别与单位口径**（eltdx 实测口径；股本数量类 wire 报**万股**，×10000 转股）：
+
+| category | 名称 | 单位口径 |
+|----------|------|---------|
+| 1 | 除权除息 | 原值（每 10 股口径，与 `corporate_actions` 的每股契约不同） |
+| 2 | 送配股上市 | c1–c4 均万股 ×10000 |
+| 3 | 非流通股上市 | 万股 ×10000 |
+| 4 | 未知股本变动 | 原值 |
+| 5 | 股本变化 | 万股 ×10000 |
+| 6 | 增发新股 | **仅 c3** 万股 ×10000，其余原值 |
+| 7 | 股份回购 | 万股 ×10000 |
+| 8 | 增发新股上市 | 万股 ×10000 |
+| 9 | 转配股上市 | 万股 ×10000 |
+| 10 | 可转债上市 | 万股 ×10000 |
+| 11 | 扩缩股 | 原值 |
+| 12 | 非流通股缩股 | 原值 |
+| 13 | 送认购权证 | 原值 |
+| 14 | 送认沽权证 | 原值 |
+| 15 | 重整调整 | 原值 |
+
+**与 `corporate_actions` 的关系。** 同一 0x000F 命令，但 `corporate_actions` 只取 category=1 并折算成每股；本数据集保留全类别原始字段，供增发/回购/缩股/权证/重整等事件研究。类别 15（重整调整）是 tdxpy 旧解析器缺失的类别，本实现补齐。
 
 #### adj_factors
 

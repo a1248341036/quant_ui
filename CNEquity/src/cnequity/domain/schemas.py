@@ -77,6 +77,26 @@ MINUTE_BARS_SCHEMA = {
     "fetched_at": FETCHED_AT_DTYPE,
 }
 
+# 集合竞价过程快照 (0x056A). One row per second-level snapshot of the opening
+# (09:15-09:25) and closing (14:57-15:00) auction process; `session` splits
+# them. Volumes are 股 — the wire reports 手 and the adapter multiplies by 100,
+# per the lake's unit contract. `unmatched_direction` is 1 (buy) / -1 (sell) /
+# 0 (balanced). `auction_time` is a naive Asia/Shanghai wall clock, like
+# `bar_time`.
+AUCTION_SERIES_SCHEMA = {
+    "symbol": pl.Utf8,
+    "trade_date": pl.Date,
+    "auction_time": pl.Datetime(time_unit="us"),
+    "session": pl.Utf8,
+    "price": pl.Float64,
+    "matched_volume": pl.Int64,
+    "unmatched_volume": pl.Int64,
+    "unmatched_direction": pl.Int8,
+    "source": pl.Utf8,
+    "data_version": pl.Utf8,
+    "fetched_at": FETCHED_AT_DTYPE,
+}
+
 # Transaction records (分笔). Not tick data — A-share Level-1 is a 3-second
 # snapshot, so one row aggregates however many real trades landed in one frame
 # (6–33 on average, measured). See adapters/tdx_protocol/trade_ticks.py.
@@ -175,6 +195,26 @@ CORPORATE_ACTIONS_SCHEMA = {
     "transfer_ratio": pl.Float64,  # per share (转股: new shares per held share)
     "allotment_ratio": pl.Float64,  # per share (配股: offered shares per held share)
     "allotment_price": pl.Float64,  # per allotted share (yuan), NOT a ratio
+    "source": pl.Utf8,
+    "data_version": pl.Utf8,
+    "fetched_at": FETCHED_AT_DTYPE,
+}
+
+# 股本变迁 / 权息资料 (0x000F) — the raw event log behind corporate_actions:
+# every category 1..15 with the four wire fields decoded per category. The
+# share-count categories (2/3/5/7/8/9/10) carry 万股 on the wire and are
+# multiplied by 10000 to 股; 增发新股 (6) is mixed (only c3 is 万股); the rest
+# are float32 as-is — category 1 keeps the 每10股 dividend/rights ratios, so
+# this dataset is NOT per-share normalized like corporate_actions.
+CAPITAL_CHANGES_SCHEMA = {
+    "symbol": pl.Utf8,
+    "event_date": pl.Date,
+    "category": pl.Int8,
+    "category_name": pl.Utf8,
+    "c1": pl.Float64,
+    "c2": pl.Float64,
+    "c3": pl.Float64,
+    "c4": pl.Float64,
     "source": pl.Utf8,
     "data_version": pl.Utf8,
     "fetched_at": FETCHED_AT_DTYPE,
@@ -1278,9 +1318,11 @@ DATASET_SCHEMAS = {
     "index_bars": {**DAILY_BARS_SCHEMA, "frequency": pl.Utf8},
     "minute_bars": MINUTE_BARS_SCHEMA,
     "minute_bars_5m": MINUTE_BARS_SCHEMA,
+    "auction_series": AUCTION_SERIES_SCHEMA,
     "trade_ticks": TRADE_TICKS_SCHEMA,
     "commodity_bars": COMMODITY_BARS_SCHEMA,
     "corporate_actions": CORPORATE_ACTIONS_SCHEMA,
+    "capital_changes": CAPITAL_CHANGES_SCHEMA,
     "adj_factors": ADJ_FACTORS_SCHEMA,
     "financial_statement_items": FINANCIAL_STATEMENT_ITEMS_SCHEMA,
     "share_structure": SHARE_STRUCTURE_SCHEMA,
@@ -1326,11 +1368,13 @@ PRIMARY_KEYS = {
     "index_bars": ["symbol", "trade_date", "frequency"],
     "minute_bars": ["symbol", "trade_date", "bar_time", "frequency"],
     "minute_bars_5m": ["symbol", "trade_date", "bar_time", "frequency"],
+    "auction_series": ["symbol", "trade_date", "auction_time"],
     # Not trade_time: it has no seconds, so a busy minute holds twenty records
     # sharing one. tick_seq is the only thing that separates them.
     "trade_ticks": ["symbol", "trade_date", "tick_seq"],
     "commodity_bars": ["symbol", "trade_date"],
     "corporate_actions": ["symbol", "ex_date", "action_type"],
+    "capital_changes": ["symbol", "event_date", "category"],
     "adj_factors": ["symbol", "trade_date", "adjust_type"],
     # announce_date is part of the key, not an attribute of it: a restatement
     # republishes the same (period, item) with a new value on a new date, and
