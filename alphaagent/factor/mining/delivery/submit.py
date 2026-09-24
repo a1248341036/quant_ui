@@ -42,6 +42,21 @@ from alphaagent.factor.mining.runlog import log_step
 from core import factor_categories
 
 
+def _visible_range_of(session: Any) -> tuple[str, str] | None:
+    """会话的挖掘可见区间（train ∪ val，剔除盲测段）；取不到返回 None。
+
+    返回 None 时调用方应**跳过**依赖该区间的检查——绝不回落到全区间，
+    否则等于把盲测段数据算出的结论回流给 LLM。
+    """
+    ctx = getattr(session, "ctx", None)
+    if ctx is None:
+        return None
+    try:
+        return ctx.visible_range()
+    except Exception:  # noqa: BLE001 — 区间不可知 = 不做该检查
+        return None
+
+
 def _candidate_registry_similarity(
     cand_values: np.ndarray,
     panel: pd.DataFrame,
@@ -51,15 +66,32 @@ def _candidate_registry_similarity(
     min_pairs: int = 30,
     top_k: int = 3,
     cache=None,
+    visible_range: tuple[str, str] | None = None,
 ) -> dict[str, Any] | None:
     """候选因子与候选 registry 中已有因子的截面 Pearson 相似度。
 
     候选 registry 中的因子只有 DSL 表达式、无 dense values，需要在会话域
     panel 上重新求值。返回与 SimilarityMatrix.cross_sectional_neighbor_report
     同结构的 dict，或 None（registry 为空/无可比因子时）。
+
+    ``visible_range``：挖掘期 LLM 可见区间（train ∪ val）。会话 panel 覆盖到
+    盲测段，而本函数结果（top_neighbors 含 expr）会回流给 LLM，故调用方须传
+    ``StockEvalContext.visible_range()`` 以剔除盲测段；``None`` 保持全区间
+    语义（仅供离线脚本/测试使用）。
     """
     from alphaagent.dsl import eval_factor
     from alphaagent.factor.align import align_series_to_panel
+
+    # ── 盲测隔离：panel 与其行序对齐的 cand_values 必须同步收窄 ──
+    if visible_range is not None:
+        start, end = visible_range
+        dt = panel.index.get_level_values("datetime")
+        mask = np.asarray((dt >= pd.Timestamp(start)) & (dt <= pd.Timestamp(end)))
+        if not bool(mask.all()):
+            panel = panel[mask]
+            cand_values = np.asarray(cand_values)[mask]
+        if len(panel) == 0:
+            return None
 
     registry = load_mining_registry(candidate_registry_path)
     if not registry:
@@ -677,6 +709,7 @@ class FactorSubmitService:
                 zoo_report = sim_matrix.cross_sectional_neighbor_report(
                     zoo, None, top_k=stage_one_policy.similar_top_k,
                     candidate_sample=cand_sample,
+                    date_max=ctx.val_end,
                 )
             production_similarity = zoo_report if zoo_report is not None else {
                 "kind": SIMILARITY_KIND,
@@ -688,12 +721,17 @@ class FactorSubmitService:
 
             # ── 候选 registry 相似度（在会话域 panel 上对已有候选 DSL 重新求值）──
             # 仅作诊断/报告，不参与正式库准入拦截。
-            candidate_similarity = _candidate_registry_similarity(
-                cand_values, panel, self.candidate_registry_path,
-                exclude_factor_id=factor_id,
-                top_k=stage_one_policy.similar_top_k,
-                cache=getattr(session, "factor_cache", None),
-            )
+            # 盲测隔离：结果（top_neighbors 含 expr）会回流给 LLM，必须切到可见区间；
+            # 区间不可知时跳过该检查而非回落到全区间。
+            _visible = _visible_range_of(session)
+            if _visible is not None:
+                candidate_similarity = _candidate_registry_similarity(
+                    cand_values, panel, self.candidate_registry_path,
+                    exclude_factor_id=factor_id,
+                    top_k=stage_one_policy.similar_top_k,
+                    cache=getattr(session, "factor_cache", None),
+                    visible_range=_visible,
+                )
         # 准入判定：统计/换手/保留比任一不过即拒；全过再叠加相似度 corr 检查
         # （只查正式库，见上）。
         stage_one_ok = not gate_reasons

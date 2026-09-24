@@ -73,6 +73,20 @@ class StockEvalContext:
             max(self.train_end, self.val_end, test_end),
         )
 
+    def visible_range(self) -> tuple[str, str]:
+        """挖掘期 LLM 可见区间 = **train ∪ val**，不含盲测段（test）。
+
+        `coverage_range()` 让会话 panel 覆盖到 test 段（交付终审需要），
+        因此盲测隔离不能依赖 panel 边界——任何**回流给 LLM** 的计算
+        （正交/相似度召回、分布统计）都必须先切到本区间。
+
+        反例（2026-09-24 修复）：`_orthogonality_check` 直接在
+        `session.panel` 上随机抽样，锚点约 25% 落在 test 段，
+        把盲测段数据算出的相关系数回传给了模型。
+        详见 `docs/specs/alphaagent_mine_precheck_spec.md` §0。
+        """
+        return (self.train_start, self.val_end)
+
 
 def asset_type_label(asset_type: str) -> str:
     """资产类型的中文展示名（提示词/日志用）。"""

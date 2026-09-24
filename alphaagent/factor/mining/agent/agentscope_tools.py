@@ -277,6 +277,29 @@ def _sample_orthogonality_panel(panel: pd.DataFrame) -> pd.DataFrame:
     return panel[panel.index.get_level_values("datetime").isin(selected)]
 
 
+def _visible_panel(session: Any) -> pd.DataFrame | None:
+    """挖掘期 LLM 可见区间面板（train ∪ val，**剔除盲测段 test**）。
+
+    ``session.panel`` 覆盖 train ∪ val ∪ test（见 ``StockEvalContext.coverage_range``），
+    盲测隔离依赖下游按 split 切片；而正交召回的结论会回流给 LLM，故必须显式切到
+    ``visible_range()``。
+
+    取不到区间时返回 ``None``：调用方应跳过检查——既不放行泄漏（回落到全区间），
+    也不因异常而 fail-closed 误判为"高度相似"。
+    """
+    panel = getattr(session, "panel", None)
+    ctx = getattr(session, "ctx", None)
+    if panel is None or ctx is None:
+        return None
+    try:
+        start, end = ctx.visible_range()
+    except Exception:  # noqa: BLE001 — 区间不可知 = 不做检查，绝不回落到全区间
+        return None
+    from alphaagent.data.panel import slice_panel
+
+    return slice_panel(panel, start=start, end=end)
+
+
 def _orthogonality_check(tools: FactorEvalTools, multi_line_expr: str) -> dict[str, Any]:
     """Post-review sampled check against production/candidate zoos and registry candidates.
 
@@ -295,7 +318,12 @@ def _orthogonality_check(tools: FactorEvalTools, multi_line_expr: str) -> dict[s
     }
     try:
         session = tools.service.sessions.get(tools.session_id)
-        sampled_panel = _sample_orthogonality_panel(session.panel)
+        visible_panel = _visible_panel(session)
+        if visible_panel is None:
+            # 可见区间不可知 → 不做正交召回（宁缺勿泄漏）
+            result["skipped_reason"] = "visible_range_unavailable"
+            return result
+        sampled_panel = _sample_orthogonality_panel(visible_panel)
 
         from alphaagent.core.paths import FACTORZOO_DIR
         from core import factor_categories

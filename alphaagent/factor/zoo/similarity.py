@@ -53,6 +53,27 @@ def _sampled_pearson_vs_rows(
     return out
 
 
+def _sample_date_mask(zoo: FactorZoo, date_max: str) -> np.ndarray | None:
+    """抽样行中 ``datetime <= date_max`` 的列掩码（用于剔除盲测段）。
+
+    返回 ``None`` 表示无法确定（调用方保持原行为，不静默改变口径）。
+    ``row_id`` 为连续位置索引（构建约定；实测 14,328,299 行上等于 ``arange``
+    且单调），故可直接按位置取值；非连续时回退到 ``searchsorted`` 对齐。
+    """
+    try:
+        rows = zoo.index.rows
+        ids = zoo.index.sample_row_ids
+        rid = rows["row_id"].to_numpy()
+        dates_raw = rows["datetime"].to_numpy()
+        if len(rid) and int(rid[0]) == 0 and int(rid[-1]) == len(rid) - 1:
+            dates = dates_raw[ids]
+        else:
+            dates = dates_raw[np.searchsorted(rid, ids)]
+        return np.asarray(pd.DatetimeIndex(dates) <= pd.Timestamp(date_max))
+    except Exception:  # noqa: BLE001 — 掩码不可得 = 调用方保持原口径
+        return None
+
+
 def _pearson_ic(a: np.ndarray, b: np.ndarray, *, min_pairs: int = 2) -> float:
     x = np.asarray(a, dtype=np.float64)
     y = np.asarray(b, dtype=np.float64)
@@ -198,6 +219,7 @@ class SimilarityMatrix:
         min_pairs: int = 10,
         top_k: int = 3,
         candidate_sample: np.ndarray | None = None,
+        date_max: str | None = None,
     ) -> dict[str, Any]:
         """候选因子与库内因子的相似度报告（抽样行快速口径）。
 
@@ -208,6 +230,11 @@ class SimilarityMatrix:
 
         ``candidate_values`` 须为 canonical 行序全量值；或直接传对齐到抽样行的
         ``candidate_sample``（会话域复用时避免构造 canonical 全量数组）。
+
+        ``date_max``：**盲测隔离**。抽样行覆盖全部历史（实测 2009-01-05 ~
+        2026-08-24，其中 14.3% 落在 2025 起的盲测段），而本函数的相似度是
+        stage_one 的准入判决依据，故挖掘链路须传 ``val_end`` 剔除盲测段；
+        ``None`` 保持全历史口径（仅供离线审计脚本使用）。
         """
         empty = {"kind": SIMILARITY_KIND, "basis": SIMILARITY_BASIS_SAMPLED, "max_abs_corr": 0.0, "top_neighbors": []}
         order = [fid for fid in zoo.catalog.list_factor_ids() if fid != exclude_factor_id]
@@ -227,8 +254,16 @@ class SimilarityMatrix:
             if candidate_values is None:
                 raise ValueError("candidate_values 与 candidate_sample 至少提供一个")
             cand_sample = zoo.extract_sample_from_values(candidate_values)
+
+        Y = summaries[rows_idx]
+        if date_max is not None:
+            keep = _sample_date_mask(zoo, date_max)
+            if keep is not None and not bool(keep.all()):
+                cand_sample = cand_sample[keep]
+                Y = Y[:, keep]
+
         corr_arr = _sampled_pearson_vs_rows(
-            cand_sample, summaries[rows_idx], min_pairs=min_pairs
+            cand_sample, Y, min_pairs=min_pairs
         )
 
         corrs: list[tuple[str, float]] = [
