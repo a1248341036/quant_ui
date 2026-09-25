@@ -223,3 +223,98 @@ def test_s4_default_cases_have_no_model_adaptation_content():
         )
         row = next(r for r in report if r["module"] == "model_adaptation")
         assert row["chars"] == 0
+
+
+# ── S0: promising 语义 + 强制 val（feat/promising-to-val-gate）────────────────
+
+
+def test_promising_conclusion_marks_train_passed_semantics():
+    """promising verdict 文案明确'训练样本海选过线，非质量结论，必须 val'。"""
+    from alphaagent.factor.mining.memory.schema import SchemaMixin
+
+    metrics = {"ic": 0.024, "icir": 0.3, "factor_coverage": 0.92}
+    result = {"ok": True, "split": "train", "metrics": metrics}
+    verdict, conclusion = SchemaMixin._classify("eval_on_train_set", result, metrics, "")
+    assert verdict == "promising"
+    assert "训练样本海选过线" in conclusion
+    assert "eval_on_val_set" in conclusion
+
+
+class _AutoValService:
+    """模拟 StockEvalService.eval_val：记录调用，返回固定 val 结果。"""
+
+    def __init__(self, val_ok: bool = True) -> None:
+        self.val_ok = val_ok
+        self.calls: list[dict] = []
+
+    def eval_val(self, req):  # noqa: ANN001
+        self.calls.append({"expr": req.multi_line_expr, "sign": req.expected_sign})
+        if not self.val_ok:
+            return {"ok": True, "summary": {"ic": 0.005, "icir": 0.05, "factor_coverage": 0.9}}
+        return {"ok": True, "sign_check": {"matches_expected_sign": True},
+                "summary": {"ic": 0.02, "icir": 0.25, "factor_coverage": 0.92}}
+
+
+def _promising_result():
+    return {"ok": True, "split": "train",
+            "metrics": {"cross_sectional_core": {"ic": 0.024, "icir": 0.3, "factor_coverage": 0.92}}}
+
+
+def _mini_tools(svc):  # noqa: ANN001
+    from alphaagent.factor.mining.tools._dispatch import _DispatchMixin
+
+    class _T(_DispatchMixin):
+        def __init__(self, service) -> None:  # noqa: ANN001
+            self.service = service
+            self.session_id = "s1"
+            self.cognition_policy = {"force_val_on_promising": True}
+            self._auto_val_done = set()
+
+    return _T(svc)
+
+
+def test_auto_val_verify_runs_on_promising_and_passes():
+    svc = _AutoValService(val_ok=True)
+    t = _mini_tools(svc)
+    result = _promising_result()
+    t._auto_val_verify(result, "RANK($ret)", "f1")
+    assert len(svc.calls) == 1 and svc.calls[0]["sign"] == 1
+    vv = result.get("val_verification")
+    assert vv is not None and vv["passed"] is True
+    assert result.get("val_failed") is None
+
+
+def test_auto_val_verify_marks_failed_when_val_weak():
+    svc = _AutoValService(val_ok=False)
+    t = _mini_tools(svc)
+    result = _promising_result()
+    t._auto_val_verify(result, "RANK($ret)", "f1")
+    assert result.get("val_failed") is True
+    assert "样本外验证未通过" in result["val_verification"]["guidance"]
+
+
+def test_auto_val_verify_skips_below_promising_line():
+    svc = _AutoValService(val_ok=True)
+    t = _mini_tools(svc)
+    weak = {"ok": True, "split": "train",
+            "metrics": {"cross_sectional_core": {"ic": 0.005, "icir": 0.05, "factor_coverage": 0.9}}}
+    t._auto_val_verify(weak, "RANK($ret)", "f1")
+    assert svc.calls == [] and "val_verification" not in weak
+
+
+def test_auto_val_verify_dedups_by_expression():
+    svc = _AutoValService(val_ok=True)
+    t = _mini_tools(svc)
+    t._auto_val_verify(_promising_result(), "RANK($ret)", "f1")
+    t._auto_val_verify(_promising_result(), "RANK($ret)", "f2")
+    assert len(svc.calls) == 1  # 同一表达式只自动 val 一次
+
+
+def test_guaranteed_positives_excludes_promising(tmp_path):
+    """2026-09-25：promising 不再进入跨族保底正向父本（_guaranteed_positives）。"""
+    import tests.test_research_memory_v3 as T
+    from alphaagent.factor.mining.research_memory import ResearchMemoryStore
+
+    store = ResearchMemoryStore(tmp_path / "m.db")
+    store.record_tool_result(run_id="r1", row=T._eval_row("eval_on_train_set", "RANK($ret)", "p1", ic=0.024))
+    assert store._guaranteed_positives(k=5) == []

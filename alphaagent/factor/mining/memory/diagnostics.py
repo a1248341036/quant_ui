@@ -123,7 +123,10 @@ def _rebuild_conclusion(name: str, result: dict[str, Any], metrics: dict[str, An
         return "validated", f"训练外验证通过：{ic_str} {icir_str} {cov_str}。方向一致且有可用相关性，可在相邻但不重复的机制上扩展。"
     # 海选线从真源 evaluation_policy 继承
     if abs(ic or 0) >= _th and (icir or 0) > _icir_soft and (coverage or 0) > _cov:
-        return "promising", f"训练阶段有潜力：{ic_str} {icir_str} {cov_str}。优先进行训练外验证或独立性改造。"
+        return "promising", (
+            f"训练样本海选过线（train_passed，非质量结论）：{ic_str} {icir_str} {cov_str}。"
+            "必须 eval_on_val_set 做样本外验证；val 不过则结构不成立，禁止继续同根变异或提交。"
+        )
     return "weak", f"指标不足：{ic_str} {icir_str} {cov_str}。除非改变变量、经济机制或处理方式，否则不要机械重试。"
 
 

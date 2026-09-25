@@ -248,15 +248,18 @@ class RetrievalMixin:
         """
         if k <= 0:
             return []
+        # 2026-09-25：promising（训练样本过线，非质量结论）不再进入"值得作为父本"
+        # 的正向保底注入——它已被系统自动推 val，val 未通过的结构不应被当成功信号
+        # 引导模型继续在其邻域挖掘。保底正向只取真验证/入库档。
         tier = {
             "production_approved": 0, "validated": 1,
-            "candidate_approved": 2, "promising": 3,
+            "candidate_approved": 2,
         }
         try:
             with self._open() as conn:
                 rows = conn.execute(
                     "SELECT * FROM memory_entries WHERE verdict IN "
-                    "('production_approved','validated','candidate_approved','promising')"
+                    "('production_approved','validated','candidate_approved')"
                 ).fetchall()
         except sqlite3.Error:
             return []
@@ -726,15 +729,19 @@ class RetrievalMixin:
         return picks
 
     def _best_family_parent(self, family: str) -> dict[str, Any] | None:
-        """族内最优正向父本（验证档位优先，其次 |IC|）。"""
+        """族内最优正向父本（验证档位优先，其次 |IC|）。
+
+        2026-09-25：promising（训练样本过线，非质量结论）不再作为变异父本推荐——
+        recommend_edits 基于父本引导编辑，val 未验证的结构不应被推荐继续深耕。
+        """
         tier = {"production_approved": 0, "validated": 1,
-                "candidate_approved": 2, "promising": 3}
+                "candidate_approved": 2}
         try:
             with self._open() as conn:
                 rows = conn.execute(
                     "SELECT factor_name, expression, verdict, metrics_json "
                     "FROM memory_entries WHERE family = ? AND verdict IN "
-                    "('production_approved','validated','candidate_approved','promising')",
+                    "('production_approved','validated','candidate_approved')",
                     (family,),
                 ).fetchall()
         except sqlite3.Error:

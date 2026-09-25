@@ -75,6 +75,8 @@ class FactorEvalTools(_DispatchMixin, _AnalysisMixin):
         _ws = int(self.homogenization_policy.get("window_size", 10) or 10)
         self._recent_evals_cap: int = max(20, _ws * 2)
         self._recent_evals: list[dict[str, Any]] = []
+        # 已自动跑过样本外验证的表达式集合（_auto_val_verify 防抖，会话级）
+        self._auto_val_done: set[str] = set()
 
 
 __all__ = [

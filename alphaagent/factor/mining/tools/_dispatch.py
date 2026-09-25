@@ -42,7 +42,14 @@ _PREDICTION_SOFT_LIMIT = 3
 # 认知对账开关（research_spec.cognition_policy，消融 C1/C2）：缺省全开不改行为。
 # prediction_check_enabled=False → 不注入 prediction_check、缺失软门不再升级拦截；
 # ablation_check_enabled=False → 不注入 ablation_check/ablation_hint。
-_DEFAULT_COGNITION_POLICY = {"prediction_check_enabled": True, "ablation_check_enabled": True}
+_DEFAULT_COGNITION_POLICY = {
+    "prediction_check_enabled": True,
+    "ablation_check_enabled": True,
+    # 2026-09-25：train 海选过线（promising 线）后系统自动跑样本外验证。
+    # promising 语义是"训练样本过线"而非"质量结论"，强制 val 把"过线→验证"
+    # 变成系统行为，不再依赖模型自觉（实测 21 promising / 0 submit）。
+    "force_val_on_promising": True,
+}
 # 算子黑名单（research_spec.operator_policy.blacklist，消融 D2）：命中即在
 # 评估/提交前拦截并引导 LLM 改用基础算子；缺省空清单不拦截。
 _DEFAULT_OPERATOR_POLICY = {"blacklist": ()}
@@ -455,6 +462,101 @@ class _DispatchMixin:
         except Exception as exc:  # noqa: BLE001
             result["ablation_check"] = {"verdict": "skipped", "error": f"{type(exc).__name__}: {str(exc)[:120]}"}
 
+    def _auto_val_verify(self, result: dict[str, Any], expr: str, factor_name: str) -> None:
+        """训练海选过线（promising 线）后**系统自动**跑一次样本外验证。
+
+        2026-09-25（feat/promising-to-val-gate）：promising 语义 = "训练样本海选
+        过线"，不是质量结论。此前模型拿到 promising 后继续同根变异而非推 val
+        （实测 21 promising / 0 submit），现把"过线 → val"变成系统行为：
+        评估成功且达 promising 线时自动调用 eval_val，结果合并进
+        ``result["val_verification"]``；val 不过 → ``result["val_failed"]=True``
+        并附强提示。异常绝不阻断主评估（增强信息）。
+
+        阈值与 ``memory._classify`` 同源（evaluation_policy），val 门槛与
+        ``DeliveryCriteria.candidate`` 同源——避免口径漂移。
+        """
+        try:
+            if not self.cognition_policy.get("force_val_on_promising", True):
+                return
+            cs = (result.get("metrics") or {}).get("cross_sectional_core") or result.get("summary") or {}
+            ic = cs.get("ic")
+            icir = cs.get("icir")
+            cov = cs.get("factor_coverage", cs.get("coverage"))
+            try:
+                ic_f = abs(float(ic))
+                icir_f = float(icir)
+                cov_f = float(cov)
+            except (TypeError, ValueError):
+                return
+            from alphaagent.factor.mining.research_spec import DEFAULT_RESEARCH_SPEC
+
+            ep = DEFAULT_RESEARCH_SPEC["evaluation_policy"]
+            if not (
+                ic_f >= float(ep["min_train_abs_ic"])
+                and icir_f > float(ep.get("min_train_icir_soft", 0.2))
+                and cov_f > float(ep["min_train_coverage"])
+            ):
+                return
+            # 防抖：同表达式（归一化）只自动 val 一次（会话级）
+            key = re.sub(r"\s+", "", expr)
+            done = getattr(self, "_auto_val_done", None)
+            if done is None:
+                done = self._auto_val_done = set()
+            if key in done:
+                return
+            done.add(key)
+
+            from alphaagent.factor.mining.eval.schemas import EvalValRequest
+
+            sign = 1 if float(ic) >= 0 else -1
+            val = self.service.eval_val(
+                EvalValRequest(
+                    session_id=self.session_id,
+                    multi_line_expr=expr,
+                    factor_name=f"{factor_name}__auto_val",
+                    expected_sign=sign,
+                )
+            )
+            if not isinstance(val, dict) or not val.get("ok"):
+                return
+            vcs = (val.get("metrics") or {}).get("cross_sectional_core") or val.get("summary") or {}
+            v_ic = vcs.get("ic")
+            v_icir = vcs.get("icir")
+            v_cov = vcs.get("factor_coverage", vcs.get("coverage"))
+            v_sign = (val.get("sign_check") or {}).get("matches_expected_sign")
+
+            from alphaagent.factor.mining.delivery_criteria import DeliveryCriteria
+
+            crit = DeliveryCriteria.defaults()
+            retention = abs(float(v_ic) / float(ic)) if v_ic is not None and float(ic) else None
+            val_ok = bool(
+                v_ic is not None
+                and abs(float(v_ic)) >= float(crit.candidate.min_val_abs_ic)
+                and (retention is None or retention >= 0.5)
+                and v_sign is not False
+            )
+            result["val_verification"] = {
+                "auto": True,
+                "val_ic": round(float(v_ic), 6) if v_ic is not None else None,
+                "val_icir": round(float(v_icir), 6) if v_icir is not None else None,
+                "val_coverage": round(float(v_cov), 4) if v_cov is not None else None,
+                "val_retention": round(float(retention), 4) if retention is not None else None,
+                "sign_consistent": v_sign,
+                "passed": val_ok,
+                "min_val_abs_ic": float(crit.candidate.min_val_abs_ic),
+                "guidance": (
+                    "训练样本海选过线且样本外验证通过，可直接 submit_factor 走交付门槛，"
+                    "或作为父本向相邻机制扩展（不要继续堆同根变体）。"
+                    if val_ok
+                    else "训练样本海选过线但**样本外验证未通过**：结构在 val 段不成立，"
+                    "禁止继续同根变异或提交，应更换信号根/机制。"
+                ),
+            }
+            if not val_ok:
+                result["val_failed"] = True
+        except Exception:  # noqa: BLE001 — 自动 val 是增强信息，失败绝不影响主评估
+            pass
+
     def schemas(self) -> list[dict[str, Any]]:
         out = [
             {
@@ -665,6 +767,7 @@ class _DispatchMixin:
                 session_obj = self.service.sessions.get(self.session_id) if (self.service and hasattr(self.service, "sessions")) else None
                 _attach_yield_hints(result, expr, arguments, session=session_obj, recent_evals=getattr(self, "_recent_evals", None), turnover_gate_limit=_turnover_gate_limit_of(self))
                 self._record_eval_signature(result, expr)
+                self._auto_val_verify(result, expr, str(arguments.get("factor_name") or "expr"))
                 if self.cognition_policy.get("ablation_check_enabled", True):
                     self._attach_ablation(expr, arguments, profile_id=profile_id, result=result)
                 pred_block = self._prediction_gate("evaluate_factor", arguments, result)
@@ -742,6 +845,7 @@ class _DispatchMixin:
                 session_obj = self.service.sessions.get(self.session_id) if (self.service and hasattr(self.service, "sessions")) else None
                 _attach_yield_hints(result, expr, arguments, session=session_obj, recent_evals=getattr(self, "_recent_evals", None), turnover_gate_limit=_turnover_gate_limit_of(self))
                 self._record_eval_signature(result, expr)
+                self._auto_val_verify(result, expr, factor_name)
                 pred_block = self._prediction_gate("eval_on_train_set", arguments, result)
                 if pred_block is not None:
                     return pred_block
