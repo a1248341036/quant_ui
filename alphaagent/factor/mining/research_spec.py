@@ -239,6 +239,13 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
         "phase_mode": "auto",
         "phase_ratio": [1 / 3, 1 / 3, 1 / 3],
     },
+    "report_policy": {
+        "enable_report_mechanisms": False,
+        "enable_report_prior": False,
+        "enable_report_rag": False,
+        "enable_question_queue": True,
+        "question_queue_file": None,
+    },
 }
 
 
@@ -563,6 +570,16 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
         raise ValueError("research_spec.prompt_policy.phase_ratio_must_be_positive")
     pp["phase_ratio"] = ratio
     spec["prompt_policy"] = pp
+
+    # ── report_policy：研报先验机制策略（R4 问题队列驱动方案） ──
+    rp = spec.get("report_policy")
+    if not isinstance(rp, dict):
+        rp = {}
+    rp["enable_report_mechanisms"] = _require_bool(rp.get("enable_report_mechanisms", False), "report_policy.enable_report_mechanisms")
+    rp["enable_report_prior"] = _require_bool(rp.get("enable_report_prior", False), "report_policy.enable_report_prior")
+    rp["enable_report_rag"] = _require_bool(rp.get("enable_report_rag", False), "report_policy.enable_report_rag")
+    rp["enable_question_queue"] = _require_bool(rp.get("enable_question_queue", True), "report_policy.enable_question_queue")
+    spec["report_policy"] = rp
 
     profiles = resolve_profiles(spec)
     spec["evaluation_profiles"] = {profile_id: profile.as_dict() for profile_id, profile in profiles.items()}

@@ -810,6 +810,19 @@ async def run_factor_mining_agentscope(
         eff_block = _efficiency_self_check(live_metrics, tool_call_rows)
         if eff_block:
             block = f"{block}\n\n{eff_block}" if block else eff_block
+
+        # R4 方案：研报研究问题队列驱动（RDAgent 范式）
+        spec = getattr(config, "research_spec", None) or {}
+        report_policy = spec.get("report_policy") or {}
+        if bool(report_policy.get("enable_question_queue", True)):
+            try:
+                from alphaagent.factor.mining.agent.question_queue import get_task_for_turn
+                q_task = get_task_for_turn(outer_turn, spec=spec, focus_facets=getattr(config, "focus_facets", None))
+                if q_task:
+                    block = f"{block}\n\n{q_task}" if block else q_task
+            except Exception as _e:
+                log.warning("研报问题队列获取异常（失败静默）: %s", _e)
+
         return block
 
     def _queued_prompt(messages: list[str]) -> str:
