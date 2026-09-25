@@ -2,19 +2,22 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 
 import polars as pl
 
 from cnequity.adapters.eastmoney.fundamentals import fetch_financial_statement_items
 from cnequity.adapters.eastmoney.shareholders import CHANGE_DATE, NOTICE_DATE
-from cnequity.adapters.eastmoney.valuation import fetch_valuation_metrics
+from cnequity.adapters.eastmoney.valuation import fetch_valuation_metrics, fetch_valuation_metrics_tushare
 from cnequity.config import Config
 from cnequity.domain.symbols import is_all_a_symbol, parse_symbol
 from cnequity.orchestrator.registry import register_step
 from cnequity.query.canonical import dedupe_lazy_by_primary_key
 from cnequity.steps.common import instrument_metadata, load_bar_universe, load_symbols
 from cnequity.steps.http_common import run_incremental_fetched, write_fetched
+
+logger = logging.getLogger(__name__)
 
 # EastMoney's valuation clist is a live snapshot only; history comes from baostock.
 _VALUATION_BACKFILL_START = date(2016, 1, 1)
@@ -71,15 +74,36 @@ def step_valuation_metrics(config: Config, trade_date: date, run_id: str, contex
     # never have a price bar (audit: valuation_bars_orphan_symbol). Pin the daily
     # snapshot to the same universe daily_bars actually realises so PE/PB rows are
     # only written for symbols that trade.
+    universe = load_bar_universe(config)
+
+    def _fetch_with_fallback(day: date):
+        try:
+            df = fetch_valuation_metrics(day, config=config)
+            if not df.is_empty():
+                return df
+        except Exception as exc:
+            logger.warning("valuation_metrics: eastmoney failed (%s); trying tushare", exc)
+        # Tushare daily_basic fallback: whole-market per-day valuation.
+        # Uses the same middleware / rate limiter as tushare_wide_daily.
+        try:
+            df = fetch_valuation_metrics_tushare(day, universe=universe or None, config=config)
+            if not df.is_empty():
+                logger.warning("valuation_metrics: fell back to tushare daily_basic (%d rows)", df.height)
+                return df
+        except Exception as exc:
+            logger.warning("valuation_metrics: tushare fallback also failed: %s", exc)
+        # Both sources failed — re-raise the first error so the engine sees a failure.
+        raise RuntimeError(f"valuation_metrics: both eastmoney and tushare sources failed for {day.isoformat()}")
+
     return run_incremental_fetched(
         config,
         trade_date,
         run_id,
         "valuation_metrics",
-        lambda d: fetch_valuation_metrics(d, config=config),
+        _fetch_with_fallback,
         source="eastmoney",
         allow_empty=False,
-        universe=load_bar_universe(config),
+        universe=universe,
     )
 
 
