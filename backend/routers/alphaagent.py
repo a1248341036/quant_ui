@@ -417,9 +417,15 @@ def run_metrics(run_id: str) -> dict[str, Any]:
     return compute_run_metrics(run_id, Path(run.log_dir))
 
 
+# 内存级 Run 指标缓存 (run_id -> (mtime, metrics_dict))，避免重复解析磁盘 JSONL 与 AST
+_RUN_ROW_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
 @router.get("/metrics/overview")
 def metrics_overview(last: int = 20) -> dict[str, Any]:
     """整体统计：扫描全部 run 的效率/漏斗指标聚合 + Reviewer 校准 + 数据面/算子成功率。"""
+    import json
+    from datetime import datetime
     from alphaagent.factor.mining.run_metrics import compute_run_metrics, reviewer_calibration
     from alphaagent.factor.mining.memory.analytics import facet_operator_breakdown, research_funnel
 
@@ -453,6 +459,11 @@ def metrics_overview(last: int = 20) -> dict[str, Any]:
 
     rows = []
     for p in sorted_dirs:
+        mtime = p.stat().st_mtime
+        if p.name in _RUN_ROW_CACHE and _RUN_ROW_CACHE[p.name][0] == mtime:
+            rows.append(_RUN_ROW_CACHE[p.name][1])
+            continue
+
         sc_f = p / "scorecard.json"
         loaded = False
         if sc_f.is_file():
@@ -477,6 +488,7 @@ def metrics_overview(last: int = 20) -> dict[str, Any]:
                     m["config_hash"] = t_meta.get("config_hash")
                     m["bench_note"] = t_meta.get("bench_note")
                     m["bench_commit"] = t_meta.get("bench_commit")
+                    _RUN_ROW_CACHE[p.name] = (mtime, m)
                     rows.append(m)
                     loaded = True
             except Exception:
@@ -496,6 +508,7 @@ def metrics_overview(last: int = 20) -> dict[str, Any]:
                 m["bench_commit"] = t_meta.get("bench_commit") or m.get("bench_commit")
             except Exception:
                 pass
+            _RUN_ROW_CACHE[p.name] = (mtime, m)
             rows.append(m)
 
     delivered = [m for m in rows if (m["stored_production"] + m["stored_candidate"]) > 0]

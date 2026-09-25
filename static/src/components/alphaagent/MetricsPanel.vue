@@ -249,7 +249,7 @@ export default {
       loading: false,
       refreshing: false,
       error: '',
-      lastN: 0,
+      lastN: 20,
       facetMetric: 'rate',
       trendMetric: 'effective_novelty_rate',
       showFullMetrics: false,
