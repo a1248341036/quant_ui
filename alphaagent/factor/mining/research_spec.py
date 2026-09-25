@@ -243,8 +243,13 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
         "phase_ratio": [1 / 3, 1 / 3, 1 / 3],
     },
     "report_policy": {
+        # 研报知识注入通道（三选一 + 关闭，唯一真源 mining/report_channels.py）：
+        #   report_rag（默认，R3/R4 文献 RAG + 逐轮课题对齐）/ static_manual（R1 静态手册）
+        #   / mechanism_cards（R2 机制卡检索）/ off
+        "knowledge_mode": "report_rag",
         "enable_report_mechanisms": False,
         "enable_report_prior": False,
+        "report_cards_path": None,
         "enable_report_rag": True,
         "report_rag_max_chars": 1600,
         "report_rag_top_k": 3,
@@ -257,6 +262,11 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
         "question_field_gate_min_ratio": 0.5,
         "question_field_gate_scan_limit": 40,
         "question_field_warn": True,
+=======
+        "enable_report_mechanisms": True,
+        "enable_report_prior": False,
+        "report_cards_path": None,
+>>>>>>> 24a2d6d (feat(mining): 实现 R1 券商研报静态机制知识手册模块与先验注入)
     },
 }
 
