@@ -748,6 +748,7 @@ _SPECS = [
     DatasetSpec(
         "sector_fund_flow",
         primary_source="eastmoney",
+        backup_source="tushare",
         tier="L7",
         partition_col="trade_date",
         partition_granularity="month",
