@@ -570,9 +570,6 @@ _SPECS = [
         tier="L3",
         partition_col="forecast_date",
         fetch_semantics="snapshot",
-        # 分析师一致预期是东财 live 快照，无历史回放源；断供 1 天缺口无法 backfill。
-        # 容差从 1 放宽到 3，避免 T+1/短暂断供造成每天 STALE，仍可在 3 天后提示补数。
-        max_staleness_days=3,
         description="分析师一致预期",
     ),
     # L4 capital flows
@@ -663,9 +660,6 @@ _SPECS = [
         tier="L5",
         partition_col="as_of_date",
         fetch_semantics="snapshot",
-        # 板块成分股是东财 live 快照，无历史回放源；断供 1 天缺口无法 backfill。
-        # 容差从 1 放宽到 3，减少短暂 WAF/接口波动导致的 STALE 噪音。
-        max_staleness_days=3,
         description="板块成分股",
     ),
     DatasetSpec(
@@ -736,9 +730,6 @@ _SPECS = [
         partition_col="trade_date",
         partition_granularity="month",
         fetch_semantics="snapshot",
-        # 人气榜是东财 live 快照，且当前月分区下无法回放断供当天缺口；
-        # 容差从 1 放宽到 3，减少 WAF/接口波动造成的 STALE 噪音。
-        max_staleness_days=3,
         description="东财人气榜",
     ),
     DatasetSpec(
@@ -761,10 +752,6 @@ _SPECS = [
         partition_col="trade_date",
         partition_granularity="month",
         fetch_semantics="snapshot",
-        # 板块资金流向是东财 push2 快照，当前 WAF 断供中且无 backfill 源。
-        # 容差从 1 放宽到 3，减少 WAF 波动造成的 STALE 噪音（待 WAF 恢复后
-        # 当天快照可补齐，缺口不可回填）。
-        max_staleness_days=3,
         description="板块资金流向",
     ),
     DatasetSpec(
