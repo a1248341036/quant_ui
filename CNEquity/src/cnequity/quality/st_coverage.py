@@ -385,7 +385,12 @@ def publish_st_receipts_for_compacted_run(config: Config, run_id: str) -> list[P
             continue
         if checkpoint.get("completion_run_id") != run_id:
             continue
-        published.append(publish_st_coverage_receipt(config, checkpoint))
+        try:
+            published.append(publish_st_coverage_receipt(config, checkpoint))
+        except ValueError as exc:
+            logger.warning(
+                "st_coverage: skipping receipt for %s: %s", path.name, exc
+            )
     return published
 
 
