@@ -847,7 +847,10 @@ class SchemaMixin:
         # 海选线从真源 evaluation_policy 继承
         th = _th
         if abs(ic or 0) >= th and (icir or 0) > _icir_soft and (coverage or 0) > _cov:
-            return "promising", f"训练阶段有潜力：{ic_str} {icir_str} {cov_str}。优先进行训练外验证或独立性改造。"
+            return "promising", (
+                f"训练样本海选过线（train_passed，非质量结论）：{ic_str} {icir_str} {cov_str}。"
+                "必须 eval_on_val_set 做样本外验证；val 不过则结构不成立，禁止继续同根变异或提交。"
+            )
         # P0-2 near_miss（2026-09-05）：IC 达门槛 80%、ICIR/coverage 达标但未过线——
         # 不再直接记 weak 死档，给"窗口微调/推 val"的二次机会（记忆分析：technical
         # 档 239 个 near-miss 无一获得二次评估）。阈值单一真源在 constants.py。

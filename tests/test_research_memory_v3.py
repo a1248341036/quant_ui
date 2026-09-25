@@ -827,6 +827,10 @@ def test_recommend_edits_scores_cells(tmp_path):
     store = ResearchMemoryStore(tmp_path / "m.db")
     parent_expr = "RANK(SUBTRACT($adj_close, TS_MEAN($vwap, 10)))"
     store.record_tool_result(run_id="r1", row=_eval_row("eval_on_train_set", parent_expr, "vwap_p", ic=0.02))
+    # 父本记为候选入库（candidate_approved）：2026-09-25 起 promising（仅训练过线）
+    # 不再作为变异父本推荐；candidate ÷5 使该族饱和度 ≤0.4，避免 D2 门控抑制本用例。
+    store.record_tool_result(run_id="r1", row=_submit_row(parent_expr, "vwap_p", candidate_stored=True,
+                                                          metrics={"ic": 0.02, "icir": 0.4, "factor_coverage": 0.9}))
     # 6 次同 (family, motif, bucket) 的显式子代编辑、残差持续为正 → 置信 > 0.3
     for i, ic in enumerate([0.03, 0.034, 0.036, 0.038, 0.04, 0.042]):
         store.record_tool_result(run_id="r1", row=_eval_row(
@@ -838,9 +842,10 @@ def test_recommend_edits_scores_cells(tmp_path):
     top = recs[0]
     assert top["family"] == "vwap"
     assert top["motif"] == "window_rescale"
-    # 族内最优父本 = 验证档位最高、|IC| 最大的正向条目（强子代优于原始父本）
-    assert top["parent_factor"] == "vwap_c5"
-    assert abs(top["parent_ic"] - 0.042) < 1e-9
+    # 族内最优父本 = 验证/入库档位最高的正向条目；promising 子代（vwap_c5 等，
+    # 仅训练过线）2026-09-25 起不再作为父本，故父本回落为 candidate_approved 的 vwap_p。
+    assert top["parent_factor"] == "vwap_p"
+    assert abs(top["parent_ic"] - 0.02) < 1e-9
     assert "残差" in top["reason"]
     # 空库：回退族级推荐或返回空，均不得抛错
     empty = ResearchMemoryStore(tmp_path / "empty.db")
