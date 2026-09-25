@@ -142,10 +142,10 @@
 
 | 项 | 值 |
 |------|-------|
-| 分组 | core@16:00 |
+| 分组 | events（按需 / backfill，不排入 daily core 门禁） |
 | 主源 | tdx_protocol（股本变迁命令 `0x000f`，与 xdxr 同命令） |
 | 备源 | **无**。wire 无日期过滤，日更全市场扫描后按 `event_date` 过滤；TDX 不可达时该数据集当日为空 |
-| 频率 | 每日（全市场扫描，约 1 请求/标的） |
+| 频率 | 按需 / 回填（全市场扫描约 1 请求/标的，推荐使用 `cne backfill capital_changes`） |
 | 主键 | (symbol, event_date, category) |
 | 已知限制 | 与 `corporate_actions` 同源同命令，**已退市标的的历史同样缺失**（见上）；类别 1 的字段是「每 10 股」口径，与 `corporate_actions` 的每股契约不同，混用前先看 [schema.md](schema.md) |
 

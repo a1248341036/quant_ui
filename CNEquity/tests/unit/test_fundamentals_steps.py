@@ -156,8 +156,43 @@ def test_valuation_metrics_rejects_empty_snapshot(cfg, monkeypatch):
         "fetch_valuation_metrics",
         lambda *_args, **_kwargs: pl.DataFrame(),
     )
-    with pytest.raises(RuntimeError, match="valuation_metrics: no rows returned"):
+    # 当 EM 返回空时 fallback 到 tushare；两者都空才抛错
+    monkeypatch.setattr(
+        fund,
+        "fetch_valuation_metrics_tushare",
+        lambda *_args, **_kwargs: pl.DataFrame(),
+    )
+    with pytest.raises(RuntimeError, match="both eastmoney and tushare sources failed"):
         fund.step_valuation_metrics(cfg, date(2024, 6, 28), "run-empty", {})
+
+
+def test_valuation_metrics_falls_back_to_tushare_when_em_empty(cfg, monkeypatch):
+    """EM clist 为空时，fallback 到 tushare daily_basic，行带 source=tushare。"""
+    monkeypatch.setattr(fund, "load_bar_universe", lambda _config: {"600519.SH", "000001.SZ"})
+    monkeypatch.setattr(fund, "fetch_valuation_metrics", lambda *_a, **_k: pl.DataFrame())
+
+    tushare_rows = pl.DataFrame({
+        "symbol": ["600519.SH", "000001.SZ"],
+        "trade_date": [date(2024, 6, 28)] * 2,
+        "pe_ttm": [17.6, 4.4],
+        "pb": [6.2, 0.49],
+        "ps_ttm": [8.1, 3.0],
+        "total_mv": [2.1e12, 2.27e11],
+        "float_mv": [2.0e12, 2.2e11],
+        "source": ["tushare", "tushare"],
+    })
+    monkeypatch.setattr(fund, "fetch_valuation_metrics_tushare", lambda *_a, **_k: tushare_rows)
+
+    result = fund.step_valuation_metrics(cfg, date(2024, 6, 28), "run-fb", {})
+    assert result["rows_written"] == 2
+
+    # 数据写入 staging（compact 步骤负责 staging→curated）
+    staged = list(cfg.staging_root.glob("valuation_metrics/**/*.parquet"))
+    assert staged, "staging 中应有 valuation_metrics parquet 文件"
+    df = pl.concat([pl.scan_parquet(str(p)).collect() for p in staged])
+    assert df.height == 2
+    # provenance 诚实：fallback 行 source=tushare，而非 eastmoney
+    assert set(df["source"].to_list()) == {"tushare"}
 
 
 def test_load_bar_universe_ignores_zero_volume_placeholders(cfg):

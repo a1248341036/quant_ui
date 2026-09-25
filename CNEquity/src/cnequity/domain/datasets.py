@@ -585,6 +585,7 @@ _SPECS = [
     DatasetSpec(
         "valuation_metrics",
         primary_source="eastmoney",
+        backup_source="tushare",
         tier="L3",
         partition_col="trade_date",
         fetch_semantics="snapshot",
@@ -775,6 +776,7 @@ _SPECS = [
     DatasetSpec(
         "sector_fund_flow",
         primary_source="eastmoney",
+        backup_source="tushare",
         tier="L7",
         partition_col="trade_date",
         partition_granularity="month",

@@ -42,18 +42,22 @@ def build_system_prompt(
     focus_facets: list[str] | tuple[str, ...] | None = None,
     prompt_phase: str = "full",
     max_tool_calls_per_round: int = 8,
+    model_name: str = "",
 ) -> str:
     """按模块注册表装配系统提示词；返回最终文本。
 
     板块启用与否由运行时事实（panel 实际列、基本面开关、种群模式、数据面聚焦、
-    用户额外指令、分阶段注入策略）决定；装配报告（每模块 on/off + 字符数 + 占位符残留）
-    由 ``assemble_system_prompt`` 返回，需要时用 ``build_system_prompt_with_report`` 获取。
+    用户额外指令、分阶段注入策略、挖掘模型名）决定；装配报告（每模块 on/off +
+    字符数 + 占位符残留）由 ``assemble_system_prompt`` 返回，需要时用
+    ``build_system_prompt_with_report`` 获取。
 
     ``prompt_phase`` 控制分阶段动态注入：
     - ``"full"``（默认）：全量装配，向后兼容；
     - ``"explore"``：探索阶段，裁剪冷门算子/IC 形态学/中性化/交付等模块；
     - ``"deepen"``：深耕阶段，恢复全部约束；
     - ``"deliver"``：交付阶段，全量 + 交付模块。
+
+    ``model_name`` 供 S4 model_adaptation 模块消费；空串时该模块不渲染。
     """
     text, _ = build_system_prompt_with_report(
         include_operator_catalog=include_operator_catalog,
@@ -67,6 +71,7 @@ def build_system_prompt(
         focus_facets=focus_facets,
         prompt_phase=prompt_phase,
         max_tool_calls_per_round=max_tool_calls_per_round,
+        model_name=model_name,
     )
     return text
 
@@ -84,6 +89,7 @@ def build_system_prompt_with_report(
     focus_facets: list[str] | tuple[str, ...] | None = None,
     prompt_phase: str = "full",
     max_tool_calls_per_round: int = 8,
+    model_name: str = "",
 ) -> tuple[str, list[dict[str, Any]]]:
     """装配系统提示词并返回 ``(text, module_report)``（无模块级可变全局）。"""
     cols = frozenset(panel_columns) if panel_columns is not None else None
@@ -104,6 +110,7 @@ def build_system_prompt_with_report(
         prompt_phase=prompt_phase,
         max_tool_calls_per_round=max_tool_calls_per_round,
         extra_instructions=extra_instructions or "",
+        model_name=model_name or "",
     )
 
     return assemble_system_prompt(DEFAULT_MODULES, ctx)

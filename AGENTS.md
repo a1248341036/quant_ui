@@ -338,7 +338,7 @@ label/panel 列加载/engine_gate 频率的语义。迁移脚本
 
 ## 关键设计决策
 
-- **盲测段锁定（`scripts/blind_test_factors.py`）**：2025-01-01 起为锁定盲测段——挖掘会话面板 coverage = `train_start~val_end`（2020~2024），LLM 迭代、stage_one/two、engine_gate 全部看不到 2025 数据；`blind_test_factors.py` 对已定稿因子做一次性离线重测（复用 `compute_ingest_metrics` 同口径），结果只写 `artifacts/alphaagent/blind_test/<run_ts>/report.json`、不回流任何门槛。**频繁重测会把盲测段重新烧掉（多重检验），克制使用频率**。train/val 双段在筛选中被反复使用、非真正 held-out——盲测段是唯一的诚实样本外。窗口重映射记录：2026-08-29 由 train 2018~2022 / val 2023~2025 / test 2026 起 调整为 train 2020~2022 / val 2023~2024 / test 2025 起（train 收近 3 年防因子衰减，test 段约 20 个月更足）。
+- **盲测段锁定（`scripts/blind_test_factors.py`）**：2025-01-01 起为锁定盲测段。**隔离靠"按 split 切片"，而非"panel 里没有 test 数据"**——`StockEvalContext.coverage_range()` 取 train ∪ val ∪ test 并集作为 panel 加载范围（实测 `('2020-01-01', 数据最新)`）；真正受限的是评估路径的 `get_split_panel(split)` 切片与 `_MINING_ALLOWED_PROFILES` 白名单（`split=full` 口径的 profile 挖掘期不可用）。**2026-09-24 更正**：原文"挖掘会话面板 coverage = `train_start~val_end`（2020~2024）"与实现不符，该错误描述曾掩盖四条旁路通道（正交召回在含 test 的 panel 上随机采样 → 约 25% 锚点落盲测段 / 候选池正交全量逐日含 test / zoo 采样行 14.3%（85678/100000）在 test 段且是 stage_one 判决依据 / research memory 证据块每轮注入明文 `test_ic`），已由分支 `fix/blind-segment-isolation`（commit `4c31407`）修复：新增 `StockEvalContext.visible_range()`（= train ∪ val）为唯一真源，凡回流 LLM 或参与判决的相似度与统计计算均切到该区间；回归测试 `tests/test_blind_segment_isolation.py`（8 例，含零交集断言），详见 `docs/specs/alphaagent_mine_precheck_spec.md` §0。`blind_test_factors.py` 对已定稿因子做一次性离线重测（复用 `compute_ingest_metrics` 同口径），结果只写 `artifacts/alphaagent/blind_test/<run_ts>/report.json`、不回流任何门槛。**频繁重测会把盲测段重新烧掉（多重检验），克制使用频率**。train/val 双段在筛选中被反复使用、非真正 held-out——盲测段是唯一的诚实样本外。窗口重映射记录：2026-08-29 由 train 2018~2022 / val 2023~2025 / test 2026 起 调整为 train 2020~2022 / val 2023~2024 / test 2025 起（train 收近 3 年防因子衰减，test 段约 20 个月更足）。
 - **panel 实时构建而非预构建**：`cne://` 标识触发 adapter 从 CNE 数据湖按日期范围拉取，避免维护大 parquet 文件。首次加载约 30-60 秒，之后驻内存复用。
 - **因子注册表单一来源（`core/factor_registry.py`）**：全部引擎因子（量价/基金/财务/动态）的元数据收口在 `FACTORS` 表；`core/composites.FACTOR_OPTIONS` 由它派生（组合编辑器清单），`strategies.registry.validate_registry_factors()` 校验策略引用。加因子 = 注册表加一行 + `build_factor_frames` 实现计算。
 - **策略定义统一模型（`core/strategy_types.py`）**：`StrategyDefinition` 收敛注册表/配置池/归档三源，`resolve_strategy_def()` 统一解析（保留旧 `resolve_strategy()` dict 兼容），`fingerprint()` 用于策略去重/冲突检测。DSL 因子经 `from_dsl_factor()` 动态构造（不回填策略池）。
@@ -454,7 +454,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start_backend_with_s
 # 缺省 dry-run，--apply 执行；门槛复用 DeliveryChecker，与提交路径零口径漂移）
 .venv\Scripts\python.exe scripts\rescreen_candidate_pool.py --data-root . --apply
 
-# 盲测段因子重测（默认 2026-01-01 起；锁定段——挖掘循环与入库门槛从未见过 2026 数据）
+# 盲测段因子重测（默认 2026-01-01 起；盲测段是唯一诚实样本外，此命令是其正式用途）
 .venv\Scripts\python.exe scripts\blind_test_factors.py
 
 # 前端 dev

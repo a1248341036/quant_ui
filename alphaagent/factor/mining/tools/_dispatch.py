@@ -21,6 +21,7 @@ from alphaagent.factor.mining.eval.prediction import (
 
 from ._schemas import (
     _EVAL_PARAMETERS,
+    _PRECHEK_PARAMETERS,
     _PROFILE_EVAL_PARAMETERS,
     _RECOMMEND_MRMR_FACTORS_PARAMETERS,
     _SCREEN_FACTORS_PARAMETERS,
@@ -536,6 +537,21 @@ class _DispatchMixin:
             }
         )
 
+        out.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": "precheck_expression",
+                    "description": (
+                        "【结构风险静态预检】对 DSL 表达式做纯 AST 分析，不触发评估："
+                        "门控 threshold 过高（分箱坍缩）、分段中间区过宽、稀疏字段 FILLNA(0) 零簇、"
+                        "已知死路结构。评估/提交前调用可避免在注定坍缩的结构上空转。"
+                    ),
+                    "parameters": _PRECHEK_PARAMETERS,
+                },
+            }
+        )
+
         return out
 
     def dispatch(self, name: str, arguments: Any) -> dict[str, Any]:
@@ -766,7 +782,31 @@ class _DispatchMixin:
         if name == "recommend_mrmr_factors":
             return self._dispatch_recommend_mrmr_factors(arguments)
 
+        if name == "precheck_expression":
+            return self._dispatch_precheck_expression(arguments)
+
         return {"ok": False, "error": f"unknown_tool: {name}", "error_type": "UnknownTool"}
+
+    def _dispatch_precheck_expression(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        """S1：结构风险静态预检（纯 AST，不触发评估、不触达盲测段）。"""
+        from alphaagent.factor.mining.tools._precheck import precheck_expression
+
+        expr = arguments.get("multi_line_expr")
+        if not isinstance(expr, str) or not expr.strip():
+            return {"ok": False, "error": "multi_line_expr_required_non_empty_string", "error_type": "ToolArgumentsError"}
+        try:
+            return precheck_expression(expr)
+        except Exception as exc:  # noqa: BLE001 — 预检失败不阻断
+            return {
+                "ok": True,
+                "result": {
+                    "risks": [{"kind": "precheck_error", "risk": "unknown",
+                               "hint": f"{type(exc).__name__}: {str(exc)[:160]}"}],
+                    "risk_count": 1,
+                    "max_risk": "unknown",
+                    "summary": "结构预检异常，请以评估结果为准。",
+                },
+            }
 
     def _dispatch_submit(self, arguments: dict[str, Any]) -> dict[str, Any]:
         if self.submit_service is None:

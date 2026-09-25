@@ -650,7 +650,7 @@ def _compute_adj_factors_locked(
         len(refresh_set),
     )
 
-    workers = max(1, min(config.workers, 16))
+    workers = max(1, min(config.workers, 32))
 
     # Sina only provides hfq factors for stocks (not ETFs, LOFs, or bonds).
     # _uncovered_symbols already filters by asset_type, but retry_symbols and

@@ -55,6 +55,9 @@ class PromptContext:
     max_tool_calls_per_round: int = 8
     # 用户/系统注入的额外指令（extra_instructions 模块消费）
     extra_instructions: str = ""
+    # 挖掘模型名（S4 model_adaptation 模块消费：按 provider/model 注入行为约束；
+    # 空字符串 = 不渲染，保持默认装配与黄金基线不变）
+    model_name: str = ""
 
 
 @dataclass(frozen=True)

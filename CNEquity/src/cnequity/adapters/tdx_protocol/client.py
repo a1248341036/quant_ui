@@ -988,15 +988,16 @@ def fetch_auction_series(
         try:
             with TDX_SESSION_LOCK:
                 client = client_factory()
-                for sym in scope:
-                    if on_heartbeat is not None:
-                        on_heartbeat()
-                    try:
+            for sym in scope:
+                if on_heartbeat is not None:
+                    on_heartbeat()
+                try:
+                    with TDX_SESSION_LOCK:
                         df = _fetch_one(client, sym, trade_date=trade_date, rate_limit=rate_limit)
-                        rows.extend(df.to_dicts())
-                    except Exception as exc:  # noqa: BLE001 — recorded, sweep continues
-                        logger.warning("auction failed for %s: %s", sym, exc)
-                        failed.append(sym)
+                    rows.extend(df.to_dicts())
+                except Exception as exc:  # noqa: BLE001 — recorded, sweep continues
+                    logger.warning("auction failed for %s: %s", sym, exc)
+                    failed.append(sym)
         finally:
             _close_quotes_client(client)
         return rows, failed
@@ -1047,17 +1048,18 @@ def fetch_capital_changes(
     try:
         with TDX_SESSION_LOCK:
             client = _connect_with_retry(config)
-            for index, sym in enumerate(symbols, start=1):
-                try:
+        for index, sym in enumerate(symbols, start=1):
+            try:
+                with TDX_SESSION_LOCK:
                     df = _fetch_one(
                         client, sym, rate_limit=rate_limit, on_date=on_date, strict=strict
                     )
-                    rows.extend(df.to_dicts())
-                except Exception as exc:  # noqa: BLE001 — recorded, sweep continues
-                    logger.warning("capital_changes failed for %s: %s", sym, exc)
-                    failed.append(sym)
-                if on_progress is not None:
-                    on_progress(index, len(symbols))
+                rows.extend(df.to_dicts())
+            except Exception as exc:  # noqa: BLE001 — recorded, sweep continues
+                logger.warning("capital_changes failed for %s: %s", sym, exc)
+                failed.append(sym)
+            if on_progress is not None:
+                on_progress(index, len(symbols))
     except ImportError as exc:
         raise TdxSourceError("capital_changes: TDX wire client unavailable") from exc
     except Exception as exc:
@@ -1068,6 +1070,47 @@ def fetch_capital_changes(
 
     df = pl.DataFrame(rows) if rows else pl.DataFrame(schema=_CAPITAL_CHANGES_FETCH_SCHEMA)
     return df, failed
+
+
+def _fetch_trading_status_tushare(
+    symbols: list[str],
+    trade_date: date,
+    *,
+    config: Config | None = None,
+) -> pl.DataFrame:
+    """Tushare ``stock_st`` fallback for the daily trading_status snapshot.
+
+    EastMoney's push2 clist is the primary ST feed, but it is WAF-blocked for
+    some egress routes (overseas / cloud IPs get ``Server disconnected``).
+    Tushare's ``stock_st`` returns the per-day all-market risk-warning list,
+    which is an independent source. It only knows ST names — suspension is not
+    covered — so every non-ST symbol is emitted as ``normal`` and the caller's
+    completeness check (expected_symbols vs observed) still holds.
+    """
+    from cnequity.external.tushare_fetch import _fetch_with_retry, _get_pro
+
+    pro = _get_pro(config)
+    raw = _fetch_with_retry(
+        pro,
+        "stock_st",
+        interval=config.external_tushare_wide_interval,
+        trade_date=trade_date.strftime("%Y%m%d"),
+    )
+    if raw.is_empty():
+        return pl.DataFrame()
+
+    st_symbols = set(raw.get_column("ts_code").drop_nulls().to_list())
+    rows = [
+        {
+            "symbol": sym,
+            "trade_date": trade_date,
+            "is_trading": True,
+            "status": "st" if sym in st_symbols else "normal",
+            "source": "tushare",
+        }
+        for sym in symbols
+    ]
+    return pl.DataFrame(rows).unique(subset=["symbol", "trade_date"], keep="last")
 
 
 def fetch_trading_status(
@@ -1101,6 +1144,23 @@ def fetch_trading_status(
         reason = "EastMoney returned no trading status rows"
     except Exception as exc:
         reason = f"EastMoney trading_status failed: {exc}"
+
+    # Tushare stock_st fallback: independent per-day all-market ST list. Only
+    # used when EastMoney is unreachable; the result is labeled source=tushare
+    # by the caller's with_provenance override in steps/reference.py.
+    if config is not None:
+        try:
+            df = _fetch_trading_status_tushare(symbols, trade_date, config=config)
+            if df.height:
+                logger.warning(
+                    "trading_status: %s; fell back to Tushare stock_st (%d rows)",
+                    reason,
+                    df.height,
+                )
+                return df
+            reason = f"{reason}; Tushare stock_st also returned no rows"
+        except Exception as exc:
+            reason = f"{reason}; Tushare stock_st fallback failed: {exc}"
 
     return _fail_or_mock(
         "trading_status",

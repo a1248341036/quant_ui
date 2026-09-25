@@ -22,6 +22,7 @@ from . import (
     facet_focus as _facet_focus_mod,
     ic_robustness as _ic_robustness_mod,
     market_mechanisms as _market_mechanisms_mod,
+    model_adaptation as _model_adaptation_mod,
     multi_period as _multi_period_mod,
     neutralization_guide as _neutralization_mod,
     operator_catalog as _operator_catalog_mod,
@@ -29,6 +30,7 @@ from . import (
     strategy_tracks as _strategy_tracks_mod,
     tool_contracts as _tool_contracts_mod,
     tool_examples as _tool_examples_mod,
+    turnover_budget as _turnover_budget_mod,
 )
 
 
@@ -87,6 +89,7 @@ DEFAULT_MODULES: list[PromptModule] = [
     _dynamic(_strategy_tracks_mod),
     _dynamic(_delivery_interface_mod),
     _dynamic(_data_calibration_mod),
+    _dynamic(_turnover_budget_mod),
     _dynamic(_data_fields_mod),
     _dynamic(_market_mechanisms_mod),
     _static(_multi_period_mod),
@@ -99,6 +102,7 @@ DEFAULT_MODULES: list[PromptModule] = [
     _dynamic(_tool_examples_mod),
     _dynamic(_population_mod),
     _dynamic(_facet_focus_mod),
+    _dynamic(_model_adaptation_mod),
     _dynamic(_extra_mod),
 ]
 

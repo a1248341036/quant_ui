@@ -277,6 +277,29 @@ def _sample_orthogonality_panel(panel: pd.DataFrame) -> pd.DataFrame:
     return panel[panel.index.get_level_values("datetime").isin(selected)]
 
 
+def _visible_panel(session: Any) -> pd.DataFrame | None:
+    """挖掘期 LLM 可见区间面板（train ∪ val，**剔除盲测段 test**）。
+
+    ``session.panel`` 覆盖 train ∪ val ∪ test（见 ``StockEvalContext.coverage_range``），
+    盲测隔离依赖下游按 split 切片；而正交召回的结论会回流给 LLM，故必须显式切到
+    ``visible_range()``。
+
+    取不到区间时返回 ``None``：调用方应跳过检查——既不放行泄漏（回落到全区间），
+    也不因异常而 fail-closed 误判为"高度相似"。
+    """
+    panel = getattr(session, "panel", None)
+    ctx = getattr(session, "ctx", None)
+    if panel is None or ctx is None:
+        return None
+    try:
+        start, end = ctx.visible_range()
+    except Exception:  # noqa: BLE001 — 区间不可知 = 不做检查，绝不回落到全区间
+        return None
+    from alphaagent.data.panel import slice_panel
+
+    return slice_panel(panel, start=start, end=end)
+
+
 def _orthogonality_check(tools: FactorEvalTools, multi_line_expr: str) -> dict[str, Any]:
     """Post-review sampled check against production/candidate zoos and registry candidates.
 
@@ -295,7 +318,12 @@ def _orthogonality_check(tools: FactorEvalTools, multi_line_expr: str) -> dict[s
     }
     try:
         session = tools.service.sessions.get(tools.session_id)
-        sampled_panel = _sample_orthogonality_panel(session.panel)
+        visible_panel = _visible_panel(session)
+        if visible_panel is None:
+            # 可见区间不可知 → 不做正交召回（宁缺勿泄漏）
+            result["skipped_reason"] = "visible_range_unavailable"
+            return result
+        sampled_panel = _sample_orthogonality_panel(visible_panel)
 
         from alphaagent.core.paths import FACTORZOO_DIR
         from core import factor_categories
@@ -959,16 +987,50 @@ def build_factor_eval_toolkit(
 
         func_tools.append(FunctionTool(screen_factors, name="screen_factors"))
 
+    async def precheck_expression(
+        multi_line_expr: str,
+        **_legacy_kwargs: Any,
+    ) -> ToolChunk:
+        """【结构风险静态预检】纯 AST 分析，不触发评估、不触达盲测段。"""
+        result, _elapsed = await _dispatch_with_timeout(
+            asyncio.get_running_loop(), _executor(max_workers), tools, "precheck_expression",
+            {"multi_line_expr": multi_line_expr},
+            timeout=_runtime_config.submit_timeout_seconds,
+        )
+        return _result_tool_chunk(result)
+
+    func_tools.append(FunctionTool(precheck_expression, name="precheck_expression"))
+
     return Toolkit(tools=func_tools)
 
 
 def _profile_result_for_reviewer(result: dict[str, Any]) -> dict[str, Any]:
-    """Adapt generic evidence to the reviewer compatibility shape."""
+    """Adapt generic evidence to the reviewer compatibility shape.
+
+    兼容两种 result 结构（train/val 评估经引擎收敛后统一走 legacy 扁平口径，
+    但本函数历史上只认引擎原生结构）：
+    - legacy 扁平结构（eval/service._engine_result_to_legacy）：summary 在顶层
+      ``result["summary"]``，月度稳健性在 ``result["monthly_corr_robustness"]``；
+    - 引擎原生结构：指标嵌在 ``result["metrics"]`` 下。
+
+    2026-09-24 修复：此前只读引擎原生结构，令 legacy 口径的 train 证据 summary
+    恒为空 ``{}``。_metric_precheck 读到空 summary 后 train IC/ICIR/coverage 全取
+    0（且 ``0 × val_ic = 0 ≤ 0`` 误判方向不一致），于是所有 val 验证必然产出
+    「训练集指标未达标 + 方向不一致」四条 revise 理由 → verdict 恒为
+    revise_required（覆盖数值达标的 validated 分支）→「验证通过」永不出现，
+    因子永远不进候选池。
+    """
     metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
+    summary = result.get("summary")
+    if not isinstance(summary, dict) or not summary:
+        summary = metrics.get("cross_sectional_core", {})
+    monthly = result.get("monthly_corr_robustness")
+    if not isinstance(monthly, dict) or not monthly:
+        monthly = metrics.get("monthly_robustness", {})
     return {
         "ok": result.get("ok", False),
-        "summary": metrics.get("cross_sectional_core", {}),
-        "monthly_corr_robustness": metrics.get("monthly_robustness", {}),
+        "summary": summary,
+        "monthly_corr_robustness": monthly,
         "profile_hash": result.get("profile_hash"),
         "rule_results": result.get("rule_results", []),
     }

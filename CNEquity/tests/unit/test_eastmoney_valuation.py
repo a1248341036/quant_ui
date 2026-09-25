@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from datetime import date
 
+import polars as pl
 import pytest
 
-from cnequity.adapters.eastmoney.valuation import fetch_valuation_metrics
+from cnequity.adapters.eastmoney.valuation import fetch_valuation_metrics, fetch_valuation_metrics_tushare
 
 
 class _Client:
@@ -107,8 +108,10 @@ def test_fetch_valuation_metrics_empty_when_no_rows(monkeypatch):
 def test_fetch_valuation_metrics_rejects_unmappable_clist_rows(monkeypatch):
     monkeypatch.setattr(
         "cnequity.adapters.eastmoney.valuation.fetch_clist_pages",
-        lambda client, fields: [{"f12": "600519", "f13": 1}, {"f12": "123456"}],
+        lambda client, fields: [{"f12": "123456"}],
     )
+    # clist_rows_to_symbols raises on unmappable rows, so the step-level guard
+    # in fundamentals.py catches it; the adapter re-raises via clist_rows_to_symbols.
     with pytest.raises(RuntimeError, match="valuation_metrics clist returned 1 unmappable"):
         fetch_valuation_metrics(date(2024, 6, 28), client=_Client())
 
@@ -129,3 +132,94 @@ def test_fetch_valuation_metrics_closes_owned_client_on_failure(monkeypatch):
     with pytest.raises(RuntimeError, match="clist down"):
         fetch_valuation_metrics(date(2024, 6, 28))
     assert created[0].closed is True
+
+
+# ─── Tushare Fallback Tests ───────────────────────────────────────────────
+
+
+def test_tushare_fallback_maps_fields_and_unit(monkeypatch):
+    """Tushare daily_basic 字段映射 + 万元→元 ×1e4 单位换算。"""
+    # Tushare raw data: total_mv/circ_mv are in 万元
+    tushare_df = pl.DataFrame({
+        "ts_code": ["600519.SH", "000001.SZ"],
+        "trade_date": [date(2024, 6, 28)] * 2,
+        "pe_ttm": [17.6, 4.4],
+        "pb": [6.2, 0.49],
+        "ps_ttm": [8.1, 3.0],
+        "total_mv": [2100000.0, 22700.0],   # 万元
+        "circ_mv": [2000000.0, 22000.0],     # 万元
+    })
+    # Patch at the source module since _get_pro/_fetch_with_retry are
+    # imported locally inside fetch_valuation_metrics_tushare.
+    monkeypatch.setattr(
+        "cnequity.external.tushare_fetch._get_pro",
+        lambda config: None,
+    )
+    monkeypatch.setattr(
+        "cnequity.external.tushare_fetch._fetch_with_retry",
+        lambda pro, api, **kwargs: tushare_df,
+    )
+
+    class MockConfig:
+        external_tushare_wide_interval = 0.3
+
+    df = fetch_valuation_metrics_tushare(date(2024, 6, 28), config=MockConfig())
+
+    assert df.height == 2
+    # 验证单位换算：2100000 万元 → 2.1e10 元 (×1e4)
+    row = df.filter(pl.col("symbol") == "600519.SH").row(0, named=True)
+    assert row["total_mv"] == 2100000.0 * 10000
+    assert row["float_mv"] == 2000000.0 * 10000
+    # source 标记为 tushare
+    assert df["source"].to_list() == ["tushare", "tushare"]
+
+
+def test_tushare_fallback_filters_universe(monkeypatch):
+    """universe 过滤：只保留 daily_bars 中存在的 symbol。"""
+    tushare_df = pl.DataFrame({
+        "ts_code": ["600519.SH", "999999.SZ"],  # 999999 不在 universe
+        "trade_date": [date(2024, 6, 28)] * 2,
+        "pe_ttm": [17.6, 5.5],
+        "pb": [6.2, 0.5],
+        "ps_ttm": [8.1, 3.0],
+        "total_mv": [2100000.0, 100.0],
+        "circ_mv": [2000000.0, 50.0],
+    })
+    monkeypatch.setattr(
+        "cnequity.external.tushare_fetch._get_pro",
+        lambda config: None,
+    )
+    monkeypatch.setattr(
+        "cnequity.external.tushare_fetch._fetch_with_retry",
+        lambda pro, api, **kwargs: tushare_df,
+    )
+
+    class MockConfig:
+        external_tushare_wide_interval = 0.3
+
+    df = fetch_valuation_metrics_tushare(
+        date(2024, 6, 28),
+        universe={"600519.SH"},
+        config=MockConfig(),
+    )
+    # 999999.SZ 被过滤掉（不在 universe 中）
+    assert df.height == 1
+    assert df["symbol"][0] == "600519.SH"
+
+
+def test_tushare_fallback_empty_returns_empty(monkeypatch):
+    """Tushare 返回空数据时返回空 DataFrame。"""
+    monkeypatch.setattr(
+        "cnequity.external.tushare_fetch._get_pro",
+        lambda config: None,
+    )
+    monkeypatch.setattr(
+        "cnequity.external.tushare_fetch._fetch_with_retry",
+        lambda pro, api, **kwargs: pl.DataFrame(),
+    )
+
+    class MockConfig:
+        external_tushare_wide_interval = 0.3
+
+    df = fetch_valuation_metrics_tushare(date(2024, 6, 28), config=MockConfig())
+    assert df.is_empty()

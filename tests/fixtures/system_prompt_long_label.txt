@@ -234,6 +234,26 @@ panel 内常用 label（启动时可 `--label-col` 切换）：
 
 ---
 
+### 换手预算与调仓频率匹配
+- 本 run 调仓频率：**weekly**；换手硬门：`avg_daily_side_turnover <= 0.65`（按频率分档，与交付门槛同源）。
+- label 持有期 × 调仓匹配判定：**OK** —— 持有 20 日 ≥ weekly 调仓周期 5 日，结构匹配
+
+| label 持有期 | daily | weekly | monthly |
+|---|---|---|---|
+| ≤2d 快信号 | ✅ 直接可用 | ⚠️ 半衰期不够，需叠信号积分 | ❌ 结构性超门 |
+| 3~10d | ✅ | ✅ 匹配 | ⚠️ 需叠长窗 |
+| ≥10d 慢信号 | ✅ | ✅ | ✅ |
+
+**降换手手段（按优先级，均已在算子库实现）**：
+- `SIGNAL_BLEND(signal, λ)` 信号积分：把当日信号与昨日融合，直接压日频换手；
+- 长窗均值 `TS_MEAN(x, N)` / `WMA` / `EMA`：N 越大换手越低，但别堆末位长窗（同质化熔断会拦）；
+- 慢信息源：资金/筹码/股东/事件类列天然低换手，做截面排序后再配门控；
+- 结构选择：背离、筹码峰距离、资金积累等「慢变量」比价格动量换手低一个量级。
+
+**红线**：1d label 配 weekly/monthly 调仓且不叠慢结构 → 换手必超门，不要在超门后靠微调参数救（同质化熔断也会拦堆平滑）。
+
+---
+
 ### 可用行情变量
 
 表达式引用列须 **`$` + 列名**：
@@ -661,6 +681,7 @@ tri_gap = CHIP_COM_W_GAP($adj_close, $adj_low, $adj_high, $volume, 40, $vwap, 64
 - `DELAY(df, p)` — 滞后 shift；p 为 int 根数或非负，或为与 df 对齐的单列 DataFrame 表示逐行动态滞后。
 - `DELTA(df, p=1)` — 同品种差分 diff(p)；df 单列面板，p 为正整数步长。
 - `EMA(df, p)` — EWM，span=p（须可转 int，勿传动态 DataFrame）。
+- `SIGNAL_BLEND(df, lam=0.5)` — 信号积分（滞后因子组合）：``λ·F + (1-λ)·DELAY(F, 1)``。
 - `SMA(df, m=None, n=None)` — SMA(df,m) 滚动均线；SMA(df,m,n) 为 alpha=m/n 的 ewm（对齐 TDX/Wilder…
 - `WMA(df, p=20)` — 线性加权均线，近端权重大，窗口 p 根。
 
@@ -668,6 +689,7 @@ tri_gap = CHIP_COM_W_GAP($adj_close, $adj_low, $adj_high, $volume, 40, $vwap, 64
 - `CS_BUCKET(df, n_bins)` — 截面等频分 N 组：每个 datetime 内对变量做 ``qcut``，输出组号 ``0…K-1``（``K≤N``…
 - `CS_DEMEAN(df)` — 截面去均值：``x - mean``（按 datetime 分组）。有效样本 < 1 时该截面为 NaN。
 - `CS_NEUTRALIZE(x, group)` — 截面组内去均值：每个 datetime 内按 ``group`` 分组，输出 ``x - group_mean(x)`…
+- `CS_RANK(df)` — 每个 **datetime 截面**内的百分位秩 ∈ [0, 1]（``rank(pct=True, method='…
 - `CS_WINSORIZE(df, lower_pct, upper_pct)` — 截面分位裁剪：将每个 datetime 截面内的值限制在 ``[lower_pct, upper_pct]`` 分位之…
 - `CS_ZSCORE(df, ddof=1)` — 截面标准化：``(x - mean) / std``（按 datetime 分组）。
 - `RANK(df)` — 每个 **datetime 截面**内的百分位秩 ∈ [0, 1]（``rank(pct=True, method='…
@@ -836,8 +858,8 @@ tri_gap = CHIP_COM_W_GAP($adj_close, $adj_low, $adj_high, $volume, 40, $vwap, 64
          - **不塌分布**（线性组合保留原始信号分布形状），优于末位 EMA/WMA 的指数/线性衰减压缩；
          - **ρ_f 提升近似**：积分后 `ρ_f' ≈ λ·ρ_f + (1-λ)·1`（滞后项视为完全持久，ρ_f=1）。
            例：原 ρ_f 0.6 + λ 0.5 → ρ_f' ≈ 0.8（仍不够）；λ 0.3 → ρ_f' ≈ 0.88（达标）。
-         - DSL 写法：`signal = ...; integrated = 0.6*signal + 0.4*DELAY(signal, 1)`，末位再 CS_ZSCORE 归一化。
-           > 标量乘（如 `0.6*signal`）豁免 MULTIPLY 拦截——MULTIPLY 拦截仅针对"两个因子信号相乘"（如 `factor_a * factor_b`），标量系数加权不触发。写法：`ADD(0.6*signal, 0.4*DELAY(signal, 1))`。
+         - DSL 写法：`signal = ...; integrated = SIGNAL_BLEND(signal, 0.6)`（内部即 `0.6*signal + 0.4*DELAY(signal, 1)`），末位再 CS_ZSCORE 归一化；多阶推广可自行叠加 `DELAY(F, 2)` 项。
+           > 标量乘（如 `0.6*signal`）豁免 MULTIPLY 拦截——MULTIPLY 拦截仅针对"两个因子信号相乘"（如 `factor_a * factor_b`），标量系数加权不触发。手写等价式：`ADD(0.6*signal, 0.4*DELAY(signal, 1))`。
       ⑤ 周线衍生变量（@1w 辅频，结构性降频，ρ_f ≈ 0.95+）：
          - `$adj_close@1w` = 最近一根已完成周线收盘（无前视广播到日频）；
          - `TS_PCTCHANGE($adj_close@1w, 4)` = 周线 4 周动量，比日频 20 日动量换手低一个量级；

@@ -48,6 +48,17 @@ _COLD_OPS = frozenset({
     "CHIP_PEAK_LOC", "CHIP_MASS_ASYM", "CHIP_ENTROPY",
 })
 
+# 盲测段指标键：**允许存储、禁止注入**。
+# 研究记忆的 metrics 里含 test_ic / test_icir / test_rank_ic / test_ic_retention
+# （写入见 memory/ingestion.py:176-182、memory/backfill.py:212-219；展平白名单见
+# memory/schema.py:751-754，注释写明"供研究总结按阶段展示"），供 UI 三段表展示。
+# 但 evidence block 是**每轮注入 LLM** 的——若把盲测段 IC 渲染进去，模型就能按
+# 样本外表现挑选结构，盲测段即被烧掉。故渲染层剔除，存储层保留。
+# 详见 docs/specs/alphaagent_mine_precheck_spec.md §0。
+_BLIND_METRIC_KEYS = frozenset({
+    "test_ic", "test_icir", "test_rank_ic", "test_ic_retention",
+})
+
 # 冷门算子一句话机制提示（注入时附上，降低 LLM 编三问的门槛）
 _COLD_OP_HINT = {
     "CROWD_SHARE": "拥挤度：散户/游资集中涌入某维度，拥挤峰值后回吐",
@@ -386,8 +397,11 @@ class RetrievalMixin:
         max_expression_chars: int | None = None,
     ) -> str:
         m = entry.get("metrics", {})
+        # 盲测段指标不得注入（存储层保留供 UI 展示）——见 _BLIND_METRIC_KEYS
         metric_text = " ".join(
-            f"{key}={value:.4g}" for key, value in m.items() if isinstance(value, (int, float))
+            f"{key}={value:.4g}"
+            for key, value in m.items()
+            if isinstance(value, (int, float)) and key not in _BLIND_METRIC_KEYS
         )
         family = str(entry.get("family") or "other")
         fail = f"；失效: {entry['fail_detail']}" if entry.get("fail_detail") else ""

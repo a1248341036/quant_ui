@@ -284,7 +284,7 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
     return result
 
 
-@register_step("capital_changes", group="core", depends_on=["instruments"])
+@register_step("capital_changes", group="events", depends_on=["instruments"])
 def step_capital_changes(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
     """股本变迁/权息资料 (0x000F) — TDX-only, per-symbol sweep.
 
