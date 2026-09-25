@@ -57,8 +57,14 @@ def render(ctx: PromptContext) -> str:
     if not name:
         return ""
     key = name.lower()
+    # 精确匹配优先：取 provider 首段（去路径前缀/供应商后缀），避免子串误命中
+    # （如 "qwen-deepseek-mix" 不应命中 deepseek 画像）。
+    head = key.split("/")[-1].split("-")[0].strip()
+    if head in _ADAPTATIONS:
+        return _ADAPTATIONS[head]
+    # 兜底：带后缀的变体（如 "deepseek-r1-distill"）用 startswith 命中
     for prefix, text in _ADAPTATIONS.items():
-        if prefix in key:
+        if key.startswith(prefix + "-"):
             return text
     return _GENERIC
 

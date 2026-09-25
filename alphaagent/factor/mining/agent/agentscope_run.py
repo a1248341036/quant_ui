@@ -175,16 +175,20 @@ _now = utc_now_iso
 
 
 def _efficiency_self_check(live_metrics: dict[str, Any], tool_call_rows: list[dict[str, Any]] | None) -> str:
-    """本 run 效率自省块（S2）：**给事实统计，不给指令**。
+    """本 run 效率自省块（S2）：**只给事实统计，不给指令**。
 
     数据来源：
     - ``live_metrics``：train/val 评估计数、提交/入库计数、重复死路拦截（全为
       train/val split 的结果，**不触达 test 段**——submit 的 test 段返回不计入）；
-    - ``tool_call_rows`` 最近 8 次尝试的表达式族分布。
+    - ``tool_call_rows``：仅统计评估类工具（evaluate_factor / eval_on_train_set /
+      eval_on_val_set）的表达式族分布——submit/precheck/screen 等非评估调用不计入
+      "最近尝试"。
 
     设计意图：整夜 run 实测 2930 次评估仅 5 次 submit（0.17%），模型在饱和族反复
     变异而不提交。此处每轮注入一段极短的"本 run 已评估 X 次 / 0 提交 / 族分布"，
-    让模型对空转有实时感知。只陈述事实，禁止写成说教指令（消融已证伪注入型说教）。
+    让模型对空转有实时感知。**只陈述事实，不写成祈使指令**（消融已证伪注入型说教）：
+    模型看到"20 次评估 / 0 次 submit / 最近 8 次 6 次集中在 X 族"自会反思，无需我们
+    告诉它"应该怎么做"。
     """
     try:
         from collections import Counter
@@ -205,7 +209,11 @@ def _efficiency_self_check(live_metrics: dict[str, Any], tool_call_rows: list[di
             f"- 已评估 train {n_eval} 次 / val {n_val} 次 / 提交 {n_submit} 次 / "
             f"累计入库 {n_stored} 条 / 重复死路拦截 {n_dup} 次",
         ]
-        recent = [str(r.get("expression") or "") for r in (tool_call_rows or [])[-8:] if r.get("expression")]
+        eval_rows = [
+            r for r in (tool_call_rows or [])
+            if r.get("name") in ("evaluate_factor", "eval_on_train_set", "eval_on_val_set")
+        ]
+        recent = [str(r.get("expression") or "") for r in eval_rows[-8:] if r.get("expression")]
         fam_counter: Counter[str] = Counter()
         for expr in recent:
             try:
@@ -219,15 +227,13 @@ def _efficiency_self_check(live_metrics: dict[str, Any], tool_call_rows: list[di
         total = sum(fam_counter.values())
         if total >= 4:
             top = fam_counter.most_common(1)[0]
-            ratio = top[1] / total
             lines.append(
-                f"- 最近 8 次尝试中 {total} 次可归族，{top[0]} 族 {top[1]} 次"
-                + ("（连续多轮未过线，需评估该族是否已饱和）" if ratio >= 0.6 else "")
+                f"- 最近 8 次评估尝试中 {total} 次可归族，{top[0]} 族 {top[1]} 次"
+                + (f"（其中 {top[1]} 次集中于该族）" if top[1] >= 5 else "")
             )
         if n_eval >= 8 and n_submit == 0:
             lines.append(
-                "- 已评估较多但 0 提交：通过海选线的因子可直接 submit_factor"
-                "（盲测/正交/精筛由系统裁决），不必先堆更多同族变体"
+                f"- 已评估 train {n_eval} 次，submit_factor 调用 0 次（本 run 尚未尝试提交）"
             )
         return "\n".join(lines)
     except Exception:  # noqa: BLE001 — 效率自省绝不影响挖掘

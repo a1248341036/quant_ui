@@ -84,8 +84,10 @@ def test_s2_efficiency_block_gives_facts_not_orders():
     text = _efficiency_self_check(st, [])
     assert text, "n_eval>=3 时应注入自省块"
     assert "train 10 次" in text
-    assert "0 提交" in text  # 事实，不是指令
-    # 族统计在无表达式时不报错
+    # 事实陈述，不是祈使指令（"应/需/必须"均不应出现）
+    assert "submit_factor 调用 0 次" in text
+    for word in ("应直接", "必须", "需评估"):
+        assert word not in text, f"自省块不应含指令性措辞: {word}"
     assert isinstance(text, str)
 
 
@@ -100,11 +102,52 @@ def test_s2_efficiency_block_family_cluster_hint():
     from alphaagent.factor.mining.agent.agentscope_run import _efficiency_self_check
 
     st = _live_state(n_eval=8)
-    rows = [{"expression": "CS_GROUP_RANK(RANK($ret), $volume)"}] * 6
+    rows = [{"name": "evaluate_factor", "expression": "CS_GROUP_RANK(RANK($ret), $volume)"}] * 6
     text = _efficiency_self_check(st, rows)
     assert text
-    # 同一族集中 ≥60% 时应给出"需评估是否饱和"的提示
-    assert "是否已饱和" in text or "饱和" in text
+    # 同族集中时应给出事实陈述（该族出现次数），不含祈使指令
+    assert "集中于该族" in text
+
+
+def test_s2_family_stats_exclude_non_eval_tools():
+    """P2-2：族统计只算评估类工具；submit/precheck 的 expression 不计入。"""
+    from alphaagent.factor.mining.agent.agentscope_run import _efficiency_self_check
+
+    st = _live_state(n_eval=8)
+    rows = (
+        [{"name": "evaluate_factor", "expression": "CS_GROUP_RANK(RANK($ret), $volume)"}] * 6
+        + [{"name": "submit_factor", "expression": "GATED_SIGNAL($ret, $volume, 0.9)"}]
+        + [{"name": "precheck_expression", "expression": "PIECEWISE_STATE($ret, $volume, 0.2, 0.8)"}]
+    )
+    text = _efficiency_self_check(st, rows)
+    # 评估类计入 → 族分布行出现
+    assert "集中于该族" in text
+    # 非评估类的表达式不得进入自省块（含族统计与全文）
+    assert "GATED_SIGNAL" not in text and "PIECEWISE_STATE" not in text
+
+
+def test_s1_dispatch_route():
+    """P3-6：dispatch 路由直达 precheck_expression（纯函数之外的接线验证）。"""
+    from alphaagent.factor.mining.tools._dispatch import _DispatchMixin
+
+    class _MiniTools(_DispatchMixin):
+        def __init__(self) -> None:
+            self.service = None
+            self.session_id = "x"
+            self.submit_service = None
+            self.memory_store = None
+            self.focus_facets = ()
+            self.cognition_policy = {}
+            self.operator_policy = {"blacklist": ()}
+            self.homogenization_policy = {"enabled": False}
+            self._recent_evals = []
+
+    r = _MiniTools().dispatch("precheck_expression", {"multi_line_expr": "GATED_SIGNAL($ret, $volume, 0.9)"})
+    assert r.get("ok") is True
+    assert r["result"]["risks"][0]["kind"] == "gate_collapse"
+
+    bad = _MiniTools().dispatch("precheck_expression", {"multi_line_expr": ""})
+    assert bad.get("ok") is False and bad.get("error_type") == "ToolArgumentsError"
 
 
 # ── S3: turnover_budget 模块 ───────────────────────────────────────────
