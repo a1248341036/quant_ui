@@ -16,7 +16,7 @@ from cnequity.adapters.eastmoney.earnings_disclosure import (
     _backfill_report_dates,
     fetch_earnings_disclosure_schedule,
 )
-from cnequity.adapters.tdx_protocol.client import fetch_corporate_actions
+from cnequity.adapters.tdx_protocol.client import fetch_capital_changes, fetch_corporate_actions
 from cnequity.config import Config
 from cnequity.domain.schemas import with_provenance
 from cnequity.orchestrator.manifest import Manifest
@@ -281,6 +281,63 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
         result["failed_symbols"] = failed_symbols
         result["status"] = "failed"
     result["context_updates"] = context_updates
+    return result
+
+
+@register_step("capital_changes", group="events", depends_on=["instruments"])
+def step_capital_changes(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
+    """股本变迁/权息资料 (0x000F) — TDX-only, per-symbol sweep.
+
+    The wire has no date filter, so every mode sweeps the universe and filters
+    client-side: daily keeps only trade_date events, backfill keeps the window.
+    """
+    rl = config.tdx_rate_limit_spec()
+    backfill = getattr(config, "_backfill", False)
+    symbols = list(context.get("_retry_symbols") or load_symbols(config))
+
+    def on_progress(done: int, total: int) -> None:
+        if done % 200 == 0 or done == total:
+            logger.info("capital_changes: %d/%d symbols", done, total)
+
+    df, failed = fetch_capital_changes(
+        symbols,
+        trade_date,
+        backfill=backfill,
+        rate_limit=rl,
+        config=config,
+        on_progress=on_progress,
+    )
+    if backfill and not df.is_empty():
+        start = getattr(config, "_backfill_start", None) or BACKFILL_START
+        end = getattr(config, "_backfill_end", None) or trade_date
+        if "event_date" not in df.columns:
+            raise RuntimeError("capital_changes: backfill response has no event_date column")
+        parsed_dates = df.get_column("event_date").cast(pl.Date, strict=False)
+        invalid = (
+            parsed_dates.is_null()
+            | (parsed_dates < start).fill_null(False)
+            | (parsed_dates > end).fill_null(False)
+        )
+        if int(invalid.sum()):
+            raise RuntimeError(
+                "capital_changes: backfill response returned row(s) outside "
+                f"requested window {start.isoformat()}..{end.isoformat()}"
+            )
+        df = df.with_columns(parsed_dates.alias("event_date"))
+
+    result: dict = {"rows_read": 0, "rows_written": 0}
+    if failed:
+        result["failed_symbols"] = failed
+        result["status"] = "failed"
+        logger.warning(
+            "capital_changes: %d/%d symbols failed; staged rows are kept",
+            len(failed),
+            len(symbols),
+        )
+    if df.is_empty():
+        return result
+    df = with_provenance(df, source="tdx_protocol", data_version="v1")
+    result.update(write_simple(config, run_id, "capital_changes", df))
     return result
 
 

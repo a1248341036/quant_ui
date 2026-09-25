@@ -6,6 +6,11 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **TDX 集合竞价过程快照（`auction_series`，L1）。** 0x056A 命令：开盘（09:15–09:25）与收盘（14:57–15:00）竞价逐秒虚拟撮合快照，`session` 区分 open/close，量纲为股（源端报手，adapter ×100）。可选数据集，`[auction_series]` 独立开关，step 挂在 `intraday` 组；标准池失败自动回落资金流向专用主站组（`AUCTION_FALLBACK_HOSTS`）。
+- **TDX 股本变迁全类别（`capital_changes`，L2）。** 0x000F 命令保留类别 1–15 与四个 wire 字段（含 tdxpy 旧解析器缺失的类别 15 重整调整），按 eltdx 单位口径归一（股本数量类万股 ×10000 → 股，增发仅 c3，其余原值）。日更全市场扫描后按 `event_date` 过滤，回填保留窗口内全部事件。
+
 ## [0.7.2] — 2026-08-16
 
 ### Fixed

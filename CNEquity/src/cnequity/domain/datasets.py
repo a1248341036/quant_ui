@@ -395,6 +395,22 @@ _SPECS = [
         row_grain="5m",
         description="5分钟K线",
     ),
+    # 集合竞价过程快照 (0x056A) — the opening (09:15-09:25) and closing
+    # (14:57-15:00) auction process, second-level virtual-match snapshots.
+    # Opt-in like minute_bars: the source serves it from the money-flow host
+    # group and historical depth varies by host, so it is not on the default
+    # daily waves. `session` splits open/close; volumes are 股.
+    DatasetSpec(
+        "auction_series",
+        primary_source="tdx_protocol",
+        tier="L1",
+        partition_col="trade_date",
+        partition_granularity="day",
+        fetch_semantics="by_date",
+        required=False,
+        row_grain="1s",
+        description="集合竞价过程快照",
+    ),
     # Transaction records (分笔). Not tick data: A-share Level-1 is a 3-second
     # snapshot, so a record aggregates 6–33 real trades (measured) and a
     # session holds ~2,700 on average, ~4,800 at most.
@@ -455,6 +471,18 @@ _SPECS = [
         partition_col="ex_date",
         partition_granularity="year",
         description="除权除息/送转/配股",
+    ),
+    # 股本变迁 / 权息资料 — the raw event log behind corporate_actions: every
+    # category 1..15 (除权除息/送配股上市/增发/回购/缩股/权证/重整调整) with the
+    # four wire fields. Same 0x000F command as xdxr, no date filter, so daily
+    # mode sweeps symbols and keeps only trade_date events (like xdxr backfill).
+    DatasetSpec(
+        "capital_changes",
+        primary_source="tdx_protocol",
+        tier="L2",
+        partition_col="event_date",
+        partition_granularity="year",
+        description="股本变迁/权息资料（全类别）",
     ),
     DatasetSpec(
         "announcement_index",
@@ -1365,6 +1393,8 @@ def is_dataset_enabled(dataset: str, config) -> bool:
             getattr(config, "minute_bars_enabled", False)
             and "5m" in getattr(config, "minute_bars_frequencies", ())
         )
+    if dataset == "auction_series":
+        return bool(getattr(config, "auction_series_enabled", False))
     # Generic per-dataset override: [datasets.<name>] enabled = false in the
     # config retires a dataset without deleting its curated history.
     overrides = getattr(config, "dataset_enabled", None) or {}

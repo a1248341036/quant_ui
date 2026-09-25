@@ -13,7 +13,11 @@ from datetime import date, timedelta
 
 import polars as pl
 
-from cnequity.adapters.tdx_protocol.client import fetch_minute_bars, normalize_with_source
+from cnequity.adapters.tdx_protocol.client import (
+    fetch_auction_series,
+    fetch_minute_bars,
+    normalize_with_source,
+)
 from cnequity.adapters.tdx_protocol.minute_bars import pages_for_window
 from cnequity.config import Config
 from cnequity.domain.datasets import get_dataset, intraday_datasets
@@ -84,16 +88,16 @@ class MinuteBarsScopeError(RuntimeError):
     """Raised when the configured scope cannot be resolved to symbols."""
 
 
-def _index_members(config: Config, index_symbol: str) -> list[str]:
+def _index_members(config: Config, index_symbol: str, scope_label: str = "minute_bars") -> list[str]:
     """Latest known constituents of *index_symbol* from ``index_constituents``."""
     from cnequity.query.parquet_scan import dataset_has_parquet, scan_parquet_root
 
     root = config.curated_root / "index_constituents"
     if not dataset_has_parquet(root):
         raise MinuteBarsScopeError(
-            f"minute_bars scope 'index:{index_symbol}' needs the index_constituents "
+            f"{scope_label} scope 'index:{index_symbol}' needs the index_constituents "
             "dataset, which is empty — run `cne run daily` (or `cne backfill "
-            "index_constituents`) first, or set [minute_bars].scope = 'watchlist'"
+            f"index_constituents`) first, or set [{scope_label}].scope = 'watchlist'"
         )
     df = (
         scan_parquet_root(root, partition_col="as_of_date", hive=False)
@@ -133,6 +137,29 @@ def resolve_scope(config: Config) -> list[str]:
         return _index_members(config, scope.split(":", 1)[1].strip())
     raise MinuteBarsScopeError(
         f"unknown [minute_bars].scope {scope!r} (expected 'all', 'watchlist', or 'index:<symbol>')"
+    )
+
+
+def resolve_auction_scope(config: Config) -> list[str]:
+    """Symbols the auction capture covers, per ``[auction_series].scope``.
+
+    Same shapes as ``[minute_bars].scope``, but the default is ``watchlist``:
+    indices have no auction process, so an index default would fail empty.
+    """
+    scope = (config.auction_series_scope or "").strip()
+    if scope == "all":
+        return [s for s in load_symbols(config) if not s.endswith(".BJ")]
+    if scope == "watchlist":
+        symbols = [s.strip() for s in config.auction_series_symbols if s.strip()]
+        if not symbols:
+            raise MinuteBarsScopeError(
+                "[auction_series].scope = 'watchlist' but [auction_series].symbols is empty"
+            )
+        return symbols
+    if scope.startswith("index:"):
+        return _index_members(config, scope.split(":", 1)[1].strip(), "auction_series")
+    raise MinuteBarsScopeError(
+        f"unknown [auction_series].scope {scope!r} (expected 'all', 'watchlist', or 'index:<symbol>')"
     )
 
 
@@ -329,6 +356,78 @@ def capture_intraday_bars(
     return result
 
 
+def capture_auction_series(
+    config: Config,
+    trade_date: date,
+    run_id: str,
+) -> dict:
+    """集合竞价过程快照 for the configured scope (0x056A, opt-in).
+
+    One request per symbol per day. The source serves it from the money-flow
+    host group and historical depth varies by host, so this is a same-day
+    capture, not a backfill target — like minute_bars, it never runs on the
+    default daily waves.
+    """
+    if not config.auction_series_enabled:
+        return {
+            "rows_read": 0,
+            "rows_written": 0,
+            "note": "auction capture disabled ([auction_series].enabled = false)",
+        }
+
+    symbols = resolve_auction_scope(config)
+    logger.info(
+        "auction_series: %d symbol(s) on %s scope=%s",
+        len(symbols),
+        trade_date,
+        config.auction_series_scope,
+    )
+
+    writer = StagingWriter(config.staging_root)
+    rate_limit = config.tdx_rate_limit_spec()
+    df, failed = fetch_auction_series(
+        symbols, trade_date, rate_limit=rate_limit, config=config
+    )
+    if df.is_empty():
+        if failed:
+            raise RuntimeError(
+                f"auction_series: no rows and {len(failed)}/{len(symbols)} symbol(s) "
+                f"failed on {trade_date} — check TDX reachability and auction host coverage"
+            )
+        return {
+            "rows_read": 0,
+            "rows_written": 0,
+            "symbols": len(symbols),
+            "failed_symbols": 0,
+            "note": f"no auction snapshots returned for {trade_date}",
+        }
+
+    df = normalize_with_source(df, dataset="auction_series")
+    writer.write_batch("auction_series", run_id, "batch-0", df)
+    result: dict = {
+        "rows_read": df.height,
+        "rows_written": df.height,
+        "symbols": len(symbols),
+        "failed_symbols": len(failed),
+        "note": f"scope={config.auction_series_scope}",
+    }
+    if failed:
+        result["context_updates"] = {
+            "audit_findings": [
+                {
+                    "dataset": "auction_series",
+                    "severity": "warning",
+                    "check": "auction_symbol_fetch",
+                    "message": (
+                        f"{len(failed)}/{len(symbols)} symbol(s) returned no auction "
+                        f"snapshots for {trade_date} (e.g. {', '.join(failed[:5])})"
+                    ),
+                }
+            ]
+        }
+    return result
+
+
 def _register_intraday_steps() -> None:
     """One step per registered intraday dataset, named after the dataset.
 
@@ -357,6 +456,22 @@ def _register_intraday_steps() -> None:
 
 
 _register_intraday_steps()
+
+
+def _step_auction_series(
+    config: Config,
+    trade_date: date,
+    run_id: str,
+    context: dict,
+) -> dict:
+    return capture_auction_series(config, trade_date, run_id)
+
+
+_step_auction_series.__name__ = "auction_series"
+_step_auction_series.__doc__ = "Capture 集合竞价过程快照 for the configured scope (opt-in)."
+register_step("auction_series", group="intraday", depends_on=["instruments"])(
+    _step_auction_series
+)
 
 
 def _approx_trading_days(config: Config, start: date, end: date) -> int:

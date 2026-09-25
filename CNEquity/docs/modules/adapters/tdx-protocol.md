@@ -20,6 +20,8 @@
 | `minute_bars.py` | 日内 K 线（从 tip 往回翻页） |
 | `trade_ticks.py` | 分笔（按交易日整段组装） |
 | `corporate_actions.py` | 每股 xdxr → corporate_actions 行 |
+| `auction.py` | 集合竞价过程快照（0x056A，手→股） |
+| `capital_changes.py` | 股本变迁全类别（0x000F，万股→股） |
 | `__init__.py` | 导出 |
 
 ---
@@ -48,6 +50,8 @@
 | `fetch_trading_status(cfg)` | 停牌列表（辅助） |
 | `fetch_minute_bars(...)` | 日内 K 线批量 |
 | `fetch_trade_ticks_batch(symbols, sessions, ...)` | 分笔批量（失败单位是 symbol-**day**） |
+| `fetch_auction_series(symbols, trade_date, ...)` | 集合竞价过程快照批量（0x056A；标准池失败回落资金流向专用主站组） |
+| `fetch_capital_changes(symbols, trade_date, ...)` | 股本变迁批量（0x000F；日更按 event_date 过滤） |
 
 ---
 
@@ -105,6 +109,8 @@
 | corporate_actions | 回填主源；日更时东财为主、TDX 写 snapshot |
 | minute_bars / minute_bars_5m | **唯一源**（无备源） |
 | trade_ticks | **唯一源**，且[有意不设备源](../../datasets/sources.md#trade_ticks) |
+| auction_series | **唯一源**（标准池 + 资金流向专用主站组，同一份数据） |
+| capital_changes | **唯一源**（无备源） |
 
 ---
 

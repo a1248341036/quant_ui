@@ -170,6 +170,29 @@ class Quotes:
         mkt = market_for_stock(symbol) if market is None else int(market)
         return self._client.get_xdxr_info(mkt, str(symbol)) or []
 
+    def auction_series(
+        self,
+        symbol: str,
+        on_date: date | int | None = None,
+        market: int | None = None,
+    ) -> list[dict]:
+        """集合竞价过程快照 (0x056A). ``on_date=None`` asks the server's
+        current trading day; a past date is served only while the host keeps it."""
+        mkt = market_for_stock(symbol) if market is None else int(market)
+        stamp = (
+            0
+            if on_date is None
+            else int(on_date.strftime("%Y%m%d"))
+            if isinstance(on_date, date)
+            else int(on_date)
+        )
+        return self._client.get_auction_series(mkt, str(symbol), date=stamp) or []
+
+    def capital_changes(self, symbol: str, market: int | None = None) -> list[dict]:
+        """股本变迁 / 权息资料 (0x000F), all categories with raw float fields."""
+        mkt = market_for_stock(symbol) if market is None else int(market)
+        return self._client.get_capital_changes(mkt, str(symbol)) or []
+
     def stocks(self, market: int) -> list[dict]:
         """Full security list for one market, paged."""
         if market not in (MARKET_SZ, MARKET_SH):

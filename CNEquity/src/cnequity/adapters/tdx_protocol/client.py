@@ -735,6 +735,28 @@ _MINUTE_BARS_FETCH_SCHEMA = {
     "amount": pl.Float64,
 }
 
+_AUCTION_FETCH_SCHEMA = {
+    "symbol": pl.Utf8,
+    "trade_date": pl.Date,
+    "auction_time": pl.Datetime(time_unit="us"),
+    "session": pl.Utf8,
+    "price": pl.Float64,
+    "matched_volume": pl.Int64,
+    "unmatched_volume": pl.Int64,
+    "unmatched_direction": pl.Int8,
+}
+
+_CAPITAL_CHANGES_FETCH_SCHEMA = {
+    "symbol": pl.Utf8,
+    "event_date": pl.Date,
+    "category": pl.Int8,
+    "category_name": pl.Utf8,
+    "c1": pl.Float64,
+    "c2": pl.Float64,
+    "c3": pl.Float64,
+    "c4": pl.Float64,
+}
+
 
 def fetch_index_bars(
     start: date,
@@ -912,6 +934,142 @@ def fetch_corporate_actions(
     return _fail_or_mock(
         "corporate_actions", "no corporate actions from TDX or EastMoney", allow_mock, empty
     )
+
+
+def _auction_fallback_client(config: Config | None):
+    """Client bound to a reachable money-flow host that serves 0x056A.
+
+    The standard pool is tried first by :func:`fetch_auction_series`; this is
+    the dedicated host group eltdx routes auction queries to. A host only
+    passes if it serves a real bar (filters dead feeds, like ``_serves_data``).
+    """
+    from cnequity.adapters.tdx_protocol.auction import AUCTION_FALLBACK_HOSTS
+    from cnequity.adapters.tdx_protocol.quotes import Quotes
+
+    import random
+
+    timeout = config.tdx_connect_timeout_sec if config else 10
+    hosts = list(AUCTION_FALLBACK_HOSTS)
+    random.shuffle(hosts)
+    last_exc: Exception | None = None
+    for host in hosts:
+        if not _serves_data(host, 7709, timeout):
+            continue
+        try:
+            return Quotes.factory(
+                server=(host, 7709), timeout=timeout, multithread=True, heartbeat=True
+            )
+        except Exception as exc:  # noqa: BLE001 — try the next host
+            last_exc = exc
+    raise TdxSourceError("no auction-capable TDX server reachable") from last_exc
+
+
+def fetch_auction_series(
+    symbols: list[str],
+    trade_date: date,
+    *,
+    rate_limit: RateLimitSpec | None = None,
+    config: Config | None = None,
+    on_heartbeat: Callable[[], None] | None = None,
+) -> tuple[pl.DataFrame, list[str]]:
+    """集合竞价过程快照 for *symbols* on *trade_date* (0x056A).
+
+    Returns ``(frame, failed_symbols)``. The standard pool is tried first;
+    symbols that fail are retried against the money-flow host group, which is
+    where eltdx serves this command. No mock path: the dataset is opt-in and
+    empty by default, so fabricated snapshots would buy nothing.
+    """
+    from cnequity.adapters.tdx_protocol.auction import fetch_auction_series as _fetch_one
+
+    def _sweep(client_factory, scope: list[str]) -> tuple[list[dict], list[str]]:
+        rows: list[dict] = []
+        failed: list[str] = []
+        client = None
+        try:
+            with TDX_SESSION_LOCK:
+                client = client_factory()
+            for sym in scope:
+                if on_heartbeat is not None:
+                    on_heartbeat()
+                try:
+                    with TDX_SESSION_LOCK:
+                        df = _fetch_one(client, sym, trade_date=trade_date, rate_limit=rate_limit)
+                    rows.extend(df.to_dicts())
+                except Exception as exc:  # noqa: BLE001 — recorded, sweep continues
+                    logger.warning("auction failed for %s: %s", sym, exc)
+                    failed.append(sym)
+        finally:
+            _close_quotes_client(client)
+        return rows, failed
+
+    try:
+        rows, failed = _sweep(lambda: _connect_with_retry(config), symbols)
+        if failed:
+            logger.info(
+                "auction: %d/%d symbol(s) failed on the standard pool; "
+                "retrying on the money-flow host group",
+                len(failed),
+                len(symbols),
+            )
+            retry_rows, failed = _sweep(lambda: _auction_fallback_client(config), failed)
+            rows.extend(retry_rows)
+    except ImportError as exc:
+        raise TdxSourceError("auction_series: TDX wire client unavailable") from exc
+    except Exception as exc:
+        reset_tdx_server_cache()
+        raise TdxSourceError(f"auction_series: TDX fetch failed: {exc}") from exc
+
+    df = pl.DataFrame(rows) if rows else pl.DataFrame(schema=_AUCTION_FETCH_SCHEMA)
+    return df, failed
+
+
+def fetch_capital_changes(
+    symbols: list[str],
+    trade_date: date,
+    *,
+    backfill: bool = False,
+    rate_limit: RateLimitSpec | None = None,
+    config: Config | None = None,
+    on_progress=None,
+    strict: bool = False,
+) -> tuple[pl.DataFrame, list[str]]:
+    """股本变迁 (0x000F) for *symbols*; daily mode keeps only *trade_date* events.
+
+    Returns ``(frame, failed_symbols)``. The wire has no date filter, so every
+    symbol returns its full event history and the caller filters — the same
+    contract as the xdxr path.
+    """
+    from cnequity.adapters.tdx_protocol.capital_changes import fetch_capital_changes as _fetch_one
+
+    on_date = None if backfill else trade_date
+    rows: list[dict] = []
+    failed: list[str] = []
+    client = None
+    try:
+        with TDX_SESSION_LOCK:
+            client = _connect_with_retry(config)
+        for index, sym in enumerate(symbols, start=1):
+            try:
+                with TDX_SESSION_LOCK:
+                    df = _fetch_one(
+                        client, sym, rate_limit=rate_limit, on_date=on_date, strict=strict
+                    )
+                rows.extend(df.to_dicts())
+            except Exception as exc:  # noqa: BLE001 — recorded, sweep continues
+                logger.warning("capital_changes failed for %s: %s", sym, exc)
+                failed.append(sym)
+            if on_progress is not None:
+                on_progress(index, len(symbols))
+    except ImportError as exc:
+        raise TdxSourceError("capital_changes: TDX wire client unavailable") from exc
+    except Exception as exc:
+        reset_tdx_server_cache()
+        raise TdxSourceError(f"capital_changes: TDX fetch failed: {exc}") from exc
+    finally:
+        _close_quotes_client(client)
+
+    df = pl.DataFrame(rows) if rows else pl.DataFrame(schema=_CAPITAL_CHANGES_FETCH_SCHEMA)
+    return df, failed
 
 
 def _fetch_trading_status_tushare(
