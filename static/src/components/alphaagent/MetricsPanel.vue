@@ -47,6 +47,14 @@
             <div class="metrics-card"><b>{{ data.research_funnel?.production_stored ?? 0 }}</b><span>晋升正式库</span></div>
             <div class="metrics-card"><b>{{ data.summary.mean_minutes_per_delivered == null ? '-' : fmt(data.summary.mean_minutes_per_delivered) }}</b><span>min/产出</span></div>
           </div>
+          <div v-if="data.summary.v4_aggregates" class="metrics-cards" style="margin-top: 10px;">
+            <div class="metrics-card"><b>{{ data.summary.v4_aggregates?.median_effective_novelty_rate != null ? (data.summary.v4_aggregates.median_effective_novelty_rate * 100).toFixed(1) + '%' : '-' }}</b><span>有效新颖率(中位)</span></div>
+            <div class="metrics-card"><b>{{ data.summary.v4_aggregates?.median_facet_coverage ?? '-' }}</b><span>面覆盖数(中位)</span></div>
+            <div class="metrics-card"><b>{{ data.summary.v4_aggregates?.median_family_coverage ?? '-' }}</b><span>信号族覆盖(中位)</span></div>
+            <div class="metrics-card"><b>{{ data.summary.v4_aggregates?.mean_prediction_coverage != null ? (data.summary.v4_aggregates.mean_prediction_coverage * 100).toFixed(1) + '%' : '-' }}</b><span>预测对账率(均值)</span></div>
+            <div class="metrics-card"><b>{{ data.summary.v4_aggregates?.mean_temporal_stability != null ? (data.summary.v4_aggregates.mean_temporal_stability * 100).toFixed(1) + '%' : '-' }}</b><span>月度稳定性</span></div>
+            <div class="metrics-card"><b>{{ data.summary.v4_aggregates?.mean_unsubmitted_passing_rate != null ? (data.summary.v4_aggregates.mean_unsubmitted_passing_rate * 100).toFixed(1) + '%' : '-' }}</b><span>未交付过线率</span></div>
+          </div>
         </div>
 
         <!-- ── 漏斗转化（echarts 漏斗图） ── -->
@@ -138,36 +146,85 @@
           </p>
         </div>
 
+        <!-- ── 逐 Run 指标变化趋势（时间轴） ── -->
+        <div class="summary-panel">
+          <div class="summary-panel-head">
+            <h3>指标逐 Run 趋势（横坐标为开始时间）</h3>
+            <div class="metrics-split-controls">
+              <select v-model="trendMetric" class="metrics-last-select">
+                <option value="effective_novelty_rate">有效新颖率 (A5)</option>
+                <option value="facet_coverage">数据面覆盖数 (A1)</option>
+                <option value="family_coverage">信号族覆盖数 (A3)</option>
+                <option value="structure_variety">结构指纹多样率 (A6)</option>
+                <option value="prediction_coverage">预测对账覆盖率 (E1)</option>
+                <option value="advisory_follow_rate">死路提示遵循率 (E6)</option>
+                <option value="eval_latency_p50_s">单次评估耗时 P50 (D3)</option>
+                <option value="stage_one_yield_pct">海选过线率 (头条1)</option>
+                <option value="unsubmitted_passing_rate">未交付过线率 (F1)</option>
+              </select>
+              <span class="summary-facet-hint" title="横坐标为 Run 开始时间（MM-DD HH:MM），点悬停展示详细时长与增量 Δ。">ⓘ</span>
+            </div>
+          </div>
+          <div id="metrics-trend-chart" class="metrics-chart" :style="{ height: trendChartHeight + 'px' }"></div>
+        </div>
+
         <!-- ── 每 run 明细（图表固定紧凑高度 + 表格内部滚动，避免按 run 数线性撑高页面） ── -->
         <div class="summary-panel">
           <div class="summary-panel-head">
-            <h3>Run 明细（新 → 旧）</h3>
-            <span v-if="(data.runs || []).length > runsChartCap" class="summary-facet-hint">
-              图表仅显示最近 {{ runsChartCap }} 个 run，完整明细见下表
-            </span>
+            <h3>Run 明细（按时间倒序）</h3>
+            <div class="metrics-split-controls">
+              <button class="summary-refresh-btn" style="padding:2px 8px;font-size:11px;" @click="showFullMetrics = !showFullMetrics">
+                {{ showFullMetrics ? '收起扩展列' : '展开扩展列' }}
+              </button>
+              <span v-if="(data.runs || []).length > runsChartCap" class="summary-facet-hint">
+                图表仅显示最近 {{ runsChartCap }} 个 run，完整明细见下表
+              </span>
+            </div>
           </div>
           <div id="metrics-runs-chart" class="metrics-chart" :style="{ height: runsChartHeight + 'px' }"></div>
           <div class="summary-table-wrap metrics-run-wrap" style="margin-top:14px">
           <table class="summary-table metrics-run-table">
             <thead>
-              <tr><th>run</th><th>时长min</th><th>LLM次</th><th>输入K</th><th>输出K</th><th>缓存率</th>
-                  <th>思维链K</th><th>评估</th><th>提交</th><th>入库</th><th>晋升</th><th>错误率</th><th>min/产出</th></tr>
+              <tr>
+                <th>开始时间</th>
+                <th>Run</th>
+                <th>时长</th>
+                <th>说明/Note</th>
+                <th>评估</th>
+                <th>新颖率</th>
+                <th>面覆盖</th>
+                <th>预测率</th>
+                <th>提交</th>
+                <th>入库</th>
+                <th v-if="showFullMetrics">族覆盖</th>
+                <th v-if="showFullMetrics">算子熵</th>
+                <th v-if="showFullMetrics">消融覆盖</th>
+                <th v-if="showFullMetrics">死路遵循</th>
+                <th v-if="showFullMetrics">耗时P50</th>
+                <th>错误率</th>
+              </tr>
             </thead>
             <tbody>
-              <tr v-for="r in data.runs" :key="r.run_id">
+              <tr v-for="r in formattedRuns" :key="r.run_id">
+                <td style="white-space: nowrap; font-size: 11px;">{{ r.time_str }}</td>
                 <td class="metrics-run-id" :title="r.run_id">{{ r.run_id.slice(0, 8) }}</td>
-                <td>{{ fmt(r.wall_minutes ?? 0) }}</td>
-                <td>{{ r.llm_calls ?? 0 }}</td>
-                <td>{{ fmt(r.input_k_tokens ?? 0) }}</td>
-                <td>{{ fmt(r.output_k_tokens ?? 0) }}</td>
-                <td>{{ r.cache_hit_rate ? (r.cache_hit_rate * 100).toFixed(0) + '%' : '-' }}</td>
-                <td>{{ fmt(r.thinking_k_chars ?? 0) }}</td>
+                <td>{{ fmt(r.wall_minutes ?? 0) }}m</td>
+                <td :title="r.bench_note || ''" style="max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ r.bench_note || r.bench_commit || '-' }}</td>
                 <td>{{ (r.n_eval ?? 0) + (r.n_eval_val ?? 0) }}</td>
+                <td>
+                  {{ r.nov_str }}
+                  <span v-if="r.nov_delta != null" :class="r.nov_delta >= 0 ? 'metrics-delta-up' : 'metrics-delta-down'">{{ r.nov_delta >= 0 ? '+' : '' }}{{ r.nov_delta }}</span>
+                </td>
+                <td>{{ r.facet_cov }}</td>
+                <td>{{ r.pred_cov }}</td>
                 <td>{{ r.n_submit ?? 0 }}</td>
-                <td>{{ r.stored_candidate ?? 0 }}</td>
-                <td>{{ r.stored_production ?? 0 }}</td>
+                <td>{{ (r.stored_candidate ?? 0) + (r.stored_production ?? 0) }}</td>
+                <td v-if="showFullMetrics">{{ r.fam_cov }}</td>
+                <td v-if="showFullMetrics">{{ r.op_ent }}</td>
+                <td v-if="showFullMetrics">{{ r.abl_cov }}</td>
+                <td v-if="showFullMetrics">{{ r.adv_follow }}</td>
+                <td v-if="showFullMetrics">{{ r.lat_p50 }}</td>
                 <td>{{ r.tool_error_rate == null ? '-' : (r.tool_error_rate * 100).toFixed(0) + '%' }}</td>
-                <td>{{ r.minutes_per_delivered ?? '-' }}</td>
               </tr>
             </tbody>
           </table>
@@ -194,6 +251,8 @@ export default {
       error: '',
       lastN: 0,
       facetMetric: 'rate',
+      trendMetric: 'effective_novelty_rate',
+      showFullMetrics: false,
       autoPoll: true,
       pollTimer: null,
     }
@@ -208,6 +267,7 @@ export default {
     minAttempts() { return this.facetStats?.min_attempts ?? 8 },
     facetChartHeight() { return Math.max(150, this.facetRows.length * 22 + 46) },
     opChartHeight() { return Math.max(150, this.opRows.length * 22 + 46) },
+    trendChartHeight() { return 200 },
     facetMetricLabel() {
       return ({ rate: '过线率', stored_rate: '入库率', mean_abs_ic: '平均 |IC|' })[this.facetMetric]
     },
@@ -240,6 +300,56 @@ export default {
     runsChartCap() {
       return 24
     },
+    formattedRuns() {
+      const runs = this.data?.runs || []
+      const chrono = [...runs].reverse()
+      let prevNov = null
+      const withDelta = chrono.map(r => {
+        const v4 = r.v4 || {}
+        const hl = v4.headline || {}
+        const exp = v4.exploration || {}
+        const proc = v4.process || {}
+        const cost = v4.cost || {}
+        const timeMeta = v4.time_meta || {}
+
+        const rawTs = r.created_at || timeMeta.created_at || ''
+        const time_str = rawTs ? rawTs.slice(5, 16).replace('T', ' ') : '-'
+
+        const nov = hl.effective_novelty_rate != null ? Number(hl.effective_novelty_rate) : (exp.effective_novelty_rate != null ? Number(exp.effective_novelty_rate) : null)
+        let nov_delta = null
+        if (nov != null && prevNov != null) {
+          nov_delta = Number((nov - prevNov).toFixed(3))
+        }
+        if (nov != null) prevNov = nov
+
+        const facet_cov = exp.facet_coverage != null ? exp.facet_coverage : '-'
+        const pred_cov = proc.prediction_coverage != null ? (proc.prediction_coverage * 100).toFixed(0) + '%' : '-'
+        const fam_cov = exp.family_coverage != null ? exp.family_coverage : '-'
+        const op_ent = exp.operator_entropy != null ? Number(exp.operator_entropy).toFixed(2) : '-'
+        const abl_cov = proc.ablation_coverage != null ? (proc.ablation_coverage * 100).toFixed(0) + '%' : '-'
+        const adv_follow = proc.advisory_follow_rate != null ? (proc.advisory_follow_rate * 100).toFixed(0) + '%' : '-'
+        const lat_p50 = cost.eval_latency_p50_s != null ? Number(cost.eval_latency_p50_s).toFixed(1) + 's' : '-'
+
+        return {
+          ...r,
+          time_str,
+          bench_note: r.bench_note || timeMeta.bench_note || '',
+          bench_commit: r.bench_commit || timeMeta.bench_commit || '',
+          config_hash: r.config_hash || timeMeta.config_hash || '',
+          nov,
+          nov_str: nov != null ? (nov * 100).toFixed(1) + '%' : '-',
+          nov_delta,
+          facet_cov,
+          pred_cov,
+          fam_cov,
+          op_ent,
+          abl_cov,
+          adv_follow,
+          lat_p50,
+        }
+      })
+      return withDelta.reverse()
+    },
   },
   mounted() {
     this.refresh(false)
@@ -253,6 +363,7 @@ export default {
   watch: {
     // 口径切换后重画（等 v-model 落值再渲染，避免用旧口径画图）
     facetMetric() { this.$nextTick(() => this.renderFacetOperatorCharts()) },
+    trendMetric() { this.$nextTick(() => this.renderTrendChart()) },
   },
   methods: {
     fmt(v) {
@@ -276,6 +387,7 @@ export default {
       this.renderFacetOperatorCharts()
       this.renderErrorChart('metrics-error-chart', this.errorRows, true)
       this.renderErrorChart('metrics-advisory-chart', this.advisoryRows, false)
+      this.renderTrendChart()
       this.renderRunsChart()
     },
     fmtMetric(v) {
@@ -449,6 +561,70 @@ export default {
           { name: '提交', type: 'bar', stack: 'm', data: runs.map(r => r.n_submit ?? 0), itemStyle: { color: '#e8c491' }, barMaxWidth: 14 },
           { name: '入库', type: 'bar', stack: 'm', data: runs.map(r => (r.stored_candidate ?? 0) + (r.stored_production ?? 0)), itemStyle: { color: '#4fc3a1' }, barMaxWidth: 14 },
         ],
+      }, true)
+    },
+    renderTrendChart() {
+      if (!window.echarts || !this.data) return
+      const runs = this.data.runs || []
+      if (!runs.length) return
+      const chrono = [...runs].reverse().slice(-this.runsChartCap)
+      const c = chart('metrics-trend-chart')
+      if (!c) return
+
+      const metric = this.trendMetric
+      const getVal = r => {
+        const v4 = r.v4 || {}
+        for (const grp of ['headline', 'exploration', 'dynamics', 'quality', 'cost', 'process', 'integrity']) {
+          if (v4[grp] && v4[grp][metric] != null) return Number(v4[grp][metric])
+        }
+        return null
+      }
+
+      const times = chrono.map(r => {
+        const raw = r.created_at || r.v4?.time_meta?.created_at || ''
+        return raw ? raw.slice(5, 16).replace('T', ' ') : r.run_id.slice(0, 6)
+      })
+      const vals = chrono.map(r => getVal(r))
+
+      c.setOption({
+        tooltip: {
+          trigger: 'axis',
+          formatter: params => {
+            const idx = params[0]?.dataIndex
+            if (idx == null) return ''
+            const r = chrono[idx]
+            const val = vals[idx]
+            const prev = idx > 0 ? vals[idx - 1] : null
+            const delta = (val != null && prev != null) ? (val - prev).toFixed(4) : '-'
+            const dSign = (val != null && prev != null && val >= prev) ? '+' : ''
+            const note = r.bench_note || r.bench_commit || ''
+            return `<b>${r.run_id}</b><br/>`
+              + `开始时间: ${times[idx]} (时长 ${Number(r.wall_minutes || 0).toFixed(0)}m)<br/>`
+              + `数值: <b>${val != null ? val : 'N/A'}</b> (Δ上一run: ${dSign}${delta})`
+              + (note ? `<br/>说明: ${note}` : '')
+          },
+        },
+        grid: { left: 50, right: 20, top: 16, bottom: 28 },
+        xAxis: {
+          type: 'category',
+          data: times,
+          axisLabel: { ...AXIS_LABEL, rotate: 30, hideOverlap: true },
+        },
+        yAxis: {
+          type: 'value',
+          axisLabel: { ...AXIS_LABEL },
+          splitLine: { lineStyle: { color: '#1c2536' } },
+        },
+        series: [{
+          name: metric,
+          type: 'line',
+          smooth: true,
+          data: vals,
+          symbolSize: 7,
+          itemStyle: { color: '#4fc3a1' },
+          lineStyle: { color: '#4f8cff', width: 2 },
+          areaStyle: { color: 'rgba(79, 140, 255, 0.15)' },
+        }],
       }, true)
     },
     advisoryLabel(kind) {

@@ -423,10 +423,80 @@ def metrics_overview(last: int = 20) -> dict[str, Any]:
     from alphaagent.factor.mining.run_metrics import compute_run_metrics, reviewer_calibration
     from alphaagent.factor.mining.memory.analytics import facet_operator_breakdown, research_funnel
 
-    run_dirs = sorted(p for p in service.LOG_ROOT.iterdir() if p.is_dir())
-    if last > 0:
-        run_dirs = run_dirs[-last:]
-    rows = [compute_run_metrics(p.name, p) for p in run_dirs]
+    raw_dirs = [p for p in service.LOG_ROOT.iterdir() if p.is_dir()]
+
+    def _dir_sort_key(p: Path) -> str:
+        meta_f = p / "run_meta.json"
+        if meta_f.is_file():
+            try:
+                data = json.loads(meta_f.read_text(encoding="utf-8"))
+                if data.get("created_at"):
+                    return str(data["created_at"])
+            except Exception:
+                pass
+        sc_f = p / "scorecard.json"
+        if sc_f.is_file():
+            try:
+                data = json.loads(sc_f.read_text(encoding="utf-8"))
+                if data.get("created_at"):
+                    return str(data["created_at"])
+            except Exception:
+                pass
+        try:
+            return datetime.fromtimestamp(p.stat().st_mtime).isoformat()
+        except Exception:
+            return p.name
+
+    sorted_dirs = sorted(raw_dirs, key=_dir_sort_key)
+    if last > 0 and len(sorted_dirs) > last:
+        sorted_dirs = sorted_dirs[-last:]
+
+    rows = []
+    for p in sorted_dirs:
+        sc_f = p / "scorecard.json"
+        loaded = False
+        if sc_f.is_file():
+            try:
+                sc = json.loads(sc_f.read_text(encoding="utf-8"))
+                if sc.get("schema_version") == 4:
+                    t_meta = sc.get("time_meta") or {}
+                    m = compute_run_metrics(p.name, p)
+                    m["v4"] = {
+                        "headline": sc.get("headline") or {},
+                        "exploration": sc.get("exploration") or {},
+                        "dynamics": sc.get("dynamics") or {},
+                        "quality": sc.get("quality") or {},
+                        "cost": sc.get("cost") or {},
+                        "process": sc.get("process") or {},
+                        "integrity": sc.get("integrity") or {},
+                        "time_meta": t_meta,
+                    }
+                    m["created_at"] = t_meta.get("created_at") or sc.get("created_at")
+                    m["ended_at"] = t_meta.get("ended_at")
+                    m["model"] = t_meta.get("model")
+                    m["config_hash"] = t_meta.get("config_hash")
+                    m["bench_note"] = t_meta.get("bench_note")
+                    m["bench_commit"] = t_meta.get("bench_commit")
+                    rows.append(m)
+                    loaded = True
+            except Exception:
+                pass
+        if not loaded:
+            m = compute_run_metrics(p.name, p)
+            try:
+                from alphaagent.factor.mining.bench.extended_metrics import compute_extended_metrics
+                ext = compute_extended_metrics(p.name, p, base_metrics=m)
+                t_meta = ext.get("time_meta") or {}
+                m["v4"] = ext
+                m["created_at"] = t_meta.get("created_at") or m.get("created_at")
+                m["ended_at"] = t_meta.get("ended_at") or m.get("ended_at")
+                m["model"] = t_meta.get("model") or m.get("model")
+                m["config_hash"] = t_meta.get("config_hash") or m.get("config_hash")
+                m["bench_note"] = t_meta.get("bench_note") or m.get("bench_note")
+                m["bench_commit"] = t_meta.get("bench_commit") or m.get("bench_commit")
+            except Exception:
+                pass
+            rows.append(m)
 
     delivered = [m for m in rows if (m["stored_production"] + m["stored_candidate"]) > 0]
     total_eval = sum(m["n_eval"] + m["n_eval_val"] for m in rows)
@@ -461,6 +531,36 @@ def metrics_overview(last: int = 20) -> dict[str, Any]:
         for k, v in (m.get("advisory_breakdown") or {}).items():
             summary["advisory_breakdown"][k] = summary["advisory_breakdown"].get(k, 0) + v
 
+    # 聚合 v4 核心指标
+    v4_agg: dict[str, Any] = {
+        "median_effective_novelty_rate": None,
+        "median_facet_coverage": None,
+        "median_family_coverage": None,
+        "mean_prediction_coverage": None,
+        "mean_temporal_stability": None,
+        "mean_unsubmitted_passing_rate": None,
+    }
+    novelties = [r["v4"]["headline"]["effective_novelty_rate"] for r in rows if r.get("v4", {}).get("headline", {}).get("effective_novelty_rate") is not None]
+    if novelties:
+        v4_agg["median_effective_novelty_rate"] = round(float(sorted(novelties)[len(novelties) // 2]), 4)
+    facet_covs = [r["v4"]["exploration"]["facet_coverage"] for r in rows if r.get("v4", {}).get("exploration", {}).get("facet_coverage") is not None]
+    if facet_covs:
+        v4_agg["median_facet_coverage"] = int(sorted(facet_covs)[len(facet_covs) // 2])
+    family_covs = [r["v4"]["exploration"]["family_coverage"] for r in rows if r.get("v4", {}).get("exploration", {}).get("family_coverage") is not None]
+    if family_covs:
+        v4_agg["median_family_coverage"] = int(sorted(family_covs)[len(family_covs) // 2])
+    pred_covs = [r["v4"]["process"]["prediction_coverage"] for r in rows if r.get("v4", {}).get("process", {}).get("prediction_coverage") is not None]
+    if pred_covs:
+        v4_agg["mean_prediction_coverage"] = round(sum(pred_covs) / len(pred_covs), 4)
+    temp_stabs = [r["v4"]["quality"]["temporal_stability"] for r in rows if r.get("v4", {}).get("quality", {}).get("temporal_stability") is not None]
+    if temp_stabs:
+        v4_agg["mean_temporal_stability"] = round(sum(temp_stabs) / len(temp_stabs), 4)
+    unsub_rates = [r["v4"]["integrity"]["unsubmitted_passing_rate"] for r in rows if r.get("v4", {}).get("integrity", {}).get("unsubmitted_passing_rate") is not None]
+    if unsub_rates:
+        v4_agg["mean_unsubmitted_passing_rate"] = round(sum(unsub_rates) / len(unsub_rates), 4)
+
+    summary["v4_aggregates"] = v4_agg
+
     candidate_registry_path = (
         service.ROOT / "artifacts" / "alphaagent" / "factorzoo" / "candidate_main" / "mining_candidate_registry.json"
     )
@@ -471,7 +571,7 @@ def metrics_overview(last: int = 20) -> dict[str, Any]:
     # 数据面 / 算子成功率：研究记忆库聚合；last>0 时与页面的 run 窗口对齐（按 last_run_id 过滤）
     facet_ops = facet_operator_breakdown(
         service.RESEARCH_MEMORY_FILE,
-        run_ids=[p.name for p in run_dirs] if last > 0 else None,
+        run_ids=[p.name for p in sorted_dirs] if last > 0 else None,
     )
     # 漏斗转化：研究记忆库 + 因子库 registry（全库口径，跨 Web/CLI/整夜，不随 run 窗口变化）
     funnel = research_funnel(

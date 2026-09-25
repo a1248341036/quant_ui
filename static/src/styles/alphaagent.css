@@ -757,6 +757,8 @@ textarea.lab-input { resize:vertical; font:12px/1.5 var(--font-mono); }
 .metrics-rate-bar i.rate-good { background:#4fc3a1; }
 .metrics-rate-bar i.rate-mid { background:#e8c491; }
 .metrics-rate-bar i.rate-bad { background:#ef6b73; }
+.metrics-delta-up { color: #4fc3a1; font-size: 10px; margin-left: 3px; font-weight: bold; }
+.metrics-delta-down { color: #ef6b73; font-size: 10px; margin-left: 3px; font-weight: bold; }
 
 /* 因子详情三阶段表现表（feat/alphaagent-metrics FactorLibrary） */
 .factor-seg-table { width:100%; border-collapse:collapse; font:12px/1.5 var(--font-mono); }

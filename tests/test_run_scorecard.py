@@ -102,7 +102,10 @@ def test_generate_scorecard_file(tmp_path: Path):
 
     sc = generate_scorecard(run_id, run_dir, summary_dict=summary_mock)
     assert sc["run_id"] == run_id
-    assert sc["schema_version"] == 3
+    assert sc["schema_version"] == 4
+    assert "exploration" in sc
+    assert "dynamics" in sc
+    assert "headline" in sc
     assert sc["funnel"]["candidate_stored"] == 1
     assert sc["funnel"]["production_stored"] == 1
     assert sc["funnel"]["gate_survival_pct"] == 100.0
