@@ -406,3 +406,68 @@ def test_fetch_news_headlines_dedupes_news_ids(monkeypatch):
     df = fetch_news_headlines(date(2026, 7, 14))
     assert df.height == 1
     assert df["title"][0] == "修订版本"
+
+
+def _cm(mock_client):
+    class CM:
+        def __enter__(self):
+            return mock_client
+
+        def __exit__(self, *a):
+            pass
+
+    return CM
+
+
+def test_fetch_sector_fund_flow_falls_back_to_tushare_on_clist_failure(monkeypatch):
+    import polars as pl
+
+    from cnequity.adapters.eastmoney import rotation
+
+    def _boom(*_a, **_kw):
+        raise RuntimeError("EastMoney clist page 1 failed on all hosts")
+
+    monkeypatch.setattr(rotation, "_fetch_board_rows", _boom)
+
+    ts_raw = pl.DataFrame(
+        {
+            "trade_date": ["20260923"] * 3,
+            "content_type": ["概念", "行业", "地域"],
+            "ts_code": ["BK0447.DC", "BK0420.DC", "BK0145.DC"],
+            "name": ["互联网服务", "航空机场", "上海板块"],
+            "pct_change": [-1.64, 0.03, -0.09],
+            "net_amount": [-3.64e9, 1.06e7, -5.74e9],
+        }
+    )
+    monkeypatch.setattr(
+        rotation, "_get_pro", lambda config: object()
+    )
+    monkeypatch.setattr(
+        rotation,
+        "_fetch_with_retry",
+        lambda pro, api, **kwargs: ts_raw if api == "moneyflow_ind_dc" else pl.DataFrame(),
+    )
+
+    class FakeConfig:
+        external_tushare_wide_interval = 0.0
+
+    df = rotation.fetch_sector_fund_flow(date(2026, 9, 23), config=FakeConfig())
+    assert df.height == 2  # 地域 dropped
+    assert set(df["board_type"].to_list()) == {"concept", "industry"}
+    assert set(df["source"].unique().to_list()) == {"tushare"}
+    row = df.filter(pl.col("sector_code") == "BK0447").row(0, named=True)
+    assert row["sector_name"] == "互联网服务"
+    assert row["main_net_inflow"] == -3.64e9
+    assert row["change_pct"] == -1.64
+    assert row["turnover_pct"] is None
+
+
+def test_fetch_sector_fund_flow_tushare_raises_without_config(monkeypatch):
+    from cnequity.adapters.eastmoney import rotation
+
+    def _boom(*_a, **_kw):
+        raise RuntimeError("EastMoney clist page 1 failed on all hosts")
+
+    monkeypatch.setattr(rotation, "_fetch_board_rows", _boom)
+    with pytest.raises(RuntimeError, match="clist page 1 failed"):
+        rotation.fetch_sector_fund_flow(date(2026, 9, 23))
