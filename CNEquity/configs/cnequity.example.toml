@@ -267,7 +267,7 @@ steps = ["compact", "derive_adj_factors", "derive_industry_index", "audit"]
 at = "16:00"
 steps = [
   "instruments", "trading_calendar", "trading_status", "stock_st", "trading_status_st",
-  "corporate_actions", "daily_bars", "index_bars",
+  "corporate_actions", "daily_bars", "index_bars", "fund_bars",
   "compact", "derive_adj_factors", "derive_industry_index",
 ]
 
@@ -281,13 +281,20 @@ steps = [
 
 [job.daily.groups.signals]
 at = "17:20"
-steps = ["dragon_tiger", "block_trades", "compact"]
+steps = [
+  "dragon_tiger", "block_trades",
+  "dividend", "namechange", "share_float_external", "stk_surv",
+  "compact",
+]
 
 [job.daily.groups.fundamentals]
 at = "17:35"
 # share_structure / shareholder_counts are quarterly data, but filings trickle in
 # over the weeks after each period end, so a daily re-sweep of the two most
 # recent periods is how newly-disclosed ones get picked up. Each is ~11 pages.
+#
+# balancesheet / income / cashflow / fina_indicator / report_rc 均带季度 cadence
+# 守卫（should_fetch），同季内自动跳过零开销，跨季自动触发增量增补。
 #
 # top_holders is deliberately NOT here: two reports × ~110 pages × two periods is
 # ~440 pages, 40× these two, and on a slow link it would overrun the gap to
@@ -296,7 +303,9 @@ at = "17:35"
 steps = [
   "financial_statement_items", "earnings_disclosure_schedule",
   "index_constituents", "industry_members",
-  "share_structure", "shareholder_counts", "compact",
+  "share_structure", "shareholder_counts",
+  "balancesheet", "income", "cashflow", "fina_indicator", "report_rc",
+  "compact",
 ]
 
 [job.daily.groups.macro_risk]
