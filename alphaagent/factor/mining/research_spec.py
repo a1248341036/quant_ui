@@ -239,6 +239,13 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
         "phase_mode": "auto",
         "phase_ratio": [1 / 3, 1 / 3, 1 / 3],
     },
+    "report_policy": {
+        "enable_report_mechanisms": False,
+        "enable_report_prior": False,
+        "enable_report_rag": True,
+        "report_rag_max_chars": 1600,
+        "report_rag_top_k": 3,
+    },
 }
 
 
@@ -563,6 +570,17 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
         raise ValueError("research_spec.prompt_policy.phase_ratio_must_be_positive")
     pp["phase_ratio"] = ratio
     spec["prompt_policy"] = pp
+
+    # ── report_policy：研报先验机制策略（R3 方案） ──
+    rp = spec.get("report_policy")
+    if not isinstance(rp, dict):
+        rp = {}
+    rp["enable_report_mechanisms"] = _require_bool(rp.get("enable_report_mechanisms", False), "report_policy.enable_report_mechanisms")
+    rp["enable_report_prior"] = _require_bool(rp.get("enable_report_prior", False), "report_policy.enable_report_prior")
+    rp["enable_report_rag"] = _require_bool(rp.get("enable_report_rag", True), "report_policy.enable_report_rag")
+    rp["report_rag_max_chars"] = int(_bounded_number(rp.get("report_rag_max_chars", 1600), "report_policy.report_rag_max_chars", 200, 10000))
+    rp["report_rag_top_k"] = int(_bounded_number(rp.get("report_rag_top_k", 3), "report_policy.report_rag_top_k", 1, 20))
+    spec["report_policy"] = rp
 
     profiles = resolve_profiles(spec)
     spec["evaluation_profiles"] = {profile_id: profile.as_dict() for profile_id, profile in profiles.items()}
