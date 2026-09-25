@@ -239,4 +239,19 @@ TOOL_NAMES = (
     "submit_factor",
     "screen_factors",
     "recommend_mrmr_factors",
+    "precheck_expression",
 )
+
+
+_PRECHEK_PARAMETERS: dict[str, Any] = {
+    "type": "object",
+    "description": "评估/提交前对 DSL 表达式做结构风险静态预检（纯 AST，不触发评估）。",
+    "properties": {
+        "multi_line_expr": {
+            "type": "string",
+            "description": "待检查的多行因子表达式。",
+        },
+    },
+    "required": ["multi_line_expr"],
+    "additionalProperties": False,
+}

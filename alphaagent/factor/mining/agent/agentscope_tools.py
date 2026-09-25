@@ -987,6 +987,20 @@ def build_factor_eval_toolkit(
 
         func_tools.append(FunctionTool(screen_factors, name="screen_factors"))
 
+    async def precheck_expression(
+        multi_line_expr: str,
+        **_legacy_kwargs: Any,
+    ) -> ToolChunk:
+        """【结构风险静态预检】纯 AST 分析，不触发评估、不触达盲测段。"""
+        result, _elapsed = await _dispatch_with_timeout(
+            asyncio.get_running_loop(), _executor(max_workers), tools, "precheck_expression",
+            {"multi_line_expr": multi_line_expr},
+            timeout=_runtime_config.submit_timeout_seconds,
+        )
+        return _result_tool_chunk(result)
+
+    func_tools.append(FunctionTool(precheck_expression, name="precheck_expression"))
+
     return Toolkit(tools=func_tools)
 
 

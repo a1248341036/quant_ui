@@ -174,6 +174,72 @@ from alphaagent.core.timeutil import utc_now_iso
 _now = utc_now_iso
 
 
+def _efficiency_self_check(live_metrics: dict[str, Any], tool_call_rows: list[dict[str, Any]] | None) -> str:
+    """本 run 效率自省块（S2）：**只给事实统计，不给指令**。
+
+    数据来源：
+    - ``live_metrics``：train/val 评估计数、提交/入库计数、重复死路拦截（全为
+      train/val split 的结果，**不触达 test 段**——submit 的 test 段返回不计入）；
+    - ``tool_call_rows``：仅统计评估类工具（evaluate_factor / eval_on_train_set /
+      eval_on_val_set）的表达式族分布——submit/precheck/screen 等非评估调用不计入
+      "最近尝试"。
+
+    设计意图：整夜 run 实测 2930 次评估仅 5 次 submit（0.17%），模型在饱和族反复
+    变异而不提交。此处每轮注入一段极短的"本 run 已评估 X 次 / 0 提交 / 族分布"，
+    让模型对空转有实时感知。**只陈述事实，不写成祈使指令**（消融已证伪注入型说教）：
+    模型看到"20 次评估 / 0 次 submit / 最近 8 次 6 次集中在 X 族"自会反思，无需我们
+    告诉它"应该怎么做"。
+    """
+    try:
+        from collections import Counter
+
+        from alphaagent.factor.mining.run_metrics import build_metrics_snapshot
+
+        snap = build_metrics_snapshot(live_metrics)
+        n_eval = int(snap.get("n_eval") or 0)
+        n_val = int(snap.get("n_eval_val") or 0)
+        n_submit = int(snap.get("n_submit") or 0)
+        n_stored = int(snap.get("stored_candidate") or 0) + int(snap.get("stored_production") or 0)
+        n_dup = int(snap.get("dup_dead_end") or 0)
+        if n_eval < 3:
+            return ""
+        lines = [
+            "",
+            "### 本 run 效率自省（事实统计，非指令）",
+            f"- 已评估 train {n_eval} 次 / val {n_val} 次 / 提交 {n_submit} 次 / "
+            f"累计入库 {n_stored} 条 / 重复死路拦截 {n_dup} 次",
+        ]
+        eval_rows = [
+            r for r in (tool_call_rows or [])
+            if r.get("name") in ("evaluate_factor", "eval_on_train_set", "eval_on_val_set")
+        ]
+        recent = [str(r.get("expression") or "") for r in eval_rows[-8:] if r.get("expression")]
+        fam_counter: Counter[str] = Counter()
+        for expr in recent:
+            try:
+                from alphaagent.factor.mining.memory.expressions import classify_family
+
+                fam = classify_family("", expr)
+            except Exception:  # noqa: BLE001 — 族统计失败不影响注入
+                continue
+            if fam and fam != "other":
+                fam_counter[fam] += 1
+        total = sum(fam_counter.values())
+        if total >= 4:
+            top = fam_counter.most_common(1)[0]
+            lines.append(
+                f"- 最近 8 次评估尝试中 {total} 次可归族，{top[0]} 族 {top[1]} 次"
+                + (f"（其中 {top[1]} 次集中于该族）" if top[1] >= 5 else "")
+            )
+        if n_eval >= 8 and n_submit == 0:
+            lines.append(
+                f"- 已评估 train {n_eval} 次，submit_factor 调用 0 次（本 run 尚未尝试提交）"
+            )
+        return "\n".join(lines)
+    except Exception:  # noqa: BLE001 — 效率自省绝不影响挖掘
+        return ""
+
+
 def _build_model(
     config: MiningConfig,
     *,
@@ -415,6 +481,7 @@ async def run_factor_mining_agentscope(
         asset_type=ctx.asset_type,
         focus_facets=getattr(config, "focus_facets", None),
         max_tool_calls_per_round=config.max_tool_calls_per_round,
+        model_name=str(getattr(config, "model", "") or ""),
     )
 
     # Windows 控制台默认 GBK：模型/工具输出含 emoji 时会中断会话，统一转 UTF-8 容错。
@@ -739,6 +806,10 @@ async def run_factor_mining_agentscope(
             if off_focus:
                 lines.append(f"- 聚焦面 {'、'.join(off_focus)} 至今未出现在任何尝试中，本轮必须至少给出 1 条触及它的表达式。")
             block = f"{block}\n{chr(10).join(lines)}" if block else "\n".join(lines).lstrip("\n")
+
+        eff_block = _efficiency_self_check(live_metrics, tool_call_rows)
+        if eff_block:
+            block = f"{block}\n\n{eff_block}" if block else eff_block
         return block
 
     def _queued_prompt(messages: list[str]) -> str:
@@ -760,6 +831,7 @@ async def run_factor_mining_agentscope(
                 focus_facets=getattr(config, "focus_facets", None),
                 prompt_phase=_phase,
                 max_tool_calls_per_round=config.max_tool_calls_per_round,
+                model_name=str(getattr(config, "model", "") or ""),
             )
             if hasattr(agent, "_system_prompt"):
                 agent._system_prompt = _new_prompt
