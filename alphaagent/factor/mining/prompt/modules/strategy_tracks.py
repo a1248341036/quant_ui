@@ -37,6 +37,35 @@ _LAYER1 = """# 理性枷锁（三条硬性约束，违反即跳过本轮）
 
 """
 
+# ── 第一层：研报先验与机制假设（R2 方案条件渲染） ──
+_LAYER1_REPORT_PRIOR = """# 理性枷锁（三条硬性约束，违反即跳过本轮）
+
+本系统通过三层枷锁约束因子生成质量，确保每条因子都有经济意义、继承优秀基因、且与已有因子正交。
+
+## 第一层：机制先验与因果承诺（Mechanism Prior & Commitment First）
+
+**在输出任何 DSL 表达式之前，必须先在思维链中明确机制假设与因果逻辑**：
+- **优先引用机制卡**：若参考了注入的研报机制先验，显式标注卡片 ID（如 [mc_0001]），并阐述在本数据集上的参数落地与具体改进；
+- **新探索声明**：若为全新结构且无对应研报先验，显式声明 `[D轨无先验]` 并回答机制三问（谁错边/为何修不平/如何观测）；
+- **因果链条必须落地**：说明输入字段与算子组合如何捕获上述市场错误定价，严禁随机拼装算子。
+
+**因果链必须是可证伪的**：评估调用时必须同步传 `prediction`（预期十分位形态 expected_shape /
+预期 alpha 集中端 expected_strong_side / 预期 IC 符号 expected_sign / 可选证伪条件 falsifier）。
+系统自动对账并在结果中返回 `prediction_check`：verdict=contradicted（被证伪）说明机制错误——
+**错误的结构调参数不会变对**，应换机制或放弃；partial（部分命中）可继续但须解释形态偏差。
+
+**如果你的机制陈述属于以下任何一种，禁止生成表达式，直接跳过该候选：**
+- "A 和 B 可能有关系" → 缺因果链
+- "X 是一个好的因子" → 无机制描述
+- "类似已有因子 Y" → 无独立逻辑
+- "动量/反转/波动率" 等单一标签 → 缺算子级因果
+- 无法写出预期十分位形态与证伪条件 → 不可证伪的叙事，视为无机制
+
+**好的机制先验示例**（可直接用于 comment 字段）：
+- ✅ "参考 [mc_0001] 量价背离机制：价格短期快速冲高但成交量显著背离萎缩，预示追涨动能衰竭。采用 DIVERGENCE_RANK 算子量化 20 日收益率与成交量的截面偏离残差。"
+
+"""
+
 # ── 第二层 D 轨：新族开拓 ──
 _TRACK_D = """## 第二层：探索 × 变异双轨策略（Explore × Exploit）
 
@@ -211,6 +240,13 @@ def render(ctx) -> str:  # noqa: ANN001
     half_batch = max(1, batch // 2)
     phase = getattr(ctx, "prompt_phase", "full")
     template = RAW_EXPLORE if phase == "explore" else RAW
+
+    # 研报先验条件渲染（P0-4）：当且仅当配置开启了 report_prior 时渲染新契约，避免污染无卡片控制组
+    spec = getattr(ctx, "research_spec", None) or {}
+    report_policy = spec.get("report_policy") or {}
+    if bool(report_policy.get("enable_report_prior", False)):
+        template = template.replace(_LAYER1, _LAYER1_REPORT_PRIOR)
+
     crit = DeliveryCriteria.from_spec(getattr(ctx, "research_spec", None))
     text = template.replace("{batch}", str(batch))
     text = text.replace("{half_batch}", str(half_batch))

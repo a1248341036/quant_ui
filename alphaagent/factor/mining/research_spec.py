@@ -263,10 +263,13 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
         "question_field_gate_scan_limit": 40,
         "question_field_warn": True,
 =======
-        "enable_report_mechanisms": True,
-        "enable_report_prior": False,
+        "enable_report_mechanisms": False,
+        "enable_report_prior": True,
+        "report_prior_max_chars": 1600,
+        "report_prior_top_k": 4,
         "report_cards_path": None,
->>>>>>> 24a2d6d (feat(mining): 实现 R1 券商研报静态机制知识手册模块与先验注入)
+        "include_negatives": True,
+>>>>>>> b1b9201 (feat(mining): 实现 R2 券商研报机制卡检索注入与条件契约)
     },
 }
 

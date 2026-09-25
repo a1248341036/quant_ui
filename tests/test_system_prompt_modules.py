@@ -287,4 +287,19 @@ def test_report_rag_module_retrieval_and_injection():
     """R3 研报原始文献 RAG 检索注入模块测试。"""
     text = build_system_prompt(**_CASES["full"])
     assert "### 研报原文先验【外部研报·非本平台实测】" in text
+def test_report_prior_module_and_scrubber_resilience():
+    """R2 机制先验模块：验证按面检索注入及反 scrubber 特性（P2-1）。"""
+    spec = {
+        **_CASES["full"]["research_spec"],
+        "report_policy": {"knowledge_mode": "mechanism_cards", "report_cards_path": None},
+    }
+    text = build_system_prompt(
+        **{**_CASES["full"], "focus_facets": ("价量面", "量能面"), "research_spec": spec}
+    )
+    assert "### 研报机制先验【外部研报先验·非本平台实测】" in text
+    assert "[mc_0001]" in text or "量价背离" in text
+    # 确保没有被 scope_filter 整段置换为说明行
+    section = text.split("### 研报机制先验")[1].split("---")[0]
+    assert "（本 run 未选「" not in section
+
 
