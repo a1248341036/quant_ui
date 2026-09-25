@@ -310,7 +310,8 @@ def ingest_factor(
         if compute_similarity and zoo.n_factors > 0:
             sim = SimilarityMatrix(zoo.paths, zoo.manifest.max_factors)
             neighbor_report = sim.cross_sectional_neighbor_report(
-                zoo, stored_values, top_k=pol.similar_top_k, min_pairs=similar_min_pairs
+                zoo, stored_values, top_k=pol.similar_top_k, min_pairs=similar_min_pairs,
+                date_max=pol.val_end,
             )
             max_corr = float(neighbor_report["max_abs_corr"])
         if max_corr >= pol.max_cs_corr:
