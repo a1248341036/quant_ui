@@ -87,3 +87,86 @@ def test_metric_precheck_only_at_validation_stage():
     assert precheck["source"] == "research_spec_metric_precheck"
     # pre_submit：stage_one 已按 ingest 口径裁决完毕且因子已入池，预检不再运行
     assert r._metric_precheck(expr, stage="pre_submit") is None
+
+
+# ---------------------------------------------------------------------------
+# 回归（2026-09-24）：evaluate_factor 走 legacy 扁平结构时，审查证据 summary 被清空，
+# 导致 _metric_precheck 把 train 指标全取 0 → 每次 val 验证必然判 revise →
+# verdict 恒为 revise_required（覆盖数值达标的 validated 分支）→「验证通过」永不出现，
+# 因子永远不进候选池（整夜 6 run 0 候选的根因）。
+# ---------------------------------------------------------------------------
+
+def test_profile_result_for_reviewer_accepts_legacy_flat_shape():
+    """legacy 扁平口径（summary 在顶层）必须原样保留，不得清空。"""
+    from alphaagent.factor.mining.agent.agentscope_tools import _profile_result_for_reviewer
+
+    legacy = {
+        "ok": True,
+        "split": "train",
+        "summary": {"ic": 0.025, "icir": 0.3291, "factor_coverage": 0.9604},
+        "monthly_corr_robustness": {"share_months_ic_positive": 0.83},
+        "rule_results": [{"passed": True}],
+    }
+    out = _profile_result_for_reviewer(legacy)
+    assert out["summary"]["ic"] == 0.025
+    assert out["summary"]["icir"] == 0.3291
+    assert out["summary"]["factor_coverage"] == 0.9604
+    assert out["monthly_corr_robustness"]["share_months_ic_positive"] == 0.83
+    assert out["rule_results"] == [{"passed": True}]
+
+
+def test_profile_result_for_reviewer_still_accepts_engine_native_shape():
+    """引擎原生口径（指标嵌在 metrics 下）回归保护。"""
+    from alphaagent.factor.mining.agent.agentscope_tools import _profile_result_for_reviewer
+
+    native = {
+        "ok": True,
+        "split": "train",
+        "metrics": {
+            "cross_sectional_core": {"ic": 0.031, "icir": 0.35, "factor_coverage": 0.95},
+            "monthly_robustness": {"share_months_ic_positive": 0.9},
+        },
+    }
+    out = _profile_result_for_reviewer(native)
+    assert out["summary"]["ic"] == 0.031
+    assert out["monthly_corr_robustness"]["share_months_ic_positive"] == 0.9
+
+
+def test_profile_result_for_reviewer_tolerates_empty_result():
+    """无任何指标字段时返回空 dict，不抛异常。"""
+    from alphaagent.factor.mining.agent.agentscope_tools import _profile_result_for_reviewer
+
+    out = _profile_result_for_reviewer({})
+    assert out["summary"] == {}
+    assert out["monthly_corr_robustness"] == {}
+
+
+def test_metric_precheck_no_revise_with_legacy_train_evidence():
+    """端到端回归：legacy 口径 train 证据 + 数值达标 val → 预检不产出 revise。
+
+    修复前该用例必失败（train summary 被清空 → 四条 revise 理由）。
+    """
+    import types
+
+    from alphaagent.factor.mining.agent.agentscope_tools import _profile_result_for_reviewer
+
+    r = _mk()
+    r.config = types.SimpleNamespace(research_spec={})
+    expr = "TS_MEAN($close, 5)"
+    # train 证据按 evaluate_factor 真实路径构造（经 _profile_result_for_reviewer 包装）
+    r.record_evaluation(
+        "train",
+        {"multi_line_expr": expr},
+        _profile_result_for_reviewer({
+            "ok": True,
+            "split": "train",
+            "summary": {"ic": 0.025, "icir": 0.3291, "factor_coverage": 0.9604},
+        }),
+    )
+    # val 证据按 eval_on_val_set 真实路径构造（原始 result，扁平 summary）
+    r.record_evaluation(
+        "val",
+        {"multi_line_expr": expr},
+        {"ok": True, "summary": {"ic": 0.0306, "icir": 0.3732, "factor_coverage": 0.9754}},
+    )
+    assert r._metric_precheck(expr, stage="validation") is None

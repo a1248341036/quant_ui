@@ -963,12 +963,32 @@ def build_factor_eval_toolkit(
 
 
 def _profile_result_for_reviewer(result: dict[str, Any]) -> dict[str, Any]:
-    """Adapt generic evidence to the reviewer compatibility shape."""
+    """Adapt generic evidence to the reviewer compatibility shape.
+
+    兼容两种 result 结构（train/val 评估经引擎收敛后统一走 legacy 扁平口径，
+    但本函数历史上只认引擎原生结构）：
+    - legacy 扁平结构（eval/service._engine_result_to_legacy）：summary 在顶层
+      ``result["summary"]``，月度稳健性在 ``result["monthly_corr_robustness"]``；
+    - 引擎原生结构：指标嵌在 ``result["metrics"]`` 下。
+
+    2026-09-24 修复：此前只读引擎原生结构，令 legacy 口径的 train 证据 summary
+    恒为空 ``{}``。_metric_precheck 读到空 summary 后 train IC/ICIR/coverage 全取
+    0（且 ``0 × val_ic = 0 ≤ 0`` 误判方向不一致），于是所有 val 验证必然产出
+    「训练集指标未达标 + 方向不一致」四条 revise 理由 → verdict 恒为
+    revise_required（覆盖数值达标的 validated 分支）→「验证通过」永不出现，
+    因子永远不进候选池。
+    """
     metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
+    summary = result.get("summary")
+    if not isinstance(summary, dict) or not summary:
+        summary = metrics.get("cross_sectional_core", {})
+    monthly = result.get("monthly_corr_robustness")
+    if not isinstance(monthly, dict) or not monthly:
+        monthly = metrics.get("monthly_robustness", {})
     return {
         "ok": result.get("ok", False),
-        "summary": metrics.get("cross_sectional_core", {}),
-        "monthly_corr_robustness": metrics.get("monthly_robustness", {}),
+        "summary": summary,
+        "monthly_corr_robustness": monthly,
         "profile_hash": result.get("profile_hash"),
         "rule_results": result.get("rule_results", []),
     }
