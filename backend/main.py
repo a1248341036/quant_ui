@@ -38,6 +38,22 @@ app.include_router(strategy_pool.router, tags=["strategy-pool"])
 app.include_router(alphaagent.router)
 
 
+# 静态资源后缀：命中则不写 api.log（避免轮询/资源请求淹没日志）
+_STATIC_SUFFIXES = (
+    ".js", ".css", ".map", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico",
+    ".webp", ".woff", ".woff2", ".ttf", ".eot",
+)
+
+
+def _loggable(path: str) -> bool:
+    """健康检查与静态资源不记日志，其余（含门禁 /_gate/*、未知路由）全部记录。
+
+    原判据 `not path.startswith("/")` 恒为 False，导致 api.log 长期零写入，
+    405/401 这类问题事后完全无迹可查。
+    """
+    return path != "/api/health" and not path.endswith(_STATIC_SUFFIXES)
+
+
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     """记录 HTTP 请求日志，包含请求 ID、耗时、状态码。"""
@@ -47,9 +63,9 @@ async def log_requests(request: Request, call_next):
     # 注入 request_id 到 headers，供下游使用
     request.state.request_id = request_id
     
-    # 跳过健康检查和静态文件
+    # 跳过健康检查和静态资源；其余路径（含门禁与未知路由）必须留痕
     path = request.url.path
-    if path not in ["/api/health", "/"] and not path.startswith("/"):
+    if _loggable(path):
         api_logger.info(f"Incoming request: {request.method} {path}")
     
     try:
@@ -57,7 +73,7 @@ async def log_requests(request: Request, call_next):
         duration_ms = (time.time() - start_time) * 1000
         
         # 记录响应日志
-        if path not in ["/api/health", "/"] and not path.startswith("/"):
+        if _loggable(path):
             status = response.status_code
             if status >= 400:
                 api_logger.warning(
@@ -99,6 +115,14 @@ _ACCESS_KEY = os.environ.get("QUANT_UI_ACCESS_KEY") or os.environ.get("QUANT_UI_
 _ACCESS_COOKIE = "qk"
 _ACCESS_MAX_AGE = 7 * 24 * 3600  # 一周免输
 _GATE_LOGIN_PATH = "/_gate/login"
+# 本机来源(127.0.0.1/::1)是否免密放行。默认 1 = 保持本地开发免登录；
+# 经本地反向代理/隧道对外暴露时必须设 0，否则公网请求会被判成本机而静默绕过门禁。
+_TRUST_LOOPBACK = os.environ.get("QUANT_UI_TRUST_LOOPBACK", "1").strip() != "0"
+if _ACCESS_KEY and _TRUST_LOOPBACK:
+    main_logger.warning(
+        "访问门禁：本机来源免密放行已启用（QUANT_UI_TRUST_LOOPBACK=1）；"
+        "若经本地反向代理/隧道对外暴露，请设置 QUANT_UI_TRUST_LOOPBACK=0"
+    )
 
 
 def _client_host(request: Request) -> str:
@@ -148,7 +172,9 @@ def _gate_render(next_path: str, error: bool) -> HTMLResponse:
     esc = next_path.replace("&", "&amp;").replace("<", "&lt;").replace('"', "&quot;")
     body = _GATE_LOGIN_HTML.replace("__NEXT__", esc)
     body = body.replace("__ERR__", '<p class="err">密码错误，请重试</p>' if error else "")
-    return HTMLResponse(body, status_code=200)
+    # 必须禁缓存：门禁在最外层中间件直接 return，内层 no_cache_html 不会生效，
+    # 少了这个头浏览器会缓存登录页，之后拿旧页提交就会出现莫名失败。
+    return HTMLResponse(body, status_code=200, headers={"Cache-Control": "no-store"})
 
 
 def _safe_next(next_path: str) -> str:
@@ -160,25 +186,10 @@ def _safe_next(next_path: str) -> str:
 async def access_gate(request: Request, call_next):
     if not _ACCESS_KEY:
         return await call_next(request)  # 未配置密钥 = 不启用门禁
-    if _client_host(request) in ("127.0.0.1", "::1"):
-        return await call_next(request)
-    if request.url.path == "/api/health":
-        return await call_next(request)
-    if request.cookies.get(_ACCESS_COOKIE) == _ACCESS_KEY:
-        return await call_next(request)
-    provided = request.query_params.get("key", "")
-    if provided == _ACCESS_KEY:
-        response = await call_next(request)
-        response.set_cookie(
-            _ACCESS_COOKIE,
-            _ACCESS_KEY,
-            max_age=_ACCESS_MAX_AGE,
-            httponly=True,
-            samesite="lax",
-        )
-        return response
-    # 登录表单提交在此短路处理（不进入业务路由）
-    if request.method == "POST" and request.url.path == _GATE_LOGIN_PATH:
+    path = request.url.path
+    # 登录表单必须最先消化：/_gate/login 不是注册路由，只能在此短路；
+    # 一旦被下面的放行判断跳过，POST 会落到业务路由表（静态挂载只收 GET）→ 405 Method Not Allowed
+    if path == _GATE_LOGIN_PATH and request.method == "POST":
         try:
             form = await request.form()
             password = str(form.get("password", ""))
@@ -196,9 +207,29 @@ async def access_gate(request: Request, call_next):
             )
             return resp
         return _gate_render(nxt, error=True)
+    if path == _GATE_LOGIN_PATH:
+        # GET（含直接敲地址）始终给登录页，同样不允许落到静态挂载
+        return _gate_render("/", error=False)
+    if _TRUST_LOOPBACK and _client_host(request) in ("127.0.0.1", "::1"):
+        return await call_next(request)
+    if path == "/api/health":
+        return await call_next(request)
+    if request.cookies.get(_ACCESS_COOKIE) == _ACCESS_KEY:
+        return await call_next(request)
+    provided = request.query_params.get("key", "")
+    if provided == _ACCESS_KEY:
+        response = await call_next(request)
+        response.set_cookie(
+            _ACCESS_COOKIE,
+            _ACCESS_KEY,
+            max_age=_ACCESS_MAX_AGE,
+            httponly=True,
+            samesite="lax",
+        )
+        return response
     # 浏览器访问 → 登录页（记住原地址，登录后跳回）；其余 → 401 JSON
     if "text/html" in request.headers.get("accept", ""):
-        nxt = request.url.path + (f"?{request.url.query}" if request.url.query else "")
+        nxt = path + (f"?{request.url.query}" if request.url.query else "")
         return _gate_render(nxt, error=False)
     return JSONResponse({"detail": "unauthorized"}, status_code=401)
 
