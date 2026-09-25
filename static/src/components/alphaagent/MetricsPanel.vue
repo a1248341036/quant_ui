@@ -57,6 +57,60 @@
           </div>
         </div>
 
+        <!-- ── ABCD 评测指标卡组（随每个 Run 动态变化 · 迷你走势线） ── -->
+        <div class="summary-panel">
+          <div class="summary-panel-head">
+            <h3>评测维度矩阵 A–F（卡片随 Run 动态变化 · 点击指标直达下方折线图）</h3>
+            <span class="summary-facet-hint">每行展示该指标在最新 Run 的数值、相对上一 Run 的 Δ 增量，以及随历史各个 Run 演进的迷你走势线 (Sparkline)</span>
+          </div>
+          <div class="abcd-cards-grid">
+            <div v-for="grp in metricGroups" :key="grp.id" class="abcd-group-card">
+              <div class="abcd-group-head">
+                <h4><span class="abcd-group-badge">{{ grp.id }}</span> {{ grp.name }}</h4>
+              </div>
+              <div class="abcd-group-body">
+                <div
+                  v-for="m in grp.metrics"
+                  :key="m.key"
+                  class="abcd-metric-row"
+                  :class="{ active: trendMetric === m.key }"
+                  @click="selectTrendMetric(m.key)"
+                  :title="'点击在下方折线图查看 ' + m.name + ' 的逐 Run 趋势'"
+                >
+                  <span class="abcd-metric-name">{{ m.name }}</span>
+                  <span class="abcd-metric-val">{{ formatMetricVal(m, getSpark(m.key).lastVal) }}</span>
+                  <span
+                    class="abcd-metric-delta"
+                    :class="deltaClass(m, getSpark(m.key).delta)"
+                  >
+                    {{ formatDelta(m, getSpark(m.key).delta) }}
+                  </span>
+                  <div class="abcd-metric-spark">
+                    <svg v-if="getSpark(m.key).points" viewBox="0 0 76 18" style="width:100%;height:100%;overflow:visible;">
+                      <polyline
+                        :points="getSpark(m.key).points"
+                        fill="none"
+                        :stroke="trendMetric === m.key ? '#4fc3a1' : '#4f8cff'"
+                        stroke-width="1.8"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      />
+                      <circle
+                        v-if="getSpark(m.key).lastPoint"
+                        :cx="getSpark(m.key).lastPoint.x"
+                        :cy="getSpark(m.key).lastPoint.y"
+                        r="2.5"
+                        :fill="deltaColor(m, getSpark(m.key).delta)"
+                      />
+                    </svg>
+                    <span v-else style="color:var(--muted);font-size:10px;">—</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- ── 漏斗转化（echarts 漏斗图） ── -->
         <div class="summary-panel">
           <div class="summary-panel-head">
@@ -255,6 +309,68 @@ export default {
       showFullMetrics: false,
       autoPoll: true,
       pollTimer: null,
+      metricGroups: [
+        {
+          id: 'A',
+          name: '探索质量 (Exploration)',
+          metrics: [
+            { key: 'effective_novelty_rate', name: '有效新颖率', isPct: true, higherGood: true },
+            { key: 'facet_coverage', name: '数据面覆盖数', isPct: false, higherGood: true },
+            { key: 'family_coverage', name: '信号族覆盖数', isPct: false, higherGood: true },
+            { key: 'operator_entropy', name: '算子分布熵', isPct: false, higherGood: true },
+            { key: 'structure_variety', name: '结构多样率', isPct: true, higherGood: true },
+          ],
+        },
+        {
+          id: 'B',
+          name: '收敛轨迹 (Dynamics)',
+          metrics: [
+            { key: 'saturation_turn', name: '饱和轮次', isPct: false, higherGood: false },
+            { key: 'late_gain_share', name: '后段增益占比', isPct: true, higherGood: true },
+            { key: 'early_mean_abs_ic', name: '早期均值 IC', isPct: false, higherGood: true },
+            { key: 'late_mean_abs_ic', name: '后期均值 IC', isPct: false, higherGood: true },
+          ],
+        },
+        {
+          id: 'C',
+          name: '产出质量 (Quality)',
+          metrics: [
+            { key: 'temporal_stability', name: '月度符号稳定性', isPct: true, higherGood: true },
+            { key: 'claim_implementation_consistency', name: '机制算子一致率', isPct: true, higherGood: true },
+            { key: 'max_corr_median', name: '库内相关中位', isPct: false, higherGood: false },
+          ],
+        },
+        {
+          id: 'D',
+          name: '成本与耗时 (Cost & Latency)',
+          metrics: [
+            { key: 'cost_per_candidate_k_tokens', name: '每候选 Token(K)', isPct: false, higherGood: false },
+            { key: 'cost_of_first_pass_k_tokens', name: '首过线 Token(K)', isPct: false, higherGood: false },
+            { key: 'eval_latency_p50_s', name: '单次耗时 P50(s)', isPct: false, higherGood: false },
+            { key: 'eval_throughput', name: '评估吞吐(次/分)', isPct: false, higherGood: true },
+          ],
+        },
+        {
+          id: 'E',
+          name: '过程控制 (Process Control)',
+          metrics: [
+            { key: 'prediction_coverage', name: '预测对账覆盖率', isPct: true, higherGood: true },
+            { key: 'ablation_coverage', name: '门控消融覆盖率', isPct: true, higherGood: true },
+            { key: 'advisory_follow_rate', name: '死路提示遵循率', isPct: true, higherGood: true },
+            { key: 'min_gap', name: '近线最小差距', isPct: true, higherGood: false },
+          ],
+        },
+        {
+          id: 'F',
+          name: '诚实性与漏斗 (Integrity & Funnel)',
+          metrics: [
+            { key: 'stage_one_yield_pct', name: '海选过线率', isPct: true, higherGood: true },
+            { key: 'gate_survival_pct', name: '实盘门存活率', isPct: true, higherGood: true },
+            { key: 'unsubmitted_passing_rate', name: '未交付过线率', isPct: true, higherGood: false },
+            { key: 'reviewer_calibration_lift', name: 'Reviewer 校准 Lift', isPct: false, higherGood: true },
+          ],
+        },
+      ],
     }
   },
   computed: {
@@ -366,6 +482,97 @@ export default {
     trendMetric() { this.$nextTick(() => this.renderTrendChart()) },
   },
   methods: {
+    getMetricVal(r, key) {
+      if (!r) return null
+      const v4 = r.v4 || {}
+      for (const grp of ['headline', 'exploration', 'dynamics', 'quality', 'cost', 'process', 'integrity']) {
+        if (v4[grp] && v4[grp][key] != null) return Number(v4[grp][key])
+      }
+      if (v4.process?.near_miss_progress && v4.process.near_miss_progress[key] != null) {
+        return Number(v4.process.near_miss_progress[key])
+      }
+      if (v4.quality?.library_novelty && v4.quality.library_novelty[key] != null) {
+        return Number(v4.quality.library_novelty[key])
+      }
+      if (v4.dynamics?.long_horizon_decay) {
+        if (key === 'early_mean_abs_ic') return Number(v4.dynamics.long_horizon_decay.early?.mean_abs_ic)
+        if (key === 'late_mean_abs_ic') return Number(v4.dynamics.long_horizon_decay.late?.mean_abs_ic)
+      }
+      if (r[key] != null) return Number(r[key])
+      if (r.funnel && r.funnel[key] != null) return Number(r.funnel[key])
+      if (r.summary && r.summary[key] != null) return Number(r.summary[key])
+      return null
+    },
+    getSpark(key) {
+      const runs = (this.data?.runs || []).slice().reverse()
+      if (!runs.length) return { points: '', lastVal: null, delta: null, lastPoint: null }
+      const pointsData = []
+      runs.forEach(r => {
+        const v = this.getMetricVal(r, key)
+        if (v != null && !isNaN(v)) pointsData.push(v)
+      })
+      if (!pointsData.length) return { points: '', lastVal: null, delta: null, lastPoint: null }
+
+      const lastVal = pointsData[pointsData.length - 1]
+      let delta = null
+      if (pointsData.length >= 2) {
+        delta = Number((lastVal - pointsData[pointsData.length - 2]).toFixed(4))
+      }
+
+      const w = 76
+      const h = 18
+      const min = Math.min(...pointsData)
+      const max = Math.max(...pointsData)
+      const range = max - min
+
+      const pts = pointsData.map((val, idx) => {
+        const x = pointsData.length === 1 ? w / 2 : (idx / (pointsData.length - 1)) * w
+        const y = range <= 1e-6 ? h / 2 : h - 2 - ((val - min) / range) * (h - 4)
+        return `${x.toFixed(1)},${y.toFixed(1)}`
+      })
+
+      const lastCoord = pts[pts.length - 1].split(',')
+      return {
+        points: pts.join(' '),
+        lastVal,
+        delta,
+        lastPoint: { x: Number(lastCoord[0]), y: Number(lastCoord[1]) },
+      }
+    },
+    selectTrendMetric(key) {
+      this.trendMetric = key
+      this.$nextTick(() => {
+        this.renderTrendChart()
+        const el = document.getElementById('metrics-trend-chart')
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+      })
+    },
+    formatMetricVal(spec, val) {
+      if (val == null || isNaN(val)) return '-'
+      if (spec.isPct) {
+        return Math.abs(val) <= 1.0 ? (val * 100).toFixed(1) + '%' : val.toFixed(1) + '%'
+      }
+      return Math.abs(val) >= 100 ? val.toFixed(0) : Math.abs(val) >= 10 ? val.toFixed(1) : val.toFixed(3)
+    },
+    formatDelta(spec, delta) {
+      if (delta == null || isNaN(delta)) return '—'
+      if (Math.abs(delta) < 1e-4) return '0.0'
+      const sign = delta > 0 ? '+' : ''
+      if (spec.isPct) {
+        return Math.abs(delta) <= 1.0 ? `${sign}${(delta * 100).toFixed(1)}%` : `${sign}${delta.toFixed(1)}%`
+      }
+      return `${sign}${delta.toFixed(3)}`
+    },
+    deltaClass(spec, delta) {
+      if (delta == null || Math.abs(delta) < 1e-4) return ''
+      const isGood = spec.higherGood ? delta > 0 : delta < 0
+      return isGood ? 'metrics-delta-up' : 'metrics-delta-down'
+    },
+    deltaColor(spec, delta) {
+      if (delta == null || Math.abs(delta) < 1e-4) return '#8ab4d8'
+      const isGood = spec.higherGood ? delta > 0 : delta < 0
+      return isGood ? '#4fc3a1' : '#ef6b73'
+    },
     fmt(v) {
       const n = Number(v)
       return isNaN(n) ? String(v ?? '-') : Math.abs(n) >= 100 ? n.toFixed(0) : n.toFixed(1)
