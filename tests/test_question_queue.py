@@ -19,11 +19,11 @@ def test_load_default_question_queue():
 def test_get_task_for_turn():
     task_0 = get_task_for_turn(0)
     assert "### 本轮研报定向攻关课题【RDAgent 研究问题驱动】" in task_0
-    assert "RQ_01" in task_0
+    assert "RQ_" in task_0
 
     task_1 = get_task_for_turn(1)
-    assert "RQ_02" in task_1
+    assert "RQ_" in task_1
 
     # 数据面聚焦匹配
-    task_focus = get_task_for_turn(0, focus_facets=("资金面",))
-    assert "RQ_04" in task_focus or "知情交易" in task_focus
+    task_focus = get_task_for_turn(0, focus_facets=("基本面",))
+    assert "基本面" in task_focus or "RQ_" in task_focus

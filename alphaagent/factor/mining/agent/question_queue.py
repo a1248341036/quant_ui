@@ -101,6 +101,15 @@ def resolve_questions_file(spec: dict[str, Any] | None = None) -> Path | None:
     except Exception:
         pass
 
+    # 优先支持 worktree 相对根路径与主仓库路径
+    repo_root = Path(__file__).resolve().parents[4]
+    p_local = repo_root / "data" / "research_reports" / "knowledge" / "research_questions.jsonl"
+    if p_local.is_file():
+        return p_local
+    main_repo = Path(r"D:\Quant\quant_ui\data\research_reports\knowledge\research_questions.jsonl")
+    if main_repo.is_file():
+        return main_repo
+
     fallback = Path(__file__).resolve().parents[5] / "data" / "research_reports" / "knowledge" / "research_questions.jsonl"
     return fallback if fallback.is_file() else None
 
