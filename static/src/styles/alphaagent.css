@@ -757,6 +757,22 @@ textarea.lab-input { resize:vertical; font:12px/1.5 var(--font-mono); }
 .metrics-rate-bar i.rate-good { background:#4fc3a1; }
 .metrics-rate-bar i.rate-mid { background:#e8c491; }
 .metrics-rate-bar i.rate-bad { background:#ef6b73; }
+.metrics-delta-up { color: #4fc3a1; font-size: 10px; margin-left: 3px; font-weight: bold; }
+.metrics-delta-down { color: #ef6b73; font-size: 10px; margin-left: 3px; font-weight: bold; }
+
+/* ABCD 评测维度卡组 */
+.abcd-cards-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 14px; margin-top: 10px; }
+.abcd-group-card { background: var(--card, #121824); border: 1px solid var(--line, #222d42); border-radius: 9px; padding: 12px 14px; }
+.abcd-group-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; border-bottom: 1px solid rgba(255, 255, 255, 0.06); padding-bottom: 6px; }
+.abcd-group-head h4 { margin: 0; font-size: 12px; color: var(--text, #e6ecf7); display: flex; align-items: center; gap: 6px; }
+.abcd-group-badge { background: rgba(79, 140, 255, 0.15); color: #4f8cff; border: 1px solid rgba(79, 140, 255, 0.3); font-size: 10px; font-weight: bold; padding: 1px 5px; border-radius: 4px; }
+.abcd-metric-row { display: flex; align-items: center; justify-content: space-between; padding: 5px 4px; border-bottom: 1px solid rgba(255, 255, 255, 0.03); font-size: 11px; cursor: pointer; border-radius: 4px; transition: background 0.15s; }
+.abcd-metric-row:hover { background: rgba(255, 255, 255, 0.05); }
+.abcd-metric-row.active { background: rgba(79, 140, 255, 0.12); border-color: rgba(79, 140, 255, 0.25); }
+.abcd-metric-name { color: var(--muted, #8494b5); flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-right: 6px; }
+.abcd-metric-val { font-family: var(--font-mono, monospace); font-weight: 600; color: #e6ecf7; min-width: 52px; text-align: right; margin-right: 6px; font-size: 11px; }
+.abcd-metric-delta { font-family: var(--font-mono, monospace); font-size: 10px; min-width: 44px; text-align: right; margin-right: 8px; }
+.abcd-metric-spark { width: 76px; height: 18px; display: flex; align-items: center; flex-shrink: 0; }
 
 /* 因子详情三阶段表现表（feat/alphaagent-metrics FactorLibrary） */
 .factor-seg-table { width:100%; border-collapse:collapse; font:12px/1.5 var(--font-mono); }

@@ -208,6 +208,20 @@ def compute_run_metrics(run_id: str, run_dir: Path) -> dict:
     m["ablation_verdicts"] = abl_verdicts
     m["near_miss_count"] = near_miss_count
     m["unique_train_exprs_count"] = len(unique_train_exprs)
+
+    # 提取时间与上下文元数据
+    try:
+        from alphaagent.factor.mining.bench.extended_metrics import _extract_time_meta
+        t_meta = _extract_time_meta(run_dir, ev)
+        m["created_at"] = t_meta.get("created_at")
+        m["ended_at"] = t_meta.get("ended_at")
+        m["model"] = t_meta.get("model")
+        m["config_hash"] = t_meta.get("config_hash")
+        m["bench_note"] = t_meta.get("bench_note")
+        m["bench_commit"] = t_meta.get("bench_commit")
+    except Exception:
+        pass
+
     return m
 
 
@@ -399,10 +413,34 @@ def generate_scorecard(
 
     from alphaagent.core.timeutil import utc_now_iso
 
+    # 计算 v4 扩展指标（A-F 分组）
+    ext: dict[str, Any] = {}
+    try:
+        from alphaagent.factor.mining.bench.extended_metrics import compute_extended_metrics
+        ext = compute_extended_metrics(run_id, run_path, base_metrics=m)
+    except Exception:
+        pass
+
+    # 尝试补充 Reviewer 校准
+    try:
+        from core import factor_categories
+        c_reg = factor_categories.candidate_registry_path("technical")
+        p_reg = factor_categories.production_registry_path("technical")
+        if c_reg.exists() and p_reg.exists():
+            cal = reviewer_calibration(c_reg, p_reg)
+            if "integrity" in ext and isinstance(ext["integrity"], dict):
+                ext["integrity"]["reviewer_calibration_lift"] = (cal.get("calibration") or {}).get("lift")
+    except Exception:
+        pass
+
+    time_meta = ext.get("time_meta") or {}
+
     scorecard: dict[str, Any] = {
         "run_id": run_id,
-        "created_at": utc_now_iso(),
-        "schema_version": 3,
+        "created_at": time_meta.get("created_at") or utc_now_iso(),
+        "schema_version": 4,
+        "time_meta": time_meta,
+        "headline": ext.get("headline") or {},
         "summary": {
             "total_turns": s.get("turns_completed") or m.get("llm_calls") or 0,
             "wall_time_minutes": wall_min,
@@ -436,6 +474,12 @@ def generate_scorecard(
             "ablation_unverifiable": av.get("unverifiable", 0),
             "dup_dead_end_rate": m.get("dup_dead_end_rate") or 0.0,
         },
+        "exploration": ext.get("exploration") or {},
+        "dynamics": ext.get("dynamics") or {},
+        "quality": ext.get("quality") or {},
+        "cost": ext.get("cost") or {},
+        "process": ext.get("process") or {},
+        "integrity": ext.get("integrity") or {},
         "gate_failure_reasons": m.get("gate_fail_reasons") or {},
         "stage_one_failure_reasons": m.get("stage_one_fail_reasons") or {},
         "oos_retention": {
