@@ -153,6 +153,47 @@ def get_question_for_turn(
     return candidate_pool[(offset + turn) % len(candidate_pool)]
 
 
+_ORTHOGONAL_COMPLEMENTS: dict[str, list[dict[str, Any]]] = {
+    "价量面": [
+        {"facet": "量能面", "fields": ["amount", "float_cap"], "technique": "换手率或成交额连续加权（SOFT_GATE 或 CS_GROUP_RANK），有效压低周度换手率并剔除虚假突破"},
+        {"facet": "资金面", "fields": ["ff_large_net", "ff_super_net"], "technique": "主力大单流向残差化或门控（SOFT_GATE），验证是否为机构真金白银建仓而非散户跟风"},
+        {"facet": "基本面", "fields": ["funda_net_profit", "pe", "pb"], "technique": "盈利质量或估值分层中性化（CS_RESIDUALIZE），剥离纯技术形态在垃圾股上的假突破"},
+    ],
+    "量能面": [
+        {"facet": "价量面", "fields": ["close", "adj_vwap", "high", "low"], "technique": "价格偏离或高阶矩背离（DIVERGENCE_RANK），识别放量滞涨或缩量企稳"},
+        {"facet": "筹码面", "fields": ["chip", "volume"], "technique": "筹码峰套牢密集度（CHIP_DENSITY 或 CHIP_BIMODAL），度量换手过程中的套牢盘抛压"},
+    ],
+    "资金面": [
+        {"facet": "基本面", "fields": ["funda_ocf", "funda_revenue"], "technique": "现金流与成长质量过滤（SOFT_GATE），避免追随游资炒作无业绩支撑标的"},
+        {"facet": "价量面", "fields": ["ret", "adj_close"], "technique": "收益率动量残差（CS_RESIDUALIZE），剥离大单对短期价格的同步冲击影响"},
+    ],
+    "基本面": [
+        {"facet": "价量面", "fields": ["adj_close", "volume"], "technique": "短期价格反转或动量启动（SOFT_GATE），寻找业绩优异但价格处于左侧错杀阶段的拐点"},
+        {"facet": "量能面", "fields": ["amount", "float_cap"], "technique": "换手率流动性分层（CS_GROUP_RANK），在机构关注度适中的股票中捕捉阿尔法"},
+    ],
+    "股东面": [
+        {"facet": "价量面", "fields": ["adj_close", "ret"], "technique": "价格突破或均线偏离背离（DIVERGENCE_RANK），确认股东户数骤降（筹码集中）时股价是否处于起爆前夕"},
+    ],
+    "事件面": [
+        {"facet": "资金面", "fields": ["ff_main_net", "ff_large_net"], "technique": "主力资金同步流入确认（SOFT_GATE），验证事件公告后机构是否真实抢筹"},
+    ],
+    "拥挤面": [
+        {"facet": "量能面", "fields": ["turnover_rate", "amount"], "technique": "换手率过热衰减连续调节（SOFT_GATE），度量拥挤交易下的多头踩踏风险"},
+    ],
+}
+
+
+def _select_complementary_facet(facets: Iterable[str]) -> dict[str, Any]:
+    """为当前课题推荐一个原课题没有的正交/互补数据面与落地技巧。"""
+    facet_set = set(facets or ())
+    for f in facet_set:
+        if f in _ORTHOGONAL_COMPLEMENTS:
+            for cand in _ORTHOGONAL_COMPLEMENTS[f]:
+                if cand["facet"] not in facet_set:
+                    return cand
+    return {"facet": "量能面", "fields": ["amount", "float_cap"], "technique": "换手率平滑连续调节（SOFT_GATE），压低周度换手并增强稳定性"}
+
+
 def get_task_for_turn(
     turn: int,
     spec: dict[str, Any] | None = None,
@@ -164,16 +205,24 @@ def get_task_for_turn(
     if not q:
         return ""
 
+    facets = q.get("facets", [])
+    comp = _select_complementary_facet(facets)
+
     lines = [
         "### 本轮研报定向攻关课题【RDAgent 研究问题驱动】",
         f"- **课题编号**：`{q.get('question_id')}` —— {q.get('topic')}",
         f"- **文献来源**：{q.get('source')}",
-        f"- **机制假设**：{q.get('hypothesis')}",
-        f"- **建议涉及字段**：{', '.join(q.get('suggested_fields', []))}",
+        f"- **主机制假设**：{q.get('hypothesis')}",
+        f"- **建议基础字段**：{', '.join(q.get('suggested_fields', []))}",
         f"- **推荐算子构想**：{', '.join(q.get('suggested_operators', []))}",
         f"- **预期检验形态**：形态={q.get('expected_shape')}，符号={q.get('expected_sign')}",
         f"- **潜在证伪陷阱**：⚠️ {q.get('falsifier')}",
         "",
-        "**任务要求**：请针对上述文献假设，设计至少 1 条具体针对该机制的 DSL 因子表达式，并在思维链中说明如何量化，严格执行 `prediction` 预测对账！"
+        "#### 💡 推荐正交补充面（跨面融合·破除同质化与降换手）",
+        f"- **推荐引入的新面**：【{comp['facet']}】（建议字段: {', '.join(comp['fields'])}）",
+        f"- **融合实现建议**：{comp['technique']}。",
+        "- **融合提示**：严禁 GATED_SIGNAL(neutral=0) 置零门控，优先使用连续加权算子 `SOFT_GATE(signal, state, strength=0.5)` 或组内排序 `CS_GROUP_RANK`！",
+        "",
+        "**任务要求**：请针对上述文献假设，设计基础信号并尝试融合上述正交调节面，严格执行 `prediction` 预测对账！"
     ]
     return "\n".join(lines)
