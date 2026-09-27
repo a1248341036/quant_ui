@@ -200,7 +200,7 @@ def get_task_for_turn(
     focus_facets: Iterable[str] | None = None,
     session_id: str | None = None,
 ) -> str:
-    """按当前轮次获取定向研究问题任务指导文本块。"""
+    """按当前轮次获取定向研究问题任务指导文本块（结构化深入呈现金工干货）。"""
     q = get_question_for_turn(turn, spec=spec, focus_facets=focus_facets, session_id=session_id)
     if not q:
         return ""
@@ -208,15 +208,34 @@ def get_task_for_turn(
     facets = q.get("facets", [])
     comp = _select_complementary_facet(facets)
 
+    const_guide = q.get("construction_guide")
+    emp_find = q.get("empirical_findings")
+    ortho_sol = q.get("orthogonal_solution")
+    pitfall = q.get("falsifier_and_pitfalls") or q.get("falsifier")
+
     lines = [
         "### 本轮研报定向攻关课题【RDAgent 研究问题驱动】",
         f"- **课题编号**：`{q.get('question_id')}` —— {q.get('topic')}",
         f"- **文献来源**：{q.get('source')}",
-        f"- **主机制假设**：{q.get('hypothesis')}",
+    ]
+
+    if const_guide and emp_find:
+        lines.extend([
+            f"- **① 因子构建细节**：{const_guide}",
+            f"- **② 研报实证结论**：{emp_find}",
+            f"- **③ 风险因子残差方案**：{ortho_sol}",
+            f"- **④ 避坑陷阱与衰减特征**：⚠️ {pitfall}",
+        ])
+    else:
+        lines.extend([
+            f"- **主机制假设**：{q.get('hypothesis')}",
+            f"- **潜在证伪陷阱**：⚠️ {q.get('falsifier')}",
+        ])
+
+    lines.extend([
         f"- **建议基础字段**：{', '.join(q.get('suggested_fields', []))}",
         f"- **推荐算子构想**：{', '.join(q.get('suggested_operators', []))}",
         f"- **预期检验形态**：形态={q.get('expected_shape')}，符号={q.get('expected_sign')}",
-        f"- **潜在证伪陷阱**：⚠️ {q.get('falsifier')}",
         "",
         "#### 💡 推荐正交补充面（跨面融合·破除同质化与降换手）",
         f"- **推荐引入的新面**：【{comp['facet']}】（建议字段: {', '.join(comp['fields'])}）",
@@ -224,5 +243,5 @@ def get_task_for_turn(
         "- **融合提示**：严禁 GATED_SIGNAL(neutral=0) 置零门控，优先使用连续加权算子 `SOFT_GATE(signal, state, strength=0.5)` 或组内排序 `CS_GROUP_RANK`！",
         "",
         "**任务要求**：请针对上述文献假设，设计基础信号并尝试融合上述正交调节面，严格执行 `prediction` 预测对账！"
-    ]
+    ])
     return "\n".join(lines)
