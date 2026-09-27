@@ -566,21 +566,20 @@ alpha 的来源只有一种：**错误定价 + 套利受限**。设计因子前�
 
 以下为从券商金工研报库中实时检索出的相关文献摘录（供机制与算子设计参考）：
 
-- **《viking://resources/research_reports/渤海证券/20240924_公募基金周报/page1_img7.png》**：
-  > Based on the provided image and context, here is a comprehensive description suitable for semantic indexing:
+- **《5775175 金融工程周报：趋势选股模型跟踪》**：
+  > 本报告从量价角度出发，通过技术形态识别出价格趋势向上的个股。
+选股指标：均线、胜率、盈亏比、累计收益率、RSI等指标。
+回测结果：全历史回测结果显示，严格条件组合累计收益为
 
-### Image Description
+- **《5767218 成长风格继续强势，单季营收同比增速因子表现出色》**：
+  > 本周市场正收益风格集中在Growth 风格上，负收益风格表现在Cubic Size 风格上。
+单季营收同比增速是中证全指成分股中，本周表现最好的因子。
+以沪深300 指数为选股空间，最近一周，盈余公告开盘跳空超额、单季ROA 等因子
 
-1.  **Main Subjects/Objects:**
-    *   The image is a digital graphic, specifically a title slide or header for a financial report.…
-
-- **《viking://resources/research_reports/渤海证券/20240924_公募基金周报/page1_img6.png》**：
-  > This image displays a financial report titled "核心观点" (Core Viewpoints), outlining market performance and fund data from the previous week. The content is organized into four main sections with bullet points: "上周市场回顾" (Last Week's Market Review), "公募基金市场概况" (Public Fund Market Ove…
-
-- **《viking://resources/research_reports/渤海证券/20240924_公募基金周报/主动型公募基金情况._2/page12_img2.png》**：
-  > This is a combination bar and line chart titled "基金发行统计-统计图" (Fund Issuance Statistics - Statistical Chart), displaying monthly data from 2023-09-30 to 2024-09-20.
-
-The chart features two distinct data series represented on dual y-axes:…
+- **《5771449 东方因子周报：成长风格连续三周登顶，EPTTM因子表现出色》**：
+  > 本周市场正收益风格集中在Growth 风格上，负收益风格表现在Trend 风格上。
+EPTTM 是中证全指成分股中，本周表现最好的因子。
+以沪深300 指数为选股空间，最近一周，单季EP、SPTTM 等因子表现较好，而预
 
 ### 多周期：`$field@<周期>`
 
