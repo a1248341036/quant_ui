@@ -96,18 +96,28 @@ class OVStore:
         self,
         focus_facets: Iterable[str] | None = None,
         research_mode: str = "technical",
+        query_text: str | None = None,
         *,
         limit: int = 4,
         max_chars: int | None = None,
     ) -> str:
-        """检索研报原文文本段落（R3 方案）。
+        """检索研报原文文本段落（R3 方案，支持 R4 课题动态对齐）。
 
         优先走 OpenViking REPORT_SCOPE，若不可用或未命中则自动平滑降级到
         本地 parsed 研报库的高性能相关性检索（带缓存与超时控制，失败静默）。
         """
         budget = max_chars or 1600
         facets = tuple(focus_facets or ())
-        query_terms = list(facets) + [research_mode or "technical", "多因子 选股 机制 异象"]
+
+        if query_text:
+            # 课题对齐模式：以课题主题和核心假说为主，辅以数据面
+            import re
+            cleaned_words = [w for w in re.split(r"[^\w\u4e00-\u9fa5]+", query_text) if len(w) >= 2][:10]
+            query_terms = cleaned_words + list(facets) + ["选股", "因子"]
+        else:
+            # 泛化模式：按数据面与研究模式检索
+            query_terms = list(facets) + [research_mode or "technical", "多因子 选股 机制 异象"]
+
         query = " ".join(query_terms)
 
         client = self._get_client()

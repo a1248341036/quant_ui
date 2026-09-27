@@ -817,7 +817,12 @@ async def run_factor_mining_agentscope(
         if bool(report_policy.get("enable_question_queue", True)):
             try:
                 from alphaagent.factor.mining.agent.question_queue import get_task_for_turn
-                q_task = get_task_for_turn(outer_turn, spec=spec, focus_facets=getattr(config, "focus_facets", None))
+                q_task = get_task_for_turn(
+                    outer_turn,
+                    spec=spec,
+                    focus_facets=getattr(config, "focus_facets", None),
+                    session_id=session_id,
+                )
                 if q_task:
                     block = f"{block}\n\n{q_task}" if block else q_task
             except Exception as _e:

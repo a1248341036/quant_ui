@@ -38,9 +38,23 @@ def render(ctx: Any) -> str:
     endpoint = policy.get("ov_endpoint", "http://127.0.0.1:1933")
     store = OVStore(endpoint=endpoint, inject_max_chars=budget)
 
+    # 动态课题对齐：如果启用了 R4 问题队列，提取当前关联课题的关键词作为核心检索 Query
+    query_text = None
+    if bool(policy.get("enable_question_queue", False)):
+        try:
+            from alphaagent.factor.mining.agent.question_queue import get_question_for_turn
+            # 系统提示词装配时，按当前聚焦面与种子匹配首选课题
+            q = get_question_for_turn(0, spec=spec, focus_facets=getattr(ctx, "focus_facets", ()))
+            if q:
+                # 以当前课题的 主题 + 机制假设 作为精准召回检索词
+                query_text = f"{q.get('topic', '')} {q.get('hypothesis', '')}"
+        except Exception:
+            pass
+
     return store.retrieve_report_knowledge(
         focus_facets=getattr(ctx, "focus_facets", ()),
         research_mode=getattr(ctx, "research_mode", "technical"),
+        query_text=query_text,
         limit=top_k,
         max_chars=budget,
     )

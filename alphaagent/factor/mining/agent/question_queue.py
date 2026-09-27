@@ -130,18 +130,39 @@ def load_question_queue(spec: dict[str, Any] | None = None) -> list[dict[str, An
     return list(DEFAULT_RESEARCH_QUESTIONS)
 
 
-def get_task_for_turn(turn: int, spec: dict[str, Any] | None = None, focus_facets: Iterable[str] | None = None) -> str:
-    """按当前轮次获取定向研究问题任务指导文本块。"""
+def get_question_for_turn(
+    turn: int,
+    spec: dict[str, Any] | None = None,
+    focus_facets: Iterable[str] | None = None,
+    session_id: str | None = None,
+) -> dict[str, Any] | None:
+    """按轮次与数据面获取具体的研究问题对象。"""
     queue = load_question_queue(spec)
     if not queue:
-        return ""
+        return None
 
     facets = set(focus_facets or ())
-    # 优先匹配当前聚焦面的问题
     matched = [q for q in queue if set(q.get("facets", [])) & facets] if facets else queue
     candidate_pool = matched if matched else queue
 
-    q = candidate_pool[turn % len(candidate_pool)]
+    offset = 0
+    if session_id:
+        import hashlib
+        offset = int(hashlib.md5(str(session_id).encode("utf-8")).hexdigest(), 16)
+
+    return candidate_pool[(offset + turn) % len(candidate_pool)]
+
+
+def get_task_for_turn(
+    turn: int,
+    spec: dict[str, Any] | None = None,
+    focus_facets: Iterable[str] | None = None,
+    session_id: str | None = None,
+) -> str:
+    """按当前轮次获取定向研究问题任务指导文本块。"""
+    q = get_question_for_turn(turn, spec=spec, focus_facets=focus_facets, session_id=session_id)
+    if not q:
+        return ""
 
     lines = [
         "### 本轮研报定向攻关课题【RDAgent 研究问题驱动】",
