@@ -20,6 +20,8 @@ def test_get_task_for_turn():
     task_0 = get_task_for_turn(0)
     assert "### 本轮研报定向攻关课题【RDAgent 研究问题驱动】" in task_0
     assert "RQ_" in task_0
+    assert "推荐正交补充面" in task_0
+    assert "SOFT_GATE" in task_0
 
     task_1 = get_task_for_turn(1)
     assert "RQ_" in task_1
