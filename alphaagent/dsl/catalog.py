@@ -49,7 +49,7 @@ def _slim_signature(fn) -> str:
 
 _CATALOG_GROUPS: list[tuple[str, Callable[[str], bool]]] = [
     ("结构化交互（门控/残差/分歧/分段——配合 interaction 契约使用）",
-     lambda n: n in {"GATED_SIGNAL", "CS_GROUP_RANK", "CS_RESIDUALIZE",
+     lambda n: n in {"SOFT_GATE", "GATED_SIGNAL", "CS_GROUP_RANK", "CS_RESIDUALIZE",
                      "DIVERGENCE_RANK", "PIECEWISE_STATE", "IF_THEN_ELSE"}),
     ("时序滚动（TS_；其中 TS_CORR/TS_COV/TS_RANKCORR 属交互类，须传契约）",
      lambda n: n.startswith("TS_")),
@@ -84,7 +84,7 @@ _FREQUENT_OPERATORS = frozenset({
     "MULTIPLY", "TS_MEDIAN", "MAX", "ABS", "TS_RANK", "TS_SUM",
     "TS_MAX", "TS_CORR", "MIN", "TS_QUANTILE", "SIGN", "TS_MIN",
     # 交互契约算子（strategy_tracks 硬约束，签名必须随目录提供）
-    "GATED_SIGNAL", "CS_GROUP_RANK", "DIVERGENCE_RANK",
+    "SOFT_GATE", "GATED_SIGNAL", "CS_GROUP_RANK", "DIVERGENCE_RANK",
     "PIECEWISE_STATE", "IF_THEN_ELSE", "TS_RANKCORR", "TS_COV",
     "MUTUAL_INFO_LAG", "NEG",
     # 数据面/时序基础

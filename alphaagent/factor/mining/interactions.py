@@ -8,6 +8,7 @@ from typing import Any
 
 
 INTERACTION_TYPES = {
+    "soft_gate": {"SOFT_GATE"},
     "gated_signal": {"GATED_SIGNAL"},
     "conditional_group_rank": {"CS_GROUP_RANK"},
     "residual_signal": {"CS_RESIDUALIZE"},
@@ -30,6 +31,9 @@ _INTERACTION_TYPE_ALIASES = {
     "gated": "gated_signal",
     "gate": "gated_signal",
     "gate_signal": "gated_signal",
+    "softgate": "soft_gate",
+    "soft_gated": "soft_gate",
+    "continuous_gate": "soft_gate",
     "conditional_group": "conditional_group_rank",
     "group_rank": "conditional_group_rank",
     "divergence": "divergence_signal",

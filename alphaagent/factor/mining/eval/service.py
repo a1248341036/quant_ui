@@ -38,6 +38,20 @@ def _turnover_prescreen_enabled() -> bool:
     return (os.environ.get("ALPHA_EVAL_TURNOVER_PRESCREEN") or "").strip() != "0"
 
 
+# 分箱塌缩预筛硬门：与 delivery_checker 的 collapse_ratio 门槛同源，杜绝口径漂移。
+_COLLAPSE_GATE_LIMIT = 0.30
+
+
+def _collapse_prescreen_enabled() -> bool:
+    """分箱塌缩预筛开关（默认开）；``ALPHA_EVAL_COLLAPSE_PRESCREEN=0`` 关闭。
+
+    lite 过线后那次 quantile_portfolio 本就带 ``collapse_ratio``（此前被丢弃），
+    此处复用同一份结果做短路，零额外算力：把塌缩反馈从「submit 阶段（分钟~小时级）」
+    提前到「首次评估（≤3 秒）」，避免模型在必然失败的常数簇结构上自旋。
+    """
+    return (os.environ.get("ALPHA_EVAL_COLLAPSE_PRESCREEN") or "").strip() != "0"
+
+
 def _engine_result_to_legacy(raw: dict[str, Any]) -> dict[str, Any]:
     """把 EvaluationEngine 结果映射回旧 split 评估契约（format_eval_response 输入）。
 
@@ -266,6 +280,28 @@ class StockEvalService:
             )
             if raw_to.get("ok"):
                 qp = (raw_to.get("metrics") or {}).get("quantile_portfolio") or {}
+                # 分箱塌缩短路（2026-09-27）：与换手率同一次 quantile_portfolio 结果，
+                # 零额外算力。此前只读 turnover、把同一份结果里的 collapse_ratio 丢弃，
+                # 导致模型在探索期拿到虚高 IC（lite 只看 core，不含分箱），一路自旋到
+                # submit 才被 decile_collapse 拦下。阈值与 delivery_checker 同源（0.30）。
+                if _collapse_prescreen_enabled():
+                    collapse = qp.get("collapse_ratio") if isinstance(qp, dict) else None
+                    if collapse is not None and float(collapse) > _COLLAPSE_GATE_LIMIT:
+                        legacy = _engine_result_to_legacy(raw_lite)
+                        resp = format_eval_response(legacy, expected_sign=None)
+                        resp["screen_stage"] = "collapse_rejected"
+                        resp["decile_collapse_ratio"] = float(collapse)
+                        resp["collapse_hint"] = (
+                            f"分箱塌缩：{float(collapse):.0%} 的交易日十分位组数不足 10"
+                            "（截面常数簇扎堆）。该结构在 stage_one（要求组数 ≥ 8）必然失败，"
+                            "不必继续变异。请改用 SOFT_GATE(signal, state, strength=0.5) "
+                            "做连续加权，或 CS_GROUP_RANK(signal, CS_BUCKET(state, 5)) 做组内排名。"
+                        )
+                        resp["skipped_diagnostics"] = [
+                            m["plugin"] for m in self.evaluation_engine.profile("train_screen").metrics
+                            if m["plugin"] not in ("cross_sectional_core", "quantile_portfolio")
+                        ]
+                        return resp
                 turnover_val = qp.get("avg_daily_side_turnover") if isinstance(qp, dict) else None
                 if turnover_val is not None and float(turnover_val) > self.turnover_gate_limit:
                     # 换手超标短路：用 lite 的 core 指标 + 换手率组装响应，

@@ -464,6 +464,33 @@ class DecileCollapseDiagnostic(BaseDiagnostic):
         if not expr:
             return None
 
+        # ── 归因优先：常数簇门控才是塌缩主因（2026-09-27 修正）──
+        # 此前本诊断只看"末位平滑算子"，在含 GATED_SIGNAL 的表达式上会给出
+        # "去掉末位平滑、改用 CS_ZSCORE" 的建议——但末位本来就常是 CS_ZSCORE，
+        # 模型照做后保留门控、走向必然塌缩。此处先归因到常数簇来源。
+        try:
+            from alphaagent.factor.mining.tools._precheck import precheck_expression
+
+            risks = ((precheck_expression(expr) or {}).get("result") or {}).get("risks") or []
+            hard = [r for r in risks if r.get("kind") in ("gate_collapse", "piecewise_middle_band")]
+            if hard:
+                r0 = hard[0]
+                hint = str(r0.get("hint") or "")
+                return DiagnosticOpinion(
+                    source=self.name,
+                    opinion_type="collapse_risk",
+                    title="十分位分布塌陷高风险（常数簇门控）",
+                    message=hint,
+                    priority=90,
+                    extra_fields={
+                        "collapse_risk": "high",
+                        "collapse_risk_hint": hint,
+                        "collapse_risk_source": r0.get("kind"),
+                    },
+                )
+        except Exception:
+            pass
+
         try:
             from alphaagent.dsl.core.ast import all_smoothing_ops, terminal_smoothing
 

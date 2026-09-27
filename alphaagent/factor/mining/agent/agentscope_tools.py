@@ -148,6 +148,37 @@ def _parse_signal_dims(expr: str) -> set[str]:
     return dims
 
 
+def _collapse_preflight(multi_line_expr: str) -> dict[str, Any] | None:
+    """分箱塌缩静态预检（2026-09-27）：常数簇结构硬拦。
+
+    此前 ``precheck_expression`` 只作为独立工具暴露，需 LLM 自愿调用——实测模型
+    几乎不调用，于是反复写出 ``CS_ZSCORE(GATED_SIGNAL(..., 0))`` 这类必然塌缩的
+    结构，在训练集拿到虚高 IC 后自旋一两小时，直到 ``submit_factor`` 才被
+    ``decile_collapse`` 拦下。此处内联到 evaluate 路径，把反馈提前到第一次评估之前。
+
+    返回 ``None`` 表示无阻断风险；否则返回 ``_preflight_check`` 同构的拦截 dict。
+    逃生阀 ``ALPHA_PRECHECK_BLOCK_COLLAPSE=0`` 降级为仅警告（回退旧行为）。
+    """
+    try:
+        from alphaagent.factor.mining.tools._precheck import precheck_expression
+
+        res = (precheck_expression(multi_line_expr) or {}).get("result") or {}
+    except Exception:  # noqa: BLE001 — 预检失败绝不阻断正常评估
+        return None
+    if not res.get("blocked"):
+        return None
+    hard = [r for r in (res.get("risks") or []) if r.get("blocked")]
+    detail = "；".join(str(r.get("hint") or r.get("kind")) for r in hard[:2])
+    return {
+        "blocked": True,
+        "warning": (
+            f"分箱塌缩结构（{', '.join(str(r.get('kind')) for r in hard)}）："
+            "该结构在等频十分位下组数必然 < 8，stage_one 必失败，不必浪费评估轮次。"
+        ),
+        "suggestion": detail,
+    }
+
+
 def _preflight_check(multi_line_expr: str, factor_name: str) -> dict[str, Any] | None:
     """因子逻辑预审：在跑 DSL 之前快速检测常见逻辑错误。
 
@@ -156,6 +187,11 @@ def _preflight_check(multi_line_expr: str, factor_name: str) -> dict[str, Any] |
     expr = multi_line_expr.strip()
     if not expr:
         return None
+
+    # ── 检查0: 分箱塌缩常数簇（硬拦，放最前——结构性问题、无歧义）──
+    collapse = _collapse_preflight(expr)
+    if collapse is not None:
+        return collapse
 
     upper = expr.upper()
 

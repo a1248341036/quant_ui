@@ -290,6 +290,9 @@ def _local_report_search(query_terms: list[str], limit: int = 4) -> list[dict[st
     """在本地 data/research_reports/parsed/ 下快速检索最相关研报段落（带内存缓存，耗时<50ms）。"""
     global _PARSED_INDEX_CACHE
     import subprocess
+    import re
+    from pathlib import Path
+
     parsed_dir = None
     try:
         out = subprocess.run(
@@ -303,9 +306,13 @@ def _local_report_search(query_terms: list[str], limit: int = 4) -> list[dict[st
     except Exception:
         pass
     if parsed_dir is None:
-        fallback = Path(__file__).resolve().parents[5] / "data" / "research_reports" / "parsed"
+        fallback = Path(__file__).resolve().parents[4] / "data" / "research_reports" / "parsed"
         if fallback.is_dir():
             parsed_dir = fallback
+    if parsed_dir is None:
+        main_root = Path(r"D:\Quant\quant_ui\data\research_reports\parsed")
+        if main_root.is_dir():
+            parsed_dir = main_root
 
     if not parsed_dir or not parsed_dir.is_dir():
         return []
