@@ -109,6 +109,32 @@
               </div>
             </div>
           </div>
+
+          <!-- ── 当前选中指标趋势详情（原地展开，绝不乱跳转） ── -->
+          <div class="abcd-trend-detail">
+            <div class="abcd-trend-header">
+              <div class="abcd-trend-title">
+                <span class="abcd-group-badge">{{ currentMetricInfo.grpId }}</span>
+                <b>{{ currentMetricInfo.name }}</b>
+                <span class="abcd-trend-key">({{ trendMetric }}) 逐 Run 动态演进走势</span>
+              </div>
+              <div class="abcd-trend-stats">
+                <span class="abcd-stat-pill">最新值: <b>{{ currentMetricInfo.lastValStr }}</b></span>
+                <span class="abcd-stat-pill" v-if="currentMetricInfo.delta != null">
+                  较上一Run: <b :class="currentMetricInfo.deltaClass">{{ currentMetricInfo.deltaStr }}</b>
+                </span>
+                <span class="abcd-stat-pill" v-if="currentMetricInfo.maxVal != null">
+                  历史极值: <b>Max {{ currentMetricInfo.maxValStr }} / Min {{ currentMetricInfo.minValStr }}</b>
+                </span>
+                <select v-model="trendMetric" class="metrics-last-select" style="margin-left:6px;">
+                  <optgroup v-for="g in metricGroups" :key="g.id" :label="g.id + ' · ' + g.name">
+                    <option v-for="m in g.metrics" :key="m.key" :value="m.key">{{ m.name }}</option>
+                  </optgroup>
+                </select>
+              </div>
+            </div>
+            <div id="metrics-trend-chart" class="metrics-chart" :style="{ height: '220px' }"></div>
+          </div>
         </div>
 
         <!-- ── 漏斗转化（echarts 漏斗图） ── -->
@@ -198,28 +224,6 @@
             {{ fmt(data.reviewer_calibration.calibration.revise_alive_rate ?? 0) }} =
             <b>{{ data.reviewer_calibration.calibration.lift ?? '-' }}</b>
           </p>
-        </div>
-
-        <!-- ── 逐 Run 指标变化趋势（时间轴） ── -->
-        <div class="summary-panel">
-          <div class="summary-panel-head">
-            <h3>指标逐 Run 趋势（横坐标为开始时间）</h3>
-            <div class="metrics-split-controls">
-              <select v-model="trendMetric" class="metrics-last-select">
-                <option value="effective_novelty_rate">有效新颖率 (A5)</option>
-                <option value="facet_coverage">数据面覆盖数 (A1)</option>
-                <option value="family_coverage">信号族覆盖数 (A3)</option>
-                <option value="structure_variety">结构指纹多样率 (A6)</option>
-                <option value="prediction_coverage">预测对账覆盖率 (E1)</option>
-                <option value="advisory_follow_rate">死路提示遵循率 (E6)</option>
-                <option value="eval_latency_p50_s">单次评估耗时 P50 (D3)</option>
-                <option value="stage_one_yield_pct">海选过线率 (头条1)</option>
-                <option value="unsubmitted_passing_rate">未交付过线率 (F1)</option>
-              </select>
-              <span class="summary-facet-hint" title="横坐标为 Run 开始时间（MM-DD HH:MM），点悬停展示详细时长与增量 Δ。">ⓘ</span>
-            </div>
-          </div>
-          <div id="metrics-trend-chart" class="metrics-chart" :style="{ height: trendChartHeight + 'px' }"></div>
         </div>
 
         <!-- ── 每 run 明细（图表固定紧凑高度 + 表格内部滚动，避免按 run 数线性撑高页面） ── -->
@@ -466,6 +470,47 @@ export default {
       })
       return withDelta.reverse()
     },
+    currentMetricInfo() {
+      const key = this.trendMetric
+      let grpId = 'A'
+      let spec = null
+      for (const grp of this.metricGroups) {
+        const found = grp.metrics.find(m => m.key === key)
+        if (found) {
+          grpId = grp.id
+          spec = found
+          break
+        }
+      }
+      if (!spec) {
+        spec = { key, name: key, isPct: false, higherGood: true }
+      }
+      const spark = this.getSpark(key)
+      const runs = (this.data?.runs || []).slice().reverse()
+      const vals = []
+      runs.forEach(r => {
+        const v = this.getMetricVal(r, key)
+        if (v != null && !isNaN(v)) vals.push(v)
+      })
+      const maxV = vals.length ? Math.max(...vals) : null
+      const minV = vals.length ? Math.min(...vals) : null
+
+      return {
+        key,
+        grpId,
+        name: spec.name,
+        isPct: spec.isPct,
+        higherGood: spec.higherGood,
+        lastValStr: this.formatMetricVal(spec, spark.lastVal),
+        delta: spark.delta,
+        deltaStr: this.formatDelta(spec, spark.delta),
+        deltaClass: this.deltaClass(spec, spark.delta),
+        maxVal: maxV,
+        minVal: minV,
+        maxValStr: this.formatMetricVal(spec, maxV),
+        minValStr: this.formatMetricVal(spec, minV),
+      }
+    },
   },
   mounted() {
     this.refresh(false)
@@ -543,8 +588,6 @@ export default {
       this.trendMetric = key
       this.$nextTick(() => {
         this.renderTrendChart()
-        const el = document.getElementById('metrics-trend-chart')
-        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
       })
     },
     formatMetricVal(spec, val) {
@@ -779,19 +822,13 @@ export default {
       if (!c) return
 
       const metric = this.trendMetric
-      const getVal = r => {
-        const v4 = r.v4 || {}
-        for (const grp of ['headline', 'exploration', 'dynamics', 'quality', 'cost', 'process', 'integrity']) {
-          if (v4[grp] && v4[grp][metric] != null) return Number(v4[grp][metric])
-        }
-        return null
-      }
+      const spec = this.currentMetricInfo
 
       const times = chrono.map(r => {
         const raw = r.created_at || r.v4?.time_meta?.created_at || ''
         return raw ? raw.slice(5, 16).replace('T', ' ') : r.run_id.slice(0, 6)
       })
-      const vals = chrono.map(r => getVal(r))
+      const vals = chrono.map(r => this.getMetricVal(r, metric))
 
       c.setOption({
         tooltip: {
@@ -802,16 +839,17 @@ export default {
             const r = chrono[idx]
             const val = vals[idx]
             const prev = idx > 0 ? vals[idx - 1] : null
-            const delta = (val != null && prev != null) ? (val - prev).toFixed(4) : '-'
-            const dSign = (val != null && prev != null && val >= prev) ? '+' : ''
+            const delta = (val != null && prev != null) ? (val - prev) : null
+            const deltaStr = delta != null ? this.formatDelta(spec, delta) : '-'
             const note = r.bench_note || r.bench_commit || ''
+            const valFormatted = this.formatMetricVal(spec, val)
             return `<b>${r.run_id}</b><br/>`
               + `开始时间: ${times[idx]} (时长 ${Number(r.wall_minutes || 0).toFixed(0)}m)<br/>`
-              + `数值: <b>${val != null ? val : 'N/A'}</b> (Δ上一run: ${dSign}${delta})`
+              + `${spec.name}: <b>${valFormatted}</b> (Δ上一run: ${deltaStr})`
               + (note ? `<br/>说明: ${note}` : '')
           },
         },
-        grid: { left: 50, right: 20, top: 16, bottom: 28 },
+        grid: { left: 56, right: 24, top: 16, bottom: 28 },
         xAxis: {
           type: 'category',
           data: times,
@@ -819,18 +857,22 @@ export default {
         },
         yAxis: {
           type: 'value',
-          axisLabel: { ...AXIS_LABEL },
+          axisLabel: {
+            ...AXIS_LABEL,
+            formatter: v => (spec.isPct && Math.abs(v) <= 1.0) ? (v * 100).toFixed(0) + '%' : v,
+          },
           splitLine: { lineStyle: { color: '#1c2536' } },
         },
         series: [{
-          name: metric,
+          name: spec.name,
           type: 'line',
           smooth: true,
           data: vals,
-          symbolSize: 7,
+          connectNulls: true,
+          symbolSize: 8,
           itemStyle: { color: '#4fc3a1' },
-          lineStyle: { color: '#4f8cff', width: 2 },
-          areaStyle: { color: 'rgba(79, 140, 255, 0.15)' },
+          lineStyle: { color: '#4f8cff', width: 2.2 },
+          areaStyle: { color: 'rgba(79, 140, 255, 0.12)' },
         }],
       }, true)
     },

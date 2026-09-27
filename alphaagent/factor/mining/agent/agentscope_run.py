@@ -810,6 +810,54 @@ async def run_factor_mining_agentscope(
         eff_block = _efficiency_self_check(live_metrics, tool_call_rows)
         if eff_block:
             block = f"{block}\n\n{eff_block}" if block else eff_block
+
+        # R4 方案：研报研究问题队列驱动（RDAgent 范式）+ 每轮动态关联 R3 文献 RAG 召回
+        spec = getattr(config, "research_spec", None) or {}
+        report_policy = spec.get("report_policy") or {}
+        current_question = None
+        sid = getattr(session_resp, "session_id", None) if 'session_resp' in locals() or 'session_resp' in globals() else None
+        if bool(report_policy.get("enable_question_queue", True)):
+            try:
+                from alphaagent.factor.mining.agent.question_queue import get_task_for_turn, get_question_for_turn
+                current_question = get_question_for_turn(
+                    outer_turn,
+                    spec=spec,
+                    focus_facets=getattr(config, "focus_facets", None),
+                    session_id=sid,
+                )
+                q_task = get_task_for_turn(
+                    outer_turn,
+                    spec=spec,
+                    focus_facets=getattr(config, "focus_facets", None),
+                    session_id=sid,
+                )
+                if q_task:
+                    block = f"{block}\n\n{q_task}" if block else q_task
+            except Exception as _e:
+                logging.warning("研报问题队列获取异常（失败静默）: %s", _e)
+
+        # R3 方案每轮动态联动：如果启用了 RAG，每轮根据当前派发的具体课题动态检索最相关研报段落注入
+        if bool(report_policy.get("enable_report_rag", True)) and current_question:
+            try:
+                from alphaagent.factor.mining.memory.ov_store import OVStore
+                _endpoint = report_policy.get("ov_endpoint", "http://127.0.0.1:1933")
+                _budget = int(report_policy.get("report_rag_max_chars", 1200))
+                _top_k = int(report_policy.get("report_rag_top_k", 2))
+                _store = OVStore(endpoint=_endpoint, inject_max_chars=_budget)
+                q_text = f"{current_question.get('topic', '')} {current_question.get('hypothesis', '')}"
+                q_rag_block = _store.retrieve_report_knowledge(
+                    focus_facets=getattr(config, "focus_facets", None),
+                    research_mode=getattr(config, "research_mode", "technical"),
+                    query_text=q_text,
+                    limit=_top_k,
+                    max_chars=_budget,
+                )
+                if q_rag_block:
+                    block = f"{block}\n\n{q_rag_block}" if block else q_rag_block
+                    log_step("report_rag_dynamic", f"turn={outer_turn} qid={current_question.get('question_id')} chars={len(q_rag_block)}")
+            except Exception as _re:
+                logging.warning("本轮动态研报 RAG 检索异常（失败静默）: %s", _re)
+
         return block
 
     def _queued_prompt(messages: list[str]) -> str:

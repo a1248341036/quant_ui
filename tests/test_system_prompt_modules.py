@@ -281,3 +281,10 @@ def test_explore_fewer_chars_than_full():
     assert len(text_explore) < len(text_full)
     # 至少减少 5%
     assert len(text_explore) < len(text_full) * 0.95
+
+
+def test_report_rag_module_retrieval_and_injection():
+    """R3 研报原始文献 RAG 检索注入模块测试。"""
+    text = build_system_prompt(**_CASES["full"])
+    assert "### 研报原文先验【外部研报·非本平台实测】" in text
+

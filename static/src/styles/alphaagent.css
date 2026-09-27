@@ -774,6 +774,56 @@ textarea.lab-input { resize:vertical; font:12px/1.5 var(--font-mono); }
 .abcd-metric-delta { font-family: var(--font-mono, monospace); font-size: 10px; min-width: 44px; text-align: right; margin-right: 8px; }
 .abcd-metric-spark { width: 76px; height: 18px; display: flex; align-items: center; flex-shrink: 0; }
 
+/* ABCD 趋势详情折线图容器 */
+.abcd-trend-detail {
+  margin-top: 14px;
+  background: var(--card, #121824);
+  border: 1px solid var(--line, #222d42);
+  border-radius: 9px;
+  padding: 14px 16px 10px 16px;
+}
+.abcd-trend-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 8px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.abcd-trend-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text, #e6ecf7);
+}
+.abcd-trend-key {
+  font-family: var(--font-mono, monospace);
+  color: var(--muted, #8494b5);
+  font-size: 11px;
+}
+.abcd-trend-stats {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.abcd-stat-pill {
+  font-size: 11px;
+  color: var(--muted, #8494b5);
+  background: rgba(255, 255, 255, 0.04);
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+.abcd-stat-pill b {
+  color: #e6ecf7;
+  font-family: var(--font-mono, monospace);
+  margin-left: 2px;
+}
+
 /* 因子详情三阶段表现表（feat/alphaagent-metrics FactorLibrary） */
 .factor-seg-table { width:100%; border-collapse:collapse; font:12px/1.5 var(--font-mono); }
 .factor-seg-table th, .factor-seg-table td { padding:5px 9px; border:1px solid var(--line); text-align:right; }

@@ -2342,6 +2342,48 @@ def CS_RESIDUALIZE(
     return pd.DataFrame(result, index=x.index, columns=x.columns[:1])
 
 
+def SOFT_GATE(
+    signal: pd.DataFrame,
+    state: pd.DataFrame,
+    strength: float = 0.5,
+    high_state: bool = True,
+) -> pd.DataFrame:
+    """连续门控信号：按 state 截面秩对 signal 做**连续**加权（不置常数）。
+
+    语义是 ``GATED_SIGNAL`` 的连续化超集——保留"状态强化/弱化信号"的经济含义，
+    但**未激活端不是常数而是连续衰减**：
+
+        out = signal * (1 + strength * (2 * rank(state) - 1))     # high_state=True
+        out = signal * (1 - strength * (2 * rank(state) - 1))     # high_state=False
+
+    ``strength=0`` 退化为裸 signal；``strength=1`` 时权重区间 [0, 2]；
+    常用 ``strength=0.5`` → 权重区间 [0.5, 1.5]（温和倾斜，不改变信号主方向）。
+
+    **为什么存在**：硬门控 ``GATED_SIGNAL(neutral=0)`` 会把比例为 ``1-activation``
+    的截面压成同一个常数，等频十分位分箱必然塌缩（实测 threshold 0.4/0.5/0.6/0.8/0.85
+    → 7/6/5/3/2 组，而 stage_one 要求 ≥8 组）；且 ``CS_ZSCORE``/``RANK`` 等单调变换
+    无法打散常数簇。本算子从构造上消除常数簇，是分箱安全的状态交互写法。
+    """
+    _validate_cs_panel(signal, name="SOFT_GATE.signal")
+    _validate_cs_panel(state, name="SOFT_GATE.state")
+    if not signal.index.equals(state.index):
+        raise ValueError("SOFT_GATE: signal 与 state 须同索引")
+    w = float(strength)
+    if not (0.0 <= w <= 1.0):
+        raise ValueError(
+            f"SOFT_GATE strength 须在 [0, 1]（当前 {w}）；"
+            "strength=0 等价于不使用状态，strength=1 为最强倾斜（权重区间 [0, 2]）。"
+        )
+    ranks = RANK(state).iloc[:, 0].to_numpy(dtype=float, copy=False)
+    sig = _first_series(signal).to_numpy(dtype=float, copy=False)
+    tilt = 2.0 * ranks - 1.0
+    if not bool(high_state):
+        tilt = -tilt
+    out = (sig * (1.0 + w * tilt)).astype(np.float32)
+    out[~(np.isfinite(sig) & np.isfinite(ranks))] = np.nan
+    return pd.DataFrame(out, index=signal.index, columns=signal.columns[:1])
+
+
 def GATED_SIGNAL(
     signal: pd.DataFrame,
     state: pd.DataFrame,
@@ -2353,6 +2395,15 @@ def GATED_SIGNAL(
 
     比 ``signal * state`` 更透明：state 是开关而不是连续放大器。signal 建议先
     ``CS_ZSCORE`` 或 ``RANK`` 标准化；state 的截面秩高/低由 ``high_state`` 控制。
+
+    ⚠ **分箱安全警告（2026-09-27 实测标定）**：本算子把未激活端压成同一个常数，
+    而等频十分位分箱要求组数 ≥ 8，对应常数簇占比必须 < 30%。但 threshold 合法区间
+    是 [0.5, 0.85]，即常数簇占比 15%~50%——**每一次合法调用都必然塌缩**
+    （实测 threshold 0.5/0.6/0.8/0.85 → 6/5/3/2 组）。且 ``CS_ZSCORE`` / ``RANK``
+    是单调变换，无法打散常数簇。
+
+    **新因子请优先用 ``SOFT_GATE``（连续加权，数学上不塌缩）或
+    ``CS_GROUP_RANK``（组内排名，全截面连续）。** 本算子保留仅为兼容历史因子复现。
     """
     _validate_cs_panel(signal, name="GATED_SIGNAL.signal")
     _validate_cs_panel(state, name="GATED_SIGNAL.state")

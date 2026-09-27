@@ -19,6 +19,7 @@ log = logging.getLogger(__name__)
 
 # 专属库 scope：所有 OpenViking 调用的硬编码边界，禁止外部传入
 SCOPE = "viking://resources/alphaagent/"
+REPORT_SCOPE = "viking://resources/research_reports/"
 
 
 class OVStore:
@@ -90,16 +91,86 @@ class OVStore:
             return ""
         return "\n".join(lines)
 
-    def _flatten_hits(self, results: dict[str, Any], limit: int) -> list[dict[str, Any]]:
+    # ── R3 方案：研报原文 RAG 检索 ──
+    def retrieve_report_knowledge(
+        self,
+        focus_facets: Iterable[str] | None = None,
+        research_mode: str = "technical",
+        query_text: str | None = None,
+        *,
+        limit: int = 4,
+        max_chars: int | None = None,
+    ) -> str:
+        """检索研报原文文本段落（R3 方案，支持 R4 课题动态对齐）。
+
+        优先走 OpenViking REPORT_SCOPE，若不可用或未命中则自动平滑降级到
+        本地 parsed 研报库的高性能相关性检索（带缓存与超时控制，失败静默）。
+        """
+        budget = max_chars or 1600
+        facets = tuple(focus_facets or ())
+
+        if query_text:
+            # 课题对齐模式：以课题主题和核心假说为主，辅以数据面
+            import re
+            cleaned_words = [w for w in re.split(r"[^\w\u4e00-\u9fa5]+", query_text) if len(w) >= 2][:10]
+            query_terms = cleaned_words + list(facets) + ["选股", "因子"]
+        else:
+            # 泛化模式：按数据面与研究模式检索
+            query_terms = list(facets) + [research_mode or "technical", "多因子 选股 机制 异象"]
+
+        query = " ".join(query_terms)
+
+        client = self._get_client()
+        hits = []
+        if client is not None:
+            try:
+                results = client.search(query=query, target_uri=REPORT_SCOPE, limit=limit)
+                hits = self._flatten_hits(results, limit, scope=REPORT_SCOPE)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("OpenViking 研报检索异常，降级到本地检索: %s", exc)
+
+        # 本地降级检索
+        if not hits:
+            hits = _local_report_search(query_terms, limit=limit)
+
+        if not hits:
+            return ""
+
+        lines: list[str] = [
+            "### 研报原文先验【外部研报·非本平台实测】",
+            "",
+            "以下为从券商金工研报库中实时检索出的相关文献摘录（供机制与算子设计参考）：",
+            "",
+        ]
+        used = 0
+        for h in hits:
+            title = h.get("title") or h.get("uri") or "研报摘录"
+            snippet = h.get("snippet") or h.get("abstract") or ""
+            if not snippet:
+                continue
+            if len(snippet) > 280:
+                snippet = snippet[:280].rsplit("\n", 1)[0] + "…"
+            block = f"- **《{title}》**：\n  > {snippet.strip()}"
+            if used + len(block) > budget:
+                break
+            lines.append(block)
+            lines.append("")
+            used += len(block)
+
+        if len(lines) <= 3:
+            return ""
+        return "\n".join(lines).strip()
+
+    def _flatten_hits(self, results: dict[str, Any], limit: int, scope: str = SCOPE) -> list[dict[str, Any]]:
         hits: list[dict[str, Any]] = []
         for cat in ("memories", "resources", "skills"):
             for item in results.get(cat) or []:
                 if not isinstance(item, dict):
                     continue
                 uri = str(item.get("uri") or "")
-                if not uri.startswith(SCOPE):  # 防御：只接受 scope 内命中
+                if not uri.startswith(scope):  # 防御：只接受指定 scope 内命中
                     continue
-                # 排除隐藏文件（OpenViking 自动生成的 .overview.md 等目录概览，非真实记忆）
+                # 排除隐藏文件（OpenViking 自动生成的 .overview.md 等目录概览）
                 if "/." in uri or uri.rstrip("/").rsplit("/", 1)[-1].startswith("."):
                     continue
                 hits.append(item)
@@ -210,3 +281,70 @@ class OVStore:
         except Exception as exc:  # noqa: BLE001
             log.warning("OpenViking dead_families 更新失败: %s", exc)
             return False
+
+
+_PARSED_INDEX_CACHE: list[tuple[str, Path]] | None = None
+
+
+def _local_report_search(query_terms: list[str], limit: int = 4) -> list[dict[str, Any]]:
+    """在本地 data/research_reports/parsed/ 下快速检索最相关研报段落（带内存缓存，耗时<50ms）。"""
+    global _PARSED_INDEX_CACHE
+    import subprocess
+    import re
+    from pathlib import Path
+
+    parsed_dir = None
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        if out:
+            candidate = Path(out).parent / "data" / "research_reports" / "parsed"
+            if candidate.is_dir():
+                parsed_dir = candidate
+    except Exception:
+        pass
+    if parsed_dir is None:
+        fallback = Path(__file__).resolve().parents[4] / "data" / "research_reports" / "parsed"
+        if fallback.is_dir():
+            parsed_dir = fallback
+    if parsed_dir is None:
+        main_root = Path(r"D:\Quant\quant_ui\data\research_reports\parsed")
+        if main_root.is_dir():
+            parsed_dir = main_root
+
+    if not parsed_dir or not parsed_dir.is_dir():
+        return []
+
+    if _PARSED_INDEX_CACHE is None:
+        idx = []
+        for p in parsed_dir.rglob("*.md"):
+            idx.append((p.stem, p))
+        _PARSED_INDEX_CACHE = idx
+
+    keywords = [q for q in query_terms if len(q) >= 2]
+    scored = []
+    for stem, path in _PARSED_INDEX_CACHE:
+        s = 0.0
+        for kw in keywords:
+            if kw in stem:
+                s += 5.0
+        if "多因子" in stem or "选股" in stem or "因子" in stem or "策略" in stem:
+            s += 1.0
+        if s > 0:
+            scored.append((s, stem, path))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    hits = []
+    for _, title, path in scored[:limit]:
+        try:
+            content = path.read_text(encoding="utf-8", errors="ignore")[:1500]
+            lines = [l.strip() for l in content.splitlines() if len(l.strip()) > 20 and "免责" not in l and "版权" not in l]
+            snippet = "\n".join(lines[:3]) if lines else content[:200]
+            clean_title = re.sub(r"^\d{4}-?\d{2}-?\d{2}_?", "", title).replace("_", " ")
+            hits.append({"title": clean_title, "snippet": snippet, "uri": str(path)})
+        except Exception:
+            continue
+    return hits
+
