@@ -32,9 +32,16 @@ def test_s1_gate_collapse_detected():
     assert any(x["kind"] == "gate_collapse" and x["risk"] == "high" for x in r["risks"])
 
 
-def test_s1_gate_low_threshold_no_risk():
+def test_s1_gate_low_threshold_also_flagged():
+    """2026-09-27 标定修正：合法区间内 GATED_SIGNAL 必然塌缩，threshold=0.5 同样要报。
+
+    旧断言是 `no risk`——那正是把 bug 编码成测试：实测 threshold=0.5 → 常数簇 50%
+    → 十分位只有 6 组 < 8，必然 stage_one 失败。
+    详见 docs/specs/alphaagent_decile_collapse_root_fix_spec.md §2.1。
+    """
     r = _precheck("GATED_SIGNAL($ret, $volume, 0.5)")
-    assert not any(x["kind"] == "gate_collapse" for x in r["risks"])
+    assert any(x["kind"] == "gate_collapse" and x["risk"] == "high" for x in r["risks"])
+    assert r["blocked"] is True
 
 
 def test_s1_piecewise_middle_band_detected():
