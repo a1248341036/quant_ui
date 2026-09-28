@@ -64,6 +64,15 @@ _COLUMN_MAP: dict[str, str] = {
     "total_mv": "tot_cap",
     # 标记
     "is_st": "is_st",
+    # 涨跌停 / 新股 / 停牌（2026-09-28 补映射：宽表本来就有，此前被列映射裁掉）
+    "pre_close": "pre_close",
+    "change": "change",
+    "pct_chg": "pct_chg",
+    "up_limit": "up_limit",
+    "down_limit": "down_limit",
+    "suspend_timing": "suspend_timing",
+    "suspend_type": "suspend_type",
+    "listed_days": "listed_days",
 }
 
 # ── 插件声明 ──────────────────────────────────────────────────────────

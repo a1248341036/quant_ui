@@ -254,6 +254,62 @@ EXPRESS_PANEL_COLUMNS = (
 )
 DISCLOSURE_PANEL_COLUMNS = ("ds_delay_days", "ds_delay_vs_first", "ds_days_since_actual")
 DIVIDEND_PANEL_COLUMNS = ("div_cash_div", "div_days_to_ex", "div_days_since_ann")
+ANNOUNCEMENT_PANEL_COLUMNS = ("ann_cnt_20d", "ann_days_since")
+RESEARCH_VIEWS_PANEL_COLUMNS = ("ac_eps_fy", "rc_cnt_90d")
+FINANCIAL_ITEMS_PANEL_COLUMNS = ("fsi_net_profit", "fsi_total_assets")
+
+# 公告事件（announcement 插件，ann_*）
+_ANNOUNCEMENT_SECTION_MD = """### 公告事件（PIT 日频，`ann_*`）
+
+个股公告索引按**公告日**展开为日频阶跃：仅当日及之前已公告的可见。
+
+| 字段 | 说明 |
+|------|------|
+| `$ann_cnt_5d` / `$ann_cnt_20d` | 近 5 / 20 自然日公告条数（信息密度） |
+| `$ann_days_since` | 距最近一条公告的自然日（越小越"有事"） |
+| `$ann_flag_reduce` / `$ann_flag_increase` | 窗口内减持 / 增持类公告（1/0） |
+| `$ann_flag_buyback` / `$ann_flag_pledge` | 回购 / 质押类公告（1/0） |
+| `$ann_flag_lawsuit` / `$ann_flag_inquiry` | 诉讼仲裁 / 问询函（1/0，风险类） |
+| `$ann_flag_forecast` | 业绩预告/预增预减类公告（1/0） |
+
+> 事件多为短期冲击，须与反转/换手结构组合；风险类标记（诉讼/问询/质押）适合做负向门控，
+> 不要单独当信号。
+"""
+
+# 研报视角（research_views 插件，ac_* 一致预期 / rc_* 卖方预测）
+_RESEARCH_VIEWS_SECTION_MD = """### 研报视角：一致预期与卖方预测（PIT 日频，`ac_*` / `rc_*`）
+
+`ac_*` = 卖方一致预期（按预期日 PIT）；`rc_*` = 个股研报预测/评级聚合。研报条数是**拥挤度**
+代理：覆盖越多、预期差越小。
+
+| 字段 | 说明 |
+|------|------|
+| `$ac_eps_fy` / `$ac_pe_fy` | 一致预期 EPS（最近预测年度）/ 对应 PE |
+| `$ac_target_price` / `$ac_analyst_count` | 一致目标价（元）/ 覆盖分析师家数 |
+| `$ac_rating` / `$ac_days_since` | 一致评级分值 / 距预期更新日的自然日 |
+| `$rc_cnt_90d` / `$rc_days_since` | 近 90 日研报条数（拥挤度）/ 距最近一份研报的自然日 |
+| `$rc_eps_y` / `$rc_pe_y` / `$rc_roe_y` | 最近研报给出的 EPS / PE / ROE 预测 |
+| `$rc_rating` / `$rc_target_price` | 最近研报评级分值 / 目标价（元） |
+
+> 研报数据是**低频慢变量**：只与日频价量做门控或残差，不要直接当短周期信号；
+> `$rc_cnt_90d` 高 + 价格滞涨 = 拥挤无催化，预期上调配低换手更稳。
+"""
+
+# 财报明细项（financial_items 插件，fsi_*，单位元）
+_FINANCIAL_ITEMS_SECTION_MD = """### 财报明细项（PIT 日频阶跃，`fsi_*`，单位元）
+
+按**实际公告日** PIT 展开的利润表/资产负债表明细（东财口径；利润表为**年初至今累计**）。
+
+| 字段 | 说明 |
+|------|------|
+| `$fsi_net_profit` / `$fsi_total_revenue` | 净利润 / 营业总收入（累计） |
+| `$fsi_total_assets` / `$fsi_total_liab` | 总资产 / 总负债 |
+| `$fsi_monetary_funds` / `$fsi_accounts_receivable` | 货币资金 / 应收账款 |
+| `$fsi_inventory` / `$fsi_goodwill` | 存货 / 商誉 |
+
+> 全是规模量：先除以规模（`$fsi_total_assets` 或 `$tot_cap`）再进算子；商誉/应收占比抬升是
+> 质量恶化信号；累计口径跨季比较用 `DELTA(..., 252)` 做同比。
+"""
 
 NAME = "data_fields"
 TITLE = "行情变量与字段族（资金流/基本面/事件披露）"
@@ -274,8 +330,16 @@ _VARIABLES_TABLE_HEAD = """### 可用行情变量
 | `$vwap` | 成交量加权均价（与 `$close` 同单位尺度：amount/volume） |
 | `$adj_vwap` | 后复权 VWAP（`$vwap × $adjfactor`，与 `$adj_close` 同复权口径） |
 | `$ret` | 日 adj_close pct_change（按 instrument） |
+| `$turnover_rate` / `$turnover_rate_f` | 换手率（%）/ 自由流通股换手率（%；`$turnover` 是 `$turnover_rate` 的别名） |
+| `$volume_ratio` | 量比（当日成交量/近 5 日均量） |
+| `$pe` / `$pe_ttm` / `$pb` / `$ps_ttm` | 估值：PE（静态/滚动）/ PB / PS(TTM)（无值 = 亏损或不可比） |
+| `$dv_ttm` | 股息率（%，近 12 个月现金分红/现价） |
+| `$total_share` / `$float_share` / `$free_share` | 总 / 流通 / 自由流通股本（万股） |
+| `$up_limit` / `$down_limit` | 当日涨停价 / 跌停价（元，与 `$close` 同口径） |
+| `$listed_days` | 上市天数（次新股识别） |
 | `$is_trade` / `$not_st` | 可交易 / 非 ST 标记 |
-| `$industry_sw_l1` | 申万一级行业**离散码**（严格 PIT，`--with-industry` 时才有）；仅用于分组，不做数值运算 |
+| `$industry_sw_l1` / `$industry_sw_name` | 申万一级行业**离散码** / 行业名（严格 PIT 快照）；仅用于分组，不做数值运算 |
+| `$idx_hs300` / `$idx_zz500` / `$idx_zz1000` / `$idx_weight` | 沪深300 / 中证500 / 中证1000 成分标记（1/0）与权重（%，PIT 快照） |
 """
 
 _INDUSTRY_NOTE = """
@@ -302,9 +366,12 @@ _SCOPED_VAR_PRICE_ROWS_MD = """| `$open` / `$high` / `$low` / `$close` | 原始 
 _SCOPED_VAR_VOLUME_ROWS_MD = """| `$volume` / `$amount` | 成交量 / 成交额 |
 """
 _SCOPED_VAR_NEUTRAL_ROWS_MD = """| `$float_cap` / `$tot_cap` | 流通 / 总市值 |
+| `$turnover_rate` / `$volume_ratio` | 换手率（%，别名 `$turnover`）/ 量比 |
+| `$pe_ttm` / `$pb` / `$dv_ttm` | 估值 PE(TTM) / PB / 股息率（%） |
+| `$up_limit` / `$down_limit` / `$listed_days` | 涨停价 / 跌停价（元）/ 上市天数 |
 | `$is_trade` / `$not_st` | 可交易 / 非 ST 标记 |
-| `$industry_sw_l1` | 申万一级行业**离散码**（严格 PIT，`--with-industry` 时才有）；仅用于分组，不做数值运算 |
-| `$industry_zx_l1` | 中信一级行业**离散码**（严格 PIT，`--with-industry` 时才有）；仅用于分组，不做数值运算 |
+| `$industry_sw_l1` | 申万一级行业**离散码**（严格 PIT 快照）；仅用于分组，不做数值运算 |
+| `$idx_hs300` / `$idx_zz500` / `$idx_zz1000` | 指数成分标记（1/0，PIT 快照） |
 """
 
 
@@ -388,6 +455,12 @@ def render(ctx) -> str:  # noqa: ANN001
         event_blocks.append(_DISCLOSURE_SECTION_MD)
     if (cols is None or any(c in cols for c in DIVIDEND_PANEL_COLUMNS)) and _want("分红面") and _family_allowed(("div_",)):
         event_blocks.append(_DIVIDEND_SECTION_MD)
+    if (cols is None or any(c in cols for c in ANNOUNCEMENT_PANEL_COLUMNS)) and _want("事件面") and _family_allowed(("ann_",)):
+        event_blocks.append(_ANNOUNCEMENT_SECTION_MD)
+    if (cols is None or any(c in cols for c in RESEARCH_VIEWS_PANEL_COLUMNS)) and _want("业绩面") and _family_allowed(("ac_", "rc_")):
+        event_blocks.append(_RESEARCH_VIEWS_SECTION_MD)
+    if (cols is None or any(c in cols for c in FINANCIAL_ITEMS_PANEL_COLUMNS)) and _want("基本面") and _family_allowed(("fsi_",)):
+        event_blocks.append(_FINANCIAL_ITEMS_SECTION_MD)
 
     variables = (
         _VARIABLES_TABLE_HEAD

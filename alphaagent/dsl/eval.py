@@ -241,12 +241,25 @@ def _build_eval_error(
     )
 
 
+# 字段别名 → 面板真实列名。研报课题库（1200 题）与记忆推荐常写 `$turnover`
+# （语义 = 换手率），而面板列名是 `turnover_rate`；不映射就会白报"不可用字段"。
+_FIELD_ALIASES = {"turnover": "turnover_rate"}
+
+
+def _apply_field_aliases(expr: str) -> str:
+    """把 `$别名` 改写为真实列名；不触碰 `$turnover_rate` / `$turnover_rate_f`。"""
+    for alias, real in _FIELD_ALIASES.items():
+        expr = re.sub(rf"\${alias}(?![A-Za-z0-9_@])", f"${real}", expr)
+    return expr
+
+
 def compile_multi_line_factor(
     multi_line_expr: str,
     *,
     columns: Optional[Sequence[str]] = None,
     verbose: bool = False,
 ) -> str:
+    multi_line_expr = _apply_field_aliases(multi_line_expr)
     if columns:
         known = {str(col).lstrip("$").split("@", 1)[0] for col in columns}
         cleaned = _strip_string_literals(multi_line_expr)
