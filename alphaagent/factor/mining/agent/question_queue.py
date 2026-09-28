@@ -199,9 +199,21 @@ def resolve_question_field_gate(
     if raw_warn is not None:
         policy["warn"] = bool(raw_warn)
     if override:
-        for key, value in override.items():
-            if key in policy and value is not None:
-                policy[key] = value
+        # 覆盖值同样 clamp/校验（调用方可能来自测试或运行期注入，不能绕过边界）
+        if override.get("enabled") is not None:
+            policy["enabled"] = bool(override["enabled"])
+        if override.get("warn") is not None:
+            policy["warn"] = bool(override["warn"])
+        if override.get("min_ratio") is not None:
+            try:
+                policy["min_ratio"] = max(0.0, min(1.0, float(override["min_ratio"])))
+            except (TypeError, ValueError):
+                pass
+        if override.get("scan_limit") is not None:
+            try:
+                policy["scan_limit"] = max(1, int(override["scan_limit"]))
+            except (TypeError, ValueError):
+                pass
     return policy
 
 
@@ -222,6 +234,12 @@ def classify_question_fields(
 ) -> tuple[list[str], list[str], list[str]]:
     """把题面 ``suggested_fields`` 分成 (可用, 缺失, 无法判定)。
 
+    ``available`` 为空（None/[]）= **未提供可用列信息** → 不做任何判定，返回三个空列表
+    （与 ``dsl.core.field_aliases.missing_fields`` 的"空即不判定"契约一致；否则调用方
+    会把整题字段误判成缺列）。
+
+    提供可用列时：
+
     - 真实列（含别名归一，如 ``turnover`` → ``turnover_rate``）按集合命中判定；
     - 列族前缀 token（``funda_ocf``）与散文近义词（``eps``/``crowding``）按族前缀判定；
     - 算子派生面 token（``chip``/``crowding``）视为可用（由行情列现算）；
@@ -231,6 +249,8 @@ def classify_question_fields(
     hits: list[str] = []
     missing: list[str] = []
     unknown: list[str] = []
+    if not avail:
+        return hits, missing, unknown
     for raw in (question or {}).get("suggested_fields") or []:
         token = str(raw).strip()
         if not token:

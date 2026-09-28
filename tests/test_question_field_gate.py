@@ -222,6 +222,18 @@ def test_classify_question_fields_buckets():
     assert unknown == ["weird_prose"]
 
 
+def test_classify_question_fields_without_available_returns_no_judgment():
+    """未提供可用列信息（None/[]）→ 不判定：不得把整题字段误报为缺列。
+
+    契约与 ``dsl.core.field_aliases.missing_fields``（空 available → 空元组）一致；
+    否则 ``question_missing_fields`` 在缺参时会把所有字段报成缺失，误导调用方。
+    """
+    q = {"suggested_fields": ["amount", "funda_ocf", "eps"]}
+    for avail in (None, []):
+        assert classify_question_fields(q, avail) == ([], [], [])
+        assert question_missing_fields(q, avail) == ()
+
+
 def test_missing_fields_uses_dsl_alias():
     """``turnover`` 走 DSL 别名 → 面板有 turnover_rate 时不算缺列。"""
     assert question_missing_fields({"suggested_fields": ["turnover"]}, ["turnover_rate"]) == ()
@@ -241,9 +253,18 @@ def test_resolve_gate_defaults_and_override():
     assert cfg2["min_ratio"] == 0.2
 
 
-def test_render_question_task_without_warning():
+def test_render_question_task_injects_warning():
+    """``warn`` 默认开启：传 missing_fields 时任务块注入「字段可用性」提示行。"""
     text = render_question_task(_FIXTURE_QUESTIONS[2], missing_fields=["eps"], spec=None)
     assert "RQ_T2" in text and "字段可用性" in text
+
+
+def test_render_question_task_warn_disabled_omits_warning():
+    """``question_field_warn=false`` 时即使传了 missing_fields 也不注入提示行。"""
+    spec = {"report_policy": {"question_field_warn": False}}
+    text = render_question_task(_FIXTURE_QUESTIONS[2], missing_fields=["eps"], spec=spec)
+    assert "RQ_T2" in text
+    assert "字段可用性" not in text
 
 
 def test_question_gate_falls_back_to_builtin_when_file_empty(tmp_path):
