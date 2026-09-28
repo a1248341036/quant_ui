@@ -14,6 +14,8 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any, Iterable
 
+from alphaagent.dsl.core.field_aliases import FIELD_ALIASES, canonical_column
+
 logger = logging.getLogger(__name__)
 
 # 精选研报经典研究问题题库（涵盖量价背离、高阶矩、筹码密集、聪明钱、流动性冲击等）
@@ -130,15 +132,186 @@ def load_question_queue(spec: dict[str, Any] | None = None) -> list[dict[str, An
     return list(DEFAULT_RESEARCH_QUESTIONS)
 
 
+# ── 课题字段门控（2026-09-28）────────────────────────────────────────────
+# 背景：整夜自由探索 run（`focus_facets` 为空 → technical 档 + `--no-fundamentals`）
+# 实际只载入行情族 + 资金/事件/股东/业绩/机构列族；而 1200 道题库是全八面的，
+# 派题时不看面板载入了什么 → 纯基本面/行业/两融/分红题注定一次白跑（实测每 run
+# `$industry_sw_l1` 报 2~6 次、`$turnover` 报 1~4 次「不可用字段」）。
+# 默认值唯一真源在本常量；`research_spec` 引用它做默认与校验，避免双写漂移。
+DEFAULT_QUESTION_FIELD_GATE: dict[str, Any] = {
+    "enabled": True,        # report_policy.question_field_gate
+    "min_ratio": 0.5,       # report_policy.question_field_gate_min_ratio
+    "scan_limit": 40,       # report_policy.question_field_gate_scan_limit
+    "warn": True,           # report_policy.question_field_warn
+}
+
+# 列族前缀：题面出现这些前缀（如 ``funda_ocf``）时按「该列族是否载入」判定。
+_COLUMN_FAMILY_PREFIXES: tuple[str, ...] = (
+    "funda_", "holder_", "inst_", "th_", "ff_", "mgn_", "dt_", "bt_",
+    "pred_", "exp_", "ds_", "div_", "industry_",
+)
+
+# 核算子派生面：由行情列现算（CHIP_*/CROWD_* 等），行情列载入即可用——不作为缺列判定。
+_OPERATOR_DERIVED_TOKENS: frozenset[str] = frozenset({
+    "crowding", "crowd", "chip", "vpin", "wick", "gap", "fractal", "entropy",
+    "effratio", "efficiency", "kline", "amihud", "illiq", "skew", "kurt",
+})
+
+# 题面散文词 → 列族前缀（题库把面名/指标口语混写在 suggested_fields 里，
+# 如 ``crowding``/``announcement``/``eps``；表集中在此，可单测）。
+_FIELD_FAMILY_SYNONYMS: dict[str, str] = {
+    "eps": "funda_", "roe": "funda_", "roa": "funda_", "net_profit": "funda_",
+    "netprofit": "funda_", "revenue": "funda_", "ocf": "funda_",
+    "total_assets": "funda_", "valuation": "funda_", "pe": "funda_", "pb": "funda_",
+    "holder": "holder_", "holder_count": "holder_", "shareholder": "holder_",
+    "shareholders": "holder_", "top10": "th_", "concentration": "th_",
+    "institutional": "inst_", "institution": "inst_", "inst": "inst_",
+    "fund_flow": "ff_", "money_flow": "ff_", "capital_flow": "ff_", "main_net": "ff_",
+    "announcement": "ds_", "disclosure": "ds_", "event": "dt_",
+    "forecast": "pred_", "express": "exp_", "surprise": "pred_",
+    "dividend": "div_", "margin": "mgn_", "industry": "industry_",
+}
+
+
+def resolve_question_field_gate(
+    spec: dict[str, Any] | None = None,
+    override: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """解析课题字段门控配置：``spec.report_policy`` < ``override``（运行期覆盖）。"""
+    policy: dict[str, Any] = dict(DEFAULT_QUESTION_FIELD_GATE)
+    rp = (spec or {}).get("report_policy") or {}
+    raw_enabled = rp.get("question_field_gate")
+    if raw_enabled is not None:
+        policy["enabled"] = bool(raw_enabled)
+    raw_ratio = rp.get("question_field_gate_min_ratio")
+    if raw_ratio is not None:
+        try:
+            policy["min_ratio"] = max(0.0, min(1.0, float(raw_ratio)))
+        except (TypeError, ValueError):
+            pass
+    raw_limit = rp.get("question_field_gate_scan_limit")
+    if raw_limit is not None:
+        try:
+            policy["scan_limit"] = max(1, int(raw_limit))
+        except (TypeError, ValueError):
+            pass
+    raw_warn = rp.get("question_field_warn")
+    if raw_warn is not None:
+        policy["warn"] = bool(raw_warn)
+    if override:
+        for key, value in override.items():
+            if key in policy and value is not None:
+                policy[key] = value
+    return policy
+
+
+def available_field_set(available_fields: Iterable[str] | None) -> set[str]:
+    """把面板列归一成裸列名集合；空 → 空集合（表示未提供可用列信息）。"""
+    if not available_fields:
+        return set()
+    return {str(col).strip().lstrip("$").split("@", 1)[0] for col in available_fields if str(col).strip()}
+
+
+def _family_loaded(prefix: str, avail: set[str]) -> bool:
+    return any(col.startswith(prefix) for col in avail)
+
+
+def classify_question_fields(
+    question: dict[str, Any] | None,
+    available: Iterable[str] | None,
+) -> tuple[list[str], list[str], list[str]]:
+    """把题面 ``suggested_fields`` 分成 (可用, 缺失, 无法判定)。
+
+    - 真实列（含别名归一，如 ``turnover`` → ``turnover_rate``）按集合命中判定；
+    - 列族前缀 token（``funda_ocf``）与散文近义词（``eps``/``crowding``）按族前缀判定；
+    - 算子派生面 token（``chip``/``crowding``）视为可用（由行情列现算）；
+    - 其余为「无法判定」，不参与合格判据（避免词表不足误杀好题）。
+    """
+    avail = available_field_set(available)
+    hits: list[str] = []
+    missing: list[str] = []
+    unknown: list[str] = []
+    for raw in (question or {}).get("suggested_fields") or []:
+        token = str(raw).strip()
+        if not token:
+            continue
+        canon = canonical_column(token)
+        if canon in avail:
+            hits.append(token)
+            continue
+        low = token.lower()
+        if low in FIELD_ALIASES:
+            # 登记过的 DSL 别名：目标列未载入 → 判为缺列（不是散文词）
+            missing.append(token)
+            continue
+        if low in _OPERATOR_DERIVED_TOKENS:
+            hits.append(token)
+            continue
+        prefix = _FIELD_FAMILY_SYNONYMS.get(low)
+        if prefix is None:
+            for cand in _COLUMN_FAMILY_PREFIXES:
+                if low.startswith(cand):
+                    prefix = cand
+                    break
+        if prefix is None:
+            unknown.append(token)
+            continue
+        if avail and _family_loaded(prefix, avail):
+            hits.append(token)
+        else:
+            missing.append(token)
+    return hits, missing, unknown
+
+
+def _question_fields_eligible(hits: list[str], missing: list[str], min_ratio: float) -> bool:
+    """合格判据：可判定字段里至少 1 个可用，且可用占比 ≥ ``min_ratio``。"""
+    known = len(hits) + len(missing)
+    if known == 0:
+        return True  # 题面只有无法判定的散文词 → 不因词表不足误杀
+    if not hits:
+        return False
+    return (len(hits) / known) >= float(min_ratio)
+
+
+def question_missing_fields(
+    question: dict[str, Any] | None,
+    available: Iterable[str] | None,
+) -> tuple[str, ...]:
+    """题面建议字段中本 run 未载入的部分（供任务块提示 / 日志）。"""
+    _hits, missing, _unknown = classify_question_fields(question, available)
+    return tuple(missing)
+
+
 def get_question_for_turn(
     turn: int,
     spec: dict[str, Any] | None = None,
     focus_facets: Iterable[str] | None = None,
     session_id: str | None = None,
+    *,
+    available_fields: Iterable[str] | None = None,
+    gate: dict[str, Any] | None = None,
+    stats: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """按轮次与数据面获取具体的研究问题对象。"""
+    """按轮次与数据面获取具体的研究问题对象。
+
+    ``available_fields`` 非空时启用**字段门控**（默认开，阈值收口在
+    ``research_spec.report_policy``，见 ``DEFAULT_QUESTION_FIELD_GATE``）：
+
+    - 题面可判定字段全部落在未载入族上（如自由探索 run 的纯 ``funda_*`` 题）→ 跳过该题，
+      继续向后扫描 ``scan_limit`` 道，返回第一道合格题；全不合格 → ``None``（本轮回退为
+      「无课题」，不阻塞 run）；
+    - 部分缺列 → 保留该题（模型可用可用列代理），缺失字段由 ``question_missing_fields``
+      暴露给调用方在任务块里提示；
+    - 题面只有无法判定的散文词 → 放行（不因词表不足误杀）。
+
+    ``available_fields`` 未提供 / 为空 / ``gate.enabled=False`` → **完全旧行为**
+    （``(offset + turn) % len(pool)`` 单次取值，不扫描）。``stats`` 为可选出参，
+    回填 ``{"status": "ok"|"partial"|"skipped", "scanned": int, "missing": [...]}`` 供日志。
+    """
     queue = load_question_queue(spec)
     if not queue:
+        if stats is not None:
+            stats.update({"status": "empty", "scanned": 0, "missing": []})
         return None
 
     facets = set(focus_facets or ())
@@ -150,7 +323,88 @@ def get_question_for_turn(
         import hashlib
         offset = int(hashlib.md5(str(session_id).encode("utf-8")).hexdigest(), 16)
 
-    return candidate_pool[(offset + turn) % len(candidate_pool)]
+    policy = resolve_question_field_gate(spec, override=gate)
+    avail = available_field_set(available_fields)
+    if not policy["enabled"] or not avail:
+        picked = candidate_pool[(offset + turn) % len(candidate_pool)]
+        if stats is not None:
+            stats.update({
+                "status": "ungated",
+                "scanned": 1,
+                "missing": list(question_missing_fields(picked, avail)),
+            })
+        return picked
+
+    n = len(candidate_pool)
+    start = (offset + turn) % n
+    limit = max(1, min(int(policy["scan_limit"]), n))
+    for step in range(limit):
+        q = candidate_pool[(start + step) % n]
+        hits, missing, _unknown = classify_question_fields(q, avail)
+        if _question_fields_eligible(hits, missing, policy["min_ratio"]):
+            if stats is not None:
+                stats.update({
+                    "status": "partial" if missing else "ok",
+                    "scanned": step + 1,
+                    "missing": list(missing),
+                })
+            return q
+    if stats is not None:
+        stats.update({"status": "skipped", "scanned": limit, "missing": []})
+    logger.info("问题队列字段门控：连续 %d 道题均落在未载入字段上，本轮不派课题", limit)
+    return None
+
+
+def get_task_for_turn(
+    turn: int,
+    spec: dict[str, Any] | None = None,
+    focus_facets: Iterable[str] | None = None,
+    session_id: str | None = None,
+    *,
+    available_fields: Iterable[str] | None = None,
+    gate: dict[str, Any] | None = None,
+    stats: dict[str, Any] | None = None,
+) -> str:
+    """按当前轮次获取定向研究问题任务指导文本块（结构化深入呈现金工干货）。"""
+    _gate_stats: dict[str, Any] = {}
+    q = get_question_for_turn(
+        turn,
+        spec=spec,
+        focus_facets=focus_facets,
+        session_id=session_id,
+        available_fields=available_fields,
+        gate=gate,
+        stats=_gate_stats,
+    )
+    if stats is not None:
+        stats.update(_gate_stats)
+    if not q:
+        return ""
+
+    return render_question_task(
+        q,
+        missing_fields=_gate_stats.get("missing") or [],
+        spec=spec,
+        gate=gate,
+    )
+
+
+def render_question_task(
+    question: dict[str, Any],
+    *,
+    missing_fields: Iterable[str] | None = None,
+    spec: dict[str, Any] | None = None,
+    gate: dict[str, Any] | None = None,
+) -> str:
+    """渲染给定课题的任务块（调用方已选定课题时复用同一次门控结果）。
+
+    ``missing_fields`` 仅在 ``report_policy.question_field_warn`` 为真时注入提示行。
+    """
+    policy = resolve_question_field_gate(spec, override=gate)
+    return _render_question_task(
+        question,
+        missing_fields=(missing_fields or []) if policy["warn"] else [],
+    )
 
 
 _ORTHOGONAL_COMPLEMENTS: dict[str, list[dict[str, Any]]] = {
@@ -194,17 +448,12 @@ def _select_complementary_facet(facets: Iterable[str]) -> dict[str, Any]:
     return {"facet": "量能面", "fields": ["amount", "float_cap"], "technique": "换手率平滑连续调节（SOFT_GATE），压低周度换手并增强稳定性"}
 
 
-def get_task_for_turn(
-    turn: int,
-    spec: dict[str, Any] | None = None,
-    focus_facets: Iterable[str] | None = None,
-    session_id: str | None = None,
+def _render_question_task(
+    q: dict[str, Any],
+    *,
+    missing_fields: Iterable[str] | None = None,
 ) -> str:
-    """按当前轮次获取定向研究问题任务指导文本块（结构化深入呈现金工干货）。"""
-    q = get_question_for_turn(turn, spec=spec, focus_facets=focus_facets, session_id=session_id)
-    if not q:
-        return ""
-
+    """渲染定向课题任务块（``missing_fields`` 非空时追加「本 run 未载入」提示行）。"""
     facets = q.get("facets", [])
     comp = _select_complementary_facet(facets)
 
@@ -236,6 +485,16 @@ def get_task_for_turn(
         f"- **建议基础字段**：{', '.join(q.get('suggested_fields', []))}",
         f"- **推荐算子构想**：{', '.join(q.get('suggested_operators', []))}",
         f"- **预期检验形态**：形态={q.get('expected_shape')}，符号={q.get('expected_sign')}",
+    ])
+    missing = [str(f) for f in (missing_fields or []) if str(f).strip()]
+    if missing:
+        lines.append(
+            "- ⚠ **字段可用性**：本 run 面板未载入 "
+            + "、".join(f"`${f}`" if not f.startswith("$") else f"`{f}`" for f in missing)
+            + "（题面建议字段）。引用它们会被工具层拦截；请用**已载入的同族/代理列**"
+            "（如换手率用 `DIVIDE($amount, $float_cap)`）落地本条假设，或跳过该字段。"
+        )
+    lines.extend([
         "",
         "#### 💡 推荐正交补充面（跨面融合·破除同质化与降换手）",
         f"- **推荐引入的新面**：【{comp['facet']}】（建议字段: {', '.join(comp['fields'])}）",

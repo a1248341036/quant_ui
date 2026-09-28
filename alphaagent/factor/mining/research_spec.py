@@ -214,6 +214,9 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
         # 记忆出题（AlphaMemo 口径）：每轮前 k 个评估名额由 recommend_edits 推荐
         # （父本×编辑类型，残差×置信排序），0 = 关闭。注入块只做解释，名额由推荐驱动。
         "suggest_slots": 2,
+        # 记忆出题字段门控（2026-09-28）：父本表达式引用本 run 未载入字段时不推荐
+        # （实测 funda_* 父本在 --no-fundamentals 下连续 8 轮白占名额）。
+        "suggest_field_gate": True,
         # 总开关（消融 A1）：False = 整个记忆系统关闭（不检索注入、不 APV 否决、
         # 不编辑先验、不硬拦死路、不蒸馏），等价 research_memory_path=None 的
         # 零记忆探索；默认 True 不改行为。
@@ -247,6 +250,13 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
         "report_rag_top_k": 3,
         "enable_question_queue": True,
         "question_queue_file": None,
+        # 课题字段门控（2026-09-28）：派题前按「本 run 实际载入列」判定，
+        # 纯缺列题跳过并顺延、部分缺列题保留但注入缺列提示。默认值唯一真源在
+        # question_queue.DEFAULT_QUESTION_FIELD_GATE（此处仅镜像，校验见 build 函数）。
+        "question_field_gate": True,
+        "question_field_gate_min_ratio": 0.5,
+        "question_field_gate_scan_limit": 40,
+        "question_field_warn": True,
     },
 }
 
@@ -422,6 +432,9 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
     memory["edit_prior_recommend_conf"] = float(_bounded_number(memory.get("edit_prior_recommend_conf"), "memory_policy.edit_prior_recommend_conf", 0, 1))
     memory["edit_prior_veto_conf"] = float(_bounded_number(memory.get("edit_prior_veto_conf"), "memory_policy.edit_prior_veto_conf", 0, 1))
     memory["suggest_slots"] = int(_bounded_number(memory.get("suggest_slots"), "memory_policy.suggest_slots", 0, 10))
+    memory["suggest_field_gate"] = _require_bool(
+        memory.get("suggest_field_gate", True), "memory_policy.suggest_field_gate"
+    )
     # 总开关（消融 A1）：False = 零记忆探索（等价 research_memory_path=None）
     if memory.get("enabled") is not None:
         memory["enabled"] = _require_bool(memory.get("enabled"), "memory_policy.enabled")
@@ -583,6 +596,15 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
     rp["report_rag_max_chars"] = int(_bounded_number(rp.get("report_rag_max_chars", 1600), "report_policy.report_rag_max_chars", 200, 10000))
     rp["report_rag_top_k"] = int(_bounded_number(rp.get("report_rag_top_k", 3), "report_policy.report_rag_top_k", 1, 20))
     rp["enable_question_queue"] = _require_bool(rp.get("enable_question_queue", True), "report_policy.enable_question_queue")
+    # 课题字段门控（2026-09-28）：开关 + 阈值全部收口在此，question_queue 只读取不硬编码
+    rp["question_field_gate"] = _require_bool(rp.get("question_field_gate", True), "report_policy.question_field_gate")
+    rp["question_field_warn"] = _require_bool(rp.get("question_field_warn", True), "report_policy.question_field_warn")
+    rp["question_field_gate_min_ratio"] = float(_bounded_number(
+        rp.get("question_field_gate_min_ratio", 0.5), "report_policy.question_field_gate_min_ratio", 0.0, 1.0
+    ))
+    rp["question_field_gate_scan_limit"] = int(_bounded_number(
+        rp.get("question_field_gate_scan_limit", 40), "report_policy.question_field_gate_scan_limit", 1, 500
+    ))
     spec["report_policy"] = rp
 
     profiles = resolve_profiles(spec)
