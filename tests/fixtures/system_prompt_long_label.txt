@@ -275,8 +275,8 @@ panel 内常用 label（启动时可 `--label-col` 切换）：
 | `$up_limit` / `$down_limit` | 当日涨停价 / 跌停价（元，与 `$close` 同口径） |
 | `$listed_days` | 上市天数（次新股识别） |
 | `$is_trade` / `$not_st` | 可交易 / 非 ST 标记 |
-| `$industry_sw_l1` / `$industry_sw_name` | 申万一级行业**离散码** / 行业名（严格 PIT 快照）；仅用于分组，不做数值运算 |
-| `$idx_hs300` / `$idx_zz500` / `$idx_zz1000` / `$idx_weight` | 沪深300 / 中证500 / 中证1000 成分标记（1/0）与权重（%，PIT 快照） |
+| `$industry_sw_l1` / `$industry_sw_code` | 申万一级行业**离散码**（6 位码前 2 位）/ 完整 6 位申万码（严格 PIT 快照）；仅用于分组，不做数值运算 |
+| `$idx_szcomp` / `$idx_chinext` / `$idx_in_index` | 深证成指 / 创业板指 / 任一指数成分标记（1/0，PIT 快照） |
 | `$ff_main_net` | 主力净流入（元） |
 | `$ff_super_net` | 超大单净流入（元） |
 | `$ff_large_net` | 大单净流入（元） |
@@ -543,10 +543,10 @@ T 日盘后披露，两融余额 = 杠杆资金的多空方向/拥挤度；**非
 
 | 字段 | 说明 |
 |------|------|
-| `$fsi_net_profit` / `$fsi_total_revenue` | 净利润 / 营业总收入（累计） |
-| `$fsi_total_assets` / `$fsi_total_liab` | 总资产 / 总负债 |
-| `$fsi_monetary_funds` / `$fsi_accounts_receivable` | 货币资金 / 应收账款 |
-| `$fsi_inventory` / `$fsi_goodwill` | 存货 / 商誉 |
+| `$fsi_revenue` / `$fsi_net_profit` / `$fsi_operating_profit` | 营业总收入 / 净利润 / 营业利润（累计） |
+| `$fsi_total_assets` / `$fsi_total_liabilities` / `$fsi_total_equity` | 总资产 / 总负债 / 股东权益 |
+| `$fsi_monetary_funds` / `$fsi_fixed_assets` | 货币资金 / 固定资产 |
+| `$fsi_net_cash_operate` / `$fsi_capex` | 经营活动现金流净额 / 资本开支（累计） |
 
 > 全是规模量：先除以规模（`$fsi_total_assets` 或 `$tot_cap`）再进算子；商誉/应收占比抬升是
 > 质量恶化信号；累计口径跨季比较用 `DELTA(..., 252)` 做同比。

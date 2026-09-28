@@ -272,8 +272,8 @@ panel 内常用 label（启动时可 `--label-col` 切换）：
 | `$up_limit` / `$down_limit` | 当日涨停价 / 跌停价（元，与 `$close` 同口径） |
 | `$listed_days` | 上市天数（次新股识别） |
 | `$is_trade` / `$not_st` | 可交易 / 非 ST 标记 |
-| `$industry_sw_l1` / `$industry_sw_name` | 申万一级行业**离散码** / 行业名（严格 PIT 快照）；仅用于分组，不做数值运算 |
-| `$idx_hs300` / `$idx_zz500` / `$idx_zz1000` / `$idx_weight` | 沪深300 / 中证500 / 中证1000 成分标记（1/0）与权重（%，PIT 快照） |
+| `$industry_sw_l1` / `$industry_sw_code` | 申万一级行业**离散码**（6 位码前 2 位）/ 完整 6 位申万码（严格 PIT 快照）；仅用于分组，不做数值运算 |
+| `$idx_szcomp` / `$idx_chinext` / `$idx_in_index` | 深证成指 / 创业板指 / 任一指数成分标记（1/0，PIT 快照） |
 
 > **行业中性化**：行业码是离散组号，直接 `CS_NEUTRALIZE(factor, $industry_sw_l1)` 即为行业内去均值；**勿**对它套 `CS_BUCKET`。
 
