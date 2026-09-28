@@ -124,7 +124,9 @@ class OVStore:
         hits = []
         if client is not None:
             try:
-                results = client.search(query=query, target_uri=REPORT_SCOPE, limit=limit)
+                # 多取候选：下面会剔除研报 PDF 的图片语义索引条目（pageN_imgM.png），
+                # 若只按 limit 取，过滤后可能不足额甚至归零、无谓触发本地降级。
+                results = client.search(query=query, target_uri=REPORT_SCOPE, limit=max(limit * 3, 8))
                 hits = self._flatten_hits(results, limit, scope=REPORT_SCOPE)
             except Exception as exc:  # noqa: BLE001
                 log.warning("OpenViking 研报检索异常，降级到本地检索: %s", exc)
@@ -172,6 +174,14 @@ class OVStore:
                     continue
                 # 排除隐藏文件（OpenViking 自动生成的 .overview.md 等目录概览）
                 if "/." in uri or uri.rstrip("/").rsplit("/", 1)[-1].startswith("."):
+                    continue
+                # 排除研报 PDF 的“页面图片语义索引”条目（pageN_imgM.png 的图注描述）：
+                # 它们检索得分不低，但对因子机制设计没有价值——实测 2026-09-28 注入块
+                # 几乎被图注占满（"Image Description ..."），正文段落反而被挤掉。
+                leaf = uri.rstrip("/").rsplit("/", 1)[-1].lower()
+                if leaf.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg")):
+                    continue
+                if "_img" in leaf or "_page" in leaf:
                     continue
                 hits.append(item)
         hits.sort(key=lambda h: -float(h.get("score") or 0.0))
