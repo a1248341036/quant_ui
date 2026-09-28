@@ -267,8 +267,16 @@ panel 内常用 label（启动时可 `--label-col` 切换）：
 | `$vwap` | 成交量加权均价（与 `$close` 同单位尺度：amount/volume） |
 | `$adj_vwap` | 后复权 VWAP（`$vwap × $adjfactor`，与 `$adj_close` 同复权口径） |
 | `$ret` | 日 adj_close pct_change（按 instrument） |
+| `$turnover_rate` / `$turnover_rate_f` | 换手率（%）/ 自由流通股换手率（%；`$turnover` 是 `$turnover_rate` 的别名） |
+| `$volume_ratio` | 量比（当日成交量/近 5 日均量） |
+| `$pe` / `$pe_ttm` / `$pb` / `$ps_ttm` | 估值：PE（静态/滚动）/ PB / PS(TTM)（无值 = 亏损或不可比） |
+| `$dv_ttm` | 股息率（%，近 12 个月现金分红/现价） |
+| `$total_share` / `$float_share` / `$free_share` | 总 / 流通 / 自由流通股本（万股） |
+| `$up_limit` / `$down_limit` | 当日涨停价 / 跌停价（元，与 `$close` 同口径） |
+| `$listed_days` | 上市天数（次新股识别） |
 | `$is_trade` / `$not_st` | 可交易 / 非 ST 标记 |
-| `$industry_sw_l1` | 申万一级行业**离散码**（仅离线 enrich 路径产出，**挖掘链路不加载**，引用即报「不可用字段」）；仅用于分组，不做数值运算 |
+| `$industry_sw_l1` / `$industry_sw_code` | 申万一级行业**离散码**（6 位码前 2 位）/ 完整 6 位申万码（严格 PIT 快照）；仅用于分组，不做数值运算 |
+| `$idx_szcomp` / `$idx_chinext` / `$idx_in_index` | 深证成指 / 创业板指 / 任一指数成分标记（1/0，PIT 快照） |
 | `$ff_main_net` | 主力净流入（元） |
 | `$ff_super_net` | 超大单净流入（元） |
 | `$ff_large_net` | 大单净流入（元） |
@@ -490,6 +498,62 @@ T 日盘后披露，两融余额 = 杠杆资金的多空方向/拥挤度；**非
 
 ---
 
+### 公告事件（PIT 日频，`ann_*`）
+
+个股公告索引按**公告日**展开为日频阶跃：仅当日及之前已公告的可见。
+
+| 字段 | 说明 |
+|------|------|
+| `$ann_cnt_5d` / `$ann_cnt_20d` | 近 5 / 20 个**交易日**公告条数（信息密度） |
+| `$ann_days_since` | 距最近一条公告的自然日（越小越"有事"） |
+| `$ann_flag_reduce` / `$ann_flag_increase` | 窗口内减持 / 增持类公告（1/0） |
+| `$ann_flag_buyback` / `$ann_flag_pledge` | 回购 / 质押类公告（1/0） |
+| `$ann_flag_lawsuit` / `$ann_flag_inquiry` | 诉讼仲裁 / 问询函（1/0，风险类） |
+| `$ann_flag_forecast` | 业绩预告/预增预减类公告（1/0） |
+
+> 事件多为短期冲击，须与反转/换手结构组合；风险类标记（诉讼/问询/质押）适合做负向门控，
+> 不要单独当信号。
+
+
+---
+
+### 研报视角：一致预期与卖方预测（PIT 日频，`ac_*` / `rc_*`）
+
+`ac_*` = 卖方一致预期（按预期日 PIT）；`rc_*` = 个股研报预测/评级聚合。研报条数是**拥挤度**
+代理：覆盖越多、预期差越小。
+
+| 字段 | 说明 |
+|------|------|
+| `$ac_eps_fy` / `$ac_pe_fy` | 一致预期 EPS（最近预测年度）/ 对应 PE |
+| `$ac_target_price` / `$ac_analyst_count` | 一致目标价（元）/ 覆盖分析师家数 |
+| `$ac_rating` / `$ac_days_since` | 一致评级分值 / 距预期更新日的自然日 |
+| `$rc_cnt_90d` / `$rc_days_since` | 近 90 日研报条数（拥挤度）/ 距最近一份研报的自然日 |
+| `$rc_eps_y` / `$rc_pe_y` / `$rc_roe_y` / `$rc_tp_wan` | 最近研报给出的 EPS / PE / ROE 预测 / 预测利润总额（万元） |
+| `$rc_rating` / `$rc_target_price` | 最近研报评级分值 / 目标价（元） |
+
+> 研报数据是**低频慢变量**：只与日频价量做门控或残差，不要直接当短周期信号；
+> `$rc_cnt_90d` 高 + 价格滞涨 = 拥挤无催化，预期上调配低换手更稳。
+
+
+---
+
+### 财报明细项（PIT 日频阶跃，`fsi_*`，单位元）
+
+按**实际公告日** PIT 展开的利润表/资产负债表明细（东财口径；利润表为**年初至今累计**）。
+
+| 字段 | 说明 |
+|------|------|
+| `$fsi_revenue` / `$fsi_net_profit` / `$fsi_operating_profit` | 营业总收入 / 净利润 / 营业利润（累计） |
+| `$fsi_total_assets` / `$fsi_total_liabilities` / `$fsi_total_equity` | 总资产 / 总负债 / 股东权益 |
+| `$fsi_monetary_funds` / `$fsi_fixed_assets` | 货币资金 / 固定资产 |
+| `$fsi_net_cash_operate` / `$fsi_capex` | 经营活动现金流净额 / 资本开支（累计） |
+
+> 全是规模量：先除以规模（`$fsi_total_assets` 或 `$tot_cap`）再进算子；商誉/应收占比抬升是
+> 质量恶化信号；累计口径跨季比较用 `DELTA(..., 252)` 做同比。
+
+
+---
+
 ---
 
 ### A 股市场机制与 alpha 分布（设计假设的事实底座）
@@ -568,20 +632,21 @@ alpha 的来源只有一种：**错误定价 + 套利受限**。设计因子前�
 
 以下为从券商金工研报库中实时检索出的相关文献摘录（供机制与算子设计参考）：
 
-- **《5775175 金融工程周报：趋势选股模型跟踪》**：
-  > 本报告从量价角度出发，通过技术形态识别出价格趋势向上的个股。
-选股指标：均线、胜率、盈亏比、累计收益率、RSI等指标。
-回测结果：全历史回测结果显示，严格条件组合累计收益为
+- **《viking://resources/research_reports/渤海证券/20240924_公募基金周报/page1_img7.png》**：
+  > Based on the provided image and context, here is a comprehensive description suitable for semantic indexing:
 
-- **《5767218 成长风格继续强势，单季营收同比增速因子表现出色》**：
-  > 本周市场正收益风格集中在Growth 风格上，负收益风格表现在Cubic Size 风格上。
-单季营收同比增速是中证全指成分股中，本周表现最好的因子。
-以沪深300 指数为选股空间，最近一周，盈余公告开盘跳空超额、单季ROA 等因子
+### Image Description
 
-- **《5771449 东方因子周报：成长风格连续三周登顶，EPTTM因子表现出色》**：
-  > 本周市场正收益风格集中在Growth 风格上，负收益风格表现在Trend 风格上。
-EPTTM 是中证全指成分股中，本周表现最好的因子。
-以沪深300 指数为选股空间，最近一周，单季EP、SPTTM 等因子表现较好，而预
+1.  **Main Subjects/Objects:**
+    *   The image is a digital graphic, specifically a title slide or header for a financial report.…
+
+- **《viking://resources/research_reports/渤海证券/20240924_公募基金周报/page1_img6.png》**：
+  > This image displays a financial report titled "核心观点" (Core Viewpoints), outlining market performance and fund data from the previous week. The content is organized into four main sections with bullet points: "上周市场回顾" (Last Week's Market Review), "公募基金市场概况" (Public Fund Market Ove…
+
+- **《viking://resources/research_reports/渤海证券/20240924_公募基金周报/主动型公募基金情况._2/page12_img2.png》**：
+  > This is a combination bar and line chart titled "基金发行统计-统计图" (Fund Issuance Statistics - Statistical Chart), displaying monthly data from 2023-09-30 to 2024-09-20.
+
+The chart features two distinct data series represented on dual y-axes:…
 
 ### 多周期：`$field@<周期>`
 

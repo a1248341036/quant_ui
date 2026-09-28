@@ -662,9 +662,34 @@ def _build_run_command(params: dict[str, Any], log_dir: Path, control_file: Path
         command.extend(["--focus-facets", ",".join(str(s) for s in focus_facets_raw)])
         if any(str(s) not in ("价量面", "量能面", "筹码面", "拥挤面") for s in focus_facets_raw):
             wants_fundamentals = True
-    if not wants_fundamentals or params.get("no_fundamentals"):
+    # 研报课题联动（2026-09-28）：自由探索（未聚焦）且 technical 档时，课题由
+    # 1200 题题库按轮随机派发，其中 45% 的题面点名 eps/roe/net_profit 等基本面
+    # 字段；不载 funda_* 时这些课题必然报"不可用字段"白跑一轮。故只要题库含
+    # 基本面组课题就载入（可用 ALPHA_FUNDAMENTALS_AUTO=0 或显式 no_fundamentals
+    # 关掉；代价是面板多约 3.2GiB）。
+    if not wants_fundamentals and not params.get("no_fundamentals"):
+        if os.environ.get("ALPHA_FUNDAMENTALS_AUTO", "1") != "0" and _question_bank_needs_fundamentals():
+            wants_fundamentals = True
+            params["fundamentals_auto"] = True
+            logger.info("基本面列自动载入：研报课题库含基本面组课题（ALPHA_FUNDAMENTALS_AUTO=0 可关）")
+    loaded = bool(wants_fundamentals) and not params.get("no_fundamentals")
+    # 落进 run_meta.json（save_meta 写 self.params）→ API/UI 可查这次为什么吃内存
+    params["fundamentals_loaded"] = loaded
+    if not loaded:
         command.append("--no-fundamentals")
     return command, params
+
+
+def _question_bank_needs_fundamentals() -> bool:
+    """研报课题库是否含基本面组课题（决定自由探索是否自动载入 funda_*）。"""
+    try:
+        from alphaagent.factor.mining.agent.question_queue import load_question_queue
+
+        bank = load_question_queue(None) or []
+    except Exception as exc:  # noqa: BLE001 — 判定失败不影响 run 启动，退回旧行为
+        logger.warning("课题库基本面判定失败，退回 --no-fundamentals: %s", exc)
+        return False
+    return any("基本面" in (q.get("facets") or []) for q in bank)
 
 
 def start_run(
