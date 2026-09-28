@@ -275,7 +275,7 @@ _VARIABLES_TABLE_HEAD = """### 可用行情变量
 | `$adj_vwap` | 后复权 VWAP（`$vwap × $adjfactor`，与 `$adj_close` 同复权口径） |
 | `$ret` | 日 adj_close pct_change（按 instrument） |
 | `$is_trade` / `$not_st` | 可交易 / 非 ST 标记 |
-| `$industry_sw_l1` | 申万一级行业**离散码**（严格 PIT，`--with-industry` 时才有）；仅用于分组，不做数值运算 |
+| `$industry_sw_l1` | 申万一级行业**离散码**（仅离线 enrich 路径产出，**挖掘链路不加载**，引用即报「不可用字段」）；仅用于分组，不做数值运算 |
 """
 
 _INDUSTRY_NOTE = """
@@ -303,8 +303,8 @@ _SCOPED_VAR_VOLUME_ROWS_MD = """| `$volume` / `$amount` | 成交量 / 成交额 
 """
 _SCOPED_VAR_NEUTRAL_ROWS_MD = """| `$float_cap` / `$tot_cap` | 流通 / 总市值 |
 | `$is_trade` / `$not_st` | 可交易 / 非 ST 标记 |
-| `$industry_sw_l1` | 申万一级行业**离散码**（严格 PIT，`--with-industry` 时才有）；仅用于分组，不做数值运算 |
-| `$industry_zx_l1` | 中信一级行业**离散码**（严格 PIT，`--with-industry` 时才有）；仅用于分组，不做数值运算 |
+| `$industry_sw_l1` | 申万一级行业**离散码**（仅离线 enrich 路径产出，**挖掘链路不加载**，引用即报「不可用字段」）；仅用于分组，不做数值运算 |
+| `$industry_zx_l1` | 中信一级行业**离散码**（仅离线 enrich 路径产出，**挖掘链路不加载**，引用即报「不可用字段」）；仅用于分组，不做数值运算 |
 """
 
 

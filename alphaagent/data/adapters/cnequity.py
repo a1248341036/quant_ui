@@ -111,8 +111,14 @@ _CACHE_INDEX_COLS = ["datetime", "instrument"]
 _ALWAYS_KEEP_COLUMNS = frozenset({
     "open", "high", "low", "close", "amount", "volume", "turnover_rate",
     "adj_close", "adjfactor", "float_cap", "tot_cap", "is_trade", "not_st",
-    "industry_sw_l1",
 })
+# 注：历史上这里还列过 ``industry_sw_l1``。该列只由离线 enrich 路径
+# （``alphaagent/data/panel.py`` 的 ``with_industry=True`` 分支，读
+# ``core/paths.INDUSTRY_SW_PATH``）产出，``adapters/plugins/`` 下没有任何插件供给它，
+# 挖掘链路（``cnequity.load_panel_from_cne``）永远拿不到——留在"永远保留"名单里
+# 只会误导读者以为行业中性可用。2026-09-27 整夜 run 实测：每 run 仍会因
+# ``$industry_sw_l1`` 报 2~6 次「不可用字段」。行业列接入属 P2（需新增插件 + 缓存
+# schema 版本），届时再按"插件确实供给"重入名单。
 # 基本面开关打开时缓存面板必须包含的列族哨兵（每插件一列）。建缓存当天某个
 # 辅助插件加载失败（如 CNE 同步占用 parquet 文件锁）会把缺列面板固化，之后
 # 每次命中都返回残缺面板 → 下游 funda_*/dt_* 因子集体报"不可用字段"。

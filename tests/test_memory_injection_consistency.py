@@ -107,6 +107,51 @@ def test_recommend_edits_respects_excluded_families(tmp_path):
     assert "chip" not in fams
 
 
+def test_recommend_edits_field_gate_blocks_unloaded_parent(tmp_path):
+    """2026-09-28（docs/specs/alphaagent_question_field_gate_spec.md §3.4）：
+    父本表达式引用本 run 未载入字段（funda_*）时不推荐，并记录 blocked 原因。"""
+    db_file = tmp_path / "test_mem.db"
+    retrieval = _create_mock_memory_db(db_file)
+    retrieval._best_family_parent = lambda fam: {
+        "parent_factor": f"{fam}_parent",
+        "parent_expression": "CS_ZSCORE($funda_ocf)",  # 本 run 未载入 funda_
+        "parent_ic": 0.025,
+    }
+
+    blocked: list[str] = []
+    recs = retrieval.recommend_edits(
+        k=2,
+        available_fields={"adj_close", "close", "amount", "turnover_rate"},
+        blocked_out=blocked,
+    )
+    assert recs == []
+    assert blocked and all("funda_ocf" in item for item in blocked)
+
+    # 未传 available_fields → 旧行为（不判定字段）
+    assert retrieval.recommend_edits(k=2)
+
+    # 列族载入后恢复推荐，且名额仍由后续候选填满
+    recs2 = retrieval.recommend_edits(
+        k=2, available_fields={"adj_close", "funda_ocf"}
+    )
+    assert [r["family"] for r in recs2] == ["chip"]
+
+
+def test_recommend_edits_field_gate_allows_alias_column(tmp_path):
+    """别名列：父本写 $turnover，面板列名 turnover_rate → 不算缺列。"""
+    db_file = tmp_path / "test_mem.db"
+    retrieval = _create_mock_memory_db(db_file)
+    retrieval._best_family_parent = lambda fam: {
+        "parent_factor": f"{fam}_parent",
+        "parent_expression": "CS_ZSCORE($turnover)",
+        "parent_ic": 0.025,
+    }
+
+    recs = retrieval.recommend_edits(k=1, available_fields={"turnover_rate"})
+    assert [r["family"] for r in recs] == ["chip"]
+    assert retrieval.recommend_edits(k=1, available_fields={"close"}) == []
+
+
 # ── D1: _edit_prior_block 饱和族推荐降级 ──────────────────────────
 
 

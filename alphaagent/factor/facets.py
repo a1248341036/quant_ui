@@ -18,7 +18,9 @@ from __future__ import annotations
 #   披露面(ds_* 披露日历) / 分红面(div_* 现金分红)
 FACET_DEFS: list[tuple[str, tuple[str, ...]]] = [
     ("价量面", ("$adj_", "$close", "$open", "$high", "$low", "$ret", "$vwap")),
-    ("量能面", ("$volume", "$amount", "$turnover")),
+    # 量能面：``$turnover`` 是 DSL 别名（见 dsl/core/field_aliases.py），真实面板列名为
+    # ``$turnover_rate``；两个键都保留——历史因子/研究记忆里两种写法都存在。
+    ("量能面", ("$volume", "$amount", "$turnover", "$turnover_rate")),
     ("筹码面", ("chip_",)),
     ("拥挤面", ("crowd_",)),
     ("基本面", ("funda_",)),

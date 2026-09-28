@@ -818,21 +818,39 @@ async def run_factor_mining_agentscope(
         sid = getattr(session_resp, "session_id", None) if 'session_resp' in locals() or 'session_resp' in globals() else None
         if bool(report_policy.get("enable_question_queue", True)):
             try:
-                from alphaagent.factor.mining.agent.question_queue import get_task_for_turn, get_question_for_turn
+                from alphaagent.factor.mining.agent.question_queue import (
+                    get_question_for_turn,
+                    render_question_task,
+                )
+
+                # 本 run 实际可用列（会话面板）——课题字段门控的唯一真源：纯缺列题跳过、
+                # 部分缺列题保留并注入缺列提示（2026-09-28，见 docs/specs/alphaagent_question_field_gate_spec.md）
+                _available_fields = list(getattr(session_resp, "available_columns", None) or [])
+                _q_stats: dict[str, Any] = {}
                 current_question = get_question_for_turn(
                     outer_turn,
                     spec=spec,
                     focus_facets=getattr(config, "focus_facets", None),
                     session_id=sid,
+                    available_fields=_available_fields,
+                    stats=_q_stats,
                 )
-                q_task = get_task_for_turn(
-                    outer_turn,
-                    spec=spec,
-                    focus_facets=getattr(config, "focus_facets", None),
-                    session_id=sid,
-                )
-                if q_task:
-                    block = f"{block}\n\n{q_task}" if block else q_task
+                if _q_stats:
+                    log_step(
+                        "question_gate",
+                        f"qid={(current_question or {}).get('question_id')} "
+                        f"status={_q_stats.get('status')} scanned={_q_stats.get('scanned')}",
+                        missing=",".join(_q_stats.get("missing") or []) or "-",
+                        available_cols=len(_available_fields),
+                    )
+                if current_question:
+                    q_task = render_question_task(
+                        current_question,
+                        missing_fields=_q_stats.get("missing") or [],
+                        spec=spec,
+                    )
+                    if q_task:
+                        block = f"{block}\n\n{q_task}" if block else q_task
             except Exception as _e:
                 logging.warning("研报问题队列获取异常（失败静默）: %s", _e)
 
@@ -1250,12 +1268,31 @@ async def run_factor_mining_agentscope(
                     from alphaagent.factor.mining.memory.expressions import facet_allowed_scope
 
                     _focus_faces = {str(f) for f in (getattr(config, "focus_facets", None) or ())}
+                    # 父本字段门控（2026-09-28）：父本表达式引用本 run 未载入字段时不推荐
+                    # （实测 funda_* 父本在 --no-fundamentals 下连续 8 轮白占名额）
+                    _mem_policy = (getattr(config, "research_spec", None) or {}).get("memory_policy") or {}
+                    _field_gate_on = bool(_mem_policy.get("suggest_field_gate", True))
+                    _avail_fields = (
+                        set(getattr(session_resp, "available_columns", None) or [])
+                        if _field_gate_on
+                        else None
+                    )
+                    _blocked_parents: list[str] = []
                     recs = memory_store.recommend_edits(
                         int(memory_store.suggest_slots),
                         facet_scope=facet_allowed_scope(_focus_faces) if _focus_faces else None,
                         facet_required=_focus_faces or None,
                         excluded_families=repeat_fams or None,
+                        available_fields=_avail_fields,
+                        blocked_out=_blocked_parents,
                     )
+                    if _blocked_parents:
+                        log_step(
+                            "memory_suggest_skip",
+                            "field_gate",
+                            blocked=len(_blocked_parents),
+                            reasons="|".join(_blocked_parents[:4]),
+                        )
                 except Exception:
                     recs = []
                 if recs:

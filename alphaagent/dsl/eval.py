@@ -29,6 +29,7 @@ import numpy as np
 import pandas as pd
 
 from alphaagent.dsl.core.errors import MultiLineFactorEvalError
+from alphaagent.dsl.core.field_aliases import apply_field_aliases
 from alphaagent.dsl.core.guard import (
     _DOLLAR_REF_RE,
     _strip_string_literals,
@@ -249,6 +250,9 @@ def compile_multi_line_factor(
 ) -> str:
     if columns:
         known = {str(col).lstrip("$").split("@", 1)[0] for col in columns}
+        # 字段别名收口（``$turnover`` → ``$turnover_rate``）：提示词/题库按别名书写，
+        # 这里在「不可用字段」校验与 parse_symbol 之前统一改写，两条求值路径共用。
+        multi_line_expr, _applied_aliases = apply_field_aliases(multi_line_expr, known)
         cleaned = _strip_string_literals(multi_line_expr)
         unknown = sorted({
             match.group(1)

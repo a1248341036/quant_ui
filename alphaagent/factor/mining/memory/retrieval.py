@@ -160,6 +160,21 @@ def _entry_in_scope(
     return _facets_ok(facets, scope, required)
 
 
+def _parent_missing_fields(parent: dict[str, Any], available_fields: set[str] | None) -> str:
+    """父本表达式引用了本 run 未载入字段时返回 ``a/b`` 形式的摘要，否则空串。
+
+    ``available_fields`` 为空（None/空集合）时不做判定 → 返回空串（旧行为）。
+    """
+    if not available_fields:
+        return ""
+    expr = str(parent.get("parent_expression") or parent.get("expression") or "")
+    if not expr:
+        return ""
+    from alphaagent.dsl.core.field_aliases import missing_fields
+
+    return "/".join(missing_fields(expr, available_fields))
+
+
 class RetrievalMixin:
     """混合检索与提示上下文构建（v3 六层注入：经验 → 模式 → 编辑先验 → 饱和度 → 多样性 → 证据）。"""
 
@@ -584,6 +599,8 @@ class RetrievalMixin:
         facet_scope: set[str] | None = None,
         facet_required: set[str] | None = None,
         excluded_families: set[str] | None = None,
+        available_fields: set[str] | None = None,
+        blocked_out: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """按 cells 残差×置信度给 (family, motif) 出题，附族内最优父本。
 
@@ -595,6 +612,12 @@ class RetrievalMixin:
 
         ``facet_scope``（数据面聚焦）非空时，父本表达式触及未选面的推荐直接
         丢弃——否则会把 LLM 派去改一个必被拦截的价量父本。
+
+        ``available_fields``（本 run 实际可用的面板列，2026-09-28 新增）非空时，
+        父本表达式引用了未载入字段的推荐同样丢弃——实测整夜自由探索 run 里
+        ``funda_*`` 父本连续 8 轮被推荐，而 ``--no-fundamentals`` 下该列族未载入，
+        每轮白占一个名额。过滤后名额会由后续候选继续填满，不减少返回条数。
+        ``blocked_out`` 为可选出参，记录被过滤的 ``父本:缺失字段`` 供日志。
         """
         if k <= 0:
             return []
@@ -677,6 +700,11 @@ class RetrievalMixin:
                 str(parent.get("parent_expression") or ""), facet_scope, facet_required
             ):
                 continue
+            _blocked = _parent_missing_fields(parent, available_fields)
+            if _blocked:
+                if blocked_out is not None:
+                    blocked_out.append(f"{parent.get('parent_factor')}:{_blocked}")
+                continue
             picks.append({
                 **cand,
                 **parent,
@@ -711,6 +739,11 @@ class RetrievalMixin:
             if facet_scope and not _facets_in_scope(
                 str(parent.get("parent_expression") or ""), facet_scope, facet_required
             ):
+                continue
+            _blocked = _parent_missing_fields(parent, available_fields)
+            if _blocked:
+                if blocked_out is not None:
+                    blocked_out.append(f"{parent.get('parent_factor')}:{_blocked}")
                 continue
             picks.append({
                 "family": family, "motif": None,

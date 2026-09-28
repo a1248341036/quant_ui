@@ -265,7 +265,7 @@ panel 内常用 label（启动时可 `--label-col` 切换）：
 | `$adj_vwap` | 后复权 VWAP（`$vwap × $adjfactor`，与 `$adj_close` 同复权口径） |
 | `$ret` | 日 adj_close pct_change（按 instrument） |
 | `$is_trade` / `$not_st` | 可交易 / 非 ST 标记 |
-| `$industry_sw_l1` | 申万一级行业**离散码**（严格 PIT，`--with-industry` 时才有）；仅用于分组，不做数值运算 |
+| `$industry_sw_l1` | 申万一级行业**离散码**（仅离线 enrich 路径产出，**挖掘链路不加载**，引用即报「不可用字段」）；仅用于分组，不做数值运算 |
 
 > **行业中性化**：行业码是离散组号，直接 `CS_NEUTRALIZE(factor, $industry_sw_l1)` 即为行业内去均值；**勿**对它套 `CS_BUCKET`。
 
