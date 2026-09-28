@@ -24,9 +24,9 @@ PHASES = frozenset({"explore", "deepen", "full"})
 def enabled(ctx: Any) -> bool:
     if getattr(ctx, "asset_type", "stock") != "stock":
         return False
-    spec = getattr(ctx, "research_spec", None) or {}
-    policy = spec.get("report_policy") or {}
-    return bool(policy.get("enable_report_rag", True))
+    from alphaagent.factor.mining.report_channels import report_rag_enabled
+
+    return report_rag_enabled(getattr(ctx, "research_spec", None))
 
 
 def render(ctx: Any) -> str:
