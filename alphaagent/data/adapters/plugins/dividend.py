@@ -115,11 +115,12 @@ def load(
         # 用 polars date_range 原生展开，避免 Python 逐日循环（全市场 ~112M 行）
         ex_windows = (
             windows.with_columns(
-                pl.date_range(
+                # pl.date_ranges（复数）才是 with_columns 内的元素级 API；
+                # pl.date_range + eager=True 会在空 frame 上求值 → 列解析失败
+                pl.date_ranges(
                     pl.col("imp_ann_date"),
                     pl.col("ex_date") - datetime.timedelta(days=1),
                     interval="1d",
-                    eager=True,
                 ).alias("_days")
             )
             .explode("_days")

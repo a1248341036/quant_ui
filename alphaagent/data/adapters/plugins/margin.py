@@ -60,7 +60,7 @@ def load(
 ) -> Any:
     """加载融资融券并按日期窗口裁剪（直接输出原始列名，由 registry 映射）。"""
     s, e = _pitlib.parse_window(start, end)
-    raw = _pitlib.read_curated("margin_trading")
+    raw = _pitlib.read_curated("margin_trading", start=start, end=end)
 
     keep = list(_COLUMN_MAP.keys()) + ["symbol", "trade_date"]
     df = raw.select([c for c in keep if c in raw.columns]).filter(

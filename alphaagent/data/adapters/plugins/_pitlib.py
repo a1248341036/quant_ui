@@ -13,6 +13,7 @@ from __future__ import annotations
 import datetime
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -64,18 +65,65 @@ def parse_window(
     return s, e
 
 
-def read_curated(dataset: str) -> pl.DataFrame:
-    """读取整个 curated 数据集（与 fundamental 同口径，hive_partitioning=False）。
+# 单次 eager 读取的文件数上限：超过则改走 scan 流式读取。CNE curated 的日频数据集
+# 按 trade_date=YYYY-MM-DD 每天一个文件（融资融券 2607 个、估值 2608 个），旧实现
+# 一律拒绝 → 这些数据集整条链路不可用（面板缺 mgn_* 列且哨兵校验拒绝落盘）。
+_MAX_EAGER_FILES = 512
+
+# hive 日期分区目录名：trade_date=2024-01-02 / announce_date=2024-01-02 / ...
+_PARTITION_DIR_RE = re.compile(r"^[a-z_]+=(\d{4}-\d{2}-\d{2})$")
+
+
+def _partition_date(path: Path) -> datetime.date | None:
+    """取路径中最近一层 hive 日期分区目录的日期；非日期分区返回 None。"""
+    for part in reversed(path.parts[:-1]):
+        m = _PARTITION_DIR_RE.match(part)
+        if m:
+            return datetime.date.fromisoformat(m.group(1))
+    return None
+
+
+def read_curated(
+    dataset: str,
+    *,
+    start: str | None = None,
+    end: str | None = None,
+) -> pl.DataFrame:
+    """读取整个 curated 数据集；给出窗口时按日期分区裁剪（与 fundamental 同口径）。
 
     显式列出 parquet 文件逐个读取：避免 ``pl.read_parquet(root)`` 对目录的隐式
     全量扫描（curated 目录异常残留碎片文件时可能把无关文件一并读入内存）。
+
+    日分区数据集（``trade_date=YYYY-MM-DD/part-merged.parquet``）在给出窗口时只保留
+    命中的分区——5 年窗口约 1200 档，不裁剪会被文件数守卫整包拒绝。
     """
     root = _curated_root() / dataset
     files = sorted(root.rglob("*.parquet"))
     if not files:
         raise FileNotFoundError(f"CNE curated {dataset} 无 parquet 文件")
-    if len(files) > 512:
-        raise ValueError(f"CNE curated {dataset} parquet 文件数异常（{len(files)}），拒绝全量读取")
+
+    windowed = False
+    if start or end:
+        s, e = parse_window(start, end)
+        dated = [(f, _partition_date(f)) for f in files]
+        if any(d is not None for _, d in dated):
+            kept = [f for f, d in dated if d is None or s <= d <= e]
+            if not kept:
+                known = sorted(d for _, d in dated if d is not None)
+                raise ValueError(
+                    f"CNE curated {dataset} 在窗口 {s}~{e} 内无分区数据"
+                    f"（分区范围 {known[0]} ~ {known[-1]}）"
+                )
+            files = sorted(kept)
+            windowed = True
+
+    if len(files) > _MAX_EAGER_FILES:
+        if not windowed:
+            raise ValueError(
+                f"CNE curated {dataset} parquet 文件数异常（{len(files)}），拒绝全量读取"
+            )
+        # 已按窗口裁剪到合规规模：scan 流式读取，避免 concat 上千个小文件
+        return pl.scan_parquet([str(f) for f in files]).collect()
     return pl.concat([pl.read_parquet(f) for f in files], how="vertical")
 
 
