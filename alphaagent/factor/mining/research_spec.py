@@ -262,14 +262,10 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
         "question_field_gate_min_ratio": 0.5,
         "question_field_gate_scan_limit": 40,
         "question_field_warn": True,
-=======
-        "enable_report_mechanisms": False,
-        "enable_report_prior": True,
+        # R2 机制卡检索参数（knowledge_mode=mechanism_cards 时生效）
         "report_prior_max_chars": 1600,
         "report_prior_top_k": 4,
-        "report_cards_path": None,
         "include_negatives": True,
->>>>>>> b1b9201 (feat(mining): 实现 R2 券商研报机制卡检索注入与条件契约)
     },
 }
 

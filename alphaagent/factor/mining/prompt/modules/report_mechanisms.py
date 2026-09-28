@@ -17,9 +17,11 @@ PHASES = frozenset({"explore", "deepen", "full"})
 def enabled(ctx) -> bool:  # noqa: ANN001
     if getattr(ctx, "asset_type", "stock") != "stock":
         return False
-    spec = getattr(ctx, "research_spec", None) or {}
-    policy = spec.get("report_policy") or {}
-    return bool(policy.get("enable_report_mechanisms", True)) and bool(RAW.strip())
+    from alphaagent.factor.mining.report_channels import resolve_report_channels
+
+    if not resolve_report_channels(getattr(ctx, "research_spec", None))["static_manual"]:
+        return False
+    return bool(RAW.strip())
 
 
 def render(ctx) -> str:  # noqa: ANN001

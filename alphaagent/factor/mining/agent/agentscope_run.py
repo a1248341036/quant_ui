@@ -855,7 +855,9 @@ async def run_factor_mining_agentscope(
                 logging.warning("研报问题队列获取异常（失败静默）: %s", _e)
 
         # R3 方案每轮动态联动：如果启用了 RAG，每轮根据当前派发的具体课题动态检索最相关研报段落注入
-        if bool(report_policy.get("enable_report_rag", True)) and current_question:
+        from alphaagent.factor.mining.report_channels import report_rag_enabled
+
+        if report_rag_enabled(spec) and current_question:
             try:
                 from alphaagent.factor.mining.memory.ov_store import OVStore
                 _endpoint = report_policy.get("ov_endpoint", "http://127.0.0.1:1933")

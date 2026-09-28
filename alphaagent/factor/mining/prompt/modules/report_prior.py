@@ -61,9 +61,9 @@ def _resolve_cards_file(ctx: Any) -> Path | None:
 def enabled(ctx: Any) -> bool:
     if getattr(ctx, "asset_type", "stock") != "stock":
         return False
-    spec = getattr(ctx, "research_spec", None) or {}
-    policy = spec.get("report_policy") or {}
-    if not bool(policy.get("enable_report_prior", True)):
+    from alphaagent.factor.mining.report_channels import resolve_report_channels
+
+    if not resolve_report_channels(getattr(ctx, "research_spec", None))["mechanism_cards"]:
         return False
     p = _resolve_cards_file(ctx)
     return bool(p and p.is_file())
