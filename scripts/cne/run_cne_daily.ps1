@@ -2,22 +2,20 @@
 <#
 .SYNOPSIS
   CNE 数据湖每日流水线（Windows / PowerShell 版）。
-  对标 CNEquity/scripts/daily_pipeline.sh，功能一致：
-    1. 按 wave 依赖顺序依次执行 cne run daily（前台输出实时进度 + 写日志）
-    2. stale 补抓（可选）
-    3. health check（audit + status）
-    4. meta 备份
-    5. staging 清理
-  一个 gate wave 失败 → 脚本 exit 1；soft wave 失败只告警。
-  非交易日运行为 no-op（cne 内部跳过，exit 0）。
-
-  事件/财务数据（balancesheet/income/cashflow/fina_indicator/report_rc/
-  dividend/share_float_external/namechange/forecast/express/stk_surv）
-  已迁移为 CNE curated step，由 events/fundamentals wave 内部抓取，
-  不再需要外部 sync_tushare_to_parquet.py 同步。
+  功能：
+    1. 弹出现代化半透明暗色进度卡片看板（自动隐藏控制台黑框）
+    2. 按 wave 依赖顺序依次执行 cne run daily（实时推送进度条与步骤）
+    3. ETF/场外基金/指数刷新
+    4. stale 补抓（可选）
+    5. health check（audit + status）与 meta 备份、staging 清理
+    6. 跑完后展示清晰直观的数据集对账清单（包含各数据集行数、耗时、状态）
+    7. 任务完成常驻卡片，待用户确认后关闭退出（不再闪退）
 
 .PARAMETER TradeDate
   指定交易日补跑，格式 YYYY-MM-DD，默认 today。
+
+.PARAMETER NoGui
+  强制纯命令行/无图形模式（禁用 WPF 进度看板）。
 
 .PARAMETER NoStaleRetry
   跳过 stale 补抓环节。
@@ -26,22 +24,18 @@
   跳过 meta 备份。
 
 .PARAMETER Quiet
-   传给 cne run daily --quiet，只输出 WARNING 及以上。
+  传给 cne run daily --quiet，只输出 WARNING 及以上。
 
 .PARAMETER SkipClean
-   跳过 staging 清理。
+  跳过 staging 清理。
 
 .PARAMETER SkipEtfFund
-   跳过 ETF/基金/指数刷新（refresh_data.py）。
-
-.EXAMPLE
-  .\run_cne_daily.ps1
-  .\run_cne_daily.ps1 -TradeDate 2026-08-20
-  .\run_cne_daily.ps1 -SkipEtfFund   # 只跑 CNE 流水线
+  跳过 ETF/基金/指数刷新（refresh_data.py）。
 #>
 [CmdletBinding()]
 param(
     [string]$TradeDate = "",
+    [switch]$NoGui,
     [switch]$NoStaleRetry,
     [switch]$NoBackup,
     [switch]$Quiet,
@@ -60,6 +54,7 @@ $LogDir     = Join-Path $CneRoot "data\cnequity\logs"
 $BackupDir  = Join-Path $CneRoot "data\cnequity\backups"
 $Py         = Join-Path $RepoRoot ".venv\Scripts\python.exe"
 $RefreshData= Join-Path $RepoRoot "scripts\refresh_data.py"
+$GuiModule  = Join-Path $PSScriptRoot "CneDailyGui.psm1"
 
 # 额外日志（终端已有实时输出，此文件做留底）
 $Stamp   = Get-Date -Format "yyyyMMdd"
@@ -72,253 +67,376 @@ $null = New-Item -ItemType Directory -Force -Path $BackupDir
 $env:PYTHONIOENCODING = "utf-8"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
+# ── Win32 控制台隐藏支持 ───────────────────────────────────────────────
+try {
+    Add-Type -Name WinUtil -Namespace Cne -MemberDefinition @"
+[System.Runtime.InteropServices.DllImport("Kernel32.dll")]
+public static extern IntPtr GetConsoleWindow();
+
+[System.Runtime.InteropServices.DllImport("user32.dll")]
+public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+"@ -ErrorAction SilentlyContinue
+} catch {}
+
 # ── 配置 ──────────────────────────────────────────────────────────────
-# wave 依赖顺序（core 先跑提供 instruments，后续 wave 依赖它）。
-# 仅列本 config（cnequity.quant_dataset.toml）实际注册的 schedule group：
-# events/finalize 不在其中，跑 --group events/finalize 只会得到
-# "Unknown group"，让 gate 每天误报失败并跳过流水线内 stale 补抓。
 $WaveList      = @("core", "fundamentals", "capital", "macro_risk", "signals", "research")
 $GateWaves     = @("core")
-$SoftFailOk    = $true   # gate OK 时 soft wave 失败只告警
+$SoftFailOk    = $true
 $StaleRetry    = -not $NoStaleRetry
-$StaleDelaySec = 1800    # stale 补抓前等待秒数
+$StaleDelaySec = 1800
 
-# ── 工具函数 ──────────────────────────────────────────────────────────
-function Write-Log([string]$Msg) {
-    $ts = Get-Date -Format "HH:mm:ss"
-    $line = "[$ts] $Msg"
-    Write-Host $line
-    # 用 .NET File.AppendAllText 原子写入，避免 Out-File -Append 文件锁竞争
-    [System.IO.File]::AppendAllText($LogFile, "$line`n", [System.Text.Encoding]::UTF8)
-}
+# ── 判断是否启用 GUI 模式 ─────────────────────────────────────────────
+$UseGui = (-not $NoGui) -and [System.Environment]::UserInteractive -and (Test-Path $GuiModule)
 
-function Invoke-Cne([string[]]$CmdArgs) {
-    if ($Quiet -and ($CmdArgs -contains "run" -and $CmdArgs -contains "daily")) {
-        $CmdArgs = @($CmdArgs) + "--quiet"
-    }
-    & $Cne @CmdArgs --config $Config
-    return $LASTEXITCODE
-}
+# ── 核心工作函数（可被前台或后台线程调用）─────────────────────────────
+function Execute-CnePipeline {
+    param(
+        [hashtable]$SyncContext = $null,
+        [string]$TradeDate = "",
+        [bool]$NoStaleRetry = $false,
+        [bool]$NoBackup = $false,
+        [bool]$Quiet = $false,
+        [bool]$SkipClean = $false,
+        [bool]$SkipEtfFund = $false
+    )
 
-function Invoke-CneWithLog([string[]]$CmdArgs) {
-    # 前台实时输出 + 写日志
-    if ($Quiet -and ($CmdArgs -contains "run" -and $CmdArgs -contains "daily")) {
-        $CmdArgs = @($CmdArgs) + "--quiet"
-    }
-    $fullArgs = @($CmdArgs) + "--config", $Config
+    $StaleRetry = -not $NoStaleRetry
+    $delaySec = if ($env:CNE_STALE_DELAY_SEC) { [int]$env:CNE_STALE_DELAY_SEC } else { $StaleDelaySec }
 
-    $lines = [System.Collections.Generic.List[string]]::new()
-    & $Cne @fullArgs 2>&1 | ForEach-Object {
-        $line = $_.ToString()
+    function Write-PipelineLog([string]$Msg) {
+        $ts = Get-Date -Format "HH:mm:ss"
+        $line = "[$ts] $Msg"
         Write-Host $line
-        $lines.Add($line)
+        try { [System.IO.File]::AppendAllText($LogFile, "$line`n", [System.Text.Encoding]::UTF8) } catch {}
     }
-    if ($lines.Count -gt 0) {
-        $text = ($lines -join "`n") + "`n"
-        [System.IO.File]::AppendAllText($LogFile, $text, [System.Text.Encoding]::UTF8)
-    }
-    return $LASTEXITCODE
-}
 
-function Invoke-PyWithLog([string[]]$CmdArgs, [string]$JobName) {
-    # 前台输出 + 写日志（统一收集后写入，避免文件锁竞争）
-    Write-Log "$JobName start"
-    $fullArgs = @($CmdArgs)
-    $lines = [System.Collections.Generic.List[string]]::new()
-    & $Py @fullArgs 2>&1 | ForEach-Object {
-        $line = $_.ToString()
-        Write-Host $line
-        $lines.Add($line)
+    function Notify-Step([string]$stepText) {
+        if ($SyncContext) {
+            $SyncContext.CurrentStep = $stepText
+        }
     }
-    if ($lines.Count -gt 0) {
-        $text = ($lines -join "`n") + "`n"
-        [System.IO.File]::AppendAllText($LogFile, $text, [System.Text.Encoding]::UTF8)
+
+    function Notify-Phase([string]$phaseName, [int]$idx, [int]$total, [double]$pct) {
+        if ($SyncContext) {
+            $SyncContext.PhaseName  = $phaseName
+            $SyncContext.PhaseIndex = $idx
+            $SyncContext.PhaseTotal = $total
+            $SyncContext.ProgressPct= $pct
+            $SyncContext.PhaseChanged = $true
+        }
     }
-    $exitCode = $LASTEXITCODE
-    if ($exitCode -eq 0) {
-        Write-Log "$JobName OK"
-    } else {
-        Write-Log "$JobName FAILED (exit=$exitCode)"
+
+    function Record-Result([string]$dataset, [string]$status, [int]$rows, [string]$elapsed, [string]$note) {
+        if ($SyncContext -and $SyncContext.NewResults) {
+            $SyncContext.NewResults.Enqueue([pscustomobject]@{
+                Dataset = $dataset
+                Status  = $status
+                Rows    = $rows
+                Elapsed = $elapsed
+                Note    = $note
+            })
+        }
     }
-    return $exitCode
-}
 
-function Invoke-EtfFund {
-    # 刷新 ETF/基金/指数面板（refresh_data.py：ETF/基金 akshare + 腾讯行情）
-    # --skip-stock-panel:        跳过腾讯股票日线抓取（股票行情由 CNE tushare_wide 承担）
-    # --no-sync-pg:              不同步 Tushare 日线到 pg_parquet（避免与 CNE daily 重复）
-    # --no-rebuild-panel:        不重建股票 panel.parquet（股票 panel 由 CNE daily_bars 提供）
-    # 这样 refresh_data 只负责 ETF/基金/指数，股票相关完全交给 CNE 流水线。
-    $cmdArgs = @($RefreshData, "--skip-stock-panel", "--no-sync-pg", "--no-rebuild-panel")
-    return Invoke-PyWithLog $cmdArgs "quant_ui:refresh_data"
-}
+    function Run-CneCommand([string[]]$CmdArgs) {
+        if ($Quiet -and ($CmdArgs -contains "run" -and $CmdArgs -contains "daily")) {
+            $CmdArgs = @($CmdArgs) + "--quiet"
+        }
+        $fullArgs = @($CmdArgs) + "--config", $Config
 
-function Backup-Meta {
-    if ($NoBackup) { return }
-    # Real meta lives under the lake root (configs resolve [data].root to
-    # CNEquity\data\quant_dataset\_cnequity); the old path here never existed,
-    # so every backup silently no-opped.
-    $metaDir = Join-Path $CneRoot "data\quant_dataset\_cnequity\meta"
-    if (-not (Test-Path $metaDir)) {
-        Write-Log "backup: meta dir not found: $metaDir"
-        return
+        $lines = [System.Collections.Generic.List[string]]::new()
+        & $Cne @fullArgs 2>&1 | ForEach-Object {
+            $line = $_.ToString()
+            Write-Host $line
+            $lines.Add($line)
+
+            # 解析实时 step 进度与结果
+            Notify-Step $line
+
+            if ($line -match "Step\s+(\w+)\s+success\s+in\s+([\d\.]+)s\s+\((\d+)\s+rows\)") {
+                Record-Result $matches[1] "success" ([int]$matches[3]) "$($matches[2])s" "更新成功"
+            } elseif ($line -match "Step\s+(\w+)\s+warning\s+in\s+([\d\.]+)s\s+\((\d+)\s+rows\)") {
+                Record-Result $matches[1] "warning" ([int]$matches[3]) "$($matches[2])s" "有警告输出"
+            } elseif ($line -match "Step\s+(\w+)\s+failed\s+after\s+([\d\.]+)s") {
+                Record-Result $matches[1] "failed" 0 "$($matches[2])s" "执行失败"
+            } elseif ($line -match "(\w+):\s+cadence\s+skip") {
+                Record-Result $matches[1] "skip" 0 "<1s" "同周期无变动自动跳过"
+            } elseif ($line -match "(\w+):\s+fell\s+back\s+to\s+(\w+)\s+\((\d+)\s+rows\)") {
+                Record-Result $matches[1] "success" ([int]$matches[3]) "--" "降级至 $($matches[2])"
+            }
+        }
+        if ($lines.Count -gt 0) {
+            $text = ($lines -join "`n") + "`n"
+            try { [System.IO.File]::AppendAllText($LogFile, $text, [System.Text.Encoding]::UTF8) } catch {}
+        }
+        return $LASTEXITCODE
     }
-    $ts = Get-Date -Format "yyyyMMdd-HHmmss"
-    $archive = Join-Path $BackupDir "meta-$ts.zip"
 
-    # 用 sqlite3 备份 manifest.db（避免撕裂），没有就用 Copy-Item
-    $manifest = Join-Path $metaDir "manifest.db"
-    $tempDir  = Join-Path $env:TEMP "cne_backup_$ts"
-    $null = New-Item -ItemType Directory -Force -Path $tempDir
-
-    if (Test-Path $manifest) {
-        $sqliteExe = Get-Command sqlite3 -ErrorAction SilentlyContinue
-        if ($sqliteExe) {
-            & sqlite3 $manifest ".backup '$(Join-Path $tempDir 'manifest.db')'"
+    function Run-PyCommand([string[]]$CmdArgs, [string]$JobName) {
+        Write-PipelineLog "$JobName start"
+        Notify-Step "正在执行: $JobName"
+        $lines = [System.Collections.Generic.List[string]]::new()
+        & $Py @CmdArgs 2>&1 | ForEach-Object {
+            $line = $_.ToString()
+            Write-Host $line
+            $lines.Add($line)
+            Notify-Step $line
+        }
+        if ($lines.Count -gt 0) {
+            $text = ($lines -join "`n") + "`n"
+            try { [System.IO.File]::AppendAllText($LogFile, $text, [System.Text.Encoding]::UTF8) } catch {}
+        }
+        $exitCode = $LASTEXITCODE
+        if ($exitCode -eq 0) {
+            Write-PipelineLog "$JobName OK"
+            Record-Result $JobName "success" 0 "--" "更新成功"
         } else {
-            Copy-Item $manifest (Join-Path $tempDir "manifest.db")
+            Write-PipelineLog "$JobName FAILED (exit=$exitCode)"
+            Record-Result $JobName "failed" 0 "--" "执行失败"
         }
-    }
-    foreach ($sub in @("state", "quality")) {
-        $src = Join-Path $metaDir $sub
-        if (Test-Path $src) {
-            Copy-Item $src $tempDir -Recurse
-        }
+        return $exitCode
     }
 
-    # 压缩
-    Compress-Archive -Path (Join-Path $tempDir "*") -DestinationPath $archive -Force
-    Remove-Item $tempDir -Recurse -Force
+    # ── 开始执行流程 ──────────────────────────────────────────────────
+    $dateArg = @()
+    if ($TradeDate) { $dateArg = @("--trade-date", $TradeDate) }
+    $dispDate = if ($TradeDate) { $TradeDate } else { "今日 (Today)" }
 
-    # 清理 14 天前的备份
-    $cutoff = (Get-Date).AddDays(-14)
-    Get-ChildItem $BackupDir -Filter "meta-*.zip" |
-        Where-Object { $_.LastWriteTime -lt $cutoff } |
-        Remove-Item -Force
+    Write-PipelineLog "==== CNE daily pipeline start $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') trade_date=$dispDate ===="
 
-    $size = [math]::Round((Get-Item $archive).Length / 1KB, 1)
-    Write-Log "backup: wrote $archive (${size}KB; retention 14d)"
-}
+    # 阶段 0: 环境准备与清理
+    Notify-Phase "环境准备与状态清理" 1 8 5.0
+    Write-PipelineLog "--- reconcile stale runs ---"
+    $null = Run-CneCommand @("clean", "--reconcile-runs", "--dry-run")
 
-# ── 主流程 ────────────────────────────────────────────────────────────
-$dateArg = @()
-if ($TradeDate) { $dateArg = @("--trade-date", $TradeDate) }
+    $failedGates  = @()
+    $failedSoft   = @()
+    $summary      = [System.Collections.Generic.List[pscustomobject]]::new()
 
-Write-Log "==== CNE daily pipeline start $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') trade_date=$($TradeDateOrDefault ?? 'today') ===="
+    # 阶段 1..6: 依次执行 WaveList
+    $waveNamesCn = @{
+        "core"         = "Core (核心行情与基础参考)"
+        "fundamentals" = "Fundamentals (财务基本面与披露)"
+        "capital"      = "Capital (资金流与估值)"
+        "macro_risk"   = "Macro & Risk (宏观与风险)"
+        "signals"      = "Signals (事件披露与信号)"
+        "research"     = "Research (舆情分析与研究)"
+    }
 
-# 先 reconcile：清理上次崩溃残留的 running 状态
-Write-Log "--- reconcile stale runs ---"
-$null = Invoke-CneWithLog @("clean", "--reconcile-runs", "--dry-run")
+    $waveIdx = 0
+    foreach ($wave in $WaveList) {
+        $waveIdx++
+        $cnTitle = if ($waveNamesCn[$wave]) { $waveNamesCn[$wave] } else { $wave }
+        $pct = 10.0 + ($waveIdx / $WaveList.Count) * 60.0
+        Notify-Phase $cnTitle ($waveIdx + 1) 8 $pct
+        Write-PipelineLog "--- wave: $wave ($cnTitle) ---"
 
-# ── 1. 按 wave 顺序执行 ──────────────────────────────────────────────
-$failedGates  = @()
-$failedSoft   = @()
-$summary      = [System.Collections.Generic.List[pscustomobject]]::new()
+        $exitCode = Run-CneCommand (@("run", "daily", "--group", $wave) + $dateArg)
 
-foreach ($wave in $WaveList) {
-    Write-Log "--- wave: $wave ---"
-
-    $exitCode = Invoke-CneWithLog (@("run", "daily", "--group", $wave) + $dateArg)
-
-    $isGate = $GateWaves -contains $wave
-    if ($exitCode -eq 0) {
-        Write-Log "wave $wave OK"
-        $summary.Add([pscustomobject]@{ Wave = $wave; Status = "OK"; Kind = $(if ($isGate) { "gate" } else { "soft" }) })
-    } else {
-        Write-Log "wave $wave FAILED (exit=$exitCode, see $LogFile)"
-        $summary.Add([pscustomobject]@{ Wave = $wave; Status = "FAILED"; Kind = $(if ($isGate) { "gate" } else { "soft" }) })
-        if ($isGate) {
-            $failedGates += $wave
+        $isGate = $GateWaves -contains $wave
+        if ($exitCode -eq 0) {
+            Write-PipelineLog "wave $wave OK"
+            $summary.Add([pscustomobject]@{ Wave = $wave; Status = "OK"; Kind = $(if ($isGate) { "gate" } else { "soft" }) })
         } else {
-            $failedSoft += $wave
+            Write-PipelineLog "wave $wave FAILED (exit=$exitCode, see $LogFile)"
+            $summary.Add([pscustomobject]@{ Wave = $wave; Status = "FAILED"; Kind = $(if ($isGate) { "gate" } else { "soft" }) })
+            if ($isGate) {
+                $failedGates += $wave
+            } else {
+                $failedSoft += $wave
+            }
         }
     }
-}
 
-# ── 2. ETF/基金/指数刷新 ─────────────────────────────────────────────
-# 排在 stale probe 之前：stale 等待加重试动辄半小时以上，而该时段（~17:00 前后）
-# 曾连续两天被系统睡眠打断，整个尾部（含本阶段）随之丢失。面板数据是下游最
-# 关心的产出，先落袋；stale 重试只影响 CNE 湖内的补漏，排在后面更安全。
-$etfStatus = "skipped"
-if (-not $SkipEtfFund) {
-    Write-Log "--- ETF/基金/指数刷新 ---"
-    $etfExit = Invoke-EtfFund
-    if ($etfExit -eq 0) {
-        $etfStatus = "OK"
-    } else {
-        $etfStatus = "FAILED"
-        $failedSoft += "etf-fund"
-    }
-}
-
-# ── 3. stale 补抓 ────────────────────────────────────────────────────
-$staleStatus = "skipped"
-if ($StaleRetry -and $failedGates.Count -eq 0) {
-    Write-Log "--- stale probe ---"
-    $staleExit = Invoke-Cne @("status", "--datasets")
-
-    if ($staleExit -eq 0) {
-        Write-Log "nothing stale — no retry needed"
-        $staleStatus = "not needed"
-    } else {
-        Write-Log "something is stale; waiting ${StaleDelaySec}s before re-fetching"
-        Start-Sleep -Seconds $StaleDelaySec
-        Write-Log "--- stale retry ---"
-        $retryExit = Invoke-CneWithLog (@("run", "daily", "--stale-only") + $dateArg)
-        if ($retryExit -eq 0) {
-            Write-Log "stale retry OK"
-            $staleStatus = "OK"
+    # 阶段 7: ETF/基金/指数面板刷新
+    $etfStatus = "skipped"
+    Notify-Phase "ETF/基金/指数面板刷新" 7 8 75.0
+    if (-not $SkipEtfFund) {
+        Write-PipelineLog "--- ETF/基金/指数刷新 ---"
+        $cmdArgs = @($RefreshData, "--skip-stock-panel", "--no-sync-pg", "--no-rebuild-panel")
+        $etfExit = Run-PyCommand $cmdArgs "etf_fund_refresh"
+        if ($etfExit -eq 0) {
+            $etfStatus = "OK"
         } else {
-            Write-Log "stale retry FAILED (see $LogFile)"
-            $staleStatus = "FAILED"
-            $failedSoft += "stale-retry"
+            $etfStatus = "FAILED"
+            $failedSoft += "etf-fund"
         }
     }
-}
 
-# ── 3. health check ──────────────────────────────────────────────────
-Write-Log "--- health check ---"
-$auditExit = Invoke-CneWithLog @("audit", "--full")
-# status --datasets 退出码 1 表示有 STALE，不一定是硬错误
-$statusExit = Invoke-CneWithLog @("status", "--datasets")
-if ($auditExit -ne 0) {
-    Write-Log "health check: audit reported problems (exit=$auditExit)"
-}
-
-# ── 4. meta 备份 ─────────────────────────────────────────────────────
-Write-Log "--- backup ---"
-Backup-Meta
-
-# ── 5. staging 清理 ──────────────────────────────────────────────────
-if (-not $SkipClean) {
-    Write-Log "--- clean staging ---"
-    $cleanExit = Invoke-CneWithLog @("clean")
-    if ($cleanExit -ne 0) {
-        Write-Log "staging cleanup FAILED (non-fatal)"
+    # 阶段 8: stale 补抓与总结审计
+    Notify-Phase "滞后补抓与健康检查" 8 8 90.0
+    $staleStatus = "skipped"
+    if ($StaleRetry -and $failedGates.Count -eq 0) {
+        Write-PipelineLog "--- stale probe ---"
+        $staleExit = Run-CneCommand @("status", "--datasets")
+        if ($staleExit -eq 0) {
+            Write-PipelineLog "nothing stale — no retry needed"
+            $staleStatus = "not needed"
+            Record-Result "stale_retry" "skip" 0 "--" "全量对齐，无需补抓"
+        } else {
+            # 只有在非交互环境或未指定立即跳过时才等待大延时，避免阻塞界面
+            Write-PipelineLog "something is stale; waiting ${delaySec}s before re-fetching"
+            Notify-Step "部分数据滞后，等待重试补抓 (${delaySec}s)..."
+            if ($delaySec -gt 0) {
+                # 细分 sleep 期间更新倒计时提示
+                $rem = $delaySec
+                while ($rem -gt 0) {
+                    Notify-Step "部分数据滞后，等待重试补抓 (${rem}s)..."
+                    $sleepStep = [math]::Min(5, $rem)
+                    Start-Sleep -Seconds $sleepStep
+                    $rem -= $sleepStep
+                }
+            }
+            $retryExit = Run-CneCommand (@("run", "daily", "--stale-only") + $dateArg)
+            if ($retryExit -eq 0) {
+                Write-PipelineLog "stale retry OK"
+                $staleStatus = "OK"
+                Record-Result "stale_retry" "success" 0 "--" "补抓完成"
+            } else {
+                Write-PipelineLog "stale retry FAILED (see $LogFile)"
+                $staleStatus = "FAILED"
+                $failedSoft += "stale-retry"
+                Record-Result "stale_retry" "failed" 0 "--" "部分补抓失败"
+            }
+        }
     }
-}
 
-# ── 汇总 ─────────────────────────────────────────────────────────────
-Write-Log "---- wave summary (gate=$($GateWaves -join ',')) ----"
-foreach ($s in $summary) {
-    Write-Log ("  {0}: {1}  [{2}]" -f $s.Wave, $s.Status, $s.Kind)
-}
-Write-Log "  stale-retry: $staleStatus"
-Write-Log "  etf-fund-refresh: $etfStatus"
-
-if ($failedGates.Count -gt 0) {
-    $softStr = if ($failedSoft.Count -gt 0) { $failedSoft -join ", " } else { "none" }
-    Write-Log "==== daily pipeline DONE — GATE FAILED: $($failedGates -join ', ') (soft also: $softStr) ===="
-    exit 1
-}
-if ($failedSoft.Count -gt 0) {
-    if ($SoftFailOk) {
-        Write-Log "==== daily pipeline DONE — gate OK, soft FAILED (warn-only): $($failedSoft -join ', ') ===="
-        exit 0
+    # Meta 备份与清理
+    Write-PipelineLog "--- backup & clean ---"
+    Notify-Step "正在执行元数据备份与清理..."
+    if (-not $NoBackup) {
+        try {
+            $metaDir = Join-Path $CneRoot "data\quant_dataset\_cnequity\meta"
+            if (Test-Path $metaDir) {
+                $ts = Get-Date -Format "yyyyMMdd-HHmmss"
+                $archive = Join-Path $BackupDir "meta-$ts.zip"
+                $tempDir  = Join-Path $env:TEMP "cne_backup_$ts"
+                $null = New-Item -ItemType Directory -Force -Path $tempDir
+                foreach ($sub in @("state", "quality")) {
+                    $src = Join-Path $metaDir $sub
+                    if (Test-Path $src) { Copy-Item $src $tempDir -Recurse }
+                }
+                Compress-Archive -Path (Join-Path $tempDir "*") -DestinationPath $archive -Force
+                Remove-Item $tempDir -Recurse -Force
+                Record-Result "meta_backup" "success" 0 "--" "备份完成: $(Split-Path $archive -Leaf)"
+            }
+        } catch {}
     }
-    Write-Log "==== daily pipeline DONE — gate OK, soft FAILED: $($failedSoft -join ', ') ===="
-    exit 1
+
+    if (-not $SkipClean) {
+        $null = Run-CneCommand @("clean")
+    }
+
+    # ── 汇总评估 ──────────────────────────────────────────────────────────
+    Notify-Phase "流水线更新完成" 8 8 100.0
+    $isAllSuccess = ($failedGates.Count -eq 0 -and $failedSoft.Count -eq 0)
+    $doneMessage = ""
+
+    if ($failedGates.Count -gt 0) {
+        $doneMessage = "核心门禁失败: $($failedGates -join ', ')"
+        Write-PipelineLog "==== daily pipeline DONE — GATE FAILED: $($failedGates -join ', ') ===="
+    } elseif ($failedSoft.Count -gt 0) {
+        $doneMessage = "部分波次警告: $($failedSoft -join ', ')"
+        Write-PipelineLog "==== daily pipeline DONE — soft FAILED (warn-only): $($failedSoft -join ', ') ===="
+    } else {
+        $doneMessage = "全部数据集与波次同步成功！"
+        Write-PipelineLog "==== daily pipeline DONE ok ===="
+    }
+
+    if ($SyncContext) {
+        $SyncContext.IsSuccess   = $isAllSuccess
+        $SyncContext.Message     = $doneMessage
+        $SyncContext.IsCompleted = $true
+    }
+
+    return $(if ($failedGates.Count -gt 0) { 1 } else { 0 })
 }
 
-Write-Log "==== daily pipeline DONE ok ===="
-exit 0
+# ── 执行分支：GUI 桌面浮窗模式 vs CLI 纯命令行模式 ───────────────────────
+if ($UseGui) {
+    # 隐藏控制台黑框窗口
+    try {
+        $consolePtr = [Cne.WinUtil]::GetConsoleWindow()
+        if ($consolePtr -and $consolePtr -ne [IntPtr]::Zero) {
+            [void][Cne.WinUtil]::ShowWindow($consolePtr, 0) # 0 = SW_HIDE
+        }
+    } catch {}
+
+    # 加载 WPF GUI 模块
+    Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
+    Import-Module $GuiModule -Force
+
+    $effectiveDate = if ($TradeDate) { $TradeDate } else { (Get-Date -Format "yyyy-MM-dd") }
+    $app = New-CneDailyGuiApp -TradeDate $effectiveDate -LogPath $LogFile
+
+    # 线程安全同步上下文
+    $sync = [hashtable]::Synchronized(@{
+        CurrentStep   = "正在启动流水线..."
+        PhaseName     = "环境准备与状态清理"
+        PhaseIndex    = 1
+        PhaseTotal    = 8
+        ProgressPct   = 0.0
+        PhaseChanged  = $false
+        NewResults    = [System.Collections.Concurrent.ConcurrentQueue[psobject]]::new()
+        IsCompleted   = $false
+        IsSuccess     = $false
+        Message       = ""
+    })
+
+    # 启动后台工作线程跑流水线
+    $workerJob = Start-ThreadJob -ScriptBlock {
+        param($s, $td, $nsr, $nb, $q, $sc, $sef)
+        # 在线程内绑定执行函数并传入实参
+        $exitCode = Execute-CnePipeline -SyncContext $s -TradeDate $td -NoStaleRetry ([bool]$nsr) -NoBackup ([bool]$nb) -Quiet ([bool]$q) -SkipClean ([bool]$sc) -SkipEtfFund ([bool]$sef)
+        return $exitCode
+    } -ArgumentList $sync, $TradeDate, [bool]$NoStaleRetry, [bool]$NoBackup, [bool]$Quiet, [bool]$SkipClean, [bool]$SkipEtfFund
+
+    # 前台 Dispatcher 轮询定时器
+    $summaryShown = $false
+    $pollTimer = [System.Windows.Threading.DispatcherTimer]::new()
+    $pollTimer.Interval = [TimeSpan]::FromMilliseconds(60)
+
+    $pollTimer.add_Tick({
+        # 1. 刷新阶段与进度条
+        if ($sync.PhaseChanged) {
+            $app.UpdatePhase($sync.PhaseName, $sync.PhaseIndex, $sync.PhaseTotal, $sync.ProgressPct)
+            $sync.PhaseChanged = $false
+        }
+
+        # 2. 刷新当前操作文本
+        if ($sync.CurrentStep) {
+            $app.UpdateStep($sync.CurrentStep)
+        }
+
+        # 3. 消费新增的结果队列
+        $resItem = $null
+        while ($sync.NewResults.TryDequeue([ref]$resItem)) {
+            $app.RecordStepResult($resItem.Dataset, $resItem.Status, $resItem.Rows, $resItem.Elapsed, $resItem.Note)
+        }
+
+        # 4. 任务完成展示对账单
+        if ($sync.IsCompleted -and -not $summaryShown) {
+            $summaryShown = $true
+            $app.ShowCompletionSummary($sync.IsSuccess, $sync.Message)
+            $pollTimer.Stop()
+        }
+    })
+
+    $pollTimer.Start()
+
+    # 阻塞前台主线程展示优雅的 WPF 浮窗，直到用户点击“确定关闭”
+    [void]$app.Window.ShowDialog()
+
+    # 清理后台作业
+    try {
+        Wait-Job $workerJob -Timeout 2 | Out-Null
+        Receive-Job $workerJob | Out-Null
+        Remove-Job $workerJob -Force
+    } catch {}
+
+    exit 0
+} else {
+    # 纯命令行控制台模式（CLI）
+    $exit = Execute-CnePipeline
+    exit $exit
+}
