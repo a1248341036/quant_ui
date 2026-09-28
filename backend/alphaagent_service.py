@@ -670,8 +670,12 @@ def _build_run_command(params: dict[str, Any], log_dir: Path, control_file: Path
     if not wants_fundamentals and not params.get("no_fundamentals"):
         if os.environ.get("ALPHA_FUNDAMENTALS_AUTO", "1") != "0" and _question_bank_needs_fundamentals():
             wants_fundamentals = True
+            params["fundamentals_auto"] = True
             logger.info("基本面列自动载入：研报课题库含基本面组课题（ALPHA_FUNDAMENTALS_AUTO=0 可关）")
-    if not wants_fundamentals or params.get("no_fundamentals"):
+    loaded = bool(wants_fundamentals) and not params.get("no_fundamentals")
+    # 落进 run_meta.json（save_meta 写 self.params）→ API/UI 可查这次为什么吃内存
+    params["fundamentals_loaded"] = loaded
+    if not loaded:
         command.append("--no-fundamentals")
     return command, params
 

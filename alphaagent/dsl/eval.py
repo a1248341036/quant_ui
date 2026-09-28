@@ -246,11 +246,17 @@ def _build_eval_error(
 _FIELD_ALIASES = {"turnover": "turnover_rate"}
 
 
+# 字符串字面量（含捕获组，re.split 后奇数段即字面量）
+_STRING_LITERAL_RE = re.compile(r"('[^'\n]*'|\"[^\"\n]*\")")
+
+
 def _apply_field_aliases(expr: str) -> str:
-    """把 `$别名` 改写为真实列名；不触碰 `$turnover_rate` / `$turnover_rate_f`。"""
-    for alias, real in _FIELD_ALIASES.items():
-        expr = re.sub(rf"\${alias}(?![A-Za-z0-9_@])", f"${real}", expr)
-    return expr
+    """把 `$别名` 改写为真实列名（**跳过字符串字面量**）；不触碰 `$turnover_rate`/`_f`。"""
+    parts = _STRING_LITERAL_RE.split(expr)
+    for i in range(0, len(parts), 2):
+        for alias, real in _FIELD_ALIASES.items():
+            parts[i] = re.sub(rf"\${alias}(?![A-Za-z0-9_@])", f"${real}", parts[i])
+    return "".join(parts)
 
 
 def compile_multi_line_factor(
