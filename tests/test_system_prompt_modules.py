@@ -77,9 +77,23 @@ _CASES = {
 }
 
 
-@pytest.mark.parametrize("name", sorted(_CASES))
+# 黄金基线只冻结「静态 prompt」：显式关掉实时研报知识通道
+# （report_rag 渲染时会实时调 OpenViking，检索结果随 OV 状态/语料变化 →
+#  基线会变成 OV 快照，OV 起来/内容更新就假失败。RAG/R1/R2 的注入正确性由下面
+#  各自的 live 测试断言，不再混进逐字节基线。）
+_GOLDEN_OFF_SPEC = {"report_policy": {"knowledge_mode": "off"}}
+_GOLDEN_CASES = {
+    name: {
+        **kw,
+        "research_spec": {**(kw.get("research_spec") or {}), "report_policy": {"knowledge_mode": "off"}},
+    }
+    for name, kw in _CASES.items()
+}
+
+
+@pytest.mark.parametrize("name", sorted(_GOLDEN_CASES))
 def test_system_prompt_matches_golden(name):
-    text = build_system_prompt(**_CASES[name])
+    text = build_system_prompt(**_GOLDEN_CASES[name])
     golden = (FIXTURES / f"system_prompt_{name}.txt").read_text(encoding="utf-8")
     assert text == golden
 
