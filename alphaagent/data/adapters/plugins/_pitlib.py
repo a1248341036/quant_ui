@@ -127,6 +127,27 @@ def read_curated(
     return pl.concat([pl.read_parquet(f) for f in files], how="vertical")
 
 
+def read_curated_pit(
+    dataset: str,
+    *,
+    start: str | None = None,
+    end: str | None = None,
+    lookback_days: int = PIT_LOOKBACK_DAYS,
+) -> pl.DataFrame:
+    """读取 PIT 类数据集：起点回退 ``lookback_days``，保住窗口前的最近状态。
+
+    ``read_curated`` 按 ``xxx_date=YYYY-MM-DD`` 分区裁剪时会把**窗口起点之前**的最后
+    一份快照/事件一起裁掉，而 PIT 类插件正需要它当初始状态——否则窗口头部若干天缺值
+    （行业/财报/指数）或滚动计数系统性少计（公告 5d/20d）。展开/计数仍在用户窗口内完成
+    （``expand_pit_daily`` 按 start/end 产出并按首事件裁行）。
+    """
+    if not start and not end:
+        return read_curated(dataset)
+    s, _ = parse_window(start, end)
+    lo = s - datetime.timedelta(days=max(0, int(lookback_days)))
+    return read_curated(dataset, start=lo.isoformat(), end=end)
+
+
 def weekdays_between(s: datetime.date, e: datetime.date) -> list[datetime.date]:
     days: list[datetime.date] = []
     d = s

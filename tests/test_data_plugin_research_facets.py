@@ -86,3 +86,40 @@ def test_financial_items_pit_anchor_is_announce_date(tmp_path, monkeypatch):
     assert out["trade_date"].min() == pd.Timestamp("2024-01-15")
     assert out["fsi_net_profit"].iloc[0] == pytest.approx(39_635_000_000.0)
     assert out["fsi_days_since"].iloc[0] == 0
+
+
+def test_industry_uses_pre_window_snapshot(tmp_path, monkeypatch):
+    """R1 回归：窗口起点之前的最近快照必须当初始状态，否则窗口头部缺行业值。"""
+    _write(tmp_path, "industry_members", "as_of_date=2023-12-29", pl.DataFrame({
+        "symbol": ["000001.SZ"], "classification_system": ["sw"], "industry_code": ["480301"],
+        "industry_name": ["480301"], "as_of_date": [dt.date(2023, 12, 29)],
+    }))
+    _write(tmp_path, "industry_members", "as_of_date=2024-01-31", pl.DataFrame({
+        "symbol": ["000001.SZ"], "classification_system": ["sw"], "industry_code": ["630802"],
+        "industry_name": ["630802"], "as_of_date": [dt.date(2024, 1, 31)],
+    }))
+    monkeypatch.setattr(_pitlib, "_curated_root", lambda: tmp_path)
+
+    out = industry.load("industry_members", start="2024-01-02", end="2024-01-31")
+
+    assert out["trade_date"].min() == pd.Timestamp("2024-01-02")          # 用 2023-12-29 快照播种
+    assert (out[out["trade_date"] < "2024-01-31"]["industry_sw_l1"] == 48.0).all()
+    assert (out[out["trade_date"] == "2024-01-31"]["industry_sw_l1"] == 63.0).all()  # 新快照生效
+
+
+def test_announcement_counts_include_pre_window_events(tmp_path, monkeypatch):
+    """R1 回归：窗口起点之前的公告要计入窗口首日的 5d/20d 与 ann_days_since。"""
+    _write(tmp_path, "announcement_index", "announce_date=2023-12-28", pl.DataFrame({
+        "symbol": ["000001.SZ"], "announce_date": [dt.date(2023, 12, 28)],
+        "title": ["关于股东减持股份的公告"], "category": ["股东/实际控制人股份减持"],
+    }))
+    monkeypatch.setattr(_pitlib, "_curated_root", lambda: tmp_path)
+
+    out = announcement.load("announcement_index", start="2024-01-02", end="2024-01-12").set_index("trade_date")
+
+    d0 = out.loc["2024-01-02"]
+    assert d0["ann_cnt_5d"] == 1 and d0["ann_cnt_20d"] == 1
+    assert d0["ann_flag_reduce"] == 1
+    assert d0["ann_days_since"] == 5          # 2023-12-28 → 2024-01-02
+    # 回看段本身不输出
+    assert out.index.min() == pd.Timestamp("2024-01-02")

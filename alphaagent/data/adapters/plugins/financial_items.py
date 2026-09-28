@@ -69,7 +69,7 @@ def load(
     **kwargs: Any,
 ) -> Any:
     """长表 → 按公告日 PIT 展开的日频宽列。"""
-    raw = _pitlib.read_curated("financial_statement_items", start=start, end=end)
+    raw = _pitlib.read_curated_pit("financial_statement_items", start=start, end=end)
     needed = {"symbol", "statement_type", "item_code", "item_value", "announce_date"}
     missing = needed - set(raw.columns)
     if missing:

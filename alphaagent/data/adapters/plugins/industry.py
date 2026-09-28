@@ -50,7 +50,7 @@ def load(
     **kwargs: Any,
 ) -> Any:
     """按快照日 PIT 展开申万行业码为日频阶跃。"""
-    raw = _pitlib.read_curated("industry_members", start=start, end=end)
+    raw = _pitlib.read_curated_pit("industry_members", start=start, end=end)
     needed = {"symbol", "classification_system", "industry_code", "as_of_date"}
     missing = needed - set(raw.columns)
     if missing:

@@ -4,7 +4,7 @@
 两个 CNE curated 数据集合并成一组 PIT 面板列：
 
 一致预期（按 ``forecast_date`` PIT，取最近预测年度）：
-- ``ac_eps_fy`` / ``ac_pe_fy``：一致预期 EPS / 对应 PE
+- ``ac_eps_fy`` / ``ac_pe_fy`` / ``ac_target_price``：一致预期 EPS / 对应 PE / 目标价（元）
 - ``ac_rating``：评级分值（buy=2 / overweight=1 / neutral=0，其它 NaN）
 - ``ac_analyst_count``：覆盖分析师家数
 - ``ac_days_since``：距预期更新日的自然日
@@ -33,7 +33,7 @@ from . import _pitlib
 
 logger = logging.getLogger(__name__)
 
-_AC_VALUE_COLS = ["ac_eps_fy", "ac_pe_fy", "ac_rating", "ac_analyst_count"]
+_AC_VALUE_COLS = ["ac_eps_fy", "ac_pe_fy", "ac_target_price", "ac_rating", "ac_analyst_count"]
 _RC_VALUE_COLS = ["rc_eps_y", "rc_pe_y", "rc_roe_y", "rc_tp_wan", "rc_target_price", "rc_rating"]
 _ALL_COLS = [*_AC_VALUE_COLS, "ac_days_since", *_RC_VALUE_COLS, "rc_cnt_90d", "rc_days_since"]
 
@@ -78,6 +78,7 @@ def _ac_events(raw: pl.DataFrame) -> pl.DataFrame:
             pl.col("forecast_date").cast(pl.Date).alias("_pit_date"),
             pl.col("eps_forecast").cast(pl.Float64, strict=False).alias("ac_eps_fy"),
             pl.col("pe_forecast").cast(pl.Float64, strict=False).alias("ac_pe_fy"),
+            pl.col("target_price").cast(pl.Float64, strict=False).alias("ac_target_price"),
             _rating_score("rating", _AC_RATING_SCORE).alias("ac_rating"),
             pl.col("analyst_count").cast(pl.Float64, strict=False).alias("ac_analyst_count"),
         )
@@ -167,7 +168,7 @@ def load(
     frames: list[pl.DataFrame] = []
 
     try:
-        ac_raw = _pitlib.read_curated("analyst_consensus", start=start, end=end)
+        ac_raw = _pitlib.read_curated_pit("analyst_consensus", start=start, end=end)
         ac = _pitlib.expand_pit_daily(
             _ac_events(ac_raw), start=start, end=end, anchor="_pit_date",
             since_col="ac_days_since", value_cols=_AC_VALUE_COLS, out_symbol="symbol",
@@ -177,7 +178,7 @@ def load(
         logger.warning("research_views: analyst_consensus 跳过: %s", exc)
 
     try:
-        rc_raw = _pitlib.read_curated("report_rc", start=start, end=end)
+        rc_raw = _pitlib.read_curated_pit("report_rc", start=start, end=end)
         rc_events = _rc_events(rc_raw)
         s, e = _pitlib.parse_window(start, end)
         rc_events = rc_events.filter(

@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import datetime
 import logging
 from typing import Any
 
@@ -55,6 +56,8 @@ PLUGIN = DataSourcePlugin(
 )
 
 _CNT_WINDOWS = ((5, "ann_cnt_5d"), (20, "ann_cnt_20d"))
+# 滚动窗口是"交易日"，回看 60 自然日足以覆盖 20 个交易日 + 长假
+_LOOKBACK_DAYS = 60
 _FLAG_WINDOW = 20
 
 
@@ -89,20 +92,21 @@ def load(
     **kwargs: Any,
 ) -> Any:
     """公告索引 → 日频公告密度/打标面板列。"""
-    raw = _pitlib.read_curated("announcement_index", start=start, end=end)
+    raw = _pitlib.read_curated_pit("announcement_index", start=start, end=end, lookback_days=_LOOKBACK_DAYS)
     needed = {"symbol", "announce_date", "title", "category"}
     missing = needed - set(raw.columns)
     if missing:
         raise ValueError(f"announcement_index 缺列: {sorted(missing)}")
 
     spec, ee = _pitlib.parse_window(start, end)
+    ext = spec - datetime.timedelta(days=_LOOKBACK_DAYS)
     events = _events(raw).filter(
-        (pl.col("trade_date") >= spec) & (pl.col("trade_date") <= ee)
+        (pl.col("trade_date") >= ext) & (pl.col("trade_date") <= ee)
     )
     if events.is_empty():
         raise ValueError(f"announcement: 窗口 {spec}~{ee} 内无公告")
 
-    days = _pitlib.weekdays_between(spec, ee)
+    days = _pitlib.weekdays_between(ext, ee)
     syms = sorted(set(events["symbol"].to_list()))
     dense = (
         pl.DataFrame({"trade_date": pl.Series(days, dtype=pl.Date)})
@@ -150,6 +154,7 @@ def load(
     )
 
     keep = ["trade_date", "symbol", *[out for _, out in _CNT_WINDOWS], *_FLAG_PATTERNS, "ann_days_since"]
-    pdf = dense.select(keep).to_pandas()
+    # 回看段只用于播种滚动窗口/初始状态，不输出
+    pdf = dense.filter(pl.col("trade_date") >= spec).select(keep).to_pandas()
     logger.info("announcement adapter: %d rows × %d cols (start=%s end=%s)", *pdf.shape, spec, ee)
     return pdf

@@ -502,7 +502,7 @@ T 日盘后披露，两融余额 = 杠杆资金的多空方向/拥挤度；**非
 
 | 字段 | 说明 |
 |------|------|
-| `$ann_cnt_5d` / `$ann_cnt_20d` | 近 5 / 20 自然日公告条数（信息密度） |
+| `$ann_cnt_5d` / `$ann_cnt_20d` | 近 5 / 20 个**交易日**公告条数（信息密度） |
 | `$ann_days_since` | 距最近一条公告的自然日（越小越"有事"） |
 | `$ann_flag_reduce` / `$ann_flag_increase` | 窗口内减持 / 增持类公告（1/0） |
 | `$ann_flag_buyback` / `$ann_flag_pledge` | 回购 / 质押类公告（1/0） |
@@ -526,7 +526,7 @@ T 日盘后披露，两融余额 = 杠杆资金的多空方向/拥挤度；**非
 | `$ac_target_price` / `$ac_analyst_count` | 一致目标价（元）/ 覆盖分析师家数 |
 | `$ac_rating` / `$ac_days_since` | 一致评级分值 / 距预期更新日的自然日 |
 | `$rc_cnt_90d` / `$rc_days_since` | 近 90 日研报条数（拥挤度）/ 距最近一份研报的自然日 |
-| `$rc_eps_y` / `$rc_pe_y` / `$rc_roe_y` | 最近研报给出的 EPS / PE / ROE 预测 |
+| `$rc_eps_y` / `$rc_pe_y` / `$rc_roe_y` / `$rc_tp_wan` | 最近研报给出的 EPS / PE / ROE 预测 / 预测利润总额（万元） |
 | `$rc_rating` / `$rc_target_price` | 最近研报评级分值 / 目标价（元） |
 
 > 研报数据是**低频慢变量**：只与日频价量做门控或残差，不要直接当短周期信号；
