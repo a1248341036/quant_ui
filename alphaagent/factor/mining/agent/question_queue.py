@@ -446,6 +446,10 @@ def render_diverge_task(question: dict, reproduce_factor: str = "", dims=_DIVERG
         "（|IC|≥0.02、|ICIR|≥0.28、coverage≥0.85），同时不抬高日换手（≤0.5）、不与库内已有因子撞车；"
         "若某维度让指标变差，明确放弃并换下一个维度，不要反复调同一维。",
         "- **维度轮换建议**（3 轮内覆盖不同维度）：首轮 `window` 或 `operator`，次轮 `neutralize` 或 `field`，末轮 `gate_shape` 或 `interaction`。",
+        "- **若母本信号偏弱（|IC|<0.015 或 |ICIR|<0.15）**：前两轮若 window/neutralize 无明显改善，"
+        "第三轮直接上结构性杠杆 —— `gate_shape`（硬门→SOFT_GATE/分位分段）或 `interaction`"
+        "（`CS_GROUP_RANK`/`DIVERGENCE_RANK` 等条件式结构），它们对弱信号母本的提升通常远大于微调窗长；"
+        "仍无改善就如实判定该机制在本池无效，不必反复凑维度。",
         "- 硬约束：",
         f"1. 每个提交/评估必须填 `parent_factor={parent}`，并在 `edit_note` 写明改的维度；",
         "2. **一次只改一个维度**：" + "、".join(f"`{d}`" for d in dims) + "；",
