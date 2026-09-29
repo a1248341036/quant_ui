@@ -1,0 +1,113 @@
+# -*- coding: utf-8 -*-
+"""研报模式课题状态机（Phase 2）：复现 → 锁定发散 → done/abandoned。
+
+**只在 report 模式启用**（由 ``report_flow_enabled(spec)`` 判断）；其他模式仍走
+``question_queue.get_question_for_turn`` 的原有逐轮推进逻辑，行为不变。
+
+状态语义：
+
+- ``reproduce_pending``：本轮下发该课题做**复现**；同时把 ``lock_remaining`` 置为
+  ``reproduce_lock_rounds``，供随后若干轮锁定发散；
+- ``diverge``（由 ``lock_remaining > 0`` 体现）：同一课题继续发散，一次一维；
+- ``done``：该课题的发散窗口用尽，换下一题。
+
+状态文件：``artifacts/alphaagent/research_specs/question_state_<mode>.jsonl``（追加式，
+最后一条胜出）——**跨 run 累积**，整夜连开多个 run 也不会重头再来。
+
+已知简化（Phase 2b 待办）：本版按"复现 1 轮 + 锁定 N 轮"的确定性窗口推进，
+**尚未**用复现版是否过 train 门来提前换题/记 abandoned（需要把评估判决回传到本模块）。
+"""
+from __future__ import annotations
+
+import json
+import time
+from pathlib import Path
+from typing import Any, Iterable
+
+
+def _root() -> Path:
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        if out:
+            return Path(out).parent
+    except Exception:  # noqa: BLE001
+        pass
+    return Path(__file__).resolve().parents[4]
+
+
+def state_path(mode: str) -> Path:
+    d = _root() / "artifacts" / "alphaagent" / "research_specs"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / f"question_state_{mode}.jsonl"
+
+
+def load_states(mode: str) -> dict[str, dict[str, Any]]:
+    p = state_path(mode)
+    out: dict[str, dict[str, Any]] = {}
+    if not p.exists():
+        return out
+    for line in p.read_text(encoding="utf-8", errors="ignore").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except Exception:  # noqa: BLE001
+            continue
+        qid = str(rec.get("question_id") or "")
+        if qid:
+            out[qid] = rec
+    return out
+
+
+def _append(mode: str, rec: dict[str, Any]) -> None:
+    rec.setdefault("updated_at", time.strftime("%Y-%m-%dT%H:%M:%S"))
+    p = state_path(mode)
+    with p.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+
+def select_question(
+    mode: str,
+    queue: Iterable[dict[str, Any]],
+    *,
+    lock_rounds: int = 3,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """按状态机挑本轮课题；返回 ``(question, phase)``，phase ∈ {reproduce, diverge}。"""
+    items = [q for q in (queue or []) if isinstance(q, dict) and q.get("question_id")]
+    if not items:
+        return None, None
+    states = load_states(mode)
+
+    # 1) 锁定中：同题继续发散，扣减窗口
+    for q in items:
+        qid = str(q.get("question_id"))
+        st = states.get(qid) or {}
+        remaining = int(st.get("lock_remaining") or 0)
+        if st.get("state") == "reproduce_pending" and remaining > 0:
+            _append(mode, {"question_id": qid, "state": "reproduce_pending",
+                           "lock_remaining": remaining - 1, "phase": "diverge"})
+            return q, "diverge"
+
+    # 2) 该题发散窗口用尽 → done；挑下一道没做过的题进入复现轮
+    for q in items:
+        qid = str(q.get("question_id"))
+        if qid in states:
+            continue
+        _append(mode, {"question_id": qid, "state": "reproduce_pending",
+                       "lock_remaining": max(0, int(lock_rounds)), "phase": "reproduce",
+                       "attempts": 1})
+        return q, "reproduce"
+
+    return None, None
+
+
+def mark_abandoned(mode: str, question_id: str, reason: str) -> None:
+    """把课题标记为 abandoned（复现失败/窗口内零过线时由上层调用）。"""
+    _append(mode, {"question_id": str(question_id), "state": "abandoned",
+                   "reason": str(reason)[:120], "lock_remaining": 0})

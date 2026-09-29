@@ -848,14 +848,50 @@ async def run_factor_mining_agentscope(
                 # 部分缺列题保留并注入缺列提示（2026-09-28，见 docs/specs/alphaagent_question_field_gate_spec.md）
                 _available_fields = list(getattr(session_resp, "available_columns", None) or [])
                 _q_stats: dict[str, Any] = {}
-                current_question = get_question_for_turn(
-                    outer_turn,
-                    spec=spec,
-                    focus_facets=getattr(config, "focus_facets", None),
-                    session_id=sid,
-                    available_fields=_available_fields,
-                    stats=_q_stats,
-                )
+                _report_phase_from_state = None
+                if report_flow_enabled(spec):
+                    # 研报模式（Phase 2）：走课题状态机——复现 1 轮 + 锁定 N 轮发散，
+                    # 跨 run 累积；其他模式仍用原有逐轮推进逻辑。
+                    from alphaagent.factor.mining.agent.question_queue import (
+                        load_question_queue,
+                    )
+                    from alphaagent.factor.mining.agent.question_state import (
+                        select_question,
+                    )
+                    from alphaagent.factor.mining.report_channels import (
+                        reproduce_lock_rounds,
+                    )
+
+                    _q, _report_phase_from_state = select_question(
+                        str(getattr(config, "research_mode", "report") or "report"),
+                        load_question_queue(spec) or [],
+                        lock_rounds=reproduce_lock_rounds(spec),
+                    )
+                    if _q is not None:
+                        # 状态机出的题仍需过字段门控（缺列题跳过，保持既有语义）
+                        _gate_stats: dict[str, Any] = {}
+                        _gated = get_question_for_turn(
+                            outer_turn, spec=spec, focus_facets=getattr(config, "focus_facets", None),
+                            session_id=sid, available_fields=_available_fields, stats=_gate_stats,
+                        )
+                        current_question = _gated or _q
+                        _q_stats.update(_gate_stats)
+                        log_step(
+                            "report_state_machine",
+                            f"turn={outer_turn} qid={(current_question or {}).get('question_id')} "
+                            f"phase={_report_phase_from_state}",
+                        )
+                    else:
+                        current_question = None
+                else:
+                    current_question = get_question_for_turn(
+                        outer_turn,
+                        spec=spec,
+                        focus_facets=getattr(config, "focus_facets", None),
+                        session_id=sid,
+                        available_fields=_available_fields,
+                        stats=_q_stats,
+                    )
                 if _q_stats:
                     log_step(
                         "question_gate",
@@ -884,7 +920,7 @@ async def run_factor_mining_agentscope(
             resolve_report_phase,
         )
 
-        _rag_phase = resolve_report_phase(spec, outer_turn)
+        _rag_phase = locals().get("_report_phase_from_state") or resolve_report_phase(spec, outer_turn)
         # ── 研报模式 Phase 1：复现阶段注入「复现题面」并把硬门禁状态挂到 tools ──
         if report_flow_enabled(spec) and current_question:
             _qid = str(current_question.get("question_id") or "")
