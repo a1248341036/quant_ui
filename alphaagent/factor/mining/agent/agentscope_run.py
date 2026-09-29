@@ -878,7 +878,10 @@ async def run_factor_mining_agentscope(
         # R3 方案每轮动态联动：如果启用了 RAG，每轮根据当前派发的具体课题动态检索最相关研报段落注入
         from alphaagent.factor.mining.report_channels import report_rag_enabled
 
-        if report_rag_enabled(spec) and current_question:
+        from alphaagent.factor.mining.report_channels import resolve_report_phase
+
+        _rag_phase = resolve_report_phase(spec, outer_turn)
+        if report_rag_enabled(spec, phase=_rag_phase) and current_question:
             try:
                 from alphaagent.factor.mining.memory.ov_store import OVStore
                 _endpoint = report_policy.get("ov_endpoint", "http://127.0.0.1:1933")

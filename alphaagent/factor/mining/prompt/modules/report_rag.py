@@ -26,7 +26,7 @@ def enabled(ctx: Any) -> bool:
         return False
     from alphaagent.factor.mining.report_channels import report_rag_enabled
 
-    return report_rag_enabled(getattr(ctx, "research_spec", None))
+    return report_rag_enabled(getattr(ctx, "research_spec", None), phase=getattr(ctx, "report_phase", None))
 
 
 def render(ctx: Any) -> str:

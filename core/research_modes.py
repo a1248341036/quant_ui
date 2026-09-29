@@ -38,6 +38,9 @@ class ResearchModeSpec:
     candidate_overrides: dict = field(default_factory=dict)       # delivery_policy.candidate
     production_overrides: dict = field(default_factory=dict)      # delivery_policy.production
     engine_gate_overrides: dict = field(default_factory=dict)     # delivery_policy.production.engine_gate
+    # 研报模式专用：report_policy 覆盖（流程开关，如"复现阶段用机制卡、发散阶段用 RAG"）。
+    # 非研报模式留空 → 行为与今天完全一致。
+    report_policy_overrides: dict = field(default_factory=dict)
 
 
 # ── 注册表（唯一事实源）───────────────────────────────────────────────
@@ -159,6 +162,51 @@ RESEARCH_MODES: dict[str, ResearchModeSpec] = {
         engine_gate_overrides={
             "freq": "weekly",
             "allowed_freqs": ["weekly"],
+        },
+    ),
+    # ── 研报模式（2026-09-29 新增）───────────────────────────────────
+    # 目标：**先照研报机制复现**一个忠实因子，**再围绕该机制单向发散**。
+    # 与 technical/fundamental 的差别只在流程，不在门槛/label：
+    #   - 复现阶段：只注入机制卡（构造指南/字段/参数/期望形态），不注入泛 RAG；
+    #   - 判定：形态对账（prediction_check）+ train 门；过线则锁定该课题 N 轮发散；
+    #   - 发散阶段：才注入研报 RAG，一轮只改一个维度（窗长/算子/同族字段/中性化键/门控形态/交互结构）。
+    # 开关全部落在 report_policy_overrides，未选该模式时这些键不存在 → 老行为不变。
+    "report": ResearchModeSpec(
+        mode_id="report",
+        label="研报复现",
+        hint="先照研报机制复现因子，再围绕机制单维发散（复现阶段喂机制卡，发散阶段用研报 RAG）",
+        recommended_label_col="label_1d_open_to_open",
+        # 研报机制常跨数据面：价量/波动/筹码 + 基本面族都放开（needs_fundamentals=True）
+        signal_families=(
+            "volume_price", "volatility", "chip", "momentum_reversal",
+            "fundamental_quality", "fundamental_growth",
+            "fundamental_value", "fundamental_revision",
+        ),
+        forbidden_families=("pure_size",),
+        needs_fundamentals=True,
+        candidate_dir="candidate_main",
+        production_dir="production_main",
+        default_user_message=(
+            "研报复现模式：先按本轮课题给出的研报机制复现一个忠实因子"
+            "（只允许字段同族替换与算子落地，提交时带 reproduce_of=<card_id>）；"
+            "复现通过后，围绕该机制做单维发散（窗长/算子/同族字段/中性化键/门控形态/交互结构，一次一维）。"
+        ),
+        engine_gate_overrides={
+            "freq": "weekly",
+            "allowed_freqs": ["daily", "weekly", "monthly"],
+        },
+        report_policy_overrides={
+            "knowledge_mode": "mechanism_cards",
+            "knowledge_mode_by_phase": {
+                "reproduce": "mechanism_cards",
+                "diverge": "report_rag",
+            },
+            "reproduce_first": True,        # 首轮必须复现（题面 + 提交门禁）
+            "reproduce_of_required": True,  # 提交必须声明 reproduce_of=<card_id>
+            "reproduce_lock_rounds": 3,     # 复现通过后锁定该课题的发散轮数
+            "enable_question_queue": True,
+            "report_rag_max_chars": 1600,
+            "report_rag_top_k": 3,
         },
     ),
     "technical_monthly": ResearchModeSpec(

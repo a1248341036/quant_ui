@@ -97,7 +97,14 @@ def build_system_prompt_with_report(
     pp = (research_spec or {}).get("prompt_policy") or {}
     family_scope_raw = pp.get("field_family_scope")
     family_scope = frozenset(family_scope_raw) if family_scope_raw else None
+    try:  # 研报模式：系统提示词按「复现阶段」装配（非研报模式返回 None，行为不变）
+        from alphaagent.factor.mining.report_channels import resolve_report_phase
+
+        report_phase = resolve_report_phase(research_spec, turn=0)
+    except Exception:  # noqa: BLE001
+        report_phase = None
     ctx = PromptContext(
+        report_phase=report_phase,
         label_col=label_col,
         include_operator_catalog=include_operator_catalog,
         include_fundamentals=include_fundamentals,
