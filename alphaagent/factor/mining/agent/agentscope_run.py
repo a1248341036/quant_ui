@@ -975,10 +975,15 @@ async def run_factor_mining_agentscope(
                     )
 
                     _rmode = str(getattr(config, "research_mode", "report") or "report")
+                    from alphaagent.factor.mining.agent.question_queue import (
+                        find_card_for_question,
+                    )
+
                     _div = render_diverge_task(
                         current_question,
                         reproduce_factor_of(_rmode, _qid),
                         parent_detail=reproduce_detail_of(_rmode, _qid),
+                        card=find_card_for_question(current_question),
                     )
                     if _div:
                         block = f"{block}\n\n{_div}" if block else _div

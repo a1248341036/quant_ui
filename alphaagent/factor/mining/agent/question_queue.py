@@ -424,7 +424,7 @@ _DIVERGE_DIMS = ("window", "operator", "field", "neutralize", "gate_shape", "int
 
 
 def render_diverge_task(question: dict, reproduce_factor: str = "", dims=_DIVERGE_DIMS,
-                        parent_detail: str = "") -> str:
+                        parent_detail: str = "", card: dict | None = None) -> str:
     """研报模式的**发散题面**：在已复现课题上做单维变异（Phase 2 / 2026-09-30）。
 
     之前只有复现轮有题面，发散轮退化成"泛课题 + RAG"，模型不声明父本，也无法保证
@@ -452,6 +452,11 @@ def render_diverge_task(question: dict, reproduce_factor: str = "", dims=_DIVERG
         "3. 不得改变机制语义（那是换题、不是发散）；",
         "4. 参考下方研报 RAG 片段，优先验证「机制在更优参数/结构下是否更稳」，而不是换赛道。",
     ]
+    _cb = _card_block(card)
+    if _cb:
+        parts.append("")
+        parts.append("**研报机制卡（变异时的算子/参数依据）**：")
+        parts.append(_cb)
     return "\n".join(parts)
 
 
