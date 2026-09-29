@@ -78,6 +78,7 @@ def select_question(
     queue: Iterable[dict[str, Any]],
     *,
     lock_rounds: int = 3,
+    max_attempts: int = 2,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """按状态机挑本轮课题；返回 ``(question, phase)``，phase ∈ {reproduce, diverge}。"""
     items = [q for q in (queue or []) if isinstance(q, dict) and q.get("question_id")]
@@ -95,12 +96,18 @@ def select_question(
                            "lock_remaining": remaining - 1, "phase": "diverge"})
             return q, "diverge"
 
-    # 2) 复现轮已用完却没过线（lock_remaining==0）→ abandoned(no_reproduce_pass)；换下一题
+    # 2) 复现轮已用完却没过线：还有重试额度 → 再给一次复现机会；否则 abandoned 换题
     for q in items:
         qid = str(q.get("question_id"))
         st = states.get(qid)
         if st is not None:
             if st.get("state") == "reproduce_pending" and int(st.get("lock_remaining") or 0) == 0:
+                attempts = int(st.get("attempts") or 1)
+                if attempts < max(1, int(max_attempts)):
+                    _append(mode, {"question_id": qid, "state": "reproduce_pending",
+                                   "lock_remaining": 0, "phase": "reproduce",
+                                   "attempts": attempts + 1})
+                    return q, "reproduce"
                 mark_abandoned(mode, qid, "no_reproduce_pass")
             continue
         # 新题：进入复现轮（此时**不预锁**——只有过线才会由 mark_reproduce_ok 上锁）

@@ -873,6 +873,7 @@ async def run_factor_mining_agentscope(
                         str(getattr(config, "research_mode", "report") or "report"),
                         load_question_queue(spec) or [],
                         lock_rounds=reproduce_lock_rounds(spec),
+                        max_attempts=int(report_policy.get("reproduce_max_attempts", 2)),
                     )
                     if _q is not None:
                         # 状态机选出的题**优先**（复现/发散必须锁在同一课题上）。

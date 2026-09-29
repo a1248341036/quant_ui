@@ -207,6 +207,7 @@ RESEARCH_MODES: dict[str, ResearchModeSpec] = {
             # 复现判定阈值（"信号存在"档，本质是保真而非强度；强度留给发散阶段）
             "reproduce_min_abs_ic": 0.010,
             "reproduce_min_icir": 0.10,
+            "reproduce_max_attempts": 2,     # 复现失败可重试一次，提高进入发散的概率
             "enable_question_queue": True,
             "report_rag_max_chars": 1600,
             "report_rag_top_k": 3,
