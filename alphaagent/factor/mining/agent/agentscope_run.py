@@ -67,7 +67,7 @@ _LENIENT_SUMMARY_SCHEMA = {
     },
     "required": [],
 }
-from alphaagent.factor.mining.infra.provider_compat import ProviderSafeChatModel
+from alphaagent.factor.mining.infra.provider_compat import is_payload_poison_error, ProviderSafeChatModel
 from alphaagent.factor.mining.infra.usage_capture import UsageBridge
 from alphaagent.factor.mining.config import MiningConfig
 from alphaagent.factor.mining.console import ConsolePrinter, ensure_utf8_stream
@@ -689,6 +689,27 @@ async def run_factor_mining_agentscope(
         usage_bridge=usage_bridge,
     )
 
+    async def _recreate_agent():
+        """重建挖掘 agent（丢弃会话历史）。
+
+        毒 payload 恢复专用（2026-09-29）：模型偶发产出畸形工具参数 JSON，该轮历史
+        被原样重放会让上游每次都判 400 Bad Request，重试同一 payload 无意义；重建
+        会话后本轮可继续，而 run 级状态（已评估因子、记忆库、提交记录）都在 agent
+        之外，不受影响。
+        """
+        return await create_mining_agent(
+            config=config,
+            system_prompt=system_prompt,
+            factor_tools=factor_tools,
+            workspace=workspace,
+            api_key=api_key,
+            base_url=base_url,
+            extra_body=extra_body,
+            reviewer=reviewer,
+            interaction_policy=(config.research_spec or {}).get("interaction_policy"),
+            usage_bridge=usage_bridge,
+        )
+
     def _take_control_messages() -> list[str]:
         nonlocal control_offset
         if control_file is None or not control_file.exists():
@@ -1101,6 +1122,7 @@ async def run_factor_mining_agentscope(
         # 一轮调用（最多 3 次）；半截响应未完成工具链，最坏情况是上下文多一条
         # 截断 assistant 消息，远好于 run 直接报废。
         transport_attempts = 0
+        poison_attempts = 0  # 毒 payload（请求体非法）恢复次数；见 is_payload_poison_error
         had_tools = False  # 兜底初始化：模型调用失败(如 429 配额)直接走 error 终态，避免 UnboundLocalError
         while True:
             try:
@@ -1131,6 +1153,39 @@ async def run_factor_mining_agentscope(
                     )
                     await asyncio.sleep(min(30, 5 * transport_attempts))
                     continue
+                # 2026-09-29：请求体非法（毒 payload）——上游 400 被包装成 500，
+                # 基类会把它当可重试并重发同一 payload 10 次，必然全败、整 run 报废。
+                # 正确处理：丢弃该轮会话上下文（重建 agent）后重试本轮，最多 2 次。
+                if poison_attempts < 2 and is_payload_poison_error(exc):
+                    poison_attempts += 1
+                    _emit(
+                        "poison_payload_recovery",
+                        {
+                            "turn": outer_turn,
+                            "attempt": poison_attempts,
+                            "error_type": type(exc).__name__,
+                            "error": str(exc)[:300],
+                        },
+                    )
+                    log_step(
+                        "poison_payload_recovery",
+                        f"turn={outer_turn} attempt={poison_attempts} err={type(exc).__name__}",
+                    )
+                    try:
+                        agent = await _recreate_agent()
+                    except Exception as rebuild_exc:  # noqa: BLE001
+                        log_step(
+                            "poison_payload_recovery_failed",
+                            f"turn={outer_turn} err={type(rebuild_exc).__name__}",
+                        )
+                    else:
+                        await asyncio.sleep(min(10, 2 * poison_attempts))
+                        continue
+                elif poison_attempts and is_payload_poison_error(exc):
+                    log_step(
+                        "poison_payload_exhausted",
+                        f"turn={outer_turn} attempts={poison_attempts} err={type(exc).__name__}",
+                    )
                 # 2026-09-16：上下文压缩失败（LLM 结构化摘要漏字段 → pydantic
                 # ValidationError / summary_template.format KeyError）不应终结 run。
                 # 压缩只是把旧段浓缩成摘要，失败 = 上下文不压缩，run 仍可继续

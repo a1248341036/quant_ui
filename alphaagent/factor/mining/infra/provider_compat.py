@@ -38,6 +38,31 @@ def _tool_choice_auto_enabled() -> bool:
     return os.environ.get("ALPHA_TOOL_CHOICE_AUTO", "1") not in {"0", "false", "False"}
 
 
+# 「请求体本身非法」类错误的文本特征：重发同一 payload 必然再次失败。
+# 2026-09-29 整夜实证（3 个 run 因此死亡）：模型偶发产出畸形工具参数 JSON，
+# 该轮历史被原样重放 → 上游判 ``400 Bad Request`` → CC Switch 包装成 500 →
+# agentscope 基类把 500 当可重试，5s 间隔重试 10 次同一 payload，全部失败 → run 终结。
+_PAYLOAD_POISON_MARKERS: tuple[str, ...] = (
+    "upstream status 400",
+    "invalid_request_error",
+    "tool arguments",      # 框架回给模型的「工具参数 JSON 解析失败」提示
+    "jsondecodeerror",
+)
+
+
+def is_payload_poison_error(exc: BaseException) -> bool:
+    """判断异常是否属于「请求体非法、重发无意义」类错误（沿 __cause__ 链检查）。"""
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        text = f"{type(cur).__name__}: {cur}".lower()
+        if any(marker in text for marker in _PAYLOAD_POISON_MARKERS):
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
 class ProviderSafeChatModel(UsageCapturedChatModel):
     """UsageCapturedChatModel + provider 兼容（tool_choice 归一 / 流式断连重试）。
 
@@ -109,6 +134,9 @@ class ProviderSafeChatModel(UsageCapturedChatModel):
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001
+                if is_payload_poison_error(exc):
+                    # 请求体非法：同 payload 重发必然再次失败，交由上层重建会话恢复
+                    raise
                 if not isinstance(exc, retryable):
                     raise
                 if attempt >= self.max_retries:
