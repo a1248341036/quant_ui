@@ -450,6 +450,9 @@ def render_diverge_task(question: dict, reproduce_factor: str = "", dims=_DIVERG
         "第三轮直接上结构性杠杆 —— `gate_shape`（硬门→SOFT_GATE/分位分段）或 `interaction`"
         "（`CS_GROUP_RANK`/`DIVERGENCE_RANK` 等条件式结构），它们对弱信号母本的提升通常远大于微调窗长；"
         "仍无改善就如实判定该机制在本池无效，不必反复凑维度。",
+        "- **同构空间耗尽即止损**：若连续 ≥2 次评估被 `memory_blocked_duplicate`（同构死路）拦截，"
+        "说明该机制在本池的可变空间已经试尽——立刻换一个维度，或直接结束本轮并说明该机制无效；"
+        "**不要**在被拦截后继续提交同构表达式（实测会整轮空转、白烧 40 分钟）。",
         "- 硬约束：",
         f"1. 每个提交/评估必须填 `parent_factor={parent}`，并在 `edit_note` 写明改的维度；",
         "2. **一次只改一个维度**：" + "、".join(f"`{d}`" for d in dims) + "；",
