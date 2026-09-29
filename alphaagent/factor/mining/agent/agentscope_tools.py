@@ -672,15 +672,14 @@ def build_factor_eval_toolkit(
             _qid = str(_gate.get("qid") or "")
             _pf = str(parent_factor or "")
             if _qid and _qid not in _pf:
-                return ToolChunk(
+                return ToolChunk(content=[TextBlock(text=(
                     content=(
                         f"⛔ 复现门禁：当前处于研报复现阶段（课题 {_qid}），"
                         f"`parent_factor` 必须写成 `reproduce_of:{_qid}`（或至少包含 `{_qid}`），"
                         f"当前传入={_pf or '(空)'}。\n"
                         "请先忠实复现研报机制（只允许字段同族替换与算子落地，不得改变机制语义），"
                         "通过 train 后才进入发散阶段。"
-                    )
-                )
+                ))])
 
         # ── 因子逻辑预审 ──
         preflight = _preflight_check(multi_line_expr, factor_name)
@@ -976,15 +975,14 @@ def build_factor_eval_toolkit(
                 _qid = str(_gate.get("qid") or "")
                 _pf = str(parent_factor or "")
                 if _qid and _qid not in _pf:
-                    return ToolChunk(
+                    return ToolChunk(content=[TextBlock(text=(
                         content=(
                             f"⛔ 复现门禁：当前处于研报复现阶段（课题 {_qid}），"
                             f"`parent_factor` 必须写成 `reproduce_of:{_qid}`（或至少包含 `{_qid}`），"
                             f"当前传入={_pf or '(空)'}。\n"
                             "请先忠实复现研报机制（只允许字段同族替换与算子落地，不得改变机制语义），"
                             "通过 train 后才进入发散阶段。"
-                        )
-                    )
+                    ))])
 
             # ── 先执行 submit（stage_one 候选池 + stage_two 正式库统计门槛） ──
             loop = __import__("asyncio").get_running_loop()
