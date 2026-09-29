@@ -204,6 +204,9 @@ RESEARCH_MODES: dict[str, ResearchModeSpec] = {
             "reproduce_first": True,        # 首轮必须复现（题面 + 提交门禁）
             "reproduce_of_required": True,  # 提交必须声明 reproduce_of=<card_id>
             "reproduce_lock_rounds": 3,     # 复现通过后锁定该课题的发散轮数
+            # 复现判定阈值（"信号存在"档，本质是保真而非强度；强度留给发散阶段）
+            "reproduce_min_abs_ic": 0.010,
+            "reproduce_min_icir": 0.10,
             "enable_question_queue": True,
             "report_rag_max_chars": 1600,
             "report_rag_top_k": 3,

@@ -327,7 +327,98 @@ def _clean_question_text(text: str, limit: int = 700) -> str:
     return out[:limit]
 
 
-def render_reproduce_task(question: dict, spec: dict | None = None) -> str:
+_CARDS_CACHE: list[dict] | None = None
+
+
+def load_mechanism_cards() -> list[dict]:
+    """加载机制卡（含 MinerU 语料新抽的卡）；失败返回空表。"""
+    global _CARDS_CACHE
+    if _CARDS_CACHE is not None:
+        return _CARDS_CACHE
+    import json
+    import subprocess
+    from pathlib import Path as _P
+
+    roots = []
+    try:
+        out = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                             capture_output=True, text=True, check=True).stdout.strip()
+        if out:
+            roots.append(_P(out).parent)
+    except Exception:  # noqa: BLE001
+        pass
+    roots.append(_P(__file__).resolve().parents[4])
+    cards: list[dict] = []
+    for r in roots:
+        f = r / "data" / "research_reports" / "knowledge" / "mechanism_cards.jsonl"
+        if not f.exists():
+            continue
+        for line in f.read_text(encoding="utf-8", errors="ignore").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                cards.append(json.loads(line))
+            except Exception:  # noqa: BLE001
+                continue
+        if cards:
+            break
+    _CARDS_CACHE = cards
+    return cards
+
+
+def find_card_for_question(question: dict, cards: list[dict] | None = None) -> dict | None:
+    """给课题挑最相关的机制卡（标题/机构/年份关键词重合度打分）。"""
+    if not question:
+        return None
+    cards = cards if cards is not None else load_mechanism_cards()
+    if not cards:
+        return None
+    import re as _re
+
+    qtext = f"{question.get('topic') or ''} {question.get('source') or ''} {question.get('hypothesis') or ''}"
+    qkeys = {t for t in _re.findall(r"[\u4e00-\u9fa5]{2,}|[A-Za-z_]{3,}", qtext)}
+    best, best_score = None, 0.0
+    for c in cards:
+        src = c.get("source") or {}
+        ctext = f"{src.get('title') or ''} {src.get('org') or ''} {c.get('card_id') or ''}"
+        ckeys = set(_re.findall(r"[\u4e00-\u9fa5]{2,}|[A-Za-z_]{3,}", ctext))
+        score = float(len(qkeys & ckeys))
+        if src.get("org") and str(src.get("org")) in qtext:
+            score += 3.0
+        if score > best_score:
+            best, best_score = c, score
+    return best if best_score >= 2.0 else None
+
+
+def _card_block(card: dict) -> str:
+    """机制卡的题面片段（机制三段式 + 字段/参数 + 参考 DSL + 研报实测）。"""
+    if not card:
+        return ""
+    m = card.get("mechanism") or {}
+    src = card.get("source") or {}
+    lines = [f"- **机制卡** `{card.get('card_id')}`（来源：{src.get('org') or ''}《{src.get('title') or ''}》{src.get('date') or ''}）",
+             f"  - 错边方：{m.get('who_wrong') or '-'}",
+             f"  - 为何持续：{m.get('why_persists') or '-'}",
+             f"  - 可观测：{m.get('observable') or '-'}"]
+    fields = card.get("fields") or []
+    params = card.get("params") or {}
+    if fields:
+        lines.append(f"  - 字段：{', '.join(map(str, fields))[:200]}")
+    if params:
+        lines.append(f"  - 参数：{str(params)[:200]}")
+    if card.get("dsl_hint"):
+        lines.append(f"  - 参考 DSL（需按本仓字段名改写）：{str(card['dsl_hint'])[:400]}")
+    if card.get("formula_text"):
+        lines.append(f"  - 研报公式（原文保真）：{str(card['formula_text'])[:400]}")
+    ev = card.get("evidence") or {}
+    if ev:
+        lines.append(f"  - 研报实测：{str(ev)[:200]}")
+    return "\n".join(lines)
+
+
+def render_reproduce_task(question: dict, spec: dict | None = None, card: dict | None = None,
+                          evidence: str = "") -> str:
     """研报模式的**复现题面**（Phase 1）：把课题自带的机制物料变成"必须复现"的任务块。
 
     物料来自题库字段本身（construction_guide / empirical_findings / suggested_fields /
@@ -353,12 +444,18 @@ def render_reproduce_task(question: dict, spec: dict | None = None) -> str:
     if findings:
         parts.append(f"- 研报实测（对账参考，非硬门）：{findings}")
     if fields:
-        parts.append(f"- 建议字段：{', '.join(map(str, fields))}")
+        parts.append(f"- 建议字段（题库建议，**若与机制或研报原文冲突，以机制/原文为准**）：{', '.join(map(str, fields))}")
     if ops:
         parts.append(f"- 建议算子：{', '.join(map(str, ops))}")
     parts.append(f"- 期望形态：{shape}；期望方向：{sign if sign is not None else '-'}")
     if falsifier:
         parts.append(f"- 证伪条件：{falsifier}")
+    _cb = _card_block(card)
+    if _cb:
+        parts.append(_cb)
+    if evidence:
+        parts.append("- **研报原文片段（含公式/表格，来自 MinerU 重抽语料；据此落地表达式）**：")
+        parts.append("  " + "\n  ".join(str(evidence).splitlines()[:20]))
     parts += [
         "",
         "**硬约束（违反会被直接拒绝，不消耗评估额度）**：",

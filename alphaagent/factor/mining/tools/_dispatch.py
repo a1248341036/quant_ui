@@ -502,19 +502,25 @@ class _DispatchMixin:
             # 由课题状态机把该课题锁定 N 轮发散；判定与 val 自动验证同源阈值，避免口径漂移。
             _rgate = getattr(self, "report_reproduce_gate", None) or {}
             if _rgate.get("phase") == "reproduce" and _rgate.get("qid"):
-                try:
-                    from alphaagent.factor.mining.agent.question_state import mark_reproduce_ok
+                # 复现判定的本质是**保真**（形态对账 + 信号存在），不是强度：
+                # 强度目标留给发散阶段去冲。阈值可由 report_policy 覆盖。
+                _rp = getattr(self, "report_policy", None) or {}
+                _rep_ic = float(_rp.get("reproduce_min_abs_ic", 0.010))
+                _rep_icir = float(_rp.get("reproduce_min_icir", 0.10))
+                if ic_f >= _rep_ic and icir_f >= _rep_icir:
+                    try:
+                        from alphaagent.factor.mining.agent.question_state import mark_reproduce_ok
 
-                    mark_reproduce_ok(
-                        str(_rgate.get("mode") or "report"),
-                        str(_rgate["qid"]),
-                        int(_rgate.get("lock_rounds") or 3),
-                        factor=factor_name,
-                        detail=f"ic={ic_f:.4f} icir={icir_f:.4f} cov={cov_f:.3f}",
-                    )
-                    _rgate["phase"] = "diverge"   # 本 turn 后续同题评估即视为发散
-                except Exception:  # noqa: BLE001
-                    pass
+                        mark_reproduce_ok(
+                            str(_rgate.get("mode") or "report"),
+                            str(_rgate["qid"]),
+                            int(_rgate.get("lock_rounds") or 3),
+                            factor=factor_name,
+                            detail=f"ic={ic_f:.4f} icir={icir_f:.4f} cov={cov_f:.3f}",
+                        )
+                        _rgate["phase"] = "diverge"   # 本 turn 后续同题评估即视为发散
+                    except Exception:  # noqa: BLE001
+                        pass
             # 防抖：同表达式（归一化）只自动 val 一次（会话级）
             key = re.sub(r"\s+", "", expr)
             done = getattr(self, "_auto_val_done", None)
