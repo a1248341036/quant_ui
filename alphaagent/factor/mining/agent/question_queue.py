@@ -435,6 +435,10 @@ def render_diverge_task(question: dict, reproduce_factor: str = "", dims=_DIVERG
         "## 研报发散（本轮必须基于复现版做**单维**变异）",
         f"- 课题：{topic}（课题号 {qid}）",
         f"- **父本（复现版）**：`{parent}`",
+        "- **本轮目标**：让该机制比复现版更强且可交付 —— 争取过 promising 线"
+        "（|IC|≥0.02、|ICIR|≥0.28、coverage≥0.85），同时不抬高日换手（≤0.5）、不与库内已有因子撞车；"
+        "若某维度让指标变差，明确放弃并换下一个维度，不要反复调同一维。",
+        "- **维度轮换建议**（3 轮内覆盖不同维度）：首轮 `window` 或 `operator`，次轮 `neutralize` 或 `field`，末轮 `gate_shape` 或 `interaction`。",
         "- 硬约束：",
         f"1. 每个提交/评估必须填 `parent_factor={parent}`，并在 `edit_note` 写明改的维度；",
         "2. **一次只改一个维度**：" + "、".join(f"`{d}`" for d in dims) + "；",
