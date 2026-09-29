@@ -154,3 +154,22 @@ def reproduce_factor_of(mode: str, question_id: str) -> str:
         if str(rec.get("question_id") or "") == qid and rec.get("reproduce_factor"):
             return str(rec["reproduce_factor"])
     return ""
+
+
+def reproduce_detail_of(mode: str, question_id: str) -> str:
+    """取该课题复现版的实测明细（ic/icir/cov），供发散题面作为"必须超越的基线"。"""
+    qid = str(question_id)
+    p = state_path(mode)
+    if not p.exists():
+        return ""
+    for line in reversed(p.read_text(encoding="utf-8", errors="ignore").splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except Exception:  # noqa: BLE001
+            continue
+        if str(rec.get("question_id") or "") == qid and rec.get("detail"):
+            return str(rec["detail"])
+    return ""

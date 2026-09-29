@@ -420,7 +420,8 @@ def _card_block(card: dict) -> str:
 _DIVERGE_DIMS = ("window", "operator", "field", "neutralize", "gate_shape", "interaction")
 
 
-def render_diverge_task(question: dict, reproduce_factor: str = "", dims=_DIVERGE_DIMS) -> str:
+def render_diverge_task(question: dict, reproduce_factor: str = "", dims=_DIVERGE_DIMS,
+                        parent_detail: str = "") -> str:
     """研报模式的**发散题面**：在已复现课题上做单维变异（Phase 2 / 2026-09-30）。
 
     之前只有复现轮有题面，发散轮退化成"泛课题 + RAG"，模型不声明父本，也无法保证
@@ -435,6 +436,9 @@ def render_diverge_task(question: dict, reproduce_factor: str = "", dims=_DIVERG
         "## 研报发散（本轮必须基于复现版做**单维**变异）",
         f"- 课题：{topic}（课题号 {qid}）",
         f"- **父本（复现版）**：`{parent}`",
+        (f"- **父本实测（必须超越的基线）**：{parent_detail}"
+         " —— 本轮至少要在 IC 或 ICIR 上改善，且 coverage 与换手不得劣化。"
+         if parent_detail else "- （父本实测指标缺失，请先重建父本基线再变异）"),
         "- **本轮目标**：让该机制比复现版更强且可交付 —— 争取过 promising 线"
         "（|IC|≥0.02、|ICIR|≥0.28、coverage≥0.85），同时不抬高日换手（≤0.5）、不与库内已有因子撞车；"
         "若某维度让指标变差，明确放弃并换下一个维度，不要反复调同一维。",

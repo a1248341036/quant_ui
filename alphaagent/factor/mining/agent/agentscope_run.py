@@ -969,13 +969,16 @@ async def run_factor_mining_agentscope(
             if _rag_phase == "diverge":
                 try:
                     from alphaagent.factor.mining.agent.question_queue import render_diverge_task
-                    from alphaagent.factor.mining.agent.question_state import reproduce_factor_of
+                    from alphaagent.factor.mining.agent.question_state import (
+                        reproduce_detail_of,
+                        reproduce_factor_of,
+                    )
 
+                    _rmode = str(getattr(config, "research_mode", "report") or "report")
                     _div = render_diverge_task(
                         current_question,
-                        reproduce_factor_of(
-                            str(getattr(config, "research_mode", "report") or "report"), _qid
-                        ),
+                        reproduce_factor_of(_rmode, _qid),
+                        parent_detail=reproduce_detail_of(_rmode, _qid),
                     )
                     if _div:
                         block = f"{block}\n\n{_div}" if block else _div
