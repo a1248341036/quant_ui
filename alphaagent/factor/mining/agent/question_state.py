@@ -14,8 +14,9 @@
 状态文件：``artifacts/alphaagent/research_specs/question_state_<mode>.jsonl``（追加式，
 最后一条胜出）——**跨 run 累积**，整夜连开多个 run 也不会重头再来。
 
-已知简化（Phase 2b 待办）：本版按"复现 1 轮 + 锁定 N 轮"的确定性窗口推进，
-**尚未**用复现版是否过 train 门来提前换题/记 abandoned（需要把评估判决回传到本模块）。
+判定驱动（2026-09-29 Phase 2b 已落地）：复现轮**不预锁**；复现版过 train 海选线
+（promising，与 ``_auto_val_verify`` 同源阈值）时由工具侧调用 :func:`mark_reproduce_ok`
+上锁 N 轮；复现轮结束仍没过线 → 下一轮选择时记 ``abandoned(no_reproduce_pass)`` 并换题。
 """
 from __future__ import annotations
 
@@ -84,27 +85,38 @@ def select_question(
         return None, None
     states = load_states(mode)
 
-    # 1) 锁定中：同题继续发散，扣减窗口
+    # 1) 复现已过线、且发散窗口未用尽 → 同题继续发散（判定驱动，2026-09-29 修订）
     for q in items:
         qid = str(q.get("question_id"))
         st = states.get(qid) or {}
         remaining = int(st.get("lock_remaining") or 0)
-        if st.get("state") == "reproduce_pending" and remaining > 0:
-            _append(mode, {"question_id": qid, "state": "reproduce_pending",
+        if st.get("state") in ("reproduce_ok", "reproduce_pending") and remaining > 0:
+            _append(mode, {"question_id": qid, "state": st.get("state") or "reproduce_ok",
                            "lock_remaining": remaining - 1, "phase": "diverge"})
             return q, "diverge"
 
-    # 2) 该题发散窗口用尽 → done；挑下一道没做过的题进入复现轮
+    # 2) 复现轮已用完却没过线（lock_remaining==0）→ abandoned(no_reproduce_pass)；换下一题
     for q in items:
         qid = str(q.get("question_id"))
-        if qid in states:
+        st = states.get(qid)
+        if st is not None:
+            if st.get("state") == "reproduce_pending" and int(st.get("lock_remaining") or 0) == 0:
+                mark_abandoned(mode, qid, "no_reproduce_pass")
             continue
+        # 新题：进入复现轮（此时**不预锁**——只有过线才会由 mark_reproduce_ok 上锁）
         _append(mode, {"question_id": qid, "state": "reproduce_pending",
-                       "lock_remaining": max(0, int(lock_rounds)), "phase": "reproduce",
-                       "attempts": 1})
+                       "lock_remaining": 0, "phase": "reproduce", "attempts": 1})
         return q, "reproduce"
 
     return None, None
+
+
+def mark_reproduce_ok(mode: str, question_id: str, lock_rounds: int, *, factor: str = "",
+                      detail: str = "") -> None:
+    """复现版过 train 海选线 → 记 reproduce_ok 并锁定该课题 N 轮发散（由工具侧调用）。"""
+    _append(mode, {"question_id": str(question_id), "state": "reproduce_ok",
+                   "lock_remaining": max(0, int(lock_rounds)), "phase": "diverge",
+                   "reproduce_factor": str(factor)[:120], "detail": str(detail)[:160]})
 
 
 def mark_abandoned(mode: str, question_id: str, reason: str) -> None:

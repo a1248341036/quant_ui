@@ -922,6 +922,7 @@ async def run_factor_mining_agentscope(
         from alphaagent.factor.mining.report_channels import report_rag_enabled
 
         from alphaagent.factor.mining.report_channels import (
+            reproduce_lock_rounds,
             reproduce_of_required,
             report_flow_enabled,
             resolve_report_phase,
@@ -943,6 +944,8 @@ async def run_factor_mining_agentscope(
                     "required": reproduce_of_required(spec),
                     "phase": _rag_phase,
                     "qid": _qid,
+                    "mode": str(getattr(config, "research_mode", "report") or "report"),
+                    "lock_rounds": reproduce_lock_rounds(spec),
                 }
             except Exception:  # noqa: BLE001
                 pass

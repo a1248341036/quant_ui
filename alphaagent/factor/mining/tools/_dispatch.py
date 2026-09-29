@@ -497,6 +497,24 @@ class _DispatchMixin:
                 and cov_f > float(ep["min_train_coverage"])
             ):
                 return
+            # ── 研报模式复现判定（Phase 2b，2026-09-29）──
+            # 复现阶段（gate.phase=="reproduce"）过同一条 train 海选线 → 记 reproduce_ok，
+            # 由课题状态机把该课题锁定 N 轮发散；判定与 val 自动验证同源阈值，避免口径漂移。
+            _rgate = getattr(self, "report_reproduce_gate", None) or {}
+            if _rgate.get("phase") == "reproduce" and _rgate.get("qid"):
+                try:
+                    from alphaagent.factor.mining.agent.question_state import mark_reproduce_ok
+
+                    mark_reproduce_ok(
+                        str(_rgate.get("mode") or "report"),
+                        str(_rgate["qid"]),
+                        int(_rgate.get("lock_rounds") or 3),
+                        factor=factor_name,
+                        detail=f"ic={ic_f:.4f} icir={icir_f:.4f} cov={cov_f:.3f}",
+                    )
+                    _rgate["phase"] = "diverge"   # 本 turn 后续同题评估即视为发散
+                except Exception:  # noqa: BLE001
+                    pass
             # 防抖：同表达式（归一化）只自动 val 一次（会话级）
             key = re.sub(r"\s+", "", expr)
             done = getattr(self, "_auto_val_done", None)
