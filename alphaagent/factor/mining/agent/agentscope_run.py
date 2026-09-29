@@ -929,6 +929,7 @@ async def run_factor_mining_agentscope(
         from alphaagent.factor.mining.report_channels import report_rag_enabled
 
         from alphaagent.factor.mining.report_channels import (
+            diverge_parent_required,
             reproduce_lock_rounds,
             reproduce_of_required,
             report_flow_enabled,
@@ -997,6 +998,10 @@ async def run_factor_mining_agentscope(
                     "qid": _qid,
                     "mode": str(getattr(config, "research_mode", "report") or "report"),
                     "lock_rounds": reproduce_lock_rounds(spec),
+                    "diverge_parent": diverge_parent_required(spec),
+                    "parent_name": reproduce_factor_of(
+                        str(getattr(config, "research_mode", "report") or "report"), _qid
+                    ),
                 }
             except Exception:  # noqa: BLE001
                 pass

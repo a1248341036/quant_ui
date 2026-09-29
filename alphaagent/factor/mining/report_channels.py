@@ -94,3 +94,12 @@ def resolve_report_phase(spec: dict[str, Any] | None, turn: int, *, locked: bool
     if locked:
         return "diverge"
     return "reproduce" if int(turn) <= 0 else "diverge"
+
+
+def diverge_parent_required(spec: dict[str, Any] | None) -> bool:
+    """发散轮是否强制 `parent_factor` 指向复现版（默认关，2026-09-30）。
+
+    关：只靠题面约束，模型可脱稿自由探索（实测产出 promising 但脱离研报血统）；
+    开：「围绕研报发散」成为硬约束，代价是候选产出可能下降。
+    """
+    return bool(((spec or {}).get("report_policy") or {}).get("diverge_parent_required"))
