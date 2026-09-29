@@ -302,6 +302,75 @@ def question_missing_fields(
     return tuple(missing)
 
 
+def _clean_question_text(text: str, limit: int = 700) -> str:
+    """清洗题库文本：去掉表格残渣与 HTML 注释（实测 23% 课题的 construction_guide 是表格块）。
+
+    题库字段由 PDF 解析而来，部分课题的 construction_guide/empirical_findings 直接是
+    ``<!-- table pN --> | ... |`` 这类表格残渣，注入题面只会污染复现要求。
+    """
+    import re
+
+    if not text:
+        return ""
+    t = re.sub(r"<!--.*?-->", " ", str(text), flags=re.S)
+    keep = []
+    for line in t.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.count("|") >= 2 or re.fullmatch(r"[\-|\s:]+", line):
+            continue          # 表格行/分隔行
+        keep.append(line)
+    out = " ".join(" ".join(keep).split())
+    if len(out) < 20:
+        return ""
+    return out[:limit]
+
+
+def render_reproduce_task(question: dict, spec: dict | None = None) -> str:
+    """研报模式的**复现题面**（Phase 1）：把课题自带的机制物料变成"必须复现"的任务块。
+
+    物料来自题库字段本身（construction_guide / empirical_findings / suggested_fields /
+    suggested_operators / expected_shape / expected_sign / falsifier），不依赖机制卡扩容
+    （卡扩容是后续的增强，见 docs/specs/alphaagent_report_reproduce_diverge_spec.md §3）。
+    """
+    if not question:
+        return ""
+    qid = str(question.get("question_id") or "").strip()
+    topic = str(question.get("topic") or "").strip()
+    guide = _clean_question_text(question.get("construction_guide"), 700)
+    findings = _clean_question_text(question.get("empirical_findings"), 400)
+    fields = question.get("suggested_fields") or []
+    ops = question.get("suggested_operators") or []
+    shape = question.get("expected_shape") or "-"
+    sign = question.get("expected_sign")
+    falsifier = " ".join(str(question.get("falsifier") or "").split())[:200]
+    parts = [
+        "## 研报复现（本轮必须完成；复现不通过则本轮作废）",
+        f"- 课题：{topic}（{question.get('source') or ''}，课题号 {qid}）",
+        f"- 研报构建思路：{guide or '（题库该字段为表格残渣或缺失——请按课题名与研报机制自行还原，并在 comment 里写明依据）'}",
+    ]
+    if findings:
+        parts.append(f"- 研报实测（对账参考，非硬门）：{findings}")
+    if fields:
+        parts.append(f"- 建议字段：{', '.join(map(str, fields))}")
+    if ops:
+        parts.append(f"- 建议算子：{', '.join(map(str, ops))}")
+    parts.append(f"- 期望形态：{shape}；期望方向：{sign if sign is not None else '-'}")
+    if falsifier:
+        parts.append(f"- 证伪条件：{falsifier}")
+    parts += [
+        "",
+        "**硬约束（违反会被直接拒绝，不消耗评估额度）**：",
+        f"1. 复现版的 `parent_factor` 必须写成 `reproduce_of:{qid}`（或包含 `{qid}`），"
+        "**禁止填自己上一轮的因子名**；",
+        "2. 只允许「字段同族替换 + 算子落地」——**不得改变研报的机制语义**；",
+        "3. 复现版先用 `train_screen` 评估；通过后（本模式）才进入发散阶段，发散一次只改一个维度"
+        "（窗长／算子／同族字段／中性化键／门控形态／交互结构），并填 `parent_factor=<复现版因子名>`。",
+    ]
+    return "\n".join(parts)
+
+
 def get_question_for_turn(
     turn: int,
     spec: dict[str, Any] | None = None,

@@ -878,9 +878,31 @@ async def run_factor_mining_agentscope(
         # R3 方案每轮动态联动：如果启用了 RAG，每轮根据当前派发的具体课题动态检索最相关研报段落注入
         from alphaagent.factor.mining.report_channels import report_rag_enabled
 
-        from alphaagent.factor.mining.report_channels import resolve_report_phase
+        from alphaagent.factor.mining.report_channels import (
+            reproduce_of_required,
+            report_flow_enabled,
+            resolve_report_phase,
+        )
 
         _rag_phase = resolve_report_phase(spec, outer_turn)
+        # ── 研报模式 Phase 1：复现阶段注入「复现题面」并把硬门禁状态挂到 tools ──
+        if report_flow_enabled(spec) and current_question:
+            _qid = str(current_question.get("question_id") or "")
+            if _rag_phase == "reproduce":
+                from alphaagent.factor.mining.agent.question_queue import render_reproduce_task
+
+                _rep_task = render_reproduce_task(current_question, spec)
+                if _rep_task:
+                    block = f"{block}\n\n{_rep_task}" if block else _rep_task
+                    log_step("report_reproduce_task", f"turn={outer_turn} qid={_qid} chars={len(_rep_task)}")
+            try:
+                factor_tools.report_reproduce_gate = {
+                    "required": reproduce_of_required(spec),
+                    "phase": _rag_phase,
+                    "qid": _qid,
+                }
+            except Exception:  # noqa: BLE001
+                pass
         if report_rag_enabled(spec, phase=_rag_phase) and current_question:
             try:
                 from alphaagent.factor.mining.memory.ov_store import OVStore
