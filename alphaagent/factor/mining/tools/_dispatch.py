@@ -506,9 +506,13 @@ class _DispatchMixin:
                     try:
                         from alphaagent.factor.mining.agent.question_state import mark_reproduce_ok
 
-                        _why = ("shape=confirmed" if _by_shape else "") + (
-                            ("+" if _by_shape and _by_metrics else "") if _by_metrics else ""
-                        ) + f"ic={ic_f:.4f} icir={icir_f:.4f} cov={cov_f:.3f}"
+                        _parts = []
+                        if _by_shape:
+                            _parts.append(f"shape={_shape}")
+                        if _by_metrics:
+                            _parts.append("signal=ok")
+                        _parts.append(f"ic={ic_f:.4f} icir={icir_f:.4f} cov={cov_f:.3f}")
+                        _why = " | ".join(_parts)
                         mark_reproduce_ok(
                             str(_rgate.get("mode") or "report"),
                             str(_rgate["qid"]),
