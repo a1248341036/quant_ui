@@ -488,6 +488,38 @@ class _DispatchMixin:
                 cov_f = float(cov)
             except (TypeError, ValueError):
                 return
+            # ── 研报模式复现判定（Phase 2b/2c，2026-09-30）──
+            # 必须在 promising 门槛**之前**判定：复现判据是"保真"，不是"强度"，
+            # 指标不达 promising 线时下面会 early-return，故放这里才能生效。
+            # 两个通过条件（满足其一）：
+            #   ① 形态对账 confirmed（spec §2.3 的主判据：因子形态与研报预期一致）
+            #   ② 信号存在档 ic≥reproduce_min_abs_ic 且 icir≥reproduce_min_icir
+            _rgate = getattr(self, "report_reproduce_gate", None) or {}
+            if _rgate.get("phase") == "reproduce" and _rgate.get("qid"):
+                _rp = getattr(self, "report_policy", None) or {}
+                _rep_ic = float(_rp.get("reproduce_min_abs_ic", 0.010))
+                _rep_icir = float(_rp.get("reproduce_min_icir", 0.10))
+                _shape = str((result.get("prediction_check") or {}).get("verdict") or "")
+                _by_metrics = ic_f >= _rep_ic and icir_f >= _rep_icir
+                _by_shape = _shape == "confirmed"
+                if _by_metrics or _by_shape:
+                    try:
+                        from alphaagent.factor.mining.agent.question_state import mark_reproduce_ok
+
+                        _why = ("shape=confirmed" if _by_shape else "") + (
+                            ("+" if _by_shape and _by_metrics else "") if _by_metrics else ""
+                        ) + f"ic={ic_f:.4f} icir={icir_f:.4f} cov={cov_f:.3f}"
+                        mark_reproduce_ok(
+                            str(_rgate.get("mode") or "report"),
+                            str(_rgate["qid"]),
+                            int(_rgate.get("lock_rounds") or 3),
+                            factor=factor_name,
+                            detail=_why,
+                        )
+                        _rgate["phase"] = "diverge"   # 本 turn 后续同题评估即视为发散
+                    except Exception:  # noqa: BLE001
+                        pass
+
             from alphaagent.factor.mining.research_spec import DEFAULT_RESEARCH_SPEC
 
             ep = DEFAULT_RESEARCH_SPEC["evaluation_policy"]
@@ -497,30 +529,6 @@ class _DispatchMixin:
                 and cov_f > float(ep["min_train_coverage"])
             ):
                 return
-            # ── 研报模式复现判定（Phase 2b，2026-09-29）──
-            # 复现阶段（gate.phase=="reproduce"）过同一条 train 海选线 → 记 reproduce_ok，
-            # 由课题状态机把该课题锁定 N 轮发散；判定与 val 自动验证同源阈值，避免口径漂移。
-            _rgate = getattr(self, "report_reproduce_gate", None) or {}
-            if _rgate.get("phase") == "reproduce" and _rgate.get("qid"):
-                # 复现判定的本质是**保真**（形态对账 + 信号存在），不是强度：
-                # 强度目标留给发散阶段去冲。阈值可由 report_policy 覆盖。
-                _rp = getattr(self, "report_policy", None) or {}
-                _rep_ic = float(_rp.get("reproduce_min_abs_ic", 0.010))
-                _rep_icir = float(_rp.get("reproduce_min_icir", 0.10))
-                if ic_f >= _rep_ic and icir_f >= _rep_icir:
-                    try:
-                        from alphaagent.factor.mining.agent.question_state import mark_reproduce_ok
-
-                        mark_reproduce_ok(
-                            str(_rgate.get("mode") or "report"),
-                            str(_rgate["qid"]),
-                            int(_rgate.get("lock_rounds") or 3),
-                            factor=factor_name,
-                            detail=f"ic={ic_f:.4f} icir={icir_f:.4f} cov={cov_f:.3f}",
-                        )
-                        _rgate["phase"] = "diverge"   # 本 turn 后续同题评估即视为发散
-                    except Exception:  # noqa: BLE001
-                        pass
             # 防抖：同表达式（归一化）只自动 val 一次（会话级）
             key = re.sub(r"\s+", "", expr)
             done = getattr(self, "_auto_val_done", None)
