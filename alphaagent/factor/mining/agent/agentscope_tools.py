@@ -666,16 +666,16 @@ def build_factor_eval_toolkit(
         **_legacy_kwargs: Any,
     ) -> ToolChunk:
         """按已冻结 EvaluationProfile 执行 DSL 评估；profile 控制 split、transform、指标与规则。"""
-                  # ── 研报模式发散门禁（可选，默认关）：发散轮必须基于复现版单维变异 ──
-                  _gate_d = getattr(tools, "report_reproduce_gate", None) or {}
-                  if _gate_d.get("diverge_parent") and _gate_d.get("phase") == "diverge":
-                      _pname = str(_gate_d.get("parent_name") or "")
-                      if _pname and _pname not in str(parent_factor or ""):
-                          return ToolChunk(content=[TextBlock(text=(
-                              f"⛔ 发散门禁：本轮是课题 {_gate_d.get('qid')} 的发散轮，`parent_factor` 必须指向复现版 "
-                              f"`{_pname}`（并只改一个维度）。若认为该机制在本池无效，请明确放弃该课题，"
-                              "不要在同一轮里另起炉灶。"
-                          ))])
+        # ── 研报模式发散门禁（可选，默认关）：发散轮必须基于复现版单维变异 ──
+        _gate_d = getattr(tools, "report_reproduce_gate", None) or {}
+        if _gate_d.get("diverge_parent") and _gate_d.get("phase") == "diverge":
+            _pname = str(_gate_d.get("parent_name") or "")
+            if _pname and _pname not in str(parent_factor or ""):
+                return ToolChunk(content=[TextBlock(text=(
+                    f"⛔ 发散门禁：本轮是课题 {_gate_d.get('qid')} 的发散轮，`parent_factor` 必须指向复现版 "
+                    f"`{_pname}`（并只改一个维度）。若认为该机制在本池无效，请明确放弃该课题，"
+                    "不要在同一轮里另起炉灶。"
+                ))])
 
         # ── 研报模式复现门禁（Phase 1）：复现阶段必须声明 reproduce_of:<课题号> ──
         _gate = getattr(tools, "report_reproduce_gate", None) or {}
@@ -979,16 +979,16 @@ def build_factor_eval_toolkit(
             **_legacy_kwargs: Any,
         ) -> ToolChunk:
             """【正式交付】统计数据通过即写候选池；reviewer approve 才写正式 factorzoo。"""
-                      # ── 研报模式发散门禁（可选，默认关）：发散轮必须基于复现版单维变异 ──
-                      _gate_d = getattr(tools, "report_reproduce_gate", None) or {}
-                      if _gate_d.get("diverge_parent") and _gate_d.get("phase") == "diverge":
-                          _pname = str(_gate_d.get("parent_name") or "")
-                          if _pname and _pname not in str(parent_factor or ""):
-                              return ToolChunk(content=[TextBlock(text=(
-                                  f"⛔ 发散门禁：本轮是课题 {_gate_d.get('qid')} 的发散轮，`parent_factor` 必须指向复现版 "
-                                  f"`{_pname}`（并只改一个维度）。若认为该机制在本池无效，请明确放弃该课题，"
-                                  "不要在同一轮里另起炉灶。"
-                              ))])
+            # ── 研报模式发散门禁（可选，默认关）：发散轮必须基于复现版单维变异 ──
+            _gate_d = getattr(tools, "report_reproduce_gate", None) or {}
+            if _gate_d.get("diverge_parent") and _gate_d.get("phase") == "diverge":
+                _pname = str(_gate_d.get("parent_name") or "")
+                if _pname and _pname not in str(parent_factor or ""):
+                    return ToolChunk(content=[TextBlock(text=(
+                        f"⛔ 发散门禁：本轮是课题 {_gate_d.get('qid')} 的发散轮，`parent_factor` 必须指向复现版 "
+                        f"`{_pname}`（并只改一个维度）。若认为该机制在本池无效，请明确放弃该课题，"
+                        "不要在同一轮里另起炉灶。"
+                    ))])
 
             # ── 研报模式复现门禁（Phase 1）：复现阶段必须声明 reproduce_of:<课题号> ──
             _gate = getattr(tools, "report_reproduce_gate", None) or {}
