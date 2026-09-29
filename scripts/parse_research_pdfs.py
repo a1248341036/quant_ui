@@ -115,17 +115,19 @@ def _default_root() -> Path:
 
 # ─────────────────────────── 正文 / 表格（v1 口径不变） ───────────────────────────
 
-def extract_text_layers(pdf_path: str, min_size: float, small_min: float) -> tuple[str, str]:
-    """返回 (正文层, 小字层)。
+def extract_text_layers(pdf_path: str, min_size: float, small_min: float) -> tuple[list[str], list[str]]:
+    """按页返回 (正文层 pages, 小字层 pages)。
 
     正文层：``size >= min_size``（v1 口径，保持可比）。
-    小字层：``small_min <= size < min_size``，去页眉页脚/免责声明/页码噪声后的行——
-    图表参数表、图注与公式大量落在这一层（实测占全文近一半）。
+    小字层：``small_min <= size < min_size``——图表参数表、图注与公式大量落在这一层
+    （实测占全文近一半；v1 整层丢弃是"研报没有公式"假象的根因）。
+    两层都保留**逐页**结构，供渲染时加 ``<!-- Page N -->`` 锚点。
     """
     import pymupdf
 
     doc = pymupdf.open(pdf_path)
-    body_pages, small_pages = [], []
+    body_pages: list[str] = []
+    small_pages: list[str] = []
     try:
         for page in doc:
             d = page.get_text("dict")
@@ -140,13 +142,65 @@ def extract_text_layers(pdf_path: str, min_size: float, small_min: float) -> tup
                     size = max((sp["size"] for sp in line["spans"]), default=0.0)
                     if size >= min_size:
                         body_lines.append(raw)
-                    elif size >= small_min and not RE_SMALL_NOISE.search(raw) and len(raw) >= 2:
+                    elif size >= small_min:
                         small_lines.append(raw)
             body_pages.append("\n".join(body_lines))
             small_pages.append("\n".join(small_lines))
-        return "\n\n".join(body_pages), "\n\n".join(small_pages)
+        return body_pages, small_pages
     finally:
         doc.close()
+
+
+def _clean_layer(pages: list[str], *, dup_threshold: int = 3, drop_short: bool = True) -> list[str]:
+    """层内清洗：剔除版式噪声，保留信息行。
+
+    规则（按有效性排序，实测小字层近一半是噪声）：
+    1. **跨页重复行只留首次**：出现 >= ``dup_threshold`` 次且长度 < 45 的行——
+       页眉/页脚/免责声明/封面"往期报告列表"；这是最大噪声源（实测 46%）。
+       含算符/等号/公式特征的行**不参与**去重（避免误删表格重复表头里的公式行）。
+    2. **超短碎片**：<= 3 字符且不含字母/数字/算符的行（坐标轴单字刻度）删除。
+    3. 小字层额外套用 ``RE_SMALL_NOISE`` 关键词黑名单。
+    """
+    from collections import Counter
+
+    FORM_HINT = re.compile(r"[=+*/()<>]|[A-Za-z]{3,}|→|[0-9]\.[0-9]")
+    freq: Counter = Counter()
+    for page in pages:
+        for line in page.splitlines():
+            line = line.strip()
+            if line:
+                freq[line] += 1
+
+    out_pages: list[str] = []
+    kept_once: set[str] = set()
+    for page in pages:
+        kept: list[str] = []
+        for raw in page.splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            if drop_short and len(line) <= 3 and not FORM_HINT.search(line):
+                continue
+            if RE_SMALL_NOISE.search(line):
+                continue
+            repeated = freq[line] >= dup_threshold and len(line) < 45
+            if repeated and not FORM_HINT.search(line):
+                if line in kept_once:
+                    continue
+                kept_once.add(line)
+            kept.append(line)
+        out_pages.append("\n".join(kept))
+    return out_pages
+
+
+def _render_paged(pages: list[str]) -> str:
+    """按页输出并加 ``<!-- Page N -->`` 锚点（保留阅读顺序，便于引用与区域归位）。"""
+    blocks = []
+    for i, page in enumerate(pages, start=1):
+        if not page.strip():
+            continue
+        blocks.append(f"<!-- Page {i} -->\n{page}")
+    return "\n\n".join(blocks)
 
 
 def render_pages(pdf_path: str, media_dir: Path, cfg: dict) -> list[dict]:
@@ -440,9 +494,13 @@ def parse_single(args: tuple[int, str]) -> dict:
     with_vlm = bool(_CFG.get("vlm"))
     try:
         t0 = time.time()
-        text, small_text = extract_text_layers(
+        body_pages, small_pages = extract_text_layers(
             str(pdf_path), float(_CFG.get("min_size", 9.0)), float(_CFG.get("small_font_min", 5.0))
         )
+        body_pages = _clean_layer(body_pages, drop_short=False)
+        small_pages = _clean_layer(small_pages)
+        text = _render_paged(body_pages)
+        small_text = _render_paged(small_pages)
         tables = extract_tables_pdfplumber(str(pdf_path), float(_CFG.get("min_table_ratio", 0.3)))
 
         images: list[dict] = []
