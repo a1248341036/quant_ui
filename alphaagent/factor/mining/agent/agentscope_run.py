@@ -933,12 +933,32 @@ async def run_factor_mining_agentscope(
         if report_flow_enabled(spec) and current_question:
             _qid = str(current_question.get("question_id") or "")
             if _rag_phase == "reproduce":
-                from alphaagent.factor.mining.agent.question_queue import render_reproduce_task
+                from alphaagent.factor.mining.agent.question_queue import (
+                    find_card_for_question,
+                    render_reproduce_task,
+                )
 
-                _rep_task = render_reproduce_task(current_question, spec)
+                _card = find_card_for_question(current_question)
+                _evidence = ""
+                try:  # 复现阶段也拉一次"该课题对应研报"的原文片段（含公式），作为复现依据
+                    from alphaagent.factor.mining.memory.ov_store import OVStore
+
+                    _store = OVStore(endpoint=report_policy.get("ov_endpoint", "http://127.0.0.1:1933"),
+                                     inject_max_chars=1000)
+                    _qtext = (f"{current_question.get('topic', '')} "
+                              f"{(_card or {}).get('source', {}).get('title', '') if _card else ''} "
+                              f"{current_question.get('hypothesis', '')}")
+                    _evidence = _store.retrieve_report_knowledge(
+                        focus_facets=getattr(config, "focus_facets", None),
+                        research_mode=getattr(config, "research_mode", "report"),
+                        query_text=_qtext, limit=2, max_chars=1000,
+                    ) or ""
+                except Exception:  # noqa: BLE001
+                    _evidence = ""
+                _rep_task = render_reproduce_task(current_question, spec, card=_card, evidence=_evidence)
                 if _rep_task:
                     block = f"{block}\n\n{_rep_task}" if block else _rep_task
-                    log_step("report_reproduce_task", f"turn={outer_turn} qid={_qid} chars={len(_rep_task)}")
+                    log_step("report_reproduce_task", f"turn={outer_turn} qid={_qid} chars={len(_rep_task)} card={(_card or {}).get('card_id') or '-'} evidence={len(_evidence)}")
             try:
                 factor_tools.report_reproduce_gate = {
                     "required": reproduce_of_required(spec),

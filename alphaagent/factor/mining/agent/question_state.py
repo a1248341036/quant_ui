@@ -123,3 +123,9 @@ def mark_abandoned(mode: str, question_id: str, reason: str) -> None:
     """把课题标记为 abandoned（复现失败/窗口内零过线时由上层调用）。"""
     _append(mode, {"question_id": str(question_id), "state": "abandoned",
                    "reason": str(reason)[:120], "lock_remaining": 0})
+
+
+def reproduce_factor_of(mode: str, question_id: str) -> str:
+    """取该课题已登记的复现版因子名（供发散题面引用为父本）；无则空串。"""
+    st = load_states(mode).get(str(question_id)) or {}
+    return str(st.get("reproduce_factor") or "")
