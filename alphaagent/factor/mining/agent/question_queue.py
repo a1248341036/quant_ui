@@ -388,7 +388,10 @@ def find_card_for_question(question: dict, cards: list[dict] | None = None) -> d
             score += 3.0
         if score > best_score:
             best, best_score = c, score
-    return best if best_score >= 2.0 else None
+    # 阈值放宽到 1.0（2026-09-30 实测：810 张卡时仍频繁 card=-，课题名与卡标题
+    # 往往只有 1 个共享实词——例如"趋势选股"vs"趋势因子"）。宁可给一张弱匹配的
+    # 参考卡（题面里标注为参考），也比复现轮完全没有机制物料好。
+    return best if best_score >= 1.0 else None
 
 
 def _card_block(card: dict) -> str:
