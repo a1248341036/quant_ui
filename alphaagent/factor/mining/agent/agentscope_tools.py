@@ -673,7 +673,6 @@ def build_factor_eval_toolkit(
             _pf = str(parent_factor or "")
             if _qid and _qid not in _pf:
                 return ToolChunk(content=[TextBlock(text=(
-                    content=(
                         f"⛔ 复现门禁：当前处于研报复现阶段（课题 {_qid}），"
                         f"`parent_factor` 必须写成 `reproduce_of:{_qid}`（或至少包含 `{_qid}`），"
                         f"当前传入={_pf or '(空)'}。\n"
@@ -976,7 +975,6 @@ def build_factor_eval_toolkit(
                 _pf = str(parent_factor or "")
                 if _qid and _qid not in _pf:
                     return ToolChunk(content=[TextBlock(text=(
-                        content=(
                             f"⛔ 复现门禁：当前处于研报复现阶段（课题 {_qid}），"
                             f"`parent_factor` 必须写成 `reproduce_of:{_qid}`（或至少包含 `{_qid}`），"
                             f"当前传入={_pf or '(空)'}。\n"
