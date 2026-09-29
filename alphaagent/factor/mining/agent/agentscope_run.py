@@ -875,13 +875,19 @@ async def run_factor_mining_agentscope(
                         lock_rounds=reproduce_lock_rounds(spec),
                     )
                     if _q is not None:
-                        # 状态机出的题仍需过字段门控（缺列题跳过，保持既有语义）
+                        # 状态机选出的题**优先**（复现/发散必须锁在同一课题上）。
+                        # 这里只借 get_question_for_turn 做字段门控**统计**，绝不用它替换课题
+                        # ——2026-09-30 实测：替换后发散轮题号会漂到下一题（RQ_712 → RQ_713），
+                        # 变成"复现完就换题"，'围绕复现版发散'名存实亡。
                         _gate_stats: dict[str, Any] = {}
-                        _gated = get_question_for_turn(
-                            outer_turn, spec=spec, focus_facets=getattr(config, "focus_facets", None),
-                            session_id=sid, available_fields=_available_fields, stats=_gate_stats,
-                        )
-                        current_question = _gated or _q
+                        try:
+                            get_question_for_turn(
+                                outer_turn, spec=spec, focus_facets=getattr(config, "focus_facets", None),
+                                session_id=sid, available_fields=_available_fields, stats=_gate_stats,
+                            )
+                        except Exception:  # noqa: BLE001
+                            _gate_stats = {}
+                        current_question = _q
                         _q_stats.update(_gate_stats)
                         log_step(
                             "report_state_machine",
