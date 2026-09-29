@@ -35,6 +35,7 @@
 [CmdletBinding()]
 param(
     [string]$TradeDate = "",
+    [string]$StatusFile = "",
     [switch]$NoGui,
     [switch]$NoStaleRetry,
     [switch]$NoBackup,
@@ -44,6 +45,24 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# ── 代理健康探测与自愈（防止死代理 10061 拖死流水线）─────────────────
+try {
+    $proxyEnv = $env:HTTP_PROXY ?? $env:HTTPS_PROXY ?? $env:ALL_PROXY
+    if ($proxyEnv -and $proxyEnv -match "127\.0\.0\.1:(\d+)") {
+        $pPort = [int]$matches[1]
+        $tcp = [System.Net.Sockets.TcpClient]::new()
+        $ar = $tcp.BeginConnect("127.0.0.1", $pPort, $null, $null)
+        $wh = $ar.AsyncWaitHandle.WaitOne(500)
+        if (-not $wh -or -not $tcp.Connected) {
+            # 代理端口无法建立连接，清除环境变量强制直连，防止批处理全部因 10061 拒绝退出
+            $env:HTTP_PROXY = ""
+            $env:HTTPS_PROXY = ""
+            $env:ALL_PROXY = ""
+        }
+        $tcp.Dispose()
+    }
+} catch {}
 
 # ── 路径常量 ──────────────────────────────────────────────────────────
 $RepoRoot   = "D:\Quant\quant_ui"
@@ -92,6 +111,7 @@ $UseGui = (-not $NoGui) -and [System.Environment]::UserInteractive -and (Test-Pa
 function Execute-CnePipeline {
     param(
         [hashtable]$SyncContext = $null,
+        [string]$StatusFile = "",
         [string]$TradeDate = "",
         [bool]$NoStaleRetry = $false,
         [bool]$NoBackup = $false,
@@ -103,6 +123,31 @@ function Execute-CnePipeline {
     $StaleRetry = -not $NoStaleRetry
     $delaySec = if ($env:CNE_STALE_DELAY_SEC) { [int]$env:CNE_STALE_DELAY_SEC } else { $StaleDelaySec }
 
+    # 结构化状态管理（供 GUI 跨进程/跨线程原子读取）
+    $resultsList = [System.Collections.Generic.List[psobject]]::new()
+    $statusObj = [ordered]@{
+        phase_name   = "环境准备与状态清理"
+        phase_index  = 1
+        phase_total  = 8
+        progress_pct = 0.0
+        current_step = "正在启动流水线..."
+        results      = $resultsList
+        is_completed = $false
+        is_success   = $false
+        message      = ""
+        updated_at   = (Get-Date -Format "HH:mm:ss")
+    }
+
+    function Save-StatusState {
+        if ($StatusFile) {
+            try {
+                $statusObj.updated_at = (Get-Date -Format "HH:mm:ss")
+                $json = $statusObj | ConvertTo-Json -Depth 5 -Compress
+                [System.IO.File]::WriteAllText($StatusFile, $json, [System.Text.Encoding]::UTF8)
+            } catch {}
+        }
+    }
+
     function Write-PipelineLog([string]$Msg) {
         $ts = Get-Date -Format "HH:mm:ss"
         $line = "[$ts] $Msg"
@@ -111,12 +156,19 @@ function Execute-CnePipeline {
     }
 
     function Notify-Step([string]$stepText) {
+        $statusObj.current_step = $stepText
+        Save-StatusState
         if ($SyncContext) {
             $SyncContext.CurrentStep = $stepText
         }
     }
 
     function Notify-Phase([string]$phaseName, [int]$idx, [int]$total, [double]$pct) {
+        $statusObj.phase_name   = $phaseName
+        $statusObj.phase_index  = $idx
+        $statusObj.phase_total  = $total
+        $statusObj.progress_pct = [math]::Round($pct, 1)
+        Save-StatusState
         if ($SyncContext) {
             $SyncContext.PhaseName  = $phaseName
             $SyncContext.PhaseIndex = $idx
@@ -127,14 +179,17 @@ function Execute-CnePipeline {
     }
 
     function Record-Result([string]$dataset, [string]$status, [int]$rows, [string]$elapsed, [string]$note) {
+        $item = [pscustomobject]@{
+            Dataset = $dataset
+            Status  = $status
+            Rows    = $rows
+            Elapsed = $elapsed
+            Note    = $note
+        }
+        $resultsList.Add($item)
+        Save-StatusState
         if ($SyncContext -and $SyncContext.NewResults) {
-            $SyncContext.NewResults.Enqueue([pscustomobject]@{
-                Dataset = $dataset
-                Status  = $status
-                Rows    = $rows
-                Elapsed = $elapsed
-                Note    = $note
-            })
+            $SyncContext.NewResults.Enqueue($item)
         }
     }
 
@@ -329,19 +384,26 @@ function Execute-CnePipeline {
 
     # ── 汇总评估 ──────────────────────────────────────────────────────────
     Notify-Phase "流水线更新完成" 8 8 100.0
-    $isAllSuccess = ($failedGates.Count -eq 0 -and $failedSoft.Count -eq 0)
     $doneMessage = ""
 
     if ($failedGates.Count -gt 0) {
+        $isAllSuccess = $false
         $doneMessage = "核心门禁失败: $($failedGates -join ', ')"
         Write-PipelineLog "==== daily pipeline DONE — GATE FAILED: $($failedGates -join ', ') ===="
     } elseif ($failedSoft.Count -gt 0) {
-        $doneMessage = "部分波次警告: $($failedSoft -join ', ')"
+        $isAllSuccess = $SoftFailOk
+        $doneMessage = "数据同步完成（部分软波次有提示: $($failedSoft -join ', ')）"
         Write-PipelineLog "==== daily pipeline DONE — soft FAILED (warn-only): $($failedSoft -join ', ') ===="
     } else {
+        $isAllSuccess = $true
         $doneMessage = "全部数据集与波次同步成功！"
         Write-PipelineLog "==== daily pipeline DONE ok ===="
     }
+
+    $statusObj.is_completed = $true
+    $statusObj.is_success   = $isAllSuccess
+    $statusObj.message      = $doneMessage
+    Save-StatusState
 
     if ($SyncContext) {
         $SyncContext.IsSuccess   = $isAllSuccess
@@ -369,62 +431,87 @@ if ($UseGui) {
     $effectiveDate = if ($TradeDate) { $TradeDate } else { (Get-Date -Format "yyyy-MM-dd") }
     $app = New-CneDailyGuiApp -TradeDate $effectiveDate -LogPath $LogFile
 
-    # 线程安全同步上下文
-    $sync = [hashtable]::Synchronized(@{
-        CurrentStep   = "正在启动流水线..."
-        PhaseName     = "环境准备与状态清理"
-        PhaseIndex    = 1
-        PhaseTotal    = 8
-        ProgressPct   = 0.0
-        PhaseChanged  = $false
-        NewResults    = [System.Collections.Concurrent.ConcurrentQueue[psobject]]::new()
-        IsCompleted   = $false
-        IsSuccess     = $false
-        Message       = ""
-    })
+    # 状态文件路径（CLI 子进程与前台 GUI 通信媒介）
+    $activeStatusFile = if ($StatusFile) { $StatusFile } else { Join-Path $LogDir "daily-sync-status.json" }
+    try { Remove-Item $activeStatusFile -Force -ErrorAction SilentlyContinue } catch {}
 
-    # 启动后台工作线程跑流水线
+    # 启动后台 CLI 独立工作进程（彻底解决 ThreadJob 跨 Runspace 丢失函数与变量的问题）
+    $pwshBin = (Get-Command pwsh.exe -ErrorAction SilentlyContinue).Source
+    if (-not $pwshBin) { $pwshBin = "pwsh.exe" }
+
     $workerJob = Start-ThreadJob -ScriptBlock {
-        param($s, $td, $nsr, $nb, $q, $sc, $sef)
-        # 在线程内绑定执行函数并传入实参
-        $exitCode = Execute-CnePipeline -SyncContext $s -TradeDate $td -NoStaleRetry ([bool]$nsr) -NoBackup ([bool]$nb) -Quiet ([bool]$q) -SkipClean ([bool]$sc) -SkipEtfFund ([bool]$sef)
-        return $exitCode
-    } -ArgumentList $sync, $TradeDate, [bool]$NoStaleRetry, [bool]$NoBackup, [bool]$Quiet, [bool]$SkipClean, [bool]$SkipEtfFund
+        param($bin, $script, $td, $sf, $nsr, $nb, $q, $sc, $sef)
+        $argsList = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $script, "-NoGui", "-StatusFile", $sf)
+        if ($td)  { $argsList += @("-TradeDate", $td) }
+        if ($nsr) { $argsList += "-NoStaleRetry" }
+        if ($nb)  { $argsList += "-NoBackup" }
+        if ($q)   { $argsList += "-Quiet" }
+        if ($sc)  { $argsList += "-SkipClean" }
+        if ($sef) { $argsList += "-SkipEtfFund" }
+
+        & $bin @argsList
+        return $LASTEXITCODE
+    } -ArgumentList $pwshBin, $PSCommandPath, $TradeDate, $activeStatusFile, [bool]$NoStaleRetry, [bool]$NoBackup, [bool]$Quiet, [bool]$SkipClean, [bool]$SkipEtfFund
 
     # 前台 Dispatcher 轮询定时器
     $summaryShown = $false
+    $recordedKeys = [System.Collections.Generic.HashSet[string]]::new()
+    $lastPhase = ""
+    $lastStep  = ""
+
     $pollTimer = [System.Windows.Threading.DispatcherTimer]::new()
-    $pollTimer.Interval = [TimeSpan]::FromMilliseconds(60)
+    $pollTimer.Interval = [TimeSpan]::FromMilliseconds(100)
 
     $pollTimer.add_Tick({
-        # 1. 刷新阶段与进度条
-        if ($sync.PhaseChanged) {
-            $app.UpdatePhase($sync.PhaseName, $sync.PhaseIndex, $sync.PhaseTotal, $sync.ProgressPct)
-            $sync.PhaseChanged = $false
+        # 1. 尝试读取状态文件
+        if (Test-Path $activeStatusFile) {
+            try {
+                $rawJson = [System.IO.File]::ReadAllText($activeStatusFile, [System.Text.Encoding]::UTF8)
+                if ($rawJson) {
+                    $st = $rawJson | ConvertFrom-Json
+                    if ($st) {
+                        if ($st.phase_name -and $st.phase_name -ne $lastPhase) {
+                            $app.UpdatePhase($st.phase_name, [int]$st.phase_index, [int]$st.phase_total, [double]$st.progress_pct)
+                            $lastPhase = $st.phase_name
+                        }
+                        if ($st.current_step -and $st.current_step -ne $lastStep) {
+                            $app.UpdateStep($st.current_step)
+                            $lastStep = $st.current_step
+                        }
+                        if ($st.results) {
+                            foreach ($r in $st.results) {
+                                $rKey = "$($r.Dataset)_$($r.Status)_$($r.Rows)_$($r.Elapsed)"
+                                if ($recordedKeys.Add($rKey)) {
+                                    $app.RecordStepResult($r.Dataset, $r.Status, [int]$r.Rows, $r.Elapsed, $r.Note)
+                                }
+                            }
+                        }
+                        if ($st.is_completed -and -not $summaryShown) {
+                            $summaryShown = $true
+                            $app.ShowCompletionSummary([bool]$st.is_success, [string]$st.message)
+                            $pollTimer.Stop()
+                            return
+                        }
+                    }
+                }
+            } catch {}
         }
 
-        # 2. 刷新当前操作文本
-        if ($sync.CurrentStep) {
-            $app.UpdateStep($sync.CurrentStep)
-        }
-
-        # 3. 消费新增的结果队列
-        $resItem = $null
-        while ($sync.NewResults.TryDequeue([ref]$resItem)) {
-            $app.RecordStepResult($resItem.Dataset, $resItem.Status, $resItem.Rows, $resItem.Elapsed, $resItem.Note)
-        }
-
-        # 4. 任务完成展示对账单
-        if ($sync.IsCompleted -and -not $summaryShown) {
+        # 2. 检查子工作进程状态（防呆异常捕获，绝不挂死在启动中）
+        if ($workerJob.State -ne 'Running' -and -not $summaryShown) {
             $summaryShown = $true
-            $app.ShowCompletionSummary($sync.IsSuccess, $sync.Message)
+            $jobExit = $null
+            try { $jobExit = Receive-Job $workerJob } catch {}
+            $isOk = ($jobExit -eq 0)
+            $msg = if ($isOk) { "全部数据集与波次同步成功！" } else { "流水线执行异常终止 (退出码: $jobExit)，请查阅详细日志。" }
+            $app.ShowCompletionSummary($isOk, $msg)
             $pollTimer.Stop()
         }
     })
 
     $pollTimer.Start()
 
-    # 阻塞前台主线程展示优雅的 WPF 浮窗，直到用户点击“确定关闭”
+    # 阻塞前台主线程展示 WPF 浮窗，直到用户点击“确定关闭”
     [void]$app.Window.ShowDialog()
 
     # 清理后台作业
@@ -437,6 +524,7 @@ if ($UseGui) {
     exit 0
 } else {
     # 纯命令行控制台模式（CLI）
-    $exit = Execute-CnePipeline
+    $activeStatusFile = if ($StatusFile) { $StatusFile } else { Join-Path $LogDir "daily-sync-status.json" }
+    $exit = Execute-CnePipeline -StatusFile $activeStatusFile -TradeDate $TradeDate -NoStaleRetry ([bool]$NoStaleRetry) -NoBackup ([bool]$NoBackup) -Quiet ([bool]$Quiet) -SkipClean ([bool]$SkipClean) -SkipEtfFund ([bool]$SkipEtfFund)
     exit $exit
 }
