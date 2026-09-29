@@ -965,6 +965,22 @@ async def run_factor_mining_agentscope(
                 if _rep_task:
                     block = f"{block}\n\n{_rep_task}" if block else _rep_task
                     log_step("report_reproduce_task", f"turn={outer_turn} qid={_qid} chars={len(_rep_task)} card={(_card or {}).get('card_id') or '-'} evidence={len(_evidence)}")
+            if _rag_phase == "diverge":
+                try:
+                    from alphaagent.factor.mining.agent.question_queue import render_diverge_task
+                    from alphaagent.factor.mining.agent.question_state import reproduce_factor_of
+
+                    _div = render_diverge_task(
+                        current_question,
+                        reproduce_factor_of(
+                            str(getattr(config, "research_mode", "report") or "report"), _qid
+                        ),
+                    )
+                    if _div:
+                        block = f"{block}\n\n{_div}" if block else _div
+                        log_step("report_diverge_task", f"turn={outer_turn} qid={_qid} chars={len(_div)}")
+                except Exception:  # noqa: BLE001
+                    pass
             try:
                 factor_tools.report_reproduce_gate = {
                     "required": reproduce_of_required(spec),

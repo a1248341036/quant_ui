@@ -126,6 +126,24 @@ def mark_abandoned(mode: str, question_id: str, reason: str) -> None:
 
 
 def reproduce_factor_of(mode: str, question_id: str) -> str:
-    """取该课题已登记的复现版因子名（供发散题面引用为父本）；无则空串。"""
-    st = load_states(mode).get(str(question_id)) or {}
-    return str(st.get("reproduce_factor") or "")
+    """取该课题已登记的复现版因子名（供发散题面引用为父本）；无则空串。
+
+    注意：不能只看 ``load_states`` 的最后一条——锁定轮的追加记录不带
+    ``reproduce_factor``（只有 :func:`mark_reproduce_ok` 那条带），因此这里
+    直接全文件倒序找最近一次非空值。
+    """
+    qid = str(question_id)
+    p = state_path(mode)
+    if not p.exists():
+        return ""
+    for line in reversed(p.read_text(encoding="utf-8", errors="ignore").splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except Exception:  # noqa: BLE001
+            continue
+        if str(rec.get("question_id") or "") == qid and rec.get("reproduce_factor"):
+            return str(rec["reproduce_factor"])
+    return ""
