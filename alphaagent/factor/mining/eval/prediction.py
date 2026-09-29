@@ -334,6 +334,28 @@ def _prose_sign(value: str) -> int | None:
     return None
 
 
+# 2026-09-29：模型常只写主型、不写方向（expected_shape="monotonic"），方向由
+# expected_sign 承载；旧逻辑（枚举/别名/散文三路）都接不住 → 整串判非法，
+# 实测单轮 36/36 评估全废。这里补齐"主型/近义词"别名，只做措辞归一，不改语义主型。
+_SHAPE_EXTRA_ALIASES.update({
+    "monotonic": "monotonic_increasing",
+    "monotone": "monotonic_increasing",
+    "monotone_increasing": "monotonic_increasing",
+    "monotone_decreasing": "monotonic_decreasing",
+    "linear": "monotonic_increasing",
+    "increasing": "monotonic_increasing",
+    "positive": "monotonic_increasing",
+    "decreasing": "monotonic_decreasing",
+    "negative": "monotonic_decreasing",
+    "u_shaped": "u_shape",
+    "ushape": "u_shape",
+    "inverted_u_shaped": "inverted_u",
+    "spike": "spike_at_extreme",
+    "extreme": "spike_at_extreme",
+    "conditional": "conditional_subgroup",
+})
+
+
 def _canon_shape(value: Any) -> str | None:
     if value is None:
         return None

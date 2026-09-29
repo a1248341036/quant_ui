@@ -849,7 +849,14 @@ async def run_factor_mining_agentscope(
                 _available_fields = list(getattr(session_resp, "available_columns", None) or [])
                 _q_stats: dict[str, Any] = {}
                 _report_phase_from_state = None
-                if report_flow_enabled(spec):
+                # 注意：函数后面才 `from ...report_channels import report_flow_enabled`，
+                # 在本函数内该名字是局部变量——此处必须用别名导入，否则 UnboundLocalError
+                # 会被下面的宽泛 except 吞掉（2026-09-29 实测：题面/状态机整块被跳过）。
+                from alphaagent.factor.mining.report_channels import (
+                    report_flow_enabled as _report_flow_enabled,
+                )
+
+                if _report_flow_enabled(spec):
                     # 研报模式（Phase 2）：走课题状态机——复现 1 轮 + 锁定 N 轮发散，
                     # 跨 run 累积；其他模式仍用原有逐轮推进逻辑。
                     from alphaagent.factor.mining.agent.question_queue import (
