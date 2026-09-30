@@ -400,14 +400,19 @@ def find_card_for_question(question: dict, cards: list[dict] | None = None) -> d
     # 阈值回到 2.0（2026-09-30 复盘：1.0 会错配——RQ_020「Alpha 因子库精简」被配上
     # 《动态情景多因子 alpha 模型》的卡并带出误导性参考 DSL；错配比没有卡更糟）。
     # 例外：标题与课题高度重合（bigram Jaccard ≥ 0.34）时即使只共享 1 个实词也放行。
-    if best and best_score >= 2.0:
+    # 硬门槛：卡标题里要有 ≥4 字的中文片段真的出现在课题文本里（否则就是错配——
+    # 2026-09-30 复盘：仅靠"同机构+alpha"就能凑够分数，把《动态情景多因子alpha模型》
+    # 配给了"Alpha 因子库精简与优化"。宁可不给卡，也不给误导性机制/参考 DSL。）
+    if not best:
+        return None
+    import re as _re
+
+    title = str((best.get("source") or {}).get("title") or "")
+    segs = [t for t in _re.findall(r"[\u4e00-\u9fa5]{4,}", title)]
+    if any(seg in qtext for seg in segs):
         return best
-    # 兜底：只接受"同机构 + 标题与课题高度重合"的卡（否则宁可不给卡）
-    if best:
-        src = best.get("source") or {}
-        org = str(src.get("org") or "")
-        if org and org in qtext and _title_similar(best, qtext) >= 0.5:
-            return best
+    if best_score >= 2.0 and _title_similar(best, qtext) >= 0.35:
+        return best
     return None
 
 
