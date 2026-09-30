@@ -63,7 +63,7 @@ def enabled(ctx: Any) -> bool:
         return False
     from alphaagent.factor.mining.report_channels import resolve_report_channels
 
-    if not resolve_report_channels(getattr(ctx, "research_spec", None))["mechanism_cards"]:
+    if not resolve_report_channels(getattr(ctx, "research_spec", None), phase=getattr(ctx, "report_phase", None))["mechanism_cards"]:
         return False
     p = _resolve_cards_file(ctx)
     return bool(p and p.is_file())

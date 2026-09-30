@@ -45,6 +45,8 @@ class PromptContext:
     asset_type: str = "stock"
     # 每模式研究规范（delivery gates / 数据面聚焦 / prompt_policy 均从这里读）
     research_spec: dict[str, Any] | None = None
+    # 研报模式的知识阶段（reproduce/diverge）；其他模式为 None
+    report_phase: str | None = None
     # 种群批量模式候选上限；0 = 未启用
     population_max: int = 0
     # 数据面聚焦（用户多选，与 expressions.FACET_DEFS 对齐）；空 = 未启用

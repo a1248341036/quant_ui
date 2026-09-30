@@ -19,7 +19,7 @@ def enabled(ctx) -> bool:  # noqa: ANN001
         return False
     from alphaagent.factor.mining.report_channels import resolve_report_channels
 
-    if not resolve_report_channels(getattr(ctx, "research_spec", None))["static_manual"]:
+    if not resolve_report_channels(getattr(ctx, "research_spec", None), phase=getattr(ctx, "report_phase", None))["static_manual"]:
         return False
     return bool(RAW.strip())
 
