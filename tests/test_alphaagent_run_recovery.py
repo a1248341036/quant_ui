@@ -181,3 +181,32 @@ def test_explicit_failed_not_overwritten_by_fresh_jsonl(tmp_path) -> None:
     run.status = "failed"
     run.refresh()
     assert run.status == "failed"
+
+
+# ── 重启恢复：档位（research_mode）不能丢 ──
+# 子进程会用自己的 run_meta.json 覆盖后端写的那份，params 只剩 user_message；
+# 若不从 run 目录的 research_spec.json 补回，恢复后的 run 在前端页头看不到档位
+# （研报/技术/基本面），历史会话的研究规范编辑框也是空的。
+
+def test_restore_research_mode_from_run_dir_spec(tmp_path) -> None:
+    d = _make_run_dir(tmp_path, "reportrun", None)
+    (d / "research_spec.json").write_text(
+        json.dumps({"research_mode": "report", "report_policy": {"reproduce_first": True}}),
+        encoding="utf-8",
+    )
+    run = svc._load_run_from_disk(d)
+    assert run is not None
+    assert run.params["research_spec"]["research_mode"] == "report"
+    assert run.snapshot(tail=0)["research_mode"] == "report"
+
+
+def test_restore_keeps_meta_research_mode_when_spec_absent(tmp_path) -> None:
+    """没有 research_spec.json 时用 run_meta.params 里的 research_mode，不覆盖成 None。"""
+    d = _make_run_dir(tmp_path, "clirun", None)
+    meta = json.loads((d / "run_meta.json").read_text(encoding="utf-8"))
+    meta["params"] = {"user_message": "x", "research_mode": "fundamental"}
+    (d / "run_meta.json").write_text(json.dumps(meta), encoding="utf-8")
+
+    run = svc._load_run_from_disk(d)
+    assert run is not None
+    assert run.snapshot(tail=0)["research_mode"] == "fundamental"

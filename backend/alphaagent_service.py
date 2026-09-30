@@ -459,6 +459,19 @@ def _load_run_from_disk(run_dir: Path) -> AgentRun | None:
     ).isoformat())
     params = metadata.get("params") if isinstance(metadata.get("params"), dict) else {}
     params.setdefault("user_message", str(first_user or ""))
+    # 子进程会用自己的 run_meta.json 覆盖后端写的那份（原样只剩 user_message），所以
+    # 后端重启后从磁盘恢复的 run 拿不到 research_spec，前端页头的档位 chip（以及历史会话
+    # 的研究规范编辑框）会空。run 目录里的 research_spec.json 是权威副本，用它补回。
+    if not isinstance(params.get("research_spec"), dict):
+        spec_file = run_dir / "research_spec.json"
+        if spec_file.is_file():
+            try:
+                loaded_spec = json.loads(spec_file.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                loaded_spec = None
+            if isinstance(loaded_spec, dict):
+                params["research_spec"] = loaded_spec
+                params.setdefault("research_mode", loaded_spec.get("research_mode"))
     status = _status_from_events(events)
     restored_pid = metadata.get("pid")
     # 外部启动（CLI/脚本）的 run 没有进程句柄：轨迹仍在推进时视为运行中，
