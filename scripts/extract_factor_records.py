@@ -59,6 +59,8 @@ def load_fields() -> set[str]:
     return fields
 
 
+from scripts._factor_expr_tools import apply_alias, parse_op_tree, try_construct
+
 OPERATORS = load_operators()
 FIELDS = load_fields()
 
@@ -216,6 +218,21 @@ def parse_one(path: Path, root: Path, retries: int = 2) -> tuple[list[dict], lis
             grounded = bool(raw) and normalize(raw) in full_norm
             expr_local = (it.get("expr_local") or "").strip() or None
             ok, why = validate_expr(expr_local) if expr_local else (False, "no_expr_local")
+            # (2)(3) 修复链：别名改写 → 构造模板兜底；任一成功即视为可执行
+            repair_note = None
+            if not ok and expr_local:
+                fixed, notes = apply_alias(expr_local)
+                if notes:
+                    ok2, _ = validate_expr(fixed)
+                    if ok2:
+                        expr_local, ok, why, repair_note = fixed, True, "ok", "alias:" + ",".join(notes)
+            if not ok:
+                tmpl, kw = try_construct(str(it.get("name") or ""),
+                                         str(it.get("expr_raw") or "") + " " + str(it.get("derivation") or ""))
+                if tmpl:
+                    ok3, _ = validate_expr(tmpl)
+                    if ok3:
+                        expr_local, ok, why, repair_note = tmpl, True, "ok", "construct:" + str(kw)
             if kind == "verbatim" and not grounded:
                 kind, raw = "derived", None  # 未回证 → 降级为推导，不冒充原文
             if kind == "null" or not expr_local or not ok:
@@ -233,6 +250,9 @@ def parse_one(path: Path, root: Path, retries: int = 2) -> tuple[list[dict], lis
                 "confidence": it.get("confidence"),
                 "executable": bool(ok),
                 "validate": why,
+                "repair": repair_note,
+                "ops_used": (parse_op_tree(expr_local)[1] if (ok and expr_local) else []),
+                "op_tree": (parse_op_tree(expr_local)[0] if (ok and expr_local) else None),
                 "null_reason": (it.get("null_reason") or (None if ok else why)) if not ok else None,
                 "grounded": grounded,
                 "report_rebalance_freq": it.get("report_rebalance_freq"),
