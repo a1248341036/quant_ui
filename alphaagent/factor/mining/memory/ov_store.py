@@ -45,21 +45,30 @@ def _research_reports_roots() -> list:
 def _report_local_corpus():
     """本地研报语料目录。
 
-    ``ALPHA_REPORT_CORPUS`` 可取值 ``parsed``（v1，默认）或 ``parsed_mineru``
+    ``ALPHA_REPORT_CORPUS`` 可取值 ``parsed``（v1）或 ``parsed_mineru``
     （MinerU 4.0.9 重抽版：页锚点 + 真表格 + 公式逐字符），也可给绝对路径。
-    用于「不重新入 OV 也能对比两套语料」的 A/B（2026-09-29）。
+    未显式指定时**优先 MinerU 重抽版**：实测同题下 ``parsed_mineru`` 命中的是
+    真因子机制文献（东吴「估值异常 EPA 因子」、海通「动量 beta 构建」），
+    v1 ``parsed`` 只有文件头/目次级内容；缺失时回落 v1，保证不空转。
     """
     import os
     from pathlib import Path
 
-    raw = (os.environ.get("ALPHA_REPORT_CORPUS") or "parsed").strip()
-    cand = Path(raw)
-    if cand.is_absolute() and cand.is_dir():
-        return cand
-    for base in _research_reports_roots():
-        d = base / raw
-        if d.is_dir():
-            return d
+    raw = (os.environ.get("ALPHA_REPORT_CORPUS") or "").strip()
+    if raw:
+        cand = Path(raw)
+        if cand.is_absolute() and cand.is_dir():
+            return cand
+        for base in _research_reports_roots():
+            d = base / raw
+            if d.is_dir():
+                return d
+        return None
+    for name in ("parsed_mineru", "parsed"):
+        for base in _research_reports_roots():
+            d = base / name
+            if d.is_dir():
+                return d
     return None
 
 
@@ -181,7 +190,10 @@ class OVStore:
             except Exception as exc:  # noqa: BLE001
                 log.warning("OpenViking 研报检索异常，降级到本地检索: %s", exc)
 
-        # 本地降级检索
+        # 本地降级检索：OV 命中为空，或命中的全是行情复盘类文档（对机制/公式无价值）。
+        if hits:
+            kept = [h for h in hits if not _is_recap_doc(str(h.get("title") or h.get("uri") or ""))]
+            hits = kept if kept else []
         if not hits:
             hits = _local_report_search(query_terms, limit=limit, corpus_dir=_report_local_corpus())
 
@@ -402,6 +414,22 @@ _PARA_NOISE_SRC = (
 # 但含"分组/多空/策略"+数字，原打分下会压过正文段落胜出（2026-10-01 实测 RQ_030 注入的
 # 三条全是图表目次）→ 直接跳过，并把公式/机制段落提权。正则见 _best_paragraph（模块内
 # `re` 是函数级导入，保持既有风格，不在模块层编译）。
+
+
+def _is_recap_doc(text: str) -> bool:
+    """行情复盘/市场评述类文档判定：对"因子机制/公式"检索无价值。
+
+    实测（2026-10-01，RQ_030）：OV 命中三条全是渤海证券「公募基金周报 / 上周市场回顾 /
+    权益市场主要指数震荡修复房地产领涨」——得分不低，但会把真因子机制文献挤掉。
+    命中此类且无其它命中时，返回空以触发本地因子语料降级。
+    """
+    import re
+
+    return bool(re.search(
+        r"市场回顾|市场表现|市场评述|复盘|盘面|晨报|盘后|收盘|领涨|领跌|震荡|"
+        r"涨跌|资金流向|基金周报|周报回顾",
+        text or "",
+    ))
 
 
 def _best_paragraph(content: str, keywords: list[str], max_chars: int = 700) -> str:
