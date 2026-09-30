@@ -43,6 +43,7 @@ import argparse
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -119,7 +120,8 @@ def _atomic_write_text(path: Path, text: str) -> None:
     try:
         tmp.write_text(text, encoding="utf-8")
         tmp.replace(path)
-    except OSError:
+    except OSError as orig_exc:
+        print(f"[warn] _atomic_write_text: rename 失败（{orig_exc}），退化为直接写", file=sys.stderr, flush=True)
         try:
             tmp.unlink(missing_ok=True)
         except OSError:

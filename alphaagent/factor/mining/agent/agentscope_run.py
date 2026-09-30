@@ -1317,15 +1317,17 @@ async def run_factor_mining_agentscope(
                     research_spec=config.research_spec,
                     asset_type=ctx.asset_type,
                     focus_facets=getattr(config, "focus_facets", None),
-                    prompt_phase=getattr(agent, "_current_prompt_phase", "full"),
+                    prompt_phase=getattr(agent, "_current_prompt_phase", _phase),
                     max_tool_calls_per_round=config.max_tool_calls_per_round,
                     model_name=str(getattr(config, "model", "") or ""),
                     report_phase=_turn_phase,
                 )
                 if hasattr(agent, "_system_prompt"):
                     agent._system_prompt = _phase_prompt
-                agent._current_report_phase = _turn_phase
-                log_step("report_phase_prompt", f"turn={outer_turn} phase={_turn_phase} rebuilt=yes")
+                    # 只有真的写进 agent 才推进跟踪标记，否则下一轮会被判为"已装配"而跳过
+                    # 重建（第二轮 review 修：原先无条件赋值）。
+                    agent._current_report_phase = _turn_phase
+                    log_step("report_phase_prompt", f"turn={outer_turn} phase={_turn_phase} rebuilt=yes")
             except Exception as _rp_err:  # noqa: BLE001
                 logging.warning("研报阶段系统提示词重建失败（知识通道可能仍按 reproduce 装配）: %s", _rp_err)
         agent_prompt = pending

@@ -104,16 +104,20 @@ def build_system_prompt_with_report(
     # (1) 原实现写死 turn=0 → 恒为 "reproduce"，发散轮也按复现阶段装配知识通道
     #     （生产配置 knowledge_mode_by_phase = {reproduce: mechanism_cards, diverge: report_rag}，
     #     即发散轮错误地只给机制卡）。现由调用方按状态机给到的阶段传入 report_phase；
-    # (2) 原 `except Exception` 会吞掉真正的编程错误（如签名变更的 TypeError）→ 收窄为 ImportError。
+    # (2) 导入失败与**调用失败**分开兜底：只把导入裹进 try 会让 spec 畸形时的
+    #     TypeError/ValueError 直接崩掉提示词装配（第二轮 review 修）。
     if report_phase is not None:
         _phase = report_phase
     else:
         try:  # 非研报模式返回 None，行为不变
             from alphaagent.factor.mining.report_channels import resolve_report_phase
-
-            _phase = resolve_report_phase(research_spec, turn=0)
         except ImportError:
             _phase = None
+        else:
+            try:
+                _phase = resolve_report_phase(research_spec, turn=0)
+            except Exception:  # noqa: BLE001
+                _phase = None
     ctx = PromptContext(
         report_phase=_phase,
         label_col=label_col,

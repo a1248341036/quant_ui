@@ -91,5 +91,65 @@
 
 - `_FUNDAMENTAL_SENTINEL_COLUMNS` 未含 `funda_ebitda`（缓存命中校验只看 12 个哨兵列），
   已放到面板分支 `feat/panel-v9-landing` 处理。
-- `feat/report-mode` 链（判定链路/机制卡硬门槛/发散父本诊断）与 main 上的注入改动动的是同一个
-  `question_queue.py`，将来合并需手工解冲突，不能整分支 merge。
+
+## 第二轮 review（合并进报告分支后，`main..feat/report-prompt-plugins`）
+
+范围 16 文件，OCR 出 14 条（10 文件入选）。原始产物：`logs/ocr_report_branch_final.md`。
+
+### 已修（commit `11466c6`）
+
+1. **[critical] `agentscope_run.py` 跨作用域 NameError（本分支上一轮引入的新缺陷）**
+   `_rag_phase` / `_rfe` / `spec` 是嵌套函数 `_dynamic_memory_context()`（741–1097）的局部量，
+   而"按阶段重建系统提示词"的块被插在该函数**之外** → `if` 条件本身就 NameError，
+   **report 模式 run 第一轮即崩**；循环里的 `report_phase=_rag_phase` 同样。
+   修法：外层定义 `_report_phase_box`，嵌套函数内算出 `_rag_phase` 后写入该 holder；
+   重建块移进 `while` 循环内、`_dynamic_memory_context()` 调用**之后**（此时阶段才是本轮真实值）。
+   新增回归 `test_report_phase_never_referenced_outside_nested_scope`：断言外层不再出现
+   裸 `_rag_phase`/`_rfe(`/`_report_phase_from_state` 引用。
+2. **`_dispatch.py` 实例网关缓存残留**：判定通过写全局网关成功后即清空
+   `self._report_gate_arg`（原先同步写实例属性，会在「下一次 `dispatch` 之前」仍以
+   `phase="diverge"` 压住新一轮判定）；仅在 `set_run_gate` 失败时兜底写实例属性。
+3. **`batch_mineru_parse.py` 三处健壮性**
+   - `_atomic_write_text` 遇 `OSError`（跨盘 `replace` / Windows 文件锁）退化为直接写：
+     不再把一次**成功的解析**标成 `error` 并触发整轮重试；
+   - `postprocess` 后处理失败只告警返回 0，不再抛出中断 `as_completed` 主循环；
+   - POSIX 用 `killpg` + `start_new_session=True` 杀整组（原只 `proc.kill()` 父进程，
+     会留下 MinerU 的 parse-server 孤儿继续占显存）。
+4. **golden 快照同步**：`system_prompt_{full,long_label}.txt` 补 `$funda_ebitda` 字段行
+   （面板分支把该字段登记进提示词字段表，快照随之过期；两文件差异经核对仅此一行）。
+
+### 第三轮 review（对上一轮**修复本身**复审）后补修
+
+原始产物：`logs/ocr_report_branch_final2.md`（13 条）。上一轮的修复自身被抓出 1 critical + 若干 medium，
+说明"改完必须再审一遍"在这条链上是必要的：
+
+1. **[critical] `scripts/batch_mineru_parse.py` 漏 `import signal`**：`_kill_tree` 的 POSIX 分支用
+   `signal.SIGKILL`，超时那一刻才会 NameError。已补 import，并加回归
+   `test_batch_mineru_kill_tree_dependencies_present`（断言 `import signal` + `os.killpg(` 同时存在）。
+2. **`prediction.py` 方向校正的判据不够严**：原先按全串精确匹配，`monotonic_D1_to_D10`
+   （`_canon_shape` 走前缀回退会归一成 increasing）仍会被固定成 increasing；
+   改成"首段是方向中性主型、且后缀里没有显式方向词"才校正，显式
+   `monotonic_increasing` / `increasing` 保持不动。回归见
+   `test_directionless_monotone_with_suffix_follows_sign`。
+3. **`prompts.py` 导入与调用分开兜底**：上一轮把 `except Exception` 收窄成 `ImportError` 后，
+   `resolve_report_phase` 自身抛 `TypeError/ValueError`（spec 畸形）会直接崩掉提示词装配 →
+   导入一段 try、调用一段 try。
+4. **`agentscope_run.py` 阶段重建块**：`prompt_phase` 缺省回退改为循环本轮算出的 `_phase`
+   （原来回退 `"full"` 会与实际阶段不符）；`agent._current_report_phase` 只在真的写入
+   `_system_prompt` 成功后才推进（否则跟踪标记先走、后续永远跳过重建）。
+5. **`question_queue.py` 机制卡空结果退避**：非空缓存短路 + 空结果 5 分钟退避
+   （`_CARDS_MISS_TTL`）。否则文件确实缺失时，每个 outer turn 都会起一个 `git rev-parse` 子进程。
+6. **`_dispatch.py`**：去掉"写全局失败时写实例属性兜底"（`dispatch()` 每次都会重置该属性，
+   兜底值在下次 dispatch 前即被覆盖，属无效保护）；`lock_rounds` 非法值改为告警而非静默回退。
+7. **`resume_mineru_parse.ps1`**：日志轮转移到幂等检查**之后**（原顺序会把正在运行的
+   pythonw 重定向目标改名 → 进度脚本读 recent 路径看不到新日志）；`_atomic_write_text`
+   退化写时打印原始 rename 失败原因。
+
+### 仍未修（明确判断）
+
+- `_dispatch.dispatch()` 里"显式传空 `{}` 网关"与"未携带网关"仍不可区分（都会回落到全局网关）：
+  当前所有调用点都在 `if _g:` 之后才注入，回落到全局网关是更安全的默认 → 保留并注释。
+- `question_queue.py` 纯英文标题（无 ≥4 字中文片段）时硬门槛恒不生效 → 只能走分数阈值：
+  这是有意的更严口径，已加注释说明。
+- `resume_mineru_parse.ps1` 冗余 `New-Item`、`mineru_progress.ps1` 的 `-Tail 500` 上限、
+  `question_queue.py` 重复 `import re as _re` —— 低危整洁性问题，未动。

@@ -58,6 +58,24 @@ def test_explicit_direction_is_not_overridden_by_sign():
     assert normalize_prediction(_pred("monotonic_increasing", -1))["expected_shape"] == "monotonic_increasing"
 
 
+def test_directionless_monotone_with_suffix_follows_sign():
+    """带后缀的方向中性写法（`monotonic_D1_to_D10`）同样要按 sign 落方向。
+
+    `_canon_shape` 会按下划线前缀回退把它归一到 increasing，所以校正判据必须按首段匹配，
+    不能只做全串精确比较（第二轮 OCR review 修）。
+    """
+    assert normalize_prediction(_pred("monotonic_D1_to_D10", -1))["expected_shape"] == "monotonic_decreasing"
+    assert normalize_prediction(_pred("monotone D1 to D10", -1))["expected_shape"] == "monotonic_decreasing"
+    assert normalize_prediction(_pred("monotonic_D1_to_D10", 1))["expected_shape"] == "monotonic_increasing"
+
+
+def test_batch_mineru_kill_tree_dependencies_present():
+    """`_kill_tree` 在 POSIX 分支用 signal.SIGKILL → signal 必须真的 import（曾漏过）。"""
+    src = Path("scripts/batch_mineru_parse.py").read_text(encoding="utf-8")
+    assert "os.killpg(" in src
+    assert re.search(r"^import signal$", src, flags=re.M), "signal 未 import 会在 POSIX 超时分支 NameError"
+
+
 def test_non_monotone_shapes_untouched():
     assert normalize_prediction(_pred("u_shape", -1))["expected_shape"] == "u_shape"
     assert normalize_prediction(_pred("inverted_u", 1))["expected_shape"] == "inverted_u"

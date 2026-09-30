@@ -16,25 +16,28 @@ param(
 $mineru = if ($Mineru) { $Mineru } elseif ($env:MINERU_EXE) { $env:MINERU_EXE } else { "D:\Quant\MinerU\.venv\Scripts\mineru.exe" }
 $logDir = Join-Path $Root "logs"
 $out = Join-Path $logDir "batch_mineru_recent.out"
-# 日志轮转：Start-Process 的重定向是**覆盖**写，直接续跑会把上一轮日志清空
-# （2026-09-30 review 修）→ 先把上一轮 recent 归档为带时间戳的名字，再开新 recent。
-New-Item -ItemType Directory -Force -Path $logDir | Out-Null
-foreach ($f in @($out, (Join-Path $logDir "batch_mineru_recent.err"))) {
-    if (Test-Path $f) {
-        $stamp = (Get-Item $f).LastWriteTime.ToString("yyyyMMdd_HHmmss")
-        Move-Item -LiteralPath $f -Destination ($f -replace "_recent\.", "_$stamp.") -Force
-    }
-}
 $env:MINERU_MODEL_SOURCE = "modelscope"
 $env:MINERU_EXE = $mineru    # 传给子进程；batch_mineru_parse.py 读该变量
 
-# 1) 幂等：已有驱动就不重复起
+# 1) 幂等：已有驱动就不重复起（**必须放在日志轮转之前**：轮转会把正在写入的
+#    batch_mineru_recent.* 改名，而 pythonw 的重定向句柄仍指向被改名的文件 →
+#    进度脚本读 recent 路径就再也看不到新日志。第二轮 review 修）
 $running = Get-CimInstance Win32_Process -Filter "Name='pythonw.exe' or Name='python.exe'" |
     Where-Object { $_.CommandLine -match "batch_mineru_parse" }
 if ($running) {
     Write-Host "批次已在运行 (PID $($running[0].ProcessId))，不重复启动。" -ForegroundColor Yellow
     Write-Host "查进度: pwsh -File $Root\scripts\mineru_progress.ps1"
     exit 0
+}
+
+# 1b) 日志轮转：Start-Process 的重定向是**覆盖**写，直接续跑会把上一轮日志清空
+#     （2026-09-30 review 修）→ 先把上一轮 recent 归档为带时间戳的名字，再开新 recent。
+New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+foreach ($f in @($out, (Join-Path $logDir "batch_mineru_recent.err"))) {
+    if (Test-Path $f) {
+        $stamp = (Get-Item $f).LastWriteTime.ToString("yyyyMMdd_HHmmss")
+        Move-Item -LiteralPath $f -Destination ($f -replace "_recent\.", "_$stamp.") -Force
+    }
 }
 
 # 2) 服务

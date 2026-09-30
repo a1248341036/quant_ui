@@ -359,6 +359,29 @@ _SHAPE_EXTRA_ALIASES.update({
 # monotonic_increasing（早期"先放行、别烧评估"的取舍），但形态对账需要方向正确，
 # 故 normalize_prediction 里按 sign 二次校正（2026-09-30 review 修）。
 _DIRECTIONLESS_MONOTONE_KEYS = frozenset({"monotonic", "monotone", "linear"})
+# 显式方向词：出现在"方向中性主型 + 后缀"写法里时，说明作者其实指定了方向 → 不参与校正
+_EXPLICIT_DIRECTION_TOKENS = frozenset({
+    "increasing", "decreasing", "increase", "decrease",
+    "up", "down", "upward", "downward",
+    "positive", "negative", "pos", "neg", "inc", "dec",
+})
+
+
+def _is_directionless_monotone_raw(raw: Any) -> bool:
+    """原始形态串是否属于"方向中性主型"（含 ``monotonic_D1_to_D10`` 这类带后缀写法）。
+
+    ``_canon_shape`` 会按下划线前缀回退把带后缀写法归一到 ``monotonic_increasing``，
+    所以判据不能只做全串精确比较；但**显式**写了方向（``monotonic_increasing`` /
+    ``increasing`` / ``monotone_down`` …）的输入必须保持原方向，故后缀里出现方向词即
+    视为非中性（2026-09-30 两轮 review 修）。
+    """
+    key = _SHAPE_SEP_RE.sub("_", str(raw or "").strip().lower())
+    if key in _DIRECTIONLESS_MONOTONE_KEYS:
+        return True
+    parts = key.split("_")
+    if parts[0] not in _DIRECTIONLESS_MONOTONE_KEYS:
+        return False
+    return not any(p in _EXPLICIT_DIRECTION_TOKENS for p in parts[1:])
 
 
 def _canon_shape(value: Any) -> str | None:
@@ -429,7 +452,9 @@ def normalize_prediction(prediction: Any) -> dict[str, Any] | None:
     # （actual.shape == expected_shape）会拿 decreasing 的实际形态去比 increasing →
     # 正确预测被误判 contradicted/未 confirmed（2026-09-30 review 修）。
     # 方向由 expected_sign 承载时按 sign 归一，其余情况一律不变。
-    if sign == -1 and str(prediction.get("expected_shape") or "").strip().lower() in _DIRECTIONLESS_MONOTONE_KEYS:
+    if sign == -1 and shape == "monotonic_increasing" and _is_directionless_monotone_raw(
+        prediction.get("expected_shape")
+    ):
         shape = "monotonic_decreasing"
     if shape is None or sign is None:
         return None

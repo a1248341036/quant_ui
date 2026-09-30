@@ -1327,7 +1327,9 @@ class _DispatchMixin:
             _prof["expected_shape"] = str(_pc["expected"]["expected_shape"])
         try:
             _lock_rounds = max(0, int(gate.get("lock_rounds") or 3))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as _lr_err:
+            # 不再静默吞掉：非法值要能在日志里与"正常默认"区分开（第二轮 review 修）
+            logging.warning("lock_rounds 非法（%r），回退默认 3: %s", gate.get("lock_rounds"), _lr_err)
             _lock_rounds = 3
         mark_reproduce_ok(
             str(gate.get("mode") or "report"), qid, _lock_rounds,
@@ -1345,6 +1347,7 @@ class _DispatchMixin:
             # phase=diverge 压住新一轮判定（2026-09-30 review 修）。
             self._report_gate_arg = None
         except Exception as _se:  # noqa: BLE001
-            logging.warning("set_run_gate(diverge) 失败（不影响判定结果）: %s", _se)
-            self._report_gate_arg = _next_gate   # 写全局失败时兜底
+            # 不做"写实例属性兜底"：dispatch() 每次调用都会重置该属性，兜底值在下次
+            # dispatch 之前就被覆盖，等于无效保护（第二轮 review 指出）→ 只留痕。
+            logging.warning("set_run_gate(diverge) 失败（不影响本次判定结果）: %s", _se)
         log_step("report_reproduce_judge", f"qid={qid} factor={factor_name} PASS [{detail}] -> reproduce_ok")
