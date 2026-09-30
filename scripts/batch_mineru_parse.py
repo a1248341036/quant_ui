@@ -90,6 +90,20 @@ def _md_state(p: Path) -> tuple[bool, int]:
         return False, 0
 
 
+def _discard_out(out_md: Path) -> None:
+    """丢弃不采信的残留 md 产物（非零退出/超时的错误页或半成品）。
+
+    review 修：MinerU 失败时也可能留下 >MIN_MD_BYTES 的错误页/半成品，若不删，
+    下一轮断点续跑仅凭“存在+字节数”就把污染产物判成 skipped，永久污染知识库。
+    本连接图走本机 MinerU doclib（图片引用在 postprocess 里转成 HTML 注释），
+    本地不落图片文件，故只需清理 out_md 这一个 .md。
+    """
+    try:
+        out_md.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def _kill_tree(proc: subprocess.Popen) -> None:
     """杀掉整棵进程树（Windows 用 taskkill /T；POSIX 用 killpg）。
 
@@ -184,6 +198,7 @@ def parse_one(args: tuple[int, str], root: Path, out_root: Path, mineru: Path,
                 except Exception:  # noqa: BLE001
                     out, err = "", ""
                 last_err = f"timeout>{timeout}s（已杀进程树）"
+                _discard_out(out_md)
                 time.sleep(3 * (attempt + 1))
                 continue
             exists, size = _md_state(out_md)
@@ -192,6 +207,7 @@ def parse_one(args: tuple[int, str], root: Path, out_root: Path, mineru: Path,
                 # 半成品，若判 ok 会被后续断点续跑永久 skip（污染知识库）。
                 last_err = (f"returncode={proc.returncode} "
                             + (out or "")[-200:] + (err or "")[-300:])
+                _discard_out(out_md)
                 time.sleep(3 * (attempt + 1))
                 continue
             if exists and size > MIN_MD_BYTES:
