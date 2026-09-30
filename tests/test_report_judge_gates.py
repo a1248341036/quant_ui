@@ -12,8 +12,13 @@
 4. 显式方向不被过度纠正（sign=1 + 显式 decreasing 必须保持 decreasing）。
 5. ``_DispatchMixin._auto_val_verify`` 必须有 docstring（原 try/except 插在 docstring 之前，
    使文档字符串沦为死语句、__doc__ 为空）。
+6. ``agentscope_run``：研报阶段（``_rag_phase`` 等）是嵌套函数 ``_dynamic_memory_context``
+   的局部量，外层裸引用会 NameError（report 模式 run 第一轮即崩）→ 必须经跨作用域 holder 传递。
 """
 from __future__ import annotations
+
+import re
+from pathlib import Path
 
 from alphaagent.factor.mining import report_channels
 from alphaagent.factor.mining.eval.prediction import normalize_prediction
@@ -56,6 +61,26 @@ def test_explicit_direction_is_not_overridden_by_sign():
 def test_non_monotone_shapes_untouched():
     assert normalize_prediction(_pred("u_shape", -1))["expected_shape"] == "u_shape"
     assert normalize_prediction(_pred("inverted_u", 1))["expected_shape"] == "inverted_u"
+
+
+def test_report_phase_never_referenced_outside_nested_scope():
+    """`_rag_phase`/`_rfe`/`_report_phase_from_state` 是嵌套函数的局部量。
+
+    agentscope_run 的外层（while 循环那一段）若裸引用它们，report 模式 run 会在第一轮
+    直接 NameError 崩溃（2026-09-30 OCR review 抓到过）。阶段必须经 `_report_phase_box`
+    这类跨作用域 holder 传递。
+    """
+    src = Path("alphaagent/factor/mining/agent/agentscope_run.py").read_text(encoding="utf-8").splitlines()
+    start = next(i for i, line in enumerate(src) if line.startswith("    def _dynamic_memory_context("))
+    end = next(i for i in range(start, len(src)) if src[i] == "        return block")
+    outer = src[end + 1:]
+    bad = [
+        f"line {end + 1 + i + 1}: {line.strip()}"
+        for i, line in enumerate(outer)
+        if re.search(r"\b_rag_phase\b|\b_rfe\s*\(|\b_report_phase_from_state\b", line)
+    ]
+    assert not bad, f"外层裸引用了嵌套函数局部量（会 NameError）: {bad[:3]}"
+    assert any("_report_phase_box" in line for line in src), "阶段必须经 _report_phase_box 传出"
 
 
 def test_auto_val_verify_keeps_docstring():

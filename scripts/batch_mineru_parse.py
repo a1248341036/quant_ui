@@ -90,13 +90,17 @@ def _md_state(p: Path) -> tuple[bool, int]:
 
 
 def _kill_tree(proc: subprocess.Popen) -> None:
-    """杀掉整棵进程树（Windows 用 taskkill /T；POSIX 退化为 kill）。"""
+    """杀掉整棵进程树（Windows 用 taskkill /T；POSIX 用 killpg）。
+
+    POSIX 下只 `proc.kill()` 会留下 MinerU 拉起的 parse-server 孤儿进程继续占显存
+    （2026-09-30 review 修）→ 子进程以独立进程组启动，这里整组 SIGKILL。
+    """
     try:
         if os.name == "nt":
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
                            capture_output=True, creationflags=CREATE_NO_WINDOW)
         else:
-            proc.kill()
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
     except Exception:  # noqa: BLE001
         try:
             proc.kill()
@@ -105,10 +109,22 @@ def _kill_tree(proc: subprocess.Popen) -> None:
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
-    """先写临时文件再 replace：中断时不会留下截断的正式产物。"""
+    """先写临时文件再 replace：中断时不会留下截断的正式产物。
+
+    replace 在跨文件系统或被占用（Windows 文件锁）时会 OSError——此时退化为直接写：
+    宁可这一次非原子，也不要把一次**成功的解析**标成 error 并触发整轮重试
+    （2026-09-30 review 修）。
+    """
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    tmp.replace(path)
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(path)
+    except OSError:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        path.write_text(text, encoding="utf-8")
 
 
 def postprocess(md_path: Path) -> int:
@@ -119,7 +135,12 @@ def postprocess(md_path: Path) -> int:
         return 0
     new, n = RE_DOC_IMG.subn(lambda m: f"<!-- image: page:{m.group(2)} block:{m.group(3)} {m.group(1)} -->", txt)
     if n:
-        _atomic_write_text(md_path, new)
+        try:
+            _atomic_write_text(md_path, new)
+        except OSError as exc:
+            # 后处理失败不得让整篇解析判 error（parse_one 里会连带中断 as_completed 循环）
+            print(f"[warn] 图片引用后处理失败 {md_path.name}: {exc}", file=sys.stderr, flush=True)
+            return 0
     return n
 
 
@@ -147,6 +168,7 @@ def parse_one(args: tuple[int, str], root: Path, out_root: Path, mineru: Path,
             proc = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                 encoding="utf-8", errors="replace", env=env,
+                start_new_session=(os.name != "nt"),   # POSIX 独立进程组，便于整组 kill
                 creationflags=CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
             try:

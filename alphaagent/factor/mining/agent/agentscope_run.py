@@ -738,6 +738,11 @@ async def run_factor_mining_agentscope(
                 messages.append(content.strip())
         return messages
 
+    # 研报阶段跨作用域传递：`_rag_phase` 是嵌套函数 _dynamic_memory_context() 的局部量，
+    # 外层（while 循环）读不到；用这个 dict 把它带出来（2026-09-30 review 修：原先在外层
+    # 直接引用 `_rag_phase` 会 NameError，report 模式 run 第一轮即崩）。
+    _report_phase_box: dict[str, Any] = {}
+
     def _dynamic_memory_context() -> str:
         """Retrieve compact evidence at every outer turn, not only at startup."""
         if memory_store is None:
@@ -981,6 +986,7 @@ async def run_factor_mining_agentscope(
         )
 
         _rag_phase = locals().get("_report_phase_from_state") or resolve_report_phase(spec, outer_turn)
+        _report_phase_box["phase"] = _rag_phase   # 供外层按阶段装配系统提示词
         # ── 研报模式 Phase 1：复现阶段注入「复现题面」并把硬门禁状态挂到 tools ──
         if report_flow_enabled(spec) and current_question:
             _qid = str(current_question.get("question_id") or "")
@@ -1099,36 +1105,6 @@ async def run_factor_mining_agentscope(
     def _queued_prompt(messages: list[str]) -> str:
         return "用户在当前研究会话追加了指令，请优先结合已有评估结果执行：\n" + "\n\n".join(messages)
 
-    # 研报模式：系统提示词的知识通道必须按**本轮实际阶段**装配。上面的初始 system_prompt
-    # 在阶段确定（select_question）之前生成 → 缺省按第 0 轮 = reproduce 装配；若本轮实为
-    # 发散轮，知识通道会落在 mechanism_cards 而非 report_rag。此处按状态机给到的
-    # `_rag_phase` 重建一次（2026-09-30 review 修 #7）。
-    if _rfe(spec) and _rag_phase and _rag_phase != getattr(agent, "_current_report_phase", None):
-        try:
-            _phase_for_prompt = _compute_prompt_phase(outer_turn, turn_limit, config.research_spec)
-            _phase_prompt = build_system_prompt(
-                include_operator_catalog=include_operator_catalog,
-                extra_instructions=extra_instructions,
-                label_col=ctx.label_col,
-                include_fundamentals=ctx.include_fundamentals,
-                panel_columns=session_resp.available_columns,
-                population_max=config.population_max,
-                research_spec=config.research_spec,
-                asset_type=ctx.asset_type,
-                focus_facets=getattr(config, "focus_facets", None),
-                prompt_phase=_phase_for_prompt,
-                max_tool_calls_per_round=config.max_tool_calls_per_round,
-                model_name=str(getattr(config, "model", "") or ""),
-                report_phase=_rag_phase,
-            )
-            if hasattr(agent, "_system_prompt"):
-                agent._system_prompt = _phase_prompt
-            agent._current_report_phase = _rag_phase
-            agent._current_prompt_phase = _phase_for_prompt
-            log_step("report_phase_prompt", f"turn={outer_turn} phase={_rag_phase} rebuilt=yes")
-        except Exception as _rp_err:  # noqa: BLE001
-            logging.warning("研报阶段系统提示词重建失败（知识通道可能仍按 reproduce 装配）: %s", _rp_err)
-
     while outer_turn < turn_limit:
         # ── 分阶段动态注入：按 outer_turn 比例切换 prompt_phase ──
         _phase = _compute_prompt_phase(outer_turn, turn_limit, config.research_spec)
@@ -1146,7 +1122,7 @@ async def run_factor_mining_agentscope(
                 prompt_phase=_phase,
                 max_tool_calls_per_round=config.max_tool_calls_per_round,
                 model_name=str(getattr(config, "model", "") or ""),
-                report_phase=_rag_phase,
+                report_phase=_report_phase_box.get("phase"),
             )
             if hasattr(agent, "_system_prompt"):
                 agent._system_prompt = _new_prompt
@@ -1324,6 +1300,34 @@ async def run_factor_mining_agentscope(
             _emit("user_message", {"turn": outer_turn, "content": pending})
 
         turn_memory = _dynamic_memory_context()
+        # 研报模式：系统提示词的知识通道按**本轮实际阶段**装配。阶段由上面的状态机在
+        # _dynamic_memory_context() 内算出（经 _report_phase_box 带出），与上一次装配
+        # 不同则重建一次——否则发散轮会按复现阶段装配知识通道（mechanism_cards 而非
+        # report_rag）（2026-09-30 review 修 #7；注意必须放在本函数调用**之后**）。
+        _turn_phase = _report_phase_box.get("phase")
+        if _turn_phase and _turn_phase != getattr(agent, "_current_report_phase", None):
+            try:
+                _phase_prompt = build_system_prompt(
+                    include_operator_catalog=include_operator_catalog,
+                    extra_instructions=extra_instructions,
+                    label_col=ctx.label_col,
+                    include_fundamentals=ctx.include_fundamentals,
+                    panel_columns=session_resp.available_columns,
+                    population_max=config.population_max,
+                    research_spec=config.research_spec,
+                    asset_type=ctx.asset_type,
+                    focus_facets=getattr(config, "focus_facets", None),
+                    prompt_phase=getattr(agent, "_current_prompt_phase", "full"),
+                    max_tool_calls_per_round=config.max_tool_calls_per_round,
+                    model_name=str(getattr(config, "model", "") or ""),
+                    report_phase=_turn_phase,
+                )
+                if hasattr(agent, "_system_prompt"):
+                    agent._system_prompt = _phase_prompt
+                agent._current_report_phase = _turn_phase
+                log_step("report_phase_prompt", f"turn={outer_turn} phase={_turn_phase} rebuilt=yes")
+            except Exception as _rp_err:  # noqa: BLE001
+                logging.warning("研报阶段系统提示词重建失败（知识通道可能仍按 reproduce 装配）: %s", _rp_err)
         agent_prompt = pending
         if turn_memory:
             agent_prompt = f"{turn_memory}\n\n# 当前研究任务 / 最新反馈\n{pending}"

@@ -1335,13 +1335,16 @@ class _DispatchMixin:
         )
         # 判定通过后把本轮阶段推进到 diverge。**不得原地改 gate**：它很可能就是进程内
         # 全局网关对象，原地改会把 phase 永久留成 diverge，后续新题的复现判定被静默跳过
-        # （2026-09-30 review 修：改经 set_run_gate 写回新字典，并同步实例属性）。
+        # （2026-09-30 review 修：改经 set_run_gate 写回新字典）。
         _next_gate = {**gate, "phase": "diverge"}
         try:
             from alphaagent.factor.mining.report_channels import set_run_gate
 
             set_run_gate(_next_gate)
+            # 全局网关已是权威通道：清掉实例缓存，避免「下一次 dispatch 之前」仍有旧
+            # phase=diverge 压住新一轮判定（2026-09-30 review 修）。
+            self._report_gate_arg = None
         except Exception as _se:  # noqa: BLE001
             logging.warning("set_run_gate(diverge) 失败（不影响判定结果）: %s", _se)
-        self._report_gate_arg = _next_gate
+            self._report_gate_arg = _next_gate   # 写全局失败时兜底
         log_step("report_reproduce_judge", f"qid={qid} factor={factor_name} PASS [{detail}] -> reproduce_ok")
