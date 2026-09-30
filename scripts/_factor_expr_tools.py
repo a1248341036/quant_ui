@@ -36,6 +36,35 @@ CONSTRUCTS: list[tuple[str, str]] = [
 ]
 
 
+# 字段别名：研报/模型口径 → 本仓面板字段（只收语义明确等价的；口径不同的不换）
+FIELD_ALIAS: dict[str, str] = {
+    "dividend_ttm": "dv_ttm", "dividend_yield": "dv_ttm", "dv_ratio": "dv_ttm",
+    "cash_dividend": "div_cash_div", "cash_div": "div_cash_div",
+    "days_to_ex": "div_days_to_ex",
+    "fsi_operate_profit": "funda_operate_profit", "operate_profit": "funda_operate_profit",
+    "net_profit": "funda_net_profit", "netprofit": "funda_net_profit",
+    "total_revenue": "funda_total_revenue", "revenue": "funda_total_revenue",
+    "total_equity": "funda_total_equity", "equity": "funda_total_equity",
+    "total_assets": "funda_total_assets", "assets": "funda_total_assets",
+    "roe": "funda_roe", "roa": "funda_roa", "eps": "funda_eps",
+    "total_mv": "tot_cap", "mktcap": "tot_cap", "market_cap": "tot_cap",
+    "circ_mv": "float_cap", "float_mv": "float_cap",
+}
+
+
+@lru_cache(maxsize=8192)
+def apply_field_alias(expr: str) -> tuple[str, tuple[str, ...]]:
+    """把字段别名改写为本仓字段名（避免"名字不同"被误判为缺字段）。"""
+    notes: list[str] = []
+    out = expr
+    for bad, good in FIELD_ALIAS.items():
+        pat = "\\$" + bad + "\\b"
+        if re.search(pat, out):
+            out = re.sub(pat, "$" + good, out)
+            notes.append(bad + "->" + good)
+    return out, tuple(notes)
+
+
 @lru_cache(maxsize=8192)
 def apply_alias(expr: str) -> tuple[str, tuple[str, ...]]:
     """把别名写法改写为本仓算子名，返回 (新表达式, 改写记录)。"""
