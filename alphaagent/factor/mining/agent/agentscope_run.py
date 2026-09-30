@@ -848,14 +848,64 @@ async def run_factor_mining_agentscope(
                 # 部分缺列题保留并注入缺列提示（2026-09-28，见 docs/specs/alphaagent_question_field_gate_spec.md）
                 _available_fields = list(getattr(session_resp, "available_columns", None) or [])
                 _q_stats: dict[str, Any] = {}
-                current_question = get_question_for_turn(
-                    outer_turn,
-                    spec=spec,
-                    focus_facets=getattr(config, "focus_facets", None),
-                    session_id=sid,
-                    available_fields=_available_fields,
-                    stats=_q_stats,
+                _report_phase_from_state = None
+                # 注意：函数后面才 `from ...report_channels import report_flow_enabled`，
+                # 在本函数内该名字是局部变量——此处必须用别名导入，否则 UnboundLocalError
+                # 会被下面的宽泛 except 吞掉（2026-09-29 实测：题面/状态机整块被跳过）。
+                from alphaagent.factor.mining.report_channels import (
+                    report_flow_enabled as _report_flow_enabled,
                 )
+
+                if _report_flow_enabled(spec):
+                    # 研报模式（Phase 2）：走课题状态机——复现 1 轮 + 锁定 N 轮发散，
+                    # 跨 run 累积；其他模式仍用原有逐轮推进逻辑。
+                    from alphaagent.factor.mining.agent.question_queue import (
+                        load_question_queue,
+                    )
+                    from alphaagent.factor.mining.agent.question_state import (
+                        select_question,
+                    )
+                    from alphaagent.factor.mining.report_channels import (
+                        reproduce_lock_rounds,
+                    )
+
+                    _q, _report_phase_from_state = select_question(
+                        str(getattr(config, "research_mode", "report") or "report"),
+                        load_question_queue(spec) or [],
+                        lock_rounds=reproduce_lock_rounds(spec),
+                        max_attempts=int(report_policy.get("reproduce_max_attempts", 2)),
+                    )
+                    if _q is not None:
+                        # 状态机选出的题**优先**（复现/发散必须锁在同一课题上）。
+                        # 这里只借 get_question_for_turn 做字段门控**统计**，绝不用它替换课题
+                        # ——2026-09-30 实测：替换后发散轮题号会漂到下一题（RQ_712 → RQ_713），
+                        # 变成"复现完就换题"，'围绕复现版发散'名存实亡。
+                        _gate_stats: dict[str, Any] = {}
+                        try:
+                            get_question_for_turn(
+                                outer_turn, spec=spec, focus_facets=getattr(config, "focus_facets", None),
+                                session_id=sid, available_fields=_available_fields, stats=_gate_stats,
+                            )
+                        except Exception:  # noqa: BLE001
+                            _gate_stats = {}
+                        current_question = _q
+                        _q_stats.update(_gate_stats)
+                        log_step(
+                            "report_state_machine",
+                            f"turn={outer_turn} qid={(current_question or {}).get('question_id')} "
+                            f"phase={_report_phase_from_state}",
+                        )
+                    else:
+                        current_question = None
+                else:
+                    current_question = get_question_for_turn(
+                        outer_turn,
+                        spec=spec,
+                        focus_facets=getattr(config, "focus_facets", None),
+                        session_id=sid,
+                        available_fields=_available_fields,
+                        stats=_q_stats,
+                    )
                 if _q_stats:
                     log_step(
                         "question_gate",
@@ -875,10 +925,134 @@ async def run_factor_mining_agentscope(
             except Exception as _e:
                 logging.warning("研报问题队列获取异常（失败静默）: %s", _e)
 
+        # 研报模式网关：**放在 try 之外**，确保永远被设置（原先在 try 内，
+        # 任何异常都被"失败静默"吞掉 → 判定侧读到空字典 → 复现永不通过）。
+        # 全部用别名导入：本函数后面还 import 了同名的 report_flow_enabled 等，
+        # 直接用原名会触发 UnboundLocalError（2026-09-30 实测 report 模式 run 直接崩）。
+        from alphaagent.factor.mining.report_channels import (
+            diverge_parent_required as _dpr,
+            report_flow_enabled as _rfe,
+            reproduce_lock_rounds as _rlr,
+            reproduce_of_required as _ror,
+            resolve_report_phase as _rrp,
+            set_run_gate as _srg,
+        )
+
+        if _rfe(spec):
+            try:
+                from alphaagent.factor.mining.agent.question_state import (
+                    reproduce_factor_of as _rfo,
+                )
+
+                _rm = str(getattr(config, "research_mode", "report") or "report")
+                _qid2 = str((current_question or {}).get("question_id") or "")
+                _g2 = {
+                    "required": _ror(spec),
+                    "phase": locals().get("_report_phase_from_state") or _rrp(spec, outer_turn),
+                    "qid": _qid2,
+                    "mode": _rm,
+                    "lock_rounds": _rlr(spec),
+                    "diverge_parent": _dpr(spec),
+                    "parent_name": _rfo(_rm, _qid2),
+                }
+                try:
+                    factor_tools.report_reproduce_gate = _g2
+                except Exception:  # noqa: BLE001
+                    pass
+                _srg(_g2)
+            except Exception as _eg:  # noqa: BLE001
+                logging.warning("研报模式网关设置失败: %s", _eg)
+
         # R3 方案每轮动态联动：如果启用了 RAG，每轮根据当前派发的具体课题动态检索最相关研报段落注入
         from alphaagent.factor.mining.report_channels import report_rag_enabled
 
-        if report_rag_enabled(spec) and current_question:
+        from alphaagent.factor.mining.report_channels import (
+            diverge_parent_required,
+            reproduce_lock_rounds,
+            reproduce_of_required,
+            report_flow_enabled,
+            resolve_report_phase,
+        )
+
+        _rag_phase = locals().get("_report_phase_from_state") or resolve_report_phase(spec, outer_turn)
+        # ── 研报模式 Phase 1：复现阶段注入「复现题面」并把硬门禁状态挂到 tools ──
+        if report_flow_enabled(spec) and current_question:
+            _qid = str(current_question.get("question_id") or "")
+            if _rag_phase == "reproduce":
+                from alphaagent.factor.mining.agent.question_queue import (
+                    find_card_for_question,
+                    render_reproduce_task,
+                )
+
+                _card = find_card_for_question(current_question)
+                _evidence = ""
+                try:  # 复现阶段也拉一次"该课题对应研报"的原文片段（含公式），作为复现依据
+                    from alphaagent.factor.mining.memory.ov_store import OVStore
+
+                    _store = OVStore(endpoint=report_policy.get("ov_endpoint", "http://127.0.0.1:1933"),
+                                     inject_max_chars=1000)
+                    _qtext = (f"{current_question.get('topic', '')} "
+                              f"{(_card or {}).get('source', {}).get('title', '') if _card else ''} "
+                              f"{current_question.get('hypothesis', '')}")
+                    _evidence = _store.retrieve_report_knowledge(
+                        focus_facets=getattr(config, "focus_facets", None),
+                        research_mode=getattr(config, "research_mode", "report"),
+                        query_text=_qtext, limit=2, max_chars=1000,
+                    ) or ""
+                except Exception:  # noqa: BLE001
+                    _evidence = ""
+                _rep_task = render_reproduce_task(current_question, spec, card=_card, evidence=_evidence)
+                if _rep_task:
+                    block = f"{block}\n\n{_rep_task}" if block else _rep_task
+                    log_step("report_reproduce_task", f"turn={outer_turn} qid={_qid} chars={len(_rep_task)} card={(_card or {}).get('card_id') or '-'} evidence={len(_evidence)}")
+            if _rag_phase == "diverge":
+                try:
+                    from alphaagent.factor.mining.agent.question_queue import render_diverge_task
+                    from alphaagent.factor.mining.agent.question_state import (
+                        reproduce_detail_of,
+                        reproduce_factor_of,
+                    )
+
+                    _rmode = str(getattr(config, "research_mode", "report") or "report")
+                    from alphaagent.factor.mining.agent.question_queue import (
+                        find_card_for_question,
+                    )
+
+                    from alphaagent.factor.mining.agent.question_state import (
+                        reproduce_profile_of as _rprof,
+                    )
+
+                    _div = render_diverge_task(
+                        current_question,
+                        reproduce_factor_of(_rmode, _qid),
+                        parent_detail=reproduce_detail_of(_rmode, _qid),
+                        card=find_card_for_question(current_question),
+                        parent_profile=_rprof(_rmode, _qid),
+                    )
+                    if _div:
+                        block = f"{block}\n\n{_div}" if block else _div
+                        log_step("report_diverge_task", f"turn={outer_turn} qid={_qid} chars={len(_div)}")
+                except Exception:  # noqa: BLE001
+                    pass
+            try:
+                from alphaagent.factor.mining.report_channels import set_run_gate
+
+                _gate_state = {
+                    "required": reproduce_of_required(spec),
+                    "phase": _rag_phase,
+                    "qid": _qid,
+                    "mode": str(getattr(config, "research_mode", "report") or "report"),
+                    "lock_rounds": reproduce_lock_rounds(spec),
+                    "diverge_parent": diverge_parent_required(spec),
+                    "parent_name": reproduce_factor_of(
+                        str(getattr(config, "research_mode", "report") or "report"), _qid
+                    ),
+                }
+                factor_tools.report_reproduce_gate = _gate_state
+                set_run_gate(_gate_state)   # 判定侧唯一可靠通道
+            except Exception:  # noqa: BLE001
+                pass
+        if report_rag_enabled(spec, phase=_rag_phase) and current_question:
             try:
                 from alphaagent.factor.mining.memory.ov_store import OVStore
                 _endpoint = report_policy.get("ov_endpoint", "http://127.0.0.1:1933")
