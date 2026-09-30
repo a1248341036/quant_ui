@@ -30,8 +30,12 @@ def derive_freq_from_label_col(label_col: str | None) -> tuple[str | None, str |
     """从 label_col 推导 (research_mode, 档位默认门禁调仓频率)。
 
     长持有期（≥10d）→ fundamental/monthly；短持有期 → technical/weekly。
-    只作老条目兜底展示：新条目入库时已记录真实 rebalance_freq（含用户覆盖），
+    **只作老条目兜底展示**：新条目入库时已记录真实 rebalance_freq（含用户覆盖），
     读取方仅在 entry 缺字段时才调用本函数。
+
+    ⚠ 这不是运行口径：主档 technical 实际是 label_1d + weekly 交付（研究口径与交付
+    口径刻意解耦，见 core/research_modes.py 顶部区块）。所以本函数返回的
+    ("technical", "weekly") 只表示"短持有期因子"，**不代表它的 label 就是 5d**。
     """
     m = _LABEL_HORIZON_RE.search(str(label_col or ""))
     if not m:
@@ -40,13 +44,18 @@ def derive_freq_from_label_col(label_col: str | None) -> tuple[str | None, str |
 
 
 def derive_label_from_freq(freq: str) -> str:
-    """调仓频率 → 对齐 label（三对齐核心映射）。
+    """调仓频率 → 对齐 label（**三对齐子档**的映射，不是主档运行口径）。
 
-    与 derive_freq_from_label_col 互为逆映射（近似）：
+    只用于 technical_daily / technical_weekly / technical_monthly 三个子档
+    （label 持有期 == 调仓持有期：1d↔daily、5d↔weekly、20d↔monthly）：
+
     - derive_freq_from_label_col("label_5d_close_to_close") → ("technical", "weekly")
     - derive_label_from_freq("weekly") → "label_5d_close_to_close"
 
-    参见 docs/specs/alphaagent_freq_label_alignment_spec_v1.md
+    ⚠ 主档（如 technical）**刻意**用 label_1d + weekly（研究口径与交付口径解耦，
+    见 core/research_modes.py 顶部区块）。所以"weekly 映射到 5d"与主档"weekly + 1d"
+    并存是**预期**状态：不要拿本函数去改主档的 recommended_label_col——那会换掉研究
+    口径，而 min_abs_ic 等门槛是按 label 尺度标定的，会一并失真。
     """
     return {
         "daily": "label_1d_open_to_open",
