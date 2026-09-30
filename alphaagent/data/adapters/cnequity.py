@@ -132,6 +132,7 @@ _FUNDAMENTAL_SENTINEL_COLUMNS = frozenset(
         "funda_net_profit",      # income
         "funda_ocf",             # cashflow
         "funda_netprofit_yoy",   # fina_indicator
+        "funda_ebitda",          # fina_indicator（v9 新增列；缺列旧面板不得被命中）
         "holder_count_chg_pct",  # shareholder_counts
         "dt_net_buy_90d",        # event_faces
         "mgn_balance",           # margin
