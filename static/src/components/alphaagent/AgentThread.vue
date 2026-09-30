@@ -15,7 +15,23 @@
         <div class="mode-toggle">
           <button :class="{active: agent.agentMode==='research'}" @click="agent.switchAgentMode('research')">研究</button>
           <button :class="{active: agent.agentMode==='normal'}" @click="agent.switchAgentMode('normal')">普通</button>
+          <!-- 研报档（research_mode=report）：与左两个按钮语义不同（它们切视图，本按钮 pin 启动
+               档位），故加竖线区分 + 独立激活色。pin 后启动/默认研究都按 report 档走。 -->
+          <button
+            class="mode-report-btn"
+            :class="{active: agent.reportPinned}"
+            :disabled="agent.agentBusy"
+            :title="agent.reportPinned
+              ? '已选研报档：先按课题机制复现一个忠实因子，通过后再围绕该机制单维发散。再点一次取消，回到按数据面自动定档'
+              : '选研报档启动：复现阶段喂机制卡、发散阶段用研报 RAG（点选后填课题或直接▶默认研究）'"
+            @click="agent.toggleReportMode()"
+          >研报</button>
         </div>
+        <!-- 当前会话档位 chip：从 run 的 research_mode 来，Commands/脚本起的 report run 也能看出档位 -->
+        <span v-if="agent.currentModeLabel" class="usage-chip mode-chip"
+              :title="'当前会话研究档位（run 的 research_spec.research_mode）'">
+          档位 · {{ agent.currentModeLabel }}
+        </span>
         <span v-if="agent.agentBusy" class="activity-line"><i></i>{{ agent.currentActivity }}</span>
         <!-- 基础挖掘指标大盘 Chip -->
         <span v-if="agent.liveMetrics" class="usage-chip live-metrics"
@@ -211,8 +227,8 @@
           <div class="composer-bottom">
             <div v-if="agent.agentMode==='research'" class="composer-options">
               <div class="mode-switch" role="tablist" aria-label="评估档位">
-                <span class="mode-auto-badge" title="档位由数据面自动推断：勾选基本面/股东/机构/股东集中面 → 慢信号档（label_20d+松门槛+月调仓）；其余 → 短周期档（label_1d+严门槛+周调仓）">
-                  {{ agent.inferredModeLabel }}
+                <span class="mode-auto-badge" :class="{ 'mode-report': agent.reportPinned }" :title="agent.effectiveModeHint">
+                  {{ agent.effectiveModeLabel }}
                 </span>
                 <button class="threshold-btn" :class="{ active: agent.showThresholdModal }" :disabled="agent.agentBusy" title="编辑当前档位的挖掘/入库/回测门槛（保存后全链路生效）" @click="agent.openThresholdModal">{{ agent.researchSpecCustom ? '门槛·已改' : '门槛' }}</button>
               </div>
@@ -285,7 +301,7 @@
         </div>
         <div v-if="agent.showResearchSpec" class="research-spec-editor">
           <div class="research-spec-head">
-            <strong>ResearchSpec · {{ agent.inferredModeLabel }}</strong>
+            <strong>ResearchSpec · {{ agent.effectiveModeLabel }}</strong>
             <div>
               <span v-if="agent.researchSpecCustom" class="research-spec-custom" title="该模式门槛文件已自定义保存，运行/晋升全链路生效">已自定义</span>
               <span v-if="agent.researchSpecDirty" class="research-spec-dirty" title="当前 JSON 与已保存门槛不一致">未保存</span>

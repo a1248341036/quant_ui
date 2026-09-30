@@ -87,6 +87,19 @@ def bootstrap_research_memory() -> int:
     return ResearchMemoryStore(RESEARCH_MEMORY_FILE).backfill_from_logs(LOG_ROOT)
 
 
+def run_research_mode(params: dict[str, Any]) -> str | None:
+    """run 的研究档位（technical/fundamental/report），前端页头 chip 显示用。
+
+    内存态从 research_spec 取；后端重启后由 hydrate_runs 从 run_meta.params 恢复，
+    而子进程写的那份 run_meta 只落 research_mode（不落整份 spec），故两条路都读。
+    """
+    spec = params.get("research_spec")
+    if isinstance(spec, dict) and spec.get("research_mode"):
+        return str(spec["research_mode"])
+    mode = params.get("research_mode")
+    return str(mode) if mode else None
+
+
 @dataclass
 class AgentRun:
     run_id: str
@@ -255,6 +268,7 @@ class AgentRun:
             "archived": self.archived,
             "pinned": self.pinned,
             "research_spec": self.params.get("research_spec"),
+            "research_mode": run_research_mode(self.params),
             "event_count": event_count,
             "events": recent_events,
             "log_dir": str(self.log_dir),

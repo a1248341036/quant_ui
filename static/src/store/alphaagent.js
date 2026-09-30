@@ -168,6 +168,30 @@ export const agentStore = reactive({
   inferredModeLabel: computed(() => {
     return agentStore.inferredMode === 'fundamental' ? '慢信号档（label_20d · 月调仓）' : '短周期档（label_1d · 周调仓）'
   }),
+  // 研报档 pin：research_mode=report 是"先复现研报机制、再单维发散"的独立顶层档位
+  // （core.research_modes 注册表第三项），由页头「研报」按钮显式选中。选中后**不再**
+  // 被数据面推断覆盖——report 要机制卡 + 跨数据面（含 funda_*），推断口径（勾慢面 →
+  // fundamental）表达不了它。2026-09-29 该档位只进了注册表，UI 入口缺失，这里补上。
+  reportPinned: computed(() => agentStore.form.research_mode === 'report'),
+  // 本次启动真正生效的档位：pin 了研报 → report；否则沿用方案 B 数据面推断。
+  effectiveMode: computed(() => (agentStore.reportPinned ? 'report' : agentStore.inferredMode)),
+  // 已选中会话的档位标签（页头 chip）。run 详情/列表带 research_mode（后端 snapshot）。
+  currentModeLabel: computed(() => {
+    const mode = agentStore.current?.research_mode
+    if (!mode) return ''
+    const hit = agentStore.researchModes.find(m => m.value === mode)
+    return hit ? hit.label : mode
+  }),
+  // 档位标签（composer 徽标 / 门槛弹窗标题）：pin 研报时按研报档语义显示，而非推断档，
+  // 否则弹窗标题会写"短周期档"而实际在改 report 档的门槛。
+  effectiveModeLabel: computed(() => {
+    if (!agentStore.reportPinned) return agentStore.inferredModeLabel
+    const hit = agentStore.researchModes.find(m => m.value === 'report')
+    return (hit ? hit.label : '研报') + '档（复现→发散）'
+  }),
+  effectiveModeHint: computed(() => (agentStore.reportPinned
+    ? '已 pin 研报档：复现阶段喂机制卡、发散阶段用研报 RAG，需载入基本面列。再点页头「研报」取消，回到按数据面自动定档。'
+    : '档位由数据面自动推断：勾选基本面/股东/机构/股东集中面 → 慢信号档（label_20d+松门槛+月调仓）；其余 → 短周期档（label_1d+严门槛+周调仓）；页头「研报」可 pin 研报档')),
   researchSpecDirty: computed(() => {
     const mode = agentStore.form.research_mode
     const effective = agentStore.specDefaultsByMode[mode]
@@ -342,8 +366,10 @@ export const agentStore = reactive({
     this.form.rebalance_freq = ''
     this.form.label_col = 'label_1d_open_to_open'
     if (this.researchSpecText) this.researchSpecText = ''
-    this.form.research_mode = 'technical'
-    this.switchResearchMode('technical', true, false).catch(() => {})
+    // 研报档 pin 属于"启动表单"选择而非上一会话残留，新会话保留（否则每次都要重按）。
+    const startMode = this.reportPinned ? 'report' : 'technical'
+    this.form.research_mode = startMode
+    this.switchResearchMode(startMode, true, false).catch(() => {})
   },
   async selectAgentRun(run) {
     if (stream) stream.close()
@@ -399,9 +425,27 @@ export const agentStore = reactive({
     this.form.focus_facets = next
     this.syncInferredMode()
   },
+  // 页头「研报」按钮：pin / 取消研报档（research_mode=report）。档位切换复用
+  // switchResearchMode（拉该档 effective spec、按 spec 覆盖 label_col、消息仍为默认时
+  // 自动填该档默认提示词）。
+  async toggleReportMode() {
+    if (this.agentBusy) return
+    if (this.reportPinned) {
+      await this.switchResearchMode(this.inferredMode, true)
+      return
+    }
+    await this.switchResearchMode('report', true)
+    // 研报档一个完整闭环 = 复现（reproduce_max_attempts=2）+ 锁定发散
+    // （reproduce_lock_rounds=3），默认 5 轮会在发散开始前被截断（线上跑通的 report run
+    // 用 10 轮）。只抬不降，避免覆盖用户显式调大的值。
+    if (this.form.max_turns < 10) this.form.max_turns = 10
+  },
   // 方案 B：勾面变化时自动同步评估档位（label/门槛/门禁频率跟随），复用
   // switchResearchMode 的 spec 加载链路；label_col 由 spec.recommended_label_col 覆盖。
   async syncInferredMode() {
+    // 研报档 pin 优先：勾面不换档（report 自带跨数据面 signal_families + 基本面加载，
+    // 被推断改回 technical/fundamental 会让 spec 被整份换掉、report_policy 丢失）。
+    if (this.reportPinned) return
     const mode = this.inferredMode
     if (mode && mode !== this.form.research_mode) {
       await this.switchResearchMode(mode)
@@ -410,10 +454,10 @@ export const agentStore = reactive({
   async startAgent() {
     if (this.agentBusy || !this.form.user_message.trim()) return
     this.error = ''
-    // 档位一致性：实际发送的是 inferredMode（数据面推断），确保 research_mode /
-    // 研究规范文本与其对齐，杜绝"基本面档位 + 价量默认消息/技术门槛"错配。
-    if (this.form.research_mode !== this.inferredMode) {
-      await this.switchResearchMode(this.inferredMode, true)
+    // 档位一致性：实际发送的是 effectiveMode（研报 pin 优先，否则数据面推断），确保
+    // research_mode / 研究规范文本与其对齐，杜绝"基本面档位 + 价量默认消息/技术门槛"错配。
+    if (this.form.research_mode !== this.effectiveMode) {
+      await this.switchResearchMode(this.effectiveMode, true)
     }
     let researchSpec
     try {
@@ -429,9 +473,13 @@ export const agentStore = reactive({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ...this.form,
-          // 方案 B：research_mode 取推断档位（勾面时 syncInferredMode 已同步 spec 文本）
-          research_mode: this.inferredMode,
-          no_fundamentals: !['基本面', '股东面'].some(f => (this.form.focus_facets || []).includes(f)) && !(this.form.focus_facets || []).length,
+          // 档位：研报 pin 优先，否则方案 B 数据面推断（勾面时已同步 spec 文本）
+          research_mode: this.effectiveMode,
+          // 研报档 needs_fundamentals=True（机制卡常点名 funda_* 字段），不能被"未勾面
+          // 省内存"的默认口径砍掉；其余档沿用原口径：未勾面 → 不载入。
+          no_fundamentals: this.effectiveMode === 'report'
+            ? false
+            : (!['基本面', '股东面'].some(f => (this.form.focus_facets || []).includes(f)) && !(this.form.focus_facets || []).length),
           rebalance_freq: this.form.rebalance_freq || null,
           research_spec: researchSpec,
           allow_submit: Boolean(researchSpec.delivery_policy?.allow_submit),
@@ -452,9 +500,9 @@ export const agentStore = reactive({
     }
   },
   async startDefaultResearch() {
-    // 与 startAgent 同口径：按数据面推断的档位（而非可能残留的 form.research_mode）
-    // 决定规范与默认消息，保证"选什么面 → 提示词跟什么档"。
-    const mode = this.inferredMode
+    // 与 startAgent 同口径：按 effectiveMode（研报 pin 优先，否则数据面推断）决定规范
+    // 与默认消息，保证"选什么面 → 提示词跟什么档"。
+    const mode = this.effectiveMode
     if (this.form.research_mode !== mode) {
       await this.switchResearchMode(mode, true)
     }

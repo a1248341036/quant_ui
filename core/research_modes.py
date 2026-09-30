@@ -8,10 +8,12 @@
 - research_spec.default_research_spec      → 门槛/信号族/label 覆盖
 - core.factor_categories                   → 候选/正式库目录
 - backend.alphaagent_service               → 是否载入 funda_* 列
-- /api/alphaagent/research-modes           → 前端动态渲染 mode 按钮/下拉/提示
+- /api/alphaagent/research-modes           → 前端档位选择（页头「研报」按钮 / 因子实验室
+  重测下拉）。**注意：不是自动渲染**——2026-09-02「模式下拉退役」后，AgentThread 的档位
+  改为按数据面自动推断（infer_research_mode），新增顶层档位必须在 store/AgentThread 里
+  显式接线才会出现在页面上（report 档 2026-09-29 只进了注册表，UI 入口 09-30 才补上）。
 
-未来若加"工具型"模式（如组合扫描），只需扩展本 dataclass 字段，
-不必改任何消费方代码。
+未来若加"工具型"模式（如组合扫描），只需扩展本 dataclass 字段 + 前端一处接线。
 """
 
 from __future__ import annotations
@@ -250,7 +252,7 @@ def mode_ids() -> list[str]:
 def ui_options() -> list[dict]:
     """前端研究模式按钮/因子库类别/保存下拉共享的选项。
 
-    仅返回顶层档位（technical/fundamental）；三对齐子档（technical_daily/
+    返回全部顶层档位（technical/fundamental/report）；三对齐子档（technical_daily/
     weekly/monthly）是内部档位，由 infer_research_mode 依据 rebalance_freq
     自动选用，不暴露给前端下拉（避免污染 UI）。
     """

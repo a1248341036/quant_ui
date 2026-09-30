@@ -577,7 +577,13 @@ async def run_factor_mining_agentscope(
                 {
                     "run_id": log_dir.name,
                     "created_at": started_at,
-                    "params": {"user_message": user_message},
+                    "params": {
+                        "user_message": user_message,
+                        # 档位一并落盘：本文件会覆盖后端 start_run 写的 run_meta.json，
+                        # 原来只留 user_message，导致后端重启后 hydrate 回来的 run 丢了
+                        # 档位（页头无从判断是 technical 还是 report）。
+                        "research_mode": (config.research_spec or {}).get("research_mode"),
+                    },
                     "parent_run_id": None,
                     "title": user_message.strip().replace("\n", " ")[:32] or log_dir.name,
                     "archived": False,
