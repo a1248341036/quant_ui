@@ -16,6 +16,14 @@
 工程约束：
   * 纯线程 + requests，不启动任何子进程 → Windows 下不会弹黑框；
   * 断点续跑：输出 JSONL 里已出现的 ``source.path`` 直接跳过；
+  * **跳过/失败台账** ``<out>.skipped.jsonl``（如 ``mechanism_cards.skipped.jsonl``）：
+    LLM 判定"未描述可复现机制"的 skip 会落盘并参与断点续跑（否则每次重跑都要把几百篇
+    重新喂一遍 LLM）；fail 只记账、不参与跳过，保持可重试。想重评跳过项用
+    ``--rescan-skipped``；
+  * JSON 解析容忍非法转义：模型输出的 LaTeX 裸反斜杠（``\\;`` ``\\sigma``）不是合法
+    JSON 转义，``repair_json_escapes`` 会补成合法转义后二次解析。**注意**：``\\f``
+    ``\\b`` ``\\t`` 本身是合法 JSON 转义，修复不会动它们，所以 ``\\frac`` 仍会被解析成
+    换页符 + "rac" —— 这类公式片段会因回证不上而被丢弃（不臆造数值），但不会丢整张卡；
   * 只写 ``--out`` 指定的 JSONL（默认现有 mechanism_cards.jsonl，追加写）。
 """
 from __future__ import annotations
@@ -469,23 +477,41 @@ def build_prompt(meta: dict[str, str], pages: list[tuple[int, str]]) -> str:
     return "".join(parts)
 
 
+# 非法反斜杠转义修复（2026-09-30）：模型在 formula.text / dsl_hint 里输出 LaTeX 时会给
+# 裸反斜杠（`\;` `\sigma` `\frac`），这些不是合法 JSON 转义序列 → json.loads 直接抛错，
+# 整篇被判 FAIL（实测 3 篇恒失败，把 --max-tokens 从 1500 提到 3000 复现同样失败）。
+#
+# 实现必须**把合法转义当整体消费**：早先版本用负向环视 `\\(?!["\\/bfnrtu])` 逐字符扫描，
+# 会把已经合法的 `\\cdots` 里第二个反斜杠也当成裸反斜杠 → 补成 `\\\cdots` → 仍旧非法
+# （2026-09-30 实测：`2024-04-24_…季报解析` 就是这样二次失败的）。这里的正则先尝试匹配
+# 完整合法转义（`\\` `\"` `\/` `\b` `\f` `\n` `\r` `\t` `\uXXXX`），匹配不到才把单个
+# `\` 补成 `\\`，因此对合法 JSON 是恒等变换。
+_ESCAPE_RE = re.compile(r'\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4})|\\')
+
+
+def repair_json_escapes(text: str) -> str:
+    """把非法反斜杠转义补成合法转义，供 json.loads 二次尝试。"""
+    return _ESCAPE_RE.sub(lambda m: m.group(0) if len(m.group(0)) > 1 else "\\\\", text)
+
+
 def extract_json(text: str) -> dict[str, Any] | None:
     s = str(text or "").strip()
     if s.startswith("```"):
         s = re.sub(r"^```[a-zA-Z]*\s*", "", s)
         s = re.sub(r"```\s*$", "", s).strip()
-    try:
-        obj = json.loads(s)
-        return obj if isinstance(obj, dict) else None
-    except Exception:
-        pass
     i, j = s.find("{"), s.rfind("}")
+    candidates = [s]
     if i >= 0 and j > i:
-        try:
-            obj = json.loads(s[i:j + 1])
-            return obj if isinstance(obj, dict) else None
-        except Exception:
-            return None
+        candidates.append(s[i:j + 1])
+    # 每个候选先按原样解析，再按"修复非法转义"后的文本解析（见 repair_json_escapes）
+    for cand in candidates:
+        for attempt in (cand, repair_json_escapes(cand)):
+            try:
+                obj = json.loads(attempt)
+            except Exception:
+                continue
+            if isinstance(obj, dict):
+                return obj
     return None
 
 
@@ -822,26 +848,55 @@ def repair_meta(out_path: Path, corpus: Path) -> int:
 
 # ── 主流程 ───────────────────────────────────────────────────────
 
-def load_done(out_path: Path) -> tuple[set[str], int]:
+def skipped_path(out_path: Path) -> Path:
+    """跳过/失败台账路径：``<out>.skipped.jsonl``（与主卡片文件同目录，独立不混写）。"""
+    return out_path.with_name(out_path.stem + ".skipped.jsonl")
+
+
+def count_lines(path: Path) -> int:
+    if not path.is_file():
+        return 0
+    with open(path, encoding="utf-8", errors="replace") as f:
+        return sum(1 for ln in f if ln.strip())
+
+
+def load_done(out_path: Path, skip_path: Path | None = None) -> tuple[set[str], int]:
+    """已处理集合 = 主文件里的成功卡片 ∪ 台账里的 skip 判定。
+
+    **为什么要读台账**（2026-09-30）：先前只认主文件，导致 768 篇被 LLM 判定
+    "未描述可复现机制"的跳过结果不落盘 → 每次重跑都要把它们重新喂一遍 LLM
+    （实测单轮约 25 分钟纯浪费）。fail 记录只进台账、不进 done，保持可重试。
+    """
     done: set[str] = set()
     max_id = 1000
-    if not out_path.is_file():
-        return done, max_id
-    with open(out_path, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                c = json.loads(line)
-            except Exception:
-                continue
-            p = (c.get("source") or {}).get("path")
-            if p:
-                done.add(str(p))
-            m = re.fullmatch(r"mc_(\d+)", str(c.get("card_id") or ""))
-            if m:
-                max_id = max(max_id, int(m.group(1)))
+    if out_path.is_file():
+        with open(out_path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    c = json.loads(line)
+                except Exception:
+                    continue
+                p = (c.get("source") or {}).get("path")
+                if p:
+                    done.add(str(p))
+                m = re.fullmatch(r"mc_(\d+)", str(c.get("card_id") or ""))
+                if m:
+                    max_id = max(max_id, int(m.group(1)))
+    if skip_path and skip_path.is_file():
+        with open(skip_path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                if rec.get("kind") == "skip" and rec.get("path"):
+                    done.add(str(rec["path"]))
     return done, max_id
 
 
@@ -873,9 +928,15 @@ def run(cfg: dict[str, Any], args: argparse.Namespace) -> int:
     out_path = Path(args.out).resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    done, max_id = load_done(out_path)
+    ledger = skipped_path(out_path)
+    done, max_id = load_done(out_path, None if args.rescan_skipped else ledger)
     print(f"[init] 输出文件: {out_path}")
     print(f"[init] 已存在 {len(done)} 条 source.path（将跳过），最大 card_id 序号 mc_{max_id:04d}")
+    if args.rescan_skipped:
+        print(f"[init] --rescan-skipped：忽略 {ledger.name} 里的历史跳过判定")
+    else:
+        print(f"[init] 跳过/失败台账 {ledger.name}：{count_lines(ledger)} 条"
+              f"（skip 命中即不再重跑；fail 仍会重试）")
 
     reports = list_reports(corpus, args.only, args.min_bytes, args.limit)
     todo = [p for p in reports if str(p.relative_to(corpus)).replace("\\", "/") not in done]
@@ -924,7 +985,8 @@ def run(cfg: dict[str, Any], args: argparse.Namespace) -> int:
             return ("skip", rel, f"schema 校验失败: {errs}")
         return ("ok", rel, card)
 
-    with open(out_path, "a", encoding="utf-8") as fout:
+    with open(out_path, "a", encoding="utf-8") as fout, \
+            open(ledger, "a", encoding="utf-8") as fledger:
         with ThreadPoolExecutor(max_workers=max(1, args.workers)) as pool:
             futures = {pool.submit(work, p): p for p in todo}
             for i, fut in enumerate(as_completed(futures), 1):
@@ -947,9 +1009,21 @@ def run(cfg: dict[str, Any], args: argparse.Namespace) -> int:
                           f"ev={payload['extraction']['evidence_verified']} {rel} ({el:.0f}s)", flush=True)
                 elif kind == "skip":
                     counters["skip"] += 1
+                    with write_lock:
+                        fledger.write(json.dumps(
+                            {"path": rel, "kind": "skip", "reason": payload,
+                             "ts": time.strftime("%Y-%m-%dT%H:%M:%S")},
+                            ensure_ascii=False) + "\n")
+                        fledger.flush()
                     print(f"[{i}/{len(todo)}] SKIP {rel} :: {payload}", flush=True)
                 else:
                     counters["fail"] += 1
+                    with write_lock:
+                        fledger.write(json.dumps(
+                            {"path": rel, "kind": "fail", "reason": payload,
+                             "ts": time.strftime("%Y-%m-%dT%H:%M:%S")},
+                            ensure_ascii=False) + "\n")
+                        fledger.flush()
                     print(f"[{i}/{len(todo)}] FAIL {rel} :: {payload}", flush=True)
 
     el = time.time() - start
@@ -1023,6 +1097,8 @@ def main() -> int:
     ap.add_argument("--api-key", default="123456")
     ap.add_argument("--timeout", type=int, default=300)
     ap.add_argument("--dry-run", action="store_true", help="只打印每篇选页/prompt 规模，不调用 LLM")
+    ap.add_argument("--rescan-skipped", action="store_true",
+                    help="忽略 <out>.skipped.jsonl 里的历史跳过判定，重新评估这些报告")
     ap.add_argument("--selftest", action="store_true", help="运行离线自检（不联网）")
     ap.add_argument("--verify", action="store_true", help="对已落盘 --out 文件做红线回证复核（不调用 LLM）")
     ap.add_argument("--repair-meta", action="store_true", help="按文件名回填 source.org 为空的卡片（不调用 LLM）")
