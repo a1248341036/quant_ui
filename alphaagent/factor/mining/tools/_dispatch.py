@@ -1234,10 +1234,14 @@ class _DispatchMixin:
         且 ICIR≥reproduce_min_icir。指标**兼容** ``metrics.cross_sectional_core`` 与
         ``summary`` 两种结构（实测引擎输出为后者）。每次判定都写日志，便于事后归因。
         """
-        gate = getattr(self, "report_reproduce_gate", None) or {}
+        from alphaagent.factor.mining.report_channels import get_run_gate
+
+        gate = get_run_gate() or getattr(self, "report_reproduce_gate", None) or {}
         phase = str(gate.get("phase") or "")
         qid = str(gate.get("qid") or "")
         if phase != "reproduce" or not qid:
+            log_step("report_reproduce_judge",
+                     f"factor={factor_name} 跳过 phase={phase or '-'} qid={qid or '-'}")
             return
         rp = getattr(self, "report_policy", None) or {}
         min_ic = float(rp.get("reproduce_min_abs_ic", 0.010))
