@@ -667,6 +667,12 @@ class _DispatchMixin:
         return out
 
     def dispatch(self, name: str, arguments: Any) -> dict[str, Any]:
+        # 研报模式网关：优先取调用参数携带的一份（跨边界最可靠）
+        try:
+            if isinstance(arguments, dict) and arguments.get("_report_gate"):
+                self._report_gate_arg = dict(arguments["_report_gate"])
+        except Exception:  # noqa: BLE001
+            pass
         if isinstance(arguments, str):
             try:
                 arguments = json.loads(arguments) if arguments.strip() else {}
@@ -1236,7 +1242,8 @@ class _DispatchMixin:
         """
         from alphaagent.factor.mining.report_channels import get_run_gate
 
-        gate = get_run_gate() or getattr(self, "report_reproduce_gate", None) or {}
+        gate = (getattr(self, "_report_gate_arg", None) or get_run_gate()
+                or getattr(self, "report_reproduce_gate", None) or {})
         phase = str(gate.get("phase") or "")
         qid = str(gate.get("qid") or "")
         if phase != "reproduce" or not qid:

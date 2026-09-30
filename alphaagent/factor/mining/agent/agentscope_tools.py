@@ -530,6 +530,15 @@ async def _dispatch_with_timeout(
     timeout: float | None = None,
 ) -> tuple[dict[str, Any], float]:
     """带超时的 dispatch，超时返回错误而非永久阻塞。"""
+    # 研报模式网关随参数一起进入评估引擎（跨线程池/未来跨进程都可靠）
+    try:
+        from alphaagent.factor.mining.report_channels import get_run_gate as _grg
+
+        _g = _grg()
+        if _g and isinstance(args, dict):
+            args["_report_gate"] = dict(_g)
+    except Exception:  # noqa: BLE001
+        pass
     actual_timeout = float(timeout if timeout is not None else _runtime_config.eval_timeout_seconds)
     try:
         result, elapsed = await asyncio.wait_for(

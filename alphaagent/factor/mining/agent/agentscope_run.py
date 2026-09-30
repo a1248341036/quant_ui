@@ -925,6 +925,36 @@ async def run_factor_mining_agentscope(
             except Exception as _e:
                 logging.warning("研报问题队列获取异常（失败静默）: %s", _e)
 
+        # 研报模式网关：**放在 try 之外**，确保永远被设置（原先在 try 内，
+        # 任何异常都被"失败静默"吞掉 → 判定侧读到空字典 → 复现永不通过）。
+        if report_flow_enabled(spec):
+            try:
+                from alphaagent.factor.mining.agent.question_queue import (
+                    find_card_for_question as _fcq,
+                )
+                from alphaagent.factor.mining.agent.question_state import (
+                    reproduce_factor_of as _rfo,
+                )
+                from alphaagent.factor.mining.report_channels import set_run_gate as _srg
+
+                _rm = str(getattr(config, "research_mode", "report") or "report")
+                _g2 = {
+                    "required": reproduce_of_required(spec),
+                    "phase": locals().get("_report_phase_from_state") or resolve_report_phase(spec, outer_turn),
+                    "qid": str((current_question or {}).get("question_id") or ""),
+                    "mode": _rm,
+                    "lock_rounds": reproduce_lock_rounds(spec),
+                    "diverge_parent": diverge_parent_required(spec),
+                    "parent_name": _rfo(_rm, str((current_question or {}).get("question_id") or "")),
+                }
+                try:
+                    factor_tools.report_reproduce_gate = _g2
+                except Exception:  # noqa: BLE001
+                    pass
+                _srg(_g2)
+            except Exception as _eg:  # noqa: BLE001
+                logging.warning("研报模式网关设置失败: %s", _eg)
+
         # R3 方案每轮动态联动：如果启用了 RAG，每轮根据当前派发的具体课题动态检索最相关研报段落注入
         from alphaagent.factor.mining.report_channels import report_rag_enabled
 
