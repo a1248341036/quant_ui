@@ -713,7 +713,17 @@ def render_factor_records_block(
         kind = str(rec.get("formula_kind") or "")
         kind_text = "研报原文公式" if kind == "verbatim" else "⚠ 由文字定义推导，待验证"
         lines.append(f"{i}. **{rec.get('name') or '-'}** — `{rec.get('expr_local')}`")
-        facets = "、".join(str(f) for f in (rec.get("focus_facets") or [])) or "-"
+        # 数据面：优先用记录里的值；为空时**就地重算**（facet 表后续补全前缀时，
+        # 存量 jsonl 不必重抽也能显示正确——抽取时算好的旧值可能是空的）
+        _facets = list(rec.get("focus_facets") or [])
+        if not _facets:
+            try:
+                from scripts._factor_expr_tools import infer_focus_facets
+
+                _facets = infer_focus_facets(rec.get("expr_local"), rec.get("fields_local") or [])
+            except Exception:  # noqa: BLE001
+                _facets = []
+        facets = "、".join(str(f) for f in _facets) or "-"
         lines.append(f"   - 方向：{rec.get('direction') or '-'} ｜ 公式档：{kind_text} ｜ 数据面：{facets}")
         lines.append(f"   - 算子树：{_record_tree_text(rec)}")
         if kind != "verbatim":
