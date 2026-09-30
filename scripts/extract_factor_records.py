@@ -39,6 +39,9 @@ RE_FUNC = re.compile(r"([A-Z][A-Z0-9_]{1,})\s*\(")
 RE_FIELD = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)")
 RE_ROW_NUM = re.compile(r"^\s*\|\s*\d+\s*\|")
 
+# 报告级频率索引（authoritative，由 extract_report_freq/verify_report_freq 产出）
+FREQ_INDEX: dict[str, dict] = {}
+
 
 # ── 本仓算子与字段（运行时加载，禁止硬编码）─────────────────────────────
 def load_operators() -> set[str]:
@@ -217,7 +220,7 @@ def parse_one(path: Path, root: Path, retries: int = 2) -> tuple[list[dict], lis
                 kind, raw = "derived", None  # 未回证 → 降级为推导，不冒充原文
             if kind == "null" or not expr_local or not ok:
                 kind = "null" if not ok else kind
-            recs.append({
+            rec = {
                 **meta_of(path, root),
                 "table_index": blk["index"], "table_title": blk["title"][:120],
                 "name": (it.get("name") or "")[:120], "category": it.get("category"),
@@ -236,7 +239,22 @@ def parse_one(path: Path, root: Path, retries: int = 2) -> tuple[list[dict], lis
                 "report_holding": it.get("report_holding"),
                 "label_col_hint": it.get("label_col_hint"),
                 "eval_freq_hint": it.get("eval_freq_hint"),
-            })
+            }
+            # ── 频率/标签：以报告级索引为准（fail-closed，缺则 null）──
+            _fr = FREQ_INDEX.get(rec["source"]) or {}
+            if _fr.get("label_final"):
+                rec["report_rebalance_freq"] = _fr.get("freq_final")
+                rec["label_col_hint"] = _fr.get("label_final")
+                rec["eval_freq_hint"] = _fr.get("freq_final")
+                rec["freq_source"] = "report_index"
+                rec["align_guard"] = "ok"
+            else:
+                rec["report_rebalance_freq"] = None
+                rec["label_col_hint"] = None
+                rec["eval_freq_hint"] = None
+                rec["freq_source"] = "none"
+                rec["align_guard"] = _fr.get("guard_final") or "no_report_freq"
+            recs.append(rec)
     return recs, stats
 
 
@@ -249,7 +267,25 @@ def main() -> int:
     ap.add_argument("--workers", type=int, default=2)
     ap.add_argument("--only", default="")
     ap.add_argument("--require-table", action="store_true")
+    ap.add_argument("--freq-index", default=str(ROOT / "data" / "research_reports" / "knowledge" / "report_freq_verified.jsonl"),
+                    help="报告级频率索引 jsonl（fail-closed：缺失即 label=null）")
     args = ap.parse_args()
+
+    global FREQ_INDEX
+    _fp = Path(args.freq_index)
+    if _fp.exists():
+        FREQ_INDEX = {}
+        for _l in _fp.read_text(encoding="utf-8", errors="ignore").splitlines():
+            if not _l.strip():
+                continue
+            try:
+                _r = json.loads(_l)
+            except Exception:  # noqa: BLE001
+                continue
+            FREQ_INDEX[_r.get("source", "")] = _r
+        print(f"频率索引: {len(FREQ_INDEX)} 篇（落定 {sum(1 for v in FREQ_INDEX.values() if v.get('label_final'))} 篇）", flush=True)
+    else:
+        print(f"频率索引不存在（{_fp}）→ 全部 label_col_hint=null", flush=True)
 
     root, out = Path(args.corpus), Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
