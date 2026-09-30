@@ -683,8 +683,12 @@ python scripts/qweave_research.py --start 2022-01-01 --train-model
 .venv\Scripts\python.exe -m pytest tests -v
 ```
 
-CI 配置见 `.github/workflows/ci.yml`，在 push/PR 时自动安装
-`requirements-dev.txt` 并执行上述冒烟测试。
+> **GitHub Actions CI 已移除（2026-09-30）**：原 `.github/workflows/ci.yml` 在
+> ubuntu-latest 上安装 `requirements-dev.txt` 后跑全量 `pytest tests -v`，但没有安装
+> 仓库内的 CNEquity 包（`ModuleNotFoundError: No module named 'cnequity'`），并含若干
+> Windows 语义的平台相关断言，导致 main 自 2026-09-23 起每次 push 全红、不再提供有效
+> 信号，故删除。如需恢复，请先补齐依赖安装（含仓库内 CNEquity 包）并处理平台相关用例，
+> 再重新引入 workflow。本地仍按上面的命令自测。
 
 ## 10. 登录鉴权
 
