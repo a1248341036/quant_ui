@@ -41,7 +41,8 @@ FIELD_ALIAS: dict[str, str] = {
     "dividend_ttm": "dv_ttm", "dividend_yield": "dv_ttm", "dv_ratio": "dv_ttm",
     "cash_dividend": "div_cash_div", "cash_div": "div_cash_div",
     "days_to_ex": "div_days_to_ex",
-    "fsi_operate_profit": "funda_operate_profit", "operate_profit": "funda_operate_profit",
+    "fsi_operate_profit": "fsi_operating_profit",   # 仓库实际字段名是 operating（不是 operate）
+    "operate_profit": "funda_operate_profit",
     "net_profit": "funda_net_profit", "netprofit": "funda_net_profit",
     "total_revenue": "funda_total_revenue", "revenue": "funda_total_revenue",
     "total_equity": "funda_total_equity", "equity": "funda_total_equity",
