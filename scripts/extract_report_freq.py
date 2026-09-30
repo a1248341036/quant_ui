@@ -93,14 +93,20 @@ PROMPT = """下面是券商研报中与"调仓/换手/持有期"相关的原文�
   "holding": "持有期原文描述或 unknown",
   "evidence_quote": "支撑判断的原文逐字片段（必须逐字来自片段；没有则空串）",
   "confidence": "high|medium|low",
+  "basis": "stated_usage|comparison_conclusion|unclear",
+  "runner_up": "被比下去的那一档频率（无则 unknown）",
   "conflict": true/false,
-  "conflict_note": "若片段中出现互相矛盾的频率表述，说明之；否则空串"}}
+  "conflict_note": "若"实做频率"与"结论推荐频率"不同，说明之；否则空串"}}
 
 纪律：
 1. 只根据**调仓/换仓/持有**的表述判断；"数据月频""因子月度更新""报告按月发布"**不算**调仓频率；
 2. `evidence_quote` 必须从片段中逐字复制，不得改写；
 3. 无明确表述 → `rebalance_freq="unknown"`、`evidence_quote=""`；
-4. 区分"因子更新频率"与"组合调仓频率"；若片段同时出现不同频率 → `conflict=true`。
+4. 区分"因子更新频率"与"组合调仓频率"；
+5. **片段里同时出现多个频率词时不要回避**：若报告在**实做**（"我们以月频调仓回测"）→ `basis="stated_usage"`；
+   若报告在**对比/下结论**（"周频明显优于月频"）→ `basis="comparison_conclusion"` 且 `rebalance_freq` 填**被推荐/更优的那一档**，
+   `runner_up` 填被比下去的那一档；两者同时存在且冲突 → `conflict=true`（仍要给出采用/推荐档）；
+   只有**并列提及、完全看不出采用或推荐哪一档**时才 `basis="unclear"`。
 
 片段：
 ---
@@ -175,10 +181,18 @@ def judge(path: Path, labels: set[str], card_freq: dict[str, str], root: Path, r
         base["align_guard"] = "quote_not_grounded"
         return base
 
-    # ── 闸门 3a：报告内冲突 → null
-    if str(obj.get("conflict")).lower() in ("true", "1", "yes"):
-        base["align_guard"] = "intra_report_conflict"
+    # ── 闸门 3c：多频率词不判 null；只有"无表态"才 null（用户 2026-09-30 指正）
+    basis = str(obj.get("basis") or "unclear").strip().lower()
+    base["basis"] = basis
+    if str(obj.get("runner_up") or "").strip().lower() not in ("", "unknown", "none", "null"):
+        base["runner_up"] = str(obj.get("runner_up")).strip().lower()
+    if basis == "unclear":
+        base["align_guard"] = "ambiguous_no_stance"
+        base["rebalance_freq"] = freq if freq != "unknown" else None
         return base
+    if str(obj.get("conflict")).lower() in ("true", "1", "yes"):
+        base["freq_conflict"] = True       # 实做与结论不一致：仍落地，但标记冲突
+        base["conflict_note"] = str(obj.get("conflict_note") or "")[:200]
     if any(a in quote for a in AMBIGUOUS):
         base["align_guard"] = "ambiguous_definition"
         return base
