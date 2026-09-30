@@ -1272,7 +1272,13 @@ class _DispatchMixin:
             return
         from alphaagent.factor.mining.agent.question_state import mark_reproduce_ok
 
-        detail = ("shape=confirmed" if by_shape else "") + ((" | " if by_shape else "") if by_metrics else "") +                  f"ic={ic_f:.4f} icir={icir_f:.4f}"
+        _parts = []
+        if by_shape:
+            _parts.append(f"shape={shape or 'confirmed'}")
+        if by_metrics:
+            _parts.append("signal=ok")
+        _parts.append(f"ic={ic_f:.4f} icir={icir_f:.4f}")
+        detail = " | ".join(_parts)
         mark_reproduce_ok(
             str(gate.get("mode") or "report"), qid, int(gate.get("lock_rounds") or 3),
             factor=factor_name, detail=detail,
