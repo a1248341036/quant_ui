@@ -50,10 +50,27 @@ RE_PERF_COL = re.compile(r"方向|最近一周|最近一月|今年以来|年化|
 # 正文公式段锚点：小节标题含"因子构建/指标计算…"，或直引"公式："
 RE_PROSE_SECTION = re.compile(r"(因子|指标|变量)[^\n]{0,12}(构建|计算|定义|构造|度量)")
 RE_PROSE_HEADING = re.compile(r"^#{1,6}\s*\S+")
+# 公式行强特征：LaTeX 命令 / 上下标 / 希腊·数学符号 / 本仓算子式
 RE_FORMULA_LINE = re.compile(
-    r"[=＝]|\\[a-zA-Z]+|_\{|\^\{|[\u0370-\u03ff\u2200-\u22ff]"
-    r"|Rank\s*\(|std\s*\(|mean\s*\(|corr\s*\(|TS_[A-Z]"
+    r"\\[a-zA-Z]{2,}|_\{|\^\{|[\u0370-\u03ff\u2200-\u22ff]"
+    r"|(?:TS|CS|DIVERGENCE|GATED|RANK|STD|MEAN|CORR)_[A-Z_]*\s*\("
 )
+# 无 LaTeX 时的弱特征：等号 + ≥2 个变量/算子 token（用于 `EP = 1 / PE` 这类纯文本公式）
+RE_EQ = re.compile(r"[=＝]")
+RE_MATH_TOKEN = re.compile(r"[A-Za-z_]{2,}|\d+\.\d+")
+RE_NOISE_LINE = re.compile(r"\.{4,}|图\s*\d+|图表\s*\d+|资料来源|目\s*录|^\s*[-*]\s*图")
+
+
+def _is_formula_line(ln: str) -> bool:
+    """公式行判定：强特征直接算；否则要求 等号 + ≥2 个变量 token，并排除图注/目录行。"""
+    s = ln.strip()
+    if len(s) < 8:
+        return False
+    if RE_FORMULA_LINE.search(s):
+        return True
+    if not RE_EQ.search(s) or RE_NOISE_LINE.search(s):
+        return False
+    return len(RE_MATH_TOKEN.findall(s)) >= 2
 RE_FUNC = re.compile(r"([A-Z][A-Z0-9_]{1,})\s*\(")
 RE_FIELD = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)")
 RE_ROW_NUM = re.compile(r"^\s*\|\s*\d+\s*\|")
@@ -156,6 +173,14 @@ def normalize(s: str) -> str:
     return "".join(c for c in unicodedata.normalize("NFKC", str(s)) if not c.isspace())
 
 
+# 块类型 → 喂给 LLM 的片段说明（prompt 用）
+_KIND_DESC = {
+    "table": "因子清单表，含表标题",
+    "prose": "正文公式段落（非表格，含因子定义/计算方法）",
+    "formula": "正文公式片段（LaTeX/算子表达式；可能缺因子名，需结合上下文命名）",
+}
+
+
 PROMPT = """你在把券商研报的"因子清单"结构化成可执行记录。下面是研报片段（{kind_desc}）。
 
 对**片段中每个因子**输出一条记录，返回严格 JSON 数组（无解释、无代码围栏）：
@@ -244,7 +269,7 @@ def build_prose_blocks(lines: list[str], max_blocks: int = 2) -> list[dict]:
             if t:
                 body.append(t)
             j += 1
-        hits = [t for t in body if RE_FORMULA_LINE.search(t)]
+        hits = [t for t in body if _is_formula_line(t)]
         if hits:
             blocks.append({"index": 0, "kind": "prose", "title": s[:120],
                            "rows": body, "n_rows": len(hits)})
@@ -252,10 +277,59 @@ def build_prose_blocks(lines: list[str], max_blocks: int = 2) -> list[dict]:
     return blocks
 
 
+def build_formula_blocks(lines: list[str], max_blocks: int = 1, gap: int = 2,
+                         min_cluster: int = 3) -> list[dict]:
+    """全篇公式行聚类兜底：把散落在正文（不限于"因子构建"小节）的公式行成块。
+
+    实测：公式常成片出现在小节标题**之外**（MinerU 输出的 LaTeX 段，如
+    `OCVP_{t} = \\frac{1}{d}\\sum ...`），只按标题锚点会漏掉它们。
+    按"公式行间隔 ≤ gap"聚类，只取成片（≥min_cluster 行）的簇，默认每篇最多 1 段
+    （单篇多段会把 LLM 预算打满，实测全语料块数会从 ~600 涨到 ~2000）。
+    """
+    idxs = [i for i, ln in enumerate(lines) if _is_formula_line(ln)]
+    if not idxs:
+        return []
+    groups: list[list[int]] = []
+    cur = [idxs[0]]
+    for i in idxs[1:]:
+        if i - cur[-1] <= gap:
+            cur.append(i)
+        else:
+            groups.append(cur)
+            cur = [i]
+    groups.append(cur)
+    # 只要成片公式（≥min_cluster 行）：单行/双行弱公式噪声太大，交给 prose 通道即可
+    groups = [g for g in groups if len(g) >= min_cluster]
+    groups.sort(key=len, reverse=True)
+
+    blocks: list[dict] = []
+    for g in groups[:max_blocks]:
+        lo, hi = max(0, g[0] - 2), min(len(lines), g[-1] + 3)
+        body = [lines[k].strip() for k in range(lo, hi) if lines[k].strip()]
+        title = ""
+        for k in range(g[0] - 1, max(-1, g[0] - 30), -1):
+            t = lines[k].strip()
+            if RE_PROSE_HEADING.match(t):
+                title = t
+                break
+        blocks.append({"index": 0, "kind": "formula", "title": title[:120],
+                       "rows": body, "n_rows": len(g)})
+    return blocks
+
+
 def build_all_blocks(lines: list[str]) -> list[dict]:
-    """表块 + 正文公式段，统一编号（parse_one / --require-table 的唯一入口）。"""
+    """表块 + 正文公式段 + 公式行聚类，统一编号、按内容去重。
+
+    这是 parse_one / --require-table 的唯一入口。
+    """
     blocks = build_blocks(lines)
-    for b in build_prose_blocks(lines):
+    seen = {normalize("".join(b["rows"])) for b in blocks}
+    # 每篇最多补 1 段散文 + 1 段公式簇；与已选块互为子串即视为重复（取先到者）
+    for b in build_prose_blocks(lines, max_blocks=1) + build_formula_blocks(lines):
+        key = normalize("".join(b["rows"]))
+        if not key or any(key in s or s in key for s in seen):
+            continue
+        seen.add(key)
         blocks.append({**b, "index": len(blocks)})
     return blocks
 
@@ -344,8 +418,8 @@ def parse_one(path: Path, root: Path, retries: int = 2) -> tuple[list[dict], lis
             for attempt in range(retries + 1):
                 try:
                     arr = call_llm("\n".join(blk["rows"]), blk["title"],
-                                   kind_desc=("因子清单表，含表标题" if blk.get("kind", "table") == "table"
-                                              else "正文公式段落（非表格，含因子定义/计算方法）"))
+                                   kind_desc=_KIND_DESC.get(blk.get("kind", "table"),
+                                                            _KIND_DESC["table"]))
                     break
                 except Exception as e:  # noqa: BLE001
                     if attempt >= retries:
