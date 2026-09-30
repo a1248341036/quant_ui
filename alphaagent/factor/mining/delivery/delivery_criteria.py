@@ -50,7 +50,11 @@ class CandidateCriteria:
     # 不再等 stage_two/engine_gate 才拦截（历史数据：30 个候选 26 个日换手>50%，
     # 全部止步 stage_two/engine_gate，浪费大量评估算力）。
     max_avg_daily_side_turnover: float = 0.5  # 【唯一真源】
-    # 按调仓频率分档的换手门槛（2026-09-20，freq_label_alignment_spec_v1.md）
+    # 按调仓频率分档的换手门槛（2026-09-20）
+    # **这是"两把尺子"的缝合点**：筛查在 label 口径（主档 label_1d）下判分，交付在
+    # freq 口径下用真实引擎回测（engine_gate 不读 label，见 core/research_modes.py
+    # 顶部"label 口径 vs 调仓频率"）。按 freq 分档等价于把"日频信号抖动 × 低频调仓"
+    # 折算成可交付成本，避免 1d 尺度把周/月频因子误杀。
     # 语义：avg_daily_side_turnover 是信号日频稳定性（与调仓频率无关），
     # 不同 freq 下"信号抖 + 低频调仓" → 实际调仓换手成本可控 → 门槛放宽。
     # 起点值基于 run 2 实证（turnover=0.15 的 weekly 因子 IC 差一点过线，

@@ -24,9 +24,16 @@ DEFAULT_PANEL_PATH = PANEL_PATH
 # 切片视图快路径开关（0 = 回退布尔掩码复制路径；排查问题时可用）
 _SLICE_VIEW_ENABLED = os.environ.get("ALPHA_PANEL_SLICE_VIEW", "1") not in {"0", "false", "False"}
 
-# label_{N}d_close_to_close：T+1 收盘 → T+(N+1) 收盘
-# 5 = weekly 调仓对齐档（technical_weekly 子档，持有 5 个交易日），详见
-# docs/specs/alphaagent_freq_label_alignment_spec_v1.md
+# label_{N}d_close_to_close：T+1 收盘 → T+(N+1) 收盘的**点到点累计收益**
+# （不是"后 N 天日均收益"，也不除以 N）；逐日滚动 → 相邻样本重叠 N-1 天，
+# 所以拿它算 ICIR 必须按持有期去重叠（factor/metrics/ic.py:cs_ic_summary）。
+# 各档用途（**本家族是 close→close**；主档 technical 的研究口径是另一个列
+# label_1d_open_to_open，见下方 _DERIVED_COLUMNS，勿与本家族的 1d 混用）：
+#   1  = 收盘到收盘 1 日口径（提示词推荐表与部分脚本/基线使用）
+#   5  = weekly 三对齐子档（technical_weekly，持有 5 个交易日）
+#   10 = 历史遗留（现无任何档位推荐，基本面档走 20d），保留仅为老 panel / 老条目兼容
+#   20 = 慢线档（fundamental / technical_monthly）
+# label 期与调仓频率刻意解耦，口径说明见 core/research_modes.py 顶部区块。
 CLOSE_TO_CLOSE_LABEL_HOLD_DAYS = (1, 5, 10, 20)
 
 

@@ -225,6 +225,30 @@ label/panel 列加载/engine_gate 频率的语义。迁移脚本
 - 因子库页模式页签退役（`FactorLibrary.vue`），由 facet 筛选 chips（全部/八面/融合）取代；
   ML 组合训练的 `collect_factor_entries` 按解析后库路径去重，避免大库下重复枚举。
 
+## label 口径 vs 调仓频率：刻意解耦（2026-09-30 决策）
+
+**结论：保留解耦，不把两个旋钮合并。** 主档（如 `technical`）就是
+`label_1d` 打分 + `weekly` 交付，这是设计，不是遗留错配。
+
+- **研究口径 = `recommended_label_col`**（`core/research_modes.py`）：IC / RANKIC / ICIR /
+  decile 按该 label 的前瞻收益计算，持有期 >1 时按持有期去重叠
+  （`factor/metrics/ic.py:cs_ic_summary`）；十分组年化/回撤/夏普用 `holding_days = label 天数`；
+  submit 侧一律 `cost_bps=0`。
+- **交付口径 = `engine_gate.freq`**：`run_engine_gate` 用真实行情（T+1 / 涨跌停 / 停牌 /
+  整手 / 滑点 / 参与率 / buffer）按该频率调仓回测，**不读 label**；入库定生死只认它。
+- **落差的缝合点（两个代理门）**：① stage_one 的 `min_cs_autocorr`（截面排名日度延续性，
+  低 → 周调仓必死）；② 换手门槛按 freq 分档（`delivery_criteria.turnover_thresholds_by_freq`：
+  daily 0.50 / weekly 0.65 / monthly 0.80）。
+- **只有 `technical_daily` / `technical_weekly` / `technical_monthly` 是真"三对齐"**
+  （1d↔daily、5d↔weekly、20d↔monthly）；`infra/registry_io.derive_label_from_freq` 只是
+  子档映射 + 老条目展示兜底，不是运行口径。
+- **已知代价（接受）**：1d IC 稳、4~5 日部分回吐的因子能过 stage_one，最终在含成本的
+  engine_gate 被拒，浪费部分挖掘算力；库里研究指标与实盘收益不可互相换算，UI 必须分列
+  展示（研究口径 / 实盘口径）。
+- **⚠ 禁止"顺手对齐"**：把主档 label 改成 `derive_label_from_freq(freq)` 等于换掉研究口径，
+  而 `min_abs_ic` / `min_train_icir` 等门槛按 label 尺度标定，会一并失真。真要做单旋钮
+  收敛，属独立改动 + 需重标定门槛。
+
 ## REST API
 
 | 方法 | 路径 | 功能 |

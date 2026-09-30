@@ -30,6 +30,11 @@ def run_engine_gate(
 ) -> dict[str, Any]:
     """验证集窗口的旧引擎 TopN 回测门禁（完整 T+1/涨跌停/停牌/整手约束）。
 
+    **口径（交付）：本门禁只认 policy["freq"] 与真实行情执行约束，不读 label_col。**
+    研究口径（按 label 期、无成本算的 IC / 十分组）在 submit 侧；两者刻意解耦——本仓库
+    主档就是 label_1d 打分 + weekly 交付（详见 core/research_modes.py 顶部区块）。
+    ⚠ 不要为了"对齐"在此引入 label：那会造出第三套口径。
+
     asset_type 决定回测执行规则（stock 用股票 profile；etf 用 ETF_PROFILE：
     免涨跌停、低佣金、价差/最低佣金单独设）。amount 单位换算由
     core.panel_schema 统一处理（stock/etf panel amount 均为元）。
