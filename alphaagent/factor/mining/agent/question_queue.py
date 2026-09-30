@@ -302,6 +302,604 @@ def question_missing_fields(
     return tuple(missing)
 
 
+_THEORY_RE_SRC = (
+    r"定价公式|无套利|风险溢价|引理|定理|证明|推导|式（\d|式\(\d|假设检验的统计量|"
+    r"参考文献|附录|本文结构|文献综述"
+)
+
+
+def _clean_question_text(text: str, limit: int = 700) -> str:
+    """清洗题库文本：去掉表格残渣与 HTML 注释（实测 23% 课题的 construction_guide 是表格块）。
+
+    题库字段由 PDF 解析而来，部分课题的 construction_guide/empirical_findings 直接是
+    ``<!-- table pN --> | ... |`` 这类表格残渣，注入题面只会污染复现要求。
+    """
+    import re
+
+    if not text:
+        return ""
+    t = re.sub(r"<!--.*?-->", " ", str(text), flags=re.S)
+    theory = re.compile(_THEORY_RE_SRC)
+    keep = []
+    for line in t.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.count("|") >= 2 or re.fullmatch(r"[\-|\s:]+", line):
+            continue          # 表格行/分隔行
+        if theory.search(line):
+            continue          # 论文/理论推导段（实测 construction_guide 常抓到 APT 定价公式这类内容）
+        keep.append(line)
+    out = " ".join(" ".join(keep).split())
+    if len(out) < 20:
+        return ""
+    return out[:limit]
+
+
+_CARDS_CACHE: list[dict] | None = None
+
+
+def load_mechanism_cards() -> list[dict]:
+    """加载机制卡（含 MinerU 语料新抽的卡）；失败返回空表。"""
+    global _CARDS_CACHE
+    if _CARDS_CACHE is not None:
+        return _CARDS_CACHE
+    import json
+    import subprocess
+    from pathlib import Path as _P
+
+    roots = []
+    try:
+        out = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                             capture_output=True, text=True, check=True).stdout.strip()
+        if out:
+            roots.append(_P(out).parent)
+    except Exception:  # noqa: BLE001
+        pass
+    roots.append(_P(__file__).resolve().parents[4])
+    cards: list[dict] = []
+    for r in roots:
+        f = r / "data" / "research_reports" / "knowledge" / "mechanism_cards.jsonl"
+        if not f.exists():
+            continue
+        for line in f.read_text(encoding="utf-8", errors="ignore").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                cards.append(json.loads(line))
+            except Exception:  # noqa: BLE001
+                continue
+        if cards:
+            break
+    _CARDS_CACHE = cards
+    return cards
+
+
+def find_card_for_question(question: dict, cards: list[dict] | None = None) -> dict | None:
+    """给课题挑最相关的机制卡（标题/机构/年份关键词重合度打分）。"""
+    if not question:
+        return None
+    cards = cards if cards is not None else load_mechanism_cards()
+    if not cards:
+        return None
+    import re as _re
+
+    qtext = f"{question.get('topic') or ''} {question.get('source') or ''} {question.get('hypothesis') or ''}"
+    qkeys = {t for t in _re.findall(r"[\u4e00-\u9fa5]{2,}|[A-Za-z_]{3,}", qtext)}
+    best, best_score = None, 0.0
+    for c in cards:
+        src = c.get("source") or {}
+        ctext = f"{src.get('title') or ''} {src.get('org') or ''} {c.get('card_id') or ''}"
+        ckeys = set(_re.findall(r"[\u4e00-\u9fa5]{2,}|[A-Za-z_]{3,}", ctext))
+        score = float(len(qkeys & ckeys))
+        if src.get("org") and str(src.get("org")) in qtext:
+            score += 3.0
+        if score > best_score:
+            best, best_score = c, score
+    # 阈值回到 2.0（2026-09-30 复盘：1.0 会错配——RQ_020「Alpha 因子库精简」被配上
+    # 《动态情景多因子 alpha 模型》的卡并带出误导性参考 DSL；错配比没有卡更糟）。
+    # 例外：标题与课题高度重合（bigram Jaccard ≥ 0.34）时即使只共享 1 个实词也放行。
+    # 硬门槛：卡标题里要有 ≥4 字的中文片段真的出现在课题文本里（否则就是错配——
+    # 2026-09-30 复盘：仅靠"同机构+alpha"就能凑够分数，把《动态情景多因子alpha模型》
+    # 配给了"Alpha 因子库精简与优化"。宁可不给卡，也不给误导性机制/参考 DSL。）
+    if not best:
+        return None
+    import re as _re
+
+    title = str((best.get("source") or {}).get("title") or "")
+    segs = [t for t in _re.findall(r"[\u4e00-\u9fa5]{4,}", title)]
+    if any(seg in qtext for seg in segs):
+        return best
+    if best_score >= 2.0 and _title_similar(best, qtext) >= 0.35:
+        return best
+    return None
+
+
+def _bigram_jaccard(a: str, b: str) -> float:
+    """两段文本的字符二元组 Jaccard（<=6 字符不予判定，返回 0）。"""
+    import re as _re
+
+    clean = lambda t: _re.sub(r"[^\u4e00-\u9fa5A-Za-z0-9]", "", str(t))  # noqa: E731
+    a, b = clean(a), clean(b)
+    if len(a) < 6 or len(b) < 6:
+        return 0.0
+    ba = {a[i:i + 2] for i in range(len(a) - 1)}
+    bb = {b[i:i + 2] for i in range(len(b) - 1)}
+    return len(ba & bb) / max(1, len(ba | bb))
+
+
+def _title_similar(card: dict, question_text: str) -> float:
+    """卡标题与课题文本的字符二元组 Jaccard（判"是否同一篇报告"）。"""
+    title = str((card.get("source") or {}).get("title") or "")
+    return _bigram_jaccard(title, question_text)
+
+
+def _card_block(card: dict) -> str:
+    """机制卡的题面片段（机制三段式 + 字段/参数 + 参考 DSL + 研报实测）。"""
+    if not card:
+        return ""
+    m = card.get("mechanism") or {}
+    src = card.get("source") or {}
+    lines = [f"- **机制卡** `{card.get('card_id')}`（来源：{src.get('org') or ''}《{src.get('title') or ''}》{src.get('date') or ''}）",
+             f"  - 错边方：{m.get('who_wrong') or '-'}",
+             f"  - 为何持续：{m.get('why_persists') or '-'}",
+             f"  - 可观测：{m.get('observable') or '-'}"]
+    fields = card.get("fields") or []
+    params = card.get("params") or {}
+    if fields:
+        lines.append(f"  - 字段：{', '.join(map(str, fields))[:200]}")
+    if params:
+        lines.append(f"  - 参数：{str(params)[:200]}")
+    if card.get("dsl_hint"):
+        lines.append(f"  - 参考 DSL（需按本仓字段名改写）：{str(card['dsl_hint'])[:400]}")
+    if card.get("formula_text"):
+        lines.append(f"  - 研报公式（原文保真）：{str(card['formula_text'])[:400]}")
+    ev = card.get("evidence") or {}
+    if ev:
+        lines.append(f"  - 研报实测：{str(ev)[:200]}")
+    return "\n".join(lines)
+
+
+# ── 研报因子清单注入（spec §7：docs/specs/alphaagent_report_factor_records_spec.md）──
+# 只读抽取侧产物（factor_records_pilot.jsonl / report_freq_verified.jsonl）并渲染题面块，
+# **不参与判定与状态机**：题面块让模型照抄研报公式落地，判不判定仍由既有闸门决定。
+FACTOR_RECORDS_FILE = "factor_records_pilot.jsonl"
+REPORT_FREQ_FILE = "report_freq_verified.jsonl"
+FACTOR_RECORDS_BLOCK_TITLE = "本报告因子清单"
+FACTOR_RECORDS_MAX_ITEMS = 10
+FACTOR_RECORDS_NO_FORMULA_NOTE = "本报告未抽出可执行公式"
+_CONF_ORDER: dict[str, int] = {"high": 0, "medium": 1, "low": 2}
+_FACTOR_RECORDS_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+_REPORT_FREQ_CACHE: dict[str, tuple[float, dict[str, dict[str, Any]]]] = {}
+
+
+def _knowledge_roots() -> list[Path]:
+    """知识库候选根目录（git common dir 优先，兼容 worktree 与主仓库路径）。"""
+    roots: list[Path] = []
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        if out:
+            roots.append(Path(out).parent)
+    except Exception:  # noqa: BLE001
+        pass
+    roots.append(Path(__file__).resolve().parents[4])
+    return roots
+
+
+def _resolve_knowledge_file(name: str, override: str = "") -> Path | None:
+    """解析 ``data/research_reports/knowledge/<name>``；``override`` 优先（测试/实验用）。"""
+    if override:
+        p = Path(override)
+        if not p.is_absolute():
+            p = Path.cwd() / p
+        if p.is_file():
+            return p
+    for root in _knowledge_roots():
+        p = root / "data" / "research_reports" / "knowledge" / name
+        if p.is_file():
+            return p
+    return None
+
+
+def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        if not line.strip():
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:  # noqa: BLE001
+            continue
+        if isinstance(obj, dict):
+            rows.append(obj)
+    return rows
+
+
+def load_factor_records(spec: dict[str, Any] | None = None,
+                        path: Path | str | None = None) -> list[dict[str, Any]]:
+    """读取研报因子清单 jsonl（按 mtime 缓存）；缺文件 → 空表（题面不加块）。
+
+    ``report_policy.factor_records_file`` 可覆盖路径（与 ``question_queue_file`` 同风格）。
+    """
+    if path is None:
+        override = str(((spec or {}).get("report_policy") or {}).get("factor_records_file") or "")
+        path = _resolve_knowledge_file(FACTOR_RECORDS_FILE, override)
+    if path is None:
+        return []
+    p = Path(path)
+    if not p.is_file():
+        return []
+    try:
+        stamp = p.stat().st_mtime
+    except OSError:
+        return []
+    cached = _FACTOR_RECORDS_CACHE.get(str(p))
+    if cached and cached[0] == stamp:
+        return cached[1]
+    rows = _read_jsonl(p)
+    _FACTOR_RECORDS_CACHE[str(p)] = (stamp, rows)
+    return rows
+
+
+def load_report_freq_index(spec: dict[str, Any] | None = None,
+                           path: Path | str | None = None) -> dict[str, dict[str, Any]]:
+    """报告级**已确认**频率索引（key = 归一化 source），来自 ``report_freq_verified.jsonl``。"""
+    if path is None:
+        override = str(((spec or {}).get("report_policy") or {}).get("report_freq_file") or "")
+        path = _resolve_knowledge_file(REPORT_FREQ_FILE, override)
+    if path is None:
+        return {}
+    p = Path(path)
+    if not p.is_file():
+        return {}
+    try:
+        stamp = p.stat().st_mtime
+    except OSError:
+        return {}
+    cached = _REPORT_FREQ_CACHE.get(str(p))
+    if cached and cached[0] == stamp:
+        return cached[1]
+    index = {_norm_source(r.get("source")): r for r in _read_jsonl(p) if r.get("source")}
+    _REPORT_FREQ_CACHE[str(p)] = (stamp, index)
+    return index
+
+
+def _norm_source(src: Any) -> str:
+    """报表 source 路径归一（分隔符/大小写/前导 ./），用于卡 path ↔ 记录 source 对齐。"""
+    return str(src or "").replace("\\", "/").strip().lstrip("./").lower()
+
+
+def match_report_records(question: dict[str, Any] | None, card: dict[str, Any] | None,
+                         records: list[dict[str, Any]] | None) -> tuple[list[dict[str, Any]], str]:
+    """把当前课题对到**某一篇报告**的因子记录，返回 (记录, 该报告 source)。
+
+    对齐顺序：① 机制卡 ``source.path`` 与记录 ``source`` 归一后精确相等（试点 10 篇里
+    9 篇有卡可精确对上）；② 卡缺失/不匹配时退化为报告标题与课题 source 的字符二元组
+    Jaccard（门槛 0.35，与机制卡匹配同源）。对不上 → ``([], "")``（宁可不注入，不猜）。
+    """
+    if not records:
+        return [], ""
+    card_path = _norm_source(((card or {}).get("source") or {}).get("path"))
+    if card_path:
+        hits = [r for r in records if _norm_source(r.get("source")) == card_path]
+        if hits:
+            return hits, str(hits[0].get("source") or "")
+    texts = [str((question or {}).get("source") or ""),
+             str(((card or {}).get("source") or {}).get("title") or "")]
+    texts = [t for t in texts if t.strip()]
+    if not texts:
+        return [], ""
+    best_src, best_score = "", 0.0
+    for src in {str(r.get("source") or "") for r in records if r.get("source")}:
+        score = max(_bigram_jaccard(Path(src).stem, t) for t in texts)
+        if score > best_score:
+            best_src, best_score = src, score
+    if not best_src or best_score < 0.35:
+        return [], ""
+    return [r for r in records if str(r.get("source") or "") == best_src], best_src
+
+
+def _record_rank(rec: dict[str, Any]) -> tuple[int, int]:
+    """注入排序键：研报原文公式（verbatim）优先，其次文字推导（derived）；再按置信度。"""
+    kind = str(rec.get("formula_kind") or "")
+    return (0 if kind == "verbatim" else 1, _CONF_ORDER.get(str(rec.get("confidence") or ""), 3))
+
+
+def select_injectable_records(
+    records: list[dict[str, Any]] | None,
+    *,
+    available_fields: Iterable[str] | None = None,
+    spec: dict[str, Any] | None = None,
+    max_items: int | None = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """筛出可注入记录：``executable=true`` → 字段可用性门控 → 排序 → 截断。
+
+    字段门控**复用课题门控的既有机制**（``classify_question_fields``：别名归一 → 精确命中 →
+    列族前缀判定），``available_fields`` 为空表示未提供可用列信息 → 不判定（与课题门控
+    "空即不判定"一致）。
+
+    与课题门控的唯一差别：记录字段是抽取侧**已按本仓列名校验过**的（``fields_local``），
+    因此"无法判定"（既非已知列、又无列族前缀）在这里等价于**未载入**——而 ``expr_local``
+    是要逐字进 DSL 评估的，缺一个字段就是硬失败，故按**零缺列**过滤，比课题的
+    ``min_ratio`` 严；否则题面会承诺本 run 跑不通的表达式。
+    返回 (入选记录, 被门控剔除的字段)。
+    """
+    policy = resolve_question_field_gate(spec)
+    avail = available_field_set(available_fields)
+    limit = int(FACTOR_RECORDS_MAX_ITEMS if max_items is None else max_items)
+    kept: list[dict[str, Any]] = []
+    dropped: list[str] = []
+    for rec in sorted([r for r in (records or [])
+                       if r.get("executable") and str(r.get("expr_local") or "").strip()],
+                      key=_record_rank):
+        fields = [str(f) for f in (rec.get("fields_local") or [])]
+        if policy["enabled"] and avail and fields:
+            _hits, missing, unknown = classify_question_fields({"suggested_fields": fields}, avail)
+            miss = list(missing) + list(unknown)
+            if miss:
+                dropped += miss
+                continue
+        kept.append(rec)
+    return kept[:max(1, limit)], dropped
+
+
+def _record_freq_text(rec: dict[str, Any], freq_index: dict[str, dict[str, Any]] | None) -> str:
+    """频率标签建议：以 report_freq_verified.jsonl 为准；未确认 → "研报未说明频率"。"""
+    row = (freq_index or {}).get(_norm_source(rec.get("source"))) or {}
+    freq = row.get("freq_final") or row.get("rebalance_freq")
+    label = row.get("label_final") or row.get("label_col_hint")
+    if not freq and str(rec.get("freq_source") or "") == "report_index":
+        freq = rec.get("eval_freq_hint")
+        label = rec.get("label_col_hint")
+    if not freq:
+        return "研报未说明频率"
+    return f"{freq}" + (f" / label={label}" if label else "") + "（report_freq_verified）"
+
+
+def _record_tree_text(rec: dict[str, Any], limit: int = 220) -> str:
+    """算子树压成单行（多行缩进 → 空格折叠）；缺树退化到 ``ops_used`` 列表。"""
+    tree = " ".join(str(rec.get("op_tree") or "").split())
+    if not tree:
+        tree = " → ".join(str(o) for o in (rec.get("ops_used") or [])) or "-"
+    if len(tree) > limit:
+        tree = tree[:limit] + "…"
+    fams = "/".join(str(f) for f in (rec.get("op_families") or [])) or "-"
+    return f"{tree}（算子族：{fams}）"
+
+
+def render_factor_records_block(
+    records: list[dict[str, Any]] | None,
+    *,
+    available_fields: Iterable[str] | None = None,
+    spec: dict[str, Any] | None = None,
+    freq_index: dict[str, dict[str, Any]] | None = None,
+    question: dict[str, Any] | None = None,
+    report_source: str = "",
+    max_items: int | None = None,
+) -> str:
+    """渲染"本报告因子清单"题面块（spec §7）。
+
+    - 只列 ``executable=true`` 且字段在本 run 载入的记录，上限 ``max_items``（默认 10）；
+    - 每条给 name / expr_local / direction / formula_kind（verbatim="研报原文公式"，
+      derived="⚠ 由文字定义推导，待验证"）/ 数据面 focus_facets / 算子树 op_tree / 频率标签；
+    - 全部被字段门控剔除或没有可执行记录 → 只返回一行说明（调用方据此省略该块）。
+    """
+    policy = (spec or {}).get("report_policy") or {}
+    if max_items is None:
+        try:
+            max_items = int(policy.get("factor_records_max_items", FACTOR_RECORDS_MAX_ITEMS))
+        except (TypeError, ValueError):
+            max_items = FACTOR_RECORDS_MAX_ITEMS
+    picked, dropped = select_injectable_records(
+        records, available_fields=available_fields, spec=spec, max_items=max_items,
+    )
+    if not picked:
+        uniq = list(dict.fromkeys(dropped))
+        why = f"（可执行公式涉及的字段本 run 未载入：{'、'.join(uniq[:6])}）" if uniq else ""
+        return f"- ⚠ {FACTOR_RECORDS_NO_FORMULA_NOTE}{why}；请按上方机制卡与研报原文自行落地。"
+    src = str(report_source or (picked[0].get("source") or ""))
+    qid = str((question or {}).get("question_id") or "-")
+    lines = [
+        f"## {FACTOR_RECORDS_BLOCK_TITLE}（抽取自研报表格，仅列本 run 可执行公式；最多 {max_items} 条）",
+        f"- 来源报告：{Path(src).stem if src else '-'}（课题 {qid}）；来源文件 `{FACTOR_RECORDS_FILE}`",
+        "- 排序：研报原文公式(verbatim) 优先，其次文字定义推导(derived)；`expr_local` 可直接进 DSL 评估，"
+        "**不得改变机制语义**。",
+    ]
+    for i, rec in enumerate(picked, 1):
+        kind = str(rec.get("formula_kind") or "")
+        kind_text = "研报原文公式" if kind == "verbatim" else "⚠ 由文字定义推导，待验证"
+        lines.append(f"{i}. **{rec.get('name') or '-'}** — `{rec.get('expr_local')}`")
+        # 数据面：优先用记录里的值；为空时**就地重算**（facet 表后续补全前缀时，
+        # 存量 jsonl 不必重抽也能显示正确——抽取时算好的旧值可能是空的）
+        _facets = list(rec.get("focus_facets") or [])
+        if not _facets:
+            try:
+                from scripts._factor_expr_tools import infer_focus_facets
+
+                _facets = infer_focus_facets(rec.get("expr_local"), rec.get("fields_local") or [])
+            except Exception:  # noqa: BLE001
+                _facets = []
+        facets = "、".join(str(f) for f in _facets) or "-"
+        lines.append(f"   - 方向：{rec.get('direction') or '-'} ｜ 公式档：{kind_text} ｜ 数据面：{facets}")
+        lines.append(f"   - 算子树：{_record_tree_text(rec)}")
+        if kind != "verbatim":
+            deriv = " ".join(str(rec.get("derivation") or "").split())[:140]
+            if deriv:
+                lines.append(f"   - 推导依据：{deriv}")
+        lines.append(f"   - 频率标签建议：{_record_freq_text(rec, freq_index)}")
+    if dropped:
+        uniq = list(dict.fromkeys(dropped))
+        lines.append(f"- （以下字段本 run 未载入，相关因子已剔除：{'、'.join(uniq[:6])}）")
+    return "\n".join(lines)
+
+
+_DIVERGE_DIMS = ("window", "operator", "field", "neutralize", "gate_shape", "interaction")
+
+
+def _parent_diagnosis(profile: dict | None) -> str:
+    """按父本"体检报告"给出**针对性**改进建议（哪一维先动、为什么）。"""
+    if not profile:
+        return ""
+    def _f(v, n=4):
+        return f"{v:.{n}f}" if isinstance(v, (int, float)) else "—"
+    ic, icir = profile.get("ic"), profile.get("icir")
+    cov, to = profile.get("cov"), profile.get("turnover")
+    shape = profile.get("shape_verdict")
+    out = [f"- 父本体检：IC={_f(ic)} ICIR={_f(icir)} coverage={_f(cov, 3)} 换手={_f(to, 3)} "
+           f"自相关={_f(profile.get('autocorr'), 3)} 形态对账={shape or '—'}"
+           + (f"（实际={profile.get('actual_shape')} / 期望={profile.get('expected_shape')}）"
+              if profile.get("actual_shape") or profile.get("expected_shape") else "")]
+    adv = []
+    if isinstance(icir, float) and icir <= 0:
+        adv.append("**ICIR≤0 → 先查方向/做稳健化**：确认 predicted 方向与强侧没填反（形态对账 contradicted 即方向问题），"
+                   "再做 `RANK`/`CS_WINSORIZE` 或换中性化键；**这一阶段别先调窗长**。")
+    elif isinstance(icir, float) and abs(icir) < 0.15:
+        adv.append("**ICIR<0.15 → 优先稳健化**：`RANK`/`CS_WINSORIZE`/行业中性化，或把离散门控换成连续 `SOFT_GATE`。")
+    if isinstance(to, float) and to > 0.5:
+        adv.append(f"**换手超标（{to:.3f}>0.5）→ 先降换手**：时序平滑（`TS_MEAN`/`WMA`）、拉长窗长、或换更慢的同族字段。")
+    if isinstance(cov, float) and cov < 0.85:
+        adv.append(f"**coverage 不足（{cov:.3f}<0.85）→ 先补覆盖**：去掉苛刻门控或换更全的同族字段。")
+    if isinstance(ic, float) and abs(ic) < 0.02:
+        adv.append("**|IC|<0.02 → 用结构杠杆**：`CS_GROUP_RANK`/`DIVERGENCE_RANK` 条件式结构，或换同族字段加信息量。")
+    if shape == "unverifiable":
+        adv.append("**形态对账 unverifiable → 先修 prediction**：按研报预期明确 shape/强侧/方向，形态通道才能过线。")
+    out += adv
+    out.append("- **每个变异必须用一句话写明经济直觉**（为什么这一改更贴合研报机制，而不只是数值好看），写进 `edit_note`/`comment`。")
+    return "\n".join(out)
+
+
+def render_diverge_task(question: dict, reproduce_factor: str = "", dims=_DIVERGE_DIMS,
+                        parent_detail: str = "", card: dict | None = None,
+                        parent_profile: dict | None = None) -> str:
+    """研报模式的**发散题面**：在已复现课题上做单维变异（Phase 2 / 2026-09-30）。
+
+    之前只有复现轮有题面，发散轮退化成"泛课题 + RAG"，模型不声明父本，也无法保证
+    "一次只改一维"。这里把约束前置到题面上。
+    """
+    if not question:
+        return ""
+    qid = str(question.get("question_id") or "")
+    topic = str(question.get("topic") or "").strip()
+    parent = str(reproduce_factor or "").strip() or f"（本课题 `{qid}` 的复现版）"
+    parts = [
+        "## 研报发散（本轮必须基于复现版做**单维**变异）",
+        f"- 课题：{topic}（课题号 {qid}）",
+        f"- **父本（复现版）**：`{parent}`",
+        (f"- **父本实测（必须超越的基线）**：{parent_detail}"
+         " —— 本轮至少要在 IC 或 ICIR 上改善，且 coverage 与换手不得劣化。"
+         if parent_detail else "- （父本实测指标缺失，请先重建父本基线再变异）"),
+        *([_parent_diagnosis(parent_profile)] if _parent_diagnosis(parent_profile) else []),
+        "- **本轮目标**：让该机制比复现版更强且可交付 —— 争取过 promising 线"
+        "（|IC|≥0.02、|ICIR|≥0.28、coverage≥0.85），同时不抬高日换手（≤0.5）、不与库内已有因子撞车；"
+        "若某维度让指标变差，明确放弃并换下一个维度，不要反复调同一维。",
+        "- **维度轮换建议**（3 轮内覆盖不同维度）：首轮 `window` 或 `operator`，次轮 `neutralize` 或 `field`，末轮 `gate_shape` 或 `interaction`。",
+        "- **若母本信号偏弱（|IC|<0.015 或 |ICIR|<0.15）**：前两轮若 window/neutralize 无明显改善，"
+        "第三轮直接上结构性杠杆 —— `gate_shape`（硬门→SOFT_GATE/分位分段）或 `interaction`"
+        "（`CS_GROUP_RANK`/`DIVERGENCE_RANK` 等条件式结构），它们对弱信号母本的提升通常远大于微调窗长；"
+        "仍无改善就如实判定该机制在本池无效，不必反复凑维度。",
+        "- **同构空间耗尽即止损**：若连续 ≥2 次评估被 `memory_blocked_duplicate`（同构死路）拦截，"
+        "说明该机制在本池的可变空间已经试尽——立刻换一个维度，或直接结束本轮并说明该机制无效；"
+        "**不要**在被拦截后继续提交同构表达式（实测会整轮空转、白烧 40 分钟）。",
+        "- 硬约束：",
+        f"1. 每个提交/评估必须填 `parent_factor={parent}`，并在 `edit_note` 写明改的维度；",
+        "2. **一次只改一个维度**：" + "、".join(f"`{d}`" for d in dims) + "；",
+        "3. 不得改变机制语义（那是换题、不是发散）；",
+        "4. 参考下方研报 RAG 片段，优先验证「机制在更优参数/结构下是否更稳」，而不是换赛道。",
+    ]
+    _cb = _card_block(card)
+    if _cb:
+        parts.append("")
+        parts.append("**研报机制卡（变异时的算子/参数依据）**：")
+        parts.append(_cb)
+    return "\n".join(parts)
+
+
+def render_reproduce_task(question: dict, spec: dict | None = None, card: dict | None = None,
+                          evidence: str = "", *, factor_records: list[dict] | None = None,
+                          available_fields: Iterable[str] | None = None,
+                          freq_index: dict | None = None) -> str:
+    """研报模式的**复现题面**（Phase 1）：把课题自带的机制物料变成"必须复现"的任务块。
+
+    物料来自题库字段本身（construction_guide / empirical_findings / suggested_fields /
+    suggested_operators / expected_shape / expected_sign / falsifier），不依赖机制卡扩容
+    （卡扩容是后续的增强，见 docs/specs/alphaagent_report_reproduce_diverge_spec.md §3）。
+
+    spec §7 接入：额外注入"本报告因子清单"块（抽取侧 ``factor_records``，只读 jsonl，
+    ``report_policy.inject_factor_records=False`` 可关；``factor_records`` 显式传入则跳过落盘读取）。
+    ``available_fields``（运行期 available_columns）用于**字段可用性过滤**，避免题面承诺
+    本 run 未载入的字段；未提供 → 不判定。
+    """
+    if not question:
+        return ""
+    qid = str(question.get("question_id") or "").strip()
+    topic = str(question.get("topic") or "").strip()
+    guide = _clean_question_text(question.get("construction_guide"), 700)
+    findings = _clean_question_text(question.get("empirical_findings"), 400)
+    fields = question.get("suggested_fields") or []
+    ops = question.get("suggested_operators") or []
+    shape = question.get("expected_shape") or "-"
+    sign = question.get("expected_sign")
+    falsifier = " ".join(str(question.get("falsifier") or "").split())[:200]
+    parts = [
+        "## 研报复现（本轮必须完成；复现不通过则本轮作废）",
+        f"- 课题：{topic}（{question.get('source') or ''}，课题号 {qid}）",
+        f"- 研报构建思路：{guide or '（题库该字段为表格残渣或缺失——请按课题名与研报机制自行还原，并在 comment 里写明依据）'}",
+    ]
+    if findings:
+        parts.append(f"- 研报实测（对账参考，非硬门）：{findings}")
+    if fields:
+        parts.append(f"- 建议字段（题库建议，**若与机制或研报原文冲突，以机制/原文为准**）：{', '.join(map(str, fields))}")
+    if ops:
+        parts.append(f"- 建议算子：{', '.join(map(str, ops))}")
+    parts.append(f"- 期望形态：{shape}；期望方向：{sign if sign is not None else '-'}")
+    if falsifier and falsifier[:30] not in (findings or "")[:120]:
+        parts.append(f"- 证伪条件：{falsifier}")
+    parts += [
+        "",
+        "**判定标准（系统按此判定，满足其一即「复现通过」并进入发散阶段）**：",
+        "1. **形态对账 confirmed**：你提交的 `prediction.expected_shape / expected_strong_side / expected_sign` "
+        "必须与因子实际分层形态一致（单调递增/递减、倒U、U形、极端尖峰、条件子组）；",
+        "2. **信号存在档**：|IC| ≥ 0.010 且 ICIR ≥ 0.10（强度目标留给发散阶段）。",
+        "→ **务必认真填 `prediction`**：胡乱填或与研报预期不符，形态对账会判 `unverifiable`/"
+        "`contradicted`，本轮复现即作废（别把 expected_shape 填成 'monotonic' 这类非法值）。",
+    ]
+    _cb = _card_block(card)
+    if _cb:
+        parts.append(_cb)
+    if evidence:
+        parts.append("- **研报原文片段（含公式/表格，来自 MinerU 重抽语料；据此落地表达式）**：")
+        parts.append("  " + "\n  ".join(str(evidence).splitlines()[:20]))
+    if bool(((spec or {}).get("report_policy") or {}).get("inject_factor_records", True)):
+        try:
+            _recs = factor_records if factor_records is not None else load_factor_records(spec)
+            _matched, _src = match_report_records(question, card, _recs)
+            if _matched:
+                _fblock = render_factor_records_block(
+                    _matched, available_fields=available_fields, spec=spec,
+                    freq_index=freq_index if freq_index is not None else load_report_freq_index(spec),
+                    question=question, report_source=_src,
+                )
+                if _fblock:
+                    parts.append("")
+                    parts.append(_fblock)
+        except Exception as _e:  # noqa: BLE001
+            logger.warning("研报因子清单注入失败（失败静默）: %s", _e)
+    parts += [
+        "",
+        "**硬约束（违反会被直接拒绝，不消耗评估额度）**：",
+        f"1. 复现版的 `parent_factor` 必须写成 `reproduce_of:{qid}`（或包含 `{qid}`），"
+        "**禁止填自己上一轮的因子名**；",
+        "2. 只允许「字段同族替换 + 算子落地」——**不得改变研报的机制语义**；",
+        "3. 复现版先用 `train_screen` 评估；通过后（本模式）才进入发散阶段，发散一次只改一个维度"
+        "（窗长／算子／同族字段／中性化键／门控形态／交互结构），并填 `parent_factor=<复现版因子名>`。",
+    ]
+    return "\n".join(parts)
+
+
 def get_question_for_turn(
     turn: int,
     spec: dict[str, Any] | None = None,

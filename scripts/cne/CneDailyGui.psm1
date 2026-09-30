@@ -10,69 +10,89 @@ using namespace System.Windows.Media
 
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Drawing, System.Windows.Forms
 
-$Global:CneDatasetNames = @{
-    "instruments"                  = "全A标的清单"
-    "trading_calendar"             = "交易日历"
-    "trading_status"               = "停复牌/ST状态"
-    "stock_st"                     = "风险警示板ST名单"
-    "trading_status_st"            = "ST证据日更续签"
-    "corporate_actions"            = "除权除息/送转"
-    "tushare_wide_daily"           = "Tushare宽表行情"
-    "daily_bars"                   = "A股日K线"
-    "index_bars"                   = "主要指数日K线"
-    "fund_bars"                    = "场内基金/ETF行情"
-    "etf_bars"                     = "ETF日K线"
-    "compact"                      = "数据合并入湖"
-    "derive_adj_factors"           = "后复权因子计算"
-    "derive_industry_index"        = "行业指数收益推导"
-    "fund_flow"                    = "个股资金流向"
-    "northbound_holdings"          = "陆股通持股季报"
-    "northbound_flows"             = "北向资金流(已停产)"
-    "margin_trading"               = "融资融券余额"
-    "valuation_metrics"            = "估值指标(PE/PB/市值)"
-    "sector_members"               = "板块概念成分股"
-    "announcement_index"           = "巨潮公告索引"
-    "fund_nav"                     = "公募基金净值"
-    "index_bars_external"          = "基准指数行情"
-    "dragon_tiger"                 = "龙虎榜交易明细"
-    "block_trades"                 = "大宗交易明细"
-    "dividend"                     = "分红送转披露"
-    "namechange"                   = "股票曾用名变更"
-    "share_float_external"         = "限售解禁数据"
-    "stk_surv"                     = "机构调研活动"
-    "fund_fees"                    = "公募基金费率"
-    "financial_statement_items"    = "财报科目长表"
-    "earnings_disclosure_schedule" = "预约披露时间表"
-    "index_constituents"           = "指数成分股月度快照"
-    "industry_members"             = "申万行业分类快照"
-    "share_structure"              = "股本结构变动"
-    "shareholder_counts"           = "股东户数数据"
-    "balancesheet"                 = "资产负债表"
-    "income"                       = "利润表"
-    "cashflow"                     = "现金流量表"
-    "fina_indicator"               = "财务核心指标"
-    "report_rc"                    = "研报盈利预测"
-    "macro_indicators"             = "宏观经济指标"
-    "market_breadth"               = "市场宽度(涨跌家数)"
-    "share_unlock_schedule"        = "限售解禁计划"
-    "regulatory_events"            = "监管处罚公告"
-    "commodity_bars"               = "商品期货主连K线"
-    "institutional_holdings"       = "机构持股汇总"
-    "analyst_consensus"            = "分析师一致预期"
-    "hot_rank"                     = "东财人气热榜"
-    "sector_bars"                  = "板块K线(同花顺)"
-    "sector_fund_flow"             = "板块资金流向"
-    "news_headlines"               = "新闻电报提要"
-    "flash_news_wire"              = "7x24快讯"
-    "sentiment_articles"           = "个股新闻舆情打分"
-    "sentiment_scores"             = "市场情绪综合得分"
+$Global:CnePredefinedSteps = @(
+    # 核心行情与参考
+    [pscustomobject]@{ Dataset = "instruments";                  CnName = "全A标的清单";               Category = "核心行情" }
+    [pscustomobject]@{ Dataset = "trading_calendar";             CnName = "交易日历";                 Category = "核心行情" }
+    [pscustomobject]@{ Dataset = "trading_status";               CnName = "停复牌与ST状态";           Category = "核心行情" }
+    [pscustomobject]@{ Dataset = "stock_st";                     CnName = "风险警示板ST名单";         Category = "核心行情" }
+    [pscustomobject]@{ Dataset = "trading_status_st";            CnName = "ST证据日更续签";           Category = "核心行情" }
+    [pscustomobject]@{ Dataset = "corporate_actions";            CnName = "除权除息与送转";           Category = "核心行情" }
+    [pscustomobject]@{ Dataset = "tushare_wide_daily";           CnName = "Tushare宽表行情";          Category = "核心行情" }
+    [pscustomobject]@{ Dataset = "daily_bars";                   CnName = "A股日K线";                 Category = "核心行情" }
+    [pscustomobject]@{ Dataset = "index_bars";                   CnName = "主要指数日K线";             Category = "核心行情" }
+    [pscustomobject]@{ Dataset = "fund_bars";                    CnName = "场内基金与ETF行情";        Category = "核心行情" }
+    [pscustomobject]@{ Dataset = "derive_adj_factors";           CnName = "后复权因子计算";           Category = "核心行情" }
+    [pscustomobject]@{ Dataset = "derive_industry_index";        CnName = "申万行业收益推导";         Category = "核心行情" }
+
+    # 资金流与估值
+    [pscustomobject]@{ Dataset = "fund_flow";                    CnName = "个股资金流向";             Category = "资金估值" }
+    [pscustomobject]@{ Dataset = "valuation_metrics";            CnName = "估值指标(PE/PB/市值)";     Category = "资金估值" }
+    [pscustomobject]@{ Dataset = "sector_members";               CnName = "板块概念成分股";           Category = "资金估值" }
+    [pscustomobject]@{ Dataset = "announcement_index";           CnName = "巨潮公告索引";             Category = "资金估值" }
+    [pscustomobject]@{ Dataset = "fund_nav";                     CnName = "公募基金净值";             Category = "资金估值" }
+    [pscustomobject]@{ Dataset = "index_bars_external";          CnName = "基准指数行情";             Category = "资金估值" }
+    [pscustomobject]@{ Dataset = "margin_trading";               CnName = "融资融券余额";             Category = "资金估值" }
+    [pscustomobject]@{ Dataset = "northbound_holdings";          CnName = "陆股通持股季报";           Category = "资金估值" }
+    [pscustomobject]@{ Dataset = "northbound_flows";             CnName = "北向资金流(已停产)";       Category = "资金估值" }
+
+    # 事件披露与信号
+    [pscustomobject]@{ Dataset = "dragon_tiger";                 CnName = "龙虎榜交易明细";           Category = "事件信号" }
+    [pscustomobject]@{ Dataset = "block_trades";                 CnName = "大宗交易明细";             Category = "事件信号" }
+    [pscustomobject]@{ Dataset = "dividend";                     CnName = "分红送转披露";             Category = "事件信号" }
+    [pscustomobject]@{ Dataset = "namechange";                   CnName = "股票曾用名变更";           Category = "事件信号" }
+    [pscustomobject]@{ Dataset = "share_float_external";         CnName = "限售解禁数据";             Category = "事件信号" }
+    [pscustomobject]@{ Dataset = "stk_surv";                     CnName = "机构调研活动";             Category = "事件信号" }
+    [pscustomobject]@{ Dataset = "fund_fees";                    CnName = "公募基金费率参考";         Category = "事件信号" }
+
+    # 财务基本面
+    [pscustomobject]@{ Dataset = "financial_statement_items";    CnName = "财报科目长表";             Category = "财务基本面" }
+    [pscustomobject]@{ Dataset = "earnings_disclosure_schedule"; CnName = "预约披露时间表";           Category = "财务基本面" }
+    [pscustomobject]@{ Dataset = "share_structure";              CnName = "股本结构变动";             Category = "财务基本面" }
+    [pscustomobject]@{ Dataset = "shareholder_counts";           CnName = "股东户数数据";             Category = "财务基本面" }
+    [pscustomobject]@{ Dataset = "balancesheet";                 CnName = "资产负债表";               Category = "财务基本面" }
+    [pscustomobject]@{ Dataset = "income";                       CnName = "利润表";                   Category = "财务基本面" }
+    [pscustomobject]@{ Dataset = "cashflow";                     CnName = "现金流量表";               Category = "财务基本面" }
+    [pscustomobject]@{ Dataset = "fina_indicator";               CnName = "财务核心指标";             Category = "财务基本面" }
+    [pscustomobject]@{ Dataset = "report_rc";                    CnName = "研报盈利预测";             Category = "财务基本面" }
+    [pscustomobject]@{ Dataset = "index_constituents";           CnName = "指数成分股快照";           Category = "财务基本面" }
+    [pscustomobject]@{ Dataset = "industry_members";             CnName = "申万行业分类快照";         Category = "财务基本面" }
+
+    # 宏观与大宗
+    [pscustomobject]@{ Dataset = "macro_indicators";             CnName = "宏观经济指标";             Category = "宏观风险" }
+    [pscustomobject]@{ Dataset = "market_breadth";               CnName = "市场宽度(涨跌家数)";       Category = "宏观风险" }
+    [pscustomobject]@{ Dataset = "share_unlock_schedule";        CnName = "限售解禁计划";             Category = "宏观风险" }
+    [pscustomobject]@{ Dataset = "regulatory_events";            CnName = "监管处罚公告";             Category = "宏观风险" }
+    [pscustomobject]@{ Dataset = "commodity_bars";               CnName = "商品期货主连K线";         Category = "宏观风险" }
+
+    # 舆情与研究
+    [pscustomobject]@{ Dataset = "institutional_holdings";       CnName = "机构持股汇总";             Category = "舆情研究" }
+    [pscustomobject]@{ Dataset = "analyst_consensus";            CnName = "分析师一致预期";           Category = "舆情研究" }
+    [pscustomobject]@{ Dataset = "hot_rank";                     CnName = "东财人气热榜";             Category = "舆情研究" }
+    [pscustomobject]@{ Dataset = "sector_bars";                  CnName = "板块K线(同花顺)";         Category = "舆情研究" }
+    [pscustomobject]@{ Dataset = "sector_fund_flow";             CnName = "板块资金流向";             Category = "舆情研究" }
+    [pscustomobject]@{ Dataset = "news_headlines";               CnName = "新闻电报提要";             Category = "舆情研究" }
+    [pscustomobject]@{ Dataset = "flash_news_wire";              CnName = "7x24快讯";                 Category = "舆情研究" }
+    [pscustomobject]@{ Dataset = "sentiment_articles";           CnName = "个股新闻舆情打分";         Category = "舆情研究" }
+    [pscustomobject]@{ Dataset = "sentiment_scores";             CnName = "市场情绪综合得分";         Category = "舆情研究" }
+
+    # 综合与入库
+    [pscustomobject]@{ Dataset = "compact";                      CnName = "数据合并入湖";             Category = "入库维护" }
+    [pscustomobject]@{ Dataset = "etf_fund_refresh";             CnName = "ETF/基金面板刷新";          Category = "入库维护" }
+    [pscustomobject]@{ Dataset = "stale_retry";                  CnName = "滞后补抓重试";             Category = "入库维护" }
+    [pscustomobject]@{ Dataset = "meta_backup";                  CnName = "元数据备份与清理";         Category = "入库维护" }
+)
+
+$Global:CneDatasetNames = @{}
+foreach ($item in $Global:CnePredefinedSteps) {
+    $Global:CneDatasetNames[$item.Dataset] = $item.CnName
 }
 
 $Global:CneGuiXaml = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="CNE 数据湖 · 每日同步" Width="720" Height="550"
-        WindowStartupLocation="CenterScreen" ResizeMode="CanMinimize"
+        Title="CNE 数据湖 · 每日同步看板" Width="840" Height="650"
+        WindowStartupLocation="CenterScreen" ResizeMode="CanResizeWithGrip"
         Background="#1E1E2E" FontFamily="Segoe UI, Microsoft YaHei UI"
         Topmost="False">
     <Window.Resources>
@@ -134,9 +154,10 @@ $Global:CneGuiXaml = @"
 
     <Grid Margin="18">
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="*"/>
-            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/> <!-- 顶部标题与总体状态 -->
+            <RowDefinition Height="Auto"/> <!-- 进度条与当前步骤 -->
+            <RowDefinition Height="*"/>    <!-- 核心数据集对账看板表格 -->
+            <RowDefinition Height="Auto"/> <!-- 底部控制栏 -->
         </Grid.RowDefinitions>
 
         <!-- 顶部导航栏 / 标题 -->
@@ -149,9 +170,12 @@ $Global:CneGuiXaml = @"
                 <StackPanel Grid.Column="0">
                     <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                         <TextBlock Text="🌊" FontSize="18" Margin="0,0,8,0"/>
-                        <TextBlock Text="CNE 数据湖 · 每日流水线更新" Style="{StaticResource HeaderTitle}"/>
+                        <TextBlock Text="CNE 数据湖 · 每日流水线更新看板" Style="{StaticResource HeaderTitle}"/>
+                        <Border Name="badgeOverallStatus" Background="#1E382B" CornerRadius="3" Padding="6,2" Margin="12,0,0,0" VerticalAlignment="Center">
+                            <TextBlock Name="txtOverallStatus" Text="同步中..." Foreground="#A6E3A1" FontSize="11" FontWeight="SemiBold"/>
+                        </Border>
                     </StackPanel>
-                    <TextBlock Name="txtSubHeader" Text="准备执行数据同步..." Style="{StaticResource SubTitle}" Margin="26,2,0,0"/>
+                    <TextBlock Name="txtSubHeader" Text="准备执行数据同步..." Style="{StaticResource SubTitle}" Margin="26,3,0,0"/>
                 </StackPanel>
                 <Border Grid.Column="1" Background="#313244" CornerRadius="4" Padding="10,4" VerticalAlignment="Center">
                     <TextBlock Name="txtTimer" Text="用时: 00:00" Foreground="#F9E2AF" FontSize="12" FontFamily="Consolas, Segoe UI"/>
@@ -159,84 +183,99 @@ $Global:CneGuiXaml = @"
             </Grid>
         </Border>
 
-        <!-- 中部主体：运行态视图 (RunningPanel) 与 总结报告视图 (SummaryPanel) 切换 -->
-        <Grid Grid.Row="1">
-            <!-- 运行中视图 -->
-            <Border Name="panelRunning" Background="#252538" CornerRadius="6" Padding="16" BorderBrush="#313244" BorderThickness="1" Visibility="Visible">
-                <Grid>
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="*"/>
-                    </Grid.RowDefinitions>
+        <!-- 进度与当前动作指示区 -->
+        <Border Grid.Row="1" Background="#252538" CornerRadius="6" Padding="14,12" Margin="0,0,0,12" BorderBrush="#313244" BorderThickness="1">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
 
-                    <!-- 当前波次大徽章 -->
-                    <StackPanel Grid.Row="0" Margin="0,4,0,12">
-                        <TextBlock Name="txtCurrentPhase" Text="正在执行: Core (核心行情与基础参考)" FontSize="14" FontWeight="SemiBold" Foreground="#89B4FA"/>
-                        <TextBlock Name="txtCurrentStep" Text="当前操作: 正在初始化..." FontSize="12" Foreground="#A6ADC8" Margin="0,4,0,0"/>
+                <!-- 当前波次指示 -->
+                <Grid Grid.Row="0" Margin="0,0,0,6">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Name="txtCurrentPhase" Text="正在执行: Core (核心行情与基础参考)" FontSize="13" FontWeight="SemiBold" Foreground="#89B4FA"/>
+                    <TextBlock Name="txtPhaseIndicator" Grid.Column="1" Text="阶段 1 / 8" Foreground="#89DCEB" FontSize="12"/>
+                </Grid>
+
+                <!-- 当前具体操作说明 (过滤后的干净业务文本) -->
+                <TextBlock Name="txtCurrentStep" Grid.Row="1" Text="正在初始化数据环境..." FontSize="12" Foreground="#A6ADC8" Margin="0,0,0,8" TextTrimming="CharacterEllipsis"/>
+
+                <!-- 总进度条与百分比 -->
+                <Grid Grid.Row="2" Margin="0,0,0,10">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <ProgressBar Name="pbTotal" Height="8" Minimum="0" Maximum="100" Value="0" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                    <TextBlock Name="txtProgressPct" Grid.Column="1" Text="0%" Foreground="#89B4FA" FontWeight="Bold" FontSize="13" FontFamily="Consolas, Segoe UI"/>
+                </Grid>
+
+                <!-- 统计计数分布 -->
+                <StackPanel Grid.Row="3" Orientation="Horizontal">
+                    <TextBlock Text="已成功: " FontSize="11" Foreground="#6C7086"/>
+                    <TextBlock Name="cntSuccess" Text="0" FontSize="11" FontWeight="Bold" Foreground="#A6E3A1" Margin="0,0,16,0"/>
+
+                    <TextBlock Text="同步中: " FontSize="11" Foreground="#6C7086"/>
+                    <TextBlock Name="cntRunning" Text="0" FontSize="11" FontWeight="Bold" Foreground="#89B4FA" Margin="0,0,16,0"/>
+
+                    <TextBlock Text="周期跳过: " FontSize="11" Foreground="#6C7086"/>
+                    <TextBlock Name="cntSkip" Text="0" FontSize="11" FontWeight="Bold" Foreground="#A6ADC8" Margin="0,0,16,0"/>
+
+                    <TextBlock Text="失败项: " FontSize="11" Foreground="#6C7086"/>
+                    <TextBlock Name="cntFailed" Text="0" FontSize="11" FontWeight="Bold" Foreground="#F38BA8" Margin="0,0,16,0"/>
+
+                    <TextBlock Text="排队等待: " FontSize="11" Foreground="#6C7086"/>
+                    <TextBlock Name="cntWaiting" Text="0" FontSize="11" FontWeight="Bold" Foreground="#6C7086"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- 中部主体：核心数据集对账表格看板 -->
+        <Border Grid.Row="2" Background="#252538" CornerRadius="6" Padding="12" BorderBrush="#313244" BorderThickness="1">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/> <!-- 表头 -->
+                    <RowDefinition Height="Auto"/> <!-- 分割线 -->
+                    <RowDefinition Height="*"/>    <!-- 可滚动表体 -->
+                </Grid.RowDefinitions>
+
+                <!-- 表头 -->
+                <Grid Grid.Row="0" Margin="4,2,4,6">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="65"/>  <!-- 状态 -->
+                        <ColumnDefinition Width="80"/>  <!-- 板块分类 -->
+                        <ColumnDefinition Width="240"/> <!-- 数据集 (中文名称) -->
+                        <ColumnDefinition Width="100"/> <!-- 同步行数 -->
+                        <ColumnDefinition Width="70"/>  <!-- 耗时 -->
+                        <ColumnDefinition Width="*"/>   <!-- 说明 -->
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="状态" FontSize="11" Foreground="#6C7086" FontWeight="SemiBold"/>
+                    <TextBlock Grid.Column="1" Text="业务板块" FontSize="11" Foreground="#6C7086" FontWeight="SemiBold"/>
+                    <TextBlock Grid.Column="2" Text="数据集及中文对照" FontSize="11" Foreground="#6C7086" FontWeight="SemiBold"/>
+                    <TextBlock Grid.Column="3" Text="更新行数" FontSize="11" Foreground="#6C7086" FontWeight="SemiBold"/>
+                    <TextBlock Grid.Column="4" Text="耗时" FontSize="11" Foreground="#6C7086" FontWeight="SemiBold"/>
+                    <TextBlock Grid.Column="5" Text="执行状态与详情说明" FontSize="11" Foreground="#6C7086" FontWeight="SemiBold"/>
+                </Grid>
+
+                <Separator Grid.Row="1" Background="#313244" Margin="0,0,0,4"/>
+
+                <!-- 表体 -->
+                <ScrollViewer Grid.Row="2" Name="scrollSummary" VerticalScrollBarVisibility="Auto">
+                    <StackPanel Name="panelSummaryList">
+                        <!-- 动态填充各数据集行 -->
                     </StackPanel>
-
-                    <!-- 总进度条 -->
-                    <Grid Grid.Row="1" Margin="0,0,0,14">
-                        <ProgressBar Name="pbTotal" Height="10" Minimum="0" Maximum="100" Value="0"/>
-                    </Grid>
-
-                    <!-- 百分比指示与阶段分布 -->
-                    <Grid Grid.Row="2" Margin="0,0,0,10">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Name="txtPhaseIndicator" Grid.Column="0" Text="阶段 1/8" Foreground="#89DCEB" FontSize="11"/>
-                        <TextBlock Name="txtProgressPct" Grid.Column="2" Text="0%" Foreground="#89B4FA" FontWeight="Bold" FontSize="12"/>
-                    </Grid>
-
-                    <!-- 动态状态流转卡片 -->
-                    <Border Grid.Row="3" Background="#181825" CornerRadius="4" Padding="10" BorderBrush="#313244" BorderThickness="1">
-                        <ScrollViewer VerticalScrollBarVisibility="Auto">
-                            <StackPanel Name="panelStepLog">
-                                <TextBlock Text="[系统就绪] 等待任务启动..." Foreground="#6C7086" FontSize="11" FontFamily="Consolas"/>
-                            </StackPanel>
-                        </ScrollViewer>
-                    </Border>
-                </Grid>
-            </Border>
-
-            <!-- 运行完成报告视图 (默认隐藏) -->
-            <Border Name="panelSummary" Background="#252538" CornerRadius="6" Padding="16" BorderBrush="#313244" BorderThickness="1" Visibility="Collapsed">
-                <Grid>
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="*"/>
-                    </Grid.RowDefinitions>
-
-                    <!-- 完成状态横幅 -->
-                    <Border Name="bannerStatus" Grid.Row="0" Background="#1E382B" CornerRadius="4" Padding="12,10" Margin="0,0,0,10" BorderBrush="#A6E3A1" BorderThickness="1">
-                        <StackPanel>
-                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                                <TextBlock Name="txtBannerIcon" Text="✅" FontSize="16" Margin="0,0,8,0"/>
-                                <TextBlock Name="txtBannerTitle" Text="每日数据湖同步完成！" FontSize="14" FontWeight="Bold" Foreground="#A6E3A1"/>
-                            </StackPanel>
-                            <TextBlock Name="txtBannerDesc" Text="全波次执行成功，总耗时 00:00。" FontSize="11" Foreground="#A6ADC8" Margin="24,2,0,0"/>
-                        </StackPanel>
-                    </Border>
-
-                    <!-- 对账结果清单 -->
-                    <Border Grid.Row="1" Background="#181825" CornerRadius="4" Padding="8" BorderBrush="#313244" BorderThickness="1">
-                        <ScrollViewer VerticalScrollBarVisibility="Auto">
-                            <StackPanel Name="panelSummaryList">
-                                <!-- 动态插入对账行 -->
-                            </StackPanel>
-                        </ScrollViewer>
-                    </Border>
-                </Grid>
-            </Border>
-        </Grid>
+                </ScrollViewer>
+            </Grid>
+        </Border>
 
         <!-- 底部操作按钮栏 -->
-        <Grid Grid.Row="2" Margin="0,12,0,0">
+        <Grid Grid.Row="3" Margin="0,12,0,0">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="*"/>
@@ -244,14 +283,24 @@ $Global:CneGuiXaml = @"
                 <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
 
-            <TextBlock Name="txtFooterHint" Grid.Column="0" Text="流水线运行中，请勿强制关闭计算机" VerticalAlignment="Center" FontSize="11" Foreground="#6C7086"/>
+            <TextBlock Name="txtFooterHint" Grid.Column="0" Text="流水线正在后台并发更新，请勿断网或强制关闭电脑" VerticalAlignment="Center" FontSize="11" Foreground="#6C7086"/>
 
-            <Button Name="btnViewLog" Grid.Column="2" Content="查看完整日志" Style="{StaticResource ActionButton}" Margin="0,0,8,0" Visibility="Collapsed"/>
+            <Button Name="btnViewLog" Grid.Column="2" Content="查看详细日志" Style="{StaticResource ActionButton}" Margin="0,0,8,0"/>
             <Button Name="btnClose" Grid.Column="3" Content="确定关闭" Style="{StaticResource PrimaryButton}" IsEnabled="False"/>
         </Grid>
     </Grid>
 </Window>
 "@
+
+class StepRowWidgets {
+    [System.Windows.Controls.Grid]$Container
+    [System.Windows.Controls.Border]$StatusBadge
+    [System.Windows.Controls.TextBlock]$BadgeText
+    [System.Windows.Controls.TextBlock]$RowsText
+    [System.Windows.Controls.TextBlock]$TimeText
+    [System.Windows.Controls.TextBlock]$NoteText
+    [string]$CurrentStatus = "waiting"
+}
 
 class CneGuiApp {
     [System.Windows.Window]$Window
@@ -261,15 +310,18 @@ class CneGuiApp {
     [System.Windows.Controls.TextBlock]$txtCurrentStep
     [System.Windows.Controls.TextBlock]$txtPhaseIndicator
     [System.Windows.Controls.TextBlock]$txtProgressPct
-    [System.Windows.Controls.TextBlock]$txtBannerIcon
-    [System.Windows.Controls.TextBlock]$txtBannerTitle
-    [System.Windows.Controls.TextBlock]$txtBannerDesc
     [System.Windows.Controls.TextBlock]$txtFooterHint
+    [System.Windows.Controls.Border]$badgeOverallStatus
+    [System.Windows.Controls.TextBlock]$txtOverallStatus
     [System.Windows.Controls.ProgressBar]$pbTotal
-    [System.Windows.Controls.Border]$panelRunning
-    [System.Windows.Controls.Border]$panelSummary
-    [System.Windows.Controls.Border]$bannerStatus
-    [System.Windows.Controls.StackPanel]$panelStepLog
+
+    [System.Windows.Controls.TextBlock]$cntSuccess
+    [System.Windows.Controls.TextBlock]$cntRunning
+    [System.Windows.Controls.TextBlock]$cntSkip
+    [System.Windows.Controls.TextBlock]$cntFailed
+    [System.Windows.Controls.TextBlock]$cntWaiting
+
+    [System.Windows.Controls.ScrollViewer]$scrollSummary
     [System.Windows.Controls.StackPanel]$panelSummaryList
     [System.Windows.Controls.Button]$btnViewLog
     [System.Windows.Controls.Button]$btnClose
@@ -277,37 +329,42 @@ class CneGuiApp {
     [System.Diagnostics.Stopwatch]$Stopwatch
     [System.Windows.Threading.DispatcherTimer]$Timer
     [string]$LogFilePath = ""
-    [System.Collections.Generic.List[psobject]]$DatasetResults
+    [hashtable]$RowMap
 
     CneGuiApp([string]$tradeDate, [string]$logPath) {
         $this.LogFilePath = $logPath
-        $this.DatasetResults = [System.Collections.Generic.List[psobject]]::new()
+        $this.RowMap = @{}
 
         $reader = [System.Xml.XmlReader]::Create([System.IO.StringReader]::new($Global:CneGuiXaml))
         $this.Window = [System.Windows.Markup.XamlReader]::Load($reader)
 
-        $this.txtSubHeader      = $this.Window.FindName("txtSubHeader")
-        $this.txtTimer          = $this.Window.FindName("txtTimer")
-        $this.txtCurrentPhase   = $this.Window.FindName("txtCurrentPhase")
-        $this.txtCurrentStep    = $this.Window.FindName("txtCurrentStep")
-        $this.txtPhaseIndicator = $this.Window.FindName("txtPhaseIndicator")
-        $this.txtProgressPct    = $this.Window.FindName("txtProgressPct")
-        $this.txtBannerIcon     = $this.Window.FindName("txtBannerIcon")
-        $this.txtBannerTitle    = $this.Window.FindName("txtBannerTitle")
-        $this.txtBannerDesc     = $this.Window.FindName("txtBannerDesc")
-        $this.txtFooterHint     = $this.Window.FindName("txtFooterHint")
+        $this.txtSubHeader        = $this.Window.FindName("txtSubHeader")
+        $this.txtTimer            = $this.Window.FindName("txtTimer")
+        $this.txtCurrentPhase     = $this.Window.FindName("txtCurrentPhase")
+        $this.txtCurrentStep      = $this.Window.FindName("txtCurrentStep")
+        $this.txtPhaseIndicator   = $this.Window.FindName("txtPhaseIndicator")
+        $this.txtProgressPct      = $this.Window.FindName("txtProgressPct")
+        $this.txtFooterHint       = $this.Window.FindName("txtFooterHint")
+        $this.badgeOverallStatus  = $this.Window.FindName("badgeOverallStatus")
+        $this.txtOverallStatus    = $this.Window.FindName("txtOverallStatus")
+        $this.pbTotal             = $this.Window.FindName("pbTotal")
 
-        $this.pbTotal           = $this.Window.FindName("pbTotal")
-        $this.panelRunning      = $this.Window.FindName("panelRunning")
-        $this.panelSummary      = $this.Window.FindName("panelSummary")
-        $this.bannerStatus      = $this.Window.FindName("bannerStatus")
-        $this.panelStepLog      = $this.Window.FindName("panelStepLog")
-        $this.panelSummaryList  = $this.Window.FindName("panelSummaryList")
+        $this.cntSuccess          = $this.Window.FindName("cntSuccess")
+        $this.cntRunning          = $this.Window.FindName("cntRunning")
+        $this.cntSkip             = $this.Window.FindName("cntSkip")
+        $this.cntFailed           = $this.Window.FindName("cntFailed")
+        $this.cntWaiting          = $this.Window.FindName("cntWaiting")
 
-        $this.btnViewLog        = $this.Window.FindName("btnViewLog")
-        $this.btnClose          = $this.Window.FindName("btnClose")
+        $this.scrollSummary       = $this.Window.FindName("scrollSummary")
+        $this.panelSummaryList    = $this.Window.FindName("panelSummaryList")
+        $this.btnViewLog          = $this.Window.FindName("btnViewLog")
+        $this.btnClose            = $this.Window.FindName("btnClose")
 
-        $this.txtSubHeader.Text = "交易日锚点: $tradeDate | 调度环境: 本地数据湖"
+        $this.txtSubHeader.Text = "交易日锚点: $tradeDate | 调度环境: 本地数据湖 (CNEquity)"
+
+        # 初始化预制表格行
+        $this.BuildPredefinedRows()
+        $this.RecountTotals()
 
         # 计时器
         $this.Stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
@@ -334,12 +391,141 @@ class CneGuiApp {
                 if ($self.Window) { $self.Window.Close() }
             }
         })
+
         $this.btnViewLog.Tag = $this
         $this.btnViewLog.add_Click({
             param($sender, $e)
             $self = $sender.Tag
             if ($self -and $self.LogFilePath -and (Test-Path $self.LogFilePath)) {
                 Start-Process "notepad.exe" -ArgumentList "`"$($self.LogFilePath)`""
+            }
+        })
+    }
+
+    [void]BuildPredefinedRows() {
+        foreach ($item in $Global:CnePredefinedSteps) {
+            $rowGrid = [System.Windows.Controls.Grid]::new()
+            $rowGrid.Margin = [System.Windows.Thickness]::new(4, 3, 4, 3)
+
+            $c1 = [System.Windows.Controls.ColumnDefinition]::new(); $c1.Width = [System.Windows.GridLength]::new(65, [System.Windows.GridUnitType]::Pixel)
+            $c2 = [System.Windows.Controls.ColumnDefinition]::new(); $c2.Width = [System.Windows.GridLength]::new(80, [System.Windows.GridUnitType]::Pixel)
+            $c3 = [System.Windows.Controls.ColumnDefinition]::new(); $c3.Width = [System.Windows.GridLength]::new(240, [System.Windows.GridUnitType]::Pixel)
+            $c4 = [System.Windows.Controls.ColumnDefinition]::new(); $c4.Width = [System.Windows.GridLength]::new(100, [System.Windows.GridUnitType]::Pixel)
+            $c5 = [System.Windows.Controls.ColumnDefinition]::new(); $c5.Width = [System.Windows.GridLength]::new(70, [System.Windows.GridUnitType]::Pixel)
+            $c6 = [System.Windows.Controls.ColumnDefinition]::new(); $c6.Width = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
+            $rowGrid.ColumnDefinitions.Add($c1); $rowGrid.ColumnDefinitions.Add($c2)
+            $rowGrid.ColumnDefinitions.Add($c3); $rowGrid.ColumnDefinitions.Add($c4)
+            $rowGrid.ColumnDefinitions.Add($c5); $rowGrid.ColumnDefinitions.Add($c6)
+
+            # 1. 状态徽章
+            $statusBadge = [System.Windows.Controls.Border]::new()
+            $statusBadge.CornerRadius = [System.Windows.CornerRadius]::new(3)
+            $statusBadge.Padding = [System.Windows.Thickness]::new(5, 1, 5, 1)
+            $statusBadge.HorizontalAlignment = [System.Windows.HorizontalAlignment]::Left
+            $statusBadge.Background = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#313244")
+
+            $badgeText = [System.Windows.Controls.TextBlock]::new()
+            $badgeText.FontSize = 10
+            $badgeText.FontWeight = [System.Windows.FontWeights]::SemiBold
+            $badgeText.Text = "等待中"
+            $badgeText.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#6C7086")
+            $statusBadge.Child = $badgeText
+            [System.Windows.Controls.Grid]::SetColumn($statusBadge, 0)
+
+            # 2. 分类
+            $catText = [System.Windows.Controls.TextBlock]::new()
+            $catText.Text = $item.Category
+            $catText.FontSize = 11
+            $catText.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#89B4FA")
+            [System.Windows.Controls.Grid]::SetColumn($catText, 1)
+
+            # 3. 数据集名称 (含中文)
+            $nameText = [System.Windows.Controls.TextBlock]::new()
+            $nameText.Text = "$($item.Dataset) ($($item.CnName))"
+            $nameText.FontSize = 11
+            $nameText.FontWeight = [System.Windows.FontWeights]::Medium
+            $nameText.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#CDD6F4")
+            $nameText.TextTrimming = [System.Windows.TextTrimming]::CharacterEllipsis
+            [System.Windows.Controls.Grid]::SetColumn($nameText, 2)
+
+            # 4. 行数
+            $rowsText = [System.Windows.Controls.TextBlock]::new()
+            $rowsText.Text = "--"
+            $rowsText.FontSize = 11
+            $rowsText.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#6C7086")
+            [System.Windows.Controls.Grid]::SetColumn($rowsText, 3)
+
+            # 5. 耗时
+            $timeText = [System.Windows.Controls.TextBlock]::new()
+            $timeText.Text = "--"
+            $timeText.FontSize = 11
+            $timeText.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#6C7086")
+            [System.Windows.Controls.Grid]::SetColumn($timeText, 4)
+
+            # 6. 说明
+            $noteText = [System.Windows.Controls.TextBlock]::new()
+            $noteText.Text = "排队等待中"
+            $noteText.FontSize = 11
+            $noteText.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#6C7086")
+            $noteText.TextTrimming = [System.Windows.TextTrimming]::CharacterEllipsis
+            [System.Windows.Controls.Grid]::SetColumn($noteText, 5)
+
+            $rowGrid.Children.Add($statusBadge); $rowGrid.Children.Add($catText)
+            $rowGrid.Children.Add($nameText); $rowGrid.Children.Add($rowsText)
+            $rowGrid.Children.Add($timeText); $rowGrid.Children.Add($noteText)
+
+            $this.panelSummaryList.Children.Add($rowGrid)
+
+            $widgets = [StepRowWidgets]::new()
+            $widgets.Container   = $rowGrid
+            $widgets.StatusBadge = $statusBadge
+            $widgets.BadgeText   = $badgeText
+            $widgets.RowsText    = $rowsText
+            $widgets.TimeText    = $timeText
+            $widgets.NoteText    = $noteText
+            $widgets.CurrentStatus = "waiting"
+
+            $this.RowMap[$item.Dataset] = $widgets
+        }
+    }
+
+    [void]RecountTotals() {
+        $nSuccess = 0
+        $nRunning = 0
+        $nSkip    = 0
+        $nFailed  = 0
+        $nWaiting = 0
+
+        foreach ($w in $this.RowMap.Values) {
+            switch ($w.CurrentStatus) {
+                "success" { $nSuccess++ }
+                "running" { $nRunning++ }
+                "skip"    { $nSkip++ }
+                "failed"  { $nFailed++ }
+                default   { $nWaiting++ }
+            }
+        }
+
+        $this.cntSuccess.Text = "$nSuccess"
+        $this.cntRunning.Text = "$nRunning"
+        $this.cntSkip.Text    = "$nSkip"
+        $this.cntFailed.Text  = "$nFailed"
+        $this.cntWaiting.Text = "$nWaiting"
+    }
+
+    [void]SetStepRunning([string]$dataset) {
+        if (-not $this.RowMap.ContainsKey($dataset)) { return }
+        $this.Window.Dispatcher.Invoke([Action]{
+            $w = $this.RowMap[$dataset]
+            if ($w.CurrentStatus -eq "waiting") {
+                $w.CurrentStatus = "running"
+                $w.StatusBadge.Background = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#1E2D4A")
+                $w.BadgeText.Text = "同步中"
+                $w.BadgeText.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#89B4FA")
+                $w.NoteText.Text = "正在从数据源拉取并校验..."
+                $w.NoteText.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#89DCEB")
+                $w.Container.BringIntoView()
+                $this.RecountTotals()
             }
         })
     }
@@ -355,30 +541,62 @@ class CneGuiApp {
 
     [void]UpdateStep([string]$stepText) {
         $this.Window.Dispatcher.Invoke([Action]{
-            $this.txtCurrentStep.Text = "当前操作: $stepText"
-            
-            # 滚动日志条目 (最多保留 40 条)
-            if ($this.panelStepLog.Children.Count -ge 40) {
-                $this.panelStepLog.Children.RemoveAt(0)
-            }
-            $tb = [System.Windows.Controls.TextBlock]::new()
-            $tb.Text = "[$(Get-Date -Format 'HH:mm:ss')] $stepText"
-            $tb.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#A6ADC8")
-            $tb.FontSize = 11
-            $tb.FontFamily = [System.Windows.Media.FontFamily]::new("Consolas")
-            $this.panelStepLog.Children.Add($tb)
+            $this.txtCurrentStep.Text = "$stepText"
         })
     }
 
     [void]RecordStepResult([string]$dataset, [string]$status, [int]$rows, [string]$elapsed, [string]$note) {
-        $res = [pscustomobject]@{
-            Dataset = $dataset
-            Status  = $status
-            Rows    = $rows
-            Elapsed = $elapsed
-            Note    = $note
-        }
-        $this.DatasetResults.Add($res)
+        $this.Window.Dispatcher.Invoke([Action]{
+            if ($this.RowMap.ContainsKey($dataset)) {
+                $w = $this.RowMap[$dataset]
+                $w.CurrentStatus = $status
+
+                if ($status -eq "success" -or $status -eq "OK") {
+                    $w.StatusBadge.Background = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#1E382B")
+                    $w.BadgeText.Text = "成功"
+                    $w.BadgeText.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#A6E3A1")
+                    if ($rows -gt 0) {
+                        $w.RowsText.Text = "+$rows 行"
+                        $w.RowsText.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#A6E3A1")
+                    } else {
+                        $w.RowsText.Text = "0 行"
+                        $w.RowsText.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#A6ADC8")
+                    }
+                    $w.TimeText.Text = if ($elapsed) { $elapsed } else { "--" }
+                    $w.TimeText.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#CDD6F4")
+                    $w.NoteText.Text = if ($note) { $note } else { "同步完成" }
+                    $w.NoteText.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#A6ADC8")
+                } elseif ($status -eq "skip") {
+                    $w.StatusBadge.Background = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#313244")
+                    $w.BadgeText.Text = "跳过"
+                    $w.BadgeText.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#A6ADC8")
+                    $w.RowsText.Text = "--"
+                    $w.RowsText.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#6C7086")
+                    $w.TimeText.Text = "<1s"
+                    $w.NoteText.Text = if ($note) { $note } else { "同周期无变动自动跳过" }
+                    $w.NoteText.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#6C7086")
+                } elseif ($status -eq "warning") {
+                    $w.StatusBadge.Background = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#3C3224")
+                    $w.BadgeText.Text = "提示"
+                    $w.BadgeText.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#F9E2AF")
+                    $w.RowsText.Text = if ($rows -gt 0) { "+$rows 行" } else { "0 行" }
+                    $w.TimeText.Text = if ($elapsed) { $elapsed } else { "--" }
+                    $w.NoteText.Text = if ($note) { $note } else { "有提示信息" }
+                    $w.NoteText.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#F9E2AF")
+                } else {
+                    $w.StatusBadge.Background = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#3C2028")
+                    $w.BadgeText.Text = "失败"
+                    $w.BadgeText.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#F38BA8")
+                    $w.RowsText.Text = "0 行"
+                    $w.RowsText.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#F38BA8")
+                    $w.TimeText.Text = if ($elapsed) { $elapsed } else { "--" }
+                    $w.NoteText.Text = if ($note) { $note } else { "执行异常" }
+                    $w.NoteText.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#F38BA8")
+                }
+                $w.Container.BringIntoView()
+            }
+            $this.RecountTotals()
+        })
     }
 
     [void]ShowCompletionSummary([bool]$isSuccess, [string]$message) {
@@ -386,162 +604,24 @@ class CneGuiApp {
         $this.Timer.Stop()
 
         $this.Window.Dispatcher.Invoke([Action]{
-            $this.panelRunning.Visibility = [System.Windows.Visibility]::Collapsed
-            $this.panelSummary.Visibility = [System.Windows.Visibility]::Visible
+            $this.pbTotal.Value = 100.0
+            $this.txtProgressPct.Text = "100%"
+            $this.txtCurrentPhase.Text = "流水线执行完毕"
+            $this.txtCurrentStep.Text = $message
             $this.btnClose.IsEnabled = $true
-            $this.btnViewLog.Visibility = [System.Windows.Visibility]::Visible
-            $this.txtFooterHint.Text = '数据湖同步完成，点击[确定关闭]退出'
-
-            # 支持无人值守或自测自动关闭环境变量
-            if ($env:CNE_GUI_AUTO_CLOSE_SEC) {
-                $seconds = [int]$env:CNE_GUI_AUTO_CLOSE_SEC
-                if ($seconds -gt 0) {
-                    $autoTimer = [System.Windows.Threading.DispatcherTimer]::new()
-                    $autoTimer.Interval = [TimeSpan]::FromSeconds(1)
-                    $autoTimer.Tag = @{
-                        Remaining = $seconds
-                        Button    = $this.btnClose
-                        Window    = $this.Window
-                    }
-                    $autoTimer.add_Tick({
-                        param($sender, $e)
-                        $ctx = $sender.Tag
-                        $ctx.Remaining--
-                        if ($ctx.Remaining -le 0) {
-                            $sender.Stop()
-                            $ctx.Window.Close()
-                        } else {
-                            $ctx.Button.Content = "确定关闭 ($($ctx.Remaining)s)"
-                        }
-                    })
-                    $this.btnClose.Content = "确定关闭 ($($seconds)s)"
-                    $autoTimer.Start()
-                }
-            }
+            $this.txtFooterHint.Text = "每日数据同步已结束，点击[确定关闭]退出"
 
             if ($isSuccess) {
-                $this.bannerStatus.Background = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#1E382B")
-                $this.bannerStatus.BorderBrush = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#A6E3A1")
-                $this.txtBannerIcon.Text = "✅"
-                $this.txtBannerTitle.Text = "每日数据湖同步完成！"
-                $this.txtBannerTitle.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#A6E3A1")
-                $this.txtBannerDesc.Text = "全部波次执行成功，总耗时 $($this.txtTimer.Text)。"
+                $this.badgeOverallStatus.Background = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#1E382B")
+                $this.txtOverallStatus.Text = "✅ 全量同步成功"
+                $this.txtOverallStatus.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#A6E3A1")
             } else {
-                $this.bannerStatus.Background = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#3C2028")
-                $this.bannerStatus.BorderBrush = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#F38BA8")
-                $this.txtBannerIcon.Text = "⚠️"
-                $this.txtBannerTitle.Text = "数据同步完成（部分波次有警告或失败）"
-                $this.txtBannerTitle.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#F38BA8")
-                $this.txtBannerDesc.Text = $message
+                $this.badgeOverallStatus.Background = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#3C2028")
+                $this.txtOverallStatus.Text = "⚠️ 存在失败项"
+                $this.txtOverallStatus.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#F38BA8")
             }
 
-            # 填充对账表格
-            $this.panelSummaryList.Children.Clear()
-
-            # 类别分组表头
-            $headerGrid = [System.Windows.Controls.Grid]::new()
-            $headerGrid.Margin = [System.Windows.Thickness]::new(6, 2, 6, 6)
-            $c1 = [System.Windows.Controls.ColumnDefinition]::new(); $c1.Width = [System.Windows.GridLength]::new(55, [System.Windows.GridUnitType]::Pixel)
-            $c2 = [System.Windows.Controls.ColumnDefinition]::new(); $c2.Width = [System.Windows.GridLength]::new(210, [System.Windows.GridUnitType]::Pixel)
-            $c3 = [System.Windows.Controls.ColumnDefinition]::new(); $c3.Width = [System.Windows.GridLength]::new(95, [System.Windows.GridUnitType]::Pixel)
-            $c4 = [System.Windows.Controls.ColumnDefinition]::new(); $c4.Width = [System.Windows.GridLength]::new(70, [System.Windows.GridUnitType]::Pixel)
-            $c5 = [System.Windows.Controls.ColumnDefinition]::new(); $c5.Width = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
-            $headerGrid.ColumnDefinitions.Add($c1); $headerGrid.ColumnDefinitions.Add($c2)
-            $headerGrid.ColumnDefinitions.Add($c3); $headerGrid.ColumnDefinitions.Add($c4); $headerGrid.ColumnDefinitions.Add($c5)
-
-            $hStatus = [System.Windows.Controls.TextBlock]::new(); $hStatus.Text = "状态"; $hStatus.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#6C7086"); $hStatus.FontSize = 11; [System.Windows.Controls.Grid]::SetColumn($hStatus, 0)
-            $hName = [System.Windows.Controls.TextBlock]::new(); $hName.Text = "数据集 (中文名称)"; $hName.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#6C7086"); $hName.FontSize = 11; [System.Windows.Controls.Grid]::SetColumn($hName, 1)
-            $hRows = [System.Windows.Controls.TextBlock]::new(); $hRows.Text = "同步行数"; $hRows.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#6C7086"); $hRows.FontSize = 11; [System.Windows.Controls.Grid]::SetColumn($hRows, 2)
-            $hTime = [System.Windows.Controls.TextBlock]::new(); $hTime.Text = "用时"; $hTime.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#6C7086"); $hTime.FontSize = 11; [System.Windows.Controls.Grid]::SetColumn($hTime, 3)
-            $hNote = [System.Windows.Controls.TextBlock]::new(); $hNote.Text = "执行说明 / 详情"; $hNote.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#6C7086"); $hNote.FontSize = 11; [System.Windows.Controls.Grid]::SetColumn($hNote, 4)
-
-            $headerGrid.Children.Add($hStatus); $headerGrid.Children.Add($hName)
-            $headerGrid.Children.Add($hRows); $headerGrid.Children.Add($hTime); $headerGrid.Children.Add($hNote)
-            $this.panelSummaryList.Children.Add($headerGrid)
-
-            $sep = [System.Windows.Controls.Separator]::new()
-            $sep.Background = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#313244")
-            $sep.Margin = [System.Windows.Thickness]::new(0, 0, 0, 4)
-            $this.panelSummaryList.Children.Add($sep)
-
-            foreach ($item in $this.DatasetResults) {
-                $rowGrid = [System.Windows.Controls.Grid]::new()
-                $rowGrid.Margin = [System.Windows.Thickness]::new(6, 4, 6, 4)
-                $r1 = [System.Windows.Controls.ColumnDefinition]::new(); $r1.Width = [System.Windows.GridLength]::new(55, [System.Windows.GridUnitType]::Pixel)
-                $r2 = [System.Windows.Controls.ColumnDefinition]::new(); $r2.Width = [System.Windows.GridLength]::new(210, [System.Windows.GridUnitType]::Pixel)
-                $r3 = [System.Windows.Controls.ColumnDefinition]::new(); $r3.Width = [System.Windows.GridLength]::new(95, [System.Windows.GridUnitType]::Pixel)
-                $r4 = [System.Windows.Controls.ColumnDefinition]::new(); $r4.Width = [System.Windows.GridLength]::new(70, [System.Windows.GridUnitType]::Pixel)
-                $r5 = [System.Windows.Controls.ColumnDefinition]::new(); $r5.Width = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
-                $rowGrid.ColumnDefinitions.Add($r1); $rowGrid.ColumnDefinitions.Add($r2)
-                $rowGrid.ColumnDefinitions.Add($r3); $rowGrid.ColumnDefinitions.Add($r4); $rowGrid.ColumnDefinitions.Add($r5)
-
-                $statusBadge = [System.Windows.Controls.Border]::new()
-                $statusBadge.CornerRadius = [System.Windows.CornerRadius]::new(3)
-                $statusBadge.Padding = [System.Windows.Thickness]::new(4, 1, 4, 1)
-                $statusBadge.HorizontalAlignment = [System.Windows.HorizontalAlignment]::Left
-                $badgeText = [System.Windows.Controls.TextBlock]::new()
-                $badgeText.FontSize = 10
-                $badgeText.FontWeight = [System.Windows.FontWeights]::SemiBold
-
-                if ($item.Status -eq "success" -or $item.Status -eq "OK") {
-                    $statusBadge.Background = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#1E382B")
-                    $badgeText.Text = "成功"
-                    $badgeText.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#A6E3A1")
-                } elseif ($item.Status -eq "skip") {
-                    $statusBadge.Background = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#313244")
-                    $badgeText.Text = "跳过"
-                    $badgeText.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#A6ADC8")
-                } elseif ($item.Status -eq "warning") {
-                    $statusBadge.Background = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#3C3224")
-                    $badgeText.Text = "提示"
-                    $badgeText.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#F9E2AF")
-                } else {
-                    $statusBadge.Background = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#3C2028")
-                    $badgeText.Text = "失败"
-                    $badgeText.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#F38BA8")
-                }
-                $statusBadge.Child = $badgeText
-                [System.Windows.Controls.Grid]::SetColumn($statusBadge, 0)
-
-                # 中文名称增强
-                $cn = $Global:CneDatasetNames[$item.Dataset]
-                $displayName = if ($cn) { "$($item.Dataset) ($cn)" } else { $item.Dataset }
-
-                $dsText = [System.Windows.Controls.TextBlock]::new()
-                $dsText.Text = $displayName
-                $dsText.FontWeight = [System.Windows.FontWeights]::Medium
-                $dsText.FontSize = 11
-                $dsText.TextTrimming = [System.Windows.TextTrimming]::CharacterEllipsis
-                [System.Windows.Controls.Grid]::SetColumn($dsText, 1)
-
-                $rowText = [System.Windows.Controls.TextBlock]::new()
-                if ($item.Rows -gt 0) {
-                    $rowText.Text = "+$($item.Rows) 行"
-                    $rowText.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#A6E3A1")
-                } else {
-                    $rowText.Text = "--"
-                    $rowText.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#6C7086")
-                }
-                $rowText.FontSize = 11
-                [System.Windows.Controls.Grid]::SetColumn($rowText, 2)
-
-                $timeText = [System.Windows.Controls.TextBlock]::new()
-                $timeText.Text = if ($item.Elapsed) { $item.Elapsed } else { "--" }
-                $timeText.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#A6ADC8")
-                $timeText.FontSize = 11
-                [System.Windows.Controls.Grid]::SetColumn($timeText, 3)
-
-                $noteText = [System.Windows.Controls.TextBlock]::new()
-                $noteText.Text = if ($item.Note) { $item.Note } else { "" }
-                $noteText.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#A6ADC8")
-                $noteText.FontSize = 10
-                $noteText.TextTrimming = [System.Windows.TextTrimming]::CharacterEllipsis
-                [System.Windows.Controls.Grid]::SetColumn($noteText, 4)
-
-                $rowGrid.Children.Add($statusBadge); $rowGrid.Children.Add($dsText)
-                $rowGrid.Children.Add($rowText); $rowGrid.Children.Add($timeText); $rowGrid.Children.Add($noteText)
-                $this.panelSummaryList.Children.Add($rowGrid)
-            }
+            $this.RecountTotals()
         })
     }
 }

@@ -5,7 +5,7 @@
         <div class="threshold-modal-head">
           <div>
             <strong>门槛配置</strong>
-            <span class="threshold-modal-mode">{{ agent.inferredModeLabel }}</span>
+            <span class="threshold-modal-mode">{{ agent.effectiveModeLabel }}</span>
             <span v-if="agent.researchSpecCustom" class="research-spec-custom">已自定义</span>
             <span v-if="agent.researchSpecDirty" class="research-spec-dirty">未保存</span>
             <span v-if="agent.specError" class="research-spec-error">{{ agent.specError }}</span>

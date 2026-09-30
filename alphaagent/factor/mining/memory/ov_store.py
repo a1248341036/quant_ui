@@ -22,6 +22,55 @@ SCOPE = "viking://resources/alphaagent/"
 REPORT_SCOPE = "viking://resources/research_reports/"
 
 
+def _research_reports_roots() -> list:
+    """定位 data/research_reports（兼容独立 worktree：用 git common dir 反查主仓库）。"""
+    import subprocess
+    from pathlib import Path
+
+    roots = []
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        if out:
+            roots.append(Path(out).parent / "data" / "research_reports")
+    except Exception:  # noqa: BLE001
+        pass
+    roots.append(Path(__file__).resolve().parents[4] / "data" / "research_reports")
+    roots.append(Path(r"D:\Quant\quant_ui\data\research_reports"))
+    return roots
+
+
+def _report_local_corpus():
+    """本地研报语料目录。
+
+    ``ALPHA_REPORT_CORPUS`` 可取值 ``parsed``（v1，默认）或 ``parsed_mineru``
+    （MinerU 4.0.9 重抽版：页锚点 + 真表格 + 公式逐字符），也可给绝对路径。
+    用于「不重新入 OV 也能对比两套语料」的 A/B（2026-09-29）。
+    """
+    import os
+    from pathlib import Path
+
+    raw = (os.environ.get("ALPHA_REPORT_CORPUS") or "parsed").strip()
+    cand = Path(raw)
+    if cand.is_absolute() and cand.is_dir():
+        return cand
+    for base in _research_reports_roots():
+        d = base / raw
+        if d.is_dir():
+            return d
+    return None
+
+
+def _report_rag_source() -> str:
+    """研报 RAG 数据源：``ov``（OpenViking，默认）| ``local``（本地语料目录直检）。"""
+    import os
+
+    return (os.environ.get("ALPHA_REPORT_RAG_SOURCE") or "ov").strip().lower()
+
+
+
 class OVStore:
     """OpenViking 长期记忆接入层。所有调用硬编码 viking://resources/alphaagent/ scope。"""
 
@@ -120,7 +169,7 @@ class OVStore:
 
         query = " ".join(query_terms)
 
-        client = self._get_client()
+        client = self._get_client() if _report_rag_source() != "local" else None
         hits = []
         if client is not None:
             try:
@@ -133,7 +182,7 @@ class OVStore:
 
         # 本地降级检索
         if not hits:
-            hits = _local_report_search(query_terms, limit=limit)
+            hits = _local_report_search(query_terms, limit=limit, corpus_dir=_report_local_corpus())
 
         if not hits:
             return ""
@@ -293,49 +342,32 @@ class OVStore:
             return False
 
 
-_PARSED_INDEX_CACHE: list[tuple[str, Path]] | None = None
+_PARSED_INDEX_CACHE: dict[str, list[tuple[str, Path]]] = {}
 
 
-def _local_report_search(query_terms: list[str], limit: int = 4) -> list[dict[str, Any]]:
-    """在本地 data/research_reports/parsed/ 下快速检索最相关研报段落（带内存缓存，耗时<50ms）。"""
-    global _PARSED_INDEX_CACHE
-    import subprocess
+def _local_report_search(query_terms: list[str], limit: int = 4, corpus_dir=None) -> list[dict[str, Any]]:
+    """在本地研报语料目录下快速检索最相关段落（带按目录缓存，耗时<50ms）。
+
+    ``corpus_dir`` 为空时回落到默认 ``parsed/``；由 ``ALPHA_REPORT_CORPUS`` 决定用哪套语料。
+    """
     import re
     from pathlib import Path
 
-    parsed_dir = None
-    try:
-        out = subprocess.run(
-            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
-            capture_output=True, text=True, check=True,
-        ).stdout.strip()
-        if out:
-            candidate = Path(out).parent / "data" / "research_reports" / "parsed"
-            if candidate.is_dir():
-                parsed_dir = candidate
-    except Exception:
-        pass
-    if parsed_dir is None:
-        fallback = Path(__file__).resolve().parents[4] / "data" / "research_reports" / "parsed"
-        if fallback.is_dir():
-            parsed_dir = fallback
-    if parsed_dir is None:
-        main_root = Path(r"D:\Quant\quant_ui\data\research_reports\parsed")
-        if main_root.is_dir():
-            parsed_dir = main_root
-
+    parsed_dir = corpus_dir or _report_local_corpus()
     if not parsed_dir or not parsed_dir.is_dir():
         return []
 
-    if _PARSED_INDEX_CACHE is None:
+    key = str(parsed_dir)
+    if key not in _PARSED_INDEX_CACHE:
         idx = []
         for p in parsed_dir.rglob("*.md"):
             idx.append((p.stem, p))
-        _PARSED_INDEX_CACHE = idx
+        _PARSED_INDEX_CACHE[key] = idx
+    index = _PARSED_INDEX_CACHE[key]
 
     keywords = [q for q in query_terms if len(q) >= 2]
     scored = []
-    for stem, path in _PARSED_INDEX_CACHE:
+    for stem, path in index:
         s = 0.0
         for kw in keywords:
             if kw in stem:
@@ -349,12 +381,60 @@ def _local_report_search(query_terms: list[str], limit: int = 4) -> list[dict[st
     hits = []
     for _, title, path in scored[:limit]:
         try:
-            content = path.read_text(encoding="utf-8", errors="ignore")[:1500]
-            lines = [l.strip() for l in content.splitlines() if len(l.strip()) > 20 and "免责" not in l and "版权" not in l]
-            snippet = "\n".join(lines[:3]) if lines else content[:200]
+            content = path.read_text(encoding="utf-8", errors="ignore")
+            snippet = _best_paragraph(content, keywords)
             clean_title = re.sub(r"^\d{4}-?\d{2}-?\d{2}_?", "", title).replace("_", " ")
             hits.append({"title": clean_title, "snippet": snippet, "uri": str(path)})
         except Exception:
             continue
     return hits
+
+
+# 版式/合规噪声：这些段落对因子机制无价值（MinerU 语料里同样存在）
+_PARA_NOISE_SRC = (
+    r"免责|版权|法律声明|投资评级说明|分析师声明|执业证书|请务必阅读|风险提示|"
+    r"微信公众号|扫码|联系方式|销售团队|地址[:：]|邮编|本公司具有中国证监会|"
+    r"评级标准|买入.*增持.*中性.*减持"
+)
+
+
+def _best_paragraph(content: str, keywords: list[str], max_chars: int = 300) -> str:
+    """在整篇 md 里挑与查询关键词最相关的段落（替代"取文件头 3 行"）。
+
+    MinerU 重抽版（``parsed_mineru``）带页锚点/表格/公式，头部常是标题与目录，
+    直接取头会注入无信息量的样本；这里按段落打分：关键词命中 + 含数字/算符加分，
+    合规噪声与目录行扣分，取最高分段并截断。
+    """
+    import re
+
+    noise = re.compile(_PARA_NOISE_SRC)
+    paras: list[str] = []
+    for block in re.split(r"\n\s*\n", content):
+        t = " ".join(line.strip() for line in block.splitlines() if line.strip())
+        if len(t) < 40:
+            continue
+        if t.startswith("<!--") or t.startswith("| ---") or t.count("|") > 8:
+            continue          # 页锚点注释 / 纯表格分隔行
+        if noise.search(t):
+            continue
+        paras.append(t)
+    if not paras:
+        return content[:max_chars]
+
+    best, best_score = paras[0], -1.0
+    for t in paras:
+        score = 0.0
+        for kw in keywords:
+            if kw and kw in t:
+                score += 2.0 + 0.5 * t.count(kw)
+        if re.search(r"[0-9]{2,}|IC|Rank ?IC|ICIR|夏普|换手|超额|分组|多空", t):
+            score += 1.5
+        if re.search(r"[a-z_]+\(|[A-Z]{2,}_[A-Z_]+", t):
+            score += 1.0          # 公式/算子痕迹
+        if score > best_score:
+            best, best_score = t, score
+    if len(best) > max_chars:
+        cut = best[:max_chars].rfind("。")
+        best = best[: cut + 1] if cut > 80 else best[:max_chars] + "…"
+    return best
 

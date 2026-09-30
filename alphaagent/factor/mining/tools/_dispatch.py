@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any
 
@@ -463,6 +464,15 @@ class _DispatchMixin:
             result["ablation_check"] = {"verdict": "skipped", "error": f"{type(exc).__name__}: {str(exc)[:120]}"}
 
     def _auto_val_verify(self, result: dict[str, Any], expr: str, factor_name: str) -> None:
+        # 研报模式复现判定：**先于所有 early-return**（2026-09-30 修：原先放在
+        # force_val_on_promising / 指标解析之后，且指标键取 metrics.cross_sectional_core——
+        # 实测结果里该键不存在（指标在 summary），导致判定几乎从不触发）。
+        try:
+            self._report_reproduce_judge(result, factor_name)
+        except Exception as _e:  # noqa: BLE001
+            logging.info("report_reproduce_judge_exception %s", _e)
+
+
         """训练海选过线（promising 线）后**系统自动**跑一次样本外验证。
 
         2026-09-25（feat/promising-to-val-gate）：promising 语义 = "训练样本海选
@@ -657,6 +667,12 @@ class _DispatchMixin:
         return out
 
     def dispatch(self, name: str, arguments: Any) -> dict[str, Any]:
+        # 研报模式网关：优先取调用参数携带的一份（跨边界最可靠）
+        try:
+            if isinstance(arguments, dict) and arguments.get("_report_gate"):
+                self._report_gate_arg = dict(arguments["_report_gate"])
+        except Exception:  # noqa: BLE001
+            pass
         if isinstance(arguments, str):
             try:
                 arguments = json.loads(arguments) if arguments.strip() else {}
@@ -1216,3 +1232,90 @@ class _DispatchMixin:
             "window": f"[{rec_start.date()} ~ {mining_end.date()}]",
             "summary": f"已通过 mRMR 选出 {len(ranking)} 个互补因子（Top: {', '.join(r['name'] for r in ranking[:3])}）",
         }
+
+    def _report_reproduce_judge(self, result: dict[str, Any], factor_name: str) -> None:
+        """研报模式复现判定（唯一实现）。
+
+        通过条件（满足其一）：① 形态对账 verdict==confirmed；② |IC|≥reproduce_min_abs_ic
+        且 ICIR≥reproduce_min_icir。指标**兼容** ``metrics.cross_sectional_core`` 与
+        ``summary`` 两种结构（实测引擎输出为后者）。每次判定都写日志，便于事后归因。
+        """
+        from alphaagent.factor.mining.report_channels import get_run_gate
+
+        gate = (getattr(self, "_report_gate_arg", None) or get_run_gate()
+                or getattr(self, "report_reproduce_gate", None) or {})
+        phase = str(gate.get("phase") or "")
+        qid = str(gate.get("qid") or "")
+        if phase != "reproduce" or not qid:
+            log_step("report_reproduce_judge",
+                     f"factor={factor_name} 跳过 phase={phase or '-'} qid={qid or '-'}")
+            return
+        rp = getattr(self, "report_policy", None) or {}
+        min_ic = float(rp.get("reproduce_min_abs_ic", 0.010))
+        min_icir = float(rp.get("reproduce_min_icir", 0.10))
+        cs = (result.get("metrics") or {}).get("cross_sectional_core") or result.get("summary") or {}
+        try:
+            ic_f = abs(float(cs.get("ic")))
+            icir_f = float(cs.get("icir"))
+        except (TypeError, ValueError):
+            log_step("report_reproduce_judge", f"qid={qid} factor={factor_name} 指标缺失 -> 跳过")
+            return
+        shape = str((result.get("prediction_check") or {}).get("verdict") or "")
+        by_metrics = ic_f >= min_ic and icir_f >= min_icir
+        by_shape = shape == "confirmed"
+        if not (by_metrics or by_shape):
+            log_step(
+                "report_reproduce_judge",
+                f"qid={qid} factor={factor_name} ic={ic_f:.4f} icir={icir_f:.4f} "
+                f"shape={shape or '-'} -> 未过线",
+            )
+            return
+        from alphaagent.factor.mining.agent.question_state import mark_reproduce_ok
+
+        _parts = []
+        if by_shape:
+            _parts.append(f"shape={shape or 'confirmed'}")
+        if by_metrics:
+            _parts.append("signal=ok")
+        _parts.append(f"ic={ic_f:.4f} icir={icir_f:.4f}")
+        detail = " | ".join(_parts)
+        # 父本"体检报告"：供发散题面给针对性改进建议（ic/icir/cov/换手/形态对账）
+        _prof: dict = {}
+        for _k in ("ic", "icir"):
+            if cs.get(_k) is not None:
+                try:
+                    _prof[_k] = float(cs[_k])
+                except (TypeError, ValueError):
+                    pass
+        _cov = cs.get("factor_coverage", cs.get("coverage"))
+        if _cov is not None:
+            try:
+                _prof["cov"] = float(_cov)
+            except (TypeError, ValueError):
+                pass
+        _ac = cs.get("cs_pearson_autocorr")
+        if _ac is not None:
+            try:
+                _prof["autocorr"] = float(_ac)
+            except (TypeError, ValueError):
+                pass
+        for _tk in ("avg_daily_side_turnover", "avg_turnover"):
+            if result.get(_tk) is not None:
+                try:
+                    _prof["turnover"] = float(result[_tk])
+                    break
+                except (TypeError, ValueError):
+                    pass
+        _pc = result.get("prediction_check") or {}
+        if _pc.get("verdict"):
+            _prof["shape_verdict"] = str(_pc["verdict"])
+        if (_pc.get("actual") or {}).get("shape"):
+            _prof["actual_shape"] = str(_pc["actual"]["shape"])
+        if (_pc.get("expected") or {}).get("expected_shape"):
+            _prof["expected_shape"] = str(_pc["expected"]["expected_shape"])
+        mark_reproduce_ok(
+            str(gate.get("mode") or "report"), qid, int(gate.get("lock_rounds") or 3),
+            factor=factor_name, detail=detail, profile=_prof,
+        )
+        gate["phase"] = "diverge"
+        log_step("report_reproduce_judge", f"qid={qid} factor={factor_name} PASS [{detail}] -> reproduce_ok")

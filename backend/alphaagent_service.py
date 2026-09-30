@@ -87,6 +87,19 @@ def bootstrap_research_memory() -> int:
     return ResearchMemoryStore(RESEARCH_MEMORY_FILE).backfill_from_logs(LOG_ROOT)
 
 
+def run_research_mode(params: dict[str, Any]) -> str | None:
+    """run 的研究档位（technical/fundamental/report），前端页头 chip 显示用。
+
+    内存态从 research_spec 取；后端重启后由 hydrate_runs 从 run_meta.params 恢复，
+    而子进程写的那份 run_meta 只落 research_mode（不落整份 spec），故两条路都读。
+    """
+    spec = params.get("research_spec")
+    if isinstance(spec, dict) and spec.get("research_mode"):
+        return str(spec["research_mode"])
+    mode = params.get("research_mode")
+    return str(mode) if mode else None
+
+
 @dataclass
 class AgentRun:
     run_id: str
@@ -255,6 +268,7 @@ class AgentRun:
             "archived": self.archived,
             "pinned": self.pinned,
             "research_spec": self.params.get("research_spec"),
+            "research_mode": run_research_mode(self.params),
             "event_count": event_count,
             "events": recent_events,
             "log_dir": str(self.log_dir),
@@ -445,6 +459,19 @@ def _load_run_from_disk(run_dir: Path) -> AgentRun | None:
     ).isoformat())
     params = metadata.get("params") if isinstance(metadata.get("params"), dict) else {}
     params.setdefault("user_message", str(first_user or ""))
+    # 子进程会用自己的 run_meta.json 覆盖后端写的那份（原样只剩 user_message），所以
+    # 后端重启后从磁盘恢复的 run 拿不到 research_spec，前端页头的档位 chip（以及历史会话
+    # 的研究规范编辑框）会空。run 目录里的 research_spec.json 是权威副本，用它补回。
+    if not isinstance(params.get("research_spec"), dict):
+        spec_file = run_dir / "research_spec.json"
+        if spec_file.is_file():
+            try:
+                loaded_spec = json.loads(spec_file.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                loaded_spec = None
+            if isinstance(loaded_spec, dict):
+                params["research_spec"] = loaded_spec
+                params.setdefault("research_mode", loaded_spec.get("research_mode"))
     status = _status_from_events(events)
     restored_pid = metadata.get("pid")
     # 外部启动（CLI/脚本）的 run 没有进程句柄：轨迹仍在推进时视为运行中，
@@ -828,29 +855,62 @@ def pin_run(run_id: str, pinned: bool) -> AgentRun | None:
     return run
 
 
+_RUN_QUIET_SEC = 900  # 轨迹静默多久算"不再推进"（批量归档与删除共用口径）
+
+
+def run_is_active(run: AgentRun) -> bool:
+    """run 是否仍在推进（批量归档/删除据此跳过）。
+
+    有进程句柄看进程是否退出；后端重启后恢复的、CLI/脚本直启的 run 没有句柄，
+    只能看轨迹新鲜度：15 分钟内有新事件即视为活跃。两处共用同一口径，避免出现
+    "删除跳过它、归档却把它藏起来"这类漂移。
+    """
+    if run.process is not None:
+        return run.process.poll() is None
+    jsonl = run._jsonl()
+    if jsonl is None or not jsonl.exists():
+        return False
+    try:
+        return time.time() - jsonl.stat().st_mtime < _RUN_QUIET_SEC
+    except OSError:
+        return False
+
+
 def delete_run(run_id: str) -> dict[str, Any] | None:
     """删除一个任务：从内存移除并清掉它的日志目录。
 
-    进程还活着时拒绝删除——先 stop 再删，避免边写边删。
+    仍在推进时拒绝删除——先 stop 再删，避免边写边删。
     """
     run = get_run(run_id)
     if run is None:
         return None
-    if run.process is not None and run.process.poll() is None:
+    if run_is_active(run):
         return {"run_id": run_id, "deleted": False, "reason": "run_still_running"}
-    # 无进程句柄但磁盘轨迹仍在推进（后端重启后恢复的活跃 run）：
-    # 直接删会连日志一起清掉，禁止删除，避免边写边删。
-    jsonl = run._jsonl()
-    if run.process is None and jsonl is not None and jsonl.exists():
-        try:
-            if time.time() - jsonl.stat().st_mtime < 900:
-                return {"run_id": run_id, "deleted": False, "reason": "run_still_running"}
-        except OSError:
-            pass
     shutil.rmtree(run.log_dir, ignore_errors=True)
     with _LOCK:
         _RUNS.pop(run_id, None)
     return {"run_id": run_id, "deleted": True}
+
+
+def archive_all_runs() -> dict[str, Any]:
+    """一键归档全部"最近任务"（archived=False）；仍在推进的跳过。
+
+    跳过运行中的 run 与一键删除同一口径：归档后它会从最近任务列表消失，正在跑的
+    任务失联比"列表里多留一行"麻烦得多。
+    """
+    hydrate_runs()
+    with _LOCK:
+        targets = [run for run in _RUNS.values() if not run.archived]
+    archived: list[str] = []
+    skipped: list[str] = []
+    for run in targets:
+        if run_is_active(run):
+            skipped.append(run.run_id)
+            continue
+        run.archived = True
+        run.save_meta()
+        archived.append(run.run_id)
+    return {"ok": True, "archived": archived, "skipped": skipped, "count": len(archived)}
 
 
 def delete_archived_runs() -> dict[str, Any]:

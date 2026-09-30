@@ -8,10 +8,12 @@
 - research_spec.default_research_spec      → 门槛/信号族/label 覆盖
 - core.factor_categories                   → 候选/正式库目录
 - backend.alphaagent_service               → 是否载入 funda_* 列
-- /api/alphaagent/research-modes           → 前端动态渲染 mode 按钮/下拉/提示
+- /api/alphaagent/research-modes           → 前端档位选择（页头「研报」按钮 / 因子实验室
+  重测下拉）。**注意：不是自动渲染**——2026-09-02「模式下拉退役」后，AgentThread 的档位
+  改为按数据面自动推断（infer_research_mode），新增顶层档位必须在 store/AgentThread 里
+  显式接线才会出现在页面上（report 档 2026-09-29 只进了注册表，UI 入口 09-30 才补上）。
 
-未来若加"工具型"模式（如组合扫描），只需扩展本 dataclass 字段，
-不必改任何消费方代码。
+未来若加"工具型"模式（如组合扫描），只需扩展本 dataclass 字段 + 前端一处接线。
 """
 
 from __future__ import annotations
@@ -40,6 +42,9 @@ class ResearchModeSpec:
     candidate_overrides: dict = field(default_factory=dict)       # delivery_policy.candidate
     production_overrides: dict = field(default_factory=dict)      # delivery_policy.production
     engine_gate_overrides: dict = field(default_factory=dict)     # delivery_policy.production.engine_gate
+    # 研报模式专用：report_policy 覆盖（流程开关，如"复现阶段用机制卡、发散阶段用 RAG"）。
+    # 非研报模式留空 → 行为与今天完全一致。
+    report_policy_overrides: dict = field(default_factory=dict)
 
 
 # ── label 口径 vs 调仓频率：**刻意解耦**（2026-09-30 决策，勿"顺手对齐"）──────
@@ -192,6 +197,55 @@ RESEARCH_MODES: dict[str, ResearchModeSpec] = {
             "allowed_freqs": ["weekly"],
         },
     ),
+    # ── 研报模式（2026-09-29 新增）───────────────────────────────────
+    # 目标：**先照研报机制复现**一个忠实因子，**再围绕该机制单向发散**。
+    # 与 technical/fundamental 的差别只在流程，不在门槛/label：
+    #   - 复现阶段：只注入机制卡（构造指南/字段/参数/期望形态），不注入泛 RAG；
+    #   - 判定：形态对账（prediction_check）+ train 门；过线则锁定该课题 N 轮发散；
+    #   - 发散阶段：才注入研报 RAG，一轮只改一个维度（窗长/算子/同族字段/中性化键/门控形态/交互结构）。
+    # 开关全部落在 report_policy_overrides，未选该模式时这些键不存在 → 老行为不变。
+    "report": ResearchModeSpec(
+        mode_id="report",
+        label="研报复现",
+        hint="先照研报机制复现因子，再围绕机制单维发散（复现阶段喂机制卡，发散阶段用研报 RAG）",
+        recommended_label_col="label_1d_open_to_open",
+        # 研报机制常跨数据面：价量/波动/筹码 + 基本面族都放开（needs_fundamentals=True）
+        signal_families=(
+            "volume_price", "volatility", "chip", "momentum_reversal",
+            "fundamental_quality", "fundamental_growth",
+            "fundamental_value", "fundamental_revision",
+        ),
+        forbidden_families=("pure_size",),
+        needs_fundamentals=True,
+        candidate_dir="candidate_main",
+        production_dir="production_main",
+        default_user_message=(
+            "研报复现模式：先按本轮课题给出的研报机制复现一个忠实因子"
+            "（只允许字段同族替换与算子落地，提交时带 reproduce_of=<card_id>）；"
+            "复现通过后，围绕该机制做单维发散（窗长/算子/同族字段/中性化键/门控形态/交互结构，一次一维）。"
+        ),
+        engine_gate_overrides={
+            "freq": "weekly",
+            "allowed_freqs": ["daily", "weekly", "monthly"],
+        },
+        report_policy_overrides={
+            "knowledge_mode": "mechanism_cards",
+            "knowledge_mode_by_phase": {
+                "reproduce": "mechanism_cards",
+                "diverge": "report_rag",
+            },
+            "reproduce_first": True,        # 首轮必须复现（题面 + 提交门禁）
+            "reproduce_of_required": True,  # 提交必须声明 reproduce_of=<card_id>
+            "reproduce_lock_rounds": 3,     # 复现通过后锁定该课题的发散轮数
+            # 复现判定阈值（"信号存在"档，本质是保真而非强度；强度留给发散阶段）
+            "reproduce_min_abs_ic": 0.010,
+            "reproduce_min_icir": 0.10,
+            "reproduce_max_attempts": 2,     # 复现失败可重试一次，提高进入发散的概率
+            "enable_question_queue": True,
+            "report_rag_max_chars": 1600,
+            "report_rag_top_k": 3,
+        },
+    ),
     "technical_monthly": ResearchModeSpec(
         mode_id="technical_monthly",
         label="日线技术·月频",
@@ -229,7 +283,7 @@ def mode_ids() -> list[str]:
 def ui_options() -> list[dict]:
     """前端研究模式按钮/因子库类别/保存下拉共享的选项。
 
-    仅返回顶层档位（technical/fundamental）；三对齐子档（technical_daily/
+    返回全部顶层档位（technical/fundamental/report）；三对齐子档（technical_daily/
     weekly/monthly）是内部档位，由 infer_research_mode 依据 rebalance_freq
     自动选用，不暴露给前端下拉（避免污染 UI）。
     """
