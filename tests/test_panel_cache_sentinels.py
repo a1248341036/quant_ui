@@ -35,6 +35,8 @@ def _make_panel(*, complete: bool, with_funda: bool = True) -> pd.DataFrame:
             "funda_net_profit": 1.0,
             "funda_ocf": 1.0,
             "funda_netprofit_yoy": 1.0,
+            # v9 新增（fina_indicator）：同时是哨兵列，缺它即视为残缺面板
+            "funda_ebitda": 1.0,
         }
         if not complete:
             base.pop("funda_ocf")
@@ -56,6 +58,12 @@ def test_missing_funda_sentinels_deficient_panel() -> None:
 def test_missing_funda_sentinels_no_funda_family() -> None:
     # include_fundamentals=False 的面板无任何 funda_ 列：不算残缺
     assert cnequity._missing_funda_sentinels(_make_panel(complete=False, with_funda=False)) == frozenset()
+
+
+def test_missing_funda_sentinels_requires_ebitda() -> None:
+    """v9 新增列 funda_ebitda 必须是哨兵：只缺它也算残缺（否则缺列面板会被静默命中）。"""
+    panel = _make_panel(complete=True).drop(columns=["funda_ebitda"])
+    assert cnequity._missing_funda_sentinels(panel) == frozenset({"funda_ebitda"})
 
 
 @pytest.fixture()
