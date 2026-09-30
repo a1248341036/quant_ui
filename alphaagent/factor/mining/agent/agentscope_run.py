@@ -1205,6 +1205,15 @@ async def run_factor_mining_agentscope(
                         "expression": args_obj.get("multi_line_expr") or "",
                         "expression_sha256": canonical_hash(args_obj.get("multi_line_expr")) if args_obj.get("multi_line_expr") else None,
                         "split": res.get("split"),
+                        # 系统自动 val（force_val_on_promising）的验证结果嵌在本条 train 评估里。
+                        # 单独记下来，供漏斗统计"实际经过样本外验证"的覆盖——2026-10-01 整夜实测：
+                        # run jsonl 里 val_verification 出现 29 次，而旧口径只统计 LLM 显式
+                        # eval_on_val_set（3 次），train_to_val_rate 被低估到 2.1%。
+                        "auto_val_verified": isinstance(res.get("val_verification"), dict),
+                        "auto_val_passed": (
+                            bool((res.get("val_verification") or {}).get("passed"))
+                            if isinstance(res.get("val_verification"), dict) else None
+                        ),
                         "metrics": {key: summary_metrics.get(key) for key in ("ic", "icir", "rank_ic", "factor_coverage", "coverage") if summary_metrics.get(key) is not None},
                         "error_type": res.get("error_type"),
                         "error": str(res.get("error") or res.get("skipped_reason") or "")[:500],
@@ -1718,6 +1727,14 @@ async def run_factor_mining_agentscope(
 
     train_attempts = {r.get("expression_sha256") for r in tool_call_rows if _is_train_eval(r)}
     val_attempts = {r.get("expression_sha256") for r in tool_call_rows if _is_val_eval(r)}
+    # 系统 auto-val（force_val_on_promising）有效覆盖 = 显式 val ∪ 被自动验证过的表达式。
+    # 既有 unique_val_evaluated / train_to_val_rate 语义**保持不变**（冻结基线可比），
+    # 另加 *_incl_auto 字段反映"实际经过样本外验证"的真实比例。
+    auto_val_attempts = {
+        r.get("expression_sha256") for r in tool_call_rows
+        if r.get("auto_val_verified") and r.get("expression_sha256")
+    }
+    val_effective = val_attempts | auto_val_attempts
     candidate_stored = sum(1 for row in submit_records if row.get("candidate_stored"))
     production_stored = sum(1 for row in submit_records if row.get("stored"))
     failure_counts: dict[str, int] = {}
@@ -1826,6 +1843,12 @@ async def run_factor_mining_agentscope(
             "candidate_stored": candidate_stored,
             "production_stored": production_stored,
             "train_to_val_rate": round(len(val_attempts) / len(train_attempts), 4) if train_attempts else None,
+            # 含系统 auto-val 的口径（旧字段语义不变，单纯补充真实覆盖率）
+            "unique_auto_val_verified": len(auto_val_attempts),
+            "unique_val_effective": len(val_effective),
+            "train_to_val_rate_incl_auto": (
+                round(len(val_effective) / len(train_attempts), 4) if train_attempts else None
+            ),
             "val_to_production_rate": round(production_stored / len(val_attempts), 4) if val_attempts else None,
         },
         "failure_counts": failure_counts,
