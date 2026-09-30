@@ -147,7 +147,13 @@ def test_async_write_batch_failure_resilience(tmp_path: Path):
 
 
 def test_turnover_reduction_hints_present():
-    """P2 测试：日换手超标时输出 3 种具体降噪路径与 turnover_reduction_hints 字段。"""
+    """P2 测试：日换手超建议红线时输出降噪路径与 turnover_reduction_hints 字段。
+
+    两档措辞（diagnostics 实现注释：红线区间"措辞不得升格为禁令"）：
+      - 建议红线段（0.40 ~ 分档硬门）：先降换手，F 不出现"请勿提交"；
+      - ≥ 分档硬门：才出现"请勿提交"。
+    本用例换手 0.55 落在 weekly 硬门 0.65 之内的建议区。
+    """
     res = {
         "split": "train",
         "passed": True,
@@ -160,9 +166,27 @@ def test_turnover_reduction_hints_present():
 
     assert "submit_decision_required" in res
     hint = res["submit_decision_required"]
-    assert "请勿提交" in hint
+    assert "先降换手" in hint          # 建议区措辞
+    assert "请勿提交" not in hint      # 硬门内不得升格为禁令
     assert "CS_ZSCORE" in hint
     assert "基本面 PIT" in hint
 
     hints_list = res.get("turnover_reduction_hints")
     assert isinstance(hints_list, list) and len(hints_list) >= 3
+
+
+def test_turnover_above_hard_gate_uses_forbidden_wording():
+    """换手 ≥ 分档硬门（weekly 0.65）时，措辞升格为"请勿提交"禁令。"""
+    res = {
+        "split": "train",
+        "passed": True,
+        "metrics": {
+            "cross_sectional_core": {"ic": 0.028, "icir": 0.35, "factor_coverage": 0.95},
+            "quantile_portfolio": {"avg_daily_side_turnover": 0.70},
+        },
+    }
+    _attach_yield_hints(res, "RANK(TS_PCTCHANGE($adj_close, 1))", {})
+
+    hint = res["submit_decision_required"]
+    assert "请勿提交" in hint
+    assert "先降换手" not in hint
