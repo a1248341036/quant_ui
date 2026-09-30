@@ -29,7 +29,7 @@ CONSTRUCTS: list[tuple[str, str]] = [
     ("cgo|处置效应|参考成本|cost_basis",
      "DIVIDE(SUBTRACT($adj_close, DIVIDE(TS_SUM(MULTIPLY($adj_close, $volume), 60), "
      "TS_SUM($volume, 60))), $adj_close)"),
-    ("irff|特异度|特质波动|ff三因子|ff_regression",
+    ("i?vr?ff|rff|特异度|特质波动|残差波动|idiosyncratic|ff三因子|ff_regression",
      "TS_STD(RESI($adj_close, CS_NEUTRALIZE($adj_close)), 20)"),
     ("换手率|turnover",
      "TS_MEAN($turnover_rate, 20)"),
