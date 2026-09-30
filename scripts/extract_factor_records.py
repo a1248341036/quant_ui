@@ -34,10 +34,40 @@ BASE_URL = os.environ.get("FACTOR_REC_BASE_URL", "http://127.0.0.1:8317/v1")
 API_KEY = os.environ.get("FACTOR_REC_API_KEY", "123456")
 MODEL = os.environ.get("FACTOR_REC_MODEL", "Qwen3.8-27B")
 
-RE_TABLE_HEADER = re.compile(r"因子(名称|序号).{0,80}(计算方法|公式|定义)|(计算方法|公式).{0,40}因子")
+# 因子清单表识别：由"窄表头"放宽为"因子列 + 公式列"双条件（2026-10-01）。
+# 旧式 `因子(名称|序号)…(计算方法|公式|定义)` 全语料只命中 26/1900 篇；实测真公式表 186 篇，
+# 另有 233 篇公式只出现在正文 —— 漏检原因是 `计算方式`/`因子简称`/`因子说明`/`因子|定义` 等真实写法。
+RE_TABLE_HEADER = re.compile(
+    r"(因子|指标|变量|符号|释义)[^\n|]{0,24}[|｜][^\n]*?"
+    r"(计算公式|计算方式|计算方法|构建方式|构建方法|公式|定义|含义|说明|解释|释义|参数)"
+    r"|(计算公式|计算方式|计算方法|构建方式|构建方法|公式)[^\n|]{0,40}"
+    r"(因子|指标|变量|符号)"
+)
+# 强公式列：命中即判为公式表，无需再排除业绩表
+RE_STRONG_FORMULA = re.compile(r"计算公式|计算方式|计算方法|构建方式|构建方法|公式")
+# 业绩列：只有弱公式列（定义/含义/说明/解释/释义/参数）时，≥2 个业绩标记判为业绩周报表（无公式可抽）
+RE_PERF_COL = re.compile(r"方向|最近一周|最近一月|今年以来|年化|趋势|收益率|超额|排名|胜率|多空|回测|涨跌幅")
+# 正文公式段锚点：小节标题含"因子构建/指标计算…"，或直引"公式："
+RE_PROSE_SECTION = re.compile(r"(因子|指标|变量)[^\n]{0,12}(构建|计算|定义|构造|度量)")
+RE_PROSE_HEADING = re.compile(r"^#{1,6}\s*\S+")
+RE_FORMULA_LINE = re.compile(
+    r"[=＝]|\\[a-zA-Z]+|_\{|\^\{|[\u0370-\u03ff\u2200-\u22ff]"
+    r"|Rank\s*\(|std\s*\(|mean\s*\(|corr\s*\(|TS_[A-Z]"
+)
 RE_FUNC = re.compile(r"([A-Z][A-Z0-9_]{1,})\s*\(")
 RE_FIELD = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)")
 RE_ROW_NUM = re.compile(r"^\s*\|\s*\d+\s*\|")
+
+
+def is_formula_header(row: str) -> bool:
+    """因子清单表表头判定：因子列 + 公式列，且排除只有业绩列的因子周报表。"""
+    if not RE_TABLE_HEADER.search(row):
+        return False
+    if RE_STRONG_FORMULA.search(row):
+        return True
+    # 弱公式列（定义/含义/说明/解释/释义/参数）：同行出现 ≥2 个业绩标记即判为业绩周报表
+    # （按出现次数而非"种类"计数：`多头超额` 在多列重复正是业绩表特征）
+    return len(RE_PERF_COL.findall(row)) < 2
 
 # 报告级频率索引（authoritative，由 extract_report_freq/verify_report_freq 产出）
 FREQ_INDEX: dict[str, dict] = {}
@@ -126,9 +156,9 @@ def normalize(s: str) -> str:
     return "".join(c for c in unicodedata.normalize("NFKC", str(s)) if not c.isspace())
 
 
-PROMPT = """你在把券商研报的"因子清单表"结构化成可执行记录。下面是研报表块的 Markdown（含表标题）。
+PROMPT = """你在把券商研报的"因子清单"结构化成可执行记录。下面是研报片段（{kind_desc}）。
 
-对**表中每个因子**输出一条记录，返回严格 JSON 数组（无解释、无代码围栏）：
+对**片段中每个因子**输出一条记录，返回严格 JSON 数组（无解释、无代码围栏）：
 
 {{
  "name": "因子名称（原文）",
@@ -157,9 +187,9 @@ PROMPT = """你在把券商研报的"因子清单表"结构化成可执行记录
 4. 原文只有文字描述时：`formula_kind=derived`，必须给出 `derivation`（依据行业标准构造）+ `assumptions`，
    `expr_local` 必须能落地；确实推不出（缺字段/缺算子/数据不可得）→ `formula_kind=null` + `null_reason`；
 5. 调仓频率/标签：**只按研报自述**（如"月度调仓"→monthly+label_20d_close_to_close），未说明填 null；
-6. 最多 120 条；表中没有因子就返回 []。
+6. 最多 120 条；片段中没有因子就返回 []。
 
-表标题：{title}
+片段标题：{title}
 片段：
 ---
 {chunk}
@@ -172,7 +202,7 @@ def build_blocks(lines: list[str]) -> list[dict]:
     i = 0
     while i < len(lines):
         s = lines[i].strip()
-        if s.startswith("|") and RE_TABLE_HEADER.search(s):
+        if s.startswith("|") and is_formula_header(s):
             title = ""
             for j in range(i - 1, max(-1, i - 4), -1):
                 if lines[j].strip():
@@ -187,6 +217,46 @@ def build_blocks(lines: list[str]) -> list[dict]:
             i = j
         else:
             i += 1
+    return blocks
+
+
+def build_prose_blocks(lines: list[str], max_blocks: int = 2) -> list[dict]:
+    """正文公式段兜底：小节标题含"因子构建/指标计算…"或直引"公式："时，取其下含公式特征的行成块。
+
+    覆盖公式只出现在正文、没有因子清单表的报告（全语料实测约 233 篇）。
+    每篇最多 ``max_blocks`` 段，避免单篇几十节"计算方法"把 LLM 预算打满。
+    """
+    blocks: list[dict] = []
+    i = 0
+    while i < len(lines) and len(blocks) < max_blocks:
+        s = lines[i].strip()
+        is_anchor = bool(RE_PROSE_SECTION.search(s)) and (s.startswith("#") or len(s) <= 40)
+        is_direct = bool(re.match(r"^公式[：:]", s))
+        if not (is_anchor or is_direct):
+            i += 1
+            continue
+        j = i + 1
+        body: list[str] = []
+        while j < len(lines) and len(body) < 24:
+            t = lines[j].strip()
+            if RE_PROSE_HEADING.match(t) or (t.startswith("|") and is_formula_header(t)):
+                break
+            if t:
+                body.append(t)
+            j += 1
+        hits = [t for t in body if RE_FORMULA_LINE.search(t)]
+        if hits:
+            blocks.append({"index": 0, "kind": "prose", "title": s[:120],
+                           "rows": body, "n_rows": len(hits)})
+        i = max(j, i + 1)
+    return blocks
+
+
+def build_all_blocks(lines: list[str]) -> list[dict]:
+    """表块 + 正文公式段，统一编号（parse_one / --require-table 的唯一入口）。"""
+    blocks = build_blocks(lines)
+    for b in build_prose_blocks(lines):
+        blocks.append({**b, "index": len(blocks)})
     return blocks
 
 
@@ -223,12 +293,13 @@ def save_table_cache(path: Path, cache: dict[str, list[dict]]) -> None:
                               for k, v in cache.items()), encoding="utf-8")
 
 
-def call_llm(chunk: str, title: str, timeout: int = 240) -> list[dict]:
+def call_llm(chunk: str, title: str, kind_desc: str = "因子清单表，含表标题", timeout: int = 240) -> list[dict]:
     prompt = PROMPT.format(
         operators=", ".join(sorted(OPERATORS))[:6000],
         fields=", ".join(sorted(FIELDS))[:6000],
         title=title or "(无标题)",
         chunk=chunk[:14000],
+        kind_desc=kind_desc,
     )
     body = {"model": MODEL, "messages": [{"role": "user", "content": prompt}], "temperature": 0, "max_tokens": 8000}
     req = urllib.request.Request(
@@ -261,7 +332,7 @@ def meta_of(path: Path, root: Path) -> dict:
 def parse_one(path: Path, root: Path, retries: int = 2) -> tuple[list[dict], list[dict]]:
     lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
     full_norm = normalize("\n".join(lines))
-    blocks = build_blocks(lines)
+    blocks = build_all_blocks(lines)
     recs: list[dict] = []
     stats: list[dict] = []
     for blk in blocks:
@@ -272,7 +343,9 @@ def parse_one(path: Path, root: Path, retries: int = 2) -> tuple[list[dict], lis
         else:
             for attempt in range(retries + 1):
                 try:
-                    arr = call_llm("\n".join(blk["rows"]), blk["title"])
+                    arr = call_llm("\n".join(blk["rows"]), blk["title"],
+                                   kind_desc=("因子清单表，含表标题" if blk.get("kind", "table") == "table"
+                                              else "正文公式段落（非表格，含因子定义/计算方法）"))
                     break
                 except Exception as e:  # noqa: BLE001
                     if attempt >= retries:
@@ -315,6 +388,7 @@ def parse_one(path: Path, root: Path, retries: int = 2) -> tuple[list[dict], lis
             rec = {
                 **meta_of(path, root),
                 "table_index": blk["index"], "table_title": blk["title"][:120],
+                "block_kind": blk.get("kind", "table"),
                 "name": (it.get("name") or "")[:120], "category": it.get("category"),
                 "direction": it.get("direction"),
                 "formula_kind": kind,
@@ -429,7 +503,7 @@ def main() -> int:
     if args.only:
         files = [f for f in files if args.only in str(f)]
     if args.require_table:
-        files = [f for f in files if build_blocks(f.read_text(encoding="utf-8", errors="ignore").splitlines())]
+        files = [f for f in files if build_all_blocks(f.read_text(encoding="utf-8", errors="ignore").splitlines())]
     if args.limit:
         files = files[: args.limit]
     print(f"算子 {len(OPERATORS)} 个 / 字段 {len(FIELDS)} 个 | 待处理 {len(files)} 篇 | model={MODEL}", flush=True)
