@@ -927,25 +927,33 @@ async def run_factor_mining_agentscope(
 
         # 研报模式网关：**放在 try 之外**，确保永远被设置（原先在 try 内，
         # 任何异常都被"失败静默"吞掉 → 判定侧读到空字典 → 复现永不通过）。
-        if report_flow_enabled(spec):
+        # 全部用别名导入：本函数后面还 import 了同名的 report_flow_enabled 等，
+        # 直接用原名会触发 UnboundLocalError（2026-09-30 实测 report 模式 run 直接崩）。
+        from alphaagent.factor.mining.report_channels import (
+            diverge_parent_required as _dpr,
+            report_flow_enabled as _rfe,
+            reproduce_lock_rounds as _rlr,
+            reproduce_of_required as _ror,
+            resolve_report_phase as _rrp,
+            set_run_gate as _srg,
+        )
+
+        if _rfe(spec):
             try:
-                from alphaagent.factor.mining.agent.question_queue import (
-                    find_card_for_question as _fcq,
-                )
                 from alphaagent.factor.mining.agent.question_state import (
                     reproduce_factor_of as _rfo,
                 )
-                from alphaagent.factor.mining.report_channels import set_run_gate as _srg
 
                 _rm = str(getattr(config, "research_mode", "report") or "report")
+                _qid2 = str((current_question or {}).get("question_id") or "")
                 _g2 = {
-                    "required": reproduce_of_required(spec),
-                    "phase": locals().get("_report_phase_from_state") or resolve_report_phase(spec, outer_turn),
-                    "qid": str((current_question or {}).get("question_id") or ""),
+                    "required": _ror(spec),
+                    "phase": locals().get("_report_phase_from_state") or _rrp(spec, outer_turn),
+                    "qid": _qid2,
                     "mode": _rm,
-                    "lock_rounds": reproduce_lock_rounds(spec),
-                    "diverge_parent": diverge_parent_required(spec),
-                    "parent_name": _rfo(_rm, str((current_question or {}).get("question_id") or "")),
+                    "lock_rounds": _rlr(spec),
+                    "diverge_parent": _dpr(spec),
+                    "parent_name": _rfo(_rm, _qid2),
                 }
                 try:
                     factor_tools.report_reproduce_gate = _g2
