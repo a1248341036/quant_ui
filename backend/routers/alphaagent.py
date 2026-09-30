@@ -699,6 +699,12 @@ def archive_run(run_id: str, req: ArchiveRequest | None = None) -> dict[str, Any
 
 
 # 注意：/runs/archived 必须先于 /runs/{run_id} 注册，否则会被路径参数吞掉。
+@router.post("/runs/archived")
+def archive_all_runs() -> dict[str, Any]:
+    """一键归档全部最近任务（仍在运行的跳过）。"""
+    return service.archive_all_runs()
+
+
 @router.delete("/runs/archived")
 def delete_archived_runs() -> dict[str, Any]:
     """一键删除全部已归档任务（仍在运行的跳过）。"""

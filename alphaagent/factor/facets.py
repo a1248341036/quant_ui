@@ -23,7 +23,7 @@ FACET_DEFS: list[tuple[str, tuple[str, ...]]] = [
     ("量能面", ("$volume", "$amount", "$turnover", "$turnover_rate")),
     ("筹码面", ("chip_",)),
     ("拥挤面", ("crowd_",)),
-    ("基本面", ("funda_",)),
+    ("基本面", ("funda_", "$fsi_", "$pe_ttm", "$pb", "$ps_ttm", "$dv_ttm", "$tot_cap", "$float_cap")),
     ("股东面", ("holder_",)),
     ("机构面", ("$inst_",)),
     ("股东集中面", ("$th_",)),

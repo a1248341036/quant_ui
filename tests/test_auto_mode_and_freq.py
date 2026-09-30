@@ -148,3 +148,71 @@ def test_to_prompt_text_contains_rebalance_freq_directive():
     text = criteria.to_prompt_text()
     assert 'rebalance_freq 必须传 "monthly"' in text
     assert "daily" in text and "weekly" in text  # 可选范围列出
+
+
+# ── 研报档（report）：注册表 / 启动请求 / 页头 chip 数据源 ──
+# 2026-09-30：report 档 09-29 只进了注册表，UI 入口缺失（前端页头「研报」按钮 + chip 后补）。
+# 这组用例把"注册表可达 → 启动请求不被数据面推断改写 → 快照向 UI 暴露档位"钉住。
+
+def test_report_mode_registered_and_exposed_to_frontend():
+    """report 必须是顶层档位且出现在 /research-modes（页头按钮的数据源）。"""
+    from core.research_modes import RESEARCH_MODES, get_research_mode, ui_options
+
+    assert "report" in RESEARCH_MODES
+    assert get_research_mode("report").needs_fundamentals is True
+    values = [opt["value"] for opt in ui_options()]
+    assert "report" in values
+    assert not any(v.startswith("technical_") for v in values)  # 内部子档不外露
+
+
+def test_start_endpoint_report_mode_passthrough(monkeypatch):
+    """显式 report 档必须胜出数据面推断，且 spec 自带 report_policy（复现门禁/阶段化注入）。"""
+    from backend.routers import alphaagent as router_mod
+
+    captured = {}
+
+    class _FakeRun:
+        def snapshot(self):
+            return {"run_id": "reportrun", "status": "running"}
+
+    def _fake_start_run(payload):
+        captured.update(payload)
+        return _FakeRun()
+
+    monkeypatch.setattr(router_mod.service, "start_run", _fake_start_run)
+
+    # 即便勾了慢因子面（自动推断会落 fundamental），显式 report 也不能被改写
+    req = router_mod.StartRequest(research_mode="report", focus_facets=["基本面"])
+    router_mod.start(req)
+
+    assert captured["research_mode"] == "report"
+    spec = captured["research_spec"]
+    assert spec["research_mode"] == "report"
+    policy = spec["report_policy"]
+    assert policy["reproduce_first"] is True
+    assert policy["reproduce_of_required"] is True
+    assert policy["knowledge_mode_by_phase"] == {
+        "reproduce": "mechanism_cards",
+        "diverge": "report_rag",
+    }
+
+
+def test_snapshot_exposes_research_mode(tmp_path):
+    """页头档位 chip 的数据源：内存态从 spec 取，后端重启恢复态从 run_meta.params 取。"""
+    from backend import alphaagent_service as svc
+
+    in_memory = svc.AgentRun(
+        run_id="mem", command=[], log_dir=tmp_path,
+        params={"research_spec": {"research_mode": "report"}},
+    )
+    assert in_memory.snapshot(tail=0)["research_mode"] == "report"
+
+    # 子进程覆盖写的 run_meta 只有 research_mode（没有整份 spec）
+    hydrated = svc.AgentRun(
+        run_id="hyd", command=[], log_dir=tmp_path,
+        params={"user_message": "x", "research_mode": "technical"},
+    )
+    assert hydrated.snapshot(tail=0)["research_mode"] == "technical"
+
+    unknown = svc.AgentRun(run_id="unk", command=[], log_dir=tmp_path, params={})
+    assert unknown.snapshot(tail=0)["research_mode"] is None

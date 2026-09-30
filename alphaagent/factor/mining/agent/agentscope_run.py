@@ -577,7 +577,13 @@ async def run_factor_mining_agentscope(
                 {
                     "run_id": log_dir.name,
                     "created_at": started_at,
-                    "params": {"user_message": user_message},
+                    "params": {
+                        "user_message": user_message,
+                        # 档位一并落盘：本文件会覆盖后端 start_run 写的 run_meta.json，
+                        # 原来只留 user_message，导致后端重启后 hydrate 回来的 run 丢了
+                        # 档位（页头无从判断是 technical 还是 report）。
+                        "research_mode": (config.research_spec or {}).get("research_mode"),
+                    },
                     "parent_run_id": None,
                     "title": user_message.strip().replace("\n", " ")[:32] or log_dir.name,
                     "archived": False,
@@ -1001,10 +1007,15 @@ async def run_factor_mining_agentscope(
                     ) or ""
                 except Exception:  # noqa: BLE001
                     _evidence = ""
-                _rep_task = render_reproduce_task(current_question, spec, card=_card, evidence=_evidence)
+                # §7：把抽取侧的"本报告因子清单"接进复现题面（只读 jsonl + 渲染，不改判定）。
+                # 字段可用性过滤用本 run 真实可用列（题面不得承诺未载入的字段）。
+                _rep_task = render_reproduce_task(
+                    current_question, spec, card=_card, evidence=_evidence,
+                    available_fields=locals().get("_available_fields") or [],
+                )
                 if _rep_task:
                     block = f"{block}\n\n{_rep_task}" if block else _rep_task
-                    log_step("report_reproduce_task", f"turn={outer_turn} qid={_qid} chars={len(_rep_task)} card={(_card or {}).get('card_id') or '-'} evidence={len(_evidence)}")
+                    log_step("report_reproduce_task", f"turn={outer_turn} qid={_qid} chars={len(_rep_task)} card={(_card or {}).get('card_id') or '-'} evidence={len(_evidence)} factor_block={'yes' if '本报告因子清单' in _rep_task else 'no'}")
             if _rag_phase == "diverge":
                 try:
                     from alphaagent.factor.mining.agent.question_queue import render_diverge_task
@@ -1035,6 +1046,12 @@ async def run_factor_mining_agentscope(
                 except Exception:  # noqa: BLE001
                     pass
             try:
+                # 2026-09-30 review 修：原代码依赖发散分支里 import 的
+                # `reproduce_factor_of`；复现轮（_rag_phase == "reproduce"）不进那个分支 →
+                # NameError 被 `except Exception: pass` 吞掉 → 网关静默不更新。此处显式导入。
+                from alphaagent.factor.mining.agent.question_state import (
+                    reproduce_factor_of as _rfo_of,
+                )
                 from alphaagent.factor.mining.report_channels import set_run_gate
 
                 _gate_state = {
@@ -1044,14 +1061,15 @@ async def run_factor_mining_agentscope(
                     "mode": str(getattr(config, "research_mode", "report") or "report"),
                     "lock_rounds": reproduce_lock_rounds(spec),
                     "diverge_parent": diverge_parent_required(spec),
-                    "parent_name": reproduce_factor_of(
+                    "parent_name": _rfo_of(
                         str(getattr(config, "research_mode", "report") or "report"), _qid
                     ),
                 }
                 factor_tools.report_reproduce_gate = _gate_state
                 set_run_gate(_gate_state)   # 判定侧唯一可靠通道
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as _gate_err:  # noqa: BLE001
+                # 原为静默 pass：失败后判定侧会读到上一轮网关 → fail-open 且无任何痕迹
+                logging.warning("研报模式第二网关设置失败（判定侧可能读到旧网关）: %s", _gate_err)
         if report_rag_enabled(spec, phase=_rag_phase) and current_question:
             try:
                 from alphaagent.factor.mining.memory.ov_store import OVStore
@@ -1062,7 +1080,10 @@ async def run_factor_mining_agentscope(
                 q_text = f"{current_question.get('topic', '')} {current_question.get('hypothesis', '')}"
                 q_rag_block = _store.retrieve_report_knowledge(
                     focus_facets=getattr(config, "focus_facets", None),
-                    research_mode=getattr(config, "research_mode", "technical"),
+                    # research_mode 默认值必须与全文件其余位置一致（"report"）：原为
+                    # "technical"，config.research_mode 缺失时会查错索引，RAG 命中为空
+                    # （2026-09-30 review 修）。
+                    research_mode=getattr(config, "research_mode", "report"),
                     query_text=q_text,
                     limit=_top_k,
                     max_chars=_budget,
@@ -1077,6 +1098,36 @@ async def run_factor_mining_agentscope(
 
     def _queued_prompt(messages: list[str]) -> str:
         return "用户在当前研究会话追加了指令，请优先结合已有评估结果执行：\n" + "\n\n".join(messages)
+
+    # 研报模式：系统提示词的知识通道必须按**本轮实际阶段**装配。上面的初始 system_prompt
+    # 在阶段确定（select_question）之前生成 → 缺省按第 0 轮 = reproduce 装配；若本轮实为
+    # 发散轮，知识通道会落在 mechanism_cards 而非 report_rag。此处按状态机给到的
+    # `_rag_phase` 重建一次（2026-09-30 review 修 #7）。
+    if _rfe(spec) and _rag_phase and _rag_phase != getattr(agent, "_current_report_phase", None):
+        try:
+            _phase_for_prompt = _compute_prompt_phase(outer_turn, turn_limit, config.research_spec)
+            _phase_prompt = build_system_prompt(
+                include_operator_catalog=include_operator_catalog,
+                extra_instructions=extra_instructions,
+                label_col=ctx.label_col,
+                include_fundamentals=ctx.include_fundamentals,
+                panel_columns=session_resp.available_columns,
+                population_max=config.population_max,
+                research_spec=config.research_spec,
+                asset_type=ctx.asset_type,
+                focus_facets=getattr(config, "focus_facets", None),
+                prompt_phase=_phase_for_prompt,
+                max_tool_calls_per_round=config.max_tool_calls_per_round,
+                model_name=str(getattr(config, "model", "") or ""),
+                report_phase=_rag_phase,
+            )
+            if hasattr(agent, "_system_prompt"):
+                agent._system_prompt = _phase_prompt
+            agent._current_report_phase = _rag_phase
+            agent._current_prompt_phase = _phase_for_prompt
+            log_step("report_phase_prompt", f"turn={outer_turn} phase={_rag_phase} rebuilt=yes")
+        except Exception as _rp_err:  # noqa: BLE001
+            logging.warning("研报阶段系统提示词重建失败（知识通道可能仍按 reproduce 装配）: %s", _rp_err)
 
     while outer_turn < turn_limit:
         # ── 分阶段动态注入：按 outer_turn 比例切换 prompt_phase ──
@@ -1095,6 +1146,7 @@ async def run_factor_mining_agentscope(
                 prompt_phase=_phase,
                 max_tool_calls_per_round=config.max_tool_calls_per_round,
                 model_name=str(getattr(config, "model", "") or ""),
+                report_phase=_rag_phase,
             )
             if hasattr(agent, "_system_prompt"):
                 agent._system_prompt = _new_prompt

@@ -355,6 +355,11 @@ _SHAPE_EXTRA_ALIASES.update({
     "conditional": "conditional_subgroup",
 })
 
+# 方向中性主型：自身不表达方向，方向由 expected_sign 承载。别名表把它们默认成
+# monotonic_increasing（早期"先放行、别烧评估"的取舍），但形态对账需要方向正确，
+# 故 normalize_prediction 里按 sign 二次校正（2026-09-30 review 修）。
+_DIRECTIONLESS_MONOTONE_KEYS = frozenset({"monotonic", "monotone", "linear"})
+
 
 def _canon_shape(value: Any) -> str | None:
     if value is None:
@@ -419,6 +424,13 @@ def normalize_prediction(prediction: Any) -> dict[str, Any] | None:
     shape = _canon_shape(prediction.get("expected_shape"))
     side = _canon_side(prediction.get("expected_strong_side"))
     sign = _canon_sign(prediction.get("expected_sign"))
+    # 方向中性主型（monotonic/monotone/linear）在别名表里被硬编码成
+    # monotonic_increasing；若模型用 expected_sign=-1 表达"单调下降"，形态对账
+    # （actual.shape == expected_shape）会拿 decreasing 的实际形态去比 increasing →
+    # 正确预测被误判 contradicted/未 confirmed（2026-09-30 review 修）。
+    # 方向由 expected_sign 承载时按 sign 归一，其余情况一律不变。
+    if sign == -1 and str(prediction.get("expected_shape") or "").strip().lower() in _DIRECTIONLESS_MONOTONE_KEYS:
+        shape = "monotonic_decreasing"
     if shape is None or sign is None:
         return None
     if shape != "conditional_subgroup" and side is None:

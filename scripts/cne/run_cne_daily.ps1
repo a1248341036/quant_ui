@@ -126,16 +126,17 @@ function Execute-CnePipeline {
     # 结构化状态管理（供 GUI 跨进程/跨线程原子读取）
     $resultsList = [System.Collections.Generic.List[psobject]]::new()
     $statusObj = [ordered]@{
-        phase_name   = "环境准备与状态清理"
-        phase_index  = 1
-        phase_total  = 8
-        progress_pct = 0.0
-        current_step = "正在启动流水线..."
-        results      = $resultsList
-        is_completed = $false
-        is_success   = $false
-        message      = ""
-        updated_at   = (Get-Date -Format "HH:mm:ss")
+        phase_name     = "环境准备与状态清理"
+        phase_index    = 1
+        phase_total    = 8
+        progress_pct   = 0.0
+        current_step   = "正在初始化数据同步环境..."
+        active_dataset = ""
+        results        = $resultsList
+        is_completed   = $false
+        is_success     = $false
+        message        = ""
+        updated_at     = (Get-Date -Format "HH:mm:ss")
     }
 
     function Save-StatusState {
@@ -156,11 +157,23 @@ function Execute-CnePipeline {
     }
 
     function Notify-Step([string]$stepText) {
-        $statusObj.current_step = $stepText
+        if ([string]::IsNullOrWhiteSpace($stepText)) { return }
+        $trimmed = $stepText.Trim()
+        # 彻底过滤 JSON 符号与行首行尾单字符
+        if ($trimmed -match '^[\s\{\}\[\]\,\"''\:]+$') { return }
+        if ($trimmed -match '^\d+$') { return }
+
+        $statusObj.current_step = $trimmed
         Save-StatusState
         if ($SyncContext) {
-            $SyncContext.CurrentStep = $stepText
+            $SyncContext.CurrentStep = $trimmed
         }
+    }
+
+    function Notify-ActiveDataset([string]$dataset) {
+        if ([string]::IsNullOrWhiteSpace($dataset)) { return }
+        $statusObj.active_dataset = $dataset
+        Save-StatusState
     }
 
     function Notify-Phase([string]$phaseName, [int]$idx, [int]$total, [double]$pct) {
@@ -205,19 +218,46 @@ function Execute-CnePipeline {
             Write-Host $line
             $lines.Add($line)
 
-            # 解析实时 step 进度与结果
-            Notify-Step $line
-
+            # 解析实时 step 进度与有业务含义的状态
             if ($line -match "Step\s+(\w+)\s+success\s+in\s+([\d\.]+)s\s+\((\d+)\s+rows\)") {
-                Record-Result $matches[1] "success" ([int]$matches[3]) "$($matches[2])s" "更新成功"
+                $ds = $matches[1]
+                Record-Result $ds "success" ([int]$matches[3]) "$($matches[2])s" "更新成功"
+                $cn = if ($Global:CneDatasetNames[$ds]) { $Global:CneDatasetNames[$ds] } else { $ds }
+                Notify-Step "$cn ($ds) 增量同步完成 (+$($matches[3]) 行)"
             } elseif ($line -match "Step\s+(\w+)\s+warning\s+in\s+([\d\.]+)s\s+\((\d+)\s+rows\)") {
-                Record-Result $matches[1] "warning" ([int]$matches[3]) "$($matches[2])s" "有警告输出"
+                $ds = $matches[1]
+                Record-Result $ds "warning" ([int]$matches[3]) "$($matches[2])s" "有警告提示"
+                $cn = if ($Global:CneDatasetNames[$ds]) { $Global:CneDatasetNames[$ds] } else { $ds }
+                Notify-Step "$cn ($ds) 带有警告提示完成"
             } elseif ($line -match "Step\s+(\w+)\s+failed\s+after\s+([\d\.]+)s") {
-                Record-Result $matches[1] "failed" 0 "$($matches[2])s" "执行失败"
+                $ds = $matches[1]
+                Record-Result $ds "failed" 0 "$($matches[2])s" "执行失败"
+                $cn = if ($Global:CneDatasetNames[$ds]) { $Global:CneDatasetNames[$ds] } else { $ds }
+                Notify-Step "⚠️ $cn ($ds) 同步失败"
             } elseif ($line -match "(\w+):\s+cadence\s+skip") {
-                Record-Result $matches[1] "skip" 0 "<1s" "同周期无变动自动跳过"
+                $ds = $matches[1]
+                Record-Result $ds "skip" 0 "<1s" "同周期最新无需重扫"
+                $cn = if ($Global:CneDatasetNames[$ds]) { $Global:CneDatasetNames[$ds] } else { $ds }
+                Notify-Step "$cn ($ds) 本周期已最新，自动跳过"
             } elseif ($line -match "(\w+):\s+fell\s+back\s+to\s+(\w+)\s+\((\d+)\s+rows\)") {
-                Record-Result $matches[1] "success" ([int]$matches[3]) "--" "降级至 $($matches[2])"
+                $ds = $matches[1]
+                Record-Result $ds "success" ([int]$matches[3]) "--" "降级至 $($matches[2]) 成功"
+                $cn = if ($Global:CneDatasetNames[$ds]) { $Global:CneDatasetNames[$ds] } else { $ds }
+                Notify-Step "$cn ($ds) 东财断连，降级至 $($matches[2]) 完成"
+            } elseif ($line -match "(\w+):\s+fetching\s+(.*)") {
+                $ds = $matches[1]
+                $cn = if ($Global:CneDatasetNames[$ds]) { $Global:CneDatasetNames[$ds] } else { $ds }
+                Notify-ActiveDataset $ds
+                Notify-Step "正在从数据源拉取: $cn ($ds)..."
+            } elseif ($line -match "(\w+):\s+(\d+)\s+new\s+rows\s+merged") {
+                $ds = $matches[1]
+                $cn = if ($Global:CneDatasetNames[$ds]) { $Global:CneDatasetNames[$ds] } else { $ds }
+                Notify-Step "正在合并写入数据湖: $cn ($ds) (+$($matches[2]) 行)"
+            } elseif ($line -match "THS sweep:\s+(\d+/\d+)\s+boards") {
+                Notify-ActiveDataset "sector_bars"
+                Notify-Step "正在扫描同花顺板块行情: $($matches[1])..."
+            } elseif ($line -match "st_coverage:\s+skipping\s+receipt") {
+                # 忽略内部未就绪凭证跳过日志
             }
         }
         if ($lines.Count -gt 0) {
@@ -473,6 +513,9 @@ if ($UseGui) {
                         if ($st.phase_name -and $st.phase_name -ne $lastPhase) {
                             $app.UpdatePhase($st.phase_name, [int]$st.phase_index, [int]$st.phase_total, [double]$st.progress_pct)
                             $lastPhase = $st.phase_name
+                        }
+                        if ($st.active_dataset) {
+                            $app.SetStepRunning($st.active_dataset)
                         }
                         if ($st.current_step -and $st.current_step -ne $lastStep) {
                             $app.UpdateStep($st.current_step)

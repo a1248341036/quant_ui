@@ -1,0 +1,62 @@
+{
+  "meta": {
+    "review_type": "single_commit",
+    "commit": "25f0cdf94c1f6ec30a964899171879e072ee6ae9",
+    "commit_subject": "fix(memory): ov_store 过滤 .overview.md 隐藏文件 + 单条 abstract 截断",
+    "files_changed": ["alphaagent/factor/mining/memory/ov_store.py"],
+    "lines_changed": "+5 -0",
+    "stack": "python",
+    "review_date": "2026-09-23",
+    "reviewer": "code-overengineering-review skill",
+    "overengineering_score": 8,
+    "overengineering_label": "SANE",
+    "simplification_potential": "改动本身是反过度设计方向的防御性修复，无抽象层可删。仅 cond1/cond2 双条件可合并为单一 basename+全路径段检查更清晰，但收益微小。"
+  },
+  "findings": [
+    {
+      "id": "OE-1",
+      "title": "[冗余包装] _flatten_hits 隐藏文件过滤 cond1/cond2 双条件可合并为单一全路径段检查",
+      "description": "L103 两个条件覆盖不同场景（cond1 拦中间路径隐藏段，cond2 拦 basename 隐藏），但语义上是同一意图（'URI 任一路径段以 . 开头则排除'）。当前写法把一个意图拆成两个条件，读者需推理才能理解为何要两个。实测 cond1 对 'viking://resources/alphaagent/.hidden_dir/foo.md' 为 True（cond2 为 False，cond1 必要）；cond2 对 basename='.overview.md' 为 True（cond1 也为 True，cond2 冗余但更直白）。两条件互补但表达不统一。合并为 any(seg.startswith('.') for seg in segments) 后功能等价、表达统一。",
+      "axis": "minimalism",
+      "severity": "low",
+      "file": "alphaagent/factor/mining/memory/ov_store.py",
+      "line": 103,
+      "evidence": "L103: if \"/.\" in uri or uri.rstrip(\"/\").rsplit(\"/\", 1)[-1].startswith(\".\"): —— 实测 viking://resources/alphaagent/.hidden_dir/foo.md: cond1=True cond2=False（cond1 必要）；viking://resources/alphaagent/.overview.md: cond1=True cond2=True（cond2 冗余）。两条件互补但语义重复，可合并为按路径段判断。",
+      "minimal_patch": "替换 L102-104 为：\n```python\n# 排除隐藏文件（任一路径段以 . 开头，含 .overview.md 等目录概览）\nsegments = uri.rstrip(\"/\").split(\"/\")\nif any(seg.startswith(\".\") for seg in segments):\n    continue\n```\n删除原 L103 双条件，替换为上述 3 行。功能等价，表达统一为'任一段隐藏则排除'。"
+    },
+    {
+      "id": "COR-1",
+      "title": "[correctness] abstract 截断阈值 220 为魔法值，无配置出口；与 inject_max_chars 配置化设计不一致",
+      "description": "L82 的 220 是硬编码魔法值，与 L74 budget = max_chars or self.inject_max_chars（默认 2400，可配置）的配置化设计不一致。当 inject_max_chars 调大（如 4800）时，单条 220 上限仍生效，大预算下单条过短；当 inject_max_chars 调小（如 800）时，220 单条占预算 27%，5 条就爆。阈值应提为类常量或与 budget 联动。另：截断在 abstract 中段，'…' 拼接后可能切断关键语义（如'vwap 族饱和度 1.00，建议...勿重复'截成'vwap 族饱和度 1.00，建议…'丢失结论），但这是注入块可接受的信息损失，不升级为 high。",
+      "axis": "correctness",
+      "severity": "medium",
+      "file": "alphaagent/factor/mining/memory/ov_store.py",
+      "line": 82,
+      "evidence": "L82: if len(abstract) > 220: # 单条上限，防长文档撑爆注入预算 —— 220 硬编码；对比 L74 budget = max_chars or self.inject_max_chars（可配置）。两处预算控制口径不一致：budget 可配，per-item 上限不可配。当 inject_max_chars=800 时 220/800=27.5%，5 条即超预算；inject_max_chars=4800 时 220 过短。",
+      "minimal_patch": "方案 A（最小改动，推荐）：提为类常量并显式命名：\n```python\nclass OVStore:\n    _ABSTRACT_MAX_CHARS = 220  # 单条 abstract 截断上限，与 inject_max_chars 独立\n\n# L82 改为\nif len(abstract) > self._ABSTRACT_MAX_CHARS:\n    abstract = abstract[:self._ABSTRACT_MAX_CHARS] + \"…\"\n```\n消除魔法值，后续调优改一处。"
+    },
+    {
+      "id": "COR-2",
+      "title": "[correctness] cond1 ('/.\" in uri) 子串匹配对含点号的合法中间路径段有理论误伤风险",
+      "description": "L103 cond1 本意是拦'路径段以 . 开头'，但实际匹配'斜杠后紧跟点号'的任意子串。当前 SCOPE 下资源 URI 不带版本号中间段，误伤概率极低。但若未来出现 'viking://resources/alphaagent/v2.0/lessons.md' 这类合法路径（'v2.0' 段含 '.' 但不以 '.' 开头），'/. ' 不匹配（是 '/v' 不是 '/.'），实际安全；真正风险是依赖子串匹配而非按段判断，语义不精确。采用 OE-1 合并方案后本问题自动消除。",
+      "axis": "correctness",
+      "severity": "low",
+      "file": "alphaagent/factor/mining/memory/ov_store.py",
+      "line": 103,
+      "evidence": "L103: if \"/.\" in uri —— 子串匹配非按段判断。实测 viking://resources/alphaagent/.hidden_dir/foo.md 命中（正确）；viking://resources/alphaagent/strategy_lessons.md 不命中（正确）。当前无实际误伤案例，理论风险源于子串匹配语义不精确。",
+      "minimal_patch": "采用 OE-1 合并方案（any(seg.startswith('.') for seg in segments)）后本问题自动消除——按'段以 . 开头'判断，不依赖子串匹配，无误伤。"
+    }
+  ],
+  "review": {
+    "summary": "commit 25f0cdf 对 ov_store.py 做两处防御性过滤：_flatten_hits 排除隐藏文件（.overview.md 等目录概览）+ retrieve_lessons 单条 abstract >220 字符截断。改动方向正确（防污染、防注入预算爆掉），+5 行零删除，未引入新抽象/新接口/新配置。架构内聚性轴：改动本身无过度设计，但触及的 _flatten_hits 现有隐藏文件过滤条件 cond1/cond2 有轻微可简化空间（low）。补充轴：correctness 发现 1 个 medium（abstract 截断阈值 220 为魔法值，无配置出口）+ 1 个 low（cond1 子串匹配语义不精确）。总体评级 A，可合并。",
+    "verdict": "merge",
+    "grade": "A",
+    "severity_counts": {
+      "critical": 0,
+      "high": 0,
+      "medium": 1,
+      "low": 2,
+      "nit": 0
+    }
+  }
+}

@@ -168,6 +168,10 @@ def cs_ic_summary(
     持有期 >1（如 label_20d → 20）时逐日 IC 来自重叠收益，std 被低估导致
     ICIR 虚高。此处按持有期节奏重采样去重叠（每 hold 个交易日取一点），与
     quantile_portfolio 的采样口径一致；label_1d 时 hold=1 无任何变化。
+
+    **口径归属：本函数是研究口径（label 尺度）**——交付口径的年化/夏普/回撤由
+    engine_gate 按调仓频率独立真实回测得出，两套数字不可互相换算。label 与
+    freq 刻意解耦，详见 core/research_modes.py 顶部"label 口径 vs 调仓频率"。
     """
     hold = max(1, int(holding_days))
     if hold > 1 and len(daily_ic) > hold:

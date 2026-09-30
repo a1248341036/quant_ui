@@ -496,6 +496,11 @@ class FactorSubmitService:
         # 组合换手预检：quantile_portfolio 提前到门槛前算一次（全窗口径——
         # 换手是因子结构性属性，与窗口无关），供 stage_one 换手硬门与最终报告复用，
         # 避免高换手因子走完全流程才在 engine_gate 被拒。
+        # **口径说明（两把尺子，刻意解耦）**：下面这段十分组是**研究口径**——收益序列取
+        # panel[label_col]、cost_bps=0、holding_days 对齐 label 名义持有期；它只服务
+        # stage_one 与三段对比的筛查。最终交付口径是 engine_gate（按 freq 调仓、含成本、
+        # 不读 label），两套数字不可互相换算。主档 technical 即 label_1d 打分 + weekly 交付，
+        # 完整说明见 core/research_modes.py 顶部"label 口径 vs 调仓频率"。
         from alphaagent.factor.metrics import quantile_portfolio_metrics
         # holding_days 对齐 label 名义持有期（label_20d → 20）：避免 20 日收益被
         # 逐日重叠计入 20 次，组合年化/回撤/夏普全部失真（曾致回撤虚标 99%）。
