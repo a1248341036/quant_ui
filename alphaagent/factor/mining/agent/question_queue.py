@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
+import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any, Iterable
@@ -337,13 +338,22 @@ def _clean_question_text(text: str, limit: int = 700) -> str:
 
 
 _CARDS_CACHE: list[dict] | None = None
+# 空结果退避（秒）：见 load_mechanism_cards——避免文件缺失时每轮都起 git 子进程扫盘
+_CARDS_MISS_AT: float = 0.0
+_CARDS_MISS_TTL: float = 300.0
 
 
 def load_mechanism_cards() -> list[dict]:
     """加载机制卡（含 MinerU 语料新抽的卡）；失败返回空表。"""
-    global _CARDS_CACHE
-    if _CARDS_CACHE is not None:
+    global _CARDS_CACHE, _CARDS_MISS_AT
+    # 只在缓存**非空**时短路：空表不固化，否则"首次调用时文件不存在"会把 [] 缓存住，
+    # 本进程后续所有调用永远拿不到机制卡（2026-09-30 review 修）。
+    if _CARDS_CACHE:
         return _CARDS_CACHE
+    # 空结果退避：find_card_for_question 每个 outer turn 都会调本函数，若文件确实缺失/
+    # 不可解析，无退避就会**每轮起一个 git 子进程**扫盘（第二轮 review 修）。
+    if _CARDS_MISS_AT and time.time() - _CARDS_MISS_AT < _CARDS_MISS_TTL:
+        return []
     import json
     import subprocess
     from pathlib import Path as _P
@@ -372,7 +382,12 @@ def load_mechanism_cards() -> list[dict]:
                 continue
         if cards:
             break
-    _CARDS_CACHE = cards
+    # 只缓存非空结果（见上方短路注释）：空表进退避窗口，窗口过后再重试。
+    if cards:
+        _CARDS_CACHE = cards
+        _CARDS_MISS_AT = 0.0
+    else:
+        _CARDS_MISS_AT = time.time()
     return cards
 
 
@@ -409,7 +424,13 @@ def find_card_for_question(question: dict, cards: list[dict] | None = None) -> d
 
     title = str((best.get("source") or {}).get("title") or "")
     segs = [t for t in _re.findall(r"[\u4e00-\u9fa5]{4,}", title)]
-    if any(seg in qtext for seg in segs):
+    # 硬门槛也要求有基本分（best_score > 0）：否则任何一篇标题里含"多因子模型"这类
+    # 通用词的卡，只要该词出现在课题文本里就会被配上，绕过下面的分数阈值
+    # （2026-09-30 review 修；与本块"宁可不给卡，也不给误导性机制"的意图对齐）。
+    # 注：标题若没有 ≥4 字中文片段（如纯英文标题），segs 为空 → 本条件恒 False，
+    # 该卡只能走下面的分数阈值（`best_score >= 2.0 且标题相似度 >= 0.35`）——这是
+    # 有意为之的更严口径（第二轮 review 澄清）。
+    if best_score > 0 and any(seg in qtext for seg in segs):
         return best
     if best_score >= 2.0 and _title_similar(best, qtext) >= 0.35:
         return best

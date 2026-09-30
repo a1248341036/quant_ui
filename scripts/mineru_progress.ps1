@@ -1,5 +1,8 @@
+#Requires -Version 7.0
 # MinerU 全量解析进度速查（用途：一眼看到进度，不必翻日志）
 # 用法:  pwsh -File D:\Quant\quant_ui\scripts\mineru_progress.ps1
+# 注：本脚本用了 PS7 的 `??` 空合并运算符，Windows 自带的 PS 5.1 会直接解析失败，
+# 故用 #Requires 提前给出明确报错（2026-09-30 review 修）。
 param(
     [string]$Root = "D:\Quant\quant_ui",
     [int]$PerDocSeconds = 11   # 单篇有效耗时（2 并发实测约 10.8s），用于估时
@@ -24,14 +27,14 @@ try {
 
 # 2) 日志最后一行（含 [done/total] ok/skip/err 与脚本自估 ETA）
 if (Test-Path $log) {
-    $last = Get-Content $log -Encoding UTF8 | Select-String -Pattern "^\[\d+/" | Select-Object -Last 1
+    $last = Get-Content $log -Encoding UTF8 -Tail 500 | Select-String -Pattern "^\[\d+/" | Select-Object -Last 1
     if ($last) { Write-Host "日志: $($last.Line)" } else { Write-Host "日志: (尚无进度行)" }
 } else { Write-Host "日志: 未找到 $log" -ForegroundColor Yellow }
 
 # 3) 按年份的完成矩阵
 $root = Join-Path $Root "data\research_reports"
 $tot = @{}; $done = @{}
-foreach ($p in Get-ChildItem $root -Recurse -Filter *.pdf | Where-Object { $_.FullName -notmatch "\\parsed" }) {
+foreach ($p in Get-ChildItem $root -Recurse -Filter *.pdf | Where-Object { $_.FullName -notmatch "\\parsed_mineru" }) {
     if ($p.Name -match "(20\d{2})") { $y = [int]$Matches[1]; $tot[$y] = 1 + ($tot[$y] ?? 0) }
 }
 $mdFiles = Get-ChildItem $out -Recurse -Filter *.md -ErrorAction SilentlyContinue | Where-Object { $_.Length -gt 1000 }

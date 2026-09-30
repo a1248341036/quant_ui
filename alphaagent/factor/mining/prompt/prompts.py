@@ -43,6 +43,7 @@ def build_system_prompt(
     prompt_phase: str = "full",
     max_tool_calls_per_round: int = 8,
     model_name: str = "",
+    report_phase: str | None = None,
 ) -> str:
     """按模块注册表装配系统提示词；返回最终文本。
 
@@ -72,6 +73,7 @@ def build_system_prompt(
         prompt_phase=prompt_phase,
         max_tool_calls_per_round=max_tool_calls_per_round,
         model_name=model_name,
+        report_phase=report_phase,
     )
     return text
 
@@ -90,6 +92,7 @@ def build_system_prompt_with_report(
     prompt_phase: str = "full",
     max_tool_calls_per_round: int = 8,
     model_name: str = "",
+    report_phase: str | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """装配系统提示词并返回 ``(text, module_report)``（无模块级可变全局）。"""
     cols = frozenset(panel_columns) if panel_columns is not None else None
@@ -97,14 +100,26 @@ def build_system_prompt_with_report(
     pp = (research_spec or {}).get("prompt_policy") or {}
     family_scope_raw = pp.get("field_family_scope")
     family_scope = frozenset(family_scope_raw) if family_scope_raw else None
-    try:  # 研报模式：系统提示词按「复现阶段」装配（非研报模式返回 None，行为不变）
-        from alphaagent.factor.mining.report_channels import resolve_report_phase
-
-        report_phase = resolve_report_phase(research_spec, turn=0)
-    except Exception:  # noqa: BLE001
-        report_phase = None
+    # 研报阶段 → 知识通道（机制卡 / 研报 RAG）。2026-09-30 review 修：
+    # (1) 原实现写死 turn=0 → 恒为 "reproduce"，发散轮也按复现阶段装配知识通道
+    #     （生产配置 knowledge_mode_by_phase = {reproduce: mechanism_cards, diverge: report_rag}，
+    #     即发散轮错误地只给机制卡）。现由调用方按状态机给到的阶段传入 report_phase；
+    # (2) 导入失败与**调用失败**分开兜底：只把导入裹进 try 会让 spec 畸形时的
+    #     TypeError/ValueError 直接崩掉提示词装配（第二轮 review 修）。
+    if report_phase is not None:
+        _phase = report_phase
+    else:
+        try:  # 非研报模式返回 None，行为不变
+            from alphaagent.factor.mining.report_channels import resolve_report_phase
+        except ImportError:
+            _phase = None
+        else:
+            try:
+                _phase = resolve_report_phase(research_spec, turn=0)
+            except Exception:  # noqa: BLE001
+                _phase = None
     ctx = PromptContext(
-        report_phase=report_phase,
+        report_phase=_phase,
         label_col=label_col,
         include_operator_catalog=include_operator_catalog,
         include_fundamentals=include_fundamentals,

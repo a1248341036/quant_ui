@@ -15,6 +15,14 @@ managed parse-server 已开（`parse_server.local.mode=managed` + `managed_tier=
   ``<!-- image: page:N block:M -->`` 注释，保留页码/块号溯源但不再产生死链。
 - 并发：`--workers N`（默认 2）。显存 8GB 下 basic 档开 2~3 路较稳。
 
+2026-09-30 review 修：
+- 超时改为**杀进程树**（MinerU 会拉起 parse-server 子进程，只杀父进程会留下占显存的孤儿）；
+- **非零退出码不再采信产物**（错误页/半成品只要 >1000 字节就会被永久 skip，属数据污染）；
+- md 后处理改**原子写**（write_text 中断会留下截断文件且原内容已丢）；
+- MinerU 路径支持 `--mineru` / `MINERU_EXE`（原为硬编码 Windows 路径）；
+- 扫描 PDF 时按输出根目录排除（原判断 `"parsed" not in p.parts` 与 `parsed_mineru` 永不相等）；
+- 元数据每行带 `run` 批次号，便于区分多次运行。
+
 用法::
 
     # 全量（后台推荐）
@@ -25,6 +33,9 @@ managed parse-server 已开（`parse_server.local.mode=managed` + `managed_tier=
 
     # 只跑某一类
     python scripts/batch_mineru_parse.py --only "因子周报"
+
+    # 指定 MinerU CLI
+    python scripts/batch_mineru_parse.py --mineru "D:\\MinerU\\.venv\\Scripts\\mineru.exe"
 """
 from __future__ import annotations
 
@@ -32,17 +43,21 @@ import argparse
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-MINERU = Path(r"D:\Quant\MinerU\.venv\Scripts\mineru.exe")
+MINERU_DEFAULT = Path(r"D:\Quant\MinerU\.venv\Scripts\mineru.exe")
+MINERU = Path(os.environ.get("MINERU_EXE") or MINERU_DEFAULT)
 RE_DOC_IMG = re.compile(r"!\[([^\]]*)\]\(doc:[^)]*?/page:(\d+)/block:(\d+)\)")
 # Windows：让子进程不再各弹一个控制台黑框（本机控制台托管给 Windows Terminal，
 # 父进程的 -WindowStyle Hidden 对子进程无效，必须显式 CREATE_NO_WINDOW）
 CREATE_NO_WINDOW = 0x08000000
+# md 有效判定阈值（字节）：小于此值视为空/半成品，会重新解析
+MIN_MD_BYTES = 1000
 
 
 def default_root() -> Path:
@@ -67,6 +82,67 @@ def year_of(p: Path) -> int:
     return int(m.group(1)) if m else 0
 
 
+def _md_state(p: Path) -> tuple[bool, int]:
+    """(存在, 字节数)；不存在或 stat 失败返回 (False, 0)。"""
+    try:
+        return True, p.stat().st_size
+    except OSError:
+        return False, 0
+
+
+def _discard_out(out_md: Path) -> None:
+    """丢弃不采信的残留 md 产物（非零退出/超时的错误页或半成品）。
+
+    review 修：MinerU 失败时也可能留下 >MIN_MD_BYTES 的错误页/半成品，若不删，
+    下一轮断点续跑仅凭“存在+字节数”就把污染产物判成 skipped，永久污染知识库。
+    本连接图走本机 MinerU doclib（图片引用在 postprocess 里转成 HTML 注释），
+    本地不落图片文件，故只需清理 out_md 这一个 .md。
+    """
+    try:
+        out_md.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _kill_tree(proc: subprocess.Popen) -> None:
+    """杀掉整棵进程树（Windows 用 taskkill /T；POSIX 用 killpg）。
+
+    POSIX 下只 `proc.kill()` 会留下 MinerU 拉起的 parse-server 孤儿进程继续占显存
+    （2026-09-30 review 修）→ 子进程以独立进程组启动，这里整组 SIGKILL。
+    """
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                           capture_output=True, creationflags=CREATE_NO_WINDOW)
+        else:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except Exception:  # noqa: BLE001
+        try:
+            proc.kill()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """先写临时文件再 replace：中断时不会留下截断的正式产物。
+
+    replace 在跨文件系统或被占用（Windows 文件锁）时会 OSError——此时退化为直接写：
+    宁可这一次非原子，也不要把一次**成功的解析**标成 error 并触发整轮重试
+    （2026-09-30 review 修）。
+    """
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(path)
+    except OSError as orig_exc:
+        print(f"[warn] _atomic_write_text: rename 失败（{orig_exc}），退化为直接写", file=sys.stderr, flush=True)
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        path.write_text(text, encoding="utf-8")
+
+
 def postprocess(md_path: Path) -> int:
     """把 doclib 图片定位符转成 HTML 注释；返回替换数。"""
     try:
@@ -75,17 +151,24 @@ def postprocess(md_path: Path) -> int:
         return 0
     new, n = RE_DOC_IMG.subn(lambda m: f"<!-- image: page:{m.group(2)} block:{m.group(3)} {m.group(1)} -->", txt)
     if n:
-        md_path.write_text(new, encoding="utf-8")
+        try:
+            _atomic_write_text(md_path, new)
+        except OSError as exc:
+            # 后处理失败不得让整篇解析判 error（parse_one 里会连带中断 as_completed 循环）
+            print(f"[warn] 图片引用后处理失败 {md_path.name}: {exc}", file=sys.stderr, flush=True)
+            return 0
     return n
 
 
-def parse_one(args: tuple[int, str], root: Path, out_root: Path, timeout: int, retries: int) -> dict:
+def parse_one(args: tuple[int, str], root: Path, out_root: Path, mineru: Path,
+              timeout: int, retries: int, run_id: str) -> dict:
     idx, pdf_str = args
     pdf = Path(pdf_str)
     rel = pdf.relative_to(root)
     out_md = out_root / rel.with_suffix(".md")
-    rec = {"index": idx, "rel_path": str(rel), "out": str(out_md)}
-    if out_md.exists() and out_md.stat().st_size > 1000:
+    rec = {"run": run_id, "index": idx, "rel_path": str(rel), "out": str(out_md)}
+    _exists, _size = _md_state(out_md)
+    if _exists and _size > MIN_MD_BYTES:
         rec["status"] = "skipped"
         return rec
     out_md.parent.mkdir(parents=True, exist_ok=True)
@@ -95,20 +178,43 @@ def parse_one(args: tuple[int, str], root: Path, out_root: Path, timeout: int, r
     last_err = ""
     for attempt in range(retries + 1):
         t0 = time.time()
-        cmd = [str(MINERU), "parse", str(pdf), "--pages", "all", "--tier", "basic",
+        cmd = [str(mineru), "parse", str(pdf), "--pages", "all", "--tier", "basic",
                "-o", str(out_md), "--wait", str(timeout)]
         try:
-            p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
-                               errors="replace", timeout=timeout + 120, env=env,
-                               creationflags=CREATE_NO_WINDOW if os.name == "nt" else 0)
-            if out_md.exists() and out_md.stat().st_size > 1000:
-                rec.update(status="ok", bytes=out_md.stat().st_size,
-                           image_refs=postprocess(out_md),
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                encoding="utf-8", errors="replace", env=env,
+                start_new_session=(os.name != "nt"),   # POSIX 独立进程组，便于整组 kill
+                creationflags=CREATE_NO_WINDOW if os.name == "nt" else 0,
+            )
+            try:
+                out, err = proc.communicate(timeout=timeout + 120)
+            except subprocess.TimeoutExpired:
+                # 必须杀**进程树**：MinerU 会拉起 parse-server 子进程，只杀父进程会在
+                # GPU 上留下占显存的孤儿，后续重试/其它 worker 直接争不到显存。
+                _kill_tree(proc)
+                try:
+                    out, err = proc.communicate(timeout=30)
+                except Exception:  # noqa: BLE001
+                    out, err = "", ""
+                last_err = f"timeout>{timeout}s（已杀进程树）"
+                _discard_out(out_md)
+                time.sleep(3 * (attempt + 1))
+                continue
+            exists, size = _md_state(out_md)
+            if proc.returncode != 0:
+                # 非零退出码不采信产物：MinerU 失败时也可能留下 >1000 字节的错误页/
+                # 半成品，若判 ok 会被后续断点续跑永久 skip（污染知识库）。
+                last_err = (f"returncode={proc.returncode} "
+                            + (out or "")[-200:] + (err or "")[-300:])
+                _discard_out(out_md)
+                time.sleep(3 * (attempt + 1))
+                continue
+            if exists and size > MIN_MD_BYTES:
+                rec.update(status="ok", bytes=size, image_refs=postprocess(out_md),
                            time_s=round(time.time() - t0, 1), attempt=attempt + 1)
                 return rec
-            last_err = (p.stdout or "")[-300:] + (p.stderr or "")[-300:]
-        except subprocess.TimeoutExpired:
-            last_err = f"timeout>{timeout}s"
+            last_err = f"no_valid_output size={size} " + (out or "")[-200:] + (err or "")[-300:]
         except Exception as e:  # noqa: BLE001
             last_err = f"{type(e).__name__}: {str(e)[:200]}"
         time.sleep(3 * (attempt + 1))
@@ -120,6 +226,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="MinerU 全量解析驱动（GPU basic 档，断点续跑）")
     ap.add_argument("--root", default=None, help="PDF 根目录（默认 data/research_reports）")
     ap.add_argument("--out", default=None, help="输出根目录（默认 <root>/parsed_mineru）")
+    ap.add_argument("--mineru", default=None,
+                    help=f"MinerU CLI 路径（默认 $MINERU_EXE 或 {MINERU_DEFAULT}）")
     ap.add_argument("--workers", type=int, default=2, help="并发篇数（8GB 显存建议 2~3）")
     ap.add_argument("--limit", type=int, default=0, help="只处理前 N 篇")
     ap.add_argument("--only", default="", help="只处理路径含该子串的报告")
@@ -134,11 +242,14 @@ def main() -> int:
     root = Path(args.root).resolve() if args.root else default_root()
     out_root = Path(args.out).resolve() if args.out else root / "parsed_mineru"
     out_root.mkdir(parents=True, exist_ok=True)
-    if not MINERU.exists():
-        print(f"找不到 MinerU CLI: {MINERU}", file=sys.stderr)
+    mineru = Path(args.mineru).resolve() if args.mineru else MINERU
+    if not mineru.exists():
+        print(f"找不到 MinerU CLI: {mineru}（可用 --mineru 或 MINERU_EXE 指定）", file=sys.stderr)
         return 2
 
-    pdfs = [p for p in root.rglob("*.pdf") if "parsed" not in p.parts]
+    # 排除输出目录内的 PDF：原写法 `"parsed" not in p.parts` 与实际目录名
+    # `parsed_mineru` 永不相等（等于没过滤）。
+    pdfs = [p for p in root.rglob("*.pdf") if out_root not in p.parents]
     if args.only:
         pdfs = [p for p in pdfs if args.only in str(p)]
     if args.min_year:
@@ -152,7 +263,8 @@ def main() -> int:
     if args.limit:
         pdfs = pdfs[: args.limit]
     total = len(pdfs)
-    print(f"PDF: {total}  workers={args.workers}  out={out_root}  mineru={MINERU}", flush=True)
+    run_id = time.strftime("%Y%m%d_%H%M%S")
+    print(f"PDF: {total}  workers={args.workers}  out={out_root}  mineru={mineru}  run={run_id}", flush=True)
     if not total:
         return 0
 
@@ -161,7 +273,8 @@ def main() -> int:
     t_start = time.time()
     with meta_path.open("a", encoding="utf-8") as mf, \
             ThreadPoolExecutor(max_workers=args.workers) as ex:
-        futs = {ex.submit(parse_one, (i, str(p)), root, out_root, args.timeout, args.retries): i
+        futs = {ex.submit(parse_one, (i, str(p)), root, out_root, mineru,
+                          args.timeout, args.retries, run_id): i
                 for i, p in enumerate(pdfs)}
         for fut in as_completed(futs):
             r = fut.result()

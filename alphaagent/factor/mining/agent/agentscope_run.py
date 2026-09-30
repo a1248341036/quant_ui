@@ -738,6 +738,11 @@ async def run_factor_mining_agentscope(
                 messages.append(content.strip())
         return messages
 
+    # 研报阶段跨作用域传递：`_rag_phase` 是嵌套函数 _dynamic_memory_context() 的局部量，
+    # 外层（while 循环）读不到；用这个 dict 把它带出来（2026-09-30 review 修：原先在外层
+    # 直接引用 `_rag_phase` 会 NameError，report 模式 run 第一轮即崩）。
+    _report_phase_box: dict[str, Any] = {}
+
     def _dynamic_memory_context() -> str:
         """Retrieve compact evidence at every outer turn, not only at startup."""
         if memory_store is None:
@@ -981,6 +986,7 @@ async def run_factor_mining_agentscope(
         )
 
         _rag_phase = locals().get("_report_phase_from_state") or resolve_report_phase(spec, outer_turn)
+        _report_phase_box["phase"] = _rag_phase   # 供外层按阶段装配系统提示词
         # ── 研报模式 Phase 1：复现阶段注入「复现题面」并把硬门禁状态挂到 tools ──
         if report_flow_enabled(spec) and current_question:
             _qid = str(current_question.get("question_id") or "")
@@ -1046,6 +1052,12 @@ async def run_factor_mining_agentscope(
                 except Exception:  # noqa: BLE001
                     pass
             try:
+                # 2026-09-30 review 修：原代码依赖发散分支里 import 的
+                # `reproduce_factor_of`；复现轮（_rag_phase == "reproduce"）不进那个分支 →
+                # NameError 被 `except Exception: pass` 吞掉 → 网关静默不更新。此处显式导入。
+                from alphaagent.factor.mining.agent.question_state import (
+                    reproduce_factor_of as _rfo_of,
+                )
                 from alphaagent.factor.mining.report_channels import set_run_gate
 
                 _gate_state = {
@@ -1055,14 +1067,15 @@ async def run_factor_mining_agentscope(
                     "mode": str(getattr(config, "research_mode", "report") or "report"),
                     "lock_rounds": reproduce_lock_rounds(spec),
                     "diverge_parent": diverge_parent_required(spec),
-                    "parent_name": reproduce_factor_of(
+                    "parent_name": _rfo_of(
                         str(getattr(config, "research_mode", "report") or "report"), _qid
                     ),
                 }
                 factor_tools.report_reproduce_gate = _gate_state
                 set_run_gate(_gate_state)   # 判定侧唯一可靠通道
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as _gate_err:  # noqa: BLE001
+                # 原为静默 pass：失败后判定侧会读到上一轮网关 → fail-open 且无任何痕迹
+                logging.warning("研报模式第二网关设置失败（判定侧可能读到旧网关）: %s", _gate_err)
         if report_rag_enabled(spec, phase=_rag_phase) and current_question:
             try:
                 from alphaagent.factor.mining.memory.ov_store import OVStore
@@ -1073,7 +1086,10 @@ async def run_factor_mining_agentscope(
                 q_text = f"{current_question.get('topic', '')} {current_question.get('hypothesis', '')}"
                 q_rag_block = _store.retrieve_report_knowledge(
                     focus_facets=getattr(config, "focus_facets", None),
-                    research_mode=getattr(config, "research_mode", "technical"),
+                    # research_mode 默认值必须与全文件其余位置一致（"report"）：原为
+                    # "technical"，config.research_mode 缺失时会查错索引，RAG 命中为空
+                    # （2026-09-30 review 修）。
+                    research_mode=getattr(config, "research_mode", "report"),
                     query_text=q_text,
                     limit=_top_k,
                     max_chars=_budget,
@@ -1106,6 +1122,7 @@ async def run_factor_mining_agentscope(
                 prompt_phase=_phase,
                 max_tool_calls_per_round=config.max_tool_calls_per_round,
                 model_name=str(getattr(config, "model", "") or ""),
+                report_phase=_report_phase_box.get("phase"),
             )
             if hasattr(agent, "_system_prompt"):
                 agent._system_prompt = _new_prompt
@@ -1283,6 +1300,36 @@ async def run_factor_mining_agentscope(
             _emit("user_message", {"turn": outer_turn, "content": pending})
 
         turn_memory = _dynamic_memory_context()
+        # 研报模式：系统提示词的知识通道按**本轮实际阶段**装配。阶段由上面的状态机在
+        # _dynamic_memory_context() 内算出（经 _report_phase_box 带出），与上一次装配
+        # 不同则重建一次——否则发散轮会按复现阶段装配知识通道（mechanism_cards 而非
+        # report_rag）（2026-09-30 review 修 #7；注意必须放在本函数调用**之后**）。
+        _turn_phase = _report_phase_box.get("phase")
+        if _turn_phase and _turn_phase != getattr(agent, "_current_report_phase", None):
+            try:
+                _phase_prompt = build_system_prompt(
+                    include_operator_catalog=include_operator_catalog,
+                    extra_instructions=extra_instructions,
+                    label_col=ctx.label_col,
+                    include_fundamentals=ctx.include_fundamentals,
+                    panel_columns=session_resp.available_columns,
+                    population_max=config.population_max,
+                    research_spec=config.research_spec,
+                    asset_type=ctx.asset_type,
+                    focus_facets=getattr(config, "focus_facets", None),
+                    prompt_phase=getattr(agent, "_current_prompt_phase", _phase),
+                    max_tool_calls_per_round=config.max_tool_calls_per_round,
+                    model_name=str(getattr(config, "model", "") or ""),
+                    report_phase=_turn_phase,
+                )
+                if hasattr(agent, "_system_prompt"):
+                    agent._system_prompt = _phase_prompt
+                    # 只有真的写进 agent 才推进跟踪标记，否则下一轮会被判为"已装配"而跳过
+                    # 重建（第二轮 review 修：原先无条件赋值）。
+                    agent._current_report_phase = _turn_phase
+                    log_step("report_phase_prompt", f"turn={outer_turn} phase={_turn_phase} rebuilt=yes")
+            except Exception as _rp_err:  # noqa: BLE001
+                logging.warning("研报阶段系统提示词重建失败（知识通道可能仍按 reproduce 装配）: %s", _rp_err)
         agent_prompt = pending
         if turn_memory:
             agent_prompt = f"{turn_memory}\n\n# 当前研究任务 / 最新反馈\n{pending}"

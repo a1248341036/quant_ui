@@ -464,15 +464,6 @@ class _DispatchMixin:
             result["ablation_check"] = {"verdict": "skipped", "error": f"{type(exc).__name__}: {str(exc)[:120]}"}
 
     def _auto_val_verify(self, result: dict[str, Any], expr: str, factor_name: str) -> None:
-        # 研报模式复现判定：**先于所有 early-return**（2026-09-30 修：原先放在
-        # force_val_on_promising / 指标解析之后，且指标键取 metrics.cross_sectional_core——
-        # 实测结果里该键不存在（指标在 summary），导致判定几乎从不触发）。
-        try:
-            self._report_reproduce_judge(result, factor_name)
-        except Exception as _e:  # noqa: BLE001
-            logging.info("report_reproduce_judge_exception %s", _e)
-
-
         """训练海选过线（promising 线）后**系统自动**跑一次样本外验证。
 
         2026-09-25（feat/promising-to-val-gate）：promising 语义 = "训练样本海选
@@ -485,6 +476,16 @@ class _DispatchMixin:
         阈值与 ``memory._classify`` 同源（evaluation_policy），val 门槛与
         ``DeliveryCriteria.candidate`` 同源——避免口径漂移。
         """
+        # 研报模式复现判定：**先于所有 early-return**（2026-09-30 修：原先放在
+        # force_val_on_promising / 指标解析之后，且指标键取 metrics.cross_sectional_core——
+        # 实测结果里该键不存在（指标在 summary），导致判定几乎从不触发）。
+        # 2026-09-30 review 修：本块原先插在 docstring **之前**，使 """...""" 沦为
+        # 死字符串语句（__doc__ 为空）；现 docstring 归位到 def 之后。
+        try:
+            self._report_reproduce_judge(result, factor_name)
+        except Exception as _e:  # noqa: BLE001
+            logging.info("report_reproduce_judge_exception %s", _e)
+
         try:
             if not self.cognition_policy.get("force_val_on_promising", True):
                 return
@@ -667,12 +668,6 @@ class _DispatchMixin:
         return out
 
     def dispatch(self, name: str, arguments: Any) -> dict[str, Any]:
-        # 研报模式网关：优先取调用参数携带的一份（跨边界最可靠）
-        try:
-            if isinstance(arguments, dict) and arguments.get("_report_gate"):
-                self._report_gate_arg = dict(arguments["_report_gate"])
-        except Exception:  # noqa: BLE001
-            pass
         if isinstance(arguments, str):
             try:
                 arguments = json.loads(arguments) if arguments.strip() else {}
@@ -681,6 +676,18 @@ class _DispatchMixin:
 
         if not isinstance(arguments, dict):
             return {"ok": False, "error": "tool_arguments_must_be_object", "error_type": "ToolArgumentsError"}
+
+        # 研报模式网关：取调用参数携带的一份（跨边界最可靠）。2026-09-30 review 修：
+        # (1) 原提取块在 JSON 解析**之前** → arguments 是 JSON 字符串时永远取不到网关；
+        # (2) 每次调用无携带网关时**显式重置**为 None → 否则上一次 dispatch 留下的旧网关
+        #     会压掉本轮新网关（判定会拿着旧题的 qid/phase 跑）。
+        try:
+            _incoming_gate = arguments.get("_report_gate")
+            self._report_gate_arg = (
+                dict(_incoming_gate) if isinstance(_incoming_gate, dict) and _incoming_gate else None
+            )
+        except Exception:  # noqa: BLE001
+            self._report_gate_arg = None
 
         # 数据面聚焦硬锁定：勾选聚焦面后，越界/未触面表达式在评估与提交前一律拦截
         if name in _FACET_LOCK_TOOLS and isinstance(arguments.get("multi_line_expr"), str):
@@ -1242,8 +1249,13 @@ class _DispatchMixin:
         """
         from alphaagent.factor.mining.report_channels import get_run_gate
 
-        gate = (getattr(self, "_report_gate_arg", None) or get_run_gate()
-                or getattr(self, "report_reproduce_gate", None) or {})
+        # 显式 None 哨兵区分「本次调用未携带网关」与「携带了空网关」：只有前者回落到
+        # 进程内全局网关，避免 `or` 把空字典当未设置、或旧实例属性压掉本轮新网关
+        # （2026-09-30 review 修）。
+        _gate_arg = getattr(self, "_report_gate_arg", None)
+        gate = _gate_arg if _gate_arg is not None else (
+            get_run_gate() or getattr(self, "report_reproduce_gate", None) or {}
+        )
         phase = str(gate.get("phase") or "")
         qid = str(gate.get("qid") or "")
         if phase != "reproduce" or not qid:
@@ -1313,9 +1325,29 @@ class _DispatchMixin:
             _prof["actual_shape"] = str(_pc["actual"]["shape"])
         if (_pc.get("expected") or {}).get("expected_shape"):
             _prof["expected_shape"] = str(_pc["expected"]["expected_shape"])
+        try:
+            _lock_rounds = max(0, int(gate.get("lock_rounds") or 3))
+        except (TypeError, ValueError) as _lr_err:
+            # 不再静默吞掉：非法值要能在日志里与"正常默认"区分开（第二轮 review 修）
+            logging.warning("lock_rounds 非法（%r），回退默认 3: %s", gate.get("lock_rounds"), _lr_err)
+            _lock_rounds = 3
         mark_reproduce_ok(
-            str(gate.get("mode") or "report"), qid, int(gate.get("lock_rounds") or 3),
+            str(gate.get("mode") or "report"), qid, _lock_rounds,
             factor=factor_name, detail=detail, profile=_prof,
         )
-        gate["phase"] = "diverge"
+        # 判定通过后把本轮阶段推进到 diverge。**不得原地改 gate**：它很可能就是进程内
+        # 全局网关对象，原地改会把 phase 永久留成 diverge，后续新题的复现判定被静默跳过
+        # （2026-09-30 review 修：改经 set_run_gate 写回新字典）。
+        _next_gate = {**gate, "phase": "diverge"}
+        try:
+            from alphaagent.factor.mining.report_channels import set_run_gate
+
+            set_run_gate(_next_gate)
+            # 全局网关已是权威通道：清掉实例缓存，避免「下一次 dispatch 之前」仍有旧
+            # phase=diverge 压住新一轮判定（2026-09-30 review 修）。
+            self._report_gate_arg = None
+        except Exception as _se:  # noqa: BLE001
+            # 不做"写实例属性兜底"：dispatch() 每次调用都会重置该属性，兜底值在下次
+            # dispatch 之前就被覆盖，等于无效保护（第二轮 review 指出）→ 只留痕。
+            logging.warning("set_run_gate(diverge) 失败（不影响本次判定结果）: %s", _se)
         log_step("report_reproduce_judge", f"qid={qid} factor={factor_name} PASS [{detail}] -> reproduce_ok")
