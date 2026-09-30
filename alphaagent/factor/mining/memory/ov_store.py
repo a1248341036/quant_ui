@@ -149,6 +149,7 @@ class OVStore:
         *,
         limit: int = 4,
         max_chars: int | None = None,
+        snippet_chars: int = 700,
     ) -> str:
         """检索研报原文文本段落（R3 方案，支持 R4 课题动态对齐）。
 
@@ -199,8 +200,8 @@ class OVStore:
             snippet = h.get("snippet") or h.get("abstract") or ""
             if not snippet:
                 continue
-            if len(snippet) > 280:
-                snippet = snippet[:280].rsplit("\n", 1)[0] + "…"
+            if len(snippet) > snippet_chars:
+                snippet = snippet[:snippet_chars].rsplit("\n", 1)[0] + "…"
             block = f"- **《{title}》**：\n  > {snippet.strip()}"
             if used + len(block) > budget:
                 break
@@ -397,16 +398,27 @@ _PARA_NOISE_SRC = (
     r"评级标准|买入.*增持.*中性.*减持"
 )
 
+# 目录/目次行：`- 图 1: xxx .... 5 - 表 2: yyy ...`。对公式与机制零价值，
+# 但含"分组/多空/策略"+数字，原打分下会压过正文段落胜出（2026-10-01 实测 RQ_030 注入的
+# 三条全是图表目次）→ 直接跳过，并把公式/机制段落提权。正则见 _best_paragraph（模块内
+# `re` 是函数级导入，保持既有风格，不在模块层编译）。
 
-def _best_paragraph(content: str, keywords: list[str], max_chars: int = 300) -> str:
+
+def _best_paragraph(content: str, keywords: list[str], max_chars: int = 700) -> str:
     """在整篇 md 里挑与查询关键词最相关的段落（替代"取文件头 3 行"）。
 
     MinerU 重抽版（``parsed_mineru``）带页锚点/表格/公式，头部常是标题与目录，
     直接取头会注入无信息量的样本；这里按段落打分：关键词命中 + 含数字/算符加分，
-    合规噪声与目录行扣分，取最高分段并截断。
+    合规噪声、目录目次行剔除，含公式/构建方法的段落提权，取最高分段并截断。
     """
     import re
 
+    toc_line = re.compile(r"\.{4,}|(?:图|表|图表)\s*\d+\s*[:：][^\n]{0,80}(?:图|表|图表)\s*\d+\s*[:：]")
+    toc_label = re.compile(r"(?:图|表|图表)\s*\d+")
+    formula_hint = re.compile(
+        r"公式|因子构建|构建方法|构建方式|计算方法|计算方式|因子定义|指标定义|"
+        r"\\frac|_\{|\^\{|算子|表达式"
+    )
     noise = re.compile(_PARA_NOISE_SRC)
     paras: list[str] = []
     for block in re.split(r"\n\s*\n", content):
@@ -417,8 +429,13 @@ def _best_paragraph(content: str, keywords: list[str], max_chars: int = 300) -> 
             continue          # 页锚点注释 / 纯表格分隔行
         if noise.search(t):
             continue
+        if toc_line.search(t) or len(toc_label.findall(t)) >= 3:
+            continue          # 图表目次（点线目录 or 连续 图N/表N 列表）
         paras.append(t)
     if not paras:
+        # 全篇都像图表目次时不返回任何东西（宁缺勿注入目次噪声）
+        if len(toc_label.findall(content)) >= 3 or toc_line.search(content):
+            return ""
         return content[:max_chars]
 
     best, best_score = paras[0], -1.0
@@ -431,6 +448,8 @@ def _best_paragraph(content: str, keywords: list[str], max_chars: int = 300) -> 
             score += 1.5
         if re.search(r"[a-z_]+\(|[A-Z]{2,}_[A-Z_]+", t):
             score += 1.0          # 公式/算子痕迹
+        if formula_hint.search(t):
+            score += 3.0          # 公式/构建方法段落优先（"公式明确"目标）
         if score > best_score:
             best, best_score = t, score
     if len(best) > max_chars:
