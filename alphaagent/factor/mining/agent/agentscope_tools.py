@@ -530,6 +530,15 @@ async def _dispatch_with_timeout(
     timeout: float | None = None,
 ) -> tuple[dict[str, Any], float]:
     """带超时的 dispatch，超时返回错误而非永久阻塞。"""
+    # 研报模式网关随参数一起进入评估引擎（跨线程池/未来跨进程都可靠）
+    try:
+        from alphaagent.factor.mining.report_channels import get_run_gate as _grg
+
+        _g = _grg()
+        if _g and isinstance(args, dict):
+            args["_report_gate"] = dict(_g)
+    except Exception:  # noqa: BLE001
+        pass
     actual_timeout = float(timeout if timeout is not None else _runtime_config.eval_timeout_seconds)
     try:
         result, elapsed = await asyncio.wait_for(
@@ -666,6 +675,31 @@ def build_factor_eval_toolkit(
         **_legacy_kwargs: Any,
     ) -> ToolChunk:
         """按已冻结 EvaluationProfile 执行 DSL 评估；profile 控制 split、transform、指标与规则。"""
+        # ── 研报模式发散门禁（可选，默认关）：发散轮必须基于复现版单维变异 ──
+        _gate_d = getattr(tools, "report_reproduce_gate", None) or {}
+        if _gate_d.get("diverge_parent") and _gate_d.get("phase") == "diverge":
+            _pname = str(_gate_d.get("parent_name") or "")
+            if _pname and _pname not in str(parent_factor or ""):
+                return ToolChunk(content=[TextBlock(text=(
+                    f"⛔ 发散门禁：本轮是课题 {_gate_d.get('qid')} 的发散轮，`parent_factor` 必须指向复现版 "
+                    f"`{_pname}`（并只改一个维度）。若认为该机制在本池无效，请明确放弃该课题，"
+                    "不要在同一轮里另起炉灶。"
+                ))])
+
+        # ── 研报模式复现门禁（Phase 1）：复现阶段必须声明 reproduce_of:<课题号> ──
+        _gate = getattr(tools, "report_reproduce_gate", None) or {}
+        if _gate.get("required") and _gate.get("phase") == "reproduce":
+            _qid = str(_gate.get("qid") or "")
+            _pf = str(parent_factor or "")
+            if _qid and _qid not in _pf:
+                return ToolChunk(content=[TextBlock(text=(
+                        f"⛔ 复现门禁：当前处于研报复现阶段（课题 {_qid}），"
+                        f"`parent_factor` 必须写成 `reproduce_of:{_qid}`（或至少包含 `{_qid}`），"
+                        f"当前传入={_pf or '(空)'}。\n"
+                        "请先忠实复现研报机制（只允许字段同族替换与算子落地，不得改变机制语义），"
+                        "通过 train 后才进入发散阶段。"
+                ))])
+
         # ── 因子逻辑预审 ──
         preflight = _preflight_check(multi_line_expr, factor_name)
         if preflight is not None:
@@ -954,6 +988,31 @@ def build_factor_eval_toolkit(
             **_legacy_kwargs: Any,
         ) -> ToolChunk:
             """【正式交付】统计数据通过即写候选池；reviewer approve 才写正式 factorzoo。"""
+            # ── 研报模式发散门禁（可选，默认关）：发散轮必须基于复现版单维变异 ──
+            _gate_d = getattr(tools, "report_reproduce_gate", None) or {}
+            if _gate_d.get("diverge_parent") and _gate_d.get("phase") == "diverge":
+                _pname = str(_gate_d.get("parent_name") or "")
+                if _pname and _pname not in str(parent_factor or ""):
+                    return ToolChunk(content=[TextBlock(text=(
+                        f"⛔ 发散门禁：本轮是课题 {_gate_d.get('qid')} 的发散轮，`parent_factor` 必须指向复现版 "
+                        f"`{_pname}`（并只改一个维度）。若认为该机制在本池无效，请明确放弃该课题，"
+                        "不要在同一轮里另起炉灶。"
+                    ))])
+
+            # ── 研报模式复现门禁（Phase 1）：复现阶段必须声明 reproduce_of:<课题号> ──
+            _gate = getattr(tools, "report_reproduce_gate", None) or {}
+            if _gate.get("required") and _gate.get("phase") == "reproduce":
+                _qid = str(_gate.get("qid") or "")
+                _pf = str(parent_factor or "")
+                if _qid and _qid not in _pf:
+                    return ToolChunk(content=[TextBlock(text=(
+                            f"⛔ 复现门禁：当前处于研报复现阶段（课题 {_qid}），"
+                            f"`parent_factor` 必须写成 `reproduce_of:{_qid}`（或至少包含 `{_qid}`），"
+                            f"当前传入={_pf or '(空)'}。\n"
+                            "请先忠实复现研报机制（只允许字段同族替换与算子落地，不得改变机制语义），"
+                            "通过 train 后才进入发散阶段。"
+                    ))])
+
             # ── 先执行 submit（stage_one 候选池 + stage_two 正式库统计门槛） ──
             loop = __import__("asyncio").get_running_loop()
             contract, interaction_warning, blocked = _gate_interaction(multi_line_expr, interaction)
