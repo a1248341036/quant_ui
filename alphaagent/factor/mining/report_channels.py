@@ -103,3 +103,20 @@ def diverge_parent_required(spec: dict[str, Any] | None) -> bool:
     开：「围绕研报发散」成为硬约束，代价是候选产出可能下降。
     """
     return bool(((spec or {}).get("report_policy") or {}).get("diverge_parent_required"))
+
+
+# ── 进程内"当前研报网关"（2026-09-30）────────────────────────────────
+# 背景：gate 原先挂在 tools 实例属性上，但判定在 dispatch() 里跑，
+# 实测两侧对象身份不一致 → 判定静默 early-return。每次 run 是独立进程、
+# 同一时刻只有一个 turn，故用模块级全局最稳妥。
+_CURRENT_GATE: dict[str, Any] = {}
+
+
+def set_run_gate(gate: dict[str, Any] | None) -> None:
+    _CURRENT_GATE.clear()
+    if gate:
+        _CURRENT_GATE.update(gate)
+
+
+def get_run_gate() -> dict[str, Any]:
+    return _CURRENT_GATE

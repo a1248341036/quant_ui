@@ -992,7 +992,9 @@ async def run_factor_mining_agentscope(
                 except Exception:  # noqa: BLE001
                     pass
             try:
-                factor_tools.report_reproduce_gate = {
+                from alphaagent.factor.mining.report_channels import set_run_gate
+
+                _gate_state = {
                     "required": reproduce_of_required(spec),
                     "phase": _rag_phase,
                     "qid": _qid,
@@ -1003,6 +1005,8 @@ async def run_factor_mining_agentscope(
                         str(getattr(config, "research_mode", "report") or "report"), _qid
                     ),
                 }
+                factor_tools.report_reproduce_gate = _gate_state
+                set_run_gate(_gate_state)   # 判定侧唯一可靠通道
             except Exception:  # noqa: BLE001
                 pass
         if report_rag_enabled(spec, phase=_rag_phase) and current_question:
