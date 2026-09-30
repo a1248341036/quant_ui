@@ -44,6 +44,15 @@ FREQ_INDEX: dict[str, dict] = {}
 
 
 # ── 本仓算子与字段（运行时加载，禁止硬编码）─────────────────────────────
+INDEX_CACHE = ROOT / "data" / "research_reports" / "knowledge" / "operator_index.json"
+_SRC_FILES = [ROOT / "alphaagent" / "dsl" / "core" / "operators.py",
+              ROOT / "alphaagent" / "factor" / "mining" / "prompt" / "modules" / "data_fields.py"]
+
+
+def _src_stamp() -> dict:
+    return {str(f): f.stat().st_mtime for f in _SRC_FILES if f.exists()}
+
+
 def load_operators() -> set[str]:
     from alphaagent.dsl.core import operators as ops
 
@@ -61,8 +70,24 @@ def load_fields() -> set[str]:
 
 from scripts._factor_expr_tools import apply_alias, parse_op_tree, try_construct
 
-OPERATORS = load_operators()
-FIELDS = load_fields()
+def load_index(force: bool = False) -> tuple[set[str], set[str]]:
+    """算子/字段集合：优先读落盘缓存（源文件 mtime 未变即复用），否则重建并写回。"""
+    stamp = _src_stamp()
+    if not force and INDEX_CACHE.exists():
+        try:
+            blob = json.loads(INDEX_CACHE.read_text(encoding="utf-8"))
+            if blob.get("stamp") == stamp:
+                return set(blob["operators"]), set(blob["fields"])
+        except Exception:  # noqa: BLE001
+            pass
+    ops, flds = load_operators(), load_fields()
+    INDEX_CACHE.parent.mkdir(parents=True, exist_ok=True)
+    INDEX_CACHE.write_text(json.dumps({"stamp": stamp, "operators": sorted(ops),
+                                       "fields": sorted(flds)}, ensure_ascii=False), encoding="utf-8")
+    return ops, flds
+
+
+OPERATORS, FIELDS = load_index()
 
 
 def validate_expr(expr: str) -> tuple[bool, str]:
@@ -159,6 +184,39 @@ def build_blocks(lines: list[str]) -> list[dict]:
     return blocks
 
 
+TABLE_CACHE: dict[str, list[dict]] = {}
+NO_CACHE = False
+
+
+def _cache_key(source: str, blk: dict) -> str:
+    import hashlib
+
+    h = hashlib.sha1()
+    h.update(source.encode("utf-8"))
+    h.update(("\n".join(blk["rows"]) + str(blk["title"])).encode("utf-8"))
+    return h.hexdigest()
+
+
+def load_table_cache(path: Path) -> dict[str, list[dict]]:
+    out: dict[str, list[dict]] = {}
+    if path.exists():
+        for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+            except Exception:  # noqa: BLE001
+                continue
+            out[rec.get("key", "")] = rec.get("records") or []
+    return out
+
+
+def save_table_cache(path: Path, cache: dict[str, list[dict]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(json.dumps({"key": k, "records": v}, ensure_ascii=False)
+                              for k, v in cache.items()), encoding="utf-8")
+
+
 def call_llm(chunk: str, title: str, timeout: int = 240) -> list[dict]:
     prompt = PROMPT.format(
         operators=", ".join(sorted(OPERATORS))[:6000],
@@ -202,16 +260,22 @@ def parse_one(path: Path, root: Path, retries: int = 2) -> tuple[list[dict], lis
     stats: list[dict] = []
     for blk in blocks:
         arr: list[dict] = []
-        for attempt in range(retries + 1):
-            try:
-                arr = call_llm("\n".join(blk["rows"]), blk["title"])
-                break
-            except Exception as e:  # noqa: BLE001
-                if attempt >= retries:
-                    print(f"  [ERR] {path.name[:40]} 表{blk['index']}: {type(e).__name__}", flush=True)
+        _ck = _cache_key(str(path.relative_to(root)), blk)
+        if _ck in TABLE_CACHE and not NO_CACHE:
+            arr = TABLE_CACHE[_ck]
+        else:
+            for attempt in range(retries + 1):
+                try:
+                    arr = call_llm("\n".join(blk["rows"]), blk["title"])
+                    break
+                except Exception as e:  # noqa: BLE001
+                    if attempt >= retries:
+                        print(f"  [ERR] {path.name[:40]} 表{blk['index']}: {type(e).__name__}", flush=True)
         n_src = max(1, blk["n_rows"])
         stats.append({"source": str(path.relative_to(root)), "table_index": blk["index"],
                       "n_src_rows": blk["n_rows"], "n_extracted": len(arr)})
+        if not NO_CACHE:
+            TABLE_CACHE[_ck] = arr
         for it in arr:
             kind = str(it.get("formula_kind") or "").strip().lower()
             raw = it.get("expr_raw")
@@ -220,6 +284,7 @@ def parse_one(path: Path, root: Path, retries: int = 2) -> tuple[list[dict], lis
             ok, why = validate_expr(expr_local) if expr_local else (False, "no_expr_local")
             # (2)(3) 修复链：别名改写 → 构造模板兜底；任一成功即视为可执行
             repair_note = None
+            _TREE = None
             if not ok and expr_local:
                 fixed, notes = apply_alias(expr_local)
                 if notes:
@@ -251,8 +316,8 @@ def parse_one(path: Path, root: Path, retries: int = 2) -> tuple[list[dict], lis
                 "executable": bool(ok),
                 "validate": why,
                 "repair": repair_note,
-                "ops_used": (parse_op_tree(expr_local)[1] if (ok and expr_local) else []),
-                "op_tree": (parse_op_tree(expr_local)[0] if (ok and expr_local) else None),
+                "ops_used": list(_TREE[1]) if _TREE else [],
+                "op_tree": _TREE[0] if _TREE else None,
                 "null_reason": (it.get("null_reason") or (None if ok else why)) if not ok else None,
                 "grounded": grounded,
                 "report_rebalance_freq": it.get("report_rebalance_freq"),
@@ -287,11 +352,16 @@ def main() -> int:
     ap.add_argument("--workers", type=int, default=2)
     ap.add_argument("--only", default="")
     ap.add_argument("--require-table", action="store_true")
+    ap.add_argument("--no-cache", action="store_true", help="忽略表级抽取缓存，强制重新调用 LLM")
     ap.add_argument("--freq-index", default=str(ROOT / "data" / "research_reports" / "knowledge" / "report_freq_verified.jsonl"),
                     help="报告级频率索引 jsonl（fail-closed：缺失即 label=null）")
     args = ap.parse_args()
 
-    global FREQ_INDEX
+    global FREQ_INDEX, TABLE_CACHE, NO_CACHE
+    NO_CACHE = bool(args.no_cache)
+    _tc = ROOT / "data" / "research_reports" / "knowledge" / "factor_records_table_cache.jsonl"
+    TABLE_CACHE = {} if NO_CACHE else load_table_cache(_tc)
+    print(f"表级缓存: {len(TABLE_CACHE)} 个表块{'（已禁用）' if NO_CACHE else ''}", flush=True)
     _fp = Path(args.freq_index)
     if _fp.exists():
         FREQ_INDEX = {}
@@ -342,6 +412,9 @@ def main() -> int:
     print(f"表行覆盖: 抽出 {n} / 源表行 {src_rows} = {n/max(1,src_rows):.0%}（门槛 ≥80%）")
     print(f"formula_kind: {dict(kinds)}")
     print("null_reason 分布:", dict(Counter((r.get('null_reason') or '').split(':')[0] for r in rows if r.get('null_reason')).most_common(6)))
+    if not NO_CACHE:
+        save_table_cache(_tc, TABLE_CACHE)
+        print(f"表级缓存已更新: {_tc}（{len(TABLE_CACHE)} 个表块）", flush=True)
     print(f"写出: {out}", flush=True)
     return 0
 

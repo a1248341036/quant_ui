@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 
 # 别名：模型常见写法 → 本仓算子名
 ALIAS: dict[str, str] = {
@@ -35,7 +36,8 @@ CONSTRUCTS: list[tuple[str, str]] = [
 ]
 
 
-def apply_alias(expr: str) -> tuple[str, list[str]]:
+@lru_cache(maxsize=8192)
+def apply_alias(expr: str) -> tuple[str, tuple[str, ...]]:
     """把别名写法改写为本仓算子名，返回 (新表达式, 改写记录)。"""
     notes: list[str] = []
     out = expr
@@ -44,7 +46,7 @@ def apply_alias(expr: str) -> tuple[str, list[str]]:
         if re.search(pat, out):
             out = re.sub(pat, good + "(", out)
             notes.append(bad + "->" + good)
-    return out, notes
+    return out, tuple(notes)
 
 
 def try_construct(name: str, definition: str = "") -> tuple[str | None, str | None]:
@@ -56,7 +58,8 @@ def try_construct(name: str, definition: str = "") -> tuple[str | None, str | No
     return None, None
 
 
-def parse_op_tree(expr: str) -> tuple[str, list[str]]:
+@lru_cache(maxsize=8192)
+def parse_op_tree(expr: str) -> tuple[str, tuple[str, ...]]:
     """解析表达式为算子树（缩进文本）+ 用到的算子列表。"""
     ops_used: list[str] = []
     n = len(expr)
@@ -99,4 +102,4 @@ def parse_op_tree(expr: str) -> tuple[str, list[str]]:
         return "  " * depth + (tok or "?"), j
 
     tree, _ = parse(0, 0)
-    return tree, ops_used
+    return tree, tuple(ops_used)
