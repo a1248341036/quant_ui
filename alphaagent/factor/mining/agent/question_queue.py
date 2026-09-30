@@ -594,6 +594,57 @@ def _norm_source(src: Any) -> str:
     return str(src or "").replace("\\", "/").strip().lstrip("./").lower()
 
 
+_CN_DIGITS = {"零": 0, "一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+_CN_UNITS = {"十": 10, "百": 100}
+
+
+def _cn2int(text: str) -> int | None:
+    """中文数字 → 整数（覆盖 一~九百九十九；纯数字原样）；无法解析返回 None。"""
+    s = str(text or "").strip()
+    if not s:
+        return None
+    if s.isdigit():
+        return int(s)
+    total, num = 0, 0
+    for ch in s:
+        if ch in _CN_DIGITS:
+            num = _CN_DIGITS[ch]
+        elif ch in _CN_UNITS:
+            total += (num or 1) * _CN_UNITS[ch]
+            num = 0
+        else:
+            return None
+    return total + num
+
+
+def _series_no(text: str) -> int | None:
+    """抽取「之<数字>」系列号（`之十八`→18）；无系列号 → None。
+
+    用于回退匹配的**同系列姊妹篇防误配**：券商研报常成系列（如东方「因子选股系列研究」
+    上百篇），同系列标题共享大量 boilerplate（机构名 + 金融工程 + 系列名），字符 bigram
+    Jaccard 极易越过 0.35 阈值。2026-10-01 整夜实测：19 个"命中"里约 8 个是假阳性，
+    例如课题 `之十三 alpha预测` 被对到 `之十八 在alpha衰退之前`，**注入的是另一篇报告的
+    公式**（比不注入更有害）。
+    """
+    import re
+
+    m = re.search(r"之([零一二三四五六七八九十百\d]+)", str(text or ""))
+    return _cn2int(m.group(1)) if m else None
+
+
+def _paren_no(text: str) -> int | None:
+    """抽取括号序号（`（三）`/`(四)`/`（2）`）→ int；无 → None。
+
+    同系列还有用括号编号的写法（如海通「因子投资与smartbeta研究（三）/（四）」），
+    `之N` 守卫覆盖不到 —— 2026-10-01 实测残留假阳性：课题 `smartbeta研究（四）单因子多组合`
+    被对到 `smartbeta研究(三)_市场环境与因子组合表现`。
+    """
+    import re
+
+    m = re.search(r"[（(]([零一二三四五六七八九十百\d]{1,4})[）)]", str(text or ""))
+    return _cn2int(m.group(1)) if m else None
+
+
 def match_report_records(question: dict[str, Any] | None, card: dict[str, Any] | None,
                          records: list[dict[str, Any]] | None) -> tuple[list[dict[str, Any]], str]:
     """把当前课题对到**某一篇报告**的因子记录，返回 (记录, 该报告 source)。
@@ -614,9 +665,22 @@ def match_report_records(question: dict[str, Any] | None, card: dict[str, Any] |
     texts = [t for t in texts if t.strip()]
     if not texts:
         return [], ""
+    # 系列号守卫：课题与候选报告都带序号（之N 或 括号序号）且不一致 → 视为不同报告直接跳过
+    def _markers(text: str) -> tuple[int | None, int | None]:
+        return _series_no(text), _paren_no(text)
+
+    q_marks = [_markers(t) for t in texts]
     best_src, best_score = "", 0.0
     for src in {str(r.get("source") or "") for r in records if r.get("source")}:
-        score = max(_bigram_jaccard(Path(src).stem, t) for t in texts)
+        stem = Path(src).stem
+        r_marks = _markers(stem)
+        conflict = any(
+            qm[i] is not None and r_marks[i] is not None and qm[i] != r_marks[i]
+            for qm in q_marks for i in (0, 1)
+        )
+        if conflict:
+            continue
+        score = max(_bigram_jaccard(stem, t) for t in texts)
         if score > best_score:
             best_src, best_score = src, score
     if not best_src or best_score < 0.35:
