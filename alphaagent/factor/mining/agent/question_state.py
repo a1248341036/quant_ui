@@ -119,11 +119,14 @@ def select_question(
 
 
 def mark_reproduce_ok(mode: str, question_id: str, lock_rounds: int, *, factor: str = "",
-                      detail: str = "") -> None:
+                      detail: str = "", profile: dict | None = None) -> None:
     """复现版过 train 海选线 → 记 reproduce_ok 并锁定该课题 N 轮发散（由工具侧调用）。"""
-    _append(mode, {"question_id": str(question_id), "state": "reproduce_ok",
-                   "lock_remaining": max(0, int(lock_rounds)), "phase": "diverge",
-                   "reproduce_factor": str(factor)[:120], "detail": str(detail)[:160]})
+    _rec = {"question_id": str(question_id), "state": "reproduce_ok",
+            "lock_remaining": max(0, int(lock_rounds)), "phase": "diverge",
+            "reproduce_factor": str(factor)[:120], "detail": str(detail)[:160]}
+    if profile:
+        _rec["profile"] = profile
+    _append(mode, _rec)
 
 
 def mark_abandoned(mode: str, question_id: str, reason: str) -> None:
@@ -173,3 +176,22 @@ def reproduce_detail_of(mode: str, question_id: str) -> str:
         if str(rec.get("question_id") or "") == qid and rec.get("detail"):
             return str(rec["detail"])
     return ""
+
+
+def reproduce_profile_of(mode: str, question_id: str) -> dict:
+    """父本"体检报告"（ic/icir/cov/换手/形态对账），供发散题面给针对性建议。"""
+    qid = str(question_id)
+    p = state_path(mode)
+    if not p.exists():
+        return {}
+    for line in reversed(p.read_text(encoding="utf-8", errors="ignore").splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except Exception:  # noqa: BLE001
+            continue
+        if str(rec.get("question_id") or "") == qid and rec.get("profile"):
+            return dict(rec["profile"])
+    return {}

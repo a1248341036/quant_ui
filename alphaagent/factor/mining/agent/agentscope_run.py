@@ -1018,11 +1018,16 @@ async def run_factor_mining_agentscope(
                         find_card_for_question,
                     )
 
+                    from alphaagent.factor.mining.agent.question_state import (
+                        reproduce_profile_of as _rprof,
+                    )
+
                     _div = render_diverge_task(
                         current_question,
                         reproduce_factor_of(_rmode, _qid),
                         parent_detail=reproduce_detail_of(_rmode, _qid),
                         card=find_card_for_question(current_question),
+                        parent_profile=_rprof(_rmode, _qid),
                     )
                     if _div:
                         block = f"{block}\n\n{_div}" if block else _div

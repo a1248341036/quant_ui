@@ -459,8 +459,41 @@ def _card_block(card: dict) -> str:
 _DIVERGE_DIMS = ("window", "operator", "field", "neutralize", "gate_shape", "interaction")
 
 
+def _parent_diagnosis(profile: dict | None) -> str:
+    """按父本"体检报告"给出**针对性**改进建议（哪一维先动、为什么）。"""
+    if not profile:
+        return ""
+    def _f(v, n=4):
+        return f"{v:.{n}f}" if isinstance(v, (int, float)) else "—"
+    ic, icir = profile.get("ic"), profile.get("icir")
+    cov, to = profile.get("cov"), profile.get("turnover")
+    shape = profile.get("shape_verdict")
+    out = [f"- 父本体检：IC={_f(ic)} ICIR={_f(icir)} coverage={_f(cov, 3)} 换手={_f(to, 3)} "
+           f"自相关={_f(profile.get('autocorr'), 3)} 形态对账={shape or '—'}"
+           + (f"（实际={profile.get('actual_shape')} / 期望={profile.get('expected_shape')}）"
+              if profile.get("actual_shape") or profile.get("expected_shape") else "")]
+    adv = []
+    if isinstance(icir, float) and icir <= 0:
+        adv.append("**ICIR≤0 → 先查方向/做稳健化**：确认 predicted 方向与强侧没填反（形态对账 contradicted 即方向问题），"
+                   "再做 `RANK`/`CS_WINSORIZE` 或换中性化键；**这一阶段别先调窗长**。")
+    elif isinstance(icir, float) and abs(icir) < 0.15:
+        adv.append("**ICIR<0.15 → 优先稳健化**：`RANK`/`CS_WINSORIZE`/行业中性化，或把离散门控换成连续 `SOFT_GATE`。")
+    if isinstance(to, float) and to > 0.5:
+        adv.append(f"**换手超标（{to:.3f}>0.5）→ 先降换手**：时序平滑（`TS_MEAN`/`WMA`）、拉长窗长、或换更慢的同族字段。")
+    if isinstance(cov, float) and cov < 0.85:
+        adv.append(f"**coverage 不足（{cov:.3f}<0.85）→ 先补覆盖**：去掉苛刻门控或换更全的同族字段。")
+    if isinstance(ic, float) and abs(ic) < 0.02:
+        adv.append("**|IC|<0.02 → 用结构杠杆**：`CS_GROUP_RANK`/`DIVERGENCE_RANK` 条件式结构，或换同族字段加信息量。")
+    if shape == "unverifiable":
+        adv.append("**形态对账 unverifiable → 先修 prediction**：按研报预期明确 shape/强侧/方向，形态通道才能过线。")
+    out += adv
+    out.append("- **每个变异必须用一句话写明经济直觉**（为什么这一改更贴合研报机制，而不只是数值好看），写进 `edit_note`/`comment`。")
+    return "\n".join(out)
+
+
 def render_diverge_task(question: dict, reproduce_factor: str = "", dims=_DIVERGE_DIMS,
-                        parent_detail: str = "", card: dict | None = None) -> str:
+                        parent_detail: str = "", card: dict | None = None,
+                        parent_profile: dict | None = None) -> str:
     """研报模式的**发散题面**：在已复现课题上做单维变异（Phase 2 / 2026-09-30）。
 
     之前只有复现轮有题面，发散轮退化成"泛课题 + RAG"，模型不声明父本，也无法保证
@@ -478,6 +511,7 @@ def render_diverge_task(question: dict, reproduce_factor: str = "", dims=_DIVERG
         (f"- **父本实测（必须超越的基线）**：{parent_detail}"
          " —— 本轮至少要在 IC 或 ICIR 上改善，且 coverage 与换手不得劣化。"
          if parent_detail else "- （父本实测指标缺失，请先重建父本基线再变异）"),
+        *([_parent_diagnosis(parent_profile)] if _parent_diagnosis(parent_profile) else []),
         "- **本轮目标**：让该机制比复现版更强且可交付 —— 争取过 promising 线"
         "（|IC|≥0.02、|ICIR|≥0.28、coverage≥0.85），同时不抬高日换手（≤0.5）、不与库内已有因子撞车；"
         "若某维度让指标变差，明确放弃并换下一个维度，不要反复调同一维。",

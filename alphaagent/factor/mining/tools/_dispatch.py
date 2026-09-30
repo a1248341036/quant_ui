@@ -1279,9 +1279,43 @@ class _DispatchMixin:
             _parts.append("signal=ok")
         _parts.append(f"ic={ic_f:.4f} icir={icir_f:.4f}")
         detail = " | ".join(_parts)
+        # 父本"体检报告"：供发散题面给针对性改进建议（ic/icir/cov/换手/形态对账）
+        _prof: dict = {}
+        for _k in ("ic", "icir"):
+            if cs.get(_k) is not None:
+                try:
+                    _prof[_k] = float(cs[_k])
+                except (TypeError, ValueError):
+                    pass
+        _cov = cs.get("factor_coverage", cs.get("coverage"))
+        if _cov is not None:
+            try:
+                _prof["cov"] = float(_cov)
+            except (TypeError, ValueError):
+                pass
+        _ac = cs.get("cs_pearson_autocorr")
+        if _ac is not None:
+            try:
+                _prof["autocorr"] = float(_ac)
+            except (TypeError, ValueError):
+                pass
+        for _tk in ("avg_daily_side_turnover", "avg_turnover"):
+            if result.get(_tk) is not None:
+                try:
+                    _prof["turnover"] = float(result[_tk])
+                    break
+                except (TypeError, ValueError):
+                    pass
+        _pc = result.get("prediction_check") or {}
+        if _pc.get("verdict"):
+            _prof["shape_verdict"] = str(_pc["verdict"])
+        if (_pc.get("actual") or {}).get("shape"):
+            _prof["actual_shape"] = str(_pc["actual"]["shape"])
+        if (_pc.get("expected") or {}).get("expected_shape"):
+            _prof["expected_shape"] = str(_pc["expected"]["expected_shape"])
         mark_reproduce_ok(
             str(gate.get("mode") or "report"), qid, int(gate.get("lock_rounds") or 3),
-            factor=factor_name, detail=detail,
+            factor=factor_name, detail=detail, profile=_prof,
         )
         gate["phase"] = "diverge"
         log_step("report_reproduce_judge", f"qid={qid} factor={factor_name} PASS [{detail}] -> reproduce_ok")
