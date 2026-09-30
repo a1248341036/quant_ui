@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import inspect
 
-from alphaagent.factor.mining.memory.ov_store import OVStore, _best_paragraph
+from alphaagent.factor.mining.memory.ov_store import OVStore, _best_paragraph, _is_recap_doc
 
 
 def test_toc_with_dot_leaders_is_skipped():
@@ -51,3 +51,38 @@ def test_snippet_cap_default_raised():
     sig = inspect.signature(OVStore.retrieve_report_knowledge)
     assert "snippet_chars" in sig.parameters
     assert sig.parameters["snippet_chars"].default >= 600
+
+
+def test_recap_docs_detected():
+    """OV 实测命中的三条复盘噪声都要被识别（好让位给本地因子语料）。"""
+    assert _is_recap_doc("viking://resources/research_reports/渤海证券/20240924_5773740_公募基金周报.md")
+    assert _is_recap_doc("权益市场主要指数震荡修复房地产领涨.md")
+    assert _is_recap_doc("上周市场回顾._1/上周市场回顾._1_1.md")
+
+
+def test_factor_mechanism_docs_not_flagged_as_recap():
+    assert not _is_recap_doc("东吴证券 金融工程 “基本面选股因子”系列：从布林带到估值异常因子")
+    assert not _is_recap_doc("海通证券 金融工程 选股因子系列（九十六）：动量beta的择时、优选与alpha因子构建")
+    assert not _is_recap_doc("5771450 多因子选股周报：估值因子表现出色，中证500指增组合年内超额12.98%")
+
+
+def test_local_corpus_prefers_mineru_then_falls_back(tmp_path, monkeypatch):
+    """未显式指定语料时优先 MinerU 重抽版（含公式层），缺失才回落 v1 parsed。"""
+    import alphaagent.factor.mining.memory.ov_store as ovs
+
+    (tmp_path / "parsed").mkdir()
+    monkeypatch.setattr(ovs, "_research_reports_roots", lambda: [tmp_path])
+    monkeypatch.delenv("ALPHA_REPORT_CORPUS", raising=False)
+    assert ovs._report_local_corpus() == tmp_path / "parsed"          # 只有 v1
+    (tmp_path / "parsed_mineru").mkdir()
+    assert ovs._report_local_corpus() == tmp_path / "parsed_mineru"   # 有 MinerU 则优先
+
+
+def test_local_corpus_env_override_wins(tmp_path, monkeypatch):
+    import alphaagent.factor.mining.memory.ov_store as ovs
+
+    (tmp_path / "parsed").mkdir()
+    (tmp_path / "parsed_mineru").mkdir()
+    monkeypatch.setattr(ovs, "_research_reports_roots", lambda: [tmp_path])
+    monkeypatch.setenv("ALPHA_REPORT_CORPUS", "parsed")
+    assert ovs._report_local_corpus() == tmp_path / "parsed"
