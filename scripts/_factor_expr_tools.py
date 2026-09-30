@@ -5,11 +5,16 @@
 - `parse_op_tree(expr)`：把本仓 DSL 表达式解析成缩进算子树 + 用到的算子集合
 - `apply_alias(expr)`：把模型常见别名写法改写为本仓算子名（单一真源 ALIAS）
 - `try_construct(name, definition)`：按关键词匹配"研报常见构造"的组合表达式模板
+- `op_families(ops)`：把算子集合归族（CS / TS / 结构/单例…，族名取自 operator_tree.json）
+- `infer_focus_facets(expr, fields)`：推断数据面（复用 alphaagent.factor.facets 的既有命名）
 """
 from __future__ import annotations
 
+import json
 import re
 from functools import lru_cache
+from pathlib import Path
+from typing import Iterable
 
 # 别名：模型常见写法 → 本仓算子名
 ALIAS: dict[str, str] = {
@@ -133,3 +138,50 @@ def parse_op_tree(expr: str) -> tuple[str, tuple[str, ...]]:
 
     tree, _ = parse(0, 0)
     return tree, tuple(ops_used)
+
+
+# ── 算子归族 + 数据面推断（§7 题面注入的两个派生字段）────────────────────
+# 族名唯一真源 = operator_tree.json 的 family 字段（scripts/build_operator_tree.py 产出：
+# TS / CS / 基础运算 / 结构/单例 / CHIP / CROWD / PRICE / …）。**禁止在本文件另造族名**。
+OP_TREE_JSON = (Path(__file__).resolve().parents[1]
+                / "data" / "research_reports" / "knowledge" / "operator_tree.json")
+UNKNOWN_FAMILY = "未归类"
+
+
+@lru_cache(maxsize=1)
+def load_op_family_map() -> dict[str, str]:
+    """算子 → 族（缺产物文件时返回空表 → 全部落 ``未归类``，不猜、不新造）。"""
+    try:
+        blob = json.loads(OP_TREE_JSON.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return {}
+    if not isinstance(blob, dict):
+        return {}
+    return {str(k).upper(): str((v or {}).get("family") or UNKNOWN_FAMILY)
+            for k, v in blob.items() if isinstance(v, dict)}
+
+
+def op_families(ops: Iterable[str] | None) -> list[str]:
+    """把 ``ops_used`` 归族（保序去重）；族名逐字取自 operator_tree.json。"""
+    fam = load_op_family_map()
+    out: list[str] = []
+    for op in ops or ():
+        name = fam.get(str(op).upper(), UNKNOWN_FAMILY)
+        if name not in out:
+            out.append(name)
+    return out
+
+
+def infer_focus_facets(expr: str | None, fields: Iterable[str] | None = None) -> list[str]:
+    """由 ``expr_local`` / ``fields_local`` 推断数据面。
+
+    命名复用 ``alphaagent.factor.facets`` 的 ``FACET_DEFS``（价量面/量能面/基本面/资金面/
+    拥挤面/股东面/事件面/筹码面/两融面/…），**不新造面名**；排序同 FACET_DEFS 的声明序。
+    """
+    from alphaagent.factor.facets import FACET_DEFS, expr_facets
+
+    hits = expr_facets(str(expr or ""))
+    for field in fields or ():
+        hits |= expr_facets("$" + str(field).lstrip("$"))
+    order = {name: i for i, (name, _) in enumerate(FACET_DEFS)}
+    return sorted(hits, key=lambda f: order.get(f, len(order)))

@@ -416,18 +416,23 @@ def find_card_for_question(question: dict, cards: list[dict] | None = None) -> d
     return None
 
 
-def _title_similar(card: dict, question_text: str) -> float:
-    """卡标题与课题文本的字符二元组 Jaccard（判"是否同一篇报告"）。"""
+def _bigram_jaccard(a: str, b: str) -> float:
+    """两段文本的字符二元组 Jaccard（<=6 字符不予判定，返回 0）。"""
     import re as _re
 
-    title = str((card.get("source") or {}).get("title") or "")
-    clean = lambda t: _re.sub(r"[^\u4e00-\u9fa5A-Za-z0-9]", "", t)
-    a, b = clean(title), clean(question_text)
+    clean = lambda t: _re.sub(r"[^\u4e00-\u9fa5A-Za-z0-9]", "", str(t))  # noqa: E731
+    a, b = clean(a), clean(b)
     if len(a) < 6 or len(b) < 6:
         return 0.0
     ba = {a[i:i + 2] for i in range(len(a) - 1)}
     bb = {b[i:i + 2] for i in range(len(b) - 1)}
     return len(ba & bb) / max(1, len(ba | bb))
+
+
+def _title_similar(card: dict, question_text: str) -> float:
+    """卡标题与课题文本的字符二元组 Jaccard（判"是否同一篇报告"）。"""
+    title = str((card.get("source") or {}).get("title") or "")
+    return _bigram_jaccard(title, question_text)
 
 
 def _card_block(card: dict) -> str:
@@ -453,6 +458,272 @@ def _card_block(card: dict) -> str:
     ev = card.get("evidence") or {}
     if ev:
         lines.append(f"  - 研报实测：{str(ev)[:200]}")
+    return "\n".join(lines)
+
+
+# ── 研报因子清单注入（spec §7：docs/specs/alphaagent_report_factor_records_spec.md）──
+# 只读抽取侧产物（factor_records_pilot.jsonl / report_freq_verified.jsonl）并渲染题面块，
+# **不参与判定与状态机**：题面块让模型照抄研报公式落地，判不判定仍由既有闸门决定。
+FACTOR_RECORDS_FILE = "factor_records_pilot.jsonl"
+REPORT_FREQ_FILE = "report_freq_verified.jsonl"
+FACTOR_RECORDS_BLOCK_TITLE = "本报告因子清单"
+FACTOR_RECORDS_MAX_ITEMS = 10
+FACTOR_RECORDS_NO_FORMULA_NOTE = "本报告未抽出可执行公式"
+_CONF_ORDER: dict[str, int] = {"high": 0, "medium": 1, "low": 2}
+_FACTOR_RECORDS_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+_REPORT_FREQ_CACHE: dict[str, tuple[float, dict[str, dict[str, Any]]]] = {}
+
+
+def _knowledge_roots() -> list[Path]:
+    """知识库候选根目录（git common dir 优先，兼容 worktree 与主仓库路径）。"""
+    roots: list[Path] = []
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        if out:
+            roots.append(Path(out).parent)
+    except Exception:  # noqa: BLE001
+        pass
+    roots.append(Path(__file__).resolve().parents[4])
+    return roots
+
+
+def _resolve_knowledge_file(name: str, override: str = "") -> Path | None:
+    """解析 ``data/research_reports/knowledge/<name>``；``override`` 优先（测试/实验用）。"""
+    if override:
+        p = Path(override)
+        if not p.is_absolute():
+            p = Path.cwd() / p
+        if p.is_file():
+            return p
+    for root in _knowledge_roots():
+        p = root / "data" / "research_reports" / "knowledge" / name
+        if p.is_file():
+            return p
+    return None
+
+
+def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        if not line.strip():
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:  # noqa: BLE001
+            continue
+        if isinstance(obj, dict):
+            rows.append(obj)
+    return rows
+
+
+def load_factor_records(spec: dict[str, Any] | None = None,
+                        path: Path | str | None = None) -> list[dict[str, Any]]:
+    """读取研报因子清单 jsonl（按 mtime 缓存）；缺文件 → 空表（题面不加块）。
+
+    ``report_policy.factor_records_file`` 可覆盖路径（与 ``question_queue_file`` 同风格）。
+    """
+    if path is None:
+        override = str(((spec or {}).get("report_policy") or {}).get("factor_records_file") or "")
+        path = _resolve_knowledge_file(FACTOR_RECORDS_FILE, override)
+    if path is None:
+        return []
+    p = Path(path)
+    if not p.is_file():
+        return []
+    try:
+        stamp = p.stat().st_mtime
+    except OSError:
+        return []
+    cached = _FACTOR_RECORDS_CACHE.get(str(p))
+    if cached and cached[0] == stamp:
+        return cached[1]
+    rows = _read_jsonl(p)
+    _FACTOR_RECORDS_CACHE[str(p)] = (stamp, rows)
+    return rows
+
+
+def load_report_freq_index(spec: dict[str, Any] | None = None,
+                           path: Path | str | None = None) -> dict[str, dict[str, Any]]:
+    """报告级**已确认**频率索引（key = 归一化 source），来自 ``report_freq_verified.jsonl``。"""
+    if path is None:
+        override = str(((spec or {}).get("report_policy") or {}).get("report_freq_file") or "")
+        path = _resolve_knowledge_file(REPORT_FREQ_FILE, override)
+    if path is None:
+        return {}
+    p = Path(path)
+    if not p.is_file():
+        return {}
+    try:
+        stamp = p.stat().st_mtime
+    except OSError:
+        return {}
+    cached = _REPORT_FREQ_CACHE.get(str(p))
+    if cached and cached[0] == stamp:
+        return cached[1]
+    index = {_norm_source(r.get("source")): r for r in _read_jsonl(p) if r.get("source")}
+    _REPORT_FREQ_CACHE[str(p)] = (stamp, index)
+    return index
+
+
+def _norm_source(src: Any) -> str:
+    """报表 source 路径归一（分隔符/大小写/前导 ./），用于卡 path ↔ 记录 source 对齐。"""
+    return str(src or "").replace("\\", "/").strip().lstrip("./").lower()
+
+
+def match_report_records(question: dict[str, Any] | None, card: dict[str, Any] | None,
+                         records: list[dict[str, Any]] | None) -> tuple[list[dict[str, Any]], str]:
+    """把当前课题对到**某一篇报告**的因子记录，返回 (记录, 该报告 source)。
+
+    对齐顺序：① 机制卡 ``source.path`` 与记录 ``source`` 归一后精确相等（试点 10 篇里
+    9 篇有卡可精确对上）；② 卡缺失/不匹配时退化为报告标题与课题 source 的字符二元组
+    Jaccard（门槛 0.35，与机制卡匹配同源）。对不上 → ``([], "")``（宁可不注入，不猜）。
+    """
+    if not records:
+        return [], ""
+    card_path = _norm_source(((card or {}).get("source") or {}).get("path"))
+    if card_path:
+        hits = [r for r in records if _norm_source(r.get("source")) == card_path]
+        if hits:
+            return hits, str(hits[0].get("source") or "")
+    texts = [str((question or {}).get("source") or ""),
+             str(((card or {}).get("source") or {}).get("title") or "")]
+    texts = [t for t in texts if t.strip()]
+    if not texts:
+        return [], ""
+    best_src, best_score = "", 0.0
+    for src in {str(r.get("source") or "") for r in records if r.get("source")}:
+        score = max(_bigram_jaccard(Path(src).stem, t) for t in texts)
+        if score > best_score:
+            best_src, best_score = src, score
+    if not best_src or best_score < 0.35:
+        return [], ""
+    return [r for r in records if str(r.get("source") or "") == best_src], best_src
+
+
+def _record_rank(rec: dict[str, Any]) -> tuple[int, int]:
+    """注入排序键：研报原文公式（verbatim）优先，其次文字推导（derived）；再按置信度。"""
+    kind = str(rec.get("formula_kind") or "")
+    return (0 if kind == "verbatim" else 1, _CONF_ORDER.get(str(rec.get("confidence") or ""), 3))
+
+
+def select_injectable_records(
+    records: list[dict[str, Any]] | None,
+    *,
+    available_fields: Iterable[str] | None = None,
+    spec: dict[str, Any] | None = None,
+    max_items: int | None = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """筛出可注入记录：``executable=true`` → 字段可用性门控 → 排序 → 截断。
+
+    字段门控**复用课题门控的既有机制**（``classify_question_fields``：别名归一 → 精确命中 →
+    列族前缀判定），``available_fields`` 为空表示未提供可用列信息 → 不判定（与课题门控
+    "空即不判定"一致）。
+
+    与课题门控的唯一差别：记录字段是抽取侧**已按本仓列名校验过**的（``fields_local``），
+    因此"无法判定"（既非已知列、又无列族前缀）在这里等价于**未载入**——而 ``expr_local``
+    是要逐字进 DSL 评估的，缺一个字段就是硬失败，故按**零缺列**过滤，比课题的
+    ``min_ratio`` 严；否则题面会承诺本 run 跑不通的表达式。
+    返回 (入选记录, 被门控剔除的字段)。
+    """
+    policy = resolve_question_field_gate(spec)
+    avail = available_field_set(available_fields)
+    limit = int(FACTOR_RECORDS_MAX_ITEMS if max_items is None else max_items)
+    kept: list[dict[str, Any]] = []
+    dropped: list[str] = []
+    for rec in sorted([r for r in (records or [])
+                       if r.get("executable") and str(r.get("expr_local") or "").strip()],
+                      key=_record_rank):
+        fields = [str(f) for f in (rec.get("fields_local") or [])]
+        if policy["enabled"] and avail and fields:
+            _hits, missing, unknown = classify_question_fields({"suggested_fields": fields}, avail)
+            miss = list(missing) + list(unknown)
+            if miss:
+                dropped += miss
+                continue
+        kept.append(rec)
+    return kept[:max(1, limit)], dropped
+
+
+def _record_freq_text(rec: dict[str, Any], freq_index: dict[str, dict[str, Any]] | None) -> str:
+    """频率标签建议：以 report_freq_verified.jsonl 为准；未确认 → "研报未说明频率"。"""
+    row = (freq_index or {}).get(_norm_source(rec.get("source"))) or {}
+    freq = row.get("freq_final") or row.get("rebalance_freq")
+    label = row.get("label_final") or row.get("label_col_hint")
+    if not freq and str(rec.get("freq_source") or "") == "report_index":
+        freq = rec.get("eval_freq_hint")
+        label = rec.get("label_col_hint")
+    if not freq:
+        return "研报未说明频率"
+    return f"{freq}" + (f" / label={label}" if label else "") + "（report_freq_verified）"
+
+
+def _record_tree_text(rec: dict[str, Any], limit: int = 220) -> str:
+    """算子树压成单行（多行缩进 → 空格折叠）；缺树退化到 ``ops_used`` 列表。"""
+    tree = " ".join(str(rec.get("op_tree") or "").split())
+    if not tree:
+        tree = " → ".join(str(o) for o in (rec.get("ops_used") or [])) or "-"
+    if len(tree) > limit:
+        tree = tree[:limit] + "…"
+    fams = "/".join(str(f) for f in (rec.get("op_families") or [])) or "-"
+    return f"{tree}（算子族：{fams}）"
+
+
+def render_factor_records_block(
+    records: list[dict[str, Any]] | None,
+    *,
+    available_fields: Iterable[str] | None = None,
+    spec: dict[str, Any] | None = None,
+    freq_index: dict[str, dict[str, Any]] | None = None,
+    question: dict[str, Any] | None = None,
+    report_source: str = "",
+    max_items: int | None = None,
+) -> str:
+    """渲染"本报告因子清单"题面块（spec §7）。
+
+    - 只列 ``executable=true`` 且字段在本 run 载入的记录，上限 ``max_items``（默认 10）；
+    - 每条给 name / expr_local / direction / formula_kind（verbatim="研报原文公式"，
+      derived="⚠ 由文字定义推导，待验证"）/ 数据面 focus_facets / 算子树 op_tree / 频率标签；
+    - 全部被字段门控剔除或没有可执行记录 → 只返回一行说明（调用方据此省略该块）。
+    """
+    policy = (spec or {}).get("report_policy") or {}
+    if max_items is None:
+        try:
+            max_items = int(policy.get("factor_records_max_items", FACTOR_RECORDS_MAX_ITEMS))
+        except (TypeError, ValueError):
+            max_items = FACTOR_RECORDS_MAX_ITEMS
+    picked, dropped = select_injectable_records(
+        records, available_fields=available_fields, spec=spec, max_items=max_items,
+    )
+    if not picked:
+        uniq = list(dict.fromkeys(dropped))
+        why = f"（可执行公式涉及的字段本 run 未载入：{'、'.join(uniq[:6])}）" if uniq else ""
+        return f"- ⚠ {FACTOR_RECORDS_NO_FORMULA_NOTE}{why}；请按上方机制卡与研报原文自行落地。"
+    src = str(report_source or (picked[0].get("source") or ""))
+    qid = str((question or {}).get("question_id") or "-")
+    lines = [
+        f"## {FACTOR_RECORDS_BLOCK_TITLE}（抽取自研报表格，仅列本 run 可执行公式；最多 {max_items} 条）",
+        f"- 来源报告：{Path(src).stem if src else '-'}（课题 {qid}）；来源文件 `{FACTOR_RECORDS_FILE}`",
+        "- 排序：研报原文公式(verbatim) 优先，其次文字定义推导(derived)；`expr_local` 可直接进 DSL 评估，"
+        "**不得改变机制语义**。",
+    ]
+    for i, rec in enumerate(picked, 1):
+        kind = str(rec.get("formula_kind") or "")
+        kind_text = "研报原文公式" if kind == "verbatim" else "⚠ 由文字定义推导，待验证"
+        lines.append(f"{i}. **{rec.get('name') or '-'}** — `{rec.get('expr_local')}`")
+        facets = "、".join(str(f) for f in (rec.get("focus_facets") or [])) or "-"
+        lines.append(f"   - 方向：{rec.get('direction') or '-'} ｜ 公式档：{kind_text} ｜ 数据面：{facets}")
+        lines.append(f"   - 算子树：{_record_tree_text(rec)}")
+        if kind != "verbatim":
+            deriv = " ".join(str(rec.get("derivation") or "").split())[:140]
+            if deriv:
+                lines.append(f"   - 推导依据：{deriv}")
+        lines.append(f"   - 频率标签建议：{_record_freq_text(rec, freq_index)}")
+    if dropped:
+        uniq = list(dict.fromkeys(dropped))
+        lines.append(f"- （以下字段本 run 未载入，相关因子已剔除：{'、'.join(uniq[:6])}）")
     return "\n".join(lines)
 
 
@@ -538,12 +809,19 @@ def render_diverge_task(question: dict, reproduce_factor: str = "", dims=_DIVERG
 
 
 def render_reproduce_task(question: dict, spec: dict | None = None, card: dict | None = None,
-                          evidence: str = "") -> str:
+                          evidence: str = "", *, factor_records: list[dict] | None = None,
+                          available_fields: Iterable[str] | None = None,
+                          freq_index: dict | None = None) -> str:
     """研报模式的**复现题面**（Phase 1）：把课题自带的机制物料变成"必须复现"的任务块。
 
     物料来自题库字段本身（construction_guide / empirical_findings / suggested_fields /
     suggested_operators / expected_shape / expected_sign / falsifier），不依赖机制卡扩容
     （卡扩容是后续的增强，见 docs/specs/alphaagent_report_reproduce_diverge_spec.md §3）。
+
+    spec §7 接入：额外注入"本报告因子清单"块（抽取侧 ``factor_records``，只读 jsonl，
+    ``report_policy.inject_factor_records=False`` 可关；``factor_records`` 显式传入则跳过落盘读取）。
+    ``available_fields``（运行期 available_columns）用于**字段可用性过滤**，避免题面承诺
+    本 run 未载入的字段；未提供 → 不判定。
     """
     if not question:
         return ""
@@ -585,6 +863,21 @@ def render_reproduce_task(question: dict, spec: dict | None = None, card: dict |
     if evidence:
         parts.append("- **研报原文片段（含公式/表格，来自 MinerU 重抽语料；据此落地表达式）**：")
         parts.append("  " + "\n  ".join(str(evidence).splitlines()[:20]))
+    if bool(((spec or {}).get("report_policy") or {}).get("inject_factor_records", True)):
+        try:
+            _recs = factor_records if factor_records is not None else load_factor_records(spec)
+            _matched, _src = match_report_records(question, card, _recs)
+            if _matched:
+                _fblock = render_factor_records_block(
+                    _matched, available_fields=available_fields, spec=spec,
+                    freq_index=freq_index if freq_index is not None else load_report_freq_index(spec),
+                    question=question, report_source=_src,
+                )
+                if _fblock:
+                    parts.append("")
+                    parts.append(_fblock)
+        except Exception as _e:  # noqa: BLE001
+            logger.warning("研报因子清单注入失败（失败静默）: %s", _e)
     parts += [
         "",
         "**硬约束（违反会被直接拒绝，不消耗评估额度）**：",

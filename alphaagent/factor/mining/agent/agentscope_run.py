@@ -1007,10 +1007,15 @@ async def run_factor_mining_agentscope(
                     ) or ""
                 except Exception:  # noqa: BLE001
                     _evidence = ""
-                _rep_task = render_reproduce_task(current_question, spec, card=_card, evidence=_evidence)
+                # §7：把抽取侧的"本报告因子清单"接进复现题面（只读 jsonl + 渲染，不改判定）。
+                # 字段可用性过滤用本 run 真实可用列（题面不得承诺未载入的字段）。
+                _rep_task = render_reproduce_task(
+                    current_question, spec, card=_card, evidence=_evidence,
+                    available_fields=locals().get("_available_fields") or [],
+                )
                 if _rep_task:
                     block = f"{block}\n\n{_rep_task}" if block else _rep_task
-                    log_step("report_reproduce_task", f"turn={outer_turn} qid={_qid} chars={len(_rep_task)} card={(_card or {}).get('card_id') or '-'} evidence={len(_evidence)}")
+                    log_step("report_reproduce_task", f"turn={outer_turn} qid={_qid} chars={len(_rep_task)} card={(_card or {}).get('card_id') or '-'} evidence={len(_evidence)} factor_block={'yes' if '本报告因子清单' in _rep_task else 'no'}")
             if _rag_phase == "diverge":
                 try:
                     from alphaagent.factor.mining.agent.question_queue import render_diverge_task

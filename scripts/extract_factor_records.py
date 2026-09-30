@@ -68,7 +68,13 @@ def load_fields() -> set[str]:
     return fields
 
 
-from scripts._factor_expr_tools import apply_alias, parse_op_tree, try_construct
+from scripts._factor_expr_tools import (
+    apply_alias,
+    infer_focus_facets,
+    op_families,
+    parse_op_tree,
+    try_construct,
+)
 
 def load_index(force: bool = False) -> tuple[set[str], set[str]]:
     """算子/字段集合：优先读落盘缓存（源文件 mtime 未变即复用），否则重建并写回。"""
@@ -298,6 +304,10 @@ def parse_one(path: Path, root: Path, retries: int = 2) -> tuple[list[dict], lis
                     ok3, _ = validate_expr(tmpl)
                     if ok3:
                         expr_local, ok, why, repair_note = tmpl, True, "ok", "construct:" + str(kw)
+            # 算子树：在**修复链之后**用最终 expr_local 解析（7b18037 引入 _TREE 占位后
+            # 漏了这一步，导致新抽记录的 ops_used/op_tree 恒为空）。
+            if ok and expr_local:
+                _TREE = parse_op_tree(expr_local)
             if kind == "verbatim" and not grounded:
                 kind, raw = "derived", None  # 未回证 → 降级为推导，不冒充原文
             if kind == "null" or not expr_local or not ok:
@@ -316,8 +326,10 @@ def parse_one(path: Path, root: Path, retries: int = 2) -> tuple[list[dict], lis
                 "executable": bool(ok),
                 "validate": why,
                 "repair": repair_note,
-                "ops_used": list(_TREE[1]) if _TREE else [],
+                "ops_used": list(dict.fromkeys(_TREE[1])) if _TREE else [],
                 "op_tree": _TREE[0] if _TREE else None,
+                "op_families": op_families(_TREE[1]) if _TREE else [],
+                "focus_facets": infer_focus_facets(expr_local, it.get("fields_local") or []),
                 "null_reason": (it.get("null_reason") or (None if ok else why)) if not ok else None,
                 "grounded": grounded,
                 "report_rebalance_freq": it.get("report_rebalance_freq"),
@@ -343,6 +355,27 @@ def parse_one(path: Path, root: Path, retries: int = 2) -> tuple[list[dict], lis
     return recs, stats
 
 
+def enrich_records(rows: list[dict]) -> list[dict]:
+    """给**已有**记录补齐两个派生字段（纯函数，不调 LLM、不改其它字段）。
+
+    - ``op_families``：由 ``ops_used`` 归族（族名取自 operator_tree.json）；
+    - ``focus_facets``：由 ``expr_local``/``fields_local`` 推断数据面（复用 FACET_DEFS 命名）。
+    顺带按最终 ``expr_local`` 重算 ``ops_used``/``op_tree``（修 7b18037 引入的空树回归）。
+    """
+    out: list[dict] = []
+    for rec in rows:
+        rec = dict(rec)
+        expr = rec.get("expr_local")
+        if rec.get("executable") and expr and validate_expr(str(expr))[0]:
+            tree, ops = parse_op_tree(str(expr))
+            rec["op_tree"] = tree
+            rec["ops_used"] = list(dict.fromkeys(ops))
+        rec["op_families"] = op_families(rec.get("ops_used") or [])
+        rec["focus_facets"] = infer_focus_facets(expr, rec.get("fields_local") or [])
+        out.append(rec)
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="研报因子清单抽取 P1-a（表块 + 三档公式 + 本仓算子/字段硬约束）")
     ap.add_argument("--corpus", default=str(DEFAULT_CORPUS))
@@ -353,9 +386,22 @@ def main() -> int:
     ap.add_argument("--only", default="")
     ap.add_argument("--require-table", action="store_true")
     ap.add_argument("--no-cache", action="store_true", help="忽略表级抽取缓存，强制重新调用 LLM")
+    ap.add_argument("--enrich", default="",
+                    help="只给已有 jsonl 原地补齐 focus_facets/op_families（不调 LLM，保内容不变）")
     ap.add_argument("--freq-index", default=str(ROOT / "data" / "research_reports" / "knowledge" / "report_freq_verified.jsonl"),
                     help="报告级频率索引 jsonl（fail-closed：缺失即 label=null）")
     args = ap.parse_args()
+
+    if args.enrich:
+        src = Path(args.enrich)
+        rows = [json.loads(l) for l in src.read_text(encoding="utf-8").splitlines() if l.strip()]
+        rows = enrich_records(rows)
+        src.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n", encoding="utf-8")
+        exe = [r for r in rows if r.get("executable")]
+        print(f"补齐 {len(rows)} 条（可执行 {len(exe)}）| focus_facets 非空 "
+              f"{sum(1 for r in rows if r.get('focus_facets'))} | op_families 非空 "
+              f"{sum(1 for r in rows if r.get('op_families'))} → {src}", flush=True)
+        return 0
 
     global FREQ_INDEX, TABLE_CACHE, NO_CACHE
     NO_CACHE = bool(args.no_cache)
