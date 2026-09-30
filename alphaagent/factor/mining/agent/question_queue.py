@@ -342,7 +342,9 @@ _CARDS_CACHE: list[dict] | None = None
 def load_mechanism_cards() -> list[dict]:
     """加载机制卡（含 MinerU 语料新抽的卡）；失败返回空表。"""
     global _CARDS_CACHE
-    if _CARDS_CACHE is not None:
+    # 只在缓存**非空**时短路：空表不固化，否则"首次调用时文件不存在"会把 [] 缓存住，
+    # 本进程后续所有调用永远拿不到机制卡（2026-09-30 review 修）。
+    if _CARDS_CACHE:
         return _CARDS_CACHE
     import json
     import subprocess
@@ -372,7 +374,9 @@ def load_mechanism_cards() -> list[dict]:
                 continue
         if cards:
             break
-    _CARDS_CACHE = cards
+    # 只缓存非空结果（见上方短路注释）：空表下次调用重试。
+    if cards:
+        _CARDS_CACHE = cards
     return cards
 
 
@@ -409,7 +413,10 @@ def find_card_for_question(question: dict, cards: list[dict] | None = None) -> d
 
     title = str((best.get("source") or {}).get("title") or "")
     segs = [t for t in _re.findall(r"[\u4e00-\u9fa5]{4,}", title)]
-    if any(seg in qtext for seg in segs):
+    # 硬门槛也要求有基本分（best_score > 0）：否则任何一篇标题里含"多因子模型"这类
+    # 通用词的卡，只要该词出现在课题文本里就会被配上，绕过下面的分数阈值
+    # （2026-09-30 review 修；与本块"宁可不给卡，也不给误导性机制"的意图对齐）。
+    if best_score > 0 and any(seg in qtext for seg in segs):
         return best
     if best_score >= 2.0 and _title_similar(best, qtext) >= 0.35:
         return best

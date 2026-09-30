@@ -119,4 +119,10 @@ def set_run_gate(gate: dict[str, Any] | None) -> None:
 
 
 def get_run_gate() -> dict[str, Any]:
-    return _CURRENT_GATE
+    """返回进程内网关的**副本**（调用方不得依赖其身份）。
+
+    2026-09-30 review 修：原实现 `return _CURRENT_GATE` 返回全局字典本体，任何调用方
+    原地改（例如判定通过后 `gate["phase"] = "diverge"`）都会**永久污染**全局网关 →
+    同一进程后续新题的复现判定 phase 永远是 diverge，被静默跳过。
+    """
+    return dict(_CURRENT_GATE)

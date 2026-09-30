@@ -9,13 +9,24 @@
 param(
     [string]$Root = "D:\Quant\quant_ui",
     [int]$MinYear = 2020,
-    [int]$Workers = 2
+    [int]$Workers = 2,
+    [string]$Mineru = ""    # 留空时取 $env:MINERU_EXE，再退回本机默认安装路径
 )
 
-$mineru = "D:\Quant\MinerU\.venv\Scripts\mineru.exe"
+$mineru = if ($Mineru) { $Mineru } elseif ($env:MINERU_EXE) { $env:MINERU_EXE } else { "D:\Quant\MinerU\.venv\Scripts\mineru.exe" }
 $logDir = Join-Path $Root "logs"
-$out = Join-Path $Root "logs\batch_mineru_recent.out"
+$out = Join-Path $logDir "batch_mineru_recent.out"
+# 日志轮转：Start-Process 的重定向是**覆盖**写，直接续跑会把上一轮日志清空
+# （2026-09-30 review 修）→ 先把上一轮 recent 归档为带时间戳的名字，再开新 recent。
+New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+foreach ($f in @($out, (Join-Path $logDir "batch_mineru_recent.err"))) {
+    if (Test-Path $f) {
+        $stamp = (Get-Item $f).LastWriteTime.ToString("yyyyMMdd_HHmmss")
+        Move-Item -LiteralPath $f -Destination ($f -replace "_recent\.", "_$stamp.") -Force
+    }
+}
 $env:MINERU_MODEL_SOURCE = "modelscope"
+$env:MINERU_EXE = $mineru    # 传给子进程；batch_mineru_parse.py 读该变量
 
 # 1) 幂等：已有驱动就不重复起
 $running = Get-CimInstance Win32_Process -Filter "Name='pythonw.exe' or Name='python.exe'" |
