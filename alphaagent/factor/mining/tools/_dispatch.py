@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any
 
@@ -463,6 +464,15 @@ class _DispatchMixin:
             result["ablation_check"] = {"verdict": "skipped", "error": f"{type(exc).__name__}: {str(exc)[:120]}"}
 
     def _auto_val_verify(self, result: dict[str, Any], expr: str, factor_name: str) -> None:
+        # 研报模式复现判定：**先于所有 early-return**（2026-09-30 修：原先放在
+        # force_val_on_promising / 指标解析之后，且指标键取 metrics.cross_sectional_core——
+        # 实测结果里该键不存在（指标在 summary），导致判定几乎从不触发）。
+        try:
+            self._report_reproduce_judge(result, factor_name)
+        except Exception as _e:  # noqa: BLE001
+            logging.info("report_reproduce_judge_exception %s", _e)
+
+
         """训练海选过线（promising 线）后**系统自动**跑一次样本外验证。
 
         2026-09-25（feat/promising-to-val-gate）：promising 语义 = "训练样本海选
@@ -488,42 +498,6 @@ class _DispatchMixin:
                 cov_f = float(cov)
             except (TypeError, ValueError):
                 return
-            # ── 研报模式复现判定（Phase 2b/2c，2026-09-30）──
-            # 必须在 promising 门槛**之前**判定：复现判据是"保真"，不是"强度"，
-            # 指标不达 promising 线时下面会 early-return，故放这里才能生效。
-            # 两个通过条件（满足其一）：
-            #   ① 形态对账 confirmed（spec §2.3 的主判据：因子形态与研报预期一致）
-            #   ② 信号存在档 ic≥reproduce_min_abs_ic 且 icir≥reproduce_min_icir
-            _rgate = getattr(self, "report_reproduce_gate", None) or {}
-            if _rgate.get("phase") == "reproduce" and _rgate.get("qid"):
-                _rp = getattr(self, "report_policy", None) or {}
-                _rep_ic = float(_rp.get("reproduce_min_abs_ic", 0.010))
-                _rep_icir = float(_rp.get("reproduce_min_icir", 0.10))
-                _shape = str((result.get("prediction_check") or {}).get("verdict") or "")
-                _by_metrics = ic_f >= _rep_ic and icir_f >= _rep_icir
-                _by_shape = _shape == "confirmed"
-                if _by_metrics or _by_shape:
-                    try:
-                        from alphaagent.factor.mining.agent.question_state import mark_reproduce_ok
-
-                        _parts = []
-                        if _by_shape:
-                            _parts.append(f"shape={_shape}")
-                        if _by_metrics:
-                            _parts.append("signal=ok")
-                        _parts.append(f"ic={ic_f:.4f} icir={icir_f:.4f} cov={cov_f:.3f}")
-                        _why = " | ".join(_parts)
-                        mark_reproduce_ok(
-                            str(_rgate.get("mode") or "report"),
-                            str(_rgate["qid"]),
-                            int(_rgate.get("lock_rounds") or 3),
-                            factor=factor_name,
-                            detail=_why,
-                        )
-                        _rgate["phase"] = "diverge"   # 本 turn 后续同题评估即视为发散
-                    except Exception:  # noqa: BLE001
-                        pass
-
             from alphaagent.factor.mining.research_spec import DEFAULT_RESEARCH_SPEC
 
             ep = DEFAULT_RESEARCH_SPEC["evaluation_policy"]
@@ -1252,3 +1226,44 @@ class _DispatchMixin:
             "window": f"[{rec_start.date()} ~ {mining_end.date()}]",
             "summary": f"已通过 mRMR 选出 {len(ranking)} 个互补因子（Top: {', '.join(r['name'] for r in ranking[:3])}）",
         }
+
+    def _report_reproduce_judge(self, result: dict[str, Any], factor_name: str) -> None:
+        """研报模式复现判定（唯一实现）。
+
+        通过条件（满足其一）：① 形态对账 verdict==confirmed；② |IC|≥reproduce_min_abs_ic
+        且 ICIR≥reproduce_min_icir。指标**兼容** ``metrics.cross_sectional_core`` 与
+        ``summary`` 两种结构（实测引擎输出为后者）。每次判定都写日志，便于事后归因。
+        """
+        gate = getattr(self, "report_reproduce_gate", None) or {}
+        phase = str(gate.get("phase") or "")
+        qid = str(gate.get("qid") or "")
+        if phase != "reproduce" or not qid:
+            return
+        rp = getattr(self, "report_policy", None) or {}
+        min_ic = float(rp.get("reproduce_min_abs_ic", 0.010))
+        min_icir = float(rp.get("reproduce_min_icir", 0.10))
+        cs = (result.get("metrics") or {}).get("cross_sectional_core") or result.get("summary") or {}
+        try:
+            ic_f = abs(float(cs.get("ic")))
+            icir_f = float(cs.get("icir"))
+        except (TypeError, ValueError):
+            logging.info("report_reproduce_judge qid=%s factor=%s ic/icir 缺失 -> 跳过", qid, factor_name)
+            return
+        shape = str((result.get("prediction_check") or {}).get("verdict") or "")
+        by_metrics = ic_f >= min_ic and icir_f >= min_icir
+        by_shape = shape == "confirmed"
+        if not (by_metrics or by_shape):
+            logging.info(
+                "report_reproduce_judge qid=%s factor=%s ic=%.4f icir=%.4f shape=%s -> 未过线",
+                qid, factor_name, ic_f, icir_f, shape or "-",
+            )
+            return
+        from alphaagent.factor.mining.agent.question_state import mark_reproduce_ok
+
+        detail = ("shape=confirmed" if by_shape else "") + ((" | " if by_shape else "") if by_metrics else "") +                  f"ic={ic_f:.4f} icir={icir_f:.4f}"
+        mark_reproduce_ok(
+            str(gate.get("mode") or "report"), qid, int(gate.get("lock_rounds") or 3),
+            factor=factor_name, detail=detail,
+        )
+        gate["phase"] = "diverge"
+        logging.info("report_reproduce_judge qid=%s factor=%s PASS [%s] -> reproduce_ok", qid, factor_name, detail)

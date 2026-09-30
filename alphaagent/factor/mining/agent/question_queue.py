@@ -302,6 +302,12 @@ def question_missing_fields(
     return tuple(missing)
 
 
+_THEORY_RE_SRC = (
+    r"定价公式|无套利|风险溢价|引理|定理|证明|推导|式（\d|式\(\d|假设检验的统计量|"
+    r"参考文献|附录|本文结构|文献综述"
+)
+
+
 def _clean_question_text(text: str, limit: int = 700) -> str:
     """清洗题库文本：去掉表格残渣与 HTML 注释（实测 23% 课题的 construction_guide 是表格块）。
 
@@ -313,6 +319,7 @@ def _clean_question_text(text: str, limit: int = 700) -> str:
     if not text:
         return ""
     t = re.sub(r"<!--.*?-->", " ", str(text), flags=re.S)
+    theory = re.compile(_THEORY_RE_SRC)
     keep = []
     for line in t.splitlines():
         line = line.strip()
@@ -320,6 +327,8 @@ def _clean_question_text(text: str, limit: int = 700) -> str:
             continue
         if line.count("|") >= 2 or re.fullmatch(r"[\-|\s:]+", line):
             continue          # 表格行/分隔行
+        if theory.search(line):
+            continue          # 论文/理论推导段（实测 construction_guide 常抓到 APT 定价公式这类内容）
         keep.append(line)
     out = " ".join(" ".join(keep).split())
     if len(out) < 20:
@@ -388,10 +397,32 @@ def find_card_for_question(question: dict, cards: list[dict] | None = None) -> d
             score += 3.0
         if score > best_score:
             best, best_score = c, score
-    # 阈值放宽到 1.0（2026-09-30 实测：810 张卡时仍频繁 card=-，课题名与卡标题
-    # 往往只有 1 个共享实词——例如"趋势选股"vs"趋势因子"）。宁可给一张弱匹配的
-    # 参考卡（题面里标注为参考），也比复现轮完全没有机制物料好。
-    return best if best_score >= 1.0 else None
+    # 阈值回到 2.0（2026-09-30 复盘：1.0 会错配——RQ_020「Alpha 因子库精简」被配上
+    # 《动态情景多因子 alpha 模型》的卡并带出误导性参考 DSL；错配比没有卡更糟）。
+    # 例外：标题与课题高度重合（bigram Jaccard ≥ 0.34）时即使只共享 1 个实词也放行。
+    if best and best_score >= 2.0:
+        return best
+    # 兜底：只接受"同机构 + 标题与课题高度重合"的卡（否则宁可不给卡）
+    if best:
+        src = best.get("source") or {}
+        org = str(src.get("org") or "")
+        if org and org in qtext and _title_similar(best, qtext) >= 0.5:
+            return best
+    return None
+
+
+def _title_similar(card: dict, question_text: str) -> float:
+    """卡标题与课题文本的字符二元组 Jaccard（判"是否同一篇报告"）。"""
+    import re as _re
+
+    title = str((card.get("source") or {}).get("title") or "")
+    clean = lambda t: _re.sub(r"[^\u4e00-\u9fa5A-Za-z0-9]", "", t)
+    a, b = clean(title), clean(question_text)
+    if len(a) < 6 or len(b) < 6:
+        return 0.0
+    ba = {a[i:i + 2] for i in range(len(a) - 1)}
+    bb = {b[i:i + 2] for i in range(len(b) - 1)}
+    return len(ba & bb) / max(1, len(ba | bb))
 
 
 def _card_block(card: dict) -> str:
@@ -498,8 +529,17 @@ def render_reproduce_task(question: dict, spec: dict | None = None, card: dict |
     if ops:
         parts.append(f"- 建议算子：{', '.join(map(str, ops))}")
     parts.append(f"- 期望形态：{shape}；期望方向：{sign if sign is not None else '-'}")
-    if falsifier:
+    if falsifier and falsifier[:30] not in (findings or "")[:120]:
         parts.append(f"- 证伪条件：{falsifier}")
+    parts += [
+        "",
+        "**判定标准（系统按此判定，满足其一即「复现通过」并进入发散阶段）**：",
+        "1. **形态对账 confirmed**：你提交的 `prediction.expected_shape / expected_strong_side / expected_sign` "
+        "必须与因子实际分层形态一致（单调递增/递减、倒U、U形、极端尖峰、条件子组）；",
+        "2. **信号存在档**：|IC| ≥ 0.010 且 ICIR ≥ 0.10（强度目标留给发散阶段）。",
+        "→ **务必认真填 `prediction`**：胡乱填或与研报预期不符，形态对账会判 `unverifiable`/"
+        "`contradicted`，本轮复现即作废（别把 expected_shape 填成 'monotonic' 这类非法值）。",
+    ]
     _cb = _card_block(card)
     if _cb:
         parts.append(_cb)
