@@ -1247,15 +1247,16 @@ class _DispatchMixin:
             ic_f = abs(float(cs.get("ic")))
             icir_f = float(cs.get("icir"))
         except (TypeError, ValueError):
-            logging.info("report_reproduce_judge qid=%s factor=%s ic/icir 缺失 -> 跳过", qid, factor_name)
+            log_step("report_reproduce_judge", f"qid={qid} factor={factor_name} 指标缺失 -> 跳过")
             return
         shape = str((result.get("prediction_check") or {}).get("verdict") or "")
         by_metrics = ic_f >= min_ic and icir_f >= min_icir
         by_shape = shape == "confirmed"
         if not (by_metrics or by_shape):
-            logging.info(
-                "report_reproduce_judge qid=%s factor=%s ic=%.4f icir=%.4f shape=%s -> 未过线",
-                qid, factor_name, ic_f, icir_f, shape or "-",
+            log_step(
+                "report_reproduce_judge",
+                f"qid={qid} factor={factor_name} ic={ic_f:.4f} icir={icir_f:.4f} "
+                f"shape={shape or '-'} -> 未过线",
             )
             return
         from alphaagent.factor.mining.agent.question_state import mark_reproduce_ok
@@ -1266,4 +1267,4 @@ class _DispatchMixin:
             factor=factor_name, detail=detail,
         )
         gate["phase"] = "diverge"
-        logging.info("report_reproduce_judge qid=%s factor=%s PASS [%s] -> reproduce_ok", qid, factor_name, detail)
+        log_step("report_reproduce_judge", f"qid={qid} factor={factor_name} PASS [{detail}] -> reproduce_ok")
