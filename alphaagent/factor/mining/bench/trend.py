@@ -30,6 +30,13 @@ def get_metric_trend(
     for d in UI_ROOT.iterdir():
         if not d.is_dir():
             continue
+        # 跳过**进行中**的 run：其 scorecard 尚未落盘（或只有部分快照），下面的"即时
+        # 轻量计算"兜底会把未完成值算进趋势末行，读表时极易误判为回归
+        # （2026-10-01 实测：run 2cd63de4f8a3 跑 5 分钟即出现 family_coverage=2 的
+        # 假[-]）。完成态判据：agentscope_run 在 run 收尾时写 `<log>.messages.json.gz`
+        # —— 正常结束 / max_turns / 中断都会写，故用它区分"跑完"与"在跑"。
+        if not any(d.glob("*.messages.json.gz")):
+            continue
         sc_file = d / "scorecard.json"
         sc = None
         if sc_file.is_file():
