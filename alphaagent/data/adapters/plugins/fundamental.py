@@ -96,6 +96,8 @@ _FINA_INDICATOR_COLS = {
     "roe": "funda_roe",
     "roa": "funda_roa",
     "roic": "funda_roic",
+    # 息税折旧摊销前利润（绝对额，元）：curated fina_indicator 原列 ebitda
+    "ebitda": "funda_ebitda",
     "grossprofit_margin": "funda_gross_margin",
     "netprofit_margin": "funda_net_margin",
     "debt_to_assets": "funda_debt_to_assets",

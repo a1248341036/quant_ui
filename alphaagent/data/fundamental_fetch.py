@@ -27,6 +27,7 @@ FINA_INDICATOR_COLUMN_MAP: dict[str, str] = {
     "ocfps": "funda_ocfps",
     "working_capital": "funda_fs_working_capital",
     "ebit": "funda_fs_ebit",
+    "ebitda": "funda_ebitda",
     "rd_exp": "funda_fs_rd_exp",
     "profit_dedt": "funda_profit_dedt",
     "current_ratio": "funda_current_ratio",

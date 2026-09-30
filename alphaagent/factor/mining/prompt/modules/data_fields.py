@@ -39,6 +39,7 @@ _FUNDAMENTAL_SECTION_MD = """### 基本面与披露日历（`build_panel --with-
 | `$funda_current_ratio` / `$funda_quick_ratio` | 流动比率 / 速动比率 |
 | `$funda_eps` / `$funda_eps_diluted` / `$funda_bps` | 每股收益 / 稀释EPS / 每股净资产 |
 | `$funda_ocfps` | 每股经营现金流 |
+| `$funda_ebitda` | 息税折旧摊销前利润（绝对额，注意规模标准化） |
 | `$funda_profit_dedt` | 扣非净利润（绝对额，注意规模标准化） |
 | `$funda_netprofit_yoy` / `$funda_or_yoy` / `$funda_tr_yoy` | 归母净利 / 营业收入 / 营业总收入 同比%（财报期同比） |
 | `$funda_ocf_yoy` / `$funda_roe_yoy` | 经营现金流 / ROE 同比% |
