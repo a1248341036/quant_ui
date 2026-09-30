@@ -291,9 +291,12 @@ class OVStore:
         for key, label in (
             ("unique_train_evaluated", "train 去重评估数"),
             ("unique_val_evaluated", "val 去重评估数"),
+            ("unique_auto_val_verified", "系统自动 val 验证数"),
+            ("unique_val_effective", "有效 val 覆盖（显式∪自动）"),
             ("candidate_stored", "候选入库"),
             ("production_stored", "正式入库"),
             ("train_to_val_rate", "train→val 保留比"),
+            ("train_to_val_rate_incl_auto", "train→val 保留比（含自动 val）"),
             ("val_to_production_rate", "val→入库率"),
         ):
             v = funnel.get(key)
