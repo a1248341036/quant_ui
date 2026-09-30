@@ -258,11 +258,32 @@ export const agentStore = reactive({
   },
   async archiveRun(run) {
     this.menuRunId = ''
+    // 归档可逆：已归档的再点即取消归档（后端 ArchiveRequest 一直支持 archived=false，
+    // 之前前端固定不传 body → 永远只归档，误点后没有回头路）。
+    const archived = !run.archived
     try {
-      await api('/api/alphaagent/runs/' + encodeURIComponent(run.run_id) + '/archive', { method: 'POST' })
+      await api('/api/alphaagent/runs/' + encodeURIComponent(run.run_id) + '/archive', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ archived }),
+      })
       await this.loadAgentRuns()
     } catch (e) {
-      this.error = '归档失败: ' + e.message
+      this.error = (archived ? '归档失败: ' : '取消归档失败: ') + e.message
+    }
+  },
+  async archiveAllRuns() {
+    const count = this.runs.length
+    if (!count) return
+    if (!window.confirm(`确定归档全部 ${count} 个最近任务？可切到「归档」查看，运行中的任务会跳过。`)) return
+    try {
+      const result = await api('/api/alphaagent/runs/archived', { method: 'POST' })
+      await this.loadAgentRuns()
+      if (result.skipped && result.skipped.length) {
+        this.error = `已归档 ${result.count} 个，${result.skipped.length} 个因仍在运行被跳过`
+      }
+    } catch (e) {
+      this.error = '全部归档失败: ' + e.message
     }
   },
   async deleteRun(run) {

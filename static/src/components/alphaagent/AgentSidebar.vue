@@ -15,6 +15,7 @@
     <div class="session-label">
       <span>{{ agent.showArchived ? '已归档任务' : '最近任务' }}</span>
       <span class="label-actions">
+        <button v-if="!agent.showArchived && agent.runs.length" class="archived-toggle" title="归档全部最近任务（运行中的会跳过；可在「归档」里取消归档）" @click="agent.archiveAllRuns">全部归档</button>
         <button v-if="agent.showArchived && agent.runs.length" class="archived-toggle danger" title="删除全部已归档任务" @click="agent.deleteAllArchived">一键删除</button>
         <button class="archived-toggle" :title="agent.showArchived ? '返回最近任务' : '查看已归档任务'" @click="agent.toggleArchived">
           {{ agent.showArchived ? '返回' : '归档' }}
@@ -56,7 +57,7 @@
         <button @click="agent.pinRun(agent.menuRun)">{{ agent.menuRun.pinned ? '取消置顶' : '置顶' }}</button>
         <button @click="agent.branchRun(agent.menuRun)">新建分支</button>
         <button @click="beginRename(agent.menuRun)">重命名</button>
-        <button class="archive-action" @click="agent.archiveRun(agent.menuRun)">归档</button>
+        <button class="archive-action" @click="agent.archiveRun(agent.menuRun)">{{ agent.menuRun.archived ? '取消归档' : '归档' }}</button>
         <button v-if="agent.menuRun.archived" class="delete-action" @click="agent.deleteRun(agent.menuRun)">删除</button>
       </div>
     </Teleport>

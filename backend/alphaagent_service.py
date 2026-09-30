@@ -855,29 +855,62 @@ def pin_run(run_id: str, pinned: bool) -> AgentRun | None:
     return run
 
 
+_RUN_QUIET_SEC = 900  # 轨迹静默多久算"不再推进"（批量归档与删除共用口径）
+
+
+def run_is_active(run: AgentRun) -> bool:
+    """run 是否仍在推进（批量归档/删除据此跳过）。
+
+    有进程句柄看进程是否退出；后端重启后恢复的、CLI/脚本直启的 run 没有句柄，
+    只能看轨迹新鲜度：15 分钟内有新事件即视为活跃。两处共用同一口径，避免出现
+    "删除跳过它、归档却把它藏起来"这类漂移。
+    """
+    if run.process is not None:
+        return run.process.poll() is None
+    jsonl = run._jsonl()
+    if jsonl is None or not jsonl.exists():
+        return False
+    try:
+        return time.time() - jsonl.stat().st_mtime < _RUN_QUIET_SEC
+    except OSError:
+        return False
+
+
 def delete_run(run_id: str) -> dict[str, Any] | None:
     """删除一个任务：从内存移除并清掉它的日志目录。
 
-    进程还活着时拒绝删除——先 stop 再删，避免边写边删。
+    仍在推进时拒绝删除——先 stop 再删，避免边写边删。
     """
     run = get_run(run_id)
     if run is None:
         return None
-    if run.process is not None and run.process.poll() is None:
+    if run_is_active(run):
         return {"run_id": run_id, "deleted": False, "reason": "run_still_running"}
-    # 无进程句柄但磁盘轨迹仍在推进（后端重启后恢复的活跃 run）：
-    # 直接删会连日志一起清掉，禁止删除，避免边写边删。
-    jsonl = run._jsonl()
-    if run.process is None and jsonl is not None and jsonl.exists():
-        try:
-            if time.time() - jsonl.stat().st_mtime < 900:
-                return {"run_id": run_id, "deleted": False, "reason": "run_still_running"}
-        except OSError:
-            pass
     shutil.rmtree(run.log_dir, ignore_errors=True)
     with _LOCK:
         _RUNS.pop(run_id, None)
     return {"run_id": run_id, "deleted": True}
+
+
+def archive_all_runs() -> dict[str, Any]:
+    """一键归档全部"最近任务"（archived=False）；仍在推进的跳过。
+
+    跳过运行中的 run 与一键删除同一口径：归档后它会从最近任务列表消失，正在跑的
+    任务失联比"列表里多留一行"麻烦得多。
+    """
+    hydrate_runs()
+    with _LOCK:
+        targets = [run for run in _RUNS.values() if not run.archived]
+    archived: list[str] = []
+    skipped: list[str] = []
+    for run in targets:
+        if run_is_active(run):
+            skipped.append(run.run_id)
+            continue
+        run.archived = True
+        run.save_meta()
+        archived.append(run.run_id)
+    return {"ok": True, "archived": archived, "skipped": skipped, "count": len(archived)}
 
 
 def delete_archived_runs() -> dict[str, Any]:
