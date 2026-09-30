@@ -340,6 +340,16 @@ function Execute-CnePipeline {
             } else {
                 $failedSoft += $wave
             }
+            # 如果波次执行失败，将该波次下所有尚未产生执行记录的预置数据集显式标记为"未执行/已受阻"
+            if ($Global:CnePredefinedSteps) {
+                $recordedNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+                foreach ($r in $resultsList) { [void]$recordedNames.Add($r.Dataset) }
+                foreach ($pre in $Global:CnePredefinedSteps) {
+                    if ($pre.Wave -eq $wave -and -not $recordedNames.Contains($pre.Dataset)) {
+                        Record-Result $pre.Dataset "failed" 0 "--" "受阻未执行: 前置步骤报错导致波次提前中断"
+                    }
+                }
+            }
         }
     }
 

@@ -96,6 +96,8 @@ _FINA_INDICATOR_COLS = {
     "roe": "funda_roe",
     "roa": "funda_roa",
     "roic": "funda_roic",
+    # 息税折旧摊销前利润（绝对额，元）：curated fina_indicator 原列 ebitda
+    "ebitda": "funda_ebitda",
     "grossprofit_margin": "funda_gross_margin",
     "netprofit_margin": "funda_net_margin",
     "debt_to_assets": "funda_debt_to_assets",
@@ -256,7 +258,14 @@ def load(
         pl.DataFrame({"symbol": pl.Series(symbols, dtype=pl.Utf8)}), how="cross"
     )
 
-    quarterly_sorted = quarterly.sort(["symbol", "ann_date"])
+    # 确定性 tie-breaker：同一 symbol 同一 ann_date 可能同时公告两期报表
+    # （如 2023 年报 + 2024Q1 同在 2024-04-29 披露）。polars join_asof 在等值右键上
+    # 取哪一行取决于物理行序 → 面板不可复现。这里先按 end_date 排序，再按
+    # (symbol, ann_date) 去重保留最后一行（= 报告期更晚的一期），使右表在 asof 键上唯一，
+    # 取值完全由数据决定、与物理行序无关。
+    quarterly_sorted = quarterly.sort(["symbol", "ann_date", "end_date"]).unique(
+        subset=["symbol", "ann_date"], keep="last", maintain_order=True
+    )
     grid_sorted = grid.sort(["symbol", "date"])
 
     expanded = grid_sorted.join_asof(
