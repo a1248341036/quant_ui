@@ -61,7 +61,7 @@ PAGE_RE = re.compile(r"<!--\s*page\s+(\d+)\s+of\s+(\d+)\s*-->")
 # 面板真实列名白名单（前缀族 + 具体列）。LLM 给出的 fields 不在其中一律丢弃。
 _BASE_FIELDS = {
     "close", "open", "high", "low", "volume", "amount", "turnover", "turnover_rate",
-    "vwap", "adj_close", "adj_open", "adj_high", "adj_low", "adj_close", "ret",
+    "vwap", "adj_close", "adj_open", "adj_high", "adj_low", "ret",
     "float_cap", "total_cap", "free_float_cap", "market_cap", "pe", "pb", "ps", "pcf",
     "funda_ocfps", "funda_roe", "funda_eps", "funda_bps", "funda_revenue", "funda_netprofit",
     "funda_gross_margin", "funda_net_margin", "funda_debt_ratio", "funda_total_assets",
@@ -682,16 +682,17 @@ def build_card(obj: dict[str, Any], full_text: str, full_norm: str, full_idx: li
     pages_out.extend(ev_pages)
     pages_out = sorted(set(pages_out)) or [1]
 
-    # confidence：由回证强度决定
+    # confidence：由回证强度决定（公式/数值能否逐字回证原文）
     verified_nums = sum(1 for k in ("ic", "icir") if evidence.get(k) is not None)
-    if formula_text and verified_nums >= 1 and dsl_hint:
+    if formula_text and verified_nums >= 1:
         confidence = "high"
     elif formula_text or verified_nums >= 1 or evidence.get("decile_shape"):
         confidence = "medium"
     else:
         confidence = "low"
-    if dsl_hint and not formula_text:
-        confidence = "medium" if confidence == "high" else confidence
+    # dsl_hint 是 LLM 生成的未回证猜测 → 下调一档（红线：generated_hint=True 降权）
+    if dsl_hint:
+        confidence = {"high": "medium", "medium": "low"}.get(confidence, confidence)
 
     card = {
         "card_id": card_id,
@@ -979,10 +980,11 @@ def run(cfg: dict[str, Any], args: argparse.Namespace) -> int:
         card, err2 = build_card(obj, text, full_norm, full_idx, parse_meta(path), rel, cid,
                                 cfg["model"], len(pages))
         if card is None:
-            return ("skip", rel, f"卡片不完整: {err2}")
+            # LLM 输出不稳定的瞬时/可重试失败 → 记 fail（只记账、可重试），不占 skip
+            return ("fail", rel, f"卡片不完整: {err2}")
         errs = validate_card(card)
         if errs:
-            return ("skip", rel, f"schema 校验失败: {errs}")
+            return ("fail", rel, f"schema 校验失败: {errs}")
         return ("ok", rel, card)
 
     with open(out_path, "a", encoding="utf-8") as fout, \
