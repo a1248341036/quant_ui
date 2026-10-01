@@ -744,14 +744,22 @@ def check_reproduce_fidelity(question: dict[str, Any] | None, expr: str, *,
                             "min_fields": _min_fields}
         if not _hit_ops:
             fails.append("structure_ops_missing=" + ",".join(_struct_ops[:4]))
-    elif _declared and _min_fields > 0:
-        _need_n = min(len(_declared), _min_fields)
+    elif _declared or _min_fields > 0:
+        # 声明字段覆盖率：须命中 ≥ min(声明字段数, min_fields) 个声明字段
+        _need_n = (min(len(_declared), _min_fields) if _min_fields else len(_declared))
         _hit_f = sorted(_declared & my_fields)
+        # 巡检实测（2026-10-02）：部分题声明 fields=[$close,$volume] 但 min_fields=5
+        # （抽取时只填了"参考公式的字段"，而非"结构所需字段"）→ 只查声明字段会让锚形同虚设。
+        # 故补一条：声明字段少于 min_fields 时，额外要求**复现用到的字段总数 ≥ min_fields**。
+        _need_total = _min_fields if _min_fields > len(_declared) else 0
         structure_anchor = {"applicable": True, "mode": "fields", "need_n": _need_n,
-                            "hit": _hit_f, "declared_fields": sorted(_declared),
-                            "min_fields": _min_fields}
-        if len(_hit_f) < _need_n:
+                            "hit": _hit_f, "need_total_fields": _need_total,
+                            "n_my_fields": len(my_fields),
+                            "declared_fields": sorted(_declared), "min_fields": _min_fields}
+        if _need_n and len(_hit_f) < _need_n:
             fails.append(f"declared_fields_hit={len(_hit_f)}<{_need_n}")
+        if _need_total and len(my_fields) < _need_total:
+            fails.append(f"fields_used={len(my_fields)}<min_fields={_need_total}")
 
     if need_f > 0 and len(anchor_pool) < need_f:
         fails.append(f"shared_{'specific_' if ref_specific else ''}fields="
