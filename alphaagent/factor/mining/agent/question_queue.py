@@ -786,6 +786,22 @@ def check_reproduce_fidelity(question: dict[str, Any] | None, expr: str, *,
         # **诊断**（记 below_min_fields），硬门只保留：① 声明的 structure_ops 必须命中
         # ② 弱声明时的复杂度地板（2 算子/2 字段，见上一分支）。
 
+    if not ref_fields and not ref_ops:
+        # 参照记录**存在但完全不含表达式文本**（实测 2026-10-02 / RQ_13e253：该报告 13 条记录
+        # 只有"联发科:营收""晶圆进口金额"这类指标名）→ 字段/算子锚**无比较对象**，此时
+        # `require_shared_field=1` 会判 `shared_fields=0<1` 而**永远失败**，该课题再也过不了复现
+        # （实测 64 条判定 0 PASS，模型其实用了题面声明的 `$funda_total_revenue`）。
+        # v2 抽取后 spec_text 类报告（占多数）都会命中此路径，故退化为「题面声明要素」锚：
+        # 仍受结构锚（structure_ops 命中 / 弱声明复杂度地板）约束，只是不再拿不存在的原文公式去比。
+        return {"passed": not fails,
+                "reason": ("no_reference_expr" if not fails
+                           else "structure_anchor:" + ",".join(fails)),
+                "n_records": len(refs), "field_jaccard": None, "op_jaccard": None,
+                "shared_fields": 0, "shared_ops": 0, "ref_fields": [],
+                "anchor_mode": "no_reference_expr",
+                "structure_anchor": structure_anchor,
+                "thresholds": cfg}
+
     if need_f > 0 and len(anchor_pool) < need_f:
         fails.append(f"shared_{'specific_' if ref_specific else ''}fields="
                      f"{len(anchor_pool)}<{need_f}")
