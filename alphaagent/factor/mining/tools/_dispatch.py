@@ -128,25 +128,30 @@ def _reproduce_strength(ic: float, icir: float, *, min_ic: float, min_icir: floa
 
 def _reproduce_passes(ic: float, icir: float, shape_verdict: str, *,
                       floor_ic: float, min_ic: float, min_icir: float):
-    """复现通过判据（唯一实现）：**【底线】 ∧ (【指标通道】 ∨ 【形态通道】)**。
+    """复现通过判据（唯一实现）：**【底线】 ∧ 【指标】 ∧ 【形态对账】**（三项全中）。
 
-    - **底线** `floor_ic`：``|IC| ≥ floor_ic``，两条通道都必须过。存在理由：形态对账
-      （`eval/prediction.py`）只验证"事先声明的可证伪预测是否成立"，**不验证强度**；
-      底线缺失时 |IC|≈0 的噪声母本仅凭形态就能进入发散（2026-10-01 实测 21 次过线里
-      13 次仅靠形态，最极端 `rq038_ma_ratio_v2` |IC|=0.0009/ICIR=−0.0068）。
-    - **指标通道**：|IC| ≥ min_ic 且 |ICIR| ≥ min_icir（两者都按 **abs**，负值=方向相反、
-      强度等价；方向由 prediction 对账与正式库 abs 门槛负责）。
-    - **形态通道**：prediction 对账 ``confirmed``（强侧/形态/IC 符号三项全中）。
+    2026-10-01 用户定调：把原先的「指标 **或** 形态」改为「**且**」——复现不仅要强度达标，
+    还必须**事先声明的可证伪预测成立**（强侧 + 形态 + 方向三项一致）。理由：
+      · 形态对账（`eval/prediction.py`）本身不验证强度，单独放行会让 |IC|≈0 的噪声母本
+        进入发散（实测 21 次过线里 13 次仅靠形态，最极端 `rq038_ma_ratio_v2` |IC|=0.0009）；
+      · 反之只按强度放行，则"机制理解错了但碰巧有 IC"的因子也会进入发散，发散阶段
+        会沿错误机制做变异。两者都成立才算真正复现了研报机制。
+
+    - **底线** `floor_ic`：``|IC| ≥ floor_ic``（默认与 min_ic 同值，故通常被指标项涵盖；
+      保留为显式项，便于单独调高底线而不动指标线）。
+    - **指标**：|IC| ≥ min_ic 且 |ICIR| ≥ min_icir（两者都按 **abs**，负值=方向相反、
+      强度等价；方向由形态对账的 expected_sign 与正式库 abs 门槛负责）。
+    - **形态对账**：`prediction_check == "confirmed"`（强侧/形态/IC 符号三项全中）。
 
     阈值唯一真源：``research_spec.DEFAULT_RESEARCH_SPEC['report_policy']``
     （reproduce_floor_abs_ic / reproduce_min_abs_ic / reproduce_min_icir），随 run gate
     传到判定侧（``agentscope_run._gate_state``）。
-    返回 ``(是否通过, 明细)``；明细含原始带符号值、abs 强度与三条通道命中情况，供日志/诊断。
+    返回 ``(是否通过, 明细)``；明细含原始带符号值、abs 强度与三项命中情况，供日志/诊断。
     """
     by_metrics, detail = _reproduce_strength(ic, icir, min_ic=min_ic, min_icir=min_icir)
     by_floor = detail["abs_ic"] >= floor_ic
     by_shape = shape_verdict == "confirmed"
-    return (by_floor and (by_metrics or by_shape)), {
+    return (by_floor and by_metrics and by_shape), {
         **detail,
         "floor_ic": floor_ic, "by_floor": by_floor,
         "by_metrics": by_metrics, "by_shape": by_shape,
@@ -1326,10 +1331,12 @@ class _DispatchMixin:
                                 expr: str = "") -> None:
         """研报模式复现判定（唯一实现）。
 
-        通过条件（满足其一，**且**须过"原文锚"保真度校验）：① 形态对账 verdict==confirmed；
-        ② |IC|≥reproduce_min_abs_ic 且 ICIR≥reproduce_min_icir。指标**兼容**
-        ``metrics.cross_sectional_core`` 与 ``summary`` 两种结构（实测引擎输出为后者）。
-        每次判定都写日志，便于事后归因。
+        通过条件（**三项全中**，且须过"原文锚"保真度校验）：
+        ① |IC| ≥ reproduce_floor_abs_ic（底线）；
+        ② |IC| ≥ reproduce_min_abs_ic 且 |ICIR| ≥ reproduce_min_icir（指标，均按绝对值）；
+        ③ 形态对账 verdict == confirmed（强侧/形态/IC 符号三项一致）。
+        指标**兼容** ``metrics.cross_sectional_core`` 与 ``summary`` 两种结构（实测引擎输出为后者）。
+        每次判定都写日志，便于事后归因。判据唯一实现在 ``_reproduce_passes``。
         """
         from alphaagent.factor.mining.report_channels import get_run_gate
 
