@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import subprocess
 import time
 from dataclasses import dataclass, asdict
@@ -126,11 +127,45 @@ def load_question_queue(spec: dict[str, Any] | None = None) -> list[dict[str, An
                 if line.strip():
                     questions.append(json.loads(line))
             if questions:
-                return questions
+                return _apply_require_factor_records(questions, spec)
         except Exception as e:
             logger.warning("读取问题题库失败: %s", e)
 
     return list(DEFAULT_RESEARCH_QUESTIONS)
+
+
+_QUESTION_INDEX_CACHE: dict[str, tuple[float, dict[str, dict[str, Any]]]] = {}
+
+
+def find_question(question_id: str, spec: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """按 qid 取课题（按文件 mtime 缓存的索引），供复现保真度校验使用。
+
+    不走 ``load_question_queue``（后者每次读全文件且可能被 require_factor_records 过滤）。
+    """
+    path = resolve_questions_file(spec)
+    if not path or not path.is_file():
+        return None
+    try:
+        stamp = path.stat().st_mtime
+    except OSError:
+        return None
+    key = str(path)
+    cached = _QUESTION_INDEX_CACHE.get(key)
+    if cached is None or cached[0] != stamp:
+        index: dict[str, dict[str, Any]] = {}
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if line.strip():
+                    q = json.loads(line)
+                    qid = str(q.get("question_id") or "")
+                    if qid:
+                        index[qid] = q
+        except Exception as e:  # noqa: BLE001
+            logger.warning("构建课题索引失败: %s", e)
+            return None
+        cached = (stamp, index)
+        _QUESTION_INDEX_CACHE[key] = cached
+    return cached[1].get(str(question_id or ""))
 
 
 # ── 课题字段门控（2026-09-28）────────────────────────────────────────────
@@ -566,6 +601,148 @@ def load_factor_records(spec: dict[str, Any] | None = None,
     return rows
 
 
+# ── 复现保真度「原文锚」（2026-10-01，**仅研报模式**）────────────────────
+# 背景（昨夜实测）：有原文公式的 10 个课题里，复现公式与原文的**字段 Jaccard 平均
+# 0.062、算子 Jaccard 0.085**（多组为 0）——模型只靠题面约束"脱稿自由探索"，
+# 用容易过训练线的通用因子（5 日反转 / Amihud 非流动性 / PE 动量）顶替原文机制
+# （K 线最短路径 / 60 日反转择时 / 一致预期字段）。而复现是否"过线"原本只看统计门槛，
+# 不校验保真度 → 缺少"以原文为锚"的硬约束。此处在复现过线判定前加机械校验。
+# 仅研报模式生效：配置放在 ``report_policy`` 下，且调用点只在 report gate 内。
+_REPRODUCE_FIDELITY_DEFAULTS: dict[str, Any] = {
+    "enabled": True,
+    "require_shared_field": 1,   # 至少命中 1 个原文公式用到的字段（0=不要求）
+    "min_field_jaccard": 0.0,    # 可选：字段 Jaccard 下限
+    "min_op_jaccard": 0.0,       # 可选：算子 Jaccard 下限
+    "min_shared_ops": 0,         # 可选：最少共享算子数
+}
+
+_FID_FIELD_RE = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)")
+_FID_OP_RE = re.compile(r"\b([A-Z][A-Z0-9_]{2,})\(")
+
+# 「通用行情/风格字段」：几乎所有报告与因子都会用到，**不能算作锚定证据**
+# （否则"脱稿"因子只要用了 $adj_close 就能蒙过 require_shared_field）。
+# 只影响 require_shared_field 的判定；Jaccard 仍按全量字段集计算。
+_FID_GENERIC_FIELDS: frozenset[str] = frozenset({
+    "adj_close", "close", "open", "high", "low", "vwap", "adj_vwap",
+    "volume", "amount", "turnover_rate", "turnover", "float_cap",
+    "total_cap", "adj_factor", "industry_sw_l1", "industry_sw_l2",
+    "ret", "pct_chg", "pre_close",
+})
+
+
+def _fid_sets(expr: str) -> tuple[set[str], set[str]]:
+    return set(_FID_FIELD_RE.findall(expr or "")), set(_FID_OP_RE.findall(expr or ""))
+
+
+def resolve_reproduce_fidelity(spec: dict[str, Any] | None = None) -> dict[str, Any]:
+    """保真度配置（``report_policy.reproduce_fidelity``），缺省见上方常量。"""
+    cfg = dict(_REPRODUCE_FIDELITY_DEFAULTS)
+    raw = ((spec or {}).get("report_policy") or {}).get("reproduce_fidelity")
+    if isinstance(raw, dict):
+        for k, v in raw.items():
+            if k in _REPRODUCE_FIDELITY_DEFAULTS:
+                cfg[k] = v
+    return cfg
+
+
+def check_reproduce_fidelity(question: dict[str, Any] | None, expr: str, *,
+                             spec: dict[str, Any] | None = None,
+                             records: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """复现公式 vs 该课题报告的原文公式：字段/算子重叠的**机械校验**。
+
+    返回 ``{passed, reason, n_records, field_jaccard, op_jaccard, shared_fields,
+    shared_ops, ref_fields, thresholds}``。
+
+    ``reason="no_reference"``：该报告不在抽取覆盖集内（无原文公式可比）→ **不因缺参照卡死**
+    （是否只派发有公式的课题由 ``report_policy.require_factor_records`` 决定）。
+    """
+    cfg = resolve_reproduce_fidelity(spec)
+    if records is None:
+        records = load_factor_records(spec)
+    matched = match_report_records(question, None, records)
+    if isinstance(matched, tuple):
+        matched = matched[0]
+    refs = [r for r in (matched or []) if isinstance(r, dict)]
+    if not refs:
+        return {"passed": True, "reason": "no_reference", "n_records": 0,
+                "field_jaccard": None, "op_jaccard": None,
+                "shared_fields": 0, "shared_ops": 0, "ref_fields": [],
+                "thresholds": cfg}
+
+    ref_fields: set[str] = set()
+    ref_ops: set[str] = set()
+    for r in refs:
+        f, o = _fid_sets(str(r.get("expr_local") or r.get("expr_raw") or ""))
+        ref_fields |= f
+        ref_ops |= o
+    my_fields, my_ops = _fid_sets(expr)
+    shared_f = ref_fields & my_fields
+    shared_o = ref_ops & my_ops
+    # 锚定证据：排除通用行情字段后的"报告特有字段"交集
+    shared_specific = shared_f - _FID_GENERIC_FIELDS
+    fj = len(shared_f) / max(1, len(ref_fields | my_fields))
+    oj = len(shared_o) / max(1, len(ref_ops | my_ops))
+
+    need_f = int(cfg.get("require_shared_field") or 0)
+    need_ops = int(cfg.get("min_shared_ops") or 0)
+    min_fj = float(cfg.get("min_field_jaccard") or 0.0)
+    min_oj = float(cfg.get("min_op_jaccard") or 0.0)
+
+    fails: list[str] = []
+    if need_f > 0 and len(shared_specific) < need_f:
+        fails.append(f"shared_specific_fields={len(shared_specific)}<{need_f}")
+    if need_ops > 0 and len(shared_o) < need_ops:
+        fails.append(f"shared_ops={len(shared_o)}<{need_ops}")
+    if min_fj > 0 and fj < min_fj:
+        fails.append(f"field_jaccard={fj:.3f}<{min_fj:.3f}")
+    if min_oj > 0 and oj < min_oj:
+        fails.append(f"op_jaccard={oj:.3f}<{min_oj:.3f}")
+
+    return {
+        "passed": not fails,
+        "reason": "ok" if not fails else "off_reference:" + ",".join(fails),
+        "n_records": len(refs),
+        "field_jaccard": round(fj, 4),
+        "op_jaccard": round(oj, 4),
+        "shared_fields": sorted(shared_f)[:8],
+        "shared_specific_fields": sorted(shared_specific)[:8],
+        "shared_ops": sorted(shared_o)[:8],
+        "ref_fields": sorted(ref_fields)[:12],
+        "thresholds": cfg,
+    }
+
+
+def _question_has_records(question: dict[str, Any], records: list[dict[str, Any]]) -> bool:
+    matched = match_report_records(question, None, records)
+    if isinstance(matched, tuple):
+        matched = matched[0]
+    return any(isinstance(r, dict) for r in (matched or []))
+
+
+def _apply_require_factor_records(rows: list[dict[str, Any]],
+                                  spec: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """``report_policy.require_factor_records``：只派发**有原文公式**的课题。
+
+    用户决策（2026-10-01）：先用有公式的研报，保证复现题面一定带原文锚。
+    兜底：清单为空或过滤后为空 → 原样返回（宁可不筛，也不要让 run 无题可做）。
+    """
+    if not rows:
+        return rows
+    if not bool(((spec or {}).get("report_policy") or {}).get("require_factor_records", False)):
+        return rows
+    records = load_factor_records(spec)
+    if not records:
+        logger.warning("require_factor_records=True 但因子清单为空，保持原题库")
+        return rows
+    kept = [q for q in rows if _question_has_records(q, records)]
+    if not kept:
+        logger.warning("require_factor_records 过滤后无课题，回退原题库（%d 道）", len(rows))
+        return rows
+    logger.info("require_factor_records: %d → %d 道（仅保留有原文公式的研报课题）",
+                len(rows), len(kept))
+    return kept
+
+
 def load_report_freq_index(spec: dict[str, Any] | None = None,
                            path: Path | str | None = None) -> dict[str, dict[str, Any]]:
     """报告级**已确认**频率索引（key = 归一化 source），来自 ``report_freq_verified.jsonl``。"""
@@ -958,6 +1135,7 @@ def render_reproduce_task(question: dict, spec: dict | None = None, card: dict |
     if evidence:
         parts.append("- **研报原文片段（含公式/表格，来自 MinerU 重抽语料；据此落地表达式）**：")
         parts.append("  " + "\n  ".join(str(evidence).splitlines()[:20]))
+    _fid_injected = False
     if bool(((spec or {}).get("report_policy") or {}).get("inject_factor_records", True)):
         try:
             _recs = factor_records if factor_records is not None else load_factor_records(spec)
@@ -971,6 +1149,7 @@ def render_reproduce_task(question: dict, spec: dict | None = None, card: dict |
                 if _fblock:
                     parts.append("")
                     parts.append(_fblock)
+                    _fid_injected = True
         except Exception as _e:  # noqa: BLE001
             logger.warning("研报因子清单注入失败（失败静默）: %s", _e)
     parts += [
@@ -982,6 +1161,14 @@ def render_reproduce_task(question: dict, spec: dict | None = None, card: dict |
         "3. 复现版先用 `train_screen` 评估；通过后（本模式）才进入发散阶段，发散一次只改一个维度"
         "（窗长／算子／同族字段／中性化键／门控形态／交互结构），并填 `parent_factor=<复现版因子名>`。",
     ]
+    if _fid_injected:
+        parts.append(
+            "4. **原文锚（硬要求，见上方「本报告因子清单」）**：复现表达式必须用到原文公式里的字段——"
+            "至少命中 **1 个报告特有字段**（如 `$funda_ocf`、`$ac_eps_fy`）；"
+            "`$adj_close`/`$amount`/`$close` 等**通用行情字段不算锚定证据**。"
+            "若只共享通用字段、或改用教科书通用因子（5 日反转 / Amihud 非流动性 / PE 动量…），"
+            "**即使统计过线也判「原文锚未达标」不予复现通过**。"
+        )
     return "\n".join(parts)
 
 
