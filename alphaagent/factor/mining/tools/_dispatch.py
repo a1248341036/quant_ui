@@ -72,6 +72,34 @@ _MINING_ALLOWED_PROFILES = frozenset({
     "size_neutral_validation",
 })
 
+# 判定侧需要、但工具对象上**没有**的研报配置键（2026-10-01 修）：
+# `self.report_policy` 全仓从未被赋值（`getattr(self, "report_policy", None)` 恒为 None），
+# 导致复现判定读不到 report_policy —— 本夜实测：保真度门槛被静默跳过（0 条
+# `report_fidelity_check` 日志），同时 reproduce_min_abs_ic/icir 也一直吃硬编码默认值。
+# 现改由 run gate（判定侧唯一可靠通道）携带这些键。
+_GATE_CARRIED_POLICY_KEYS = (
+    "reproduce_min_abs_ic",
+    "reproduce_min_icir",
+    "reproduce_fidelity",
+    "factor_records_file",
+    "question_queue_file",
+    "inject_factor_records",
+)
+
+
+def _effective_report_policy(tool_policy: dict[str, Any] | None,
+                             gate: dict[str, Any] | None) -> dict[str, Any]:
+    """合并「工具对象上的 report_policy」与「gate 携带的判定配置」（gate 优先）。
+
+    纯函数，便于单测：gate 里同名的非 None 值覆盖工具侧取值。
+    """
+    merged: dict[str, Any] = dict(tool_policy or {})
+    for key in _GATE_CARRIED_POLICY_KEYS:
+        val = (gate or {}).get(key)
+        if val is not None:
+            merged[key] = val
+    return merged
+
 
 def _prediction_argument_error(arguments: dict[str, Any], *, enabled: bool = True) -> dict[str, Any] | None:
     """prediction 参数校验：携带但字段非法时返回 ToolArgumentsError。
@@ -1264,7 +1292,7 @@ class _DispatchMixin:
             log_step("report_reproduce_judge",
                      f"factor={factor_name} 跳过 phase={phase or '-'} qid={qid or '-'}")
             return
-        rp = getattr(self, "report_policy", None) or {}
+        rp = _effective_report_policy(getattr(self, "report_policy", None), gate)
         min_ic = float(rp.get("reproduce_min_abs_ic", 0.010))
         min_icir = float(rp.get("reproduce_min_icir", 0.10))
         cs = (result.get("metrics") or {}).get("cross_sectional_core") or result.get("summary") or {}
