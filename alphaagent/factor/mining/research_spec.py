@@ -299,6 +299,15 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
         "reproduce_shape_requirement": "strong_side",
         # 复现保真度「原文锚」（2026-10-01，仅研报模式；唯一真源 question_queue）：
         # ①只派发有原文公式的课题；②复现过线前校验复现公式与原文公式的字段/算子重叠。
+        # 血统门禁（2026-10-02 开）：原先**缺键→默认关**，实测后果——本夜 run 的 12 个达双门槛
+        # 因子**全部是同一个记忆建议父本 `mix_*` 的同根变体**（turn=0 的 memory_suggest 给了它，
+        # 模型即脱稿发散），研报复现版被绕过 → 指标被同根灌水、研报血统丢失。
+        #   · reproduce_of_required：复现轮的 `parent_factor` 必须声明 `reproduce_of:<课题号>`；
+        #   · diverge_parent_required：发散轮的 `parent_factor` 必须指向该课题的复现版因子。
+        # 两条在 agentscope_tools 里已有硬拦截实现（⛔ 会直接拒绝评估），此处只是把开关打开。
+        # 若某课题机制无效，题面/拦截文案允许模型**明确放弃课题**，不是逼它硬凑。
+        "reproduce_of_required": True,
+        "diverge_parent_required": True,
         "require_factor_records": True,
         # 结构准入（2026-10-02，仅研报模式）：只派发**报告提出了可复现结构**的课题。
         # 结构 = gated 条件门控 / composite 多因子合成 / residual 残差中性化 / timing 择时 /
@@ -679,6 +688,12 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
     #      「报告特有字段」上（通用行情字段不算），防止脱稿自由探索顶替原文机制。
     rp["require_factor_records"] = _require_bool(
         rp.get("require_factor_records", True), "report_policy.require_factor_records"
+    )
+    rp["reproduce_of_required"] = _require_bool(
+        rp.get("reproduce_of_required", True), "report_policy.reproduce_of_required"
+    )
+    rp["diverge_parent_required"] = _require_bool(
+        rp.get("diverge_parent_required", True), "report_policy.diverge_parent_required"
     )
     rp["require_report_structure"] = _require_bool(
         rp.get("require_report_structure", True), "report_policy.require_report_structure"
