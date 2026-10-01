@@ -5,7 +5,7 @@
 - 尝试 n = 记忆库条目数（一条 = 一次 evaluate/submit 落账）
 - 有效 n_valid = n − eval_error（"没算出来"= 面板缺列/超时/参数错，不计入分母，
   否则一次数据故障会把所有面/算子的成功率一起拉低）
-- 过线 = verdict ∈ POSITIVE_VERDICTS（promising / validated / candidate_approved /
+- 过线 = verdict ∈ POSITIVE_VERDICTS_READ（promising / validated / candidate_approved /
   production_approved）；入库 = candidate_approved / production_approved
 - 平均 |IC| 取 ``metrics_json.ic`` 的绝对值均值（缺 IC 的条目不计入该项）
 - 数据面来自 ``facets_json``（老行为空时按表达式现算 ``expr_facets``）：多面条目在
@@ -22,7 +22,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-from .constants import POSITIVE_VERDICTS
+from .constants import POSITIVE_VERDICTS_READ
 from .expressions import expr_facets
 
 # 入库（真正躺进因子库）的 verdict
@@ -113,7 +113,7 @@ def _accumulate(bucket: dict[str, Any], verdict: str, ic: float | None) -> None:
     bucket["n"] += 1
     if verdict == EVAL_ERROR_VERDICT:
         bucket["n_eval_error"] += 1
-    if verdict in POSITIVE_VERDICTS:
+    if verdict in POSITIVE_VERDICTS_READ:
         bucket["positive"] += 1
     if verdict in STORED_VERDICTS:
         bucket["stored"] += 1
@@ -260,7 +260,7 @@ def research_funnel(
     层级：
       total      全部尝试过的因子结构（含 eval_error——没算出来的也是劳动量）
       valid      有效尝试（剔除 eval_error：面板缺列/超时/参数错，未产出证据）
-      positive   海选过线（verdict ∈ POSITIVE_VERDICTS）
+      positive   海选过线（verdict ∈ POSITIVE_VERDICTS_READ）
       submitted  发起过提交（observations 出现过 submit_factor 阶段的去重因子数）
       candidate  入候选池（candidate registry 条目数——库成员资格的事实源）
       production 晋升正式库（production delivered registry 条目数）
@@ -293,10 +293,10 @@ def research_funnel(
             result["valid"] = max(0, total - int(row["n_err"] or 0))
             result["created_min"] = row["t_min"]
             result["created_max"] = row["t_max"]
-            pos_ph = ",".join("?" * len(POSITIVE_VERDICTS))
+            pos_ph = ",".join("?" * len(POSITIVE_VERDICTS_READ))
             result["positive"] = int(conn.execute(
                 f"SELECT COUNT(*) FROM memory_entries WHERE verdict IN ({pos_ph})",
-                sorted(POSITIVE_VERDICTS),
+                sorted(POSITIVE_VERDICTS_READ),
             ).fetchone()[0])
             result["submitted"] = int(conn.execute(
                 "SELECT COUNT(DISTINCT entry_id) FROM memory_observations "

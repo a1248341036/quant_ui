@@ -15,7 +15,7 @@
 最后一条胜出）——**跨 run 累积**，整夜连开多个 run 也不会重头再来。
 
 判定驱动（2026-09-29 Phase 2b 已落地）：复现轮**不预锁**；复现版过 train 海选线
-（promising，与 ``_auto_val_verify`` 同源阈值）时由工具侧调用 :func:`mark_reproduce_ok`
+（train_passed / 旧名 promising，与 ``_auto_val_verify`` 同源阈值）时由工具侧调用 :func:`mark_reproduce_ok`
 上锁 N 轮；复现轮结束仍没过线 → 下一轮选择时记 ``abandoned(no_reproduce_pass)`` 并换题。
 """
 from __future__ import annotations

@@ -18,15 +18,41 @@ DATA_VERSION = "7"
 # 弱负向（不算正向证据，不触发重复提交拦截；但比 weak 多一次二次机会提示）
 # eval_error（2026-09-07）：评估未产出结果（面板缺列/超时/参数错）——
 # "没算出来 ≠ 被否定"，与机制性 reject 分离；负向权重最弱（-0.2）
-POSITIVE_VERDICTS = frozenset({"production_approved", "validated", "candidate_approved", "promising"})
+#
+# train_passed（2026-10-01 由 "promising" 改名而来）：
+#   语义 = **只过训练集海选线**（train_passed），不是质量结论。旧名 "promising"
+#   与 validated/candidate_approved 并列在 POSITIVE_VERDICTS 里，被误读成"已成候选"，
+#   实测在多次复盘中被当成"达标"引用（包括本会话的两次误判），故改名消除歧义。
+VERDICT_TRAIN_PASS = "train_passed"
+# 改名前的旧字面量：**仅用于读取历史记忆数据**（memory_entries 里已落库的行）。
+# 新写入一律用 VERDICT_TRAIN_PASS；查询侧用 POSITIVE_VERDICTS_READ 兼顾两代数据。
+LEGACY_VERDICT_TRAIN_PASS = "promising"
+LEGACY_VERDICT_ALIASES = {LEGACY_VERDICT_TRAIN_PASS: VERDICT_TRAIN_PASS}
+
+POSITIVE_VERDICTS = frozenset(
+    {"production_approved", "validated", "candidate_approved", VERDICT_TRAIN_PASS}
+)
+# 查询/聚合专用：把旧字面量也算进来，保证改名不改变历史数据的统计口径。
+POSITIVE_VERDICTS_READ = POSITIVE_VERDICTS | frozenset({LEGACY_VERDICT_TRAIN_PASS})
+# 判定「训练过线」时的可接受字面量（新写 train_passed，历史行仍是 promising）。
+TRAIN_PASS_VERDICTS = (VERDICT_TRAIN_PASS, LEGACY_VERDICT_TRAIN_PASS)
 NEGATIVE_VERDICTS = frozenset({"rejected", "revise_required", "weak", "near_miss", "eval_error"})
 
+
+def normalize_verdict(verdict: object) -> str:
+    """把历史字面量归一到当前标识（promising → train_passed）；其它原样返回。"""
+    raw = str(verdict or "")
+    return LEGACY_VERDICT_ALIASES.get(raw, raw)
+
 # Verdict 显示顺序（正值优先，负值在后）
+# 注：legacy "promising" 与 "train_passed" 同序（同一判定的两代字面量），
+# 保留旧键是为了让历史记忆行在排序/过滤里不掉队（改名不改变历史口径）。
 VERDICT_ORDER = {
     "production_approved": 0,
     "validated": 1,
     "candidate_approved": 2,
-    "promising": 3,
+    "train_passed": 3,
+    LEGACY_VERDICT_TRAIN_PASS: 3,
     "near_miss": 4,
     "revise_required": 5,
     "rejected": 6,
@@ -79,11 +105,14 @@ TECHNICAL_ERROR_PATTERNS = frozenset({
 })
 
 # Verdict 权重（用于统计聚合）
+# 注：legacy "promising" 与 "train_passed" 同权（同一判定的两代字面量）——
+# 缺了旧键会让历史行的证据权重从 0.6 掉到默认 0.2。
 VERDICT_WEIGHT = {
     "production_approved": 1.0,
     "validated": 1.0,
     "candidate_approved": 0.8,
-    "promising": 0.6,
+    "train_passed": 0.6,
+    LEGACY_VERDICT_TRAIN_PASS: 0.6,
     "near_miss": -0.2,
     "revise_required": -0.3,
     "rejected": -1.0,

@@ -61,7 +61,7 @@ def _make_db(path: Path, rows: list[dict]) -> Path:
 def test_facet_operator_breakdown_rates_and_buckets(tmp_path: Path) -> None:
     db = _make_db(tmp_path / "mem.db", [
         # 价量面 + 股东面（跨面融合），过线，算子显式声明
-        {"expression": "A", "verdict": "promising", "facets": ["价量面", "股东面"],
+        {"expression": "A", "verdict": "train_passed", "facets": ["价量面", "股东面"],
          "ops": ["ts_mean", "cs_zscore"], "metrics": {"ic": 0.03}},
         # 价量面，未过线
         {"expression": "B", "verdict": "weak", "facets": ["价量面"],
@@ -107,7 +107,7 @@ def test_facet_operator_breakdown_rates_and_buckets(tmp_path: Path) -> None:
 
 def test_min_attempts_filters_and_run_filter(tmp_path: Path) -> None:
     db = _make_db(tmp_path / "mem.db", [
-        {"expression": "A", "verdict": "promising", "facets": ["价量面"],
+        {"expression": "A", "verdict": "train_passed", "facets": ["价量面"],
          "ops": ["ts_mean"], "run_id": "runA"},
         {"expression": "B", "verdict": "weak", "facets": ["基本面"],
          "ops": ["divide"], "run_id": "runB"},

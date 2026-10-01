@@ -202,7 +202,7 @@ class TestNearMissVerdict:
         verdict, _ = SchemaMixin._classify(
             "evaluate_factor", result, metrics, error=""
         )
-        assert verdict == "promising"
+        assert verdict == "train_passed"
 
 
 class TestConstants:
@@ -233,7 +233,7 @@ class TestYieldBlock:
             # gap_overnight：20 次，5 个 promising
             for i in range(20):
                 rows.append((f"fp_gap_{i}", f"g_{i}", "f = TS_MEAN($open,{i})",
-                             "promising" if i < 5 else "weak", "gap_overnight",
+                             "train_passed" if i < 5 else "weak", "gap_overnight",
                              "2026-09-05"))
             conn.executemany(
                 "INSERT INTO memory_entries (id, factor_name, expression, verdict, family, "
@@ -256,19 +256,19 @@ class TestStructureStatsBlock:
             rows = []
             # 基线（无结构交互）：40 条，4 过线 → 10%
             for i in range(40):
-                v = "promising" if i < 4 else "weak"
+                v = "train_passed" if i < 4 else "weak"
                 rows.append((f"fp_base_{i}", f"b_{i}",
                              f"f = RANK(TS_MEAN($volume, {i + 3}))", v,
                              "volume", "2026-09-06"))
             # 分组条件：20 条 6 过线 → 30%（命中率最高，应排最前）
             for i in range(20):
-                v = "promising" if i < 6 else "weak"
+                v = "train_passed" if i < 6 else "weak"
                 rows.append((f"fp_grp_{i}", f"g_{i}",
                              "f = CS_GROUP_RANK(RANK($volume), CS_BUCKET($float_cap, 5))",
                              v, "liquidity", "2026-09-06"))
             # 分歧表达：20 条 2 过线 → 10%
             for i in range(20):
-                v = "promising" if i < 2 else "weak"
+                v = "train_passed" if i < 2 else "weak"
                 rows.append((f"fp_div_{i}", f"d_{i}",
                              "f = DIVERGENCE_RANK(RANK($volume), RANK($adj_close))",
                              v, "liquidity", "2026-09-06"))

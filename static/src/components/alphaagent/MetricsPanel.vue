@@ -141,7 +141,7 @@
         <div class="summary-panel">
           <div class="summary-panel-head">
             <h3>漏斗转化</h3>
-            <span class="summary-facet-hint" title="口径 = 研究记忆库全量（Web/CLI/整夜全渠道），跨 run 稳定、不随上方 run 窗口变化。评估尝试 = 记忆库因子结构数；有效尝试剔除 eval_error（面板缺列/超时等没算出来的）；海选过线 = promising/validated/入库；发起提交 = 出现过 submit 阶段的去重因子；入候选池/晋升取因子库 registry 条目数（与因子库页一致）。每层标注相对上一层的转化率。">ⓘ</span>
+            <span class="summary-facet-hint" title="口径 = 研究记忆库全量（Web/CLI/整夜全渠道），跨 run 稳定、不随上方 run 窗口变化。评估尝试 = 记忆库因子结构数；有效尝试剔除 eval_error（面板缺列/超时等没算出来的）；海选过线 = train_passed/validated/入库；发起提交 = 出现过 submit 阶段的去重因子；入候选池/晋升取因子库 registry 条目数（与因子库页一致）。每层标注相对上一层的转化率。">ⓘ</span>
           </div>
           <div id="metrics-funnel-chart" class="metrics-chart" :style="{ height: funnelHeight + 'px' }"></div>
         </div>
@@ -175,7 +175,7 @@
               </div>
             </div>
             <p class="metrics-cal-line">
-              {{ facetMetricLabel }} 口径：过线 = promising/validated/candidate_approved/production_approved；
+              {{ facetMetricLabel }} 口径：过线 = train_passed/validated/candidate_approved/production_approved（历史数据里的旧名 promising 等价计入）；
               分母为有效尝试（已剔除评估未产出的 eval_error {{ facetStats?.scope?.n_eval_error ?? 0 }} 次）；
               虚线 = 整体基线 {{ fmtMetric(facetStats?.baseline?.[facetMetric]) }}；样本 &lt; {{ minAttempts }} 次的桶不列入。
             </p>

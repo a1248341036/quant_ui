@@ -11,7 +11,7 @@
 
     setup_run_logger(log_dir)          # agentscope_run 入口调用一次
     set_turn(3)                        # 每个外层轮开始时
-    log_step("evaluate", "vwap_dev_20 ic=+0.0300", ic=0.03, verdict="promising")
+    log_step("evaluate", "vwap_dev_20 ic=+0.0300", ic=0.03, verdict="train_passed")
 """
 from __future__ import annotations
 

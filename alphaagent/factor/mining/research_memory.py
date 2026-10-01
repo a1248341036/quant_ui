@@ -21,7 +21,7 @@ from .memory.constants import (
     INVALID_WEIGHT,
     NEGATIVE_VERDICTS,
     PARENT_ORIGIN_WEIGHT,
-    POSITIVE_VERDICTS,
+    POSITIVE_VERDICTS_READ,
     VERDICT_ORDER,
     VERDICT_WEIGHT,
 )
@@ -54,7 +54,7 @@ from .memory.store import ResearchMemoryStore
 __all__ = [
     "ResearchMemoryStore",
     "MOTIFS",
-    "POSITIVE_VERDICTS",
+    "POSITIVE_VERDICTS_READ",
     "NEGATIVE_VERDICTS",
     "VERDICT_ORDER",
     "VERDICT_WEIGHT",

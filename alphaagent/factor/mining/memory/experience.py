@@ -9,7 +9,7 @@ import sqlite3
 from typing import Any
 
 from .calibration import _parent_bucket
-from .constants import BASELINE_HALF_LIFE_DAYS, POSITIVE_VERDICTS
+from .constants import BASELINE_HALF_LIFE_DAYS, POSITIVE_VERDICTS_READ, TRAIN_PASS_VERDICTS
 from .diagnostics import _SUCCESS_SIGNATURES, _FORBIDDEN_SIGNATURES, _match_signature, _now, _safe_float
 from .expressions import (
     classify_family,
@@ -78,7 +78,7 @@ class ExperienceMixin:
         from .constants import (
             INVALID_WEIGHT,
             PARENT_ORIGIN_WEIGHT,
-            POSITIVE_VERDICTS,
+            POSITIVE_VERDICTS_READ,
             TECHNICAL_ERROR_PATTERNS,
         )
         from alphaagent.dsl.core.ast import classify_family_coarse
@@ -115,11 +115,11 @@ class ExperienceMixin:
             if baseline is not None:
                 residual = child_ic - baseline
 
-        is_positive = verdict in POSITIVE_VERDICTS
+        is_positive = verdict in POSITIVE_VERDICTS_READ
         # 入库成功（production/candidate_approved）不算 invalid：submit 的 gate
         # 失败（stage_two_failed/engine_gate_failed）以 error 文本返回但因子已在
         # 候选池，该次编辑对 SSPM 是有效正观测（cells 只认 verdict 极性）。
-        invalid = verdict not in POSITIVE_VERDICTS and (bool(error) or child_ic is None)
+        invalid = verdict not in POSITIVE_VERDICTS_READ and (bool(error) or child_ic is None)
         if parent_origin == "explicit":
             s_col, f_col = "explicit_s", "explicit_f"
         else:
@@ -281,7 +281,7 @@ class ExperienceMixin:
                 metrics = item.get("metrics") if isinstance(item.get("metrics"), dict) else {}
                 ic = _safe_float(metrics.get("ic"))
                 verdict = str(item.get("verdict") or "")
-                admitted = bool(item.get("admitted", verdict in ("validated", "production_approved", "promising")))
+                admitted = bool(item.get("admitted", verdict in ("validated", "production_approved", *TRAIN_PASS_VERDICTS)))
                 conclusion = str(item.get("conclusion") or "")
                 reason = str(item.get("rejection_reason") or item.get("fail_detail") or "")
                 text = " ".join(filter(None, [factor_name, expression, conclusion]))
@@ -652,7 +652,7 @@ class ExperienceMixin:
                 abs_ics = [abs(ic) for _, ic, _, _ in members]
                 names = [nm for nm, _, _, _ in members]
                 n = len(members)
-                n_pos = sum(1 for *_, v in members if v in POSITIVE_VERDICTS)
+                n_pos = sum(1 for *_, v in members if v in POSITIVE_VERDICTS_READ)
                 best_name, best_ic, best_expr, _ = max(
                     members, key=lambda t: abs(t[1]))
                 best_template = template_from_expression(best_expr)

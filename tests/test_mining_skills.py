@@ -209,7 +209,7 @@ def test_s4_deepseek_renders_behavior():
         include_fundamentals=True, research_spec=None, asset_type="stock",
         model_name="deepseek-v4-flash",
     )
-    assert "DeepSeek" in text and "promising" in text
+    assert "DeepSeek" in text and "train_passed" in text
 
 
 def test_s4_gemini_renders_turnover_warning():
@@ -242,7 +242,7 @@ def test_promising_conclusion_marks_train_passed_semantics():
     metrics = {"ic": 0.024, "icir": 0.3, "factor_coverage": 0.92}
     result = {"ok": True, "split": "train", "metrics": metrics}
     verdict, conclusion = SchemaMixin._classify("eval_on_train_set", result, metrics, "")
-    assert verdict == "promising"
+    assert verdict == "train_passed"
     assert "训练样本海选过线" in conclusion
     assert "eval_on_val_set" in conclusion
 

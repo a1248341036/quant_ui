@@ -15,6 +15,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
+from .constants import TRAIN_PASS_VERDICTS
+
 log = logging.getLogger(__name__)
 
 # 专属库 scope：所有 OpenViking 调用的硬编码边界，禁止外部传入
@@ -306,7 +308,7 @@ class OVStore:
             lines.append("")
             lines.append("## 失败分布")
             for code, n in sorted(failure_counts.items(), key=lambda kv: -kv[1]):
-                if code in ("ok", "passed", "promising"):
+                if code in ("ok", "passed", *TRAIN_PASS_VERDICTS):
                     continue
                 lines.append(f"- {code}：{n}")
         if submitted := summary.get("submitted_factors"):

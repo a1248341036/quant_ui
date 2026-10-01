@@ -154,11 +154,11 @@ class TestExactDuplicatePrior:
         db = tmp_path / "mem.db"
         store = ResearchMemoryStore(str(db))
         expr = "vp = VOLUME_CLOCK_VPIN($adj_close, $volume, 20, 0.1)\nTS_MEAN(RANK(vp), 3)"
-        self._seed(store, expr, "vpin_smooth3", "promising")
+        self._seed(store, expr, "vpin_smooth3", "train_passed")
         hit = store.exact_duplicate_prior(expr)
         assert hit is not None
         assert hit["factor_name"] == "vpin_smooth3"
-        assert hit["verdict"] == "promising"
+        assert hit["verdict"] == "train_passed"
         assert hit["ic"] == pytest.approx(0.0349)
         # 变异表达式（不同参数）→ 不同指纹 → 不检出
         variant = "vp = VOLUME_CLOCK_VPIN($adj_close, $volume, 40, 0.1)\nTS_MEAN(RANK(vp), 3)"

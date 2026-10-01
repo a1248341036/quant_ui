@@ -878,7 +878,7 @@ def render_diverge_task(question: dict, reproduce_factor: str = "", dims=_DIVERG
          " —— 本轮至少要在 IC 或 ICIR 上改善，且 coverage 与换手不得劣化。"
          if parent_detail else "- （父本实测指标缺失，请先重建父本基线再变异）"),
         *([_parent_diagnosis(parent_profile)] if _parent_diagnosis(parent_profile) else []),
-        "- **本轮目标**：让该机制比复现版更强且可交付 —— 争取过 promising 线"
+        "- **本轮目标**：让该机制比复现版更强且可交付 —— 争取过 train_passed 线（训练过线，非质量结论）"
         "（|IC|≥0.02、|ICIR|≥0.28、coverage≥0.85），同时不抬高日换手（≤0.5）、不与库内已有因子撞车；"
         "若某维度让指标变差，明确放弃并换下一个维度，不要反复调同一维。",
         "- **维度轮换建议**（3 轮内覆盖不同维度）：首轮 `window` 或 `operator`，次轮 `neutralize` 或 `field`，末轮 `gate_shape` 或 `interaction`。",

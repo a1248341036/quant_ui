@@ -74,10 +74,10 @@ def _load_entries(
         if rejected_only:
             conds.append(f"(verdict = 'rejected' AND ({ors}))")
         else:
-            conds.append(f"((verdict = 'promising') OR (verdict = 'rejected' AND ({ors})))")
+            conds.append(f"((verdict IN ('train_passed','promising')) OR (verdict = 'rejected' AND ({ors})))")
         params.extend(rejected_patterns)
     elif not rejected_only:
-        conds.append("verdict = 'promising'")
+        conds.append("verdict IN ('train_passed','promising')")
     sql += " AND ".join(conds) + " ORDER BY factor_name"
     rows = [dict(r) for r in db.execute(sql, params).fetchall()]
     db.close()
@@ -98,7 +98,7 @@ def _load_entries(
         norm = " ".join(str(r.get("expression") or "").split())
         prev = by_expr.get(norm)
         # 同表达式去重：promising 优先于 rejected
-        if prev is None or (prev["verdict"] != "promising" and r["verdict"] == "promising"):
+        if prev is None or (prev["verdict"] != "train_passed" and r["verdict"] == "train_passed"):
             by_expr[norm] = r
     return list(by_expr.values())
 
