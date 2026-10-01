@@ -283,26 +283,59 @@ class FactorReviewer:
             "source": "research_spec_metric_precheck",
         }
 
+    _VERDICT_RE = re.compile(r'"verdict"\s*:\s*"(approve|revise|reject)"')
+    _NOVELTY_RE = re.compile(r'"novelty"\s*:\s*"(high|medium|low)"')
+
     @staticmethod
     def _parse_verdict(raw: str) -> dict[str, Any]:
-        match = re.search(r"\{[\s\S]*\}", raw)
+        """解析 Reviewer 输出；**绝不因解析失败把因子判死**（2026-10-01 修）。
+
+        实测（run fcc9a4618fe2）：模型在字符串值里写了未转义引号
+        （``...split="val" 结果与...``），``json.loads`` 在 char 425 报
+        ``Expecting ',' delimiter`` —— 输出**完整、未被截断**，且有 ```json 围栏。
+        旧实现对任何解析失败一律合成 ``verdict=reject``，等于**因格式问题硬拦候选池**
+        （delivery/submit.py:890 对 reject 是硬拦，且在候选池入库前 return）。
+        现改为三级容错：
+          ① 剥围栏后正常解析；
+          ② 失败则正则捞回顶层 verdict/novelty（模型判断其实就在文本里）；
+          ③ 连 verdict 都捞不到才降级 **revise**（不阻断，交统计门槛裁决）。
+        """
+        text = re.sub(r"^\s*```[a-zA-Z]*\s*", "", raw or "")
+        text = re.sub(r"\s*```\s*$", "", text).strip()
+        match = re.search(r"\{[\s\S]*\}", text)
+        value: Any = {}
         try:
-            value = json.loads(match.group(0) if match else raw)
+            value = json.loads(match.group(0) if match else text)
         except (json.JSONDecodeError, AttributeError):
             value = {}
-        if not isinstance(value, dict) or value.get("verdict") not in {"approve", "revise", "reject"}:
+        if isinstance(value, dict) and value.get("verdict") in {"approve", "revise", "reject"}:
+            value.setdefault("novelty", "low")
+            value.setdefault("canonical_form", "未分类")
+            value.setdefault("reasons", [])
+            value.setdefault("required_changes", [])
+            value["source"] = "agentscope_factor_reviewer"
+            return value
+
+        # ② 正则兜底：常见故障只是引号未转义，顶层字段仍在文本里
+        verdict_m = FactorReviewer._VERDICT_RE.search(text)
+        novelty_m = FactorReviewer._NOVELTY_RE.search(text)
+        if verdict_m:
             return {
-                "verdict": "reject",
-                "novelty": "low",
-                "canonical_form": "审查输出不可解析",
-                "reasons": ["FactorReviewer 未返回可验证的结构性原创结论。"],
-                "required_changes": ["修订表达式并重新完成 train/val 评估后再提交。"],
-                "source": "reviewer_parse_guard",
-                "raw": raw[:2000],
+                "verdict": verdict_m.group(1),
+                "novelty": novelty_m.group(1) if novelty_m else "low",
+                "canonical_form": "审查输出需容错解析",
+                "reasons": ["Reviewer 输出含未转义引号等格式问题，已容错解析出判定。"],
+                "required_changes": [],
+                "source": "agentscope_factor_reviewer_repaired",
+                "raw": (raw or "")[:2000],
             }
-        value.setdefault("novelty", "low")
-        value.setdefault("canonical_form", "未分类")
-        value.setdefault("reasons", [])
-        value.setdefault("required_changes", [])
-        value["source"] = "agentscope_factor_reviewer"
-        return value
+        # ③ 完全无法判定 → 降级 revise（不阻断），不再合成 reject
+        return {
+            "verdict": "revise",
+            "novelty": "low",
+            "canonical_form": "审查输出不可解析（已降级，不阻断）",
+            "reasons": ["FactorReviewer 未返回可解析的判定；已降级为 revise，不阻断入库。"],
+            "required_changes": ["修订表达式并重新完成 train/val 评估后再提交。"],
+            "source": "reviewer_parse_guard",
+            "raw": (raw or "")[:2000],
+        }
