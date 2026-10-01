@@ -116,10 +116,14 @@ def summarize(rid: str) -> dict:
         _par.setdefault(m.group(1), m.group(2))
     _pc = Counter(_par.get(f, "(根)") for f in _dual)
     _top_share = (max(_pc.values()) / len(_dual)) if _dual else 0.0
+    # 同根≠灌水：研报模式下 diverging 只改一个维度 → 同根是**设计预期**；
+    # 真正的问题是"同根且**离线**"（2026-10-02 实测 a898c626b991：22/22 挂记忆建议的 mix_*）。
+    _top_parent = _pc.most_common(1)[0][0] if _pc else ""
+    _top_in_lineage = bool(_top_parent.startswith("rq") or _top_parent.startswith("reproduce_of"))
     return {
         "n_unique_eval": len(_ev), "dual_factors": len(_dual),
         "distinct_parents": len(_pc), "top_parent_share": round(_top_share, 3),
-        "top_parent": (_pc.most_common(1)[0][0] if _pc else ""),
+        "top_parent": _top_parent, "top_parent_in_lineage": _top_in_lineage,
         "phase": _phase,
         "struct_block": struct_block, "field_block": field_block,
         "run_id": rid, "topics": len({q for q, _ in qstate}),
@@ -182,10 +186,13 @@ def main() -> int:
         dual_f = sum(r["dual_factors"] for r in rs)
         uniq = sum(r["n_unique_eval"] for r in rs)
         worst = max((r["top_parent_share"] for r in rs), default=0.0)
+        worst_off = max((r["top_parent_share"] for r in rs if not r["top_parent_in_lineage"]),
+                        default=0.0)
         lines += ["", f"**{ph}**：run {len(rs)} 个 | 复现 {ps}/{jd} 过线 | "
                       f"结构锚拦截 {sb} | 评估 {uniq} | 达双门槛 {dual_f}"
                       f"（{dual_f / max(1, uniq) * 100:.1f}%）| 最大同根占比 {worst:.0%}"
-                      + ("  ⚠ 同根灌水，勿据此判效果" if worst >= 0.5 else "")]
+                      + (f"（其中离线同根 {worst_off:.0%}）" if worst_off else "（均在研报血统内，设计预期）")
+                      + ("  ⚠ 离线同根灌水，勿据此判效果" if worst_off >= 0.5 else "")]
     out = UI.parent.parent / args.out if not Path(args.out).is_absolute() else Path(args.out)
     out.write_text("\n".join(lines), encoding="utf-8")
     print("\n".join(lines[:12]))
