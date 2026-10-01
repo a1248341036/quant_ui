@@ -101,6 +101,30 @@ def _effective_report_policy(tool_policy: dict[str, Any] | None,
     return merged
 
 
+def _reproduce_strength(ic: float, icir: float, *, min_ic: float, min_icir: float):
+    """复现「强度」判定：**IC 与 ICIR 一律按绝对值比较**（2026-10-01 修）。
+
+    为什么：负 IC / 负 ICIR 是**正常信号**（只是方向相反，强度等价）。系统里方向相关
+    判定已有三处且都是"方向无关"口径：①`prediction` 形态/方向对账（`eval/prediction.py`，
+    模型自己声明 expected_sign，负方向同样可 confirmed）；②train↔val 方向一致性
+    （`require_sign_consistency`，只要求两段同号，不要求为正）；③正式库门槛 `abs_gte`
+    （`evaluation/profile.py:158`）。
+    唯独复现判定原先 `abs(ic)` 与**带符号** `icir` 混用 → 方向反向但强度足够的机制
+    被判"未过线"（实测 3 次：|IC| 0.0125~0.0225、|ICIR| 0.104~0.234，例
+    `rq045_vwap_bias_to_sz_extreme` |IC|=0.0225/|ICIR|=0.2335），并与正式门槛口径漂移。
+    修法：两侧都取绝对值，方向不参与强度判定。
+
+    返回 ``(是否达标, {"ic": 原始IC, "icir": 原始ICIR, "abs_ic":…, "abs_icir":…})``，
+    保留原始带符号值供日志与父本体检展示（避免"日志看起来符号矛盾"）。
+    """
+    abs_ic = abs(float(ic))
+    abs_icir = abs(float(icir))
+    return (abs_ic >= min_ic and abs_icir >= min_icir), {
+        "ic": float(ic), "icir": float(icir),
+        "abs_ic": abs_ic, "abs_icir": abs_icir,
+    }
+
+
 def _prediction_argument_error(arguments: dict[str, Any], *, enabled: bool = True) -> dict[str, Any] | None:
     """prediction 参数校验：携带但字段非法时返回 ToolArgumentsError。
 
@@ -220,8 +244,9 @@ def _near_miss_verdict(metrics: dict[str, Any]) -> bool:
     icir = metrics.get("icir")
     coverage = metrics.get("factor_coverage", metrics.get("coverage"))
     try:
+        # 强度口径：IC / ICIR 一律 abs（负值=方向相反，强度等价；2026-10-01 统一）
         ic_f = abs(float(ic)) if ic is not None else None
-        icir_f = float(icir) if icir is not None else None
+        icir_f = abs(float(icir)) if icir is not None else None
         cov_f = float(coverage) if coverage is not None else None
     except (TypeError, ValueError):
         return False
@@ -522,8 +547,9 @@ class _DispatchMixin:
             icir = cs.get("icir")
             cov = cs.get("factor_coverage", cs.get("coverage"))
             try:
+                # 强度口径统一 abs（IC 与 ICIR 同口径；负值只是方向相反）
                 ic_f = abs(float(ic))
-                icir_f = float(icir)
+                icir_f = abs(float(icir))
                 cov_f = float(cov)
             except (TypeError, ValueError):
                 return
@@ -1297,18 +1323,21 @@ class _DispatchMixin:
         min_icir = float(rp.get("reproduce_min_icir", 0.10))
         cs = (result.get("metrics") or {}).get("cross_sectional_core") or result.get("summary") or {}
         try:
-            ic_f = abs(float(cs.get("ic")))
-            icir_f = float(cs.get("icir"))
+            ic_s = float(cs.get("ic"))
+            icir_s = float(cs.get("icir"))
         except (TypeError, ValueError):
             log_step("report_reproduce_judge", f"qid={qid} factor={factor_name} 指标缺失 -> 跳过")
             return
+        # 强度：IC 与 ICIR **都按绝对值**（负值是正常方向，见 _reproduce_strength 说明）
+        by_metrics, _stg = _reproduce_strength(ic_s, icir_s, min_ic=min_ic, min_icir=min_icir)
         shape = str((result.get("prediction_check") or {}).get("verdict") or "")
-        by_metrics = ic_f >= min_ic and icir_f >= min_icir
         by_shape = shape == "confirmed"
         if not (by_metrics or by_shape):
+            # 日志同时给「真实带符号值」与「用于判定的绝对值」，避免 ic/icir 符号看起来矛盾
             log_step(
                 "report_reproduce_judge",
-                f"qid={qid} factor={factor_name} ic={ic_f:.4f} icir={icir_f:.4f} "
+                f"qid={qid} factor={factor_name} ic={ic_s:+.4f} icir={icir_s:+.4f} "
+                f"|IC|={_stg['abs_ic']:.4f} |ICIR|={_stg['abs_icir']:.4f} "
                 f"shape={shape or '-'} -> 未过线",
             )
             return
@@ -1360,7 +1389,7 @@ class _DispatchMixin:
             _parts.append(f"shape={shape or 'confirmed'}")
         if by_metrics:
             _parts.append("signal=ok")
-        _parts.append(f"ic={ic_f:.4f} icir={icir_f:.4f}")
+        _parts.append(f"ic={ic_s:+.4f} icir={icir_s:+.4f}")
         detail = " | ".join(_parts)
         # 父本"体检报告"：供发散题面给针对性改进建议（ic/icir/cov/换手/形态对账）
         _prof: dict = {}
