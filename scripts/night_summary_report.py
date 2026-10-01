@@ -70,7 +70,17 @@ def summarize(rid: str) -> dict:
     icirs = sorted(r for _, r in evals)
     ics = sorted(i for i, _ in evals)
     med = lambda a: a[len(a) // 2] if a else 0.0  # noqa: E731
+    # 相位：日志里出现结构锚相关拦截原因 → 该 run 已带硬锚（合并后启动）
+    reasons_all = " ".join(re.findall(r"report_fidelity_check \|[^\n]*reason=([\w:,=<.]+)", txt))
+    hard_anchor = any(k in reasons_all for k in
+                      ("structure_ops_missing", "ops_used=", "fields_used="))
+    # 拦截分类：结构锚 vs 原有字段锚
+    struct_block = len(re.findall(r"structure_ops_missing|ops_used=\d+<floor|fields_used=\d+<floor",
+                                  reasons_all))
+    field_block = len(re.findall(r"shared_(?:specific_)?fields=\d+<|shared_ops=", reasons_all))
     return {
+        "phase": "硬锚后" if hard_anchor else "硬锚前",
+        "struct_block": struct_block, "field_block": field_block,
         "run_id": rid, "topics": len({q for q, _ in qstate}),
         "phases": dict(Counter(p for _, p in qstate)),
         "repro_judge": len(repro), "repro_pass": len(passes),
@@ -110,13 +120,26 @@ def main() -> int:
              f"| 复现 |IC| 中位 | {BASELINE['reproduce_ic_median']} | —（见下）|",
              f"| 复现 ICIR 中位 | {BASELINE['reproduce_icir_median']} | — |", "",
              "## 逐 run", "",
-             "| run | 课题 | 复现判定/过线 | 保真度 | 结构锚 | 评估 | 达双门槛 | |IC|中位 | ICIR中位 | 错误 |",
+             "| run | 相位 | 课题 | 复现判定/过线 | 保真度拦截(结构锚/字段锚) | 评估 | 达双门槛 | |IC|中位 | ICIR中位 | 错误 |",
              "|---|---|---|---|---|---|---|---|---|---|"]
     for r in rows:
         lines.append(
-            f"| `{r['run_id']}` | {r['topics']} | {r['repro_judge']}/{r['repro_pass']} | "
-            f"{r['fidelity']} | {r['structure_anchor_events']} | {r['evals']} | {r['dual_gate']} | "
+            f"| `{r['run_id']}` | {r['phase']} | {r['topics']} | {r['repro_judge']}/{r['repro_pass']} | "
+            f"{r['struct_block']}/{r['field_block']} | {r['evals']} | {r['dual_gate']} | "
             f"{r['ic_median']} | {r['icir_median']} | {r['errors'] or '-'} |")
+    # 相位汇总（A/B 读法）
+    for ph in ("硬锚前", "硬锚后"):
+        rs = [r for r in rows if r["phase"] == ph]
+        if not rs:
+            continue
+        ev = sum(r["evals"] for r in rs)
+        dg = sum(r["dual_gate"] for r in rs)
+        jd = sum(r["repro_judge"] for r in rs)
+        ps = sum(r["repro_pass"] for r in rs)
+        sb = sum(r["struct_block"] for r in rs)
+        lines += ["", f"**{ph}**：run {len(rs)} 个 | 复现 {ps}/{jd} 过线 | "
+                      f"结构锚拦截 {sb} | 评估 {ev} | 达双门槛 {dg}"
+                      f"（{dg / max(1, ev) * 100:.1f}%）"]
     out = UI.parent.parent / args.out if not Path(args.out).is_absolute() else Path(args.out)
     out.write_text("\n".join(lines), encoding="utf-8")
     print("\n".join(lines[:12]))
