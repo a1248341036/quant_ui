@@ -278,13 +278,22 @@ def build_prose_blocks(lines: list[str], max_blocks: int = 2) -> list[dict]:
 
 
 def build_formula_blocks(lines: list[str], max_blocks: int = 1, gap: int = 2,
-                         min_cluster: int = 3) -> list[dict]:
+                         min_cluster: int = 2) -> list[dict]:
     """全篇公式行聚类兜底：把散落在正文（不限于"因子构建"小节）的公式行成块。
 
     实测：公式常成片出现在小节标题**之外**（MinerU 输出的 LaTeX 段，如
     `OCVP_{t} = \\frac{1}{d}\\sum ...`），只按标题锚点会漏掉它们。
     按"公式行间隔 ≤ gap"聚类，只取成片（≥min_cluster 行）的簇，默认每篇最多 1 段
     （单篇多段会把 LLM 预算打满，实测全语料块数会从 ~600 涨到 ~2000）。
+
+    2026-10-01「提高抽取覆盖」：``min_cluster`` 3 → 2。全语料（1900 篇 parsed_mineru）
+    实测对比：
+      - min_cluster=3 → 候选 716 篇 / 963 块（原值）
+      - **min_cluster=2 → 候选 961 篇 / 1266 块（+34% 报告，+31% 块）**
+      - prose max_blocks 1→2 或 formula max_blocks 1→2 **只增加块数、不增加覆盖报告数**，
+        边际收益差，故保持 1。
+    2 行簇的弱公式噪声更高，但由 LLM 判可执行性兜底（``executable`` 字段），
+    比"整篇报告完全没有原文公式可用"更有利。
     """
     idxs = [i for i, ln in enumerate(lines) if _is_formula_line(ln)]
     if not idxs:

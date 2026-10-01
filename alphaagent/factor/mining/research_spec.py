@@ -273,6 +273,16 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
         "question_field_gate_min_ratio": 0.5,
         "question_field_gate_scan_limit": 40,
         "question_field_warn": True,
+        # 复现保真度「原文锚」（2026-10-01，仅研报模式；唯一真源 question_queue）：
+        # ①只派发有原文公式的课题；②复现过线前校验复现公式与原文公式的字段/算子重叠。
+        "require_factor_records": True,
+        "reproduce_fidelity": {
+            "enabled": True,
+            "require_shared_field": 1,   # 至少 1 个「报告特有字段」（通用行情字段不算）
+            "min_field_jaccard": 0.0,
+            "min_op_jaccard": 0.0,
+            "min_shared_ops": 0,
+        },
         # R2 机制卡检索参数（knowledge_mode=mechanism_cards 时生效）
         "report_prior_max_chars": 1600,
         "report_prior_top_k": 4,
@@ -628,6 +638,36 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
     rp["question_field_gate_scan_limit"] = int(_bounded_number(
         rp.get("question_field_gate_scan_limit", 40), "report_policy.question_field_gate_scan_limit", 1, 500
     ))
+    # 复现保真度「原文锚」（2026-10-01，**仅研报模式**）：
+    #   ① require_factor_records：只派发**有原文公式**的课题（用户决策：先用有公式的研报）
+    #   ② reproduce_fidelity：复现过线前做字段/算子重叠的机械校验；锚定必须落在
+    #      「报告特有字段」上（通用行情字段不算），防止脱稿自由探索顶替原文机制。
+    rp["require_factor_records"] = _require_bool(
+        rp.get("require_factor_records", True), "report_policy.require_factor_records"
+    )
+    _fid = rp.get("reproduce_fidelity")
+    if not isinstance(_fid, dict):
+        _fid = {}
+    _fid["enabled"] = _require_bool(
+        _fid.get("enabled", True), "report_policy.reproduce_fidelity.enabled"
+    )
+    _fid["require_shared_field"] = int(_bounded_number(
+        _fid.get("require_shared_field", 1),
+        "report_policy.reproduce_fidelity.require_shared_field", 0, 20,
+    ))
+    _fid["min_field_jaccard"] = float(_bounded_number(
+        _fid.get("min_field_jaccard", 0.0),
+        "report_policy.reproduce_fidelity.min_field_jaccard", 0.0, 1.0,
+    ))
+    _fid["min_op_jaccard"] = float(_bounded_number(
+        _fid.get("min_op_jaccard", 0.0),
+        "report_policy.reproduce_fidelity.min_op_jaccard", 0.0, 1.0,
+    ))
+    _fid["min_shared_ops"] = int(_bounded_number(
+        _fid.get("min_shared_ops", 0),
+        "report_policy.reproduce_fidelity.min_shared_ops", 0, 20,
+    ))
+    rp["reproduce_fidelity"] = _fid
     spec["report_policy"] = rp
 
     profiles = resolve_profiles(spec)

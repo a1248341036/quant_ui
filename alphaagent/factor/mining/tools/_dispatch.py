@@ -482,7 +482,7 @@ class _DispatchMixin:
         # 2026-09-30 review 修：本块原先插在 docstring **之前**，使 """...""" 沦为
         # 死字符串语句（__doc__ 为空）；现 docstring 归位到 def 之后。
         try:
-            self._report_reproduce_judge(result, factor_name)
+            self._report_reproduce_judge(result, factor_name, expr=expr)
         except Exception as _e:  # noqa: BLE001
             logging.info("report_reproduce_judge_exception %s", _e)
 
@@ -1240,12 +1240,14 @@ class _DispatchMixin:
             "summary": f"已通过 mRMR 选出 {len(ranking)} 个互补因子（Top: {', '.join(r['name'] for r in ranking[:3])}）",
         }
 
-    def _report_reproduce_judge(self, result: dict[str, Any], factor_name: str) -> None:
+    def _report_reproduce_judge(self, result: dict[str, Any], factor_name: str,
+                                expr: str = "") -> None:
         """研报模式复现判定（唯一实现）。
 
-        通过条件（满足其一）：① 形态对账 verdict==confirmed；② |IC|≥reproduce_min_abs_ic
-        且 ICIR≥reproduce_min_icir。指标**兼容** ``metrics.cross_sectional_core`` 与
-        ``summary`` 两种结构（实测引擎输出为后者）。每次判定都写日志，便于事后归因。
+        通过条件（满足其一，**且**须过"原文锚"保真度校验）：① 形态对账 verdict==confirmed；
+        ② |IC|≥reproduce_min_abs_ic 且 ICIR≥reproduce_min_icir。指标**兼容**
+        ``metrics.cross_sectional_core`` 与 ``summary`` 两种结构（实测引擎输出为后者）。
+        每次判定都写日志，便于事后归因。
         """
         from alphaagent.factor.mining.report_channels import get_run_gate
 
@@ -1282,6 +1284,47 @@ class _DispatchMixin:
                 f"shape={shape or '-'} -> 未过线",
             )
             return
+        # ── 复现保真度「原文锚」硬门槛（2026-10-01）────────────────────────
+        # 依据：昨夜实测 10 个"有原文公式"的课题，复现公式与原文的字段 Jaccard 平均
+        # 0.062、算子 Jaccard 0.085——模型靠题面约束脱稿自由探索，用容易过线的通用因子
+        # （5 日反转 / Amihud / PE 动量）顶替原文机制。此处对"过线"增设机械校验：
+        # 复现公式必须与原文公式共享 ≥N 个**报告特有字段**（通用行情字段不算）。
+        # 仅研报模式：本函数只由 report gate 触发、配置在 report_policy 下。
+        # 客观锚通道：校验结果写进 result["report_fidelity"]（模型可见）+ steps.log。
+        _fid_cfg = rp.get("reproduce_fidelity") or {}
+        if bool(_fid_cfg.get("enabled", False)) and expr:
+            try:
+                from alphaagent.factor.mining.agent.question_queue import (
+                    check_reproduce_fidelity,
+                    find_question,
+                )
+
+                _fid_spec = {"report_policy": rp}
+                _q = find_question(qid, _fid_spec)
+                _fid = check_reproduce_fidelity(_q, expr, spec=_fid_spec)
+                result["report_fidelity"] = _fid
+                log_step(
+                    "report_fidelity_check",
+                    f"qid={qid} factor={factor_name} passed={_fid.get('passed')} "
+                    f"ref_n={_fid.get('n_records')} "
+                    f"shared_specific={_fid.get('shared_specific_fields')} "
+                    f"fj={_fid.get('field_jaccard')} oj={_fid.get('op_jaccard')} "
+                    f"reason={_fid.get('reason')}",
+                )
+                if not _fid.get("passed"):
+                    log_step(
+                        "report_reproduce_judge",
+                        f"qid={qid} factor={factor_name} 原文锚未达标"
+                        f"（{_fid.get('reason')}）-> 不予过线",
+                    )
+                    return
+            except Exception as _fe:  # noqa: BLE001
+                # 校验异常绝不静默变成"放行"：记录后按未过线处理（宁严勿松）
+                log_step("report_fidelity_check",
+                         f"qid={qid} factor={factor_name} 校验异常 -> 不予过线: "
+                         f"{type(_fe).__name__}: {str(_fe)[:120]}")
+                return
+
         from alphaagent.factor.mining.agent.question_state import mark_reproduce_ok
 
         _parts = []
