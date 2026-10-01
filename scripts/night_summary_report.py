@@ -75,8 +75,21 @@ def summarize(rid: str) -> dict:
     #      / 全套生效（结构准入 + 血统门禁 + 复杂度地板）。
     reasons_all = " ".join(re.findall(r"report_fidelity_check \|[^\n]*reason=([\w:,=<.]+)", txt))
     _phase = "硬锚前"
+    # 先看 research_mode：**普通模式 run 不进研报 A/B**（2026-10-02 实测坑：监控 --research-mode
+    # 缺省空 → 后端自定 technical，整夜监控自起的 run 全是普通模式，却因 spec 里含 report_policy
+    # 键而被误标为"部分生效"）。
+    _meta_p = UI / rid / "run_meta.json"
+    _mode = ""
+    if _meta_p.is_file():
+        try:
+            _mode = str((json.loads(_meta_p.read_text(encoding="utf-8")).get("params") or {})
+                        .get("research_mode") or "")
+        except Exception:  # noqa: BLE001
+            _mode = ""
     _spec_p = UI / rid / "research_spec.json"
-    if _spec_p.is_file():
+    if _mode and _mode != "report":
+        _phase = f"非研报模式({_mode})"
+    elif _spec_p.is_file():
         try:
             _spec = json.loads(_spec_p.read_text(encoding="utf-8"))
             _flat = json.dumps(_spec, ensure_ascii=False)
@@ -157,7 +170,7 @@ def main() -> int:
             f"{r['distinct_parents']} | {r['top_parent_share']:.0%} | "
             f"{r['ic_median']} | {r['icir_median']} | {r['errors'] or '-'} |")
     # 相位汇总（A/B 读法）
-    for ph in ("硬锚前", "部分生效", "全套生效"):
+    for ph in ("全套生效", "部分生效", "硬锚前", "非研报模式(technical)"):
         rs = [r for r in rows if r["phase"] == ph]
         if not rs:
             continue
