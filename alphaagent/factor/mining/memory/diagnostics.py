@@ -122,7 +122,8 @@ def _rebuild_conclusion(name: str, result: dict[str, Any], metrics: dict[str, An
     if is_val and (result.get("sign_check", {}).get("matches_expected_sign") is not False) and abs(ic or 0) >= _val_abs_ic:
         return "validated", f"训练外验证通过：{ic_str} {icir_str} {cov_str}。方向一致且有可用相关性，可在相邻但不重复的机制上扩展。"
     # 海选线从真源 evaluation_policy 继承
-    if abs(ic or 0) >= _th and (icir or 0) > _icir_soft and (coverage or 0) > _cov:
+    # 强度口径：IC / ICIR 一律 abs（与 schema._classify 保持同源，见其注释）
+    if abs(ic or 0) >= _th and abs(icir or 0) > _icir_soft and (coverage or 0) > _cov:
         return "train_passed", (
             f"训练样本海选过线（train_passed，非质量结论）：{ic_str} {icir_str} {cov_str}。"
             "必须 eval_on_val_set 做样本外验证；val 不过则结构不成立，禁止继续同根变异或提交。"

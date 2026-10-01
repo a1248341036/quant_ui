@@ -845,7 +845,9 @@ class SchemaMixin:
             return "validated", f"训练外验证通过：{ic_str} {icir_str} {cov_str}。方向一致且有可用相关性，可在相邻但不重复的机制上扩展。"
         # 海选线从真源 evaluation_policy 继承
         th = _th
-        if abs(ic or 0) >= th and (icir or 0) > _icir_soft and (coverage or 0) > _cov:
+        # 强度口径：IC / ICIR 一律 abs（与正式门槛 evaluation/profile.py abs_gte 同源；
+        # 负值只表示方向相反，不应因方向被降级为 weak）
+        if abs(ic or 0) >= th and abs(icir or 0) > _icir_soft and (coverage or 0) > _cov:
             return "train_passed", (
                 f"训练样本海选过线（train_passed，非质量结论）：{ic_str} {icir_str} {cov_str}。"
                 "必须 eval_on_val_set 做样本外验证；val 不过则结构不成立，禁止继续同根变异或提交。"
@@ -855,7 +857,8 @@ class SchemaMixin:
         # 档 239 个 near-miss 无一获得二次评估）。阈值单一真源在 constants.py。
         from .constants import NEAR_MISS_COVERAGE, NEAR_MISS_ICIR_SOFT, NEAR_MISS_IC_RATIO
 
-        if abs(ic or 0) >= NEAR_MISS_IC_RATIO * th and (icir or 0) > NEAR_MISS_ICIR_SOFT and (coverage or 0) > NEAR_MISS_COVERAGE:
+        # 强度口径同上游：IC / ICIR 一律 abs（负值只是方向相反；见 :850 注释）
+        if abs(ic or 0) >= NEAR_MISS_IC_RATIO * th and abs(icir or 0) > NEAR_MISS_ICIR_SOFT and (coverage or 0) > NEAR_MISS_COVERAGE:
             return "near_miss", (
                 f"接近海选线：{ic_str} {icir_str} {cov_str}（IC 距 {th} 门槛 <20%）。"
                 "建议窗口微调后重评（传 parent_factor/edit_note），或机制置信度高时直接 eval_on_val_set。"
