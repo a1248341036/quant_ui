@@ -679,7 +679,14 @@ def check_reproduce_fidelity(question: dict[str, Any] | None, expr: str, *,
     shared_f = ref_fields & my_fields
     shared_o = ref_ops & my_ops
     # 锚定证据：排除通用行情字段后的"报告特有字段"交集
+    ref_specific = ref_fields - _FID_GENERIC_FIELDS
     shared_specific = shared_f - _FID_GENERIC_FIELDS
+    # 边界兜底（2026-10-01）：部分报告的原文公式**全用通用行情字段**——实测 361 篇覆盖
+    # 报告里 83 篇（23%），如"纯 VWAP/close 乖离""K 线高低点"类。若一律要求命中特有字段，
+    # 这些课题下的**忠实复现也永远过不了**（分母本身就没有特有字段）。故退化为按全量字段
+    # 判定，并在结果里标明 anchor_mode 以便审计。
+    anchor_mode = "specific" if ref_specific else "generic_only_reference"
+    anchor_pool = shared_specific if ref_specific else shared_f
     fj = len(shared_f) / max(1, len(ref_fields | my_fields))
     oj = len(shared_o) / max(1, len(ref_ops | my_ops))
 
@@ -689,8 +696,9 @@ def check_reproduce_fidelity(question: dict[str, Any] | None, expr: str, *,
     min_oj = float(cfg.get("min_op_jaccard") or 0.0)
 
     fails: list[str] = []
-    if need_f > 0 and len(shared_specific) < need_f:
-        fails.append(f"shared_specific_fields={len(shared_specific)}<{need_f}")
+    if need_f > 0 and len(anchor_pool) < need_f:
+        fails.append(f"shared_{'specific_' if ref_specific else ''}fields="
+                     f"{len(anchor_pool)}<{need_f}")
     if need_ops > 0 and len(shared_o) < need_ops:
         fails.append(f"shared_ops={len(shared_o)}<{need_ops}")
     if min_fj > 0 and fj < min_fj:
@@ -702,12 +710,14 @@ def check_reproduce_fidelity(question: dict[str, Any] | None, expr: str, *,
         "passed": not fails,
         "reason": "ok" if not fails else "off_reference:" + ",".join(fails),
         "n_records": len(refs),
+        "anchor_mode": anchor_mode,
         "field_jaccard": round(fj, 4),
         "op_jaccard": round(oj, 4),
         "shared_fields": sorted(shared_f)[:8],
         "shared_specific_fields": sorted(shared_specific)[:8],
         "shared_ops": sorted(shared_o)[:8],
         "ref_fields": sorted(ref_fields)[:12],
+        "ref_specific_fields": sorted(ref_specific)[:12],
         "thresholds": cfg,
     }
 
