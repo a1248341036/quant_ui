@@ -127,7 +127,8 @@ def load_question_queue(spec: dict[str, Any] | None = None) -> list[dict[str, An
                 if line.strip():
                     questions.append(json.loads(line))
             if questions:
-                return _apply_require_factor_records(questions, spec)
+                return _apply_require_report_structure(
+                    _apply_require_factor_records(questions, spec), spec)
         except Exception as e:
             logger.warning("读取问题题库失败: %s", e)
 
@@ -135,6 +136,30 @@ def load_question_queue(spec: dict[str, Any] | None = None) -> list[dict[str, An
 
 
 _QUESTION_INDEX_CACHE: dict[str, tuple[float, dict[str, dict[str, Any]]]] = {}
+
+
+def _apply_require_report_structure(rows: list[dict[str, Any]],
+                                    spec: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """``report_policy.require_report_structure``：只派发**报告提出了可复现结构**的课题。
+
+    结构判定由抽取侧 LLM 产出（`report_structure` / `has_reproducible_structure` /
+    `reproduction_target`），本函数只做准入过滤，不重判。
+    兜底：题库无该字段（旧题库）→ 不筛；过滤后为空 → 回退原题库（宁可不筛也不让 run 无题）。
+    """
+    if not rows:
+        return rows
+    if not bool(((spec or {}).get("report_policy") or {}).get("require_report_structure", False)):
+        return rows
+    if not any("has_reproducible_structure" in r for r in rows):
+        logger.info("require_report_structure=True 但题库无该字段（旧题库），不筛")
+        return rows
+    kept = [r for r in rows if r.get("has_reproducible_structure") is True]
+    if not kept:
+        logger.warning("require_report_structure 过滤后无课题，回退原题库（%d 道）", len(rows))
+        return rows
+    logger.info("require_report_structure: %d → %d 道（仅保留有可复现结构的研报课题）",
+                len(rows), len(kept))
+    return kept
 
 
 def find_question(question_id: str, spec: dict[str, Any] | None = None) -> dict[str, Any] | None:
@@ -1130,6 +1155,25 @@ def render_reproduce_task(question: dict, spec: dict | None = None, card: dict |
     parts.append(f"- 期望形态：{shape}；期望方向：{sign if sign is not None else '-'}")
     if falsifier and falsifier[:30] not in (findings or "")[:120]:
         parts.append(f"- 证伪条件：{falsifier}")
+    # ── 结构目标（B 版题面主体，2026-10-02）──────────────────────────────
+    # 复现对象 = 报告提出的**结构/机制**，不是那条参考公式。依据：实测单算子因子达双门槛率
+    # 1.4%、单字段 0.1%，而含结构算子 9.1%、3+ 字段 11.2% —— 复现简单公式必然无效。
+    _struct = str(question.get("report_structure") or "")
+    _target = str(question.get("reproduction_target") or "").strip()
+    if _target:
+        _sr = ((question.get("primary") or {}).get("spec_requirements") or {})
+        parts += [
+            "",
+            f"**复现目标（结构类型 `{_struct}`）**：{_target}",
+            f"- 要素清单：字段 `{_sr.get('fields')}`；窗口 `{_sr.get('windows')}`；"
+            f"算子 `{_sr.get('operators')}`；结构性算子 `{_sr.get('structure_ops')}`；"
+            f"处理链 `{_sr.get('chain')}`；最少字段数 `{_sr.get('min_fields')}`",
+            "- **必须体现上述结构**（不是照抄一条简单公式）：优先用**结构性算子**"
+            "（`SOFT_GATE` / `CS_GROUP_RANK` / `CS_RESIDUALIZE` / `CS_NEUTRALIZE` / "
+            "`IF_THEN_ELSE` / `DIVERGENCE_RANK`）表达该结构；若该结构在本仓算子下无法直接表达，"
+            "就用多层嵌套 + `CS_ZSCORE`/`CS_RANK`/`ADD` 组合近似，并在 `edit_note` 写明落地方式。",
+            "- 下方「本报告因子清单」里的公式**仅作参考/对照**，**不作为复现目标**。",
+        ]
     parts += [
         "",
         "**判定标准（系统按此判定，满足其一即「复现通过」并进入发散阶段）**：",

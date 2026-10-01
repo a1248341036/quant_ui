@@ -300,6 +300,13 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
         # 复现保真度「原文锚」（2026-10-01，仅研报模式；唯一真源 question_queue）：
         # ①只派发有原文公式的课题；②复现过线前校验复现公式与原文公式的字段/算子重叠。
         "require_factor_records": True,
+        # 结构准入（2026-10-02，仅研报模式）：只派发**报告提出了可复现结构**的课题。
+        # 结构 = gated 条件门控 / composite 多因子合成 / residual 残差中性化 / timing 择时 /
+        # cross_facet 跨面融合；`none`（仅通用单因子，如 ROE/PB/动量）**不出题**。
+        # 依据（26707 次历史评估实测）：单算子因子达双门槛率 1.4%、1 字段 0.1%，
+        # 而含结构算子 9.1%、3+ 字段 11.2%（差 6~112 倍）——复现"一条通用单公式"必然无效。
+        # 兼容：题库无 `has_reproducible_structure` 字段（旧 1200 题库）→ 本项不筛，行为不变。
+        "require_report_structure": True,
         "reproduce_fidelity": {
             "enabled": True,
             "require_shared_field": 1,   # 至少 1 个「报告特有字段」（通用行情字段不算）
@@ -668,6 +675,9 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
     #      「报告特有字段」上（通用行情字段不算），防止脱稿自由探索顶替原文机制。
     rp["require_factor_records"] = _require_bool(
         rp.get("require_factor_records", True), "report_policy.require_factor_records"
+    )
+    rp["require_report_structure"] = _require_bool(
+        rp.get("require_report_structure", True), "report_policy.require_report_structure"
     )
     _fid = rp.get("reproduce_fidelity")
     if not isinstance(_fid, dict):
