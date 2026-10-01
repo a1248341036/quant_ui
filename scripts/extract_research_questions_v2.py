@@ -123,8 +123,16 @@ USER_TMPL = """下面是一篇券商金工研报的 Markdown 正文（可能有�
    `has_reproducible_structure = (report_structure != "none")`；
    `reproduction_target` 写成**可执行的结构描述**（含关键参数/步骤/字段），例如
    "GMSD 前 2/3 → SIRD 前 50% → PB 最低 1/3 三步筛选"；
-   并把复现该结构所需要素填进 `primary.spec_requirements`（fields/operators/chain/
-   structure_ops 结构性算子/min_fields 最少字段数）。
+   并把复现该结构所需要素填进 `primary.spec_requirements`——**注意：填的是"结构"的要素，
+   不是参考公式的要素**（标定实测：59% 的题未声明 structure_ops、声明字段常只有 1 个 →
+   下游结构锚形同虚设）：
+     · `fields`：**列全该结构用到的所有字段**（多因子合成就列全部成分字段），不要只填参考公式那两个；
+     · `operators`：该结构依赖的算子（用上面清单里的名字）；
+     · `structure_ops`：**结构性算子**，从下面白名单里选该结构真正依赖的（可为多个）：
+       `CS_GROUP_RANK` | `SOFT_GATE` | `DIVERGENCE_RANK` | `CS_RESIDUALIZE` |
+       `CS_NEUTRALIZE` | `IF_THEN_ELSE` | `CS_BUCKET` | `PIECEWISE_STATE`；
+       若该结构确实不依赖上述任何一个（例如纯等权合成），**留空数组**并在 `spec_text` 里写清合成方式；
+     · `min_fields`：复现该结构**至少要用几个字段**（应与 fields 数量一致或略低，不要虚高）。
    ⚠ 若判 `none`，说明本篇**不应作为复现题**（`reproduction_target` 留空），不要硬凑结构。
    ⚠⚠ **算子白名单（硬约束）**：`operators` / `structure_ops` / `expr_local` **只能使用上面清单里
    已有的算子名**，**严禁自造**（例：`SIGNAL_BLEND` 这类清单里没有的名字一律不许写）。
