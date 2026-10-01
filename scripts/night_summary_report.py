@@ -70,10 +70,23 @@ def summarize(rid: str) -> dict:
     icirs = sorted(r for _, r in evals)
     ics = sorted(i for i, _ in evals)
     med = lambda a: a[len(a) // 2] if a else 0.0  # noqa: E731
-    # 相位：日志里出现结构锚相关拦截原因 → 该 run 已带硬锚（合并后启动）
+    # 相位：**直接读该 run 冻结的 research_spec.json**（比猜日志可靠）。
+    # 三态：硬锚前（无新键）/ 部分生效（有结构准入但缺血统门禁与地板，= 后端未重启，见 Round 18）
+    #      / 全套生效（结构准入 + 血统门禁 + 复杂度地板）。
     reasons_all = " ".join(re.findall(r"report_fidelity_check \|[^\n]*reason=([\w:,=<.]+)", txt))
-    hard_anchor = any(k in reasons_all for k in
-                      ("structure_ops_missing", "ops_used=", "fields_used="))
+    _phase = "硬锚前"
+    _spec_p = UI / rid / "research_spec.json"
+    if _spec_p.is_file():
+        try:
+            _spec = json.loads(_spec_p.read_text(encoding="utf-8"))
+            _flat = json.dumps(_spec, ensure_ascii=False)
+            _has_struct = "require_report_structure" in _flat
+            _has_lineage = "diverge_parent_required" in _flat or "min_ops_floor" in _flat
+            _phase = ("全套生效" if (_has_struct and _has_lineage)
+                      else ("部分生效" if _has_struct else "硬锚前"))
+        except Exception:  # noqa: BLE001
+            _phase = "硬锚前"
+    hard_anchor = _phase == "全套生效"
     # 拦截分类：结构锚 vs 原有字段锚
     struct_block = len(re.findall(r"structure_ops_missing|ops_used=\d+<floor|fields_used=\d+<floor",
                                   reasons_all))
@@ -94,7 +107,7 @@ def summarize(rid: str) -> dict:
         "n_unique_eval": len(_ev), "dual_factors": len(_dual),
         "distinct_parents": len(_pc), "top_parent_share": round(_top_share, 3),
         "top_parent": (_pc.most_common(1)[0][0] if _pc else ""),
-        "phase": "硬锚后" if hard_anchor else "硬锚前",
+        "phase": _phase,
         "struct_block": struct_block, "field_block": field_block,
         "run_id": rid, "topics": len({q for q, _ in qstate}),
         "phases": dict(Counter(p for _, p in qstate)),
@@ -144,7 +157,7 @@ def main() -> int:
             f"{r['distinct_parents']} | {r['top_parent_share']:.0%} | "
             f"{r['ic_median']} | {r['icir_median']} | {r['errors'] or '-'} |")
     # 相位汇总（A/B 读法）
-    for ph in ("硬锚前", "硬锚后"):
+    for ph in ("硬锚前", "部分生效", "全套生效"):
         rs = [r for r in rows if r["phase"] == ph]
         if not rs:
             continue
