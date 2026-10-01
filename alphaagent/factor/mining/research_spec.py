@@ -274,16 +274,18 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
         "question_field_gate_scan_limit": 40,
         "question_field_warn": True,
         # ── 复现门槛（研报模式；**唯一真源**，判定在 tools/_dispatch._report_reproduce_judge）──
-        # 判定式：复现通过 = 【底线】 ∧ (【指标通道】 ∨ 【形态通道】)
-        #   · reproduce_floor_abs_ic —— **底线，两条通道都必须过**：|IC| 不得低于此值。
-        #     存在理由（2026-10-01 实测）：形态对账只验证"事先声明的可证伪预测是否成立"，
-        #     不验证强度；底线缺失时 |IC|=0.0009 的噪声母本也能靠形态过线进入发散
-        #     （21 次过线里 13 次仅靠形态，最极端 rq038_ma_ratio_v2 |IC|=0.0009）。
+        # 判定式：复现通过 = 【底线】 ∧ 【指标】 ∧ 【形态对账】（**三项全中**）
+        #   （2026-10-01 用户定调：原先「指标 **或** 形态」，改为「**且**」——既要强度达标，
+        #     也要事先声明的可证伪预测成立；只按形态放行会让 |IC|≈0 的噪声母本进发散，
+        #     只按强度放行会让"机制理解错了但碰巧有 IC"的因子进发散。）
+        #   · reproduce_floor_abs_ic —— 底线：|IC| 不得低于此值。默认与 min_abs_ic 同值，
+        #     故通常被指标项涵盖；保留为显式项，便于单独调高底线而不动指标线。
         #     调大 → 母本更少但更强；调小 → 更多弱母本进入发散（发散阶段白烧算力）。
-        #   · reproduce_min_abs_ic / reproduce_min_icir —— 指标通道：|IC| 与 |ICIR| 同时达线。
-        #   · 形态通道：prediction 对账 confirmed（强侧/形态/IC 符号三项全中，见 eval/prediction.py）。
-        # 注 1：IC 与 ICIR **一律按绝对值**比较（负值=方向相反、强度等价；方向由 prediction
-        #       对账与正式库 abs 门槛负责，不参与强度判定）。
+        #   · reproduce_min_abs_ic / reproduce_min_icir —— 指标：|IC| 与 |ICIR| 同时达线。
+        #   · 形态对账：prediction_check 必须 confirmed（强侧/形态/IC 符号三项全中，
+        #     见 eval/prediction.py；它只验证"预测是否成立"，不验证强度）。
+        # 注 1：IC 与 ICIR **一律按绝对值**比较（负值=方向相反、强度等价；方向由形态对账的
+        #       expected_sign 与正式库 abs 门槛负责，不参与强度判定）。
         # 注 2：自 2026-10-01 起这三个阈值可从 spec 配置（此前是代码内硬编码默认值，无法调参）。
         "reproduce_floor_abs_ic": 0.010,
         "reproduce_min_abs_ic": 0.010,
