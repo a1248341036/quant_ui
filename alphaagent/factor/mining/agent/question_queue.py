@@ -635,6 +635,8 @@ def load_factor_records(spec: dict[str, Any] | None = None,
 # 仅研报模式生效：配置放在 ``report_policy`` 下，且调用点只在 report gate 内。
 _REPRODUCE_FIDELITY_DEFAULTS: dict[str, Any] = {
     "enabled": True,
+    "min_ops_floor": 2,          # 弱声明兜底：复现至少用几个不同算子（挡一行式）
+    "min_fields_floor": 2,       # 弱声明兜底：复现至少用几个不同字段
     "require_shared_field": 1,   # 至少命中 1 个原文公式用到的字段（0=不要求）
     "min_field_jaccard": 0.0,    # 可选：字段 Jaccard 下限
     "min_op_jaccard": 0.0,       # 可选：算子 Jaccard 下限
@@ -744,6 +746,26 @@ def check_reproduce_fidelity(question: dict[str, Any] | None, expr: str, *,
                             "min_fields": _min_fields}
         if not _hit_ops:
             fails.append("structure_ops_missing=" + ",".join(_struct_ops[:4]))
+    elif ((question or {}).get("has_reproducible_structure") is True
+          and not _struct_ops
+          and (not _declared or (len(_declared) <= 1 and _min_fields <= 1))):
+        # ⑤ 弱声明兜底（2026-10-02 标定）：59% 的结构题未声明 structure_ops，且声明字段常只有
+        # 1 个 → 结构锚会退化成"用到某个通用字段即过"。此时改用**复杂度地板**：
+        # 复现至少 min_ops_floor 个不同算子 + min_fields_floor 个不同字段（挡掉一行式）。
+        # 依据（26707 次评估）：1 算子因子达双门槛 1.4%、2-3 算子 0.3%、4+ 算子 8.2%。
+        try:
+            _ops_floor = int(cfg.get("min_ops_floor") or 0)
+            _flds_floor = int(cfg.get("min_fields_floor") or 0)
+        except (TypeError, ValueError):
+            _ops_floor = _flds_floor = 0
+        structure_anchor = {"applicable": bool(_ops_floor or _flds_floor), "mode": "complexity_floor",
+                            "n_my_ops": len(my_ops), "n_my_fields": len(my_fields),
+                            "min_ops_floor": _ops_floor, "min_fields_floor": _flds_floor,
+                            "declared_fields": sorted(_declared), "min_fields": _min_fields}
+        if _ops_floor and len(my_ops) < _ops_floor:
+            fails.append(f"ops_used={len(my_ops)}<floor={_ops_floor}")
+        if _flds_floor and len(my_fields) < _flds_floor:
+            fails.append(f"fields_used={len(my_fields)}<floor={_flds_floor}")
     elif _declared or _min_fields > 0:
         # 声明字段覆盖率：须命中 ≥ min(声明字段数, min_fields) 个声明字段
         _need_n = (min(len(_declared), _min_fields) if _min_fields else len(_declared))

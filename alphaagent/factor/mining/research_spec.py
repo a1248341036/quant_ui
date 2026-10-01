@@ -309,6 +309,10 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
         "require_report_structure": True,
         "reproduce_fidelity": {
             "enabled": True,
+            # 弱声明兜底（2026-10-02 标定）：59% 结构题未声明 structure_ops、声明字段常只有 1 个
+            # → 结构锚退化。此时用复杂度地板挡一行式（实测 1 算子达双门槛 1.4% vs 4+ 算子 8.2%）。
+            "min_ops_floor": 2,
+            "min_fields_floor": 2,
             "require_shared_field": 1,   # 至少 1 个「报告特有字段」（通用行情字段不算）
             "min_field_jaccard": 0.0,
             "min_op_jaccard": 0.0,
@@ -685,6 +689,12 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
     _fid["enabled"] = _require_bool(
         _fid.get("enabled", True), "report_policy.reproduce_fidelity.enabled"
     )
+    _fid["min_ops_floor"] = int(_bounded_number(
+        _fid.get("min_ops_floor", 2), "report_policy.reproduce_fidelity.min_ops_floor", 0, 20,
+    ))
+    _fid["min_fields_floor"] = int(_bounded_number(
+        _fid.get("min_fields_floor", 2), "report_policy.reproduce_fidelity.min_fields_floor", 0, 20,
+    ))
     _fid["require_shared_field"] = int(_bounded_number(
         _fid.get("require_shared_field", 1),
         "report_policy.reproduce_fidelity.require_shared_field", 0, 20,
