@@ -78,7 +78,22 @@ def summarize(rid: str) -> dict:
     struct_block = len(re.findall(r"structure_ops_missing|ops_used=\d+<floor|fields_used=\d+<floor",
                                   reasons_all))
     field_block = len(re.findall(r"shared_(?:specific_)?fields=\d+<|shared_ops=", reasons_all))
+    # 同根度（防同根灌水误读）：达双门槛因子里最大同父本占比
+    # 2026-10-02 实测教训：run a898c626b991 的 22 个达双门槛因子**全部**同一记忆建议父本
+    # （mix_ovlead_wma5_kg90_totcap_m15），"12.2% 达双门槛"实为 1 个机制的变体。
+    _ev = {}
+    for m in re.finditer(r"\| evaluate \| [^|]+ (\S+) \| split=train \| ic=(-?[\d.]+) \| icir=(-?[\d.]+)", txt):
+        _ev[m.group(1)] = (abs(float(m.group(2))), abs(float(m.group(3))))
+    _dual = [f for f, (i, r) in _ev.items() if i >= 0.02 and r >= 0.28]
+    _par = {}
+    for m in re.finditer(r"memory\.record \| (\S+) verdict=\w+[^\n]*parent=(\S+)", txt):
+        _par.setdefault(m.group(1), m.group(2))
+    _pc = Counter(_par.get(f, "(根)") for f in _dual)
+    _top_share = (max(_pc.values()) / len(_dual)) if _dual else 0.0
     return {
+        "n_unique_eval": len(_ev), "dual_factors": len(_dual),
+        "distinct_parents": len(_pc), "top_parent_share": round(_top_share, 3),
+        "top_parent": (_pc.most_common(1)[0][0] if _pc else ""),
         "phase": "硬锚后" if hard_anchor else "硬锚前",
         "struct_block": struct_block, "field_block": field_block,
         "run_id": rid, "topics": len({q for q, _ in qstate}),
@@ -120,12 +135,13 @@ def main() -> int:
              f"| 复现 |IC| 中位 | {BASELINE['reproduce_ic_median']} | —（见下）|",
              f"| 复现 ICIR 中位 | {BASELINE['reproduce_icir_median']} | — |", "",
              "## 逐 run", "",
-             "| run | 相位 | 课题 | 复现判定/过线 | 保真度拦截(结构锚/字段锚) | 评估 | 达双门槛 | |IC|中位 | ICIR中位 | 错误 |",
-             "|---|---|---|---|---|---|---|---|---|---|"]
+             "| run | 相位 | 课题 | 复现判定/过线 | 保真度拦截(结构锚/字段锚) | 评估 | 达双门槛 | 独立父本 | 最大同根占比 | |IC|中位 | ICIR中位 | 错误 |",
+             "|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in rows:
         lines.append(
             f"| `{r['run_id']}` | {r['phase']} | {r['topics']} | {r['repro_judge']}/{r['repro_pass']} | "
             f"{r['struct_block']}/{r['field_block']} | {r['evals']} | {r['dual_gate']} | "
+            f"{r['distinct_parents']} | {r['top_parent_share']:.0%} | "
             f"{r['ic_median']} | {r['icir_median']} | {r['errors'] or '-'} |")
     # 相位汇总（A/B 读法）
     for ph in ("硬锚前", "硬锚后"):
@@ -137,9 +153,13 @@ def main() -> int:
         jd = sum(r["repro_judge"] for r in rs)
         ps = sum(r["repro_pass"] for r in rs)
         sb = sum(r["struct_block"] for r in rs)
+        dual_f = sum(r["dual_factors"] for r in rs)
+        uniq = sum(r["n_unique_eval"] for r in rs)
+        worst = max((r["top_parent_share"] for r in rs), default=0.0)
         lines += ["", f"**{ph}**：run {len(rs)} 个 | 复现 {ps}/{jd} 过线 | "
-                      f"结构锚拦截 {sb} | 评估 {ev} | 达双门槛 {dg}"
-                      f"（{dg / max(1, ev) * 100:.1f}%）"]
+                      f"结构锚拦截 {sb} | 评估 {uniq} | 达双门槛 {dual_f}"
+                      f"（{dual_f / max(1, uniq) * 100:.1f}%）| 最大同根占比 {worst:.0%}"
+                      + ("  ⚠ 同根灌水，勿据此判效果" if worst >= 0.5 else "")]
     out = UI.parent.parent / args.out if not Path(args.out).is_absolute() else Path(args.out)
     out.write_text("\n".join(lines), encoding="utf-8")
     print("\n".join(lines[:12]))
