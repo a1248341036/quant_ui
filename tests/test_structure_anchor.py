@@ -73,3 +73,27 @@ def test_min_fields_total_when_declared_is_incomplete():
         records=REF)
     assert rich["passed"] is True, rich
     assert rich["structure_anchor"]["need_total_fields"] == 5
+
+
+def test_complexity_floor_for_weak_declarations():
+    """标定实测：59% 的结构题未声明 structure_ops、声明字段常只有 1 个 → 走复杂度地板挡一行式。
+    旧题库（无 has_reproducible_structure）不得被此规则影响。"""
+    weak_q = dict(_q({"fields": ["$close"], "min_fields": 1}),
+                  has_reproducible_structure=True)
+    one = check_reproduce_fidelity(weak_q, "CS_ZSCORE($close)", records=REF)
+    assert one["passed"] is False, one
+    assert "ops_used=1<floor=2" in one["reason"]
+    assert one["structure_anchor"]["mode"] == "complexity_floor"
+
+    ok = check_reproduce_fidelity(
+        weak_q, "CS_ZSCORE(TS_MEAN(DIVIDE($close, $volume), 20))", records=REF)
+    assert ok["passed"] is True, ok
+
+
+def test_legacy_question_bypasses_floor():
+    """旧题库题（无 has_reproducible_structure）→ 复杂度地板不生效（向后兼容）。"""
+    legacy = _q({})
+    assert legacy.get("has_reproducible_structure") is None
+    out = check_reproduce_fidelity(legacy, "CS_ZSCORE($close)", records=REF)
+    assert out["passed"] is True, out
+    assert out["structure_anchor"]["applicable"] is False
