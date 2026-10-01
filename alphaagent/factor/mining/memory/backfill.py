@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from .calibration import _parent_bucket
-from .constants import BASELINE_HALF_LIFE_DAYS, POSITIVE_VERDICTS
+from .constants import BASELINE_HALF_LIFE_DAYS, POSITIVE_VERDICTS_READ
 from .diagnostics import _SUCCESS_SIGNATURES, _extract_fail_detail, _match_signature, _now, _parse_args, _rebuild_conclusion, _safe_float
 from .expressions import (
     _structure_fingerprint,
@@ -308,7 +308,7 @@ class BackfillMixin:
                 child_ic = _safe_float(metrics.get("ic"))
                 verdict = str(row["verdict"] or "")
                 error = str(row["error"] or "")
-                is_positive = verdict in POSITIVE_VERDICTS
+                is_positive = verdict in POSITIVE_VERDICTS_READ
                 invalid = bool(error) or child_ic is None
 
                 # 同桶基线（迁移时按历史顺序累积）

@@ -17,7 +17,7 @@ def _reset_runlog():
 def test_log_step_writes_file_and_formats(tmp_path, capsys):
     runlog.setup_run_logger(tmp_path)
     runlog.set_turn(3)
-    runlog.log_step("evaluate", "vwap_dev_20", ic=0.0321, cov=0.998, verdict="promising", skip=None)
+    runlog.log_step("evaluate", "vwap_dev_20", ic=0.0321, cov=0.998, verdict="train_passed", skip=None)
     runlog.set_turn(None)
     runlog.log_step("run_end", "outcome=candidate_only", tool_calls=41)
 
@@ -25,7 +25,7 @@ def test_log_step_writes_file_and_formats(tmp_path, capsys):
     lines = [ln for ln in text.splitlines() if ln.strip()]
     assert len(lines) == 2
     assert "turn=3" in lines[0] and "evaluate" in lines[0]
-    assert "ic=0.0321" in lines[0] and "verdict=promising" in lines[0]
+    assert "ic=0.0321" in lines[0] and "verdict=train_passed" in lines[0]
     assert "skip=" not in lines[0]  # None 字段不输出
     assert "turn=-" in lines[1] and "tool_calls=41" in lines[1]
     # stdout 镜像（backend drain 进 console.log 的那份）

@@ -6,7 +6,7 @@ schema 归一化与断连重试）。而同一份 prompt 喂给不同模型，�
 （画像见 OpenViking `viking://resources/alphaagent/model_behaviors/`）：
 
 - **DeepSeek 系**（deepseek-*）：吞吐高但同族扎堆（dup_dead_end 11.7% vs Qwen 4.4%），
-  30 个 promising 却 0 次 submit——"过线继续变异"而非"过线即提交"；
+  30 个 train_passed（训练过线）却 0 次 submit——"过线继续变异"而非"过线即提交"；
 - **Gemini 系**（gemini-*）：换手率盲区——19/28 提交因换手被拒（1d label + weekly
   调仓错配），高轮次 run 重复评估率高；
 - **Qwen / 其它**：无专门画像，注入空。
@@ -30,8 +30,8 @@ _ADAPTATIONS: dict[str, str] = {
         "### 本模型历史行为画像（DeepSeek 系，来自对比实验）\n"
         "- 探索吞吐高但**同族扎堆**：历史 run 重复死路拦截率 11.7%（对比 Qwen 4.4%）。\n"
         "  连续多轮在同一信号族变体上打转且未见 new verdict 时，应主动换族/换数据面。\n"
-        "- **高 promising 低提交**：历史 run 30 个 promising 因子 0 次 submit_factor。\n"
-        "  promising 只是**训练样本海选过线，不是质量结论**——系统会对过线因子自动跑\n"
+        "- **高 train_passed 低提交**：历史 run 30 个训练过线因子 0 次 submit_factor。\n"
+        "  train_passed 只是**训练样本海选过线，不是质量结论**——系统会对过线因子自动跑\n"
         "  样本外验证（见评估结果的 val_verification）：val 未通过就不要继续同根变异或提交，\n"
         "  直接换信号根；val 通过才值得 submit_factor 或作为父本扩展。"
     ),
@@ -48,7 +48,7 @@ _ADAPTATIONS: dict[str, str] = {
 # 未命中前缀的模型给一个通用轻提示（避免完全空置；可选）
 _GENERIC = (
     "### 模型行为提示\n"
-    "- 训练评估通过海选线（promising = 训练样本过线，非质量结论）后，系统会自动跑"
+    "- 训练评估通过海选线（train_passed = 训练样本过线，非质量结论）后，系统会自动跑"
     "样本外验证（val_verification）：val 未通过就换信号根、不要堆同根变体；"
     "val 通过才走 submit_factor。提交前自查换手与调仓频率匹配。"
 )

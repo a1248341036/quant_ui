@@ -271,6 +271,7 @@ export default {
         'production_approved',
         'validated',
         'candidate_approved',
+        'train_passed',
         'promising',
         'near_miss',
         'revise_required',

@@ -13,7 +13,7 @@ import threading
 from typing import Any
 
 from .calibration import _parent_bucket
-from .constants import INVALID_WEIGHT, PARENT_ORIGIN_WEIGHT, POSITIVE_VERDICTS
+from .constants import INVALID_WEIGHT, PARENT_ORIGIN_WEIGHT
 from .diagnostics import _extract_fail_detail, _failure_code, _now, _parse_args, _rebuild_conclusion, _safe_float
 from ..runlog import log_step
 from .expressions import (

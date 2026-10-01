@@ -55,7 +55,7 @@ def load_promising(limit: int, min_ic: float, max_attempts: int = 3) -> list[dic
         """
         SELECT id, factor_name, expression, metrics_json, attempts, updated_at
         FROM memory_entries
-        WHERE verdict = 'promising' AND expression IS NOT NULL AND expression != ''
+        WHERE verdict IN ('train_passed','promising') AND expression IS NOT NULL AND expression != ''
         ORDER BY updated_at DESC
         """
     ).fetchall()

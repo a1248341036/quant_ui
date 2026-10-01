@@ -13,7 +13,17 @@ from datetime import datetime
 from typing import Any
 
 from .calibration import _apv_gate, _eq7_confidence
-from .constants import NEGATIVE_VERDICTS, POSITIVE_VERDICTS, VERDICT_WEIGHT
+from .constants import (
+    NEGATIVE_VERDICTS,
+    POSITIVE_VERDICTS_READ,
+    VERDICT_TRAIN_PASS,
+    VERDICT_WEIGHT,
+    normalize_verdict,
+)
+
+# 正集 SQL 片段（单一真源）：含历史字面量 promising——见 constants.POSITIVE_VERDICTS_READ。
+# 此前两处 SQL 手抄字面量，改名/增删正集时会与常量漂移。
+_POSITIVE_READ_SQL = ", ".join(f"'{v}'" for v in sorted(POSITIVE_VERDICTS_READ))
 from .expressions import (
     _structure_fingerprint,
     _tokens,
@@ -475,7 +485,7 @@ class RetrievalMixin:
         scored.sort(key=lambda pair: pair[0], reverse=True)
 
         # 正负池分离，各自独立做多样性去重，避免指纹去重跨 verdict 误杀
-        pos_pool = [(s, e) for s, e in scored if e.get("verdict") in POSITIVE_VERDICTS]
+        pos_pool = [(s, e) for s, e in scored if e.get("verdict") in POSITIVE_VERDICTS_READ]
         neg_pool = [(s, e) for s, e in scored if e.get("verdict") in NEGATIVE_VERDICTS]
 
         pos_quota = max(1, int(limit * 0.4))
@@ -649,11 +659,10 @@ class RetrievalMixin:
         try:
             with self._open() as conn:
                 zrows = conn.execute(
-                    """
+                    f"""
                     SELECT COALESCE(NULLIF(family, ''), 'other') AS fam,
                            COUNT(*) AS n,
-                           SUM(CASE WHEN verdict IN ('promising','validated',
-                                                     'candidate_approved','production_approved')
+                           SUM(CASE WHEN verdict IN ({_POSITIVE_READ_SQL})
                                     THEN 1 ELSE 0 END) AS n_pass
                     FROM memory_entries
                     GROUP BY fam HAVING n >= 30
@@ -999,7 +1008,7 @@ class RetrievalMixin:
                          "n_validated": 0}
             )
             fam["n_entries"] += 1
-            if row["verdict"] == "promising":
+            if normalize_verdict(row["verdict"]) == VERDICT_TRAIN_PASS:
                 fam["n_promising"] += 1
             elif row["verdict"] == "candidate_approved":
                 fam["n_candidate"] += 1
@@ -1062,16 +1071,15 @@ class RetrievalMixin:
         记忆实证（2943 次评估）：volume 族 616 次尝试 0 产出，gap_overnight
         0.57%、融合族（价量×基本面）1.75%——尝试次数与产出严重错配，而 LLM
         倾向于在最熟悉的族里内卷。本块把真实产出率喂给 LLM，矫正探索方向。
-        过线 = verdict ∈ {promising, validated, candidate_approved, production_approved}。
+        过线 = verdict ∈ {train_passed, validated, candidate_approved, production_approved}（历史行仍是旧名 promising，查询侧由 POSITIVE_VERDICTS_READ 兼容）。
         """
         try:
             with self._open() as conn:
                 rows = conn.execute(
-                    """
+                    f"""
                     SELECT COALESCE(NULLIF(family, ''), 'other') AS fam,
                            COUNT(*) AS n,
-                           SUM(CASE WHEN verdict IN ('promising','validated',
-                                                     'candidate_approved','production_approved')
+                           SUM(CASE WHEN verdict IN ({_POSITIVE_READ_SQL})
                                     THEN 1 ELSE 0 END) AS n_pass
                     FROM memory_entries
                     GROUP BY fam HAVING n >= ?
@@ -1126,14 +1134,14 @@ class RetrievalMixin:
         正交/审查拒绝（默认 spec 亦已禁用）。候选池融合因子 5/7 是同一
         DIVERGENCE_RANK 两元素模板——幸存结构塌缩、同模板边际递减，本块把
         真实命中率喂给 LLM 引导结构轮换与链式组合探索。
-        过线 = verdict ∈ POSITIVE_VERDICTS；单扫描 SQL，统计失效不阻断注入。
+        过线 = verdict ∈ POSITIVE_VERDICTS_READ；单扫描 SQL，统计失效不阻断注入。
         """
         try:
             with self._open() as conn:
                 n_total = int(conn.execute("SELECT COUNT(*) FROM memory_entries").fetchone()[0])
                 if n_total < min_total:
                     return ""
-                pos_list = ", ".join(f"'{v}'" for v in sorted(POSITIVE_VERDICTS))
+                pos_list = ", ".join(f"'{v}'" for v in sorted(POSITIVE_VERDICTS_READ))
                 cols: list[str] = [
                     "COUNT(*) AS n_all",
                     f"SUM(CASE WHEN verdict IN ({pos_list}) THEN 1 ELSE 0 END) AS np_all",

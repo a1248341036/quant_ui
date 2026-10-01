@@ -10,7 +10,7 @@ from collections import OrderedDict
 from typing import Any
 
 from .calibration import _apv_gate, _eq7_confidence
-from .constants import POSITIVE_VERDICTS, VERDICT_ORDER
+from .constants import POSITIVE_VERDICTS_READ, VERDICT_ORDER
 from .diagnostics import _parse_args
 from .expressions import _structure_fingerprint, classify_family, motif_from_note
 
@@ -49,8 +49,8 @@ _RECENT_SORT_EXPRS: dict[str, str] = {
 
 
 # 正向 verdict 集合的 SQL IN 占位（①b 指纹正证据查重；sorted 保证参数顺序稳定）
-_POSITIVE_VERDICTS = sorted(POSITIVE_VERDICTS)
-_POSITIVE_PH = ",".join("?" * len(_POSITIVE_VERDICTS))
+_POSITIVE_VERDICTS_READ = sorted(POSITIVE_VERDICTS_READ)
+_POSITIVE_PH = ",".join("?" * len(_POSITIVE_VERDICTS_READ))
 
 _ADVISORY_CACHE_TTL = 60.0
 _ADVISORY_CACHE_MAXSIZE = 512
@@ -131,10 +131,10 @@ class AdvisoryMixin:
                         SELECT 1 FROM memory_entries
                         WHERE structure_fingerprint = ?
                           AND last_run_id = ?
-                          AND (verdict IN ({_POSITIVE_PH}) OR verdict = 'promising')
+                          AND verdict IN ({_POSITIVE_PH})  -- 含历史字面量 promising（POSITIVE_VERDICTS_READ）
                         LIMIT 1
                         """,
-                        (fingerprint, str(current_run_id), *_POSITIVE_VERDICTS),
+                        (fingerprint, str(current_run_id), *_POSITIVE_VERDICTS_READ),
                     ).fetchone()
                     curr_run_passed = curr_run_row is not None
 
@@ -142,10 +142,10 @@ class AdvisoryMixin:
                     f"""
                     SELECT 1 FROM memory_entries
                     WHERE structure_fingerprint = ?
-                      AND (verdict IN ({_POSITIVE_PH}) OR verdict = 'promising')
+                      AND verdict IN ({_POSITIVE_PH})  -- 含历史字面量 promising（POSITIVE_VERDICTS_READ）
                     LIMIT 1
                     """,
-                    (fingerprint, *_POSITIVE_VERDICTS),
+                    (fingerprint, *_POSITIVE_VERDICTS_READ),
                 ).fetchone()
                 has_positive = pos_exists is not None or curr_run_passed
                 agg = conn.execute(
@@ -197,10 +197,10 @@ class AdvisoryMixin:
                            COUNT(*) OVER () AS n_positive
                     FROM memory_entries
                     WHERE structure_fingerprint = ?
-                      AND (verdict IN ({_POSITIVE_PH}) OR verdict = 'promising')
+                      AND verdict IN ({_POSITIVE_PH})  -- 含历史字面量 promising（POSITIVE_VERDICTS_READ）
                     ORDER BY updated_at DESC LIMIT 1
                     """,
-                    (fingerprint, *_POSITIVE_VERDICTS),
+                    (fingerprint, *_POSITIVE_VERDICTS_READ),
                 ).fetchone()
                 if pos_row:
                     metrics = json.loads(pos_row["metrics_json"] or "{}")
@@ -278,7 +278,7 @@ class AdvisoryMixin:
                   AND verdict IN ({_POSITIVE_PH})
                 ORDER BY updated_at DESC LIMIT 20
                 """,
-                (fingerprint, *_POSITIVE_VERDICTS),
+                (fingerprint, *_POSITIVE_VERDICTS_READ),
             ).fetchall()
         canonical = "\n".join(
             line.strip() for line in str(expression).strip().splitlines() if line.strip()

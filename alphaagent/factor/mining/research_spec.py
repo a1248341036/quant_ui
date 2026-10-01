@@ -147,9 +147,20 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
     },
     "evaluation_profiles": _default_evaluation_profile_spec(),
     "review_policy": {
-        "enabled": True,
+        # 2026-10-01 用户决策：**全关**。理由（实测）：
+        #   ①26/26 曾全判 revise，空转且拖慢（infra/config.py:48 的默认关闭即源于此）；
+        #   ②本夜 API run 里 11 次审查中 4 次 reject 全为 novelty=low，
+        #     理由是"教科书短期反转/VWAP乖离重包装"——与"新颖性不作为优化目标、
+        #     只看有效性"的定调冲突，且它在 stage_one、正交门之后**硬拦候选池入库**
+        #     （delivery/submit.py:890 `factor_review_reject_blocked`）；
+        #   ③解析失败兜底 fail-closed 判 reject（factor_reviewer.py:293-302）。
+        # 防重复仍由两道**独立**门负责，均未改动：离线正交门
+        # （submit.py:852-861 `offline_orthogonality`）与 stage 内 `max_cs_corr`。
+        # 需要重开时：把 enabled 改回 True（亦可 CLI 用 --no-reviewer 临时关）。
+        "enabled": False,
         "review_on": ["validation", "pre_submit"],
-        "block_classic_transforms": True,
+        # 经典单调变换不再作为阻断理由（同上定调）；重开 Reviewer 时也保持只提示。
+        "block_classic_transforms": False,
         # 新颖度门槛暂关（2026-08）：先积累一批统计有效的候选，再回头筛新颖性。
         # 恢复严格筛选时改回 "medium"/"high"；Reviewer 仍输出 novelty 供参考。
         "minimum_novelty": "low",
@@ -690,16 +701,25 @@ def research_policy_prompt(spec: dict[str, Any]) -> str:
             "换手率约束："
             f"cs_pearson_autocorr>={evaluation.get('min_cs_autocorr', 0):.4g}——低于此值的因子排名日度变化过快、"
             "实际交易成本会吃掉全部 alpha，将被自动拦截不入候选池。",
-            "Reviewer 策略："
-            f"在 {', '.join(review['review_on'])} 阶段审查；最低新颖性={review['minimum_novelty']}；"
-            + ("经典单调变换必须阻断。" if review["block_classic_transforms"] else "经典变换只提示，不自动阻断。"),
+            (
+                "Reviewer 策略："
+                f"在 {', '.join(review['review_on'])} 阶段审查；最低新颖性={review['minimum_novelty']}；"
+                + ("经典单调变换必须阻断。" if review["block_classic_transforms"] else "经典变换只提示，不自动阻断。")
+                if review.get("enabled", True)
+                else "Reviewer：**已关闭**（不审查、不阻断）。交付由统计门槛与正交门裁决；"
+                     "结构性新颖/经典变换不作为否决理由。"
+            ),
             "交互策略："
             f"允许 interaction_type={', '.join(interaction.get('allowed_interaction_types', []))}；"
             + ("未声明契约的 MULTIPLY 直接拦截。" if interaction.get("block_undeclared_multiply") else "MULTIPLY 仅提示。")
             + "所有结构化多因子交互必须传完整 interaction 契约"
             + ("（未传时自动补全占位并警告——机制描述请显式写）。" if interaction.get("auto_fill_missing_contract", True) else "，缺契约直接拦截。"),
             "交付策略："
-            "通过 validation 的因子自动进入 candidate 候选池；Reviewer approve 后进入 production 正式库。",
+            + (
+                "通过 validation 的因子自动进入 candidate 候选池；Reviewer approve 后进入 production 正式库。"
+                if review.get("enabled", True)
+                else "过统计门槛的因子自动进入 candidate 候选池，再按 stage_two/engine_gate 统计门槛裁决是否进 production 正式库（无 Reviewer 环节）。"
+            ),
         ]
         + ([cognition_policy_summary(spec)] if cognition_policy_summary(spec) else [])
         + ([operator_policy_summary(spec)] if operator_policy_summary(spec) else [])

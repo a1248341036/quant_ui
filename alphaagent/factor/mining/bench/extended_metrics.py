@@ -17,6 +17,7 @@ from typing import Any
 from alphaagent.dsl.core.ast import structure_fingerprint
 from alphaagent.factor.facets import FACET_DEFS
 from alphaagent.factor.mining.infra.audit import canonical_hash
+from alphaagent.factor.mining.memory.constants import TRAIN_PASS_VERDICTS
 from alphaagent.factor.mining.memory.expressions import classify_family_ex, expression_ops
 
 # 8 个标准数据面
@@ -354,7 +355,7 @@ def compute_extended_metrics(
                                         pass
                         if failed_gaps:
                             attempt_gaps.append(min(failed_gaps))
-                    elif res.get("verdict") in ("promising", "candidate_approved"):
+                    elif res.get("verdict") in (*TRAIN_PASS_VERDICTS, "candidate_approved"):
                         rules_all_passed = True
 
                     # 预测对账与违规检测

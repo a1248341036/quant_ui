@@ -45,7 +45,11 @@ REVIEW_PROMPT = """你是独立的量化因子评估子 Agent（FactorReviewer�
 
 输出严格 JSON，不能使用 Markdown：
 {"verdict":"approve|revise|reject","novelty":"high|medium|low","canonical_form":"一句话标准因子名称","reasons":["最多三条可审计原因"],"required_changes":["具体可执行的重构方向"]}
-只有在确认是教科书因子单调变换、无任何新增信息源时才 `reject`。JSON 无法保证时用 reject。"""
+**字符串值内禁止使用英文双引号**：需要引用术语、字段名或取值时一律改用中文引号「」或单引号。
+（实测教训：reasons 里写了 split="val" 这类未转义引号，导致整条 JSON 解析失败、
+判定退化为"不可解析"。）
+只有在确认是教科书因子单调变换、无任何新增信息源时才 `reject`。
+**无法给出合规 JSON 时，输出 `{"verdict":"revise"}`——不得因格式问题判 reject。**"""
 
 
 def _expr_key(expr: str) -> str:
@@ -283,26 +287,68 @@ class FactorReviewer:
             "source": "research_spec_metric_precheck",
         }
 
+    _VERDICT_RE = re.compile(r'"verdict"\s*:\s*"(approve|revise|reject)"')
+    _NOVELTY_RE = re.compile(r'"novelty"\s*:\s*"(high|medium|low)"')
+
     @staticmethod
     def _parse_verdict(raw: str) -> dict[str, Any]:
-        match = re.search(r"\{[\s\S]*\}", raw)
+        """解析 Reviewer 输出；**绝不因解析失败把因子判死**（2026-10-01 修）。
+
+        实测（run fcc9a4618fe2）：模型在字符串值里写了未转义引号
+        （``...split="val" 结果与...``），``json.loads`` 在 char 425 报
+        ``Expecting ',' delimiter`` —— 输出**完整、未被截断**，且有 ```json 围栏。
+        旧实现对任何解析失败一律合成 ``verdict=reject``，等于**因格式问题硬拦候选池**
+        （delivery/submit.py:890 对 reject 是硬拦，且在候选池入库前 return）。
+        现改为三级容错：
+          ① 剥围栏后正常解析；
+          ② 失败则正则捞回顶层 verdict/novelty（模型判断其实就在文本里）；
+          ③ 连 verdict 都捞不到才降级 **revise**（不阻断，交统计门槛裁决）。
+        """
+        text = re.sub(r"^\s*```[a-zA-Z]*\s*", "", raw or "")
+        text = re.sub(r"\s*```\s*$", "", text).strip()
+        match = re.search(r"\{[\s\S]*\}", text)
+        value: Any = {}
         try:
-            value = json.loads(match.group(0) if match else raw)
+            value = json.loads(match.group(0) if match else text)
         except (json.JSONDecodeError, AttributeError):
             value = {}
-        if not isinstance(value, dict) or value.get("verdict") not in {"approve", "revise", "reject"}:
+        if isinstance(value, dict) and value.get("verdict") in {"approve", "revise", "reject"}:
+            value.setdefault("novelty", "low")
+            value.setdefault("canonical_form", "未分类")
+            value.setdefault("reasons", [])
+            value.setdefault("required_changes", [])
+            value["source"] = "agentscope_factor_reviewer"
+            return value
+
+        # ② 正则兜底：常见故障只是引号未转义，顶层字段仍在文本里。
+        #    但**只在全文取值唯一时才采信**——正文/reasons 里可能二次引用别的判定，
+        #    取首个匹配（旧写法 re.search）会伪造 approve/reject，比降级 revise 更危险
+        #    （OCR 2026-10-01 medium：伪造 approve 会让因子前移，伪造 reject 会硬拦）。
+        verdict_hits = set(FactorReviewer._VERDICT_RE.findall(text))
+        novelty_hits = set(FactorReviewer._NOVELTY_RE.findall(text))
+        if len(verdict_hits) == 1:
             return {
-                "verdict": "reject",
-                "novelty": "low",
-                "canonical_form": "审查输出不可解析",
-                "reasons": ["FactorReviewer 未返回可验证的结构性原创结论。"],
-                "required_changes": ["修订表达式并重新完成 train/val 评估后再提交。"],
-                "source": "reviewer_parse_guard",
-                "raw": raw[:2000],
+                "verdict": verdict_hits.pop(),
+                "novelty": novelty_hits.pop() if len(novelty_hits) == 1 else "low",
+                "canonical_form": "审查输出需容错解析",
+                "reasons": ["Reviewer 输出含未转义引号等格式问题，已容错解析出判定。"],
+                "required_changes": [],
+                "source": "agentscope_factor_reviewer_repaired",
+                "raw": (raw or "")[:2000],
             }
-        value.setdefault("novelty", "low")
-        value.setdefault("canonical_form", "未分类")
-        value.setdefault("reasons", [])
-        value.setdefault("required_changes", [])
-        value["source"] = "agentscope_factor_reviewer"
-        return value
+        # ③ 完全无法判定 / 出现互相矛盾的判定 → 降级 revise（不阻断），不合成 reject
+        ambiguous = len(verdict_hits) > 1
+        return {
+            "verdict": "revise",
+            "novelty": "low",
+            "canonical_form": ("审查输出含矛盾判定（已降级，不阻断）" if ambiguous
+                               else "审查输出不可解析（已降级，不阻断）"),
+            "reasons": [
+                "Reviewer 输出含互相矛盾的 verdict 取值，无法可信恢复，已降级为 revise 不阻断。"
+                if ambiguous else
+                "FactorReviewer 未返回可解析的判定；已降级为 revise，不阻断入库。"
+            ],
+            "required_changes": ["修订表达式并重新完成 train/val 评估后再提交。"],
+            "source": "reviewer_parse_guard",
+            "raw": (raw or "")[:2000],
+        }

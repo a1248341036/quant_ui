@@ -342,7 +342,7 @@ def test_advisory_duplicate_prior_result(tmp_path):
     assert "duplicate_prior_result" in kinds
     item = next(a for a in advisory["advisories"] if a["kind"] == "duplicate_prior_result")
     assert item["prior_factor"] == "prior_prom"
-    assert item["prior_verdict"] == "promising"
+    assert item["prior_verdict"] == "train_passed"
     assert item["n_prior_positive"] == 1
     assert "ic=" in item["message"] and "勿原样重测" in item["message"]
     # 重复评估历史条目自身（同表达式）同样命中
@@ -671,7 +671,7 @@ def test_recent_order_default_time_desc(tmp_path):
     assert entries_recent[0]["verdict"] == "weak"
     entries_verdict, _ = store.recent(order="verdict")
     assert entries_verdict[0]["factor_name"] == "good_old"
-    assert entries_verdict[0]["verdict"] == "promising"
+    assert entries_verdict[0]["verdict"] == "train_passed"
 
 
 # ---------------------------------------------------------------------------
@@ -718,7 +718,7 @@ def test_evidence_positive_guarantee(tmp_path):
         enable_edit_patterns=False, limit=6)
     assert "已验证 / 有潜力的因子" in block
     assert "vwap_dev_10" in block              # 全库 |IC| 最高的正向因子保底在场
-    assert "[promising]" in block
+    assert "[train_passed]" in block
 
 
 def test_recent_sort_and_verdict_filter(tmp_path):
@@ -747,7 +747,7 @@ def test_recent_sort_and_verdict_filter(tmp_path):
     assert all(e["verdict"] == "weak" for e in entries)
     # sort="verdict"：按 verdict 排名，promising 在 weak/rejected 前
     entries, _ = store.recent(sort="verdict", dir=1)
-    assert entries[0]["verdict"] == "promising"
+    assert entries[0]["verdict"] == "train_passed"
     # 未知名 sort 回落 updated_at（不抛错）
     _, total = store.recent(sort="not_a_column", dir=-1)
     assert total == 4
@@ -913,7 +913,7 @@ def test_form_memory_signature_rows_enriched(tmp_path):
         "expression": expr,
         "metrics": {"ic": -0.0349, "icir": 0.4},
         "admitted": True,
-        "verdict": "promising",
+        "verdict": "train_passed",
         "conclusion": "训练阶段指标有潜力",
         "rejection_reason": "",
     }])

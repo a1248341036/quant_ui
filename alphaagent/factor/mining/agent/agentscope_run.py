@@ -28,6 +28,7 @@ from alphaagent.factor.mining.env_settings import (
     resolve_turnover_gate_limit,
 )
 from alphaagent.factor.mining.infra.jsonutil import json_safe
+from alphaagent.factor.mining.memory.constants import TRAIN_PASS_VERDICTS
 from alphaagent.factor.mining.schemas import SessionCreateRequest
 from alphaagent.factor.mining.service import StockEvalService
 from alphaagent.factor.mining.agentscope_tools import build_factor_eval_toolkit, context_to_openai_messages
@@ -1776,7 +1777,7 @@ async def run_factor_mining_agentscope(
             submitted_expr_keys.add(canonical_hash(sr_expr))
     unsubmitted_promising = [
         r for r in tool_call_rows
-        if r.get("verdict") == "promising"
+        if r.get("verdict") in TRAIN_PASS_VERDICTS
         and r.get("expression_sha256")
         and r.get("expression_sha256") not in submitted_expr_keys
         and r.get("name") in ("evaluate_factor", "eval_on_train_set")
