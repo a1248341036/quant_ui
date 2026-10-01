@@ -41,14 +41,15 @@ def test_structure_ops_hit_passes():
     assert out["structure_anchor"]["hit"] == ["CS_GROUP_RANK"]
 
 
-def test_declared_fields_coverage():
+def test_declared_field_hit_is_diagnostic_only():
+    """回放校准（2026-10-02）：不再把"命中声明字段"当硬门——本模式允许字段同族替换，
+    当硬门会误杀（回放 24 条真实复现里 19 条被拦，含 live 已过线案例）。
+    min_fields ≤ 声明字段数时不应产生任何字段门。"""
     sr = {"fields": ["$close", "$volume"], "min_fields": 2}
-    bad = check_reproduce_fidelity(_q(sr), "CS_ZSCORE(TS_MEAN($close, 20))", records=REF)
-    assert bad["passed"] is False, bad
-    assert "declared_fields_hit=1<2" in bad["reason"]
-    good = check_reproduce_fidelity(
-        _q(sr), "CS_ZSCORE(DIVIDE(TS_MEAN($close, 20), TS_MEAN($volume, 20)))", records=REF)
-    assert good["passed"] is True, good
+    out = check_reproduce_fidelity(_q(sr), "CS_ZSCORE(TS_MEAN($close, 20))", records=REF)
+    assert out["passed"] is True, out
+    assert out["structure_anchor"]["hit_is_diagnostic_only"] is True
+    assert out["structure_anchor"]["hit"] == ["close"]
 
 
 def test_legacy_question_not_anchored():
@@ -59,20 +60,21 @@ def test_legacy_question_not_anchored():
 
 
 def test_min_fields_total_when_declared_is_incomplete():
-    """巡检实测场景：声明 fields=[$close,$volume] 但 min_fields=5
-    （抽取只填了"参考公式字段"）→ 仅查声明字段会让锚形同虚设，须额外要求字段总数达标。"""
+    """巡检实测场景：声明 fields=[$close,$volume] 但 min_fields=5（抽取只填了参考公式字段）
+    → 仅查声明字段会让锚形同虚设，故要求复现字段总数达标；但 min_fields **封顶 4**
+    （回放校准：不封顶时 min_fields=5 会把 live 已过线的合理复现也卡死）。"""
     sr = {"fields": ["$close", "$volume"], "min_fields": 5}
     weak = check_reproduce_fidelity(
         _q(sr), "CS_ZSCORE(DIVIDE(TS_MEAN($close, 20), TS_MEAN($volume, 20)))", records=REF)
     assert weak["passed"] is False, weak
-    assert "fields_used=2<min_fields=5" in weak["reason"]
+    assert "fields_used=2<min_fields=4" in weak["reason"]
 
     rich = check_reproduce_fidelity(
         _q(sr),
         "CS_ZSCORE(ADD(ADD(ADD(TS_MEAN($close, 20), $volume), $high), $low), $open)",
         records=REF)
     assert rich["passed"] is True, rich
-    assert rich["structure_anchor"]["need_total_fields"] == 5
+    assert rich["structure_anchor"]["need_total_fields"] == 4
 
 
 def test_complexity_floor_for_weak_declarations():

@@ -767,19 +767,19 @@ def check_reproduce_fidelity(question: dict[str, Any] | None, expr: str, *,
         if _flds_floor and len(my_fields) < _flds_floor:
             fails.append(f"fields_used={len(my_fields)}<floor={_flds_floor}")
     elif _declared or _min_fields > 0:
-        # 声明字段覆盖率：须命中 ≥ min(声明字段数, min_fields) 个声明字段
-        _need_n = (min(len(_declared), _min_fields) if _min_fields else len(_declared))
+        # 字段要求（2026-10-02 回放校准）：**不再要求"命中声明字段"**。
+        # 回放实测：把"必须命中声明字段"当硬门时，24 条真实复现表达式有 19 条被拦（79%），
+        # 连 live 中已过线的 `rq8b4cdd_repro_composite_blend_v2`（fields=3）也被拦 —— 因为
+        # 本模式**本来就允许"字段同族替换 + 算子落地"**，而题目声明的 fields 往往只覆盖参考公式。
+        # 故：声明字段命中只作**诊断**；硬门只保留「复现字段总数 ≥ min(min_fields, 4)」，
+        # 且 min_fields 封顶 4 防虚高（回放里 min_fields=5 而声明只有 2 个字段的题会把合理复现卡死）。
         _hit_f = sorted(_declared & my_fields)
-        # 巡检实测（2026-10-02）：部分题声明 fields=[$close,$volume] 但 min_fields=5
-        # （抽取时只填了"参考公式的字段"，而非"结构所需字段"）→ 只查声明字段会让锚形同虚设。
-        # 故补一条：声明字段少于 min_fields 时，额外要求**复现用到的字段总数 ≥ min_fields**。
-        _need_total = _min_fields if _min_fields > len(_declared) else 0
-        structure_anchor = {"applicable": True, "mode": "fields", "need_n": _need_n,
-                            "hit": _hit_f, "need_total_fields": _need_total,
+        _need_total = min(_min_fields, 4) if _min_fields > len(_declared) else 0
+        structure_anchor = {"applicable": bool(_need_total), "mode": "fields",
+                            "hit": _hit_f, "hit_is_diagnostic_only": True,
+                            "need_total_fields": _need_total,
                             "n_my_fields": len(my_fields),
                             "declared_fields": sorted(_declared), "min_fields": _min_fields}
-        if _need_n and len(_hit_f) < _need_n:
-            fails.append(f"declared_fields_hit={len(_hit_f)}<{_need_n}")
         if _need_total and len(my_fields) < _need_total:
             fails.append(f"fields_used={len(my_fields)}<min_fields={_need_total}")
 
