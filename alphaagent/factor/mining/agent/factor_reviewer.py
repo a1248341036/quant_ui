@@ -45,7 +45,11 @@ REVIEW_PROMPT = """你是独立的量化因子评估子 Agent（FactorReviewer�
 
 输出严格 JSON，不能使用 Markdown：
 {"verdict":"approve|revise|reject","novelty":"high|medium|low","canonical_form":"一句话标准因子名称","reasons":["最多三条可审计原因"],"required_changes":["具体可执行的重构方向"]}
-只有在确认是教科书因子单调变换、无任何新增信息源时才 `reject`。JSON 无法保证时用 reject。"""
+**字符串值内禁止使用英文双引号**：需要引用术语、字段名或取值时一律改用中文引号「」或单引号。
+（实测教训：reasons 里写了 split="val" 这类未转义引号，导致整条 JSON 解析失败、
+判定退化为"不可解析"。）
+只有在确认是教科书因子单调变换、无任何新增信息源时才 `reject`。
+**无法给出合规 JSON 时，输出 `{"verdict":"revise"}`——不得因格式问题判 reject。**"""
 
 
 def _expr_key(expr: str) -> str:
