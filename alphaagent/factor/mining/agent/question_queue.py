@@ -774,14 +774,17 @@ def check_reproduce_fidelity(question: dict[str, Any] | None, expr: str, *,
         # 故：声明字段命中只作**诊断**；硬门只保留「复现字段总数 ≥ min(min_fields, 4)」，
         # 且 min_fields 封顶 4 防虚高（回放里 min_fields=5 而声明只有 2 个字段的题会把合理复现卡死）。
         _hit_f = sorted(_declared & my_fields)
-        _need_total = min(_min_fields, 4) if _min_fields > len(_declared) else 0
-        structure_anchor = {"applicable": bool(_need_total), "mode": "fields",
+        _ref_total = min(_min_fields, 4) if _min_fields > len(_declared) else 0
+        structure_anchor = {"applicable": False, "mode": "fields_diagnostic",
                             "hit": _hit_f, "hit_is_diagnostic_only": True,
-                            "need_total_fields": _need_total,
+                            "need_total_fields": _ref_total, "below_min_fields":
+                                bool(_ref_total and len(my_fields) < _ref_total),
                             "n_my_fields": len(my_fields),
                             "declared_fields": sorted(_declared), "min_fields": _min_fields}
-        if _need_total and len(my_fields) < _need_total:
-            fails.append(f"fields_used={len(my_fields)}<min_fields={_need_total}")
+        # 说明（2026-10-02 二次回放校准）：`min_fields` 是 LLM 声明值、**常虚高**（实测某题声明 5
+        # 而结构 2 字段即可表达），当硬门会误杀 live 已过线的合理复现（回放剩 1 例）。故此处只
+        # **诊断**（记 below_min_fields），硬门只保留：① 声明的 structure_ops 必须命中
+        # ② 弱声明时的复杂度地板（2 算子/2 字段，见上一分支）。
 
     if need_f > 0 and len(anchor_pool) < need_f:
         fails.append(f"shared_{'specific_' if ref_specific else ''}fields="

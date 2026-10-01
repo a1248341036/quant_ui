@@ -59,22 +59,22 @@ def test_legacy_question_not_anchored():
     assert out["structure_anchor"]["applicable"] is False
 
 
-def test_min_fields_total_when_declared_is_incomplete():
-    """巡检实测场景：声明 fields=[$close,$volume] 但 min_fields=5（抽取只填了参考公式字段）
-    → 仅查声明字段会让锚形同虚设，故要求复现字段总数达标；但 min_fields **封顶 4**
-    （回放校准：不封顶时 min_fields=5 会把 live 已过线的合理复现也卡死）。"""
+def test_min_fields_total_is_diagnostic():
+    """二次回放校准：`min_fields` 是 LLM 声明值、常虚高（实测某题声明 5 而 2 字段即可表达），
+    当硬门会误杀 live 已过线的合理复现 → 只作诊断（记 below_min_fields）。"""
     sr = {"fields": ["$close", "$volume"], "min_fields": 5}
     weak = check_reproduce_fidelity(
         _q(sr), "CS_ZSCORE(DIVIDE(TS_MEAN($close, 20), TS_MEAN($volume, 20)))", records=REF)
-    assert weak["passed"] is False, weak
-    assert "fields_used=2<min_fields=4" in weak["reason"]
+    assert weak["passed"] is True, weak
+    assert weak["structure_anchor"]["below_min_fields"] is True
+    assert weak["structure_anchor"]["need_total_fields"] == 4
 
     rich = check_reproduce_fidelity(
         _q(sr),
         "CS_ZSCORE(ADD(ADD(ADD(TS_MEAN($close, 20), $volume), $high), $low), $open)",
         records=REF)
     assert rich["passed"] is True, rich
-    assert rich["structure_anchor"]["need_total_fields"] == 4
+    assert rich["structure_anchor"]["below_min_fields"] is False
 
 
 def test_complexity_floor_for_weak_declarations():
