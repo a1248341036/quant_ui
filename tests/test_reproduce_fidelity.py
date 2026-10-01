@@ -145,3 +145,44 @@ def test_spec_validates_new_report_policy_keys():
     assert fid["require_shared_field"] == 1
     assert fid["min_field_jaccard"] == 0.0 and fid["min_op_jaccard"] == 0.0
     assert fid["min_shared_ops"] == 0
+
+
+# ── ④ 边界：原文公式全用通用行情字段的报告 ────────────────────────────────
+# 实测 361 篇覆盖报告里 83 篇（23%）属于此类（如纯 VWAP/close 乖离、K 线高低点）。
+# 若一律要求"命中报告特有字段"，这些课题下**忠实复现也永远过不了**（参照集本身没有
+# 特有字段）→ 必须退化为按全量字段判定。
+
+GENERIC_Q = {"question_id": "RQ_T9", "source": "东方证券_反转因子择时研究"}
+GENERIC_SRC = "nn73/01/2018-02-22_《因子选股系列研究三十三》_反转因子择时研究_东方证券.md"
+
+
+def _grec(expr: str) -> dict:
+    return {"source": GENERIC_SRC, "expr_local": expr, "formula_kind": "verbatim",
+            "executable": True}
+
+
+def test_generic_only_reference_allows_faithful_reproduction():
+    """原文只含通用行情字段时，忠实复现（共享该字段）必须能通过。"""
+    records = [_grec("TS_PCTCHANGE($close, 60)"), _grec("TS_STD($close, 20)")]
+    out = check_reproduce_fidelity(GENERIC_Q, "RANK(TS_PCTCHANGE($close, 20))", records=records)
+    assert out["passed"] is True, out
+    assert out["anchor_mode"] == "generic_only_reference"
+    assert out["shared_fields"] == ["close"]
+    assert out["ref_specific_fields"] == []
+
+
+def test_generic_only_reference_still_blocks_no_overlap():
+    """退化模式下仍要求有共享字段：完全不沾原文的复现照样拦。"""
+    records = [_grec("TS_PCTCHANGE($close, 60)")]
+    out = check_reproduce_fidelity(GENERIC_Q, "DIVIDE($funda_ocf, $funda_total_revenue)",
+                                   records=records)
+    assert out["passed"] is False, out
+    assert out["anchor_mode"] == "generic_only_reference"
+
+
+def test_specific_reference_does_not_degrade():
+    """有特有字段的参照集仍走严格模式（通用字段不算锚）。"""
+    records = [_rec("DIVIDE($funda_ocf, $funda_total_revenue)")]
+    out = check_reproduce_fidelity(Q, "NEG(TS_PCTCHANGE($adj_close, 5))", records=records)
+    assert out["passed"] is False
+    assert out["anchor_mode"] == "specific"
