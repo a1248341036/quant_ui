@@ -1071,6 +1071,16 @@ async def run_factor_mining_agentscope(
                     "parent_name": _rfo_of(
                         str(getattr(config, "research_mode", "report") or "report"), _qid
                     ),
+                    # 判定侧需要但工具对象上没有的配置（2026-10-01 修）：`self.report_policy`
+                    # 全仓从未被赋值 → 复现判定读不到 report_policy，保真度门槛被**静默跳过**
+                    # （本夜实测 0 条 report_fidelity_check），reproduce_min_abs_ic/icir 也一直
+                    # 吃硬编码默认。随网关（判定侧唯一可靠通道）传递。
+                    "reproduce_min_abs_ic": report_policy.get("reproduce_min_abs_ic", 0.010),
+                    "reproduce_min_icir": report_policy.get("reproduce_min_icir", 0.10),
+                    "reproduce_fidelity": report_policy.get("reproduce_fidelity"),
+                    "factor_records_file": report_policy.get("factor_records_file"),
+                    "question_queue_file": report_policy.get("question_queue_file"),
+                    "inject_factor_records": report_policy.get("inject_factor_records", True),
                 }
                 factor_tools.report_reproduce_gate = _gate_state
                 set_run_gate(_gate_state)   # 判定侧唯一可靠通道
