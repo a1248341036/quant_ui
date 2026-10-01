@@ -63,7 +63,7 @@ def summarize(rid: str) -> dict:
     fid = Counter(re.findall(r"report_fidelity_check \| qid=\S+ factor=\S+ passed=(\w+)", txt))
     fid_reason = Counter(re.findall(r"report_fidelity_check \|[^\n]*reason=([\w:,=<]+)", txt))
     # 评估指标
-    evals = [(float(m.group(2)), float(m.group(3))) for m in re.finditer(
+    evals = [(float(m.group(1)), float(m.group(2))) for m in re.finditer(
         r"\| evaluate \| [^|]+ \| split=train \| ic=(-?[\d.]+) \| icir=(-?[\d.]+)", txt)]
     evals = [(abs(a), abs(b)) for a, b in evals]
     dual = sum(1 for i, r in evals if i >= 0.02 and r >= 0.28)
