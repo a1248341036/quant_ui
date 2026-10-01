@@ -78,9 +78,9 @@ _MINING_ALLOWED_PROFILES = frozenset({
 # `report_fidelity_check` 日志），同时 reproduce_min_abs_ic/icir 也一直吃硬编码默认值。
 # 现改由 run gate（判定侧唯一可靠通道）携带这些键。
 _GATE_CARRIED_POLICY_KEYS = (
-    "reproduce_floor_abs_ic",
     "reproduce_min_abs_ic",
     "reproduce_min_icir",
+    "reproduce_shape_requirement",
     "reproduce_fidelity",
     "factor_records_file",
     "question_queue_file",
@@ -126,35 +126,41 @@ def _reproduce_strength(ic: float, icir: float, *, min_ic: float, min_icir: floa
     }
 
 
-def _reproduce_passes(ic: float, icir: float, shape_verdict: str, *,
-                      floor_ic: float, min_ic: float, min_icir: float):
-    """复现通过判据（唯一实现）：**【底线】 ∧ 【指标】 ∧ 【形态对账】**（三项全中）。
+def _reproduce_passes(ic: float, icir: float, shape_verdict: str, strong_side_match: bool, *,
+                      min_ic: float, min_icir: float, shape_requirement: str = "strong_side"):
+    """复现通过判据（唯一实现）：**【指标】 ∧ 【形态要求】**（2026-10-01 两次定调后的形态）。
 
-    2026-10-01 用户定调：把原先的「指标 **或** 形态」改为「**且**」——复现不仅要强度达标，
-    还必须**事先声明的可证伪预测成立**（强侧 + 形态 + 方向三项一致）。理由：
-      · 形态对账（`eval/prediction.py`）本身不验证强度，单独放行会让 |IC|≈0 的噪声母本
-        进入发散（实测 21 次过线里 13 次仅靠形态，最极端 `rq038_ma_ratio_v2` |IC|=0.0009）；
-      · 反之只按强度放行，则"机制理解错了但碰巧有 IC"的因子也会进入发散，发散阶段
-        会沿错误机制做变异。两者都成立才算真正复现了研报机制。
+    演进：`指标 OR 形态` → `底线 ∧ 指标 ∧ confirmed` → **`指标 ∧ 形态要求`**（本实现）：
+      · 底线 `reproduce_floor_abs_ic` **已删除** —— 它与 `reproduce_min_abs_ic` 同值时被
+        后者完全包含（判据为「且」后零影响），是冗余键；
+      · 形态项由硬编码 `confirmed` 改为**可配档位**（`reproduce_shape_requirement`）：
+          - `strong_side`（默认）：实际强侧 == 声明强侧。**经济含义强且独立于 IC** ——
+            IC 只看全体股票相关性，看不见"收益集中在中间组、整体相关仍为正"的因子
+            （多空组合赚不到钱）；实测该档与 `confirmed` 质量等价
+            （|IC| 0.0179/0.206 vs 0.0180/0.210）却少拦 40 条同强度母本；
+          - `confirmed`：prediction_check 完全一致（强侧+形态+方向），最严，备选；
+          - `off`：仅按指标，最松。
+        `actual_shape/expected_shape` 字符串**恒作诊断信息**输出，不受档位影响。
 
-    - **底线** `floor_ic`：``|IC| ≥ floor_ic``（默认与 min_ic 同值，故通常被指标项涵盖；
-      保留为显式项，便于单独调高底线而不动指标线）。
-    - **指标**：|IC| ≥ min_ic 且 |ICIR| ≥ min_icir（两者都按 **abs**，负值=方向相反、
-      强度等价；方向由形态对账的 expected_sign 与正式库 abs 门槛负责）。
-    - **形态对账**：`prediction_check == "confirmed"`（强侧/形态/IC 符号三项全中）。
+    - **指标**：|IC| ≥ min_ic 且 |ICIR| ≥ min_icir（都按 **abs**；负值=方向相反、强度等价）。
+    - **形态**：见上，由 `shape_requirement` 决定。
 
     阈值唯一真源：``research_spec.DEFAULT_RESEARCH_SPEC['report_policy']``
-    （reproduce_floor_abs_ic / reproduce_min_abs_ic / reproduce_min_icir），随 run gate
-    传到判定侧（``agentscope_run._gate_state``）。
-    返回 ``(是否通过, 明细)``；明细含原始带符号值、abs 强度与三项命中情况，供日志/诊断。
+    （reproduce_min_abs_ic / reproduce_min_icir / reproduce_shape_requirement），
+    随 run gate 传到判定侧（``agentscope_run._gate_state``）。
+    返回 ``(是否通过, 明细)``；明细含原始带符号值、abs 强度与各项命中情况，供日志/诊断。
     """
     by_metrics, detail = _reproduce_strength(ic, icir, min_ic=min_ic, min_icir=min_icir)
-    by_floor = detail["abs_ic"] >= floor_ic
-    by_shape = shape_verdict == "confirmed"
-    return (by_floor and by_metrics and by_shape), {
+    by_shape = (
+        shape_requirement == "off"
+        or (shape_requirement == "strong_side" and strong_side_match)
+        or (shape_requirement == "confirmed" and shape_verdict == "confirmed")
+    )
+    return (by_metrics and by_shape), {
         **detail,
-        "floor_ic": floor_ic, "by_floor": by_floor,
         "by_metrics": by_metrics, "by_shape": by_shape,
+        "strong_side_match": strong_side_match, "shape_verdict": shape_verdict,
+        "shape_requirement": shape_requirement,
     }
 
 
@@ -1331,10 +1337,10 @@ class _DispatchMixin:
                                 expr: str = "") -> None:
         """研报模式复现判定（唯一实现）。
 
-        通过条件（**三项全中**，且须过"原文锚"保真度校验）：
-        ① |IC| ≥ reproduce_floor_abs_ic（底线）；
-        ② |IC| ≥ reproduce_min_abs_ic 且 |ICIR| ≥ reproduce_min_icir（指标，均按绝对值）；
-        ③ 形态对账 verdict == confirmed（强侧/形态/IC 符号三项一致）。
+        通过条件（**全部满足**，且须过"原文锚"保真度校验）：
+        ① |IC| ≥ reproduce_min_abs_ic 且 |ICIR| ≥ reproduce_min_icir（指标，均按绝对值）；
+        ② 形态要求 `reproduce_shape_requirement`（默认 strong_side = 强侧匹配；
+           可选 confirmed / off）。
         指标**兼容** ``metrics.cross_sectional_core`` 与 ``summary`` 两种结构（实测引擎输出为后者）。
         每次判定都写日志，便于事后归因。判据唯一实现在 ``_reproduce_passes``。
         """
@@ -1356,9 +1362,9 @@ class _DispatchMixin:
         rp = _effective_report_policy(getattr(self, "report_policy", None), gate)
         min_ic = float(rp.get("reproduce_min_abs_ic", 0.010))
         min_icir = float(rp.get("reproduce_min_icir", 0.10))
-        # 底线：**两条通道都必须过**（2026-10-01 起强制）。此前判据是「指标达标 OR 形态
-        # confirmed」，形态可单独放行 → |IC|≈0 的噪声母本靠形态进入发散（实测 13/21 次）。
-        floor_ic = float(rp.get("reproduce_floor_abs_ic", min_ic))
+        # 形态要求档位（2026-10-01）：strong_side（默认，经济含义强且独立于 IC）/
+        # confirmed（最严）/ off（仅指标）。底线已删除（与 min_abs_ic 同值属冗余）。
+        shape_req = str(rp.get("reproduce_shape_requirement", "strong_side") or "strong_side")
         cs = (result.get("metrics") or {}).get("cross_sectional_core") or result.get("summary") or {}
         try:
             ic_s = float(cs.get("ic"))
@@ -1367,13 +1373,17 @@ class _DispatchMixin:
             log_step("report_reproduce_judge", f"qid={qid} factor={factor_name} 指标缺失 -> 跳过")
             return
         # 强度：IC 与 ICIR **都按绝对值**（负值是正常方向，见 _reproduce_strength 说明）
-        shape = str((result.get("prediction_check") or {}).get("verdict") or "")
+        _pc = result.get("prediction_check") or {}
+        shape = str(_pc.get("verdict") or "")
+        # 强侧匹配：实际强侧 == 声明强侧（IC 看不见的可交易性维度）
+        _act_side = str((_pc.get("actual") or {}).get("strong_side") or "")
+        _exp_side = str((_pc.get("expected") or {}).get("expected_strong_side") or "")
+        strong_side_match = bool(_act_side and _exp_side and _act_side == _exp_side)
         _passed, _stg = _reproduce_passes(
-            ic_s, icir_s, shape,
-            floor_ic=floor_ic, min_ic=min_ic, min_icir=min_icir,
+            ic_s, icir_s, shape, strong_side_match,
+            min_ic=min_ic, min_icir=min_icir, shape_requirement=shape_req,
         )
         by_metrics = _stg["by_metrics"]
-        by_floor = _stg["by_floor"]
         by_shape = _stg["by_shape"]
         if not _passed:
             # 日志同时给「真实带符号值」「判定用绝对值」与「底线/通道命中情况」，
@@ -1382,9 +1392,10 @@ class _DispatchMixin:
                 "report_reproduce_judge",
                 f"qid={qid} factor={factor_name} ic={ic_s:+.4f} icir={icir_s:+.4f} "
                 f"|IC|={_stg['abs_ic']:.4f} |ICIR|={_stg['abs_icir']:.4f} "
-                f"floor={floor_ic:.3f}[{'过' if by_floor else '未过'}] "
                 f"metrics={'过' if by_metrics else '未过'} "
-                f"shape={shape or '-'} -> 未过线",
+                f"shape={shape or '-'}"
+                f"({_stg['strong_side_match'] and '强侧匹配' or (_act_side + '≠' + _exp_side).strip('≠')}) "
+                f"要求={shape_req} -> 未过线",
             )
             return
         # ── 复现保真度「原文锚」硬门槛（2026-10-01）────────────────────────

@@ -278,18 +278,25 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
         #   （2026-10-01 用户定调：原先「指标 **或** 形态」，改为「**且**」——既要强度达标，
         #     也要事先声明的可证伪预测成立；只按形态放行会让 |IC|≈0 的噪声母本进发散，
         #     只按强度放行会让"机制理解错了但碰巧有 IC"的因子进发散。）
-        #   · reproduce_floor_abs_ic —— 底线：|IC| 不得低于此值。默认与 min_abs_ic 同值，
-        #     故通常被指标项涵盖；保留为显式项，便于单独调高底线而不动指标线。
-        #     调大 → 母本更少但更强；调小 → 更多弱母本进入发散（发散阶段白烧算力）。
         #   · reproduce_min_abs_ic / reproduce_min_icir —— 指标：|IC| 与 |ICIR| 同时达线。
-        #   · 形态对账：prediction_check 必须 confirmed（强侧/形态/IC 符号三项全中，
-        #     见 eval/prediction.py；它只验证"预测是否成立"，不验证强度）。
+        #   · reproduce_shape_requirement —— 「形态对账」要求档位（2026-10-01）：
+        #       "strong_side"（默认）实际强侧 == 声明强侧 —— 经济含义强（多头端是否最强，
+        #         关乎多空组合能否赚钱），且**独立于 IC**（IC 只看全体相关性，看不见
+        #         "收益集中在中间组但整体相关为正"的情形）；
+        #       "confirmed" 要求 prediction_check 完全一致（强侧+形态+方向三项全中）——
+        #         实测与 strong_side 质量等价（|IC| 0.0179/0.206 vs 0.0180/0.210）却多拦
+        #         40 条同强度母本（曲线略偏即不过），故不作默认；
+        #       "off" 完全不看形态，仅按指标（最松）。
+        #     注：`shape` 字符串（单调/倒U/U形…）**恒作为诊断信息**写入日志与父本体检，
+        #     无论本档位取值如何。
+        #   已删除：reproduce_floor_abs_ic —— 与 reproduce_min_abs_ic 同值时被后者完全
+        #   包含（判据改「且」后零影响），属冗余键。
         # 注 1：IC 与 ICIR **一律按绝对值**比较（负值=方向相反、强度等价；方向由形态对账的
         #       expected_sign 与正式库 abs 门槛负责，不参与强度判定）。
         # 注 2：自 2026-10-01 起这三个阈值可从 spec 配置（此前是代码内硬编码默认值，无法调参）。
-        "reproduce_floor_abs_ic": 0.010,
         "reproduce_min_abs_ic": 0.010,
         "reproduce_min_icir": 0.10,
+        "reproduce_shape_requirement": "strong_side",
         # 复现保真度「原文锚」（2026-10-01，仅研报模式；唯一真源 question_queue）：
         # ①只派发有原文公式的课题；②复现过线前校验复现公式与原文公式的字段/算子重叠。
         "require_factor_records": True,
@@ -686,10 +693,6 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
     ))
     rp["reproduce_fidelity"] = _fid
     # 复现门槛（研报模式）：底线 + 指标通道。判定式见 DEFAULT_RESEARCH_SPEC 里同名字段的注释。
-    rp["reproduce_floor_abs_ic"] = float(_bounded_number(
-        rp.get("reproduce_floor_abs_ic", 0.010),
-        "report_policy.reproduce_floor_abs_ic", 0.0, 0.5,
-    ))
     rp["reproduce_min_abs_ic"] = float(_bounded_number(
         rp.get("reproduce_min_abs_ic", 0.010),
         "report_policy.reproduce_min_abs_ic", 0.0, 0.5,
@@ -698,6 +701,13 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
         rp.get("reproduce_min_icir", 0.10),
         "report_policy.reproduce_min_icir", 0.0, 10.0,
     ))
+    _shape_req = str(rp.get("reproduce_shape_requirement", "strong_side") or "strong_side")
+    if _shape_req not in ("strong_side", "confirmed", "off"):
+        raise ValueError(
+            "report_policy.reproduce_shape_requirement 必须是 strong_side|confirmed|off，"
+            f"收到 {_shape_req!r}"
+        )
+    rp["reproduce_shape_requirement"] = _shape_req
     spec["report_policy"] = rp
 
     profiles = resolve_profiles(spec)
