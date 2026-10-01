@@ -56,3 +56,20 @@ def test_legacy_question_not_anchored():
     out = check_reproduce_fidelity(_q({}), "CS_ZSCORE($close)", records=REF)
     assert out["passed"] is True
     assert out["structure_anchor"]["applicable"] is False
+
+
+def test_min_fields_total_when_declared_is_incomplete():
+    """巡检实测场景：声明 fields=[$close,$volume] 但 min_fields=5
+    （抽取只填了"参考公式字段"）→ 仅查声明字段会让锚形同虚设，须额外要求字段总数达标。"""
+    sr = {"fields": ["$close", "$volume"], "min_fields": 5}
+    weak = check_reproduce_fidelity(
+        _q(sr), "CS_ZSCORE(DIVIDE(TS_MEAN($close, 20), TS_MEAN($volume, 20)))", records=REF)
+    assert weak["passed"] is False, weak
+    assert "fields_used=2<min_fields=5" in weak["reason"]
+
+    rich = check_reproduce_fidelity(
+        _q(sr),
+        "CS_ZSCORE(ADD(ADD(ADD(TS_MEAN($close, 20), $volume), $high), $low), $open)",
+        records=REF)
+    assert rich["passed"] is True, rich
+    assert rich["structure_anchor"]["need_total_fields"] == 5
