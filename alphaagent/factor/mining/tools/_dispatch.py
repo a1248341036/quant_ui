@@ -78,6 +78,7 @@ _MINING_ALLOWED_PROFILES = frozenset({
 # `report_fidelity_check` 日志），同时 reproduce_min_abs_ic/icir 也一直吃硬编码默认值。
 # 现改由 run gate（判定侧唯一可靠通道）携带这些键。
 _GATE_CARRIED_POLICY_KEYS = (
+    "reproduce_floor_abs_ic",
     "reproduce_min_abs_ic",
     "reproduce_min_icir",
     "reproduce_fidelity",
@@ -122,6 +123,33 @@ def _reproduce_strength(ic: float, icir: float, *, min_ic: float, min_icir: floa
     return (abs_ic >= min_ic and abs_icir >= min_icir), {
         "ic": float(ic), "icir": float(icir),
         "abs_ic": abs_ic, "abs_icir": abs_icir,
+    }
+
+
+def _reproduce_passes(ic: float, icir: float, shape_verdict: str, *,
+                      floor_ic: float, min_ic: float, min_icir: float):
+    """复现通过判据（唯一实现）：**【底线】 ∧ (【指标通道】 ∨ 【形态通道】)**。
+
+    - **底线** `floor_ic`：``|IC| ≥ floor_ic``，两条通道都必须过。存在理由：形态对账
+      （`eval/prediction.py`）只验证"事先声明的可证伪预测是否成立"，**不验证强度**；
+      底线缺失时 |IC|≈0 的噪声母本仅凭形态就能进入发散（2026-10-01 实测 21 次过线里
+      13 次仅靠形态，最极端 `rq038_ma_ratio_v2` |IC|=0.0009/ICIR=−0.0068）。
+    - **指标通道**：|IC| ≥ min_ic 且 |ICIR| ≥ min_icir（两者都按 **abs**，负值=方向相反、
+      强度等价；方向由 prediction 对账与正式库 abs 门槛负责）。
+    - **形态通道**：prediction 对账 ``confirmed``（强侧/形态/IC 符号三项全中）。
+
+    阈值唯一真源：``research_spec.DEFAULT_RESEARCH_SPEC['report_policy']``
+    （reproduce_floor_abs_ic / reproduce_min_abs_ic / reproduce_min_icir），随 run gate
+    传到判定侧（``agentscope_run._gate_state``）。
+    返回 ``(是否通过, 明细)``；明细含原始带符号值、abs 强度与三条通道命中情况，供日志/诊断。
+    """
+    by_metrics, detail = _reproduce_strength(ic, icir, min_ic=min_ic, min_icir=min_icir)
+    by_floor = detail["abs_ic"] >= floor_ic
+    by_shape = shape_verdict == "confirmed"
+    return (by_floor and (by_metrics or by_shape)), {
+        **detail,
+        "floor_ic": floor_ic, "by_floor": by_floor,
+        "by_metrics": by_metrics, "by_shape": by_shape,
     }
 
 
@@ -1321,6 +1349,9 @@ class _DispatchMixin:
         rp = _effective_report_policy(getattr(self, "report_policy", None), gate)
         min_ic = float(rp.get("reproduce_min_abs_ic", 0.010))
         min_icir = float(rp.get("reproduce_min_icir", 0.10))
+        # 底线：**两条通道都必须过**（2026-10-01 起强制）。此前判据是「指标达标 OR 形态
+        # confirmed」，形态可单独放行 → |IC|≈0 的噪声母本靠形态进入发散（实测 13/21 次）。
+        floor_ic = float(rp.get("reproduce_floor_abs_ic", min_ic))
         cs = (result.get("metrics") or {}).get("cross_sectional_core") or result.get("summary") or {}
         try:
             ic_s = float(cs.get("ic"))
@@ -1329,15 +1360,23 @@ class _DispatchMixin:
             log_step("report_reproduce_judge", f"qid={qid} factor={factor_name} 指标缺失 -> 跳过")
             return
         # 强度：IC 与 ICIR **都按绝对值**（负值是正常方向，见 _reproduce_strength 说明）
-        by_metrics, _stg = _reproduce_strength(ic_s, icir_s, min_ic=min_ic, min_icir=min_icir)
         shape = str((result.get("prediction_check") or {}).get("verdict") or "")
-        by_shape = shape == "confirmed"
-        if not (by_metrics or by_shape):
-            # 日志同时给「真实带符号值」与「用于判定的绝对值」，避免 ic/icir 符号看起来矛盾
+        _passed, _stg = _reproduce_passes(
+            ic_s, icir_s, shape,
+            floor_ic=floor_ic, min_ic=min_ic, min_icir=min_icir,
+        )
+        by_metrics = _stg["by_metrics"]
+        by_floor = _stg["by_floor"]
+        by_shape = _stg["by_shape"]
+        if not _passed:
+            # 日志同时给「真实带符号值」「判定用绝对值」与「底线/通道命中情况」，
+            # 避免 ic/icir 符号看起来矛盾，也便于区分是"没过底线"还是"两条通道都没走通"
             log_step(
                 "report_reproduce_judge",
                 f"qid={qid} factor={factor_name} ic={ic_s:+.4f} icir={icir_s:+.4f} "
                 f"|IC|={_stg['abs_ic']:.4f} |ICIR|={_stg['abs_icir']:.4f} "
+                f"floor={floor_ic:.3f}[{'过' if by_floor else '未过'}] "
+                f"metrics={'过' if by_metrics else '未过'} "
                 f"shape={shape or '-'} -> 未过线",
             )
             return
