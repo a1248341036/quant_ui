@@ -720,7 +720,39 @@ def check_reproduce_fidelity(question: dict[str, Any] | None, expr: str, *,
     min_fj = float(cfg.get("min_field_jaccard") or 0.0)
     min_oj = float(cfg.get("min_op_jaccard") or 0.0)
 
+    # ── 结构硬锚（2026-10-02，仅研报模式且题面带结构信息时生效）──────────────
+    # 依据（巡检实测）：题面要求"5 因子夏普率加权合成"，模型却自行换成"上下行波动分解"
+    # —— 结构要求只在题面=软约束。此处做成**机械校验**（规则只做核对，结构判定仍来自 LLM 抽取）：
+    #   ① 声明了 structure_ops → 复现须命中其中 ≥1 个结构性算子；
+    #   ② 否则按声明字段：须用到 ≥ min(声明字段数, min_fields) 个；
+    #   ③ 无结构信息（旧题库）→ applicable=False，不判（向后兼容）。
     fails: list[str] = []
+    _sr = ((question or {}).get("primary") or {}).get("spec_requirements") or {}
+    _struct_ops = [str(o) for o in (_sr.get("structure_ops") or []) if str(o).strip()] \
+        if isinstance(_sr, dict) else []
+    _declared = {str(f).lstrip("$") for f in ((_sr.get("fields") or []) if isinstance(_sr, dict) else [])
+                 if str(f).strip()}
+    try:
+        _min_fields = int((_sr or {}).get("min_fields") or 0)
+    except (TypeError, ValueError):
+        _min_fields = 0
+    structure_anchor: dict[str, Any] = {"applicable": False}
+    if _struct_ops:
+        _hit_ops = sorted(set(_struct_ops) & my_ops)
+        structure_anchor = {"applicable": True, "mode": "structure_ops", "need": _struct_ops,
+                            "hit": _hit_ops, "declared_fields": sorted(_declared),
+                            "min_fields": _min_fields}
+        if not _hit_ops:
+            fails.append("structure_ops_missing=" + ",".join(_struct_ops[:4]))
+    elif _declared and _min_fields > 0:
+        _need_n = min(len(_declared), _min_fields)
+        _hit_f = sorted(_declared & my_fields)
+        structure_anchor = {"applicable": True, "mode": "fields", "need_n": _need_n,
+                            "hit": _hit_f, "declared_fields": sorted(_declared),
+                            "min_fields": _min_fields}
+        if len(_hit_f) < _need_n:
+            fails.append(f"declared_fields_hit={len(_hit_f)}<{_need_n}")
+
     if need_f > 0 and len(anchor_pool) < need_f:
         fails.append(f"shared_{'specific_' if ref_specific else ''}fields="
                      f"{len(anchor_pool)}<{need_f}")
@@ -744,6 +776,7 @@ def check_reproduce_fidelity(question: dict[str, Any] | None, expr: str, *,
         "ref_fields": sorted(ref_fields)[:12],
         "ref_specific_fields": sorted(ref_specific)[:12],
         "thresholds": cfg,
+        "structure_anchor": structure_anchor,
     }
 
 
