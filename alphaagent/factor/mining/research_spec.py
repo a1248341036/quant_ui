@@ -273,6 +273,21 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
         "question_field_gate_min_ratio": 0.5,
         "question_field_gate_scan_limit": 40,
         "question_field_warn": True,
+        # ── 复现门槛（研报模式；**唯一真源**，判定在 tools/_dispatch._report_reproduce_judge）──
+        # 判定式：复现通过 = 【底线】 ∧ (【指标通道】 ∨ 【形态通道】)
+        #   · reproduce_floor_abs_ic —— **底线，两条通道都必须过**：|IC| 不得低于此值。
+        #     存在理由（2026-10-01 实测）：形态对账只验证"事先声明的可证伪预测是否成立"，
+        #     不验证强度；底线缺失时 |IC|=0.0009 的噪声母本也能靠形态过线进入发散
+        #     （21 次过线里 13 次仅靠形态，最极端 rq038_ma_ratio_v2 |IC|=0.0009）。
+        #     调大 → 母本更少但更强；调小 → 更多弱母本进入发散（发散阶段白烧算力）。
+        #   · reproduce_min_abs_ic / reproduce_min_icir —— 指标通道：|IC| 与 |ICIR| 同时达线。
+        #   · 形态通道：prediction 对账 confirmed（强侧/形态/IC 符号三项全中，见 eval/prediction.py）。
+        # 注 1：IC 与 ICIR **一律按绝对值**比较（负值=方向相反、强度等价；方向由 prediction
+        #       对账与正式库 abs 门槛负责，不参与强度判定）。
+        # 注 2：自 2026-10-01 起这三个阈值可从 spec 配置（此前是代码内硬编码默认值，无法调参）。
+        "reproduce_floor_abs_ic": 0.010,
+        "reproduce_min_abs_ic": 0.010,
+        "reproduce_min_icir": 0.10,
         # 复现保真度「原文锚」（2026-10-01，仅研报模式；唯一真源 question_queue）：
         # ①只派发有原文公式的课题；②复现过线前校验复现公式与原文公式的字段/算子重叠。
         "require_factor_records": True,
@@ -668,6 +683,19 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
         "report_policy.reproduce_fidelity.min_shared_ops", 0, 20,
     ))
     rp["reproduce_fidelity"] = _fid
+    # 复现门槛（研报模式）：底线 + 指标通道。判定式见 DEFAULT_RESEARCH_SPEC 里同名字段的注释。
+    rp["reproduce_floor_abs_ic"] = float(_bounded_number(
+        rp.get("reproduce_floor_abs_ic", 0.010),
+        "report_policy.reproduce_floor_abs_ic", 0.0, 0.5,
+    ))
+    rp["reproduce_min_abs_ic"] = float(_bounded_number(
+        rp.get("reproduce_min_abs_ic", 0.010),
+        "report_policy.reproduce_min_abs_ic", 0.0, 0.5,
+    ))
+    rp["reproduce_min_icir"] = float(_bounded_number(
+        rp.get("reproduce_min_icir", 0.10),
+        "report_policy.reproduce_min_icir", 0.0, 10.0,
+    ))
     spec["report_policy"] = rp
 
     profiles = resolve_profiles(spec)

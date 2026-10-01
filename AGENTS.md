@@ -21,6 +21,28 @@
 - 查 DSL 算子/因子评估逻辑 → `alphaagent/dsl/`、`alphaagent/factor/`；查回测引擎 → `core/`；查前端 → `static/src/`；查 API → `backend/`。
 - 文件读取（glob/read）同样先确认目标是否在源码目录；数据产物目录不得直接列目录全文。
 
+## 统一配置中心纪律（强制，永久生效）
+
+**所有可调阈值 / 开关 / 门槛数值必须收口到统一配置中心，禁止在业务逻辑里硬编码魔法数。**
+
+- **唯一真源位置**：
+  - `alphaagent/factor/mining/research_spec.py` 的 `DEFAULT_RESEARCH_SPEC`
+    （研究/研报模式的门槛：`evaluation_policy` / `delivery_policy` / `report_policy` …）；
+  - `alphaagent/factor/mining/memory/constants.py`（记忆层阈值/枚举，如 verdict 与 near-miss 线）；
+  - `alphaagent/factor/mining/delivery/delivery_criteria.py`（候选/正式库交付门槛）。
+  判定代码只允许 `.get(key, <默认>)` 回落，默认值必须与配置中心一致。
+- **新增配置三件套缺一不可**：
+  1. `DEFAULT_RESEARCH_SPEC` 里的默认值 **+ 说明性注释**：含义、单位、为什么取这个值、
+     调大/调小的后果、影响的模式范围（研报模式专属的必须写明"仅研报模式"）；
+  2. 校验函数（`build_run_research_spec` 内）里的类型与**范围约束**（`_bounded_number` /
+     `_require_bool`），防止越界值静默生效；
+  3. 判定处的 `.get(key, 默认)` 回落 + 单测覆盖（默认值、覆盖生效、越界被拒）。
+- **判定侧读取路径**：优先随 **run gate** 传递（`agentscope_run._gate_state` →
+  `set_run_gate` → `_dispatch._effective_report_policy`）。**禁止依赖工具对象上未赋值的属性**
+  ——`self.report_policy` 全仓从未被赋值（恒为 `None`），2026-10-01 因此导致研报复现门槛
+  被静默跳过（0 条 `report_fidelity_check` 日志），并让 `reproduce_min_*` 长期吃硬编码默认。
+- **改阈值 = 改口径**：必须同步更新相关单测与 `docs/`，并在提交信息里写明"旧值 → 新值 + 理由"。
+
 ## Git 分支纪律（强制）
 
 - **任何改动（代码/文档/配置/脚本）必须先从 `main` 新建分支再动手**（`feat/*`、`fix/*`、`chore/*`），**禁止直接在 `main` 上修改或提交**。
