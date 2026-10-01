@@ -33,6 +33,10 @@ sys.path.insert(0, str(ROOT))
 
 from alphaagent.factor.mining.config import MiningConfig  # noqa: E402
 from alphaagent.factor.mining.context import StockEvalContext  # noqa: E402
+from alphaagent.factor.mining.memory.constants import (  # noqa: E402
+    VERDICT_TRAIN_PASS,
+    normalize_verdict,
+)
 from alphaagent.factor.mining.registry_io import load_mining_registry  # noqa: E402
 from alphaagent.factor.mining.research_spec import effective_research_spec  # noqa: E402
 from alphaagent.factor.mining.schemas import SessionCreateRequest  # noqa: E402
@@ -97,8 +101,11 @@ def _load_entries(
             continue
         norm = " ".join(str(r.get("expression") or "").split())
         prev = by_expr.get(norm)
-        # 同表达式去重：promising 优先于 rejected
-        if prev is None or (prev["verdict"] != "train_passed" and r["verdict"] == "train_passed"):
+        # 同表达式去重：train_passed 优先于 rejected（用 normalize 兼容历史 promising 行）
+        if prev is None or (
+            normalize_verdict(prev["verdict"]) != VERDICT_TRAIN_PASS
+            and normalize_verdict(r["verdict"]) == VERDICT_TRAIN_PASS
+        ):
             by_expr[norm] = r
     return list(by_expr.values())
 

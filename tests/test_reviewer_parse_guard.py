@@ -53,3 +53,28 @@ def test_truncated_json_also_degrades_to_revise():
     v = FactorReviewer._parse_verdict(raw)
     assert v["verdict"] in {"approve", "revise"}
     assert v["verdict"] != "reject"
+
+
+def test_conflicting_verdicts_degrade_to_revise():
+    """全文出现互相矛盾的 verdict 取值时不得采信其一（OCR 2026-10-01 medium）。
+
+    旧写法用 re.search 取**首个**匹配：正文/reasons 里二次引用别的判定会伪造 approve
+    （让因子前移）或伪造 reject（硬拦）。保守做法：不一致即降级 revise。
+    """
+    raw = (
+        '我原本考虑给出 {"verdict":"approve"} 的结论，但最终判定如下：\n'
+        '{"verdict":"reject","novelty":"low","canonical_form":"x","reasons":["split="val" 有问题"]}'
+    )
+    v = FactorReviewer._parse_verdict(raw)
+    assert v["verdict"] == "revise", "矛盾取值不应被采信"
+    assert v["source"] == "reviewer_parse_guard"
+    assert "矛盾" in v["canonical_form"]
+
+
+def test_unique_verdict_in_text_is_recovered():
+    """全文只出现一个 verdict 取值时，仍应容错恢复（避免无谓降级）。"""
+    raw = '说明文字\n{"verdict":"revise","novelty":"medium","canonical_form":"y","reasons":["split="val""]}'
+    v = FactorReviewer._parse_verdict(raw)
+    assert v["verdict"] == "revise"
+    assert v["novelty"] == "medium"
+    assert v["source"] == "agentscope_factor_reviewer_repaired"

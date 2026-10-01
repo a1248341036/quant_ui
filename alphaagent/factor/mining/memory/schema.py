@@ -17,7 +17,6 @@ from .constants import (
     EDIT_PRIOR_HARD_CONF_DEFAULT,
     EDIT_PRIOR_RECOMMEND_CONF_DEFAULT,
     EDIT_PRIOR_VETO_CONF_DEFAULT,
-    POSITIVE_VERDICTS_READ,
 )
 from .diagnostics import _failure_code, _now, _safe_float
 from .expressions import (

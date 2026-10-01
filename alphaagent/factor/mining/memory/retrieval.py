@@ -20,6 +20,10 @@ from .constants import (
     VERDICT_WEIGHT,
     normalize_verdict,
 )
+
+# 正集 SQL 片段（单一真源）：含历史字面量 promising——见 constants.POSITIVE_VERDICTS_READ。
+# 此前两处 SQL 手抄字面量，改名/增删正集时会与常量漂移。
+_POSITIVE_READ_SQL = ", ".join(f"'{v}'" for v in sorted(POSITIVE_VERDICTS_READ))
 from .expressions import (
     _structure_fingerprint,
     _tokens,
@@ -655,11 +659,10 @@ class RetrievalMixin:
         try:
             with self._open() as conn:
                 zrows = conn.execute(
-                    """
+                    f"""
                     SELECT COALESCE(NULLIF(family, ''), 'other') AS fam,
                            COUNT(*) AS n,
-                           SUM(CASE WHEN verdict IN ('train_passed','promising','validated',
-                                                     'candidate_approved','production_approved')
+                           SUM(CASE WHEN verdict IN ({_POSITIVE_READ_SQL})
                                     THEN 1 ELSE 0 END) AS n_pass
                     FROM memory_entries
                     GROUP BY fam HAVING n >= 30
@@ -1068,16 +1071,15 @@ class RetrievalMixin:
         记忆实证（2943 次评估）：volume 族 616 次尝试 0 产出，gap_overnight
         0.57%、融合族（价量×基本面）1.75%——尝试次数与产出严重错配，而 LLM
         倾向于在最熟悉的族里内卷。本块把真实产出率喂给 LLM，矫正探索方向。
-        过线 = verdict ∈ {promising, validated, candidate_approved, production_approved}。
+        过线 = verdict ∈ {train_passed, validated, candidate_approved, production_approved}（历史行仍是旧名 promising，查询侧由 POSITIVE_VERDICTS_READ 兼容）。
         """
         try:
             with self._open() as conn:
                 rows = conn.execute(
-                    """
+                    f"""
                     SELECT COALESCE(NULLIF(family, ''), 'other') AS fam,
                            COUNT(*) AS n,
-                           SUM(CASE WHEN verdict IN ('train_passed','promising','validated',
-                                                     'candidate_approved','production_approved')
+                           SUM(CASE WHEN verdict IN ({_POSITIVE_READ_SQL})
                                     THEN 1 ELSE 0 END) AS n_pass
                     FROM memory_entries
                     GROUP BY fam HAVING n >= ?

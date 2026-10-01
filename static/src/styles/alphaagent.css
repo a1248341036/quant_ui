@@ -64,7 +64,7 @@
 .memory-item strong { color:var(--text); font-size:10px; font-weight:550; }
 .memory-item small { margin-top:2px; font-size:9px; }
 .memory-production_approved, .memory-validated { border-color:#43d17a; }
-.memory-candidate_approved, .memory-promising { border-color:#f5bd4f; }
+.memory-candidate_approved, .memory-promising, .memory-train_passed { border-color:#f5bd4f; }
 .memory-rejected, .memory-weak { border-color:#ef6b73; }
 .memory-revise_required { border-color:#f5bd4f; }
 .memory-hint-text { display:block; margin-top:2px; font-size:9px; color:var(--muted); opacity:.7; }
@@ -96,7 +96,7 @@
 .memory-entry-main strong { font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .memory-verdict-tag { flex:none; padding:1px 6px; border-radius:4px; font-size:10px; }
 .memv-production_approved, .memv-validated, .memv-candidate_approved { color:#5ee0a0; background:rgb(94 224 160 / .1); }
-.memv-promising { color:#e2c04a; background:rgb(226 192 74 / .1); }
+.memv-promising, .memv-train_passed { color:#e2c04a; background:rgb(226 192 74 / .1); }
 .memv-near_miss { color:#c9b26b; background:rgb(201 178 107 / .12); }
 .memv-rejected, .memv-revise_required { color:#ef8b92; background:rgb(239 139 146 / .1); }
 .memv-weak { color:#b58a92; background:rgb(181 138 146 / .12); }
@@ -134,7 +134,8 @@
 .summary-stat b { color:var(--text); font:11px var(--font-mono); }
 .summary-verdict-dot { width:7px; height:7px; border-radius:50%; }
 .summary-verdict-dot.memv-production_approved, .summary-verdict-dot.memv-validated, .summary-verdict-dot.memv-candidate_approved { background:#5ee0a0; }
-.summary-verdict-dot.memv-promising { background:#e2c04a; }
+.summary-verdict-dot.memv-promising,
+.summary-verdict-dot.memv-train_passed { background:#e2c04a; }
 .summary-verdict-dot.memv-near_miss { background:#c9b26b; }
 .summary-verdict-dot.memv-rejected, .summary-verdict-dot.memv-revise_required { background:#ef8b92; }
 .summary-verdict-dot.memv-weak { background:#b58a92; }
@@ -146,7 +147,8 @@
 .verdict-filter-btn b { color:var(--text); font:11px var(--font-mono); }
 .verdict-filter-btn.active { color:var(--text); border-color:var(--accent, #5b9dff); background:rgb(79 140 255 / .15); }
 .verdict-filter-btn.active.memv-production_approved, .verdict-filter-btn.active.memv-validated, .verdict-filter-btn.active.memv-candidate_approved { border-color:#5ee0a0; background:rgb(94 224 160 / .15); }
-.verdict-filter-btn.active.memv-promising { border-color:#e2c04a; background:rgb(226 192 74 / .15); }
+.verdict-filter-btn.active.memv-promising,
+.verdict-filter-btn.active.memv-train_passed { border-color:#e2c04a; background:rgb(226 192 74 / .15); }
 .verdict-filter-btn.active.memv-near_miss { border-color:#c9b26b; background:rgb(201 178 107 / .18); }
 .verdict-filter-btn.active.memv-rejected, .verdict-filter-btn.active.memv-revise_required { border-color:#ef8b92; background:rgb(239 139 146 / .15); }
 .verdict-filter-btn.active.memv-weak { border-color:#b58a92; background:rgb(181 138 146 / .15); }

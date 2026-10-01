@@ -316,25 +316,34 @@ class FactorReviewer:
             value["source"] = "agentscope_factor_reviewer"
             return value
 
-        # ② 正则兜底：常见故障只是引号未转义，顶层字段仍在文本里
-        verdict_m = FactorReviewer._VERDICT_RE.search(text)
-        novelty_m = FactorReviewer._NOVELTY_RE.search(text)
-        if verdict_m:
+        # ② 正则兜底：常见故障只是引号未转义，顶层字段仍在文本里。
+        #    但**只在全文取值唯一时才采信**——正文/reasons 里可能二次引用别的判定，
+        #    取首个匹配（旧写法 re.search）会伪造 approve/reject，比降级 revise 更危险
+        #    （OCR 2026-10-01 medium：伪造 approve 会让因子前移，伪造 reject 会硬拦）。
+        verdict_hits = set(FactorReviewer._VERDICT_RE.findall(text))
+        novelty_hits = set(FactorReviewer._NOVELTY_RE.findall(text))
+        if len(verdict_hits) == 1:
             return {
-                "verdict": verdict_m.group(1),
-                "novelty": novelty_m.group(1) if novelty_m else "low",
+                "verdict": verdict_hits.pop(),
+                "novelty": novelty_hits.pop() if len(novelty_hits) == 1 else "low",
                 "canonical_form": "审查输出需容错解析",
                 "reasons": ["Reviewer 输出含未转义引号等格式问题，已容错解析出判定。"],
                 "required_changes": [],
                 "source": "agentscope_factor_reviewer_repaired",
                 "raw": (raw or "")[:2000],
             }
-        # ③ 完全无法判定 → 降级 revise（不阻断），不再合成 reject
+        # ③ 完全无法判定 / 出现互相矛盾的判定 → 降级 revise（不阻断），不合成 reject
+        ambiguous = len(verdict_hits) > 1
         return {
             "verdict": "revise",
             "novelty": "low",
-            "canonical_form": "审查输出不可解析（已降级，不阻断）",
-            "reasons": ["FactorReviewer 未返回可解析的判定；已降级为 revise，不阻断入库。"],
+            "canonical_form": ("审查输出含矛盾判定（已降级，不阻断）" if ambiguous
+                               else "审查输出不可解析（已降级，不阻断）"),
+            "reasons": [
+                "Reviewer 输出含互相矛盾的 verdict 取值，无法可信恢复，已降级为 revise 不阻断。"
+                if ambiguous else
+                "FactorReviewer 未返回可解析的判定；已降级为 revise，不阻断入库。"
+            ],
             "required_changes": ["修订表达式并重新完成 train/val 评估后再提交。"],
             "source": "reviewer_parse_guard",
             "raw": (raw or "")[:2000],
