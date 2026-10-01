@@ -109,8 +109,35 @@
 
 ```powershell
 # 必须显式传参，否则静默走默认（今晚三个坑都是这么来的）
-python C:\Users\zhoubw\Desktop\quant\overnight_mining_monitor.v2.py `
+python C:\Users\zhoubw\Desktop\quant\overnight_monitor.v2.py `
   --deadline 07:00 --research-mode report `
   --stall-warn-minutes 15 --stall-kill-minutes 25
 # 改过配置中心 → 先重启后端（或让监控 --restart-backend 负责）
 ```
+
+---
+
+## 九、修复后段实测（`b2f3c460fffe`，06:21 起，今晚唯一"全绿"的 run）
+
+主动轮换掉空转的 `5ce845512076`（111 条判定 0 PASS，全部卡在已修的 bug 上）后，新 run 立刻见效：
+
+```
+阶段推进:  RQ_7810a8 reproduce → diverge              完整闭环跑通
+复现判定:  45 条 / PASS 1
+  └ rq7810a8_gnn_dual_edge_v5b PASS [shape=confirmed | signal=ok | ic=+0.0142 …]
+保真度:    {'True': 1}                                 首个保真度过线
+评估 43 | 达双门槛 1
+因子 60 | 血统内 60 = 100%（reproduce_of:RQ_7810a8 43 / 复现版 11 / 其衍生 4）
+```
+
+### 今晚唯一可信的设计效果对照
+
+| | 前段 `a898c626b991`（有准入+B版题面，无锚/门禁） | 后段 `b2f3c460fffe`（全套 + 两个缺陷修复） |
+|---|---|---|
+| 血统内占比 | 67% | **100%** |
+| 达双门槛 | 22 个，**100% 同根离线灌水**（`mix_*`，无研报血统） | **1 个，挂在研报血统上** |
+| 复现过线 | 2/15（无保真度过线） | 1 条，且保真度 `passed=True` |
+| 闭环 | 复现后发散脱稿 | **复现 → 发散 完整闭环** |
+
+**结论（有限但方向明确）**：把"复现目标改为结构 + 血统门禁 + 修掉两个卡死缺陷"之后，
+**达双门槛因子第一次长在研报血统上**。样本仅 1 个因子 / 1 个课题，仍需下一夜扩大样本确认。
