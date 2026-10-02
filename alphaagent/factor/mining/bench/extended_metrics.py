@@ -114,6 +114,23 @@ def _extract_time_meta(run_dir: Path, events: list[dict]) -> dict[str, Any]:
         except Exception:
             pass
 
+    # 运行模式（report / technical / …）：API 启动的 run 没有 bench_meta.json，
+    # 若不记录模式，bench 会把 report run 与 technical 基线当作"同配置"直接给结论
+    # （实测 2026-10-02：c51f08948c14 得到误导性的 REGRESSED）。
+    research_mode = None
+    for _name in ("run_meta.json", "research_spec.json"):
+        _p = run_dir / _name
+        if not _p.is_file():
+            continue
+        try:
+            _o = json.loads(_p.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            continue
+        _m = _o.get("research_mode") or (_o.get("params") or {}).get("research_mode")
+        if _m:
+            research_mode = str(_m)
+            break
+
     bench_meta_path = run_dir / "bench_meta.json"
     if bench_meta_path.is_file():
         try:
@@ -125,6 +142,12 @@ def _extract_time_meta(run_dir: Path, events: list[dict]) -> dict[str, Any]:
                 model = b_obj.get("model")
         except Exception:
             pass
+    if not config_hash:
+        # 无 bench_meta.json（API/监控启动的 run）→ 用 run 自身身份合成：
+        # (research_mode, research_spec_hash)。这样 report 与 technical 不会 hash 相等，
+        # compare.py 会因 config_matched=False 提示"配置不一致"而不是给出误导性结论。
+        if research_mode or spec_hash:
+            config_hash = f"spec:{spec_hash or '-'}|mode:{research_mode or 'unknown'}"
 
     return {
         "created_at": created_at_s,
@@ -133,6 +156,7 @@ def _extract_time_meta(run_dir: Path, events: list[dict]) -> dict[str, Any]:
         "title": title,
         "model": model,
         "research_spec_hash": spec_hash,
+        "research_mode": research_mode,
         "config_hash": config_hash,
         "bench_note": bench_note,
         "bench_commit": bench_commit,
