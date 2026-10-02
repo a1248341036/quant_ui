@@ -127,8 +127,9 @@ def load_question_queue(spec: dict[str, Any] | None = None) -> list[dict[str, An
                 if line.strip():
                     questions.append(json.loads(line))
             if questions:
-                return _apply_require_report_structure(
-                    _apply_require_factor_records(questions, spec), spec)
+                return _apply_exclude_method_types(
+                    _apply_require_report_structure(
+                        _apply_require_factor_records(questions, spec), spec), spec)
         except Exception as e:
             logger.warning("读取问题题库失败: %s", e)
 
@@ -167,6 +168,39 @@ def _apply_require_report_structure(rows: list[dict[str, Any]],
         return rows
     logger.info("require_report_structure: %d → %d 道（仅保留有可复现结构的研报课题）",
                 len(rows), len(kept))
+    return kept
+
+
+def _apply_exclude_method_types(rows: list[dict[str, Any]],
+                               spec: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """``report_policy.exclude_method_types``：按**方法类型**排除暂时不做的方法类研报。
+
+    当前默认排除 `ml_model` / `graph_deep`——这类报告的核心是训练出来的模型/网络结构，
+    DSL 表达不了，硬出题只会得到"用任意表达式近似"的伪复现（2026-10-02 实测 RQ_7810a8）。
+    方法类型由 LLM 分类产出（`method_type` 字段，见 scripts/classify_report_methods.py）。
+    兜底：题库无该字段（旧题库）→ 不筛；过滤后为空 → 回退原题库（宁可不筛也不让 run 无题）。
+    """
+    if not rows:
+        return rows
+    _rp = (spec or {}).get("report_policy")
+    if (isinstance(_rp, dict) and "exclude_method_types" not in _rp
+            and any("method_type" in r for r in rows)):
+        # 与 require_report_structure 同口径：键缺失（旧 spec / 绕过 normalize）时**显式告警**，
+        # 不留"配置中心显示开着、实际没生效"的静默 fail-open（OCR 2026-10-02 指出的模式）。
+        logger.warning("report_policy 缺 exclude_method_types 键（旧 spec / 绕过 normalize）"
+                       "→ 本次**未**按方法类型排除")
+    excluded = [str(x) for x in ((_rp or {}).get("exclude_method_types") or [])]
+    if not excluded:
+        return rows
+    if not any("method_type" in r for r in rows):
+        logger.info("exclude_method_types=%s 但题库无 method_type 字段（旧题库），不筛", excluded)
+        return rows
+    kept = [r for r in rows if str(r.get("method_type") or "") not in excluded]
+    if not kept:
+        logger.warning("exclude_method_types=%s 过滤后无课题，回退原题库（%d 道）", excluded, len(rows))
+        return rows
+    logger.info("exclude_method_types=%s: %d → %d 道（排除机器学习/图深度等方法类研报）",
+                excluded, len(rows), len(kept))
     return kept
 
 
