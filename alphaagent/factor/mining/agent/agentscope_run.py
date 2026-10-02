@@ -325,6 +325,61 @@ async def create_mining_agent(
     )
 
 
+def rescue_unsubmitted_promising(
+    submit_service: Any,
+    session_id: str | None,
+    rows: list[dict[str, Any]],
+    top: int,
+    log_fn: Any = None,
+) -> dict[str, int]:
+    """run 末尾兜底补交：把"训练过线但轮次耗尽未提交"的因子，按 |ICIR| 取前 ``top`` 个补交。
+
+    走**与正常提交完全相同的** submit 通路（盲测 / stage_one / stage_two / engine gate
+    一个都不跳过），失败原因照常记录。设计为**纯函数 + 依赖注入**，便于单测：
+    2026-10-02 实测端到端验证需要"恰好有过线未提交因子"的 run（不确定），改为确定性单测。
+
+    返回 ``{"attempted","stored","candidate","failed"}`` 计数。
+    """
+    summary = {"attempted": 0, "stored": 0, "candidate": 0, "failed": 0}
+    if not submit_service or not session_id or not rows or int(top or 0) <= 0:
+        return summary
+    ranked = sorted(
+        rows, key=lambda r: -abs(float((r.get("metrics") or {}).get("icir") or 0.0))
+    )[:int(top)]
+    for r in ranked:
+        expr = str(r.get("expression") or "")
+        name = str(r.get("factor_name") or "unnamed")
+        if not expr:
+            continue
+        summary["attempted"] += 1
+        try:
+            out = submit_service.submit(
+                session_id,
+                multi_line_expr=expr,
+                factor_name=f"{name}__autorescue",
+                comment="run 末尾兜底补交：训练集过线但轮次耗尽未提交（2026-10-02 兜底机制）",
+            ) or {}
+        except Exception as rescue_err:  # noqa: BLE001 —— 单个失败不影响其余
+            summary["failed"] += 1
+            if log_fn:
+                log_fn("auto_submit_rescue", f"{name} 兜底补交异常: {rescue_err}",
+                       level=logging.WARNING)
+            continue
+        stored = bool(out.get("stored"))
+        cand = bool(out.get("candidate"))
+        summary["stored"] += int(stored)
+        summary["candidate"] += int(cand)
+        if log_fn:
+            log_fn(
+                "auto_submit_rescue",
+                f"{name} 兜底补交: stored={stored} candidate={cand} "
+                f"skipped={out.get('skipped') or '-'} "
+                f"error={str(out.get('error') or '-')[:80]}",
+                level=logging.INFO if (stored or cand) else logging.WARNING,
+            )
+    return summary
+
+
 async def run_factor_mining_agentscope(
     config: MiningConfig,
     user_message: str,
@@ -1824,8 +1879,7 @@ async def run_factor_mining_agentscope(
         # ── 兜底补交（2026-10-02）────────────────────────────────────────────
         # 问题：轮次耗尽（max_turns_reached）时训练过线因子直接丢失——2026-10-02 整夜实测
         # 两段 run 分别丢 32 / 30 个，而全仓既无 auto_submit 通路、`unsubmitted_promising`
-        # 也只是审计日志。此处按 |ICIR| 取前 N 个，走**与正常提交完全相同的** submit 通路
-        # 补交：盲测 / stage_one / stage_two / engine gate 一个都不跳过，失败原因照常记录。
+        # 也只是审计日志。逻辑抽在模块级 rescue_unsubmitted_promising()（可单测）。
         # 开关与代价见 `auto_submit_unsubmitted_top`（0=关闭，默认 3）。
         #
         # ⚠ 2026-10-02 实测教训（run f65e4436c6b4）：本函数体层级**没有** `spec`（它定义在
@@ -1834,44 +1888,18 @@ async def run_factor_mining_agentscope(
         #   ① 改用 `config.research_spec`；② **整段包 try/except** —— 收尾代码绝不允许弄崩 run。
         try:
             _rescue_spec = getattr(config, "research_spec", None) or {}
-            _rescue_top = int(_rescue_spec.get("auto_submit_unsubmitted_top") or 0)
-            if _rescue_top > 0 and submit_service is not None and unsubmitted_promising_unique:
-                _ranked = sorted(
-                    unsubmitted_promising_unique,
-                    key=lambda r: -abs(float((r.get("metrics") or {}).get("icir") or 0.0)),
-                )[:_rescue_top]
-                _sid = getattr(session_resp, "session_id", None)
-                for _r in _ranked:
-                    _expr = str(_r.get("expression") or "")
-                    _fname = str(_r.get("factor_name") or "unnamed")
-                    if not _expr or not _sid:
-                        continue
-                    try:
-                        _out = submit_service.submit(
-                            _sid,
-                            multi_line_expr=_expr,
-                            factor_name=f"{_fname}__autorescue",
-                            comment="run 末尾兜底补交：训练集过线但轮次耗尽未提交"
-                                    "（2026-10-02 兜底机制）",
-                        ) or {}
-                    except Exception as _rescue_err:  # noqa: BLE001
-                        log_step("auto_submit_rescue", f"{_fname} 兜底补交异常: {_rescue_err}",
-                                 level=logging.WARNING)
-                        continue
-                    _stored = bool(_out.get("stored"))
-                    _cand = bool(_out.get("candidate"))
-                    log_step(
-                        "auto_submit_rescue",
-                        f"{_fname} 兜底补交: stored={_stored} candidate={_cand} "
-                        f"skipped={_out.get('skipped') or '-'} "
-                        f"error={str(_out.get('error') or '-')[:80]}",
-                        level=logging.INFO if (_stored or _cand) else logging.WARNING,
-                    )
-                    # 让 run_end 的产出计数反映兜底结果（下面 outcome 判定会读这两个变量）
-                    if _stored:
-                        production_stored = True
-                    elif _cand:
-                        candidate_stored = True
+            _rescue_stat = rescue_unsubmitted_promising(
+                submit_service,
+                getattr(session_resp, "session_id", None),
+                unsubmitted_promising_unique,
+                int(_rescue_spec.get("auto_submit_unsubmitted_top") or 0),
+                log_step,
+            )
+            # 让 run_end 的产出计数反映兜底结果（下面 outcome 判定会读这两个变量）
+            if _rescue_stat.get("stored"):
+                production_stored = True
+            elif _rescue_stat.get("candidate"):
+                candidate_stored = True
         except Exception as _rescue_fatal:  # noqa: BLE001
             # 护栏：兜底机制自身出任何问题都只记日志，**绝不能影响 run 收尾**
             log_step("auto_submit_rescue",
