@@ -150,5 +150,24 @@ rq7810a8_v18e_holder_conc_prem    ← 同上
 ```
 
 **结论（有限但方向明确）**：把"复现目标改为结构 + 血统门禁 + 修掉两个卡死缺陷"之后，
-**达双门槛因子第一次全部长在研报血统上**（7/7）。样本仍是 1 个课题（20 分钟），
-需下一夜扩大样本确认强度与可复现性。
+**达双门槛因子第一次全部长在研报血统上**（7/7）。
+
+### 该 run 的最终终态（`run_summary.json` / 日志，08:05 收尾）
+
+```
+outcome      = candidate_only | termination_reason = max_turns_reached
+墙钟          = 102.7 分钟 | 模型 DeepSeek-V4-Flash-0731
+tool_calls   = 518（成功 332 / 失败 186）
+candidate_funnel: unique_train_evaluated=327 | unique_val_evaluated=2
+                  candidate_stored=1 | production_stored=0
+run_end 时警告: 30 个训练过线因子**未提交入库**（如 rq7810a8_v17a_vwap_prem5 +0.0262）
+若干 submit 被拒: stage_one_failed:icir / blind_test_failed:blind_test_abs_ic / …
+```
+
+**两条重要观察**：
+1. **`max_turns` 是绑定约束**——跑满轮次时仍有 **30 个 train 过线因子没来得及提交**，
+   说明"产出能力"不是瓶颈，"提交窗口/轮次预算"才是；
+2. **`tool_calls` 失败率 36%（186/518）**，其中相当部分是血统门禁与交互契约的正常拦截
+   （门禁生效的代价），值得下一夜量化"有效调用占比"。
+
+样本仍是 1 个课题，需下一夜扩大样本确认强度与可复现性。
