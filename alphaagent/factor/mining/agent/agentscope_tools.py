@@ -1004,30 +1004,10 @@ def build_factor_eval_toolkit(
             **_legacy_kwargs: Any,
         ) -> ToolChunk:
             """【正式交付】统计数据通过即写候选池；reviewer approve 才写正式 factorzoo。"""
-            # ── 研报模式发散门禁（可选，默认关）：发散轮必须基于复现版单维变异 ──
-            _gate_d = getattr(tools, "report_reproduce_gate", None) or {}
-            if _gate_d.get("diverge_parent") and _gate_d.get("phase") == "diverge":
-                _pname = str(_gate_d.get("parent_name") or "")
-                if _pname and _pname not in str(parent_factor or ""):
-                    return ToolChunk(content=[TextBlock(text=(
-                        f"⛔ 发散门禁：本轮是课题 {_gate_d.get('qid')} 的发散轮，`parent_factor` 必须指向复现版 "
-                        f"`{_pname}`（并只改一个维度）。若认为该机制在本池无效，请明确放弃该课题，"
-                        "不要在同一轮里另起炉灶。"
-                    ))])
-
-            # ── 研报模式复现门禁（Phase 1）：复现阶段必须声明 reproduce_of:<课题号> ──
-            _gate = getattr(tools, "report_reproduce_gate", None) or {}
-            if _gate.get("required") and _gate.get("phase") == "reproduce":
-                _qid = str(_gate.get("qid") or "")
-                _pf = str(parent_factor or "")
-                if _qid and _qid not in _pf:
-                    return ToolChunk(content=[TextBlock(text=(
-                            f"⛔ 复现门禁：当前处于研报复现阶段（课题 {_qid}），"
-                            f"`parent_factor` 必须写成 `reproduce_of:{_qid}`（或至少包含 `{_qid}`），"
-                            f"当前传入={_pf or '(空)'}。\n"
-                            "请先忠实复现研报机制（只允许字段同族替换与算子落地，不得改变机制语义），"
-                            "通过 train 后才进入发散阶段。"
-                    ))])
+            # ── 研报模式血统门禁（复现 / 发散）：统一走共享助手，避免双份口径漂移（OCR 2026-10-02）──
+            _lineage_block = _report_lineage_block(tools, parent_factor)
+            if _lineage_block:
+                return ToolChunk(content=[TextBlock(text=_lineage_block)])
 
             # ── 先执行 submit（stage_one 候选池 + stage_two 正式库统计门槛） ──
             loop = __import__("asyncio").get_running_loop()

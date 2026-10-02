@@ -67,6 +67,17 @@ def test_falls_back_when_all_filtered_out(tmp_path):
     assert len(load_question_queue(spec)) == 1
 
 
+def test_mixed_bank_keeps_legacy_rows(tmp_path):
+    """OCR 2026-10-02：混合题库（部分行有新字段、部分历史行没有）不得把历史题静默丢掉。
+    旧实现 `is True` 会丢弃缺字段的行；现改为只丢**显式 False**。"""
+    qp = _write(tmp_path, [Q_STRUCT, {"question_id": "RQ_L1", "source": "旧报告", "topic": "旧题"}])
+    spec = {"report_policy": {"require_report_structure": True,
+                              "require_factor_records": False,
+                              "question_queue_file": str(qp)}}
+    kept = load_question_queue(spec)
+    assert sorted(q["question_id"] for q in kept) == ["RQ_L1", "RQ_S1"]
+
+
 def test_config_center_key():
     rp = rs.build_run_research_spec(rs.DEFAULT_RESEARCH_SPEC)["report_policy"]
     assert rp["require_report_structure"] is True
