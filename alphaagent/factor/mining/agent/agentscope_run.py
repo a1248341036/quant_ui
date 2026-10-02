@@ -1826,43 +1826,58 @@ async def run_factor_mining_agentscope(
         # 两段 run 分别丢 32 / 30 个，而全仓既无 auto_submit 通路、`unsubmitted_promising`
         # 也只是审计日志。此处按 |ICIR| 取前 N 个，走**与正常提交完全相同的** submit 通路
         # 补交：盲测 / stage_one / stage_two / engine gate 一个都不跳过，失败原因照常记录。
-        # 开关与代价见 `spec.auto_submit_unsubmitted_top`（0=关闭，默认 3）。
-        _rescue_top = int(spec.get("auto_submit_unsubmitted_top") or 0)
-        if _rescue_top > 0 and submit_service is not None and unsubmitted_promising_unique:
-            _ranked = sorted(
-                unsubmitted_promising_unique,
-                key=lambda r: -abs(float((r.get("metrics") or {}).get("icir") or 0.0)),
-            )[:_rescue_top]
-            _sid = getattr(session_resp, "session_id", None)
-            for _r in _ranked:
-                _expr = str(_r.get("expression") or "")
-                _fname = str(_r.get("factor_name") or "unnamed")
-                if not _expr or not _sid:
-                    continue
-                try:
-                    _out = submit_service.submit(
-                        _sid,
-                        multi_line_expr=_expr,
-                        factor_name=f"{_fname}__autorescue",
-                        comment="run 末尾兜底补交：训练集过线但轮次耗尽未提交（2026-10-02 兜底机制）",
-                    ) or {}
-                except Exception as _rescue_err:  # noqa: BLE001
-                    log_step("auto_submit_rescue", f"{_fname} 兜底补交异常: {_rescue_err}",
-                             level=logging.WARNING)
-                    continue
-                _stored = bool(_out.get("stored"))
-                _cand = bool(_out.get("candidate"))
-                log_step(
-                    "auto_submit_rescue",
-                    f"{_fname} 兜底补交: stored={_stored} candidate={_cand} "
-                    f"skipped={_out.get('skipped') or '-'} error={str(_out.get('error') or '-')[:80]}",
-                    level=logging.INFO if (_stored or _cand) else logging.WARNING,
-                )
-                # 让 run_end 的产出计数反映兜底结果（下面 outcome 判定会读这两个变量）
-                if _stored:
-                    production_stored = True
-                elif _cand:
-                    candidate_stored = True
+        # 开关与代价见 `auto_submit_unsubmitted_top`（0=关闭，默认 3）。
+        #
+        # ⚠ 2026-10-02 实测教训（run f65e4436c6b4）：本函数体层级**没有** `spec`（它定义在
+        # 上面的嵌套函数里），原先写成 `spec.get(...)` → NameError → **整个 run 在收尾处崩溃**
+        # （run_summary.json 缺失、outcome/funnel 全丢、兜底也没跑成）。两处修正：
+        #   ① 改用 `config.research_spec`；② **整段包 try/except** —— 收尾代码绝不允许弄崩 run。
+        try:
+            _rescue_spec = getattr(config, "research_spec", None) or {}
+            _rescue_top = int(_rescue_spec.get("auto_submit_unsubmitted_top") or 0)
+            if _rescue_top > 0 and submit_service is not None and unsubmitted_promising_unique:
+                _ranked = sorted(
+                    unsubmitted_promising_unique,
+                    key=lambda r: -abs(float((r.get("metrics") or {}).get("icir") or 0.0)),
+                )[:_rescue_top]
+                _sid = getattr(session_resp, "session_id", None)
+                for _r in _ranked:
+                    _expr = str(_r.get("expression") or "")
+                    _fname = str(_r.get("factor_name") or "unnamed")
+                    if not _expr or not _sid:
+                        continue
+                    try:
+                        _out = submit_service.submit(
+                            _sid,
+                            multi_line_expr=_expr,
+                            factor_name=f"{_fname}__autorescue",
+                            comment="run 末尾兜底补交：训练集过线但轮次耗尽未提交"
+                                    "（2026-10-02 兜底机制）",
+                        ) or {}
+                    except Exception as _rescue_err:  # noqa: BLE001
+                        log_step("auto_submit_rescue", f"{_fname} 兜底补交异常: {_rescue_err}",
+                                 level=logging.WARNING)
+                        continue
+                    _stored = bool(_out.get("stored"))
+                    _cand = bool(_out.get("candidate"))
+                    log_step(
+                        "auto_submit_rescue",
+                        f"{_fname} 兜底补交: stored={_stored} candidate={_cand} "
+                        f"skipped={_out.get('skipped') or '-'} "
+                        f"error={str(_out.get('error') or '-')[:80]}",
+                        level=logging.INFO if (_stored or _cand) else logging.WARNING,
+                    )
+                    # 让 run_end 的产出计数反映兜底结果（下面 outcome 判定会读这两个变量）
+                    if _stored:
+                        production_stored = True
+                    elif _cand:
+                        candidate_stored = True
+        except Exception as _rescue_fatal:  # noqa: BLE001
+            # 护栏：兜底机制自身出任何问题都只记日志，**绝不能影响 run 收尾**
+            log_step("auto_submit_rescue",
+                     f"兜底补交整体异常（已忽略，不影响 run 收尾）: "
+                     f"{type(_rescue_fatal).__name__}: {_rescue_fatal}",
+                     level=logging.WARNING)
     if production_stored:
         outcome, success = "production_factor", True
     elif candidate_stored:
