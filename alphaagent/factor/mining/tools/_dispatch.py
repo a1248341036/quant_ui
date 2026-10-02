@@ -38,7 +38,17 @@ from ._prefilter import (
 )
 
 
-_PREDICTION_SOFT_LIMIT = 3
+_PREDICTION_SOFT_LIMIT = 3   # 兜底默认值；真源 evaluation_policy.prediction_soft_limit（P5 收口）
+
+
+def _prediction_soft_limit() -> int:
+    """prediction 缺失软门次数：读配置中心（原硬编码常量，2026-10-02 P5 收口）。"""
+    try:
+        from alphaagent.factor.evaluation.defaults import DEFAULT_EVALUATION_POLICY
+
+        return int(DEFAULT_EVALUATION_POLICY.get("prediction_soft_limit", _PREDICTION_SOFT_LIMIT))
+    except Exception:  # noqa: BLE001
+        return _PREDICTION_SOFT_LIMIT
 
 # 认知对账开关（research_spec.cognition_policy，消融 C1/C2）：缺省全开不改行为。
 # prediction_check_enabled=False → 不注入 prediction_check、缺失软门不再升级拦截；
@@ -400,7 +410,7 @@ class _DispatchMixin:
                 self._missing_prediction_counts = counts
             counts[tool_name] = counts.get(tool_name, 0) + 1
             n = counts[tool_name]
-            if n >= _PREDICTION_SOFT_LIMIT:
+            if n >= _prediction_soft_limit():
                 counts.pop(tool_name, None)  # 拦截后重新计数，给 provider 自纠机会
                 return {
                     "ok": False,
@@ -412,7 +422,7 @@ class _DispatchMixin:
                     "error_type": "ToolArgumentsError",
                 }
             result["prediction_warning"] = (
-                f"本次未携带 prediction，结果未做预期对账（第 {n}/{_PREDICTION_SOFT_LIMIT} 次，"
+                f"本次未携带 prediction，结果未做预期对账（第 {n}/{_prediction_soft_limit()} 次，"
                 "累计缺失将拦截）。后续每次 evaluate 必须传 prediction="
                 '{"expected_shape": ..., "expected_strong_side": ..., "expected_sign": 1|-1}。'
             )

@@ -14,6 +14,7 @@ from typing import Any
 
 from .calibration import _apv_gate, _eq7_confidence
 from .constants import (
+    SATURATION_FAMILY_SKIP,
     NEGATIVE_VERDICTS,
     POSITIVE_VERDICTS_READ,
     VERDICT_TRAIN_PASS,
@@ -696,8 +697,8 @@ class RetrievalMixin:
             fam = cand["family"]
             if fam in seen_families or (excluded_families and fam in excluded_families):
                 continue
-            # D2 核心对齐：饱和度 > 0.4 的拥挤族不再主动推荐微调
-            if saturation.get(fam, {}).get("saturation_score", 0.0) > 0.4:
+            # D2 核心对齐：饱和度超阈值的拥挤族不再主动推荐微调（阈值收口 memory.constants）
+            if saturation.get(fam, {}).get("saturation_score", 0.0) > SATURATION_FAMILY_SKIP:
                 continue
             # D3 核心对齐：历史高频零产出族不再推荐
             if fam in zero_yield_fams:

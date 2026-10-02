@@ -1084,6 +1084,10 @@ async def run_factor_mining_agentscope(
                     "factor_records_file": report_policy.get("factor_records_file"),
                     "question_queue_file": report_policy.get("question_queue_file"),
                     "inject_factor_records": report_policy.get("inject_factor_records", True),
+                    # 2026-10-02 P5 收口：正交门阈值随网关传递（工具对象上没有 spec）
+                    "orthogonality_max_corr": (
+                        (spec.get("evaluation_policy") or {}).get("orthogonality_max_corr", 0.7)
+                    ),
                 }
                 factor_tools.report_reproduce_gate = _gate_state
                 set_run_gate(_gate_state)   # 判定侧唯一可靠通道

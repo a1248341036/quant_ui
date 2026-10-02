@@ -291,7 +291,27 @@ def _interaction_contract(
 
 _ORTHO_N_DATES = 5       # 随机抽样锚点数
 _ORTHO_BLOCK_DAYS = 20   # 每个锚点向前取的连续交易日数，保留 TS_* 窗口语义
-_ORTHO_MAX_CORR = 0.7    # Spearman 相关性阈值
+_ORTHO_MAX_CORR = 0.7    # 兜底默认值；真源 evaluation_policy.orthogonality_max_corr（2026-10-02 P5 收口）
+
+
+def _ortho_max_corr(tools: Any = None) -> float:
+    """离线正交门阈值：优先取 run 网关（研报模式随 _gate_state 传递），否则取配置中心默认。
+
+    2026-10-02 P5 收口：原为模块级硬编码常量（3 处引用），违反项目"阈值收口配置中心"纪律。
+    """
+    gate = getattr(tools, "report_reproduce_gate", None) or {}
+    value = gate.get("orthogonality_max_corr")
+    if value is None:
+        try:
+            from alphaagent.factor.evaluation.defaults import DEFAULT_EVALUATION_POLICY
+
+            value = DEFAULT_EVALUATION_POLICY.get("orthogonality_max_corr", _ORTHO_MAX_CORR)
+        except Exception:  # noqa: BLE001
+            value = _ORTHO_MAX_CORR
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return _ORTHO_MAX_CORR
 
 
 def _sample_orthogonality_panel(panel: pd.DataFrame) -> pd.DataFrame:
@@ -346,7 +366,7 @@ def _orthogonality_check(tools: FactorEvalTools, multi_line_expr: str) -> dict[s
     result = {
         "passed": True,
         "skipped_reason": None,
-        "threshold": _ORTHO_MAX_CORR,
+        "threshold": _ortho_max_corr(tools),
         "max_abs_corr": 0.0,
         "compared_factors": 0,
         "blocked_factor_id": None,
@@ -483,7 +503,7 @@ def _orthogonality_check(tools: FactorEvalTools, multi_line_expr: str) -> dict[s
         result["similar_factors"] = [
             {"factor_id": fid, "corr": round(c, 4)} for fid, c in corr_pairs[:3]
         ]
-        result["passed"] = result["max_abs_corr"] < _ORTHO_MAX_CORR
+        result["passed"] = result["max_abs_corr"] < _ortho_max_corr(tools)
         return result
     except Exception as exc:  # noqa: BLE001
         # This is now an explicit post-review gate, so an unverifiable check fails closed.
@@ -822,7 +842,7 @@ def build_factor_eval_toolkit(
                         "top": similar,
                         "compared_factors": ortho.get("compared_factors"),
                     }
-                    if (ortho.get("max_abs_corr") or 0) >= _ORTHO_MAX_CORR:
+                    if (ortho.get("max_abs_corr") or 0) >= _ortho_max_corr(tools):
                         tops = ", ".join(f"{s['factor_id']}({s['corr']:.2f})" for s in similar[:2])
                         result["similarity_warning"] = (
                             f"⚠ 与已有因子高度相似: {tops} —— 提交将被正交门拦截。"

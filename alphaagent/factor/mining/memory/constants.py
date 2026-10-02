@@ -70,6 +70,8 @@ BASELINE_HALF_LIFE_DAYS = 90   # 残差基线时间衰减半衰期
 # 硬档（硬推荐/硬否决）共用；软推荐与软否决分向设阈值，
 # 否决向放宽（默认 0.3）以放行「一致失败」的避坑证据
 EDIT_PRIOR_HARD_CONF_DEFAULT = 0.7
+# 拥挤族（饱和度超过该值）不再主动推荐微调；原硬编码在 retrieval.py（2026-10-02 P5 收口）
+SATURATION_FAMILY_SKIP = 0.4
 EDIT_PRIOR_RECOMMEND_CONF_DEFAULT = 0.4
 EDIT_PRIOR_VETO_CONF_DEFAULT = 0.3
 
