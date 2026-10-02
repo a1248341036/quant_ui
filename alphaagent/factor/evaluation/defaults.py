@@ -22,6 +22,10 @@ DEFAULT_EVALUATION_POLICY: dict[str, float] = {
     "min_val_abs_ic": 0.015,
     "min_val_ic_retention_ratio": 0.5,
     "min_cs_autocorr": 0.18,
+    # 2026-10-02 阈值收口（P5）：以下三项原先硬编码在业务逻辑里（违反"阈值收口配置中心"纪律）。
+    "orthogonality_max_corr": 0.7,        # 离线正交预判阈值（进候选池硬门；原 agentscope_tools._ORTHO_MAX_CORR）
+    "prediction_soft_limit": 3,           # prediction 缺失软门次数（原 _dispatch._PREDICTION_SOFT_LIMIT）
+    "prediction_sign_min_abs_ic": 0.003,  # 符号对账的最小 |IC|（原 eval/prediction.py 硬编码两处）
 }
 
 # 与 delivery_criteria.ProductionCriteria 默认值严格一致（唯一真源在

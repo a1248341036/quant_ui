@@ -434,6 +434,19 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
     evaluation["min_cs_autocorr"] = _bounded_number(
         evaluation.get("min_cs_autocorr", 0), "evaluation_policy.min_cs_autocorr", 0, 1
     )
+    # 2026-10-02 P5 收口：三项原硬编码阈值，现纳入配置中心并做范围校验
+    evaluation["orthogonality_max_corr"] = _bounded_number(
+        evaluation.get("orthogonality_max_corr", 0.7),
+        "evaluation_policy.orthogonality_max_corr", 0, 1,
+    )
+    evaluation["prediction_soft_limit"] = int(_bounded_number(
+        evaluation.get("prediction_soft_limit", 3),
+        "evaluation_policy.prediction_soft_limit", 0, 50,
+    ))
+    evaluation["prediction_sign_min_abs_ic"] = _bounded_number(
+        evaluation.get("prediction_sign_min_abs_ic", 0.003),
+        "evaluation_policy.prediction_sign_min_abs_ic", 0, 1,
+    )
 
     review = _require_dict(spec.get("review_policy"), "review_policy")
     review["enabled"] = _require_bool(review.get("enabled"), "review_policy.enabled")

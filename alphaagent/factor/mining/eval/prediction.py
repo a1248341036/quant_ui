@@ -13,6 +13,19 @@ from __future__ import annotations
 import re
 from typing import Any
 
+
+def _sign_min_abs_ic() -> float:
+    """符号对账的最小 |IC|：真源 evaluation_policy.prediction_sign_min_abs_ic（2026-10-02 P5 收口）。
+
+    低于该值认为 IC 近似 0、符号不可信，不做符号对账（原先两处硬编码 0.003）。
+    """
+    try:
+        from alphaagent.factor.evaluation.defaults import DEFAULT_EVALUATION_POLICY
+
+        return float(DEFAULT_EVALUATION_POLICY.get("prediction_sign_min_abs_ic", 0.003))
+    except Exception:  # noqa: BLE001
+        return 0.003
+
 # 门控/条件类算子：出现即触发消融流程（表达式大写匹配）
 GATING_OP_RE = re.compile(r"\b(GATED_SIGNAL|IF_THEN_ELSE|PIECEWISE_STATE|CS_GROUP_RANK)\s*\(")
 
@@ -571,7 +584,7 @@ def build_prediction_check(
         ic_val = None
     sign_mismatch = (
         ic_val is not None
-        and abs(ic_val) >= 0.003
+        and abs(ic_val) >= _sign_min_abs_ic()
         and (ic_val > 0) != (pred["expected_sign"] > 0)
     )
 
@@ -648,7 +661,8 @@ def build_ablation_check(
         out["verdict"] = "unverifiable"
         out["message"] = "base-only 或 full 的 IC 缺失，无法量化条件化增量。"
         return out
-    if (full_ic > 0) != (base_ic > 0) and abs(base_ic) >= 0.003 and abs(full_ic) >= 0.003:
+    if ((full_ic > 0) != (base_ic > 0)
+            and abs(base_ic) >= _sign_min_abs_ic() and abs(full_ic) >= _sign_min_abs_ic()):
         verdict = "conditioning_flipped_signal"
         message = (
             f"条件化翻转了信号方向：base-only IC={base_ic:+.4f} → 门控后 IC={full_ic:+.4f}。"
