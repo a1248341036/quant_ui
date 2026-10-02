@@ -1821,6 +1821,48 @@ async def run_factor_mining_agentscope(
             count=len(unsubmitted_promising_unique),
             level=logging.WARNING,
         )
+        # ── 兜底补交（2026-10-02）────────────────────────────────────────────
+        # 问题：轮次耗尽（max_turns_reached）时训练过线因子直接丢失——2026-10-02 整夜实测
+        # 两段 run 分别丢 32 / 30 个，而全仓既无 auto_submit 通路、`unsubmitted_promising`
+        # 也只是审计日志。此处按 |ICIR| 取前 N 个，走**与正常提交完全相同的** submit 通路
+        # 补交：盲测 / stage_one / stage_two / engine gate 一个都不跳过，失败原因照常记录。
+        # 开关与代价见 `spec.auto_submit_unsubmitted_top`（0=关闭，默认 3）。
+        _rescue_top = int(spec.get("auto_submit_unsubmitted_top") or 0)
+        if _rescue_top > 0 and submit_service is not None and unsubmitted_promising_unique:
+            _ranked = sorted(
+                unsubmitted_promising_unique,
+                key=lambda r: -abs(float((r.get("metrics") or {}).get("icir") or 0.0)),
+            )[:_rescue_top]
+            _sid = getattr(session_resp, "session_id", None)
+            for _r in _ranked:
+                _expr = str(_r.get("expression") or "")
+                _fname = str(_r.get("factor_name") or "unnamed")
+                if not _expr or not _sid:
+                    continue
+                try:
+                    _out = submit_service.submit(
+                        _sid,
+                        multi_line_expr=_expr,
+                        factor_name=f"{_fname}__autorescue",
+                        comment="run 末尾兜底补交：训练集过线但轮次耗尽未提交（2026-10-02 兜底机制）",
+                    ) or {}
+                except Exception as _rescue_err:  # noqa: BLE001
+                    log_step("auto_submit_rescue", f"{_fname} 兜底补交异常: {_rescue_err}",
+                             level=logging.WARNING)
+                    continue
+                _stored = bool(_out.get("stored"))
+                _cand = bool(_out.get("candidate"))
+                log_step(
+                    "auto_submit_rescue",
+                    f"{_fname} 兜底补交: stored={_stored} candidate={_cand} "
+                    f"skipped={_out.get('skipped') or '-'} error={str(_out.get('error') or '-')[:80]}",
+                    level=logging.INFO if (_stored or _cand) else logging.WARNING,
+                )
+                # 让 run_end 的产出计数反映兜底结果（下面 outcome 判定会读这两个变量）
+                if _stored:
+                    production_stored = True
+                elif _cand:
+                    candidate_stored = True
     if production_stored:
         outcome, success = "production_factor", True
     elif candidate_stored:

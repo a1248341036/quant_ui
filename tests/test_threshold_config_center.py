@@ -60,3 +60,28 @@ def test_agentscope_tools_reads_gate_then_default():
         report_reproduce_gate = {"orthogonality_max_corr": "oops"}
 
     assert _ortho_max_corr(_Bad()) == 0.7         # 脏值回落默认，不崩
+
+
+# ── 兜底补交（2026-10-02）：训练过线但轮次耗尽未提交的因子，run 末尾按 |ICIR| 取前 N 补交 ──
+
+def test_auto_submit_rescue_config_and_bounds():
+    import pytest
+
+    spec = rs.build_run_research_spec(rs.DEFAULT_RESEARCH_SPEC)
+    assert spec["auto_submit_unsubmitted_top"] == 3
+    assert rs.build_run_research_spec({"auto_submit_unsubmitted_top": 0})[
+        "auto_submit_unsubmitted_top"] == 0
+    with pytest.raises(ValueError):
+        rs.build_run_research_spec({"auto_submit_unsubmitted_top": 99})
+
+
+def test_auto_submit_rescue_is_wired_into_run_end():
+    """兜底补交必须真接在 run 收尾上（防误删/被重构掉）。"""
+    import inspect
+
+    import alphaagent.factor.mining.agent.agentscope_run as m
+
+    src = inspect.getsource(m)
+    assert "auto_submit_unsubmitted_top" in src, "run 收尾没有读兜底开关"
+    assert "auto_submit_rescue" in src, "run 收尾没有兜底补交日志"
+    assert "submit_service.submit(" in src, "兜底补交没有走正常 submit 通路"
