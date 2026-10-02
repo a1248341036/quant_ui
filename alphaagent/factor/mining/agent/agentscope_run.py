@@ -380,6 +380,23 @@ def rescue_unsubmitted_promising(
     return summary
 
 
+def submitted_factor_names(submit_records: list[dict[str, Any]]) -> set[str]:
+    """已提交过的**因子名/因子 id** 集合（审计的第二层兜底键）。
+
+    为什么需要：审计原先只按**表达式哈希**判"是否已提交"（``submitted_expression_keys``）。
+    但模型常以同一因子名迭代多个表达式 → train_passed 那条表达式确实从未提交，同名因子却提交过
+    （实测 run ca6371b8bc8c：``dv_vwap_turn_sub120`` 已提交 5 次仍被判"未提交"，兜底重复提交）。
+    按名字兜底是**保守**方向：宁可少补一次，也不重复提交已提交过的因子。
+    """
+    names: set[str] = set()
+    for sr in submit_records or []:
+        for key in ("factor_name", "factor_id"):
+            v = str(sr.get(key) or "").strip()
+            if v:
+                names.add(v)
+    return names
+
+
 def submitted_expression_keys(submit_records: list[dict[str, Any]]) -> set[str]:
     """收尾审计用：把**已提交**的表达式归一化哈希集合。
 
@@ -1861,11 +1878,16 @@ async def run_factor_mining_agentscope(
     # 记忆实证：201 个 promising 中 93 个无 candidate_id，断在 LLM 决策。本汇总
     # 让 run 结束时这笔产出损失可见（steps.log + outcome 归因）。
     submitted_expr_keys = submitted_expression_keys(submit_records)
+    # 残余边界（2026-10-03 实测 run ca6371b8bc8c）：模型会用**同一因子名**迭代多个不同表达式，
+    # 于是 train_passed 的那条表达式哈希确实没提交过，但同名因子已提交 5 次 → 仍被判"未提交"，
+    # 兜底会重复提交。故再加一层**按因子名**的兜底判定（保守：宁少补、不重复）。
+    submitted_names = submitted_factor_names(submit_records)
     unsubmitted_promising = [
         r for r in tool_call_rows
         if r.get("verdict") in TRAIN_PASS_VERDICTS
         and r.get("expression_sha256")
         and r.get("expression_sha256") not in submitted_expr_keys
+        and str(r.get("factor_name") or "") not in submitted_names
         and r.get("name") in ("evaluate_factor", "eval_on_train_set")
     ]
     # 同表达式多次评估去重（取首次）

@@ -41,3 +41,30 @@ def test_multiple_records_dedupe_by_hash():
     recs = [{"multi_line_expr": "A + B"}, {"multi_line_expr": "A + B"},
             {"multi_line_expr": "C - D"}]
     assert len(ar.submitted_expression_keys(recs)) == 2
+
+
+# ── 第二层兜底：按因子名（2026-10-03 残余边界）──
+# 实测 run ca6371b8bc8c：`dv_vwap_turn_sub120` 用同名迭代多个表达式、已提交 5 次，
+# 但 train_passed 那条表达式哈希从未提交 → 仍被判"未提交"，兜底重复提交。
+
+def test_submitted_factor_names_reads_name_and_id():
+    recs = [{"factor_name": "dv_vwap_turn_sub120", "factor_id": "dv_vwap_turn_sub120"},
+            {"factor_name": "other", "factor_id": None},
+            {"factor_id": "only_id"},
+            {}]
+    assert ar.submitted_factor_names(recs) == {"dv_vwap_turn_sub120", "other", "only_id"}
+
+
+def test_submitted_factor_names_handles_empty_and_none():
+    assert ar.submitted_factor_names([]) == set()
+    assert ar.submitted_factor_names(None) == set()
+    assert ar.submitted_factor_names([{"factor_name": "  "}]) == set()
+
+
+def test_same_name_different_expression_is_still_considered_submitted():
+    """核心回归：同名因子已提交 → 即使表达式哈希不同，也应视为已提交（不重复补交）。"""
+    submits = [{"factor_name": "dv_vwap_turn_sub120", "multi_line_expr": "A_OTHER_EXPR"}]
+    assert ar.submitted_factor_names(submits) >= {"dv_vwap_turn_sub120"}
+    # 哈希层面确实匹配不上（这正是残余边界的成因）
+    assert ar.canonical_hash("THE_EVAL_EXPR") not in ar.submitted_expression_keys(submits)
+
