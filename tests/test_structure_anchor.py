@@ -122,6 +122,29 @@ def test_floor_applies_to_mid_declaration_without_structure_ops():
     assert one["structure_anchor"]["mode"] == "complexity_floor"
 
 
+def test_string_form_fields_not_split_into_chars():
+    """OCR 第二轮回评：structure_ops/fields 被抽成**字符串**时不得按单字符迭代
+    （否则 `for o in "CS_GROUP_RANK"` → 命中集恒空 → 忠实复现被硬拦）。"""
+    q = _q({"structure_ops": "CS_GROUP_RANK", "fields": "$close"})
+    out = check_reproduce_fidelity(
+        q, "CS_GROUP_RANK(CS_ZSCORE($close), $industry_sw_l1)", records=REF)
+    assert out["passed"] is True, out
+    assert out["structure_anchor"]["hit"] == ["CS_GROUP_RANK"]
+
+    miss = check_reproduce_fidelity(q, "CS_ZSCORE(TS_MEAN($close, 20))", records=REF)
+    assert miss["passed"] is False
+    assert "structure_ops_missing=CS_GROUP_RANK" in miss["reason"]   # 整体，而非 C,S,_…
+
+
+def test_non_dict_primary_does_not_crash():
+    """OCR 第二轮回评：`primary` 本身也可能是非 dict → 不得抛异常（判定侧会被静默误杀）。"""
+    q = {"question_id": "RQ_P", "source": "华泰证券_单因子测试之财务质量因子",
+         "has_reproducible_structure": True, "primary": ["$close", "$volume"]}
+    out = check_reproduce_fidelity(
+        q, "CS_ZSCORE(TS_MEAN(DIVIDE($close, $volume), 20))", records=REF)
+    assert out["passed"] is True, out          # 取不到声明 → 只受地板约束
+
+
 def test_non_dict_spec_requirements_does_not_crash():
     """OCR 2026-10-02：spec_requirements 可能是非 dict（LLM 抽成数组/字符串）→ 不得抛异常。"""
     q = {"question_id": "RQ_B", "source": "华泰证券_单因子测试之财务质量因子",
