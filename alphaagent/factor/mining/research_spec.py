@@ -128,6 +128,13 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
     "research_mode": "technical",
     # 信息性提示：该模式建议的评估 label，前端/调用方可据此设置 --label-col。
     "recommended_label_col": "label_1d_open_to_open",
+    # run 末尾兜底补交（2026-10-02）：训练过线但因 max_turns 耗尽**未提交**的因子，按 |ICIR|
+    # 取前 N 个走**正常 submit 通路**补交（不绕过盲测/stage_one/stage_two/engine gate 任何门槛）。
+    #   0 = 关闭。代价实测：单次 submit 约 5~10 分钟（盲测+stage_one+engine gate），
+    #   故默认 3（夜间 run 结尾多花 ~15~30 分钟换回产出）。
+    # 依据：2026-10-02 整夜实测两段 run 分别有 32 / 30 个训练过线因子未提交（均因 max_turns），
+    #   此前只有 `unsubmitted_promising` 审计日志、**无任何补交通路**（全仓无 auto_submit 实现）。
+    "auto_submit_unsubmitted_top": 3,
     "search_policy": {
         "allowed_signal_families": ["volume_price", "volatility", "chip", "momentum_reversal"],
         "forbidden_signal_families": ["pure_size"],
@@ -421,6 +428,9 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
     search["min_distinct_raw_fields"] = int(_bounded_number(search.get("min_distinct_raw_fields"), "search_policy.min_distinct_raw_fields", 1, 10))
     search["require_time_series_structure"] = _require_bool(search.get("require_time_series_structure"), "search_policy.require_time_series_structure")
     search["max_candidates_per_round"] = int(_bounded_number(search.get("max_candidates_per_round"), "search_policy.max_candidates_per_round", 1, 24))
+    spec["auto_submit_unsubmitted_top"] = int(_bounded_number(
+        spec.get("auto_submit_unsubmitted_top", 3), "auto_submit_unsubmitted_top", 0, 20
+    ))
 
     evaluation = _require_dict(spec.get("evaluation_policy"), "evaluation_policy")
     for key in ("min_train_abs_ic", "min_val_abs_ic"):
