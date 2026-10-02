@@ -148,7 +148,13 @@ def _apply_require_report_structure(rows: list[dict[str, Any]],
     """
     if not rows:
         return rows
-    if not bool(((spec or {}).get("report_policy") or {}).get("require_report_structure", False)):
+    _rp = (spec or {}).get("report_policy")
+    if isinstance(_rp, dict) and "require_report_structure" not in _rp:
+        # OCR 第二轮回评 2026-10-02：主路径会先 normalize（默认 True），但任何绕过 normalize 的
+        # 调用方（直接构造的旧 spec 等）会让该保护**静默失效**。此处显式告警，不留静默 fail-open。
+        logger.warning("report_policy 缺 require_report_structure 键（旧 spec / 绕过 normalize）"
+                       "→ 本次**未启用**结构准入")
+    if not bool((_rp or {}).get("require_report_structure", False)):
         return rows
     if not any("has_reproducible_structure" in r for r in rows):
         logger.info("require_report_structure=True 但题库无该字段（旧题库），不筛")
@@ -731,15 +737,27 @@ def check_reproduce_fidelity(question: dict[str, Any] | None, expr: str, *,
     #   ② 否则按声明字段：须用到 ≥ min(声明字段数, min_fields) 个；
     #   ③ 无结构信息（旧题库）→ applicable=False，不判（向后兼容）。
     fails: list[str] = []
-    _sr = ((question or {}).get("primary") or {}).get("spec_requirements") or {}
-    _struct_ops = [str(o) for o in (_sr.get("structure_ops") or []) if str(o).strip()] \
-        if isinstance(_sr, dict) else []
-    _declared = {str(f).lstrip("$") for f in ((_sr.get("fields") or []) if isinstance(_sr, dict) else [])
-                 if str(f).strip()}
+    # 异质形态防御（OCR 第二轮回评 2026-10-02）：`primary` 与 `spec_requirements` 及其内层字段
+    # 全部来自同一个 LLM 抽取侧，实测出现过数组/字符串形态。两层都要防：
+    #   · `primary` 非 dict → `.get` 抛 AttributeError：判定侧被宽泛 except 吞掉 → 该课题复现被
+    #     **静默误杀**；题面装配侧无 try 包裹 → 直接中断整轮提示词构建。
+    #   · `structure_ops`/`fields` 若是**字符串**（如 "CS_GROUP_RANK"）→ `for o in ...` 按**单字符**
+    #     迭代 → 命中集恒空 → 忠实复现被判 `structure_ops_missing=C,S,_…` **硬拦**（fail-closed）。
+    _primary = (question or {}).get("primary")
+    _primary = _primary if isinstance(_primary, dict) else {}
+    _sr = _primary.get("spec_requirements")
+    _sr = _sr if isinstance(_sr, dict) else {}
+
+    def _as_list(value: Any) -> list[Any]:
+        """把 LLM 可能给成字符串/None 的字段归一为 list（字符串按整体视为单元素，不拆字符）。"""
+        if isinstance(value, list):
+            return value
+        return [value] if value else []
+
+    _struct_ops = [str(o) for o in _as_list(_sr.get("structure_ops")) if str(o).strip()]
+    _declared = {str(f).lstrip("$") for f in _as_list(_sr.get("fields")) if str(f).strip()}
     try:
-        # 与上方两处保持一致：spec_requirements 可能是非 dict（LLM 抽成数组/字符串），
-        # 直接 .get 会抛 AttributeError 且不被下面 except 捕获 → 整条判定崩溃（OCR 2026-10-02）。
-        _min_fields = int((_sr.get("min_fields") if isinstance(_sr, dict) else 0) or 0)
+        _min_fields = int(_sr.get("min_fields") or 0)
     except (TypeError, ValueError):
         _min_fields = 0
     structure_anchor: dict[str, Any] = {"applicable": False}
@@ -1232,11 +1250,12 @@ def render_reproduce_task(question: dict, spec: dict | None = None, card: dict |
     _struct = str(question.get("report_structure") or "")
     _target = str(question.get("reproduction_target") or "").strip()
     if _target:
-        _sr = ((question.get("primary") or {}).get("spec_requirements") or {})
-        # 防御（OCR 2026-10-02）：spec_requirements 可能是非 dict（LLM 抽成数组/字符串）；
-        # 此处在题面装配路径上且无 try 包裹，不防护会中断整轮提示词构建。与判定侧保持一致。
-        if not isinstance(_sr, dict):
-            _sr = {}
+        # 防御（OCR 第二轮回评 2026-10-02）：`primary` 与 `spec_requirements` 都可能是非 dict
+        # （LLM 抽成数组/字符串）；此路径无 try 包裹，不防护会中断整轮提示词构建。与判定侧一致。
+        _primary = question.get("primary")
+        _primary = _primary if isinstance(_primary, dict) else {}
+        _sr = _primary.get("spec_requirements")
+        _sr = _sr if isinstance(_sr, dict) else {}
         parts += [
             "",
             f"**复现目标（结构类型 `{_struct}`）**：{_target}",
