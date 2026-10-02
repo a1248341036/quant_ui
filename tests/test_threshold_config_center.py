@@ -84,6 +84,7 @@ def test_auto_submit_rescue_is_wired_into_run_end():
     ③ 不得再出现裸 `spec.get("auto_submit_unsubmitted_top")`。
     """
     import inspect
+    import re
 
     import alphaagent.factor.mining.agent.agentscope_run as m
 
@@ -94,5 +95,7 @@ def test_auto_submit_rescue_is_wired_into_run_end():
     assert 'config, "research_spec"' in src, \
         "兜底开关没有从 config.research_spec 读取（函数体层级没有 spec 变量）"
     assert "_rescue_fatal" in src, "兜底补交缺少整段 try/except 护栏（收尾代码不得弄崩 run）"
-    assert 'spec.get("auto_submit_unsubmitted_top")' not in src, \
+    # 只查**代码行**（注释里提到该写法不算）：用负向断言避免把 `_rescue_spec.get(` 误判成裸 `spec`
+    code = "\n".join(line for line in src.splitlines() if not line.lstrip().startswith("#"))
+    assert not re.search(r"(?<![_\w.])spec\.get\(", code), \
         "兜底块又在裸用 spec —— 该变量在函数体层级不存在，会 NameError 崩掉 run 收尾"
