@@ -56,6 +56,14 @@ TMPL = """判断下面这篇研报**提出/测试的核心东西属于哪一类�
 判据：**看报告主张的核心机制是否依赖"训练出来的模型/网络结构"**——依赖则归 `ml_model`
 或 `graph_deep`（图/深度优先 `graph_deep`）；只是用模型做筛选/回测工具则不算。
 
+**加严规则（2026-10-03，实测漏判后补）**：只要满足下面任一条，就**必须**归 `ml_model`
+（若涉及图/深度网络则 `graph_deep`），**不得**归 `factor_test`/`rule_formula`：
+1. 标题/课题里出现"机器学习/深度学习/神经网络/图神经网络/GNN/LSTM/Transformer/XGBoost/
+   随机森林/GBDT/自编码器/embedding/模型训练/训练模型"等字样，且报告用它来**构造或合成因子**；
+2. 报告的因子来自"用模型把高频数据低频化""端到端训练出信号"这类**机制本身依赖训练**的做法；
+3. 复现目标里出现"训练/模型/网络/拟合/预测模型"且是核心步骤。
+> 反例（不算 ML）：仅用线性回归做中性化/筛选、仅用 IC 加权合成、仅做分组回测。
+
 只输出 JSON：{{"method_type": "...", "reason": "一句话依据"}}
 
 研报信息：
@@ -85,6 +93,31 @@ def classify(rec: dict) -> dict:
     return {"method_type": label, "reason": str((out or {}).get("reason") or "")[:160]}
 
 
+def audit_ml_misses(rows: list[dict]) -> int:
+    """审计护栏（B）：列出「标题/主题命中 ML 词但未归 ml_model/graph_deep」的题。
+
+    仅用于**发现漏判候选**供复核，不作为分类依据（分类仍由 LLM 完成）。
+    背景：2026-10-03 实测 RQ_875028 主题写"机器学习"，却被归为 factor_test，
+    没被 `report_policy.exclude_method_types` 排除 → 该题在复现阶段连续 42 次被结构/字段锚
+    拦截（`off_reference`）、0 PASS、整轮预算耗在 DSL 表达不了的报告上。
+    """
+    import re
+    pat = re.compile(r"机器学习|深度学习|神经网络|图神经网络|GNN|GAT|XGBoost|随机森林|GBDT|"
+                     r"LSTM|Transformer|自编码|embedding|模型训练|训练模型", re.I)
+    hits = []
+    for r in rows:
+        txt = " ".join(str(r.get(k) or "") for k in ("topic", "name", "report_type"))
+        if pat.search(txt):
+            hits.append(r)
+    misses = [r for r in hits if r.get("method_type") not in ("ml_model", "graph_deep")]
+    print(f"[审计] {len(rows)} 题中标题/主题命中 ML 词的 {len(hits)} 题；"
+          f"其中未归 ml_model/graph_deep 的 {len(misses)} 题（漏判风险）")
+    for r in misses:
+        print(f"  {r.get('question_id') or r.get('source')}  method={r.get('method_type')}  "
+              f"topic={str(r.get('topic'))[:60]}")
+    return 0 if not misses else 1
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--src", default="question_v2_prod2.jsonl")
@@ -93,6 +126,9 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--sync-only", action="store_true",
                     help="跳过 LLM 分类，仅把 --src 里已有的 method_type 同步到在用题库（按 source 对齐）")
+    ap.add_argument("--audit", action="store_true",
+                    help="审计：列出「标题/主题命中 ML 词但未归 ml_model/graph_deep」的题（漏判风险），"
+                         "不做判定也不写文件")
     args = ap.parse_args()
 
     os.environ.setdefault("ALPHA_LLM_PROVIDER", "codex")
@@ -104,6 +140,9 @@ def main() -> int:
             if l.strip()]
     if args.limit:
         rows = rows[:args.limit]
+
+    if args.audit:
+        return audit_ml_misses(rows)
 
     if args.sync_only:
         results = rows
