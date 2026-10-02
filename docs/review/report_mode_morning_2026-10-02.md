@@ -70,7 +70,30 @@
 |---|---|---|
 | 1 | 监控 `--research-mode` **缺省空** → 后端自定 `technical` | 监控自起的 run 全是普通模式（`baeb4b983d2f`、`d6fb37459d9c`），设计完全没生效 |
 | 2 | 监控 `--stall-kill-minutes` **缺省 0** | 上游 LLM 掉线 → run 卡死重试 **122 分钟**，监控只告警不动手 |
-| 3 | **后端冻结 spec** | 代码合并后新配置不生效（`ad280ca9edb0` 只吃到一半配置）：**改配置后必须重启后端** |
+| 3 | ~~**后端冻结 spec**~~ **（已被 2026-10-02 复核推翻，见下方更正）** | 原判"代码合并后新配置不生效"**不成立** |
+
+### 更正：第 3 条不是陷阱，是我误判（2026-10-02 复核 + OCR 评审共同确认）
+
+**实测反证**：`build_run_research_spec(陈旧 spec)` 与 `load_research_spec(陈旧文件)` **都会逐键深合并**
+代码默认值——连嵌套的 `reproduce_fidelity.min_ops_floor` 也会被补齐：
+
+```
+build_run_research_spec({"report_policy": {只有 require_report_structure + 旧形状 fidelity}})
+  → report_policy.diverge_parent_required = True
+  → report_policy.reproduce_fidelity.min_ops_floor = 2      ← 嵌套也补齐
+```
+
+**我错在哪**：我拿 run 目录里冻结的 `research_spec.json` **反推运行时行为**。那个文件只是
+"后端当时传给子进程的内容"的**记录**，子进程还会用代码默认值深合并它 → **记录 ≠ 生效值**。
+
+**结论修正**：
+- ❌ "改配置中心后必须重启后端" —— **不成立**；
+- ❌ 我为此加的 `default_missing_keys()` 启动自检 —— **前提错误，已删除**（且 OCR 实测它在接线后
+  恒不触发：合并后的 spec 必然含全部默认键）；
+- ✅ **唯一需要记住的约束**：**代码改动只对"合并之后启动的 run"生效**（run 是独立子进程，
+  启动时导入当时磁盘上的代码）。这与"配置是否生效"无关。
+- 📌 **方法论教训**：诊断必须用**运行时可观测值**（日志里的实际判定/门禁行为），
+  不要用记录文件反推——我这次就是被自己的记录文件骗了一轮。
 
 ---
 

@@ -123,9 +123,10 @@ qid=RQ_367653  rq367653_composite_v1       ic=+0.0158 icir=+0.1772
 |---|---|---|
 | 1 | 监控 `--research-mode` **缺省空** → 后端自定 `technical` | 监控自起的 2 个 run（`baeb4b983d2f`、`d6fb37459d9c`）**根本不是研报模式**，设计完全没生效 |
 | 2 | 监控 `--stall-kill-minutes` **缺省 0**（只告警不自杀） | 上游 LLM 掉线 → run 卡死重试 **122 分钟**，整夜空转近 1.6 小时 |
-| 3 | **后端冻结 spec**（spec 由后端进程构建） | 代码合并后新配置**不生效**：`ad280ca9edb0` 只吃到一半配置（有结构准入，缺血统门禁与地板） |
+| 3 | ~~**后端冻结 spec**~~ **（2026-10-02 复核推翻）** | 原判"代码合并后新配置不生效"**不成立**：实测 `build_run_research_spec` / `load_research_spec` 都会把代码默认值**逐键深合并**（含嵌套键）。错因：我拿 run 目录里冻结的 `research_spec.json` 反推运行时而它只是**记录**；已把该结论与配套的 `default_missing_keys()` 自检一并撤销 |
 
-> 三者共同点：**参数没显式给 → 静默走默认，且不报错**。下一夜启动参数见第五节。
+> 修正后只剩 **2 个真陷阱**（都属"参数没显式给 → 静默走默认且不报错"）。
+> 补充的正确约束：**代码改动只对"合并之后启动的 run"生效**（run 是独立子进程）。
 
 ### C. 未解决 / 待确认（本夜暴露，尚未动手）
 
@@ -152,7 +153,7 @@ qid=RQ_367653  rq367653_composite_v1       ic=+0.0158 icir=+0.1772
   **不能据此声称"产出质量已提升"**，只能说"方向正确、血统可控"；
 - ❌ **入库仍为 0**（1 个候选池、0 个正式库），达标因子与可提交之间仍有结构性落差（第四节 C3）。
 
-### 5.2 下一夜启动参数（照抄，规避三个默认值陷阱）
+### 5.2 下一夜启动参数（照抄，规避两个默认值陷阱）
 
 ```powershell
 python C:\Users\zhoubw\Desktop\quant\overnight_mining_monitor.v2.py `
@@ -184,6 +185,50 @@ logs/factor_mining/ui/<run_id>/run_summary.json  +  scorecard.json
 .venv\Scripts\python.exe scripts\night_summary_report.py --since 2026-10-02T01:30
 # 巡检（复现过线 / 结构锚 / 母本强度 / 错误分布）
 .venv\Scripts\python.exe scripts\patrol_report_mode.py
-# 锚校准（改锚必跑：验收=误杀 0）
+# 锚校准（改锚必跑：口径 judged；判读见脚本内说明）
 .venv\Scripts\python.exe scripts\replay_anchor_on_run.py --run b2f3c460fffe
 ```
+
+---
+
+## 十、合并前 OCR 评审（open-code-review，两轮）
+
+**评审对象**：`origin/main..main`（未推送的全部改动，10 个代码文件 / 614 行插入）。
+命令：`ocr review --audience agent --from origin/main --to main --background-file logs/ocr_background_20261002.md`。
+
+### 第一轮：6 条 findings（全部核实成立，已修）
+
+| # | 严重度 | 位置 | 问题 | 处置 |
+|---|---|---|---|---|
+| 1 | medium | `alphaagent_factor_mining.py` | **我加的 spec 自检恒不触发**（`load_research_spec` 已把默认值合并回来） | **连带其错误前提一并删除**（见第五节更正） |
+| 2 | medium | `question_queue.py` | **fail-open**：无 `structure_ops` 的中等声明题（fields=2/min_fields=2）**没有任何硬门** → 一行式可绕过 | 地板改为"只要无 `structure_ops` 就施加" |
+| 3 | low | `question_queue.py` | 混合题库（部分行无新字段）会把历史题**静默整批丢弃** | 改为逐行兜底：只丢显式 `False` |
+| 4 | low | `agentscope_tools.py` | `submit_factor` 仍是内联门禁副本 → 口径漂移风险 | 改用共享助手；覆盖测试断言提升到 ≥4 处且文案唯一 |
+| 5 | medium | `question_queue.py` | `_sr` 未做 `isinstance` 防御 → 非 dict 时 `AttributeError` 崩溃 | 补防御 |
+| 6 | low | `question_queue.py` | 题面装配处同样缺防御（无 try 包裹） | 补防御 |
+
+### 第二轮（复核修复后状态）：12 条（去重后 9 条，全部成立，已修）
+
+| 类型 | 问题 | 处置 |
+|---|---|---|
+| **真缺陷** | `primary` 本身未防非 dict（判定侧被宽泛 except 吞掉 → **该课题复现被静默误杀**；题面侧直接中断） | 判定/装配两侧都先归一 `primary` |
+| **真缺陷** | `structure_ops`/`fields` 若被抽成**字符串** → `for o in "CS_GROUP_RANK"` 按**单字符**迭代 → 命中集恒空 → **忠实复现被判 `structure_ops_missing=C,S,_…` 硬拦** | 统一归一为 list（字符串整体视为单元素） |
+| 静默 fail-open | 绕过 `normalize_research_spec` 的调用方会让三条新开关**静默失效** | 键缺失时**显式告警** |
+| **工具口径** | 校准工具 `replay_anchor_on_run.py`：只判前 40 条却用全量做分母、qid join 静默失败、同名多表达式只留首个、异常裸崩、坏行静默、硬编码盘符、死代码 | **整脚本重写**（口径 `--scope judged`、覆盖率自检、异常计数、路径可移植） |
+
+### 由 OCR 促成的两处自我更正（重要）
+
+1. **"trap 3：后端冻结 spec"不成立**（第一轮 #1 牵出）—— 实测 `build_run_research_spec` /
+   `load_research_spec` 都会**逐键深合并**代码默认值（含嵌套键）。我拿 run 目录里冻结的
+   `research_spec.json` 反推运行时行为是错的：那只是**记录**。相应纪律已在第五节更正。
+2. **"锚拦截 8/106（7.5%）、误杀 0"是坏工具的产物**（第二轮工具类 findings 牵出）——
+   旧工具只判前 40 条且多数因 join 失败被静默跳过。**重写后的正确口径与数字**：
+
+   | run | 真实复现判定条数 | 拦截率 | live 曾过线但被当前锚拦截 |
+   |---|---|---|---|
+   | `b2f3c460fffe`（修复后段） | 38 | **6/38 = 16%** | **0** |
+   | `a898c626b991`（前段） | 24 | 2/24 = 8% | 1（原因 `structure_ops_missing=IF_THEN_ELSE` → **模型换了结构，锚的本职，非过严**） |
+   | `5ce845512076`（卡死段） | 84 | 2/84 = 2% | 0 |
+
+   **结论不变**：当前锚对"真实复现"的拦截率约 2~16%，且逐条查因后**没有发现真过严**；
+   但原报告里的 7.5% 这个具体数字作废。
