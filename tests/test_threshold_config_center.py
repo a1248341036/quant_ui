@@ -95,7 +95,12 @@ def test_auto_submit_rescue_is_wired_into_run_end():
     assert 'config, "research_spec"' in src, \
         "兜底开关没有从 config.research_spec 读取（函数体层级没有 spec 变量）"
     assert "_rescue_fatal" in src, "兜底补交缺少整段 try/except 护栏（收尾代码不得弄崩 run）"
-    # 只查**代码行**（注释里提到该写法不算）：用负向断言避免把 `_rescue_spec.get(` 误判成裸 `spec`
-    code = "\n".join(line for line in src.splitlines() if not line.lstrip().startswith("#"))
+    # 只查**兜底块内的代码行**：模块其它地方（嵌套作用域）合法使用 `spec.get(...)`，
+    # 注释里提到该写法也不算；负向断言避免把 `_rescue_spec.get(` 误判成裸 `spec`
+    i, j = src.find("# ── 兜底补交"), src.find("if production_stored:")
+    block = src[i:j] if i > 0 and j > i else ""
+    assert block, "定位不到兜底补交块（可能被重构/删除）"
+    code = "\n".join(line for line in block.splitlines()
+                     if not line.lstrip().startswith("#"))
     assert not re.search(r"(?<![_\w.])spec\.get\(", code), \
-        "兜底块又在裸用 spec —— 该变量在函数体层级不存在，会 NameError 崩掉 run 收尾"
+        "兜底块内在裸用 spec —— 该变量在函数体层级不存在，会 NameError 崩掉 run 收尾"
