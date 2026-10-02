@@ -54,6 +54,12 @@ USER_TMPL = """下面是一篇券商金工研报的 Markdown 正文（可能有�
 
 {{
   "report_type": "深度研究|单因子测试|专题|策略|周报|月报|文献推荐|其他",
+  // 方法类型（决定是否出题；ml_model / graph_deep 默认被 report_policy.exclude_method_types 排除）：
+  // rule_formula 规则型公式因子 | factor_test 因子测试优选 | portfolio_combo 组合/合成打分 |
+  // event_driven 事件驱动 | timing_rotation 择时轮动 | ml_model 机器学习模型 |
+  // graph_deep 图/深度结构（GNN/Transformer/RNN/LSTM/自编码器/embedding） | other
+  // 判据：核心机制**是否依赖训练出来的模型/网络结构**——依赖则归 ml_model 或 graph_deep。
+  "method_type": "rule_formula|factor_test|portfolio_combo|event_driven|timing_rotation|ml_model|graph_deep|other",
   "topic": "本文核心因子/机制的一句话课题名",
   "report_structure": "gated|composite|residual|timing|cross_facet|none",
   "has_reproducible_structure": true/false,
