@@ -37,10 +37,15 @@ def test_no_gate_passes_everything():
 
 
 def test_all_eval_entrypoints_call_the_helper():
-    """覆盖检查：4 个评估入口都应调用助手（防止再次漏装）。"""
+    """覆盖检查（OCR 2026-10-02 后收紧）：**4 个**入口都必须调用助手，且不得再有内联副本。
+    - eval_on_train_set / eval_on_val_set / evaluate_factor / submit_factor
+    - 原先 submit_factor 是内联副本（口径漂移风险），已改为调用助手。"""
     import inspect
 
     import alphaagent.factor.mining.agent.agentscope_tools as m
     src = inspect.getsource(m)
-    assert src.count("_report_lineage_block(tools, parent_factor)") >= 3, \
-        "_report_lineage_block 调用点少于 3 处（可能又有入口漏装门禁）"
+    assert src.count("_report_lineage_block(tools, parent_factor)") >= 4, \
+        "_report_lineage_block 调用点少于 4 处（可能又有入口漏装内联副本）"
+    # 内联副本的判据：⛔ 文案只应出现在助手内一处
+    assert src.count("⛔ 发散门禁") == 1, "发散门禁文案出现多次 → 又有内联副本"
+    assert src.count("⛔ 复现门禁") == 1, "复现门禁文案出现多次 → 又有内联副本"

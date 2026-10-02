@@ -153,7 +153,9 @@ def _apply_require_report_structure(rows: list[dict[str, Any]],
     if not any("has_reproducible_structure" in r for r in rows):
         logger.info("require_report_structure=True 但题库无该字段（旧题库），不筛")
         return rows
-    kept = [r for r in rows if r.get("has_reproducible_structure") is True]
+    # 逐行兜底（OCR 2026-10-02）：只丢弃**显式标记 False** 的题；缺该字段的历史题保留。
+    # 旧写法 `is True` 会在"部分升级的混合题库"里把历史题整批静默丢掉，与本函数文档语义不符。
+    kept = [r for r in rows if r.get("has_reproducible_structure") is not False]
     if not kept:
         logger.warning("require_report_structure 过滤后无课题，回退原题库（%d 道）", len(rows))
         return rows
@@ -735,7 +737,9 @@ def check_reproduce_fidelity(question: dict[str, Any] | None, expr: str, *,
     _declared = {str(f).lstrip("$") for f in ((_sr.get("fields") or []) if isinstance(_sr, dict) else [])
                  if str(f).strip()}
     try:
-        _min_fields = int((_sr or {}).get("min_fields") or 0)
+        # 与上方两处保持一致：spec_requirements 可能是非 dict（LLM 抽成数组/字符串），
+        # 直接 .get 会抛 AttributeError 且不被下面 except 捕获 → 整条判定崩溃（OCR 2026-10-02）。
+        _min_fields = int((_sr.get("min_fields") if isinstance(_sr, dict) else 0) or 0)
     except (TypeError, ValueError):
         _min_fields = 0
     structure_anchor: dict[str, Any] = {"applicable": False}
@@ -746,47 +750,32 @@ def check_reproduce_fidelity(question: dict[str, Any] | None, expr: str, *,
                             "min_fields": _min_fields}
         if not _hit_ops:
             fails.append("structure_ops_missing=" + ",".join(_struct_ops[:4]))
-    elif ((question or {}).get("has_reproducible_structure") is True
-          and not _struct_ops
-          and (not _declared or (len(_declared) <= 1 and _min_fields <= 1))):
-        # ⑤ 弱声明兜底（2026-10-02 标定）：59% 的结构题未声明 structure_ops，且声明字段常只有
-        # 1 个 → 结构锚会退化成"用到某个通用字段即过"。此时改用**复杂度地板**：
-        # 复现至少 min_ops_floor 个不同算子 + min_fields_floor 个不同字段（挡掉一行式）。
-        # 依据（26707 次评估）：1 算子因子达双门槛 1.4%、2-3 算子 0.3%、4+ 算子 8.2%。
+    elif (question or {}).get("has_reproducible_structure") is True:
+        # 复杂度地板（2026-10-02 标定 + OCR 复评校准）：**只要题没有 structure_ops 就施加**。
+        # 依据（26,707 次评估）：1 算子因子达双门槛 1.4%、1 字段 0.1%；4+ 算子 8.2%、3+ 字段 11.2%。
+        # 早期版本只在"声明字段≤1 且 min_fields≤1"时才施加 → 中等声明（fields=2/min_fields=2）又无
+        # structure_ops 的题**完全没有硬门**，一行式复现可绕过（OCR 指出，已核实）。
+        # 声明字段命中 / 字段总数仍只作**诊断**：回放 24 条真实表达式时它们误杀 live 已过线复现。
         try:
             _ops_floor = int(cfg.get("min_ops_floor") or 0)
             _flds_floor = int(cfg.get("min_fields_floor") or 0)
         except (TypeError, ValueError):
             _ops_floor = _flds_floor = 0
+        _hit_f = sorted(_declared & my_fields)
+        _ref_total = min(_min_fields, 4) if _min_fields > len(_declared) else 0
         structure_anchor = {"applicable": bool(_ops_floor or _flds_floor), "mode": "complexity_floor",
                             "n_my_ops": len(my_ops), "n_my_fields": len(my_fields),
                             "min_ops_floor": _ops_floor, "min_fields_floor": _flds_floor,
+                            "hit": _hit_f, "hit_is_diagnostic_only": True,
+                            "need_total_fields": _ref_total,
+                            "below_min_fields": bool(_ref_total and len(my_fields) < _ref_total),
                             "declared_fields": sorted(_declared), "min_fields": _min_fields}
         if _ops_floor and len(my_ops) < _ops_floor:
             fails.append(f"ops_used={len(my_ops)}<floor={_ops_floor}")
         if _flds_floor and len(my_fields) < _flds_floor:
             fails.append(f"fields_used={len(my_fields)}<floor={_flds_floor}")
-    elif _declared or _min_fields > 0:
-        # 字段要求（2026-10-02 回放校准）：**不再要求"命中声明字段"**。
-        # 回放实测：把"必须命中声明字段"当硬门时，24 条真实复现表达式有 19 条被拦（79%），
-        # 连 live 中已过线的 `rq8b4cdd_repro_composite_blend_v2`（fields=3）也被拦 —— 因为
-        # 本模式**本来就允许"字段同族替换 + 算子落地"**，而题目声明的 fields 往往只覆盖参考公式。
-        # 故：声明字段命中只作**诊断**；硬门只保留「复现字段总数 ≥ min(min_fields, 4)」，
-        # 且 min_fields 封顶 4 防虚高（回放里 min_fields=5 而声明只有 2 个字段的题会把合理复现卡死）。
-        _hit_f = sorted(_declared & my_fields)
-        _ref_total = min(_min_fields, 4) if _min_fields > len(_declared) else 0
-        structure_anchor = {"applicable": False, "mode": "fields_diagnostic",
-                            "hit": _hit_f, "hit_is_diagnostic_only": True,
-                            "need_total_fields": _ref_total, "below_min_fields":
-                                bool(_ref_total and len(my_fields) < _ref_total),
-                            "n_my_fields": len(my_fields),
-                            "declared_fields": sorted(_declared), "min_fields": _min_fields}
-        # 说明（2026-10-02 二次回放校准）：`min_fields` 是 LLM 声明值、**常虚高**（实测某题声明 5
-        # 而结构 2 字段即可表达），当硬门会误杀 live 已过线的合理复现（回放剩 1 例）。故此处只
-        # **诊断**（记 below_min_fields），硬门只保留：① 声明的 structure_ops 必须命中
-        # ② 弱声明时的复杂度地板（2 算子/2 字段，见上一分支）。
-
     if not ref_fields and not ref_ops:
+
         # 参照记录**存在但完全不含表达式文本**（实测 2026-10-02 / RQ_13e253：该报告 13 条记录
         # 只有"联发科:营收""晶圆进口金额"这类指标名）→ 字段/算子锚**无比较对象**，此时
         # `require_shared_field=1` 会判 `shared_fields=0<1` 而**永远失败**，该课题再也过不了复现
@@ -1244,6 +1233,10 @@ def render_reproduce_task(question: dict, spec: dict | None = None, card: dict |
     _target = str(question.get("reproduction_target") or "").strip()
     if _target:
         _sr = ((question.get("primary") or {}).get("spec_requirements") or {})
+        # 防御（OCR 2026-10-02）：spec_requirements 可能是非 dict（LLM 抽成数组/字符串）；
+        # 此处在题面装配路径上且无 try 包裹，不防护会中断整轮提示词构建。与判定侧保持一致。
+        if not isinstance(_sr, dict):
+            _sr = {}
         parts += [
             "",
             f"**复现目标（结构类型 `{_struct}`）**：{_target}",

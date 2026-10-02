@@ -98,29 +98,6 @@ def effective_research_spec(mode: str = "technical") -> dict[str, Any]:
     return normalize_research_spec(merged)
 
 
-def default_missing_keys(spec: dict[str, Any] | None) -> list[str]:
-    """列出「配置中心默认值里有、而本次 run 的 spec 里没有」的键路径（点号分层）。
-
-    用途：**spec 新鲜度自检**。spec 可能由后端进程冻结，后端不重启就吃不到配置中心新键
-    （2026-10-02 实测：run 只生效了一半新配置——有 `require_report_structure`，
-    缺 `diverge_parent_required` / `min_ops_floor`）。启动时调用本函数并告警，
-    让"旧 spec"立刻暴露，而不是等夜里发现指标异常。
-    完整继承默认值的 spec 返回空列表。
-    """
-    missing: list[str] = []
-
-    def walk(default: dict[str, Any], current: Any, prefix: str = "") -> None:
-        for key, value in (default or {}).items():
-            path = f"{prefix}{key}"
-            if not isinstance(current, dict) or key not in current:
-                missing.append(path)
-            elif isinstance(value, dict):
-                walk(value, current.get(key) or {}, f"{path}.")
-
-    walk(DEFAULT_RESEARCH_SPEC or {}, spec or {})
-    return missing
-
-
 def build_run_research_spec(explicit: dict[str, Any] | None = None) -> dict[str, Any]:
     """运行口径研究规范：注册表默认 < 保存覆盖 < 显式 spec（如前端 JSON / CLI 文件）。
 

@@ -20,9 +20,13 @@ REF = [{"source": SRC, "expr_local": "TS_MEAN($close, 20)", "formula_kind": "ver
         "executable": True}]
 
 
-def _q(sr: dict) -> dict:
-    return {"question_id": "RQ_X", "source": "华泰证券_单因子测试之财务质量因子",
-            "primary": {"spec_requirements": sr}}
+def _q(sr: dict, *, structured: bool = True) -> dict:
+    """结构化课题夹具（structure 分支要求 has_reproducible_structure=True）。"""
+    q = {"question_id": "RQ_X", "source": "华泰证券_单因子测试之财务质量因子",
+         "primary": {"spec_requirements": sr}}
+    if structured:
+        q["has_reproducible_structure"] = True
+    return q
 
 
 def test_structure_ops_required():
@@ -42,19 +46,25 @@ def test_structure_ops_hit_passes():
 
 
 def test_declared_field_hit_is_diagnostic_only():
-    """回放校准（2026-10-02）：不再把"命中声明字段"当硬门——本模式允许字段同族替换，
+    """回放校准（2026-10-02）：不把"命中声明字段"当硬门——本模式允许字段同族替换，
     当硬门会误杀（回放 24 条真实复现里 19 条被拦，含 live 已过线案例）。
-    min_fields ≤ 声明字段数时不应产生任何字段门。"""
+    此处只要求满足复杂度地板（2 算子/2 字段），字段命中仅作诊断。"""
     sr = {"fields": ["$close", "$volume"], "min_fields": 2}
-    out = check_reproduce_fidelity(_q(sr), "CS_ZSCORE(TS_MEAN($close, 20))", records=REF)
-    assert out["passed"] is True, out
-    assert out["structure_anchor"]["hit_is_diagnostic_only"] is True
-    assert out["structure_anchor"]["hit"] == ["close"]
+    out = check_reproduce_fidelity(
+        _q(sr), "CS_ZSCORE(TS_MEAN($close, 20))", records=REF)   # 2 算子但仅 1 字段
+    assert out["passed"] is False, out
+    assert "fields_used=1<floor=2" in out["reason"]              # 被地板拦，而不是被"命中声明字段"拦
+
+    ok = check_reproduce_fidelity(
+        _q(sr), "CS_ZSCORE(TS_MEAN(DIVIDE($close, $volume), 20))", records=REF)
+    assert ok["passed"] is True, ok
+    assert ok["structure_anchor"]["hit_is_diagnostic_only"] is True
+    assert ok["structure_anchor"]["hit"] == ["close", "volume"]
 
 
 def test_legacy_question_not_anchored():
     """旧题库没有结构信息 → 不判（行为不变）。"""
-    out = check_reproduce_fidelity(_q({}), "CS_ZSCORE($close)", records=REF)
+    out = check_reproduce_fidelity(_q({}, structured=False), "CS_ZSCORE($close)", records=REF)
     assert out["passed"] is True
     assert out["structure_anchor"]["applicable"] is False
 
@@ -94,8 +104,33 @@ def test_complexity_floor_for_weak_declarations():
 
 def test_legacy_question_bypasses_floor():
     """旧题库题（无 has_reproducible_structure）→ 复杂度地板不生效（向后兼容）。"""
-    legacy = _q({})
+    legacy = _q({}, structured=False)
     assert legacy.get("has_reproducible_structure") is None
     out = check_reproduce_fidelity(legacy, "CS_ZSCORE($close)", records=REF)
     assert out["passed"] is True, out
     assert out["structure_anchor"]["applicable"] is False
+
+
+def test_floor_applies_to_mid_declaration_without_structure_ops():
+    """OCR 2026-10-02 指出的 fail-open：中等声明（fields=2/min_fields=2）但**无 structure_ops**
+    的题原先完全没有硬门（地板只在"声明字段≤1 且 min_fields≤1"时才生效）→ 一行式可绕过。
+    现在只要无 structure_ops 就施加地板。"""
+    sr = {"fields": ["$close", "$volume"], "min_fields": 2}      # 中等声明、无 structure_ops
+    one = check_reproduce_fidelity(_q(sr), "CS_ZSCORE($close)", records=REF)
+    assert one["passed"] is False, one
+    assert "ops_used=1<floor=2" in one["reason"]
+    assert one["structure_anchor"]["mode"] == "complexity_floor"
+
+
+def test_non_dict_spec_requirements_does_not_crash():
+    """OCR 2026-10-02：spec_requirements 可能是非 dict（LLM 抽成数组/字符串）→ 不得抛异常。"""
+    q = {"question_id": "RQ_B", "source": "华泰证券_单因子测试之财务质量因子",
+         "has_reproducible_structure": True, "primary": {"spec_requirements": ["$close", "$volume"]}}
+    out = check_reproduce_fidelity(q, "CS_ZSCORE($close)", records=REF)
+    assert out["passed"] is False                     # 无声明 → 只受地板约束
+    assert "ops_used=1<floor=2" in out["reason"]
+
+    q2 = {"question_id": "RQ_C", "source": "华泰证券_单因子测试之财务质量因子",
+          "has_reproducible_structure": True, "primary": {"spec_requirements": "cash_ratio"}}
+    out2 = check_reproduce_fidelity(q2, "CS_ZSCORE(TS_MEAN(DIVIDE($close, $volume), 20))", records=REF)
+    assert out2["passed"] is True, out2
