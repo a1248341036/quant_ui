@@ -323,6 +323,15 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
         # 而含结构算子 9.1%、3+ 字段 11.2%（差 6~112 倍）——复现"一条通用单公式"必然无效。
         # 兼容：题库无 `has_reproducible_structure` 字段（旧 1200 题库）→ 本项不筛，行为不变。
         "require_report_structure": True,
+        # 方法类型准入（2026-10-02）：**暂时排除机器学习/图深度类研报**。
+        # 理由：这类报告的"结构"是训练出来的模型/网络（GNN、Transformer、XGBoost…），
+        # 在 DSL 里无法表达——硬出题只能得到"用任意表达式近似"的**伪复现**（实测案例
+        # RQ_7810a8：复现目标写"异构图 GNN+两阶段训练"，实际复现成"成交额/VWAP 溢价残差"）。
+        # 归类由 LLM 产出（scripts/classify_report_methods.py 的 `method_type` 字段），可选值：
+        # rule_formula / factor_test / portfolio_combo / event_driven / timing_rotation /
+        # ml_model / graph_deep / other。题库无该字段（旧题库）→ 不筛（向后兼容）。
+        # 想放开某类：把它从本列表移除即可（例如 "ml_model"）。
+        "exclude_method_types": ["ml_model", "graph_deep"],
         "reproduce_fidelity": {
             "enabled": True,
             # 弱声明兜底（2026-10-02 标定）：59% 结构题未声明 structure_ops、声明字段常只有 1 个
@@ -720,6 +729,10 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
     )
     rp["require_report_structure"] = _require_bool(
         rp.get("require_report_structure", True), "report_policy.require_report_structure"
+    )
+    rp["exclude_method_types"] = _string_list(
+        rp.get("exclude_method_types", ["ml_model", "graph_deep"]),
+        "report_policy.exclude_method_types",
     )
     _fid = rp.get("reproduce_fidelity")
     if not isinstance(_fid, dict):
