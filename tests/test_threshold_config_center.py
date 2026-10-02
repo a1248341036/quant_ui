@@ -76,7 +76,13 @@ def test_auto_submit_rescue_config_and_bounds():
 
 
 def test_auto_submit_rescue_is_wired_into_run_end():
-    """兜底补交必须真接在 run 收尾上（防误删/被重构掉）。"""
+    """兜底补交必须真接在 run 收尾上（防误删/被重构掉）。
+
+    2026-10-02 实测教训（run f65e4436c6b4）：兜底块原先误用函数体层级**不存在**的 `spec`
+    → `NameError` → **整个 run 在收尾处崩溃**（run_summary.json 缺失、outcome/funnel 全丢）。
+    故此处同时锁定：① 用 `config.research_spec` 读开关；② 整段有 try/except 护栏；
+    ③ 不得再出现裸 `spec.get("auto_submit_unsubmitted_top")`。
+    """
     import inspect
 
     import alphaagent.factor.mining.agent.agentscope_run as m
@@ -85,3 +91,8 @@ def test_auto_submit_rescue_is_wired_into_run_end():
     assert "auto_submit_unsubmitted_top" in src, "run 收尾没有读兜底开关"
     assert "auto_submit_rescue" in src, "run 收尾没有兜底补交日志"
     assert "submit_service.submit(" in src, "兜底补交没有走正常 submit 通路"
+    assert 'config, "research_spec"' in src, \
+        "兜底开关没有从 config.research_spec 读取（函数体层级没有 spec 变量）"
+    assert "_rescue_fatal" in src, "兜底补交缺少整段 try/except 护栏（收尾代码不得弄崩 run）"
+    assert 'spec.get("auto_submit_unsubmitted_top")' not in src, \
+        "兜底块又在裸用 spec —— 该变量在函数体层级不存在，会 NameError 崩掉 run 收尾"
