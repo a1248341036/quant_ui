@@ -380,6 +380,24 @@ def rescue_unsubmitted_promising(
     return summary
 
 
+def submitted_expression_keys(submit_records: list[dict[str, Any]]) -> set[str]:
+    """收尾审计用：把**已提交**的表达式归一化哈希集合。
+
+    ⚠ 2026-10-03 实测缺陷（run b7d8eee01152）：``loop.submit_record()`` 把表达式存在键
+    ``multi_line_expr``（见 ``loop.py:79``），而此处原先只读 ``expression`` → 已提交集合
+    **恒为空** → 任何 train_passed 因子都被判成"未提交"：① ``unsubmitted_promising`` 计数虚高；
+    ② 兜底补交（``rescue_unsubmitted_promising``）会把**模型早就提交过**的因子再提交一遍
+    （实测：3 个补交对象中 1 个此前已提交，白花一次盲测+stage_one）。
+    两个键都读，向后兼容。
+    """
+    keys: set[str] = set()
+    for sr in submit_records or []:
+        expr = str(sr.get("multi_line_expr") or sr.get("expression") or "")
+        if expr:
+            keys.add(canonical_hash(expr))
+    return keys
+
+
 async def run_factor_mining_agentscope(
     config: MiningConfig,
     user_message: str,
@@ -1842,11 +1860,7 @@ async def run_factor_mining_agentscope(
     # P0-1 收尾审计（2026-09-05）：训练过线（promising）却未提交的因子汇总——
     # 记忆实证：201 个 promising 中 93 个无 candidate_id，断在 LLM 决策。本汇总
     # 让 run 结束时这笔产出损失可见（steps.log + outcome 归因）。
-    submitted_expr_keys: set = set()
-    for sr in submit_records:
-        sr_expr = str(sr.get("expression") or "")
-        if sr_expr:
-            submitted_expr_keys.add(canonical_hash(sr_expr))
+    submitted_expr_keys = submitted_expression_keys(submit_records)
     unsubmitted_promising = [
         r for r in tool_call_rows
         if r.get("verdict") in TRAIN_PASS_VERDICTS
