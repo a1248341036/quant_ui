@@ -243,6 +243,21 @@ def main() -> int:
         print(f"错误：{exc}", file=sys.stderr)
         return 2
 
+    # ── spec 新鲜度自检（2026-10-02 实测教训）──
+    # spec 由后端进程冻结；后端不重启就吃不到配置中心的新键，曾导致"只生效一半配置"且不报错。
+    try:
+        from alphaagent.factor.mining.research_spec import default_missing_keys
+        _missing = default_missing_keys(research_spec)
+        if _missing:
+            print(
+                f"⚠ spec 自检：本次 run 的 research_spec 比配置中心默认值旧，缺 {len(_missing)} 个键"
+                f"（前 8 个：{', '.join(_missing[:8])}）。常见原因：后端进程未重启；"
+                "若不是有意为之，请重启后端后重跑。",
+                file=sys.stderr,
+            )
+    except Exception:  # noqa: BLE001 —— 自检失败不得影响挖掘主流程
+        pass
+
     memory_path = _resolve(str(args.research_memory_file)) if args.research_memory_file else None
     if args.resume_context_file and args.resume_context_file.exists():
         history = args.resume_context_file.read_text(encoding="utf-8").strip()
