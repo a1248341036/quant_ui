@@ -382,6 +382,42 @@ def test_advisory_cache_key_includes_phase(tmp_path):
         set_run_gate({})
 
 
+def test_advisory_turn_phase_wins_over_flipped_phase(tmp_path):
+    """复现过线会把网关 `phase` 翻成 diverge，但**本轮仍是复现** → 豁免必须读 `turn_phase`。
+
+    实测 run eb785f4298b9：06:33:46 STATE reproduce → 06:34:09 REPRO_PASS（`_dispatch`
+    把 phase 翻成 diverge）→ 06:34:43 起 6 次复现轮硬拦（豁免失效）。
+    """
+    from alphaagent.factor.mining.report_channels import set_run_gate
+
+    store = ResearchMemoryStore(tmp_path / "m.db")
+    expr = "TS_MEAN($adj_close, 5) + 0.5"
+    for i in range(3):
+        store.record_tool_result(
+            run_id=f"r{i}", row=_eval_row("eval_on_train_set", expr, f"weak_{i}", ic=0.005)
+        )
+
+    def item(adv):
+        return next(a for a in adv["advisories"] if a["kind"] == "duplicate_known_dead_end")
+
+    # 本轮是复现，但网关 phase 已被 PASS 翻成 diverge（turn_phase 保留复现）
+    set_run_gate({"phase": "diverge", "turn_phase": "reproduce", "qid": "RQ_X", "required": True})
+    try:
+        adv = store.advisory_for(expr, enable_advisory_cache=False)
+        assert item(adv)["exempt_from_block"] is True, \
+            "读 phase 会让复现轮豁免失效（run eb785f4298b9 实测 6 次）"
+    finally:
+        set_run_gate({})
+
+    # 真发散轮（turn_phase=diverge）→ 不豁免
+    set_run_gate({"phase": "diverge", "turn_phase": "diverge", "qid": "RQ_X", "required": True})
+    try:
+        adv2 = store.advisory_for(expr, enable_advisory_cache=False)
+        assert item(adv2)["exempt_from_block"] is False
+    finally:
+        set_run_gate({})
+
+
 def test_advisory_dead_end_aggregates_window_variants(tmp_path):
     """同骨架换窗口的三个 weak 变体（各自 attempts=1）也聚合为指纹死路。"""
     store = ResearchMemoryStore(tmp_path / "m.db")

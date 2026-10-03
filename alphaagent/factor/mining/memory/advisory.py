@@ -15,6 +15,22 @@ from .diagnostics import _parse_args
 from .expressions import _structure_fingerprint, classify_family, motif_from_note
 
 
+def _effective_phase() -> str:
+    """当前**轮次**的研报阶段：优先 `turn_phase`，回落 `phase`。
+
+    `phase` 会被 `_dispatch` 在复现过线时翻成 `diverge`（推进后续轮），而本轮题面仍是复现
+    → "按轮"的判定（豁免/缓存）读 `phase` 会在同一轮内自相矛盾（2026-10-04 实测：
+    run `eb785f4298b9` 06:34:09 PASS 后、06:34:43 起 6 次复现轮硬拦）。
+    """
+    try:
+        from alphaagent.factor.mining.report_channels import get_run_gate
+
+        gate = get_run_gate() or {}
+        return str(gate.get("turn_phase") or gate.get("phase") or "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _reproduce_phase_active() -> bool:
     """当前是否处于研报**复现阶段**（复现是任务强制动作，非自由探索）。
 
@@ -28,7 +44,7 @@ def _reproduce_phase_active() -> bool:
         from alphaagent.factor.mining.report_channels import get_run_gate
 
         gate = get_run_gate() or {}
-        return str(gate.get("phase") or "") == "reproduce" and bool(gate.get("required"))
+        return _effective_phase() == "reproduce" and bool(gate.get("required"))
     except Exception:  # noqa: BLE001 — 判定失败按"非复现"处理（保持原硬拦语义，不静默放宽）
         return False
 
@@ -36,16 +52,15 @@ def _reproduce_phase_active() -> bool:
 def _phase_tag() -> str:
     """当前研报阶段标签（`reproduce` / `diverge` / 其他模式的 `''`）——**只用于 advisory 缓存键**。
 
-    2026-10-04：`exempt_from_block` 现在依赖阶段，而 advisory 缓存键里原先没有阶段
-    → 阶段切换（复现过线后 `_dispatch` 会把网关翻成 diverge）或网关尚未设置时写入的
-    缓存条目会被后续阶段复用 → **豁免失效、死路继续硬拦**（实测 run `d27d37aab8c9`
-    在复现阶段仍有 11 次 `memory.advisory_block`）。阶段入键即可根除这类陈旧命中。
+    2026-10-04：`exempt_from_block` 依赖阶段，缓存键必须同步含阶段；且必须用**轮次阶段**
+    （`_effective_phase`）——否则复现过线把 `phase` 翻成 diverge 后，本轮剩余调用写下的缓存
+    条目会在下一轮复现时被复用（实测 run `eb785f4298b9` 复现轮仍硬拦 6 次）。
     """
     try:
         from alphaagent.factor.mining.report_channels import get_run_gate
 
         gate = get_run_gate() or {}
-        return f"{gate.get('phase') or ''}:{int(bool(gate.get('required')))}"
+        return f"{_effective_phase()}:{int(bool(gate.get('required')))}"
     except Exception:  # noqa: BLE001
         return ""
 

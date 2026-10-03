@@ -1061,6 +1061,10 @@ async def run_factor_mining_agentscope(
                     "parent_name": _rfo(_rm, _qid2),
                     "parent_autofill": _lpa(spec),
                 }
+                # `turn_phase` = **本轮任务实际所属阶段**：`phase` 会被 `_dispatch` 在复现过线时
+                # 翻成 diverge（推进后续轮），但本轮题面仍是复现。豁免/缓存这类"按轮"判定必须
+                # 读 turn_phase（2026-10-04 实测：读 phase 会让复现轮的已知死路豁免失效 6 次）。
+                _g2["turn_phase"] = _g2["phase"]
                 try:
                     factor_tools.report_reproduce_gate = _g2
                 except Exception:  # noqa: BLE001
@@ -1169,6 +1173,8 @@ async def run_factor_mining_agentscope(
                     ),
                     # 2026-10-03 血统自动补全开关（漏传 parent_factor 时按阶段补齐）
                     "parent_autofill": lineage_parent_autofill(spec),
+                    # 本轮任务实际阶段（`phase` 会在复现过线时被翻成 diverge，见上面 _g2 注释）
+                    "turn_phase": _rag_phase,
                     # 判定侧需要但工具对象上没有的配置（2026-10-01 修）：`self.report_policy`
                     # 全仓从未被赋值 → 复现判定读不到 report_policy，保真度门槛被**静默跳过**
                     # （本夜实测 0 条 report_fidelity_check），reproduce_min_abs_ic/icir 也一直
