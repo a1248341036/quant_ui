@@ -605,6 +605,15 @@ def _evaluation_evidence(reviewer: Any | None, expr: str) -> dict[str, Any] | No
     return evidence or None
 
 
+def _lineage_key(text: Any) -> str:
+    """血统比对键：忽略大小写与下划线。
+
+    同一课题号在因子名里有 `rq<qid>`（如 `rq17eebb_*`）与 `rq_<qid>`（如 `rq_addf97_*`）
+    两种写法，逐字比较会把"同课题"误判成"跨课题"。
+    """
+    return str(text or "").lower().replace("_", "")
+
+
 def _report_lineage_block(tools: Any, parent_factor: Any) -> str | None:
     """研报模式血统门禁（复现 / 发散）：返回 ⛔ 文案表示拦截，``None`` 表示放行。
 
@@ -612,19 +621,25 @@ def _report_lineage_block(tools: Any, parent_factor: Any) -> str | None:
     ``eval_on_train_set``（实测 108 次/run，是主路径）与 ``eval_on_val_set`` 没有装 →
     34/154（22%）因子绕过门禁挂在其它课题血统上（rq13_*/rq17_*）。此处抽成共享助手统一挂载，
     文案与原实现逐字一致（只补覆盖，不改口径）。
+
+    2026-10-03：比对改成**忽略大小写与下划线**（`_lineage_key`）。实测（4 个 run、38 条门禁
+    拦截）里 14 条是"同一课题被误杀"：课题号是 `RQ_17eebb` / `RQ_addf97`，而因子名有两种写法
+    `rq17eebb_rev_timed_turn_slope`（无下划线）与 `rq_addf97_growth_surprise_core`（有下划线）
+    → 原实现 `qid not in pf` 逐字比较必然不匹配，**与拦截文案自己声明的口径「或至少包含
+    `<课题号>`」相矛盾**，白烧轮次。跨课题血统（如把 `rqffd0ba_*` 传给 RQ_addf97）仍照旧硬拦。
     """
     g = getattr(tools, "report_reproduce_gate", None) or {}
     phase = str(g.get("phase") or "")
     if phase == "diverge" and g.get("diverge_parent"):
         pname = str(g.get("parent_name") or "")
-        if pname and pname not in str(parent_factor or ""):
+        if pname and _lineage_key(pname) not in _lineage_key(parent_factor):
             return (f"⛔ 发散门禁：本轮是课题 {g.get('qid')} 的发散轮，`parent_factor` 必须指向复现版 "
                     f"`{pname}`（并只改一个维度）。若认为该机制在本池无效，请明确放弃该课题，"
                     "不要在同一轮里另起炉灶。")
     if g.get("required") and phase == "reproduce":
         qid = str(g.get("qid") or "")
         pf = str(parent_factor or "")
-        if qid and qid not in pf:
+        if qid and _lineage_key(qid) not in _lineage_key(pf):
             return (f"⛔ 复现门禁：当前处于研报复现阶段（课题 {qid}），"
                     f"`parent_factor` 必须写成 `reproduce_of:{qid}`（或至少包含 `{qid}`），"
                     f"当前传入={pf or '(空)'}。\n"
