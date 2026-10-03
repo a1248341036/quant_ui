@@ -310,6 +310,44 @@ def test_advisory_duplicate_known_dead_end(tmp_path):
     assert "duplicate_known_dead_end" in kinds4
 
 
+def test_advisory_reproduce_phase_exempts_dead_end_block(tmp_path):
+    """2026-10-04：复现阶段对"已知死路"**只提醒不硬拦**。
+
+    证据（run 6597fe0e0c84）：死路硬拦 17 次里 14 次在复现阶段（RQ_2f2436 单题 11 次）——
+    复现门要求"忠实复现研报机制"，记忆层判该死路并硬拦 → 互锁，该题永远过不了复现门。
+    非复现阶段（发散/非研报）行为必须不变。
+    """
+    from alphaagent.factor.mining.report_channels import set_run_gate
+
+    store = ResearchMemoryStore(tmp_path / "m.db")
+    expr = "TS_MEAN($adj_close, 5) + 0.5"
+    for i in range(3):
+        store.record_tool_result(
+            run_id=f"r{i}", row=_eval_row("eval_on_train_set", expr, f"weak_{i}", ic=0.005)
+        )
+
+    def _item(adv):
+        return next(a for a in adv["advisories"] if a["kind"] == "duplicate_known_dead_end")
+
+    set_run_gate({"phase": "reproduce", "qid": "RQ_X", "required": True})
+    try:
+        adv = store.advisory_for(expr, enable_advisory_cache=False)
+        assert _item(adv)["exempt_from_block"] is True, "复现阶段应豁免硬拦"
+    finally:
+        set_run_gate({})
+
+    set_run_gate({"phase": "diverge", "qid": "RQ_X", "diverge_parent": True})
+    try:
+        adv2 = store.advisory_for(expr, enable_advisory_cache=False)
+        assert _item(adv2)["exempt_from_block"] is False, "发散阶段不得豁免"
+    finally:
+        set_run_gate({})
+
+    # 非研报模式（无网关）→ 照旧硬拦
+    adv3 = store.advisory_for(expr, enable_advisory_cache=False)
+    assert _item(adv3)["exempt_from_block"] is False
+
+
 def test_advisory_dead_end_aggregates_window_variants(tmp_path):
     """同骨架换窗口的三个 weak 变体（各自 attempts=1）也聚合为指纹死路。"""
     store = ResearchMemoryStore(tmp_path / "m.db")

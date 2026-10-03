@@ -14,6 +14,24 @@ from .constants import POSITIVE_VERDICTS_READ, VERDICT_ORDER
 from .diagnostics import _parse_args
 from .expressions import _structure_fingerprint, classify_family, motif_from_note
 
+
+def _reproduce_phase_active() -> bool:
+    """当前是否处于研报**复现阶段**（复现是任务强制动作，非自由探索）。
+
+    2026-10-04 实测（run `6597fe0e0c84`）：死路硬拦 17 次里 **14 次发生在复现阶段**
+    （`RQ_2f2436` 单题 11 次）—— 复现门要求"忠实复现研报机制"，而记忆层把该结构判成已知
+    死路并硬拦，两条硬约束互锁：该题永远无法过复现门，且每轮白烧调用。
+    复现阶段改为**只提醒不硬拦**（advisory 照旧输出，模型仍能看到"这个方向历史上弱"）；
+    发散阶段与非研报模式行为不变。
+    """
+    try:
+        from alphaagent.factor.mining.report_channels import get_run_gate
+
+        gate = get_run_gate() or {}
+        return str(gate.get("phase") or "") == "reproduce" and bool(gate.get("required"))
+    except Exception:  # noqa: BLE001 — 判定失败按"非复现"处理（保持原硬拦语义，不静默放宽）
+        return False
+
 # recent() 服务端排序白名单：前端排序列 → SQL 表达式（metrics 为 JSON 字段）。
 # 覆盖率/年化超额存在双键（新键缺失时回退旧键），其余直接取单键。
 _RECENT_SORT_EXPRS: dict[str, str] = {
@@ -119,9 +137,11 @@ class AdvisoryMixin:
             # ① 指纹负证据：同一结构指纹的已否定条目累计 ≥dead_end_min_attempts 次尝试 → 已知死路。
             #    跨变体聚合：同骨架换窗口/参数刷出的 weak/revise_required 变体各自
             #    attempts=1，但同构已多轮失败、再测同构无新增信息，一并计入死路。
-            #    双重过线豁免：
+            #    三重过线豁免：
             #      a) 当前 run 内豁免：若表达式在当前 run 内已出过正向信号（promising/通过海选），绝对不拦；
-            #      b) 历史正向豁免：该指纹已有正向历史条目时不判死路（结构已被证明出过信号，失败变体为迭代噪声）。
+            #      b) 历史正向豁免：该指纹已有正向历史条目时不判死路（结构已被证明出过信号，失败变体为迭代噪声）；
+            #      c) **复现阶段豁免**（2026-10-04）：复现是任务强制动作，硬拦会让该题永远过不了复现门
+            #         （实测 run 6597fe0e0c84：同题被拦 11 次）→ 只提醒不硬拦，见 _reproduce_phase_active()。
             if fingerprint:
                 # 检查当前 run 内是否有过线记录
                 curr_run_passed = False
@@ -183,7 +203,7 @@ class AdvisoryMixin:
                             f"该表达式结构与历史死路相同：同构已评估 {int(agg['n_tries'])} 次"
                             f"{scope}{latest}（{reason}），不建议继续同构重复评估。"
                         ),
-                        "exempt_from_block": bool(curr_run_passed),
+                        "exempt_from_block": bool(curr_run_passed) or _reproduce_phase_active(),
                     })
 
             # ①b 指纹正证据：同结构曾有正向 verdict（promising/入库）→ 重复劳动提醒。
