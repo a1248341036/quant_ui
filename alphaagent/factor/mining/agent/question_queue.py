@@ -1442,7 +1442,20 @@ def get_question_for_turn(
         return None
 
     facets = set(focus_facets or ())
-    matched = [q for q in queue if set(q.get("facets", [])) & facets] if facets else queue
+    if facets:
+        matched = [q for q in queue if set(q.get("facets", [])) & facets]
+        if not matched:
+            # 静默回退是隐性能力损失（2026-10-04 实测：题库 196 道**整体没有 facets 字段**，
+            # 于是 `focus_facets` 完全失效却毫无痕迹——`tests/test_question_field_gate.py`
+            # 的同名断言长期飘红正是这个数据契约断裂）。此处只**显式告警**，行为不变（仍回退全池）。
+            logger.warning(
+                "focus_facets=%s 未命中任何课题（题库 %d 道，%s）→ 回退全池，focus 实际未生效",
+                ",".join(sorted(facets)), len(queue),
+                "全部无 facets 字段" if not any(q.get("facets") for q in queue)
+                else "有 facets 但无交集",
+            )
+    else:
+        matched = queue
     candidate_pool = matched if matched else queue
     # 连续锚失败护栏（2026-10-03）：这些课题在本 run 内已连续 N 次原文锚未达标 → 跳过该题。
     # run 级（不写持久状态，未来 run 仍可再试）；过滤后为空则回退原池（宁可不跳，也不让 run 无题可做）。
