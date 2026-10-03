@@ -109,6 +109,25 @@ def test_arity_error_gets_copyable_fix():
     _, problem = _problem_from_exception(exc)
     assert "只接受 2 个参数" in problem and "3" in problem
     assert "嵌套" in problem and "PIECEWISE_STATE" in problem
+    assert "正确写法示例: AND($a, $b)" in problem
+
+
+def test_missing_argument_gets_signature_hint():
+    """2026-10-03 实测主因：`TS_ZSCORE() missing 1 required positional argument: 'window'`。
+
+    当次 run eval_error 占 70%，模型反复漏传 window —— 报错必须给出真实签名。
+    """
+    exc = TypeError("TS_ZSCORE() missing 1 required positional argument: 'window'")
+    _, problem = _problem_from_exception(exc)
+    assert "缺少必需的参数" in problem and "window" in problem
+    assert "正确写法示例: TS_ZSCORE($列, window, ddof=1)" in problem
+    assert "窗口周期" in problem
+
+
+def test_missing_argument_without_known_signature_still_actionable():
+    exc = TypeError("NO_SUCH_OP() missing 2 required positional arguments: 'a' and 'b'")
+    _, problem = _problem_from_exception(exc)
+    assert "缺少必需的参数" in problem and "'a' and 'b'" in problem
 
 
 def test_unknown_field_suggests_closest_column():

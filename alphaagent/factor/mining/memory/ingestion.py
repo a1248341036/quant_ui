@@ -361,6 +361,10 @@ class IngestionMixin:
             motif=intended_motif,
             parent=parent_factor,
             fail_code=failure_code,
+            # 2026-10-03：eval_error 行必须带**错误摘要**——此前只写 fail_code=eval_failed，
+            # 导致"eval_error 占比 70%"无法归因（实测只能去 console.log 里挖真因
+            # `MultiLineFactorEvalError: TS_ZSCORE() missing 1 required positional argument`）。
+            err=(str(error).replace("\n", " ")[:160] if error else None),
             attempts=entry["attempts"],
         )
 
