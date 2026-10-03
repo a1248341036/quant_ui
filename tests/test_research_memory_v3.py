@@ -348,6 +348,40 @@ def test_advisory_reproduce_phase_exempts_dead_end_block(tmp_path):
     assert _item(adv3)["exempt_from_block"] is False
 
 
+def test_advisory_cache_key_includes_phase(tmp_path):
+    """advisory 缓存必须区分阶段：`exempt_from_block` 依赖阶段（2026-10-04）。
+
+    实测 run d27d37aab8c9：复现阶段仍有 11 次 `memory.advisory_block` —— 阶段切换
+    （复现过线后网关翻成 diverge）或网关未设置时写入的缓存条目被后续阶段复用。
+    """
+    from alphaagent.factor.mining.report_channels import set_run_gate
+
+    store = ResearchMemoryStore(tmp_path / "m.db")
+    expr = "TS_MEAN($adj_close, 5) + 0.5"
+    for i in range(3):
+        store.record_tool_result(
+            run_id=f"r{i}", row=_eval_row("eval_on_train_set", expr, f"weak_{i}", ic=0.005)
+        )
+
+    def _item(adv):
+        return next(a for a in adv["advisories"] if a["kind"] == "duplicate_known_dead_end")
+
+    # ① 先在"非复现"（网关空）阶段写缓存
+    set_run_gate({})
+    try:
+        first = store.advisory_for(expr, enable_advisory_cache=True)
+        assert _item(first)["exempt_from_block"] is False
+    finally:
+        set_run_gate({})
+    # ② 再进复现阶段：不得复用上一阶段的缓存条目
+    set_run_gate({"phase": "reproduce", "qid": "RQ_X", "required": True})
+    try:
+        second = store.advisory_for(expr, enable_advisory_cache=True)
+        assert _item(second)["exempt_from_block"] is True, "复现阶段命中旧阶段缓存 → 豁免失效"
+    finally:
+        set_run_gate({})
+
+
 def test_advisory_dead_end_aggregates_window_variants(tmp_path):
     """同骨架换窗口的三个 weak 变体（各自 attempts=1）也聚合为指纹死路。"""
     store = ResearchMemoryStore(tmp_path / "m.db")
