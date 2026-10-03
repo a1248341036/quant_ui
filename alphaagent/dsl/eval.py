@@ -159,6 +159,27 @@ def _align_user_to_generated(
     return lineno, text
 
 
+def _suggest_names(name: str, candidates: Iterable[str], n: int = 3) -> str:
+    """给未定义名称/算子挑最相近的候选（2026-10-03：模型常幻觉算子名如 TS_FILL_NAN）。"""
+    import difflib
+
+    try:
+        close = difflib.get_close_matches(str(name), [str(c) for c in candidates], n=n, cutoff=0.6)
+    except Exception:  # noqa: BLE001
+        close = []
+    return ("；最相近的候选: " + ", ".join(close)) if close else ""
+
+
+def _operator_names() -> list[str]:
+    """已注册 DSL 算子名（从算子模块公开的大写可调用名取，避免维护第二份清单）。"""
+    try:
+        from alphaagent.dsl.core import operators as _ops
+
+        return [n for n in dir(_ops) if n.isupper() and not n.startswith("_")]
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def _problem_from_exception(exc: BaseException) -> Tuple[str, str]:
     tname = type(exc).__name__
     if isinstance(exc, NameError):
@@ -167,9 +188,27 @@ def _problem_from_exception(exc: BaseException) -> Tuple[str, str]:
             m = re.search(r"name ['\"](\w+)['\"] is not defined", str(exc))
             name = m.group(1) if m else None
         if name:
-            return tname, f"未定义的名称 {name!r}（缺少函数/变量或列未注入）"
+            return tname, (
+                f"未定义的名称 {name!r}（缺少函数/变量或列未注入）"
+                f"{_suggest_names(name, _operator_names())}"
+                "——请只使用算子目录中列出的算子名；列引用请写 $列名 并确认本 run 已载入该列"
+            )
         return tname, str(exc) or repr(exc)
-    if isinstance(exc, (TypeError, ValueError, ZeroDivisionError)):
+    if isinstance(exc, TypeError):
+        # 元数错误给"可直接照抄"的正确写法（2026-10-03 实测：AND()/ADD() 被当变参调用，
+        # 单夜 4 次白烧评估）。DSL 的四则/逻辑算子均为**二元**。
+        m = re.search(
+            r"(\w+)\(\) takes (\d+) positional arguments? but (\d+) (?:was|were) given", str(exc)
+        )
+        if m:
+            fn, want, got = m.group(1), m.group(2), m.group(3)
+            return tname, (
+                f"{fn}() 只接受 {want} 个参数，本次传了 {got} 个——多条件请**显式嵌套**"
+                f"（如 AND(AND(a, b), c)）；分支/分段语义请用 PIECEWISE_STATE / IF_THEN_ELSE。"
+                f"（原始信息: {str(exc)[:120]}）"
+            )
+        return tname, str(exc) or repr(exc)
+    if isinstance(exc, (ValueError, ZeroDivisionError)):
         return tname, str(exc) or repr(exc)
     if isinstance(exc, KeyError):
         return tname, f"键不存在或列缺失: {exc!r}"
@@ -279,8 +318,19 @@ def compile_multi_line_factor(
             if match.group(1) not in known
         })
         if unknown:
+            # 可行动报错（2026-10-03）：附最相近的**可用列**，让模型一次改对
+            # （实测 $turnover_rate 与真实列 $turnover_rate_f 差一个后缀，模型盲猜重试 3 次）。
+            import difflib
+
+            _hints = []
+            for _nm in unknown:
+                _close = difflib.get_close_matches(_nm, sorted(known), n=2, cutoff=0.6)
+                if _close:
+                    _hints.append(f"{_nm}→{'/'.join(_close)}")
+            _hint = ("；最相近的可用列: " + ", ".join(_hints)) if _hints else ""
             raise MultiLineFactorEvalError(
-                f"symbol 阶段失败: 表达式引用了不可用字段: {', '.join('$' + name for name in unknown)}",
+                f"symbol 阶段失败: 表达式引用了不可用字段: {', '.join('$' + name for name in unknown)}"
+                f"{_hint}——请只用本 run 已载入的列（注意后缀如 _f，以及 $ 前缀）",
                 phase="symbol",
                 problem="unknown_fields:" + ",".join(unknown),
                 exception_type="ValueError",
