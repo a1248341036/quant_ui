@@ -429,6 +429,28 @@ class TestPredictionAliasAndErrorDetail:
             assert pred is not None, raw
             assert pred["expected_strong_side"] == want, raw
 
+    def test_side_endpoint_prefix_with_semantics(self):
+        """2026-10-03（run 6597fe0e0c84）：模型写 `high_quality` / `high_div` / `high_vpin`
+        —— "端点 + 因子语义"写法，别名表要求精确匹配 → 一律被拒、每次白烧一轮评估。
+        串首端点词 + 单一端点语义 → 归一放行；混写/无端点词仍拒。"""
+        from alphaagent.factor.mining.eval.prediction import normalize_prediction
+
+        base = {"expected_shape": "monotonic_increasing", "expected_sign": 1}
+        for raw, want in (
+            ("high_quality", "high_factor"),
+            ("high_div", "high_factor"),
+            ("high_vpin", "high_factor"),
+            ("low_turnover", "low_factor"),
+            ("mid_band", "middle"),
+            ("High_Quality", "high_factor"),
+        ):
+            pred = normalize_prediction({**base, "expected_strong_side": raw})
+            assert pred is not None, raw
+            assert pred["expected_strong_side"] == want, raw
+        # 歧义 / 无端点词：仍拒绝（不猜）
+        for raw in ("high_div_low_vol", "strongest", "随便", "quality"):
+            assert normalize_prediction({**base, "expected_strong_side": raw}) is None, raw
+
     def test_shape_enum_with_suffix_alias(self):
         """2026-09-12（run adfbf57c45aa）：deepseek 8 次 prediction_invalid 于
         expected_shape='monotone_increasing_D1_to_D10'——模型把描述后缀 D1~D10

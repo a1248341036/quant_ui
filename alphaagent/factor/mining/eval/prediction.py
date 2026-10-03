@@ -262,6 +262,11 @@ _MIDDLE_RE = re.compile(r"中间|中部|中段|居中")
 # 中间分位（D4~D7 / Q4~Q7）：说话人用分位号点名"中间段"，此前既不命中 _MIDDLE_RE
 # 也不命中高/低端正则 → 被判非法（2026-10-03 实测）。
 _MIDDLE_DECILE_RE = re.compile(r"D\s*[4-7](?!\d)|Q\s*[4-7](?!\d)", re.IGNORECASE)
+# 端点前缀写法：`high_quality` / `high_div` / `high_vpin` / `low_vol`（"端点+因子语义"）。
+# 2026-10-03 实测（run 6597fe0e0c84）：模型反复写 high_quality / high_div / high_vpin，
+# 别名表要求精确匹配（只覆盖 high_decile 这类）→ 一律 prediction_invalid，每次白烧一轮评估。
+# 只认**串首**端点词，且整串只允许出现一个端点词（同时出现 high 与 low/middle → 歧义不猜）。
+_SIDE_PREFIX_RE = re.compile(r"^\s*(high|low|mid(?:dle)?)(?![a-z])", re.IGNORECASE)
 _INVERTED_U_RE = re.compile(r"倒\s*U|inverted[_\s]*u", re.IGNORECASE)
 _SU_SHAPE_RE = re.compile(r"(?<!倒)\bU\s*型|u[_\s]shape", re.IGNORECASE)
 _SPIKE_RE = re.compile(r"尖峰|极端组|spike", re.IGNORECASE)
@@ -447,6 +452,28 @@ def _canon_shape(value: Any) -> str | None:
     return _prose_shape(str(value))
 
 
+def _side_from_prefix(value: str) -> str | None:
+    """`high_quality` / `high_div` / `mid_band` 这类"端点前缀 + 因子语义"写法 → 端点枚举。
+
+    保守约束（宁可拒也不猜）：串首必须是端点词，且整串**只出现一个**端点语义
+    （`high_*_low_*` 这类混写视为歧义，交回上层拒绝并回显合法值）。
+    """
+    t = str(value)
+    low = t.lower()
+    kinds = sum(("high" in low, "low" in low, "mid" in low))
+    if kinds != 1:
+        return None
+    m = _SIDE_PREFIX_RE.match(t)
+    if not m:
+        return None
+    head = m.group(1).lower()
+    if head.startswith("high"):
+        return "high_factor"
+    if head.startswith("low"):
+        return "low_factor"
+    return "middle"
+
+
 def _canon_side(value: Any) -> str | None:
     if value is None:
         return None
@@ -454,7 +481,7 @@ def _canon_side(value: Any) -> str | None:
     canon = _SIDE_ALIASES.get(s) or _SIDE_ALIASES.get(re.sub(r"[\s_\-]+", "", s))
     if canon:
         return canon
-    return _prose_side(str(value))
+    return _prose_side(str(value)) or _side_from_prefix(str(value))
 
 
 def _canon_sign(value: Any) -> int | None:

@@ -1720,7 +1720,8 @@ async def run_factor_mining_agentscope(
                     recs = []
                 # 研报模式：跨课题的记忆推荐在血统门禁下**必被拦**（复现要求含本课题号、
                 # 发散要求指向复现版）→ 留着只会白烧当轮评估名额（实测 17 条/晚）。
-                # 阶段/课题号经 `_report_phase_box` 带出（`_rag_phase` 是嵌套函数局部量）。
+                # 阶段/课题号经 `_report_phase_box` 带出（阶段变量是嵌套函数局部量，
+                # 外层裸引用会 NameError——见 tests/test_report_judge_gates.py 作用域守卫）。
                 if recs and str(_report_phase_box.get("phase") or "") in ("reproduce", "diverge"):
                     from alphaagent.factor.mining.report_channels import filter_lineage_recs
 
