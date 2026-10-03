@@ -332,6 +332,17 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
         # ml_model / graph_deep / other。题库无该字段（旧题库）→ 不筛（向后兼容）。
         # 想放开某类：把它从本列表移除即可（例如 "ml_model"）。
         "exclude_method_types": ["ml_model", "graph_deep"],
+        # 复现通过后锁定该课题的发散轮数（2026-10-03 收口：此前只存在于
+        # report_channels.reproduce_lock_rounds 的 .get(...,3)，从未进配置中心，违反三件套）。
+        # 语义：复现过线后同一课题继续发散的轮数。调大→单题挖得更深、铺题更慢；调小→铺题快、单题浅。
+        # 实测（2026-10-03 夜）：唯一产出候选的 run（fc9bdcbd505b）全程只做 1 道题（深挖），
+        # 而 3~5 道快换题的 run 全部 0 候选 → 故**本次收口不改值**（保持 3），改值需按数据再定。
+        "reproduce_lock_rounds": 3,
+        # 连续锚失败护栏（2026-10-03）：同一课题在复现阶段**连续 N 次**原文锚未达标（off_reference）
+        # → **本 run 跳过该题**（run 级、不写持久 abandoned，未来 run 仍可再试）。0=关闭。
+        # 动机：实测有题连续 93 次被锚拦截（占当夜全部拦截的 69%），整轮预算烧在一道
+        # "DSL 表达不了"的题上。默认 8：给忠实复现足够尝试次数，又能在明显不匹配时止损。
+        "anchor_block_skip_threshold": 8,
         "reproduce_fidelity": {
             "enabled": True,
             # 弱声明兜底（2026-10-02 标定）：59% 结构题未声明 structure_ops、声明字段常只有 1 个
@@ -734,6 +745,13 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
         rp.get("exclude_method_types", ["ml_model", "graph_deep"]),
         "report_policy.exclude_method_types",
     )
+    rp["reproduce_lock_rounds"] = int(_bounded_number(
+        rp.get("reproduce_lock_rounds", 3), "report_policy.reproduce_lock_rounds", 0, 12
+    ))
+    rp["anchor_block_skip_threshold"] = int(_bounded_number(
+        rp.get("anchor_block_skip_threshold", 8),
+        "report_policy.anchor_block_skip_threshold", 0, 200,
+    ))
     _fid = rp.get("reproduce_fidelity")
     if not isinstance(_fid, dict):
         _fid = {}

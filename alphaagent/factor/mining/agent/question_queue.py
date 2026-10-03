@@ -1354,6 +1354,28 @@ def render_reproduce_task(question: dict, spec: dict | None = None, card: dict |
     return "\n".join(parts)
 
 
+def note_anchor_block(counts: dict[str, int], qid: str, passed: bool,
+                      threshold: int) -> bool:
+    """记录一次原文锚判定结果；返回**是否应在本 run 跳过该课题**（纯函数，便于单测）。
+
+    - ``passed=True``（锚达标）→ 该题计数**清零**（说明它做得出复现，不因历史失败误杀）；
+    - ``passed=False``（原文锚未达标）→ 计数 +1；达到 ``threshold`` 时返回 True；
+    - ``threshold<=0`` → 关闭护栏，恒返回 False。
+
+    背景（2026-10-03）：实测有题连续 93 次被锚拦截（占当夜全部拦截的 69%），
+    整轮预算烧在"DSL 表达不了"的题上。故按阈值触发 **run 级**跳过（不写持久状态）。
+    """
+    q = str(qid or "")
+    if not q:
+        return False
+    thr = int(threshold or 0)
+    if passed:
+        counts[q] = 0
+        return False
+    counts[q] = int(counts.get(q) or 0) + 1
+    return thr > 0 and counts[q] >= thr
+
+
 def get_question_for_turn(
     turn: int,
     spec: dict[str, Any] | None = None,
@@ -1363,6 +1385,7 @@ def get_question_for_turn(
     available_fields: Iterable[str] | None = None,
     gate: dict[str, Any] | None = None,
     stats: dict[str, Any] | None = None,
+    exclude_qids: Iterable[str] | None = None,
 ) -> dict[str, Any] | None:
     """按轮次与数据面获取具体的研究问题对象。
 
@@ -1389,6 +1412,18 @@ def get_question_for_turn(
     facets = set(focus_facets or ())
     matched = [q for q in queue if set(q.get("facets", [])) & facets] if facets else queue
     candidate_pool = matched if matched else queue
+    # 连续锚失败护栏（2026-10-03）：这些课题在本 run 内已连续 N 次原文锚未达标 → 跳过该题。
+    # run 级（不写持久状态，未来 run 仍可再试）；过滤后为空则回退原池（宁可不跳，也不让 run 无题可做）。
+    if exclude_qids:
+        _ex = {str(x) for x in exclude_qids}
+        _kept = [q for q in candidate_pool if str(q.get("question_id") or "") not in _ex]
+        if _kept:
+            logger.info("连续锚失败护栏：本 run 跳过 %d 道课题（%s），候选池 %d → %d",
+                        len(candidate_pool) - len(_kept), ",".join(sorted(_ex)),
+                        len(candidate_pool), len(_kept))
+            candidate_pool = _kept
+        else:
+            logger.warning("连续锚失败护栏：过滤后候选池为空，回退原池（%d 道）", len(candidate_pool))
 
     offset = 0
     if session_id:
