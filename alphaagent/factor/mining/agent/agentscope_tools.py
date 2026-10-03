@@ -619,6 +619,8 @@ def _report_lineage_block(tools: Any, parent_factor: Any) -> str | None:
     `rq17eebb_rev_timed_turn_slope`（无下划线）与 `rq_addf97_growth_surprise_core`（有下划线）
     → 原实现 `qid not in pf` 逐字比较必然不匹配，**与拦截文案自己声明的口径「或至少包含
     `<课题号>`」相矛盾**，白烧轮次。跨课题血统（如把 `rqffd0ba_*` 传给 RQ_addf97）仍照旧硬拦。
+    同日再修：复现轮**也接受"本课题复现版名"**（复现版名常不含课题号，实测 RQ_d8fac5 的
+    复现版 `amtcap120_x_prem20_x_prem10q4_rank_med` 在复现轮被误杀）。
     """
     g = getattr(tools, "report_reproduce_gate", None) or {}
     phase = str(g.get("phase") or "")
@@ -631,9 +633,15 @@ def _report_lineage_block(tools: Any, parent_factor: Any) -> str | None:
     if g.get("required") and phase == "reproduce":
         qid = str(g.get("qid") or "")
         pf = str(parent_factor or "")
-        if qid and _lineage_key(qid) not in _lineage_key(pf):
+        # 本课题**已有复现版**时，直接指向它属于同一条血统（与发散门禁同一把尺）：
+        # 复现版名常不含课题号（实测 RQ_d8fac5 的复现版 = `amtcap120_x_prem20_x_prem10q4_rank_med`），
+        # 复现轮指向它会被逐字比较误杀。
+        pname = str(g.get("parent_name") or "")
+        via_parent_name = bool(pname) and _lineage_key(pname) in _lineage_key(pf)
+        if qid and _lineage_key(qid) not in _lineage_key(pf) and not via_parent_name:
+            alt = f"（或指向本课题复现版 `{pname}`）" if pname else ""
             return (f"⛔ 复现门禁：当前处于研报复现阶段（课题 {qid}），"
-                    f"`parent_factor` 必须写成 `reproduce_of:{qid}`（或至少包含 `{qid}`），"
+                    f"`parent_factor` 必须写成 `reproduce_of:{qid}`（或至少包含 `{qid}`）{alt}，"
                     f"当前传入={pf or '(空)'}。\n"
                     "请先忠实复现研报机制（只允许字段同族替换与算子落地，不得改变机制语义），"
                     "通过 train 后才进入发散阶段。")
