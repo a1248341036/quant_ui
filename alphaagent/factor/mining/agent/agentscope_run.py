@@ -1007,6 +1007,8 @@ async def run_factor_mining_agentscope(
                         session_id=sid,
                         available_fields=_available_fields,
                         stats=_q_stats,
+                        # 连续锚失败护栏：本 run 内已放弃的课题（run 级，不影响其它 run）
+                        exclude_qids=getattr(factor_tools, "_anchor_blocked_qids", None),
                     )
                 if _q_stats:
                     log_step(

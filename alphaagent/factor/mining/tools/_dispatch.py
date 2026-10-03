@@ -1435,6 +1435,33 @@ class _DispatchMixin:
                     f"fj={_fid.get('field_jaccard')} oj={_fid.get('op_jaccard')} "
                     f"reason={_fid.get('reason')}",
                 )
+                # ── 连续锚失败护栏（2026-10-03）：逐题累计未达标次数，达阈值则本 run 跳过该题 ──
+                try:
+                    from alphaagent.factor.mining.agent.question_queue import note_anchor_block
+
+                    _thr = int(rp.get("anchor_block_skip_threshold") or 0)
+                    if _thr > 0:
+                        _counts = getattr(tools, "_anchor_block_counts", None)
+                        if _counts is None:
+                            _counts = {}
+                            tools._anchor_block_counts = _counts
+                        _blocked = getattr(tools, "_anchor_blocked_qids", None)
+                        if _blocked is None:
+                            _blocked = set()
+                            tools._anchor_blocked_qids = _blocked
+                        if note_anchor_block(_counts, qid, bool(_fid.get("passed")), _thr):
+                            if qid not in _blocked:
+                                _blocked.add(qid)
+                                log_step(
+                                    "report_anchor_skip",
+                                    f"qid={qid} 连续 {_counts.get(qid)} 次原文锚未达标"
+                                    f"（阈值 {_thr}）→ 本 run 跳过该课题，换题继续",
+                                )
+                except Exception as _ge:  # noqa: BLE001
+                    # 护栏自身异常绝不影响判定主流程（宁可不跳，也不能改变过线判定）
+                    log_step("report_anchor_skip",
+                             f"护栏异常（忽略，不影响判定）: {type(_ge).__name__}: {_ge}")
+
                 if not _fid.get("passed"):
                     log_step(
                         "report_reproduce_judge",
