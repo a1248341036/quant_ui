@@ -1194,6 +1194,10 @@ async def run_factor_mining_agentscope(
                 }
                 factor_tools.report_reproduce_gate = _gate_state
                 set_run_gate(_gate_state)   # 判定侧唯一可靠通道
+                # 复现版因子名也带出：发散阶段的记忆推荐若指向"本课题复现版"是**合法**的
+                # （名字常不含课题号，如 `amtcap120_x_prem20_x_prem10q4_rank_med`），
+                # 只按 qid 过滤会误杀 → 一起交给 filter_lineage_recs 判定。
+                _report_phase_box["parent_name"] = str(_gate_state.get("parent_name") or "")
             except Exception as _gate_err:  # noqa: BLE001
                 # 原为静默 pass：失败后判定侧会读到上一轮网关 → fail-open 且无任何痕迹
                 logging.warning("研报模式第二网关设置失败（判定侧可能读到旧网关）: %s", _gate_err)
@@ -1720,7 +1724,11 @@ async def run_factor_mining_agentscope(
                 if recs and str(_report_phase_box.get("phase") or "") in ("reproduce", "diverge"):
                     from alphaagent.factor.mining.report_channels import filter_lineage_recs
 
-                    _kept = filter_lineage_recs(recs, _report_phase_box.get("qid"))
+                    _kept = filter_lineage_recs(
+                        recs,
+                        _report_phase_box.get("qid"),
+                        parent_name=_report_phase_box.get("parent_name"),
+                    )
                     if len(_kept) != len(recs):
                         log_step(
                             "memory_suggest_lineage_filter",
