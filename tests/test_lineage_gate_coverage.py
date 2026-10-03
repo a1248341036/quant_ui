@@ -33,6 +33,22 @@ def test_reproduce_gate_requires_qid():
     assert _report_lineage_block(t, "reproduce_of:RQ_X") is None
 
 
+def test_reproduce_gate_accepts_own_reproduce_version_name():
+    """2026-10-03：复现轮也接受"本课题复现版名"（复现版名常不含课题号）。
+
+    实测 run 65eedb4b8777：RQ_d8fac5 的复现版 = `amtcap120_x_prem20_x_prem10q4_rank_med`，
+    复现轮指向它被逐字比较误杀；跨课题复现版（rqffd0ba_*）仍要拦。
+    """
+    t = _T({"required": True, "phase": "reproduce", "qid": "RQ_d8fac5",
+            "parent_name": "amtcap120_x_prem20_x_prem10q4_rank_med"})
+    assert _report_lineage_block(t, "amtcap120_x_prem20_x_prem10q4_rank_med") is None
+    assert _report_lineage_block(t, "peakclear_mom10_pw") is not None
+    # 没有登记复现版的课题：仍按"必须含课题号"判
+    t2 = _T({"required": True, "phase": "reproduce", "qid": "RQ_ee557e", "parent_name": ""})
+    assert _report_lineage_block(t2, "repro_value_contq_pb_gate_v2q") is not None
+    assert _report_lineage_block(t2, "reproduce_of:RQ_ee557e") is None
+
+
 def test_reproduce_gate_accepts_same_question_lowercase_name():
     """2026-10-03 修：因子名是 `rq<qid-小写>_*`，课题号是大写 `RQ_*` → 必须大小写不敏感。
 
