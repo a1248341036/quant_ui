@@ -1449,14 +1449,14 @@ class _DispatchMixin:
                                  "护栏阈值未随网关传入（旧网关 / 绕过 normalize）→ 本次未启用止损")
                     _thr = int(rp.get("anchor_block_skip_threshold") or 0)
                     if _thr > 0:
-                        _counts = getattr(tools, "_anchor_block_counts", None)
+                        _counts = getattr(self, "_anchor_block_counts", None)
                         if _counts is None:
                             _counts = {}
-                            tools._anchor_block_counts = _counts
-                        _blocked = getattr(tools, "_anchor_blocked_qids", None)
+                            self._anchor_block_counts = _counts
+                        _blocked = getattr(self, "_anchor_blocked_qids", None)
                         if _blocked is None:
                             _blocked = set()
-                            tools._anchor_blocked_qids = _blocked
+                            self._anchor_blocked_qids = _blocked
                         if note_anchor_block(_counts, qid, bool(_fid.get("passed")), _thr):
                             if qid not in _blocked:
                                 _blocked.add(qid)
