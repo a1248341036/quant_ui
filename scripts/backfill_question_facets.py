@@ -42,16 +42,29 @@ DEFAULT_BANK = Path(__file__).resolve().parents[1] / "data" / "research_reports"
 
 
 def probe_text(row: dict) -> str:
-    """把题目已声明的要素拼成探针文本（供 expr_facets 做前缀匹配）。"""
+    """把题目已声明的要素拼成探针文本（供 expr_facets 做前缀匹配）。
+
+    字段写法不统一：多数带 `$`（`$ret`），也有裸名（`ret` / `mgn_short_balance`）。
+    `FACET_DEFS` 的键是带 `$` 的列族前缀，故裸名一律补一个 `$` 变体一起探
+    （2026-10-04：初版漏这步 → `ret` / `mgn_short_balance` 这类题被误判为"无面"）。
+    """
     primary = row.get("primary") or {}
     req = primary.get("spec_requirements") or {}
     parts: list[str] = []
+
+    def add(value: object) -> None:
+        text = str(value)
+        parts.append(text)
+        if text and not text.startswith(("$", "@")):
+            parts.append("$" + text)
+
     for key in ("fields", "operators", "structure_ops", "chain", "windows"):
         val = req.get(key)
         if isinstance(val, (list, tuple)):
-            parts.extend(str(x) for x in val)
+            for x in val:
+                add(x)
         elif val:
-            parts.append(str(val))
+            add(val)
     for key in ("expr_local", "expr_raw", "spec_text", "name"):
         if primary.get(key):
             parts.append(str(primary[key]))
