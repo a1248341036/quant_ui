@@ -332,6 +332,14 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
         # ml_model / graph_deep / other。题库无该字段（旧题库）→ 不筛（向后兼容）。
         # 想放开某类：把它从本列表移除即可（例如 "ml_model"）。
         "exclude_method_types": ["ml_model", "graph_deep"],
+        # **质量标签准入**（2026-10-03）：按回测出来的"效果"过滤课题。题库字段
+        # `perf_label` 由 `scripts/label_question_quality.py` 依据**已落盘日志 + 状态机**打标：
+        #   ok（复现过线过）/ untried（没判定过）/ suspect（判定够多却从未过线：
+        #   weak_signal 从未够到 |IC|≥0.010、not_expressible 原文锚反复不达标）/
+        #   deprecated（状态机已 abandoned，永久出局）。
+        # 默认排除 deprecated + suspect：**不再为已知做不出的题烧整轮预算**
+        # （实测单题最多烧 49~54 次判定、占当夜判定 47%）。旧题库无该字段 → 不筛。
+        "exclude_perf_labels": ["deprecated", "suspect"],
         # 复现通过后锁定该课题的发散轮数（2026-10-03 收口：此前只存在于
         # report_channels.reproduce_lock_rounds 的 .get(...,3)，从未进配置中心，违反三件套）。
         # 语义：复现过线后同一课题继续发散的轮数。调大→单题挖得更深、铺题更慢；调小→铺题快、单题浅。
@@ -744,6 +752,10 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
     rp["exclude_method_types"] = _string_list(
         rp.get("exclude_method_types", ["ml_model", "graph_deep"]),
         "report_policy.exclude_method_types",
+    )
+    rp["exclude_perf_labels"] = _string_list(
+        rp.get("exclude_perf_labels", ["deprecated", "suspect"]),
+        "report_policy.exclude_perf_labels",
     )
     rp["reproduce_lock_rounds"] = int(_bounded_number(
         rp.get("reproduce_lock_rounds", 3), "report_policy.reproduce_lock_rounds", 0, 12
