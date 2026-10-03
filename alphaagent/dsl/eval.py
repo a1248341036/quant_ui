@@ -180,6 +180,38 @@ def _operator_names() -> list[str]:
         return []
 
 
+def _signature_hint(fn_name: str) -> str:
+    """给出该算子的**可照抄调用式**（2026-10-03：TS_ZSCORE 缺 window 反复白烧评估）。"""
+    try:
+        import inspect as _inspect
+
+        from alphaagent.dsl.core import operators as _ops
+
+        fn = getattr(_ops, str(fn_name), None)
+        if fn is None or not callable(fn):
+            return ""
+        sig = _inspect.signature(fn)
+        parts: list[str] = []
+        for p in sig.parameters.values():
+            # 数据列（df/df1/df2…）由 DSL 从 $列 自动注入，提示里不必让模型手写
+            if p.name.startswith("df"):
+                continue
+            if p.default is _inspect.Parameter.empty:
+                parts.append(p.name)
+            else:
+                d = p.default
+                parts.append(f"{p.name}={d!r}" if isinstance(d, str) else f"{p.name}={d}")
+        if sig.parameters and any(p.name.startswith("df") for p in sig.parameters.values()):
+            if parts:
+                return f"；正确写法示例: {fn_name}($列, {', '.join(parts)})"
+            # 全部是数据列参数（如 AND(df1, df2)/ADD）：逐列给占位，别写成"只需一个列"
+            holders = [f"${c}" for c in ("a", "b", "c", "d")[:len(sig.parameters)]]
+            return f"；正确写法示例: {fn_name}({', '.join(holders)})"
+        return f"；正确写法示例: {fn_name}({', '.join(parts)})" if parts else f"；{fn_name} 无必需参数"
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _problem_from_exception(exc: BaseException) -> Tuple[str, str]:
     tname = type(exc).__name__
     if isinstance(exc, NameError):
@@ -203,8 +235,20 @@ def _problem_from_exception(exc: BaseException) -> Tuple[str, str]:
         if m:
             fn, want, got = m.group(1), m.group(2), m.group(3)
             return tname, (
-                f"{fn}() 只接受 {want} 个参数，本次传了 {got} 个——多条件请**显式嵌套**"
+                f"{fn}() 只接受 {want} 个参数，本次传了 {got} 个{_signature_hint(fn)}——多条件请**显式嵌套**"
                 f"（如 AND(AND(a, b), c)）；分支/分段语义请用 PIECEWISE_STATE / IF_THEN_ELSE。"
+                f"（原始信息: {str(exc)[:120]}）"
+            )
+        # 参数**缺失**（2026-10-03 实测：`TS_ZSCORE() missing 1 required positional argument:
+        # 'window'` 反复出现，是当次 run eval_error 占 70% 的主因）。给出真实签名。
+        m = re.search(
+            r"(\w+)\(\) missing (\d+) required positional arguments?: (.+)", str(exc)
+        )
+        if m:
+            fn, miss = m.group(1), m.group(3).strip()
+            return tname, (
+                f"{fn}() 缺少必需的参数 {miss}{_signature_hint(fn)}"
+                "——时序算子通常必须显式给窗口周期（如 20），不要省略；"
                 f"（原始信息: {str(exc)[:120]}）"
             )
         return tname, str(exc) or repr(exc)
