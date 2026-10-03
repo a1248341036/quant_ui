@@ -327,20 +327,9 @@ def _build_eval_error(
 
 # 字段别名 → 面板真实列名。研报课题库（1200 题）与记忆推荐常写 `$turnover`
 # （语义 = 换手率），而面板列名是 `turnover_rate`；不映射就会白报"不可用字段"。
-_FIELD_ALIASES = {"turnover": "turnover_rate"}
-
-
-# 字符串字面量（含捕获组，re.split 后奇数段即字面量）
-_STRING_LITERAL_RE = re.compile(r"('[^'\n]*'|\"[^\"\n]*\")")
-
-
-def _apply_field_aliases(expr: str) -> str:
-    """把 `$别名` 改写为真实列名（**跳过字符串字面量**）；不触碰 `$turnover_rate`/`_f`。"""
-    parts = _STRING_LITERAL_RE.split(expr)
-    for i in range(0, len(parts), 2):
-        for alias, real in _FIELD_ALIASES.items():
-            parts[i] = re.sub(rf"\${alias}(?![A-Za-z0-9_@])", f"${real}", parts[i])
-    return "".join(parts)
+# 2026-10-04：别名改写统一收口到 `dsl/core/field_aliases.apply_field_aliases`
+#（**目标列存在才改写**）；此处原来的"无条件改写 + 跳过字符串字面量"实现已删除——
+# 它不看面板列，会把本来可用的 `$turnover` 改成不存在的列（见 eval_multi_line_factor 处的注释）。
 
 
 def compile_multi_line_factor(
@@ -349,7 +338,6 @@ def compile_multi_line_factor(
     columns: Optional[Sequence[str]] = None,
     verbose: bool = False,
 ) -> str:
-    multi_line_expr = _apply_field_aliases(multi_line_expr)
     if columns:
         known = {str(col).lstrip("$").split("@", 1)[0] for col in columns}
         # 字段别名收口（``$turnover`` → ``$turnover_rate``）：提示词/题库按别名书写，
@@ -502,6 +490,15 @@ def eval_multi_line_factor(
                 exception_type="ValueError",
                 user_source=multi_line_expr,
             )
+    # 字段别名**先按完整面板列**改写，再裁剪面板（2026-10-04 修）。
+    # 原顺序（先按原始表达式裁剪 → 编译期才做别名）有一个假报错：
+    # `$turnover` 的别名目标是 `turnover_rate`，而目标列"没被原始表达式引用"→ 被 prune 掉
+    # → 编译期 known 集里没有它 → 误报「symbol 阶段失败: 不可用字段: $turnover_rate」。
+    # 实测 run 61ded42e3ff8：3 次 evaluate_factor(train_screen) 因 `$turnover` 白烧
+    #（同 run 里直接写 `$turnover_rate` 的 10 次调用全部正常）。
+    # 别名表本身是"目标列确实存在才改写"（见 dsl/core/field_aliases.py 约定），
+    # 所以面板只有 `turnover` 而没有 `turnover_rate` 时，这里不会改写、表达式照旧可用。
+    multi_line_expr, _alias_hits = apply_field_aliases(multi_line_expr, list(df.columns))
     # 面板列裁剪：只保留表达式引用到的列，减少 _column_bindings 与辅面板构建开销。
     # 索引/行序不变，输出 Series 仍与完整面板对齐。
     if len(df.columns) > 1:
