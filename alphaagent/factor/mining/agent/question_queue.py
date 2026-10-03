@@ -127,9 +127,10 @@ def load_question_queue(spec: dict[str, Any] | None = None) -> list[dict[str, An
                 if line.strip():
                     questions.append(json.loads(line))
             if questions:
-                return _apply_exclude_method_types(
-                    _apply_require_report_structure(
-                        _apply_require_factor_records(questions, spec), spec), spec)
+                return _apply_exclude_perf_labels(
+                    _apply_exclude_method_types(
+                        _apply_require_report_structure(
+                            _apply_require_factor_records(questions, spec), spec), spec), spec)
         except Exception as e:
             logger.warning("读取问题题库失败: %s", e)
 
@@ -200,6 +201,37 @@ def _apply_exclude_method_types(rows: list[dict[str, Any]],
         logger.warning("exclude_method_types=%s 过滤后无课题，回退原题库（%d 道）", excluded, len(rows))
         return rows
     logger.info("exclude_method_types=%s: %d → %d 道（排除机器学习/图深度等方法类研报）",
+                excluded, len(rows), len(kept))
+    return kept
+
+
+def _apply_exclude_perf_labels(rows: list[dict[str, Any]],
+                               spec: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """``report_policy.exclude_perf_labels``：按**质量标签**排除"效果不好"的题（2026-10-03）。
+
+    标签由 `scripts/label_question_quality.py` 依**已落盘日志 + 状态机**产出（`perf_label`）：
+    `ok` / `untried` 可出；`suspect`（判定够多却从未过线）/ `deprecated`（已 abandoned）默认排除。
+    动机：实测单题最多烧 49~54 次判定、占当夜判定预算 47%，而这些题**从未过线**。
+    兜底：题库无该字段（旧题库）→ 不筛；过滤后为空 → 回退原题库（不让 run 无题可做）。
+    """
+    if not rows:
+        return rows
+    _rp = (spec or {}).get("report_policy")
+    if (isinstance(_rp, dict) and "exclude_perf_labels" not in _rp
+            and any("perf_label" in r for r in rows)):
+        logger.warning("report_policy 缺 exclude_perf_labels 键（旧 spec / 绕过 normalize）"
+                       "→ 本次**未**按质量标签排除")
+    excluded = [str(x) for x in ((_rp or {}).get("exclude_perf_labels") or [])]
+    if not excluded:
+        return rows
+    if not any("perf_label" in r for r in rows):
+        logger.info("exclude_perf_labels=%s 但题库无 perf_label 字段（旧题库），不筛", excluded)
+        return rows
+    kept = [r for r in rows if str(r.get("perf_label") or "") not in excluded]
+    if not kept:
+        logger.warning("exclude_perf_labels=%s 过滤后无课题，回退原题库（%d 道）", excluded, len(rows))
+        return rows
+    logger.info("exclude_perf_labels=%s: %d → %d 道（排除已知做不出的题，省下整轮预算）",
                 excluded, len(rows), len(kept))
     return kept
 
