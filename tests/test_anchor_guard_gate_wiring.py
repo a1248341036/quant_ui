@@ -49,3 +49,24 @@ def test_dispatch_warns_when_threshold_missing():
         __import__("alphaagent.factor.mining.tools._dispatch", fromlist=["_x"])
     )
     assert "护栏阈值未随网关传入" in src
+
+
+def test_guard_block_uses_self_not_bare_tools():
+    """⑤ 作用域锁定：护栏块在 `_DispatchMixin` 方法内，工具对象只能叫 `self`。
+
+    实测 run 38b61ab42be6：护栏 5 次触发全是
+    `NameError: name 'tools' is not defined`（该作用域没有 tools）→ 止损仍不生效。
+    """
+    import re
+
+    src = inspect.getsource(
+        __import__("alphaagent.factor.mining.tools._dispatch", fromlist=["_x"])
+    )
+    i, j = src.find("连续锚失败护栏"), src.find('if not _fid.get("passed")')
+    block = src[i:j] if i > 0 and j > i else ""
+    assert block, "定位不到护栏块（可能被重构/删除）"
+    code = "\n".join(l for l in block.splitlines() if not l.lstrip().startswith("#"))
+    assert not re.search(r"(?<![_\w.])tools\.", code), \
+        "护栏块里出现裸 `tools` —— 该作用域没有此变量（mixin 方法用 self）"
+    assert "self._anchor_block" in code, "护栏状态没有挂在 self（工具实例）上"
+
