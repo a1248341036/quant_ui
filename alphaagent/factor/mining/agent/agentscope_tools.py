@@ -18,6 +18,7 @@ from agentscope.tool import FunctionTool, Toolkit, ToolChunk
 
 from alphaagent.factor.mining.tools import FactorEvalTools
 from alphaagent.factor.mining.infra.jsonutil import json_safe
+from alphaagent.factor.mining.report_channels import lineage_key as _lineage_key
 from alphaagent.factor.mining.runlog import log_step
 from alphaagent.factor.mining.interactions import lint_expression_interaction
 from alphaagent.factor.mining.population import screen_population
@@ -603,15 +604,6 @@ def _evaluation_evidence(reviewer: Any | None, expr: str) -> dict[str, Any] | No
         for split, rows in evaluations.items()
     }
     return evidence or None
-
-
-def _lineage_key(text: Any) -> str:
-    """血统比对键：忽略大小写与下划线。
-
-    同一课题号在因子名里有 `rq<qid>`（如 `rq17eebb_*`）与 `rq_<qid>`（如 `rq_addf97_*`）
-    两种写法，逐字比较会把"同课题"误判成"跨课题"。
-    """
-    return str(text or "").lower().replace("_", "")
 
 
 def _report_lineage_block(tools: Any, parent_factor: Any) -> str | None:

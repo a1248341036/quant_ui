@@ -115,6 +115,32 @@ def lineage_parent_autofill(spec: dict[str, Any] | None) -> bool:
     return bool(((spec or {}).get("report_policy") or {}).get("parent_autofill", True))
 
 
+# ── 血统比对键（2026-10-03）──────────────────────────────────────────
+# 同一课题号在因子名里有 `rq<qid>`（`rq17eebb_*`）与 `rq_<qid>`（`rq_addf97_*`）两种写法，
+# 逐字比较会把"同课题"误判成"跨课题"（实测 4 run / 38 条门禁拦截里 17 条属此类）。
+
+def lineage_key(text: Any) -> str:
+    """血统比对键：忽略大小写与下划线。"""
+    return str(text or "").lower().replace("_", "")
+
+
+def same_lineage(parent_factor: Any, qid_or_name: Any) -> bool:
+    """`parent_factor` 是否落在该课题号/复现版名的血统里。"""
+    key = lineage_key(qid_or_name)
+    return bool(key) and key in lineage_key(parent_factor)
+
+
+def filter_lineage_recs(recs: list[dict[str, Any]], qid: Any) -> list[dict[str, Any]]:
+    """研报模式：只保留指向**本课题血统**的记忆推荐。
+
+    跨课题推荐在复现/发散两处门禁下**必被拦**（复现要求含本课题号、发散要求指向复现版），
+    留着只会白烧当轮评估名额（实测跨课题推荐 17 条/晚）。
+    """
+    if not str(qid or ""):
+        return list(recs or [])
+    return [r for r in (recs or []) if same_lineage((r or {}).get("parent_factor"), qid)]
+
+
 # ── 进程内"当前研报网关"（2026-09-30）────────────────────────────────
 # 背景：gate 原先挂在 tools 实例属性上，但判定在 dispatch() 里跑，
 # 实测两侧对象身份不一致 → 判定静默 early-return。每次 run 是独立进程、

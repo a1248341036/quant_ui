@@ -103,6 +103,42 @@ def test_autofill_keeps_explicit_value():
     assert _report_lineage_block(t, _report_lineage_fill(t, "mix_ovlead")) is not None
 
 
+def test_same_lineage_and_recommendation_filter():
+    """跨课题记忆推荐在研报两阶段必被门禁拦 → 推荐阶段就要过滤掉（2026-10-03）。"""
+    from alphaagent.factor.mining.report_channels import (
+        filter_lineage_recs,
+        same_lineage,
+    )
+
+    assert same_lineage("rq_addf97_growth_resid", "RQ_addf97")
+    assert same_lineage("reproduce_of:rq17eebb", "RQ_17eebb")
+    assert same_lineage("rq17eebb_rev_timed_turn_slope", "RQ_17eebb")
+    assert not same_lineage("rqffd0ba_style_rotation_anch", "RQ_addf97")
+    assert not same_lineage(None, "RQ_addf97")
+    assert not same_lineage("rq_addf97_x", "")
+
+    recs = [
+        {"parent_factor": "rq_62f045_ssa_timing_mom"},
+        {"parent_factor": "amtcap120_x_prem20_x_prem10q4_rank"},
+        {"parent_factor": "peakclear_mom10_pw"},
+    ]
+    kept = filter_lineage_recs(recs, "RQ_62f045")
+    assert [r["parent_factor"] for r in kept] == ["rq_62f045_ssa_timing_mom"]
+    # 非研报模式（无课题号）→ 原样返回
+    assert filter_lineage_recs(recs, "") == recs
+
+
+def test_recommendation_filter_wired_in_run_loop():
+    """防止修复被静默摘掉：run 主循环必须调用过滤器，并带 steps.log 锚点。"""
+    import inspect
+
+    import alphaagent.factor.mining.agent.agentscope_run as m
+    src = inspect.getsource(m)
+    assert "filter_lineage_recs" in src, "记忆推荐未接血统过滤"
+    assert "memory_suggest_lineage_filter" in src, "过滤缺少可观测锚点"
+    assert '_report_phase_box["qid"]' in src, "阶段盒未携带课题号 → 过滤拿不到 qid"
+
+
 def test_autofill_switch_off_and_empty_gate():
     """开关关掉 → 不补；空网关/非研报阶段 → 不补。"""
     off = _T({"required": True, "phase": "reproduce", "qid": "RQ_X", "parent_autofill": False})
