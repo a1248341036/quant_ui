@@ -54,6 +54,16 @@ def set_baseline(run_id: str, note: str = "") -> dict[str, Any]:
     from alphaagent.factor.mining.bench.config import compute_config_hash, load_bench_config
     cfg = load_bench_config()
     cfg_hash = compute_config_hash(cfg)
+    # ⚠ 2026-10-03：基线必须存**run 自身身份**，否则 diff 永远判"不可直接比"。
+    # scorecard 的 time_meta.config_hash 在 API/监控启动的 run 上是由 (research_mode,
+    # research_spec_hash) 合成的身份（见 extended_metrics._extract_time_meta）；只有 bench
+    # 自己启动的 run 才有 bench_meta.json 的 frozen hash。优先用 scorecard 里的那个。
+    try:
+        _sc_hash = ((sc or {}).get("time_meta") or {}).get("config_hash")
+    except Exception:  # noqa: BLE001
+        _sc_hash = None
+    if _sc_hash:
+        cfg_hash = _sc_hash
 
     # 从 run_meta 读取补充信息
     meta_path = run_dir / "run_meta.json"
