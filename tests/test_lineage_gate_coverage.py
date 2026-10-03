@@ -124,6 +124,13 @@ def test_same_lineage_and_recommendation_filter():
     ]
     kept = filter_lineage_recs(recs, "RQ_62f045")
     assert [r["parent_factor"] for r in kept] == ["rq_62f045_ssa_timing_mom"]
+    # 发散阶段：指向"本课题复现版"的推荐合法，即使该名字不含课题号
+    # （实测 RQ_d8fac5 的复现版名 = amtcap120_x_prem20_x_prem10q4_rank_med，autofill 23 次即用它）
+    recs2 = [{"parent_factor": "amtcap120_x_prem20_x_prem10q4_rank_med"},
+             {"parent_factor": "peakclear_mom10_pw"}]
+    kept2 = filter_lineage_recs(
+        recs2, "RQ_d8fac5", parent_name="amtcap120_x_prem20_x_prem10q4_rank_med")
+    assert [r["parent_factor"] for r in kept2] == ["amtcap120_x_prem20_x_prem10q4_rank_med"]
     # 非研报模式（无课题号）→ 原样返回
     assert filter_lineage_recs(recs, "") == recs
 
@@ -137,6 +144,7 @@ def test_recommendation_filter_wired_in_run_loop():
     assert "filter_lineage_recs" in src, "记忆推荐未接血统过滤"
     assert "memory_suggest_lineage_filter" in src, "过滤缺少可观测锚点"
     assert '_report_phase_box["qid"]' in src, "阶段盒未携带课题号 → 过滤拿不到 qid"
+    assert '_report_phase_box["parent_name"]' in src, "阶段盒未携带复现版名 → 发散阶段合法推荐被误杀"
 
 
 def test_autofill_switch_off_and_empty_gate():

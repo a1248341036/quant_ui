@@ -130,15 +130,23 @@ def same_lineage(parent_factor: Any, qid_or_name: Any) -> bool:
     return bool(key) and key in lineage_key(parent_factor)
 
 
-def filter_lineage_recs(recs: list[dict[str, Any]], qid: Any) -> list[dict[str, Any]]:
+def filter_lineage_recs(recs: list[dict[str, Any]], qid: Any,
+                        parent_name: Any = None) -> list[dict[str, Any]]:
     """研报模式：只保留指向**本课题血统**的记忆推荐。
 
     跨课题推荐在复现/发散两处门禁下**必被拦**（复现要求含本课题号、发散要求指向复现版），
     留着只会白烧当轮评估名额（实测跨课题推荐 17 条/晚）。
+
+    ``parent_name`` = 本课题复现版因子名（发散阶段合法父本）：**它常常不含课题号**
+    （如 `amtcap120_x_prem20_x_prem10q4_rank_med`），只按 qid 过滤会把它误杀。
     """
     if not str(qid or ""):
         return list(recs or [])
-    return [r for r in (recs or []) if same_lineage((r or {}).get("parent_factor"), qid)]
+    return [
+        r for r in (recs or [])
+        if same_lineage((r or {}).get("parent_factor"), qid)
+        or same_lineage((r or {}).get("parent_factor"), parent_name)
+    ]
 
 
 # ── 进程内"当前研报网关"（2026-09-30）────────────────────────────────
