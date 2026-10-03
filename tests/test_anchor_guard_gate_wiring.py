@@ -62,7 +62,10 @@ def test_guard_block_uses_self_not_bare_tools():
     src = inspect.getsource(
         __import__("alphaagent.factor.mining.tools._dispatch", fromlist=["_x"])
     )
-    i, j = src.find("连续锚失败护栏"), src.find('if not _fid.get("passed")')
+    # 锚点必须精确到**护栏块自身的注释**（"（2026-10-03）：逐题累计"），
+    # 否则会从 _GATE_CARRIED_POLICY_KEYS 的注释处开始切，块区过大误报。
+    i = src.find("连续锚失败护栏（2026-10-03）")
+    j = src.find('if not _fid.get("passed")')
     block = src[i:j] if i > 0 and j > i else ""
     assert block, "定位不到护栏块（可能被重构/删除）"
     code = "\n".join(l for l in block.splitlines() if not l.lstrip().startswith("#"))
