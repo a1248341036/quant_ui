@@ -1176,6 +1176,11 @@ async def run_factor_mining_agentscope(
                     "factor_records_file": report_policy.get("factor_records_file"),
                     "question_queue_file": report_policy.get("question_queue_file"),
                     "inject_factor_records": report_policy.get("inject_factor_records", True),
+                    # 2026-10-03 连续锚失败护栏：阈值随网关传递（判定侧 `_effective_report_policy`
+                    # 只带网关键，工具对象上没有 spec → 不传则护栏恒关，实测已踩）
+                    "anchor_block_skip_threshold": int(
+                        report_policy.get("anchor_block_skip_threshold", 8) or 0
+                    ),
                     # 2026-10-02 P5 收口：正交门阈值随网关传递（工具对象上没有 spec）
                     "orthogonality_max_corr": (
                         (spec.get("evaluation_policy") or {}).get("orthogonality_max_corr", 0.7)

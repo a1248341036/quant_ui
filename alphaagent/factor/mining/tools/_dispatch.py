@@ -95,6 +95,10 @@ _GATE_CARRIED_POLICY_KEYS = (
     "factor_records_file",
     "question_queue_file",
     "inject_factor_records",
+    # 2026-10-03：连续锚失败护栏阈值**必须**随网关传递——本函数的 merged 只含网关键，
+    # 不入列则 `rp.get("anchor_block_skip_threshold")` 恒为 None → 护栏静默关闭
+    # （实测 run e10835374b7a：同一题 16 次 off_reference 却 0 条 report_anchor_skip）。
+    "anchor_block_skip_threshold",
 )
 
 
@@ -1439,6 +1443,10 @@ class _DispatchMixin:
                 try:
                     from alphaagent.factor.mining.agent.question_queue import note_anchor_block
 
+                    if "anchor_block_skip_threshold" not in rp:
+                        # 不留静默 fail-open：阈值必须随网关传入（见 _GATE_CARRIED_POLICY_KEYS 注释）。
+                        log_step("report_anchor_skip",
+                                 "护栏阈值未随网关传入（旧网关 / 绕过 normalize）→ 本次未启用止损")
                     _thr = int(rp.get("anchor_block_skip_threshold") or 0)
                     if _thr > 0:
                         _counts = getattr(tools, "_anchor_block_counts", None)
