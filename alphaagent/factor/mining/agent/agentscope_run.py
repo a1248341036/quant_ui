@@ -1035,6 +1035,7 @@ async def run_factor_mining_agentscope(
         # 直接用原名会触发 UnboundLocalError（2026-09-30 实测 report 模式 run 直接崩）。
         from alphaagent.factor.mining.report_channels import (
             diverge_parent_required as _dpr,
+            lineage_parent_autofill as _lpa,
             report_flow_enabled as _rfe,
             reproduce_lock_rounds as _rlr,
             reproduce_of_required as _ror,
@@ -1058,6 +1059,7 @@ async def run_factor_mining_agentscope(
                     "lock_rounds": _rlr(spec),
                     "diverge_parent": _dpr(spec),
                     "parent_name": _rfo(_rm, _qid2),
+                    "parent_autofill": _lpa(spec),
                 }
                 try:
                     factor_tools.report_reproduce_gate = _g2
@@ -1072,6 +1074,7 @@ async def run_factor_mining_agentscope(
 
         from alphaagent.factor.mining.report_channels import (
             diverge_parent_required,
+            lineage_parent_autofill,
             reproduce_lock_rounds,
             reproduce_of_required,
             report_flow_enabled,
@@ -1163,6 +1166,8 @@ async def run_factor_mining_agentscope(
                     "parent_name": _rfo_of(
                         str(getattr(config, "research_mode", "report") or "report"), _qid
                     ),
+                    # 2026-10-03 血统自动补全开关（漏传 parent_factor 时按阶段补齐）
+                    "parent_autofill": lineage_parent_autofill(spec),
                     # 判定侧需要但工具对象上没有的配置（2026-10-01 修）：`self.report_policy`
                     # 全仓从未被赋值 → 复现判定读不到 report_policy，保真度门槛被**静默跳过**
                     # （本夜实测 0 条 report_fidelity_check），reproduce_min_abs_ic/icir 也一直

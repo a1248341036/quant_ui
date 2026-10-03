@@ -315,6 +315,12 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
         # 若某课题机制无效，题面/拦截文案允许模型**明确放弃课题**，不是逼它硬凑。
         "reproduce_of_required": True,
         "diverge_parent_required": True,
+        # 血统**自动补全**（2026-10-03，仅研报模式）：漏传 `parent_factor`（传空）时按阶段自动
+        # 补齐——复现轮补 `reproduce_of:<课题号>`、发散轮补该课题复现版因子名。
+        # 为什么：门禁拦截里 13+ 次/run 是「当前传入=(空)」，即模型在**正确课题与阶段**里干活
+        # 却忘填字段，白烧一轮；漏传=忘写，补全即本意。**传非空错血统仍硬拦**（不猜不覆盖）。
+        # 调小后果：回到严格口径（血统必须显式声明，诊断用），代价是模型漏填时继续烧轮次。
+        "parent_autofill": True,
         "require_factor_records": True,
         # 结构准入（2026-10-02，仅研报模式）：只派发**报告提出了可复现结构**的课题。
         # 结构 = gated 条件门控 / composite 多因子合成 / residual 残差中性化 / timing 择时 /
@@ -745,6 +751,9 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
     )
     rp["diverge_parent_required"] = _require_bool(
         rp.get("diverge_parent_required", True), "report_policy.diverge_parent_required"
+    )
+    rp["parent_autofill"] = _require_bool(
+        rp.get("parent_autofill", True), "report_policy.parent_autofill"
     )
     rp["require_report_structure"] = _require_bool(
         rp.get("require_report_structure", True), "report_policy.require_report_structure"
