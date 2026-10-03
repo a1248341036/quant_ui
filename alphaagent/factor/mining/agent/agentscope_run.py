@@ -1083,6 +1083,7 @@ async def run_factor_mining_agentscope(
 
         _rag_phase = locals().get("_report_phase_from_state") or resolve_report_phase(spec, outer_turn)
         _report_phase_box["phase"] = _rag_phase   # 供外层按阶段装配系统提示词
+        _report_phase_box["qid"] = str((current_question or {}).get("question_id") or "")
         # ── 研报模式 Phase 1：复现阶段注入「复现题面」并把硬门禁状态挂到 tools ──
         if report_flow_enabled(spec) and current_question:
             _qid = str(current_question.get("question_id") or "")
@@ -1713,6 +1714,24 @@ async def run_factor_mining_agentscope(
                         )
                 except Exception:
                     recs = []
+                # 研报模式：跨课题的记忆推荐在血统门禁下**必被拦**（复现要求含本课题号、
+                # 发散要求指向复现版）→ 留着只会白烧当轮评估名额（实测 17 条/晚）。
+                # 阶段/课题号经 `_report_phase_box` 带出（`_rag_phase` 是嵌套函数局部量）。
+                if recs and str(_report_phase_box.get("phase") or "") in ("reproduce", "diverge"):
+                    from alphaagent.factor.mining.report_channels import filter_lineage_recs
+
+                    _kept = filter_lineage_recs(recs, _report_phase_box.get("qid"))
+                    if len(_kept) != len(recs):
+                        log_step(
+                            "memory_suggest_lineage_filter",
+                            f"phase={_report_phase_box.get('phase')} "
+                            f"qid={_report_phase_box.get('qid')} kept={len(_kept)}/{len(recs)}",
+                            dropped="|".join(
+                                str((r or {}).get("parent_factor")) for r in recs
+                                if r not in _kept
+                            )[:200],
+                        )
+                    recs = _kept
                 if recs:
                     reflection_lines.append("")
                     if repeat_fams:
