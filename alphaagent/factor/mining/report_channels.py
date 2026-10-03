@@ -105,6 +105,16 @@ def diverge_parent_required(spec: dict[str, Any] | None) -> bool:
     return bool(((spec or {}).get("report_policy") or {}).get("diverge_parent_required"))
 
 
+def lineage_parent_autofill(spec: dict[str, Any] | None) -> bool:
+    """血统门禁是否对**漏传**的 `parent_factor` 自动补全（默认开，2026-10-03）。
+
+    开：漏传（传空）时按当前阶段补 `reproduce_of:<qid>` / 复现版因子名；**传了非空的
+    错血统仍硬拦** —— 治的是"模型忘填字段白烧一轮"（实测 13+/run）；
+    关：回到"血统必须由模型显式声明"的严格口径（诊断用）。
+    """
+    return bool(((spec or {}).get("report_policy") or {}).get("parent_autofill", True))
+
+
 # ── 进程内"当前研报网关"（2026-09-30）────────────────────────────────
 # 背景：gate 原先挂在 tools 实例属性上，但判定在 dispatch() 里跑，
 # 实测两侧对象身份不一致 → 判定静默 early-return。每次 run 是独立进程、

@@ -18,6 +18,7 @@ from agentscope.tool import FunctionTool, Toolkit, ToolChunk
 
 from alphaagent.factor.mining.tools import FactorEvalTools
 from alphaagent.factor.mining.infra.jsonutil import json_safe
+from alphaagent.factor.mining.runlog import log_step
 from alphaagent.factor.mining.interactions import lint_expression_interaction
 from alphaagent.factor.mining.population import screen_population
 
@@ -632,6 +633,43 @@ def _report_lineage_block(tools: Any, parent_factor: Any) -> str | None:
     return None
 
 
+def _report_lineage_fill(tools: Any, parent_factor: Any) -> str | None:
+    """研报模式血统**自动补全**：漏传 `parent_factor` 时按当前阶段补齐（2026-10-03）。
+
+    实测依据（run `afb3d7707264`，全 run 25 条 `tool_failed` 里 13+ 条是这个）：
+    复现门禁拦下的都是「`parent_factor` 必须写成 `reproduce_of:RQ_xxx`，当前传入=(空)」——
+    模型**已经在正确的课题与正确的阶段**里干活，只是忘了填血统字段，于是白烧一轮。
+    漏传 = 忘写，补全即本意；**传了非空的错血统仍按原样硬拦**（不覆盖、不猜测，避免污染血统）。
+
+    两种阶段各自的正确补全值：
+      · `phase=reproduce`（`required` 开）→ `reproduce_of:<qid>`；
+      · `phase=diverge`（`diverge_parent` 开）→ 该课题复现版因子名 `parent_name`。
+
+    开关 `report_policy.parent_autofill`（默认开，随研报网关传递）；关掉即回到
+    「血统必须由模型显式声明」的严格口径。补全成功会落一条 `report_lineage_autofill` 到 steps.log。
+    """
+    pf = str(parent_factor or "").strip()
+    if pf:
+        return pf
+    g = getattr(tools, "report_reproduce_gate", None) or {}
+    if not g.get("parent_autofill", True):
+        return None
+    phase = str(g.get("phase") or "")
+    filled: str | None = None
+    if phase == "reproduce" and g.get("required"):
+        qid = str(g.get("qid") or "")
+        filled = f"reproduce_of:{qid}" if qid else None
+    elif phase == "diverge" and g.get("diverge_parent"):
+        filled = str(g.get("parent_name") or "") or None
+    if filled:
+        try:
+            log_step("report_lineage_autofill",
+                     f"phase={phase} qid={g.get('qid')} parent={filled}")
+        except Exception:  # noqa: BLE001 — 日志永不阻断评估
+            pass
+    return filled
+
+
 def build_factor_eval_toolkit(
     tools: FactorEvalTools,
     *,
@@ -672,6 +710,7 @@ def build_factor_eval_toolkit(
         **_legacy_kwargs: Any,
     ) -> ToolChunk:
         """训练集评估多行因子表达式，返回 summary、monthly_corr_robustness、label_quantile_buckets。"""
+        parent_factor = _report_lineage_fill(tools, parent_factor)
         _lineage_block = _report_lineage_block(tools, parent_factor)
         if _lineage_block:
             return ToolChunk(content=[TextBlock(text=_lineage_block)])
@@ -727,6 +766,7 @@ def build_factor_eval_toolkit(
     ) -> ToolChunk:
         """按已冻结 EvaluationProfile 执行 DSL 评估；profile 控制 split、transform、指标与规则。"""
         # ── 研报模式血统门禁（复现 / 发散，2026-10-02 抽为共享助手，见 _report_lineage_block）──
+        parent_factor = _report_lineage_fill(tools, parent_factor)
         _lineage_block = _report_lineage_block(tools, parent_factor)
         if _lineage_block:
             return ToolChunk(content=[TextBlock(text=_lineage_block)])
@@ -948,6 +988,7 @@ def build_factor_eval_toolkit(
         **_legacy_kwargs: Any,
     ) -> ToolChunk:
         """验证集评估；须传 expected_sign（train IC 符号 1/-1），结果含 sign_check。"""
+        parent_factor = _report_lineage_fill(tools, parent_factor)
         _lineage_block = _report_lineage_block(tools, parent_factor)
         if _lineage_block:
             return ToolChunk(content=[TextBlock(text=_lineage_block)])
@@ -1025,6 +1066,7 @@ def build_factor_eval_toolkit(
         ) -> ToolChunk:
             """【正式交付】统计数据通过即写候选池；reviewer approve 才写正式 factorzoo。"""
             # ── 研报模式血统门禁（复现 / 发散）：统一走共享助手，避免双份口径漂移（OCR 2026-10-02）──
+            parent_factor = _report_lineage_fill(tools, parent_factor)
             _lineage_block = _report_lineage_block(tools, parent_factor)
             if _lineage_block:
                 return ToolChunk(content=[TextBlock(text=_lineage_block)])
