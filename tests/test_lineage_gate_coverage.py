@@ -33,6 +33,30 @@ def test_reproduce_gate_requires_qid():
     assert _report_lineage_block(t, "reproduce_of:RQ_X") is None
 
 
+def test_reproduce_gate_accepts_same_question_lowercase_name():
+    """2026-10-03 修：因子名是 `rq<qid-小写>_*`，课题号是大写 `RQ_*` → 必须大小写不敏感。
+
+    实测（4 run / 38 条拦截）里 14 条属于这种"同课题被误杀"（如 RQ_17eebb 传
+    `rq17eebb_rev_timed_turn_slope`）；跨课题血统仍要硬拦。
+    """
+    t = _T({"required": True, "phase": "reproduce", "qid": "RQ_17eebb"})
+    assert _report_lineage_block(t, "rq17eebb_rev_timed_turn_slope") is None
+    assert _report_lineage_block(t, "reproduce_of:rq17eebb") is None
+    assert _report_lineage_block(t, "RQ17EEBB_x") is None
+    # 另一种命名写法（带下划线）同样放行
+    t2 = _T({"required": True, "phase": "reproduce", "qid": "RQ_addf97"})
+    assert _report_lineage_block(t2, "rq_addf97_growth_resid_softgate") is None
+    # 跨课题血统（另一个课题的复现版）仍然拦截
+    assert _report_lineage_block(t, "rqffd0ba_style_rotation_anch") is not None
+
+
+def test_diverge_gate_case_insensitive_parent_name():
+    t = _T({"diverge_parent": True, "phase": "diverge", "qid": "RQ_X",
+            "parent_name": "rq_x_repro_v1"})
+    assert _report_lineage_block(t, "RQ_X_REPRO_V1_mut") is None
+    assert _report_lineage_block(t, "mix_ovlead") is not None
+
+
 def test_no_gate_passes_everything():
     t = _T({})
     assert _report_lineage_block(t, None) is None
