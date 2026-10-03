@@ -206,6 +206,15 @@ _SIDE_ALIASES = {
     "middle": "middle", "mid": "middle",
     "d4": "middle", "d5": "middle", "d6": "middle", "d7": "middle",
     "q4": "middle", "q5": "middle", "q6": "middle", "q7": "middle",
+    # 归一化键（去空格/下划线/连字符后匹配，见 _canon_side）——2026-10-03 实测：
+    # 模型常写 high_decile / high decile / high-decile，此前一律被拒（白烧评估）。
+    "highdecile": "high_factor", "highdeciles": "high_factor",
+    "lowdecile": "low_factor", "lowdeciles": "low_factor",
+    "middecile": "middle", "middledecile": "middle", "neutral": "middle",
+    "d8d10": "high_factor", "d1d3": "low_factor", "d4d7": "middle",
+    "high侧": "high_factor", "low侧": "low_factor", "高侧": "high_factor",
+    "低侧": "low_factor", "高因子端": "high_factor", "低因子端": "low_factor",
+    "中间组": "middle", "中段": "middle",
 }
 
 _SHAPE_SEP_RE = re.compile(r"[\s\-]+")
@@ -250,6 +259,9 @@ _SHAPE_EXTRA_ALIASES = {
 _HIGH_SIDE_RE = re.compile(r"D\s*10|D\s*9|D\s*8|高(?:因子)?(?:端|侧)|顶部|高端|最高组", re.IGNORECASE)
 _LOW_SIDE_RE = re.compile(r"D\s*1(?!\d)|D\s*2(?!\d)|D\s*3(?!\d)|低(?:因子)?(?:端|侧)|底部|低端|最低组", re.IGNORECASE)
 _MIDDLE_RE = re.compile(r"中间|中部|中段|居中")
+# 中间分位（D4~D7 / Q4~Q7）：说话人用分位号点名"中间段"，此前既不命中 _MIDDLE_RE
+# 也不命中高/低端正则 → 被判非法（2026-10-03 实测）。
+_MIDDLE_DECILE_RE = re.compile(r"D\s*[4-7](?!\d)|Q\s*[4-7](?!\d)", re.IGNORECASE)
 _INVERTED_U_RE = re.compile(r"倒\s*U|inverted[_\s]*u", re.IGNORECASE)
 _SU_SHAPE_RE = re.compile(r"(?<!倒)\bU\s*型|u[_\s]shape", re.IGNORECASE)
 _SPIKE_RE = re.compile(r"尖峰|极端组|spike", re.IGNORECASE)
@@ -299,6 +311,15 @@ def _prose_direction(text: str) -> tuple[bool, bool]:
                 high += 1
         else:
             low += 1
+    if high == low and tokens:
+        # 字段语义就是"哪一端强"：只点名单侧端点（如 "D10低换手端"、"D1~D3"）即视为该侧的一票，
+        # 不强求评级词/梯度词。2026-10-03 实测：此类写法此前因"无方向词"被判歧义，
+        # 单夜白烧 10+ 次评估（expected_strong_side 收到 'high_decile'/'D10低换手端' 被拒）。
+        sides = {tk[1] for tk in tokens}
+        if sides == {"high"}:
+            high += 1
+        elif sides == {"low"}:
+            low += 1
     return high > low, low > high
 
 
@@ -326,7 +347,10 @@ def _prose_shape(value: str) -> str | None:
 
 def _prose_side(value: str) -> str | None:
     t = str(value)
-    if _MIDDLE_RE.search(t) and not (_HIGH_SIDE_RE.search(t) or _LOW_SIDE_RE.search(t)):
+    _has_hl = bool(_HIGH_SIDE_RE.search(t) or _LOW_SIDE_RE.search(t))
+    if _MIDDLE_RE.search(t) and not _has_hl:
+        return "middle"
+    if _MIDDLE_DECILE_RE.search(t) and not _has_hl:
         return "middle"
     high_strong, low_strong = _prose_direction(t)
     if high_strong and not low_strong:
@@ -426,7 +450,8 @@ def _canon_shape(value: Any) -> str | None:
 def _canon_side(value: Any) -> str | None:
     if value is None:
         return None
-    canon = _SIDE_ALIASES.get(str(value).strip().lower())
+    s = str(value).strip().lower()
+    canon = _SIDE_ALIASES.get(s) or _SIDE_ALIASES.get(re.sub(r"[\s_\-]+", "", s))
     if canon:
         return canon
     return _prose_side(str(value))

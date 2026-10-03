@@ -275,11 +275,27 @@ def lint_expression_interaction(
 
     # 容错 3：契约缺 base_signal/condition_signal 时，从表达式的数据列引用自动补全。
     #   字段缺失是模型的格式瑕疵，不该让高 IC 因子死在提交拦截上（实测有过
-    #   IC=+0.082 的因子因此被拒）；economic_mechanism（经济机制纪律）仍强制。
+    #   IC=+0.082 的因子因此被拒）。
+    # 容错 3b（2026-10-03）：`economic_mechanism` 缺失或不足 20 字同样是**格式瑕疵**——
+    #   实测单夜 17 次 `interaction_missing_fields:economic_mechanism(>=20 chars)` 白烧评估
+    #   （占当夜 InteractionContractRejected 的 65%）。与信号补全同口径：自动补**占位机制**
+    #   并回传警告，不再硬拦；机制纪律仍由 Reviewer / 记忆层把关，占位文本明确标注"自动补全"
+    #   便于事后审计。`interaction_policy.auto_fill_missing_contract=False` 可恢复硬拦。
+    _autofill_warn: str | None = None
     if isinstance(spec, dict):
         missing_fields = [f for f in ("base_signal", "condition_signal") if not _text(spec.get(f))]
         if missing_fields:
             spec = _autofill_signals_from_expr(expr, spec)
+        if (len(_text(spec.get("economic_mechanism") or "")) < 20
+                and policy.get("auto_fill_missing_contract", True)):
+            spec = {**spec, "economic_mechanism": (
+                "（自动补全·占位）模型未给出 ≥20 字经济机制说明；本次放行并记账——"
+                "下次调用请在 interaction.economic_mechanism 显式描述该交互的经济机制。"
+            )}
+            _autofill_warn = (
+                "已自动补全 economic_mechanism（占位）——该字段是经济机制纪律字段，"
+                "下次调用请显式给出 ≥20 字机制描述。"
+            )
 
     normalized, error = validate_interaction(spec, allowed_types=allowed_types)
     if error is not None:
@@ -312,6 +328,8 @@ def lint_expression_interaction(
                 "乘法仅允许作为已声明的放大器；必须完成 base-only / condition-only / "
                 "combined 三组消融，且组合相对最强单腿有稳定增量。"
             )
+            if _autofill_warn:
+                warning = warning + "\n" + _autofill_warn
             return normalized, warning, None
 
     if matched_ops and normalized is None and policy.get("require_contract_for_typed_interactions", True):
@@ -349,10 +367,13 @@ def lint_expression_interaction(
     if normalized is not None:
         expected_ops = INTERACTION_TYPES[normalized["interaction_type"]]
         if not matched_ops & expected_ops and not has_multiply:
-            return normalized, (
+            _w = (
                 f"interaction_type={normalized['interaction_type']} 通常对应 "
                 f"{sorted(expected_ops)}，但当前表达式未检测到这些算子。"
-            ), None
-        return normalized, None, None
+            )
+            if _autofill_warn:
+                _w = _w + "\n" + _autofill_warn
+            return normalized, _w, None
+        return normalized, _autofill_warn, None
 
     return None, None, None
