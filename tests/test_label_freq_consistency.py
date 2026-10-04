@@ -121,3 +121,15 @@ def test_unknown_freq_is_rejected() -> None:
 def test_bad_freq_hold_map_is_rejected() -> None:
     with pytest.raises(ValueError):
         normalize_research_spec({"label_freq_consistency": {"freq_hold_days": {"daily": 0}}})
+
+
+def test_start_run_rejects_mismatch_before_spawning() -> None:
+    """所有 API/脚本/monitor 启动路径的唯一收口：start_run 在 spawn 之前拒绝不一致组合。"""
+    from backend import alphaagent_service as svc
+
+    spec = default_research_spec("technical")  # label_1d + daily
+    spec["delivery_policy"]["production"]["engine_gate"]["freq"] = "weekly"  # 人为制造不一致
+    with pytest.raises(svc.RunAdmissionError) as exc:
+        svc.start_run({"label_col": "label_1d_open_to_open", "research_spec": spec})
+    assert "label_freq_consistency.mismatch" in str(exc.value)
+
