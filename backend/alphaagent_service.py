@@ -11,7 +11,7 @@ import sys
 import threading
 import time
 import uuid
-from collections import deque
+from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -546,15 +546,32 @@ def read_events(path: Path | None) -> Iterator[dict[str, Any]]:
         return
 
 
-def scan_event_tail(path: Path | None, tail: int) -> tuple[int, list[dict[str, Any]]]:
-    """Count rows in an event JSONL and decode only its last *tail* rows.
+_TAIL_CACHE: "OrderedDict[tuple[str, int, int, int], tuple[int, list[dict[str, Any]]]]" = OrderedDict()
+_TAIL_CACHE_MAX = 512
+_TAIL_CACHE_LOCK = threading.Lock()
 
-    Listing every run must not JSON-decode entire histories: raw lines are
-    counted cheaply and only the trailing window is parsed. Non-dict or
-    undecodable trailing lines are excluded from the count, matching read_events.
+
+def _scan_one_file_cached(path: Path, tail: int) -> tuple[int, list[dict[str, Any]]]:
+    """读单个 JSONL 的 ``(行数, 末尾 tail 行)``，按 ``(size, mtime_ns, tail)`` 缓存结果。
+
+    为什么必须缓存（2026-10-04 实测）：``list_runs()`` 对**每个** run 调一次本函数，
+    原实现每次都把整份 `run_*.jsonl` 读一遍统计行数 —— 143 个 run 时 `GET /runs` 实测
+    **2.8s**，冷盘/负载高时超 20s；monitor 把超时当成"后端挂了"→ 重启后端
+    （当天触发 3 次，还会顺带把已 stop 的 run 复活成 running）。缓存后只有**正在写的那个**
+    run 会 miss，I/O 从"全部文件"降到"1 个文件"。
     """
-    if path is None or not path.exists() or tail <= 0:
+    if tail <= 0:
         return 0, []
+    try:
+        stat = path.stat()
+        key = (str(path), stat.st_size, stat.st_mtime_ns, tail)
+    except OSError:
+        return 0, []
+    with _TAIL_CACHE_LOCK:
+        hit = _TAIL_CACHE.get(key)
+        if hit is not None:
+            _TAIL_CACHE.move_to_end(key)
+            return hit
     recent: deque[str] = deque(maxlen=tail)
     total = 0
     try:
@@ -577,42 +594,46 @@ def scan_event_tail(path: Path | None, tail: int) -> tuple[int, list[dict[str, A
             events.append(json_safe(row))
         else:
             total -= 1
-    return total, events
+    result = (total, events)
+    with _TAIL_CACHE_LOCK:
+        _TAIL_CACHE[key] = result
+        _TAIL_CACHE.move_to_end(key)
+        while len(_TAIL_CACHE) > _TAIL_CACHE_MAX:
+            _TAIL_CACHE.popitem(last=False)
+    return result
+
+
+def scan_event_tail(path: Path | None, tail: int) -> tuple[int, list[dict[str, Any]]]:
+    """Count rows in an event JSONL and decode only its last *tail* rows.
+
+    Listing every run must not JSON-decode entire histories: raw lines are
+    counted cheaply and only the trailing window is parsed. Non-dict or
+    undecodable trailing lines are excluded from the count, matching read_events.
+    结果按文件身份缓存（见 ``_scan_one_file_cached``）。
+    """
+    if path is None or not path.exists() or tail <= 0:
+        return 0, []
+    return _scan_one_file_cached(path, tail)
 
 
 def scan_event_tail_multi(files: list[Path], tail: int) -> tuple[int, list[dict[str, Any]]]:
     """多段轨迹版 scan_event_tail：原地续跑后同一 run 目录含多个 run_*.jsonl 段。
 
-    计数 = 各段行数之和（原始行计数，与单文件口径一致）；
+    计数 = 各段行数之和（口径与单文件一致，逐段走 ``_scan_one_file_cached`` → 同样享受缓存）；
     尾部窗口从最后一段向前回溯，直到凑满 tail 行。
     """
     files = [f for f in files if f.exists()]
     if not files or tail <= 0:
         return 0, []
     total = 0
-    collected: list[str] = []
+    rows: list[dict[str, Any]] = []
     for path in reversed(files):
-        try:
-            with path.open("r", encoding="utf-8", errors="replace") as handle:
-                lines = [line for line in handle if line.strip()]
-        except OSError:
-            continue
-        total += len(lines)
-        need = tail - len(collected)
+        count, events = _scan_one_file_cached(path, tail)
+        total += count
+        need = tail - len(rows)
         if need > 0:
-            collected = lines[-need:] + collected
-    events: list[dict[str, Any]] = []
-    for line in collected:
-        try:
-            row = json.loads(line)
-        except json.JSONDecodeError:
-            total -= 1
-            continue
-        if isinstance(row, dict):
-            events.append(json_safe(row))
-        else:
-            total -= 1
-    return total, events
+            rows = events[-need:] + rows
+    return total, rows
 
 
 def _build_run_command(params: dict[str, Any], log_dir: Path, control_file: Path) -> tuple[list[str], dict[str, Any]]:
