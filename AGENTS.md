@@ -102,6 +102,26 @@ cd static && npm run dev
 
 > **端口约定**：Quant UI 后端固定 **17891**；CNE dashboard **8787**。历史上 AGENTS.md 曾写 8000，已废弃 —— 一律以 `scripts/start_backend_with_sync.ps1` 为准。
 
+## 整夜挖掘监控（`overnight_mining_monitor.v2.py`）
+
+脚本在仓库外：`C:\Users\zhoubw\Desktop\quant\overnight_mining_monitor.v2.py`。
+
+**后端一律无窗口启动**（用户 2026-10-04 定调）：该脚本自 2026-10-04 起**缺省**用
+`CREATE_NO_WINDOW` 拉起 `scripts/start_backend_with_sync.ps1`，并把 launcher/uvicorn/CNE 输出
+重定向到 `C:\Users\zhoubw\Desktop\quant\logs\backend_console_<YYYYMMDD>.log`。
+
+- 显式开关：`--backend-hidden`（缺省，等价于不传）；需要可见窗口时用 `--backend-console`。
+- **为什么**（2026-10-04 实测两次）：原先 `CREATE_NEW_CONSOLE` 会留一个独立控制台窗口，
+  误关该窗口 = 后端被杀 → monitor 要空等约 5 分钟才发现并重拉；且**后端重启会把已 stop 的
+  run 复活成 `running`**，害得下一段 monitor 白等（需再 stop 一次才清掉）。无窗口启动同时
+  消除了"窗口被误关"这一整类事故。
+- 标准调用：
+
+```powershell
+D:\Quant\quant_ui\.venv\Scripts\python.exe C:\Users\zhoubw\Desktop\quant\overnight_mining_monitor.v2.py `
+  --repo D:\Quant\quant_ui --research-mode report --deadline 07:00 --max-turns 8 --backend-hidden
+```
+
 ## 关键文档指针
 
 - `docs/alphaagent_architecture.md` — 核心流程（启动链路/挖掘循环/三层约束/认知层升级/评估引擎/入库两阶段/候选库管理/因子中台/研究记忆）、评估档位推断、REST API 全表、关键设计决策、聚宽 JQ Shim 兼容层。**改这些模块前先读它。**
