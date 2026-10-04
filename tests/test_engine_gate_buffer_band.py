@@ -155,10 +155,17 @@ def test_engine_gate_turnover_gate_derived():
     spec2 = default_research_spec("technical")
     spec2["delivery_policy"]["production"]["engine_gate"]["max_avg_daily_turnover"] = 0.42
     assert DeliveryCriteria.from_spec(spec2).engine_gate.max_avg_daily_turnover == 0.42
-    # 消费点 fallback：prompt 渲染按 freq 分档（weekly → 0.65）
+    # 消费点 fallback：prompt 渲染按 freq 分档；2026-10-04 起 technical 已对齐为
+    # label_1d + daily（换手硬门 daily 档 0.50），文案也改为"调仓口径单边换手"。
     dc = DeliveryCriteria.from_spec(default_research_spec("technical"))
     text = dc.to_prompt_text()
-    assert "日均执行换手 <= 0.65" in text
+    assert dc.engine_gate.freq == "daily"
+    assert "调仓口径单边换手 <= 0.5" in text
+    # weekly 档仍按 0.65（在 label_5d 的对齐档位上）
+    sp_w = default_research_spec("technical_weekly")
+    dc_w = DeliveryCriteria.from_spec(sp_w)
+    assert dc_w.engine_gate.freq == "weekly"
+    assert "调仓口径单边换手 <= 0.65" in dc_w.to_prompt_text()
 
 
 def test_engine_gate_criteria_dict_includes_new_fields():

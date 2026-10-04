@@ -761,6 +761,16 @@ def start_run(
 ) -> AgentRun:
     # 准入控制：并发上限 + 可用内存下限（超限抛 RunAdmissionError → HTTP 429）
     _admission_check()
+    # 口径准入（2026-10-04 用户定调）：label 与调仓频率强制一致（daily↔1d/weekly↔5d/monthly↔20d）。
+    # 放在这里是因为这是**所有** API/监控启动路径的唯一收口（含脚本/monitor 传参），
+    # 不一致直接拒绝，避免"跑起来才发现门槛与 label 不是同一把尺子"。
+    from alphaagent.factor.mining.research_spec import ensure_label_freq_consistency
+
+    _spec = params.get("research_spec") if isinstance(params.get("research_spec"), dict) else {}
+    try:
+        ensure_label_freq_consistency(_spec, label_col=params.get("label_col"))
+    except ValueError as exc:
+        raise RunAdmissionError(str(exc)) from exc
     run_id = uuid.uuid4().hex[:12]
     log_dir = LOG_ROOT / run_id
     log_dir.mkdir(parents=True, exist_ok=True)

@@ -6,7 +6,7 @@ from alphaagent.factor.mining.delivery_criteria import DeliveryCriteria
 RAW = """### 行为准则
 
 1. **经济直觉先行 + 预测必填**：每个 `evaluate_factor` / `eval_on_train_set` 调用前，在思维链中先写出 50 字以内经济直觉（清晰描述信息源、与未来收益关联及因果链条，缺一即跳过），并随调用传 `prediction`（缺失会记账警告、累计 3 次拦截——每次都带上，别依赖宽限）。结果中的 `prediction_check` 优先于门槛阅读：verdict=contradicted（被证伪）→ 换机制或放弃，禁止对被证伪结构做参数变异。`submit_factor` 的 `comment` 中必须包含经济直觉全文。
-2. **换手红线（硬约束）与设计期自检清单**：系统交付硬门槛为 `avg_daily_side_turnover <= {max_turnover}`（`{diag_turnover}` 为 diagnostics 诊断预警线，非交付硬门：超过即应主动降换手；`> {max_turnover}` 必定被拒，请勿直接调用 `submit_factor`）——消融实验与历史数据证明绝大多数候选均因此止步 stage_one/engine_gate，纯浪费算力。
+2. **换手红线（硬约束）与设计期自检清单**：系统交付硬门槛为 `avg_rebalance_side_turnover <= {max_turnover}`（按 label 持有期 = 调仓周期口径；daily↔1d 时等于 `avg_daily_side_turnover`。`{diag_turnover}` 为 diagnostics 诊断预警线，非交付硬门：超过即应主动降换手；`> {max_turnover}` 必定被拒，请勿直接调用 `submit_factor`）——消融实验与历史数据证明绝大多数候选均因此止步 stage_one/engine_gate，纯浪费算力。
     - **降换手强制流程（禁止跳过）**：
       ① 先读诊断归因：换手超标时结果里的 `worst_col_autocorr` / `worst_col_name` / `worst_col_tier`（tier=high_freq/mid/slow）；
       ② 按归因选路径：

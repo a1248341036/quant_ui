@@ -33,9 +33,11 @@ def derive_freq_from_label_col(label_col: str | None) -> tuple[str | None, str |
     **只作老条目兜底展示**：新条目入库时已记录真实 rebalance_freq（含用户覆盖），
     读取方仅在 entry 缺字段时才调用本函数。
 
-    ⚠ 这不是运行口径：主档 technical 实际是 label_1d + weekly 交付（研究口径与交付
-    口径刻意解耦，见 core/research_modes.py 顶部区块）。所以本函数返回的
-    ("technical", "weekly") 只表示"短持有期因子"，**不代表它的 label 就是 5d**。
+    ⚠ 本函数保留**历史口径**：2026-10-04 之前主档（technical/report）是 label_1d +
+    weekly 交付的"刻意解耦"，所以老条目按 1d→weekly 展示才是**如实**的。该解耦已于
+    2026-10-04 被用户定调推翻（label 与调仓频率强制一致：daily↔1d/weekly↔5d/monthly↔20d，
+    见 `research_spec.label_freq_consistency`）→ **新条目不会再出现 1d+weekly**，本函数
+    对它们的返回值也就自然正确；**不要**用它给新条目补口径。
     """
     m = _LABEL_HORIZON_RE.search(str(label_col or ""))
     if not m:
