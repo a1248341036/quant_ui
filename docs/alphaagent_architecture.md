@@ -212,42 +212,51 @@ label/panel 列加载/engine_gate 频率的语义。迁移脚本
 ## 评估档位自动推断 + 调仓频率（2026-09-03，方案 B）
 
 前端"日线技术/基本面"模式下拉退役，档位由数据面多选自动推断：
-- `core.research_modes.infer_research_mode(focus_facets)`：勾选基本面/股东面 → fundamental 档
-  （label_20d + 松门槛 + monthly 门禁）；其余/未选 → technical 档（label_1d + 严门槛 + weekly 门禁）。
-  混合勾选落 technical（融合因子以价量为主信号）；纯函数，前后端同口径。
+- `core.research_modes.infer_research_mode(focus_facets, rebalance_freq)`：勾选基本面/股东面 → fundamental 档
+  （label_20d + 松门槛 + monthly 门禁）；其余/未选 → technical 档（label_1d + 严门槛 + **daily** 门禁，
+  2026-10-04 起与 label 对齐，见下节）；显式给 rebalance_freq 时价量面走
+  `technical_{daily,weekly,monthly}` 对齐子档（label 5d/20d 跟随）。纯函数，前后端同口径。
 - 前端 composer 显示推断档位徽章（`inferredModeLabel`），勾面变化经 `syncInferredMode()` 自动
   切换 spec（复用 `switchResearchMode` 链路：门槛弹窗/保存门槛/label_col 跟随全部保留）。
 - `StartRequest.rebalance_freq`（daily/weekly/monthly，可空）：用户显式指定时写入
-  `spec.delivery_policy.production.engine_gate.freq` 覆盖档位默认；`DeliveryCriteria.to_prompt_text`
-  渲染 "rebalance_freq 必传" 指令约束 LLM；`allowed_freqs` 白名单仍生效。前端 composer 新增
-  "调仓" 选择器（自动/日/周/月）。
+  `spec.delivery_policy.production.engine_gate.freq`，并把档位落到 label 对齐的子档；
+  若与档位 label 矛盾（如在 1d/20d label 档上选 weekly）→ **422 拒绝**（fail-closed）。
+  `DeliveryCriteria.to_prompt_text` 渲染 "rebalance_freq 必传" 指令约束 LLM；`allowed_freqs` 白名单生效。
+  前端 composer 新增 "调仓" 选择器（自动/日/周/月）。
 - `research_mode` 参数兼容保留：显式传入优先于自动推断（历史调用方/脚本不受影响）。
 - 因子库页模式页签退役（`FactorLibrary.vue`），由 facet 筛选 chips（全部/八面/融合）取代；
   ML 组合训练的 `collect_factor_entries` 按解析后库路径去重，避免大库下重复枚举。
 
-## label 口径 vs 调仓频率：刻意解耦（2026-09-30 决策）
+## label 口径 vs 调仓频率：**强制一致**（2026-10-04 用户定调，推翻 2026-09-30 解耦决策）
 
-**结论：保留解耦，不把两个旋钮合并。** 主档（如 `technical`）就是
-`label_1d` 打分 + `weekly` 交付，这是设计，不是遗留错配。
+**结论（用户原话）：「调仓频率是多少，label 就应该多少」。** label 持有期必须等于
+`engine_gate.freq` 持有期：**daily↔1d、weekly↔5d、monthly↔20d**；不一致 **fail-closed 拒绝启动**。
 
-- **研究口径 = `recommended_label_col`**（`core/research_modes.py`）：IC / RANKIC / ICIR /
-  decile 按该 label 的前瞻收益计算，持有期 >1 时按持有期去重叠
-  （`factor/metrics/ic.py:cs_ic_summary`）；十分组年化/回撤/夏普用 `holding_days = label 天数`；
-  submit 侧一律 `cost_bps=0`。
-- **交付口径 = `engine_gate.freq`**：`run_engine_gate` 用真实行情（T+1 / 涨跌停 / 停牌 /
-  整手 / 滑点 / 参与率 / buffer）按该频率调仓回测，**不读 label**；入库定生死只认它。
-- **落差的缝合点（两个代理门）**：① stage_one 的 `min_cs_autocorr`（截面排名日度延续性，
-  低 → 周调仓必死）；② 换手门槛按 freq 分档（`delivery_criteria.turnover_thresholds_by_freq`：
-  daily 0.50 / weekly 0.65 / monthly 0.80）。
-- **只有 `technical_daily` / `technical_weekly` / `technical_monthly` 是真"三对齐"**
-  （1d↔daily、5d↔weekly、20d↔monthly）；`infra/registry_io.derive_label_from_freq` 只是
-  子档映射 + 老条目展示兜底，不是运行口径。
-- **已知代价（接受）**：1d IC 稳、4~5 日部分回吐的因子能过 stage_one，最终在含成本的
-  engine_gate 被拒，浪费部分挖掘算力；库里研究指标与实盘收益不可互相换算，UI 必须分列
-  展示（研究口径 / 实盘口径）。
-- **⚠ 禁止"顺手对齐"**：把主档 label 改成 `derive_label_from_freq(freq)` 等于换掉研究口径，
-  而 `min_abs_ic` / `min_train_icir` 等门槛按 label 尺度标定，会一并失真。真要做单旋钮
-  收敛，属独立改动 + 需重标定门槛。
+- **配置中心**：`research_spec.DEFAULT_RESEARCH_SPEC["label_freq_consistency"]`
+  = `{"enforce": true, "freq_hold_days": {...}}`（`research_spec.py` 顶部有取值理由）。
+- **校验点（三处，同一函数 `research_spec.ensure_label_freq_consistency`）**：
+  ① `build_run_research_spec` / `normalize_research_spec`（构建期，以 label 为准把 freq 收口到
+  对应档位并把 `allowed_freqs` 收成单值）；② `POST /api/alphaagent/runs`（用户显式覆盖 freq
+  之后再校验，否则覆盖就成了绕过通道 → 422）；③ `backend.alphaagent_service.start_run`
+  （**所有** API/脚本/monitor 启动路径的唯一收口 → `RunAdmissionError`）。
+- **档位现状**：`technical` / `report` 已从 `label_1d + weekly` 收成 **`label_1d + daily`**
+  （`allowed_freqs=["daily"]`）；`fundamental`(20d+monthly) / `technical_daily`(1d+daily) /
+  `technical_weekly`(5d+weekly) / `technical_monthly`(20d+monthly) 本来就是对齐的。
+- **换手门改用调仓口径**：`delivery_checker.stage_one_stats` 取
+  `quantile_portfolio.avg_rebalance_side_turnover`（每 hold 日调一次的真实换手），
+  旧记录回落 `avg_daily_side_turnover`；daily↔1d 时两者相等（历史行为不变）。
+- **为什么推翻解耦**（2026-10-04 实测）：旧组合里 stage_one 拿"日频信号抖动"撞 weekly 档阈值
+  （0.65），而 `hold=label 天数=1` → 组合其实每天在换（实测 `n_rebalances=1615`、
+  `avg_rebalance_side_turnover == avg_daily_side_turnover`）→ "周频摊薄成本"的折算前提不成立，
+  1.48 这类超门值既不是日频事实也不是周频事实。
+- **已知代价（接受）**：1d 快信号不再有"周频折让"，换手硬门按 daily 档（0.50）执行；
+  engine_gate 对这两个档位也按 daily 真实回测（成本更高）。要过门只能把信号做慢。
+- **⚠ 仍成立的历史警告**：**不要单独把 label 抬到 5d/20d 去凑 freq**。`min_abs_ic` /
+  `min_train_icir` / `reproduce_min_*` 等门槛按 **1d 尺度**标定，换 label 会一并失真——
+  必须同批重标定门槛（属独立改动）。所以本次选择"保 1d 研究口径、把 freq 收到 daily"。
+- 历史（2026-09-30 决策，已废弃）：曾把两个旋钮视为"两把尺子"并保留落差，靠
+  `min_cs_autocorr` + `turnover_thresholds_by_freq` 两个代理门缝住；该设计已按上表推翻。
+
 
 ## REST API
 

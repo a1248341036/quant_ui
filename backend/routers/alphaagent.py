@@ -93,7 +93,9 @@ class PinRequest(BaseModel):
     pinned: bool
 
 
-def apply_user_rebalance_freq(spec: dict[str, Any], rebalance_freq: str | None) -> None:
+def apply_user_rebalance_freq(
+    spec: dict[str, Any], rebalance_freq: str | None, *, label_col: str | None = None
+) -> None:
     """把用户显式选择的调仓频率写成**硬约束**（就地修改 spec）。
 
     2026-09-11 修正：此前只覆盖 engine_gate.freq，allowed_freqs 仍含全部三档——
@@ -102,6 +104,11 @@ def apply_user_rebalance_freq(spec: dict[str, Any], rebalance_freq: str | None) 
     现在用户显式选择时 allowed_freqs 收窄为单值：prompt 渲染的可选范围与 submit
     白名单同步收口，LLM 只能传用户指定的频率。"未选择（自动）"时不动白名单，
     保留模型按因子证据在三档内声明的自由度。
+
+    2026-10-04：label 与调仓频率**强制一致**（用户定调）。传入 ``label_col``（本次
+    run 实际使用的 label）时，若与该频率的持有期不符则抛 ValueError——
+    档位由 `infer_research_mode(..., rebalance_freq)` 自动落到对齐子档，
+    所以正常路径不会冲突；冲突说明用户同时钉了不匹配的 research_mode。
     """
     if not rebalance_freq:
         return
@@ -110,6 +117,16 @@ def apply_user_rebalance_freq(spec: dict[str, Any], rebalance_freq: str | None) 
     )
     engine["freq"] = rebalance_freq
     engine["allowed_freqs"] = [rebalance_freq]
+    # 2026-10-04：label 与调仓频率强制一致 —— 用户显式选频率时，档位由
+    # infer_research_mode 自动落到 label 对齐的子档；若用户同时钉死了不匹配的
+    # research_mode（如 weekly + 1d label 的 technical/report），这里必须报错，
+    # 而不是让 freq 覆盖发生在校验之后成为绕过通道。
+    from alphaagent.factor.mining.research_spec import ensure_label_freq_consistency
+
+    try:
+        ensure_label_freq_consistency(spec, label_col=label_col)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.post("/runs")
@@ -134,7 +151,13 @@ def start(req: StartRequest) -> dict[str, Any]:
     else:
         spec = build_default_research_spec(mode)
     spec["research_mode"] = mode
-    apply_user_rebalance_freq(spec, req.rebalance_freq)
+    # 2026-10-04：label 与调仓频率强制一致。用户**没显式指定** label_col 时，以该档位的
+    # recommended_label_col 为准（否则 weekly 档会被默认的 label_1d 误判为不匹配）；
+    # 显式指定了就用它——那正是需要校验的情形。
+    _eff_label = (
+        req.label_col if "label_col" in req.model_fields_set else spec.get("recommended_label_col")
+    )
+    apply_user_rebalance_freq(spec, req.rebalance_freq, label_col=_eff_label)
     payload["research_spec"] = spec
     try:
         run = service.start_run(payload)

@@ -396,7 +396,7 @@ class DeliveryCriteria:
             f"动态 top {_pct(eg.selection_pct)} 选股、净超额年化 >= "
             f"{_pct(eg.min_excess_annual)}、超额夏普 >= {eg.min_excess_sharpe}、"
             f"回撤 <= {_pct(eg.max_drawdown)}、仓位利用率 >= {_pct(eg.min_invested_ratio)}、"
-            f"日均执行换手 <= {gate_max_to}）。"
+            f"调仓口径单边换手 <= {gate_max_to}）。"
             f"submit_factor 的 rebalance_freq 必须传 \"{eg.freq}\""
             f"（用户指定档位；可选范围 {', '.join(eg.allowed_freqs)}）。"
         )

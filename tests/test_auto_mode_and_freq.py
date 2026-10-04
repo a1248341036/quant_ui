@@ -90,14 +90,29 @@ def test_start_endpoint_wires_freq_and_mode(monkeypatch):
 
     monkeypatch.setattr(router_mod.service, "start_run", _fake_start_run)
 
-    req = router_mod.StartRequest(focus_facets=["基本面"], rebalance_freq="weekly")
+    req = router_mod.StartRequest(focus_facets=["价量面"], rebalance_freq="weekly")
     result = router_mod.start(req)
 
     assert result["run_id"] == "fake"
-    assert captured["research_mode"] == "fundamental"  # 自动推断
+    # 2026-10-04：用户给频率 → 自动落到对齐子档（label 5d + weekly），不再走解耦主档
+    assert captured["research_mode"] == "technical_weekly"
     eg = captured["research_spec"]["delivery_policy"]["production"]["engine_gate"]
-    assert eg["freq"] == "weekly"  # 用户频率覆盖 monthly 默认
-    assert "weekly" in eg["allowed_freqs"]  # 白名单不受影响
+    assert eg["freq"] == "weekly"
+    assert eg["allowed_freqs"] == ["weekly"]
+
+
+def test_start_endpoint_rejects_label_freq_mismatch(monkeypatch):
+    """2026-10-04 强制一致：慢档（label_20d）配 weekly 频率必须被拒，而不是静默放行。"""
+    from fastapi import HTTPException
+
+    from backend.routers import alphaagent as router_mod
+
+    monkeypatch.setattr(router_mod.service, "start_run", lambda payload: None)
+    req = router_mod.StartRequest(focus_facets=["基本面"], rebalance_freq="weekly")
+    with pytest.raises(HTTPException) as exc:
+        router_mod.start(req)
+    assert exc.value.status_code == 422
+    assert "label_freq_consistency.mismatch" in str(exc.value.detail)
 
 
 def test_start_endpoint_default_freq_follows_mode(monkeypatch):
@@ -121,13 +136,14 @@ def test_start_endpoint_default_freq_follows_mode(monkeypatch):
     eg = captured["research_spec"]["delivery_policy"]["production"]["engine_gate"]
     assert eg["freq"] == "monthly"
 
-    # 纯价量 → technical 档 → weekly 默认
+    # 纯价量 → technical 档 → daily（label_1d 对齐后的门禁频率，2026-10-04 起）
     captured.clear()
     req2 = router_mod.StartRequest(focus_facets=["价量面"])
     router_mod.start(req2)
     assert captured["research_mode"] == "technical"
     eg2 = captured["research_spec"]["delivery_policy"]["production"]["engine_gate"]
-    assert eg2["freq"] == "weekly"
+    assert eg2["freq"] == "daily"
+    assert eg2["allowed_freqs"] == ["daily"]
 
 
 # ── prompt 渲染：频率指令 ──

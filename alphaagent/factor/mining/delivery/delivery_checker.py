@@ -335,14 +335,28 @@ class DeliveryChecker:
         for stage in self.stage_one:
             reasons.extend(stage.run({"metrics": metrics_train}).fail_reasons)
         qp = metrics_train.get("quantile_portfolio") or {}
-        turnover = qp.get("avg_daily_side_turnover") if isinstance(qp, dict) else None
+        # 换手口径（2026-10-04 起）：取**调仓口径** `avg_rebalance_side_turnover`
+        # （每 hold 个交易日调一次的真实换手）。因为 label 与调仓频率已强制一致
+        # （research_spec.label_freq_consistency），hold == freq 持有期：
+        #   · daily↔1d 时两口径数值相同（历史行为不变）；
+        #   · weekly↔5d / monthly↔20d 时调仓口径才是"实际要付的成本"，
+        #     此前误用日频口径 → 对慢档系统性过严。
+        # 旧记录（无该字段）回落日频口径，保证兼容。
+        turnover = None
+        turnover_metric = "avg_rebalance_side_turnover"
+        if isinstance(qp, dict):
+            turnover = qp.get("avg_rebalance_side_turnover")
+            if turnover is None:
+                turnover = qp.get("avg_daily_side_turnover")
+                turnover_metric = "avg_daily_side_turnover"
         # 按 freq 分档取门槛；未匹配时回落到 max_avg_daily_side_turnover
         thresholds = self.criteria.candidate.turnover_thresholds_by_freq or {}
         max_t = thresholds.get(rebalance_freq, self.criteria.candidate.max_avg_daily_side_turnover)
         if turnover is not None and np.isfinite(float(turnover)) and float(turnover) > max_t:
             reasons.append(
-                f"avg_daily_side_turnover={float(turnover):.2f} > {max_t:.2f} "
-                f"(rebalance_freq={rebalance_freq}, 组合日单边换手过高，实盘不可交付)"
+                f"{turnover_metric}={float(turnover):.2f} > {max_t:.2f} "
+                f"(rebalance_freq={rebalance_freq}；该指标=按声明频率调仓的单边换手，"
+                f"label 与调仓频率已强制一致，组合换手过高，实盘不可交付)"
             )
 
         # 分箱塌缩防御（2026-09-15，decile_collapse_spec）：

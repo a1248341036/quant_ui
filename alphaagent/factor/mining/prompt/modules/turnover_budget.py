@@ -62,8 +62,11 @@ def render(ctx) -> str:  # noqa: ANN001
 
     lines = [
         "### 换手预算与调仓频率匹配",
-        f"- 本 run 调仓频率：**{freq}**；换手硬门：`avg_daily_side_turnover <= {gate}`"
-        "（按频率分档，与交付门槛同源）。",
+        f"- 本 run 调仓频率：**{freq}**；换手硬门：`avg_rebalance_side_turnover <= {gate}`"
+        "（按频率分档，与交付门槛同源；daily↔1d 时该值 = `avg_daily_side_turnover`）。",
+        "- **label 与调仓频率已强制一致**（2026-10-04 起）：label 持有期必须等于调仓持有期"
+        "（daily↔1d、weekly↔5d、monthly↔20d）——所以「1d label 配 weekly 调仓」这种组合"
+        "在本 run 里不存在，快信号不会被低频调仓的折算放行。",
         f"- label 持有期 × 调仓匹配判定：**{verdict.upper()}** —— {note}",
         "",
         "| label 持有期 | daily | weekly | monthly |",

@@ -47,32 +47,30 @@ class ResearchModeSpec:
     report_policy_overrides: dict = field(default_factory=dict)
 
 
-# ── label 口径 vs 调仓频率：**刻意解耦**（2026-09-30 决策，勿"顺手对齐"）──────
-# 本文件里这两个字段是**两把独立的尺子**，不是同一件事的两种写法：
+# ── label 口径 vs 调仓频率：**强制一致**（2026-10-04 用户定调；推翻 2026-09-30 的"刻意解耦"）──
+# 规则（用户原话）：「调仓频率是多少，label 就应该多少」——
+#   `recommended_label_col` 的持有期必须等于 `engine_gate_overrides["freq"]` 的持有期
+#   （daily↔1d、weekly↔5d、monthly↔20d），由 `research_spec.label_freq_consistency`
+#   **fail-closed 校验**，不一致直接拒绝启动（模式未显式声明 freq 时由 label 派生）。
 #
-#   1) recommended_label_col —— **研究口径**（筛查打分用）
-#      决定 IC / RANKIC / ICIR / decile 按多长前瞻收益计算，并按持有期去重叠
-#      （label_20d → 每 20 个交易日取一点）；十分组的年化/回撤/夏普也按
-#      holding_days = label 天数算，且 submit 侧一律 cost_bps=0。
-#   2) engine_gate_overrides["freq"] —— **交付口径**（最终收益用）
-#      engine_gate 用真实行情（T+1/涨跌停/停牌/整手/滑点/参与率/buffer）按该频率
-#      调仓回测，**整个函数不读 label**；入库定生死只认这一把尺子。
+# 为什么推翻解耦（2026-10-04 实测）：旧组合（1d label + weekly 交付）里
+#   · 研究口径按 1d 打分、交付口径按周频回测，看似各管一段；
+#   · 但 stage_one 换手硬门拿"日频信号抖动"去撞 weekly 档阈值（0.65），而 hold=label 天数=1
+#     → 组合其实**每天在换**（实测 `n_rebalances=1615`、`avg_rebalance_side_turnover ==
+#     avg_daily_side_turnover`）→ "周频摊薄成本"的折算前提根本不成立：既不是日频事实，
+#     也不是周频事实，1.48 这类超门值无法自洽解释。
+#   · 代价（接受）：1d 快信号不再有"周频折让"，换手门按该档阈值（daily 0.50）执行，
+#     要过门只能把信号做慢（滚动均值/EMA/慢信息源），这正是 prompt 换手红线要求的动作。
 #
-# 因此主档（如 technical）故意配 label_1d + weekly 交付：
-#   - label_1d 样本多、信噪好 → 探测"单日边际预测力"更灵敏；
-#   - weekly 用来控换手成本（RANKIC 日度抖动大、但周频调仓成本可控）。
-# 两把尺子的落差由两个**代理门**缝住，而不是靠把 label 改成 freq 对齐：
-#   · stage_one 的 min_cs_autocorr（截面排名日度延续性，低 → 周调仓必死）；
-#   · 换手门槛按 freq 分档（delivery_criteria.turnover_thresholds_by_freq）。
+# ⚠ 仍然成立的历史警告：**不要单独把 label 抬到 5d/20d 去凑 freq**。min_abs_ic /
+#   min_train_icir / reproduce_min_abs_ic 等门槛是按 1d 尺度标定的，换 label 会一并失真，
+#   必须同批重新标定门槛（属独立改动）。因此本仓当前做法是：**保持 1d 研究口径，把 freq
+#   收到 daily**；将来若要 weekly/monthly 交付，走 label_5d/label_20d 的档位（technical_weekly /
+#   technical_monthly / fundamental）并重标定门槛。
 #
-# 只有 technical_daily / technical_weekly / technical_monthly 三个子档才是真
-# "三对齐"（label 持有期 == 调仓持有期）。已知代价（接受）：1d IC 稳、4~5 日部分
-# 回吐的因子能过 stage_one，最终在含成本的 engine_gate 被拒，浪费部分挖掘算力；
-# 研究指标与实盘收益不可互相换算，UI 必须分列展示。
-#
-# ⚠ 不要把主档的 recommended_label_col 改成 derive_label_from_freq(freq) 来"消除
-#   不一致"：那等于换掉研究口径，而 min_abs_ic / min_train_icir 等门槛是按 label
-#   尺度标定的，会一并失真。真要收成单旋钮，属独立改动 + 需重标定门槛。
+# 旧设计（已废弃，留档避免误读）：label=研究尺子（IC/ICIR 按 label 持有期算，cost_bps=0）、
+#   freq=交付尺子（engine_gate 用真实行情按该频率回测、不读 label），两把尺子的落差由
+#   `min_cs_autocorr` 与 `turnover_thresholds_by_freq` 两个代理门缝住。
 
 # ── 注册表（唯一事实源）───────────────────────────────────────────────
 RESEARCH_MODES: dict[str, ResearchModeSpec] = {
@@ -92,12 +90,11 @@ RESEARCH_MODES: dict[str, ResearchModeSpec] = {
             "请自主挖掘A股日频价量因子，先训练集评估，再验证集检验；"
             "只有通过验证和去重门槛的因子才提交。"
         ),
-        # 放开调仓频率白名单：默认 GATE_FREQ=weekly，但允许 LLM/用户显式覆盖
-        # daily/weekly/monthly。注意本档是"研究口径 label_1d + 交付口径 weekly"的
-        # **刻意解耦**组合（见本文件顶部区块），不是三对齐子档。
+        # 2026-10-04 用户定调：label 与调仓频率**强制一致**（见本文件顶部区块）。
+        # 本档 label=1d ⇒ freq=daily（由 research_spec 的 label_freq_consistency 复查，不一致直接拒启动）。
         engine_gate_overrides={
-            "freq": "weekly",
-            "allowed_freqs": ["daily", "weekly", "monthly"],
+            "freq": "daily",
+            "allowed_freqs": ["daily"],
         },
     ),
     "fundamental": ResearchModeSpec(
@@ -156,7 +153,8 @@ RESEARCH_MODES: dict[str, ResearchModeSpec] = {
     ),
     # ── 三对齐子档位（2026-09-20）──
     # label 持有期 = 调仓频率持有期；快/中/慢信号分轨，各走对应 label + freq + 门槛。
-    # 注意：只有这三个子档是"对齐"的，主档（如 technical）是刻意解耦（见本文件顶部区块）。
+    # 2026-10-04 起**全部档位**都按该规则强制对齐（主档 technical/report 已收成 1d+daily，
+    # 见本文件顶部区块）；这三个子档仍是"快/中/慢分轨"的显式入口。
     "technical_daily": ResearchModeSpec(
         mode_id="technical_daily",
         label="日线技术·日频",
@@ -225,8 +223,11 @@ RESEARCH_MODES: dict[str, ResearchModeSpec] = {
             "复现通过后，围绕该机制做单维发散（窗长/算子/同族字段/中性化键/门控形态/交互结构，一次一维）。"
         ),
         engine_gate_overrides={
-            "freq": "weekly",
-            "allowed_freqs": ["daily", "weekly", "monthly"],
+            # 2026-10-04 用户定调：label 与调仓频率强制一致 → 本档 label=1d ⇒ freq=daily。
+            # （想要 weekly 交付的研报因子，请用 label_5d 的档位；换 label 属改研究口径，
+            #   须同步重标定 reproduce_min_abs_ic / min_train_* 等按 1d 尺度标定的门槛。）
+            "freq": "daily",
+            "allowed_freqs": ["daily"],
         },
         report_policy_overrides={
             "knowledge_mode": "mechanism_cards",
@@ -305,8 +306,9 @@ def ui_options() -> list[dict]:
 # 前端模式下拉（日线技术/基本面）退役后，档位由数据面多选自动推断：
 # 勾选基本面/股东面/机构面/股东集中面（慢因子数据源）→ fundamental 档
 # （label_20d + 松门槛 + monthly 门禁）；其余（纯价量族或混合）→ technical
-# 档（label_1d + 严门槛 + weekly 门禁）。混合勾选落 technical：融合因子以
-# 价量为主信号、1d 评估合理，且用户可用 rebalance_freq 显式覆盖门禁频率。
+# 档（label_1d + 严门槛 + daily 门禁）。混合勾选落 technical：融合因子以
+# 价量为主信号、1d 评估合理。用户显式给 rebalance_freq 时改走对应的
+# technical_{freq} 子档（label 与调仓频率对齐，2026-10-04 起全局强制一致）。
 
 _SLOW_FACETS: frozenset[str] = frozenset({"基本面", "股东面", "机构面", "股东集中面"})
 
@@ -317,10 +319,11 @@ def infer_research_mode(
 ) -> str:
     """按数据面多选自动推断研究档位（mode_id：technical/fundamental/technical_*）。
 
-    纯函数，前后端共享。空/未选 → technical（原默认行为不变）。
-    显式传入 rebalance_freq（daily/weekly/monthly）时，价量面走对应三对齐子档
-    （technical_daily/weekly/monthly，label 持有期与调仓频率对齐）；基本面面仍走
-    fundamental。主档（如 technical）与 rebalance_freq 刻意解耦，见本文件顶部区块。
+    纯函数，前后端共享。空/未选 → technical（label_1d + daily 门禁）。
+    显式传入 rebalance_freq（daily/weekly/monthly）时，价量面走对应**对齐**子档
+    （technical_daily/weekly/monthly，label 持有期 == 调仓持有期）；基本面面仍走
+    fundamental。2026-10-04 起 label 与调仓频率**强制一致**（见本文件顶部区块），
+    主档 technical/report 也已收成 1d + daily，不再有"解耦"组合。
     """
     facets = {str(f).strip() for f in (focus_facets or []) if str(f).strip()}
     if facets & _SLOW_FACETS:

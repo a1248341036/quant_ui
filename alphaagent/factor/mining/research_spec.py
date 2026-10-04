@@ -128,6 +128,23 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
     "research_mode": "technical",
     # 信息性提示：该模式建议的评估 label，前端/调用方可据此设置 --label-col。
     "recommended_label_col": "label_1d_open_to_open",
+    # ── label 与调仓频率**强制一致**（2026-10-04 用户定调：「调仓频率是多少，label 就应该多少」）──
+    # 规则：`delivery_policy.production.engine_gate.freq` 的持有期必须等于 label 的持有期，
+    # 否则 **fail-closed 拒绝启动**（不再是"刻意解耦 + 分档阈值折算"）。
+    # 为什么改（2026-10-04 实测）：旧组合（1d label + weekly 交付）里
+    #   · 研究口径按 1d 打分、交付口径按周频回测；
+    #   · 但 stage_one 的换手硬门拿**日频信号抖动**去撞 weekly 档阈值（0.65），
+    #     而 hold=label 天数=1 → 组合其实每天在换（实测 n_rebalances=1615、
+    #     avg_rebalance_side_turnover == avg_daily_side_turnover）→ "周频摊薄成本"的假设不成立。
+    # 取值：daily=1 / weekly=5 / monthly=20（交易日）。调大/调小 = 改口径，必须同步单测与 docs。
+    # 实现方向：**freq 缺省由 label 派生**（模式未显式声明 freq 时），显式声明但与之矛盾则报错。
+    # 注：本仓 min_abs_ic / min_train_icir / reproduce_min_* 等门槛是按 **1d 尺度**标定的，
+    #   所以当前 1d 研究口径下对齐结果 = freq:daily；若将来要 weekly 交付，必须同时换
+    #   label_5d_* 并**重标定这些门槛**（属独立改动，不可只改一侧）。
+    "label_freq_consistency": {
+        "enforce": True,
+        "freq_hold_days": {"daily": 1, "weekly": 5, "monthly": 20},
+    },
     # run 末尾兜底补交（2026-10-02）：训练过线但因 max_turns 耗尽**未提交**的因子，按 |ICIR|
     # 取前 N 个走**正常 submit 通路**补交（不绕过盲测/stage_one/stage_two/engine gate 任何门槛）。
     #   0 = 关闭。代价实测：单次 submit 约 5~10 分钟（盲测+stage_one+engine gate），
@@ -383,6 +400,11 @@ def default_research_spec(mode: str = "technical") -> dict[str, Any]:
     """
     spec = copy.deepcopy(DEFAULT_RESEARCH_SPEC)
     if mode == "technical":
+        # 2026-10-04：主档不再"完全等于 DEFAULT"——注册表里 technical 显式声明了对齐后的
+        # engine_gate（label 1d ⇒ freq=daily、白名单收成 [daily]）。这里必须应用该覆盖，
+        # 否则裸默认 spec 仍带 DEFAULT 的 weekly + 三档白名单（与 label_1d 不一致）。
+        _tech_gate = (get_research_mode("technical").engine_gate_overrides or {})
+        spec["delivery_policy"]["production"]["engine_gate"].update(_tech_gate)
         return spec
     mode_spec = get_research_mode(mode)
     spec["research_mode"] = mode
@@ -441,6 +463,57 @@ def _string_list(value: Any, name: str) -> list[str]:
     if not isinstance(value, list) or not all(isinstance(item, str) and item.strip() for item in value):
         raise ValueError(f"research_spec.{name}_must_be_string_list")
     return [item.strip() for item in value]
+
+
+def label_hold_days(label_col: Any) -> int:
+    """label 列名 → 名义持有期（交易日）。口径与 engine/submit 侧一致（无数字视为 1d）。"""
+    digits = "".join(ch for ch in str(label_col or "") if ch.isdigit())
+    return max(1, int(digits) if digits else 1)
+
+
+def ensure_label_freq_consistency(spec: dict[str, Any], *, label_col: str | None = None) -> None:
+    """校验 label 持有期 == engine_gate.freq 持有期（2026-10-04 用户定调，fail-closed）。
+
+    规则：「调仓频率是多少，label 就应该多少」（daily↔1d、weekly↔5d、monthly↔20d）。
+    `build_run_research_spec` 内联做一次（构建期）；API 入口在**用户显式覆盖 freq 之后**
+    再调用一次——否则覆盖发生在校验之后就成了绕过通道。
+
+    `label_col` 可传本次 run 实际使用的 label（params.label_col）；不传则用
+    `spec["recommended_label_col"]`。**两者都拿不到时跳过**（无法比较，交给下游
+    run 级校验），避免对"部分 spec"误报。
+    """
+    lfc = spec.get("label_freq_consistency")
+    lfc = lfc if isinstance(lfc, dict) else {}
+    if not lfc.get("enforce", True):
+        return
+    label_col = label_col or spec.get("recommended_label_col")
+    if not label_col:
+        return
+    hold_map = {"daily": 1, "weekly": 5, "monthly": 20}
+    raw_map = lfc.get("freq_hold_days")
+    if isinstance(raw_map, dict) and raw_map:
+        hold_map = {str(k).lower(): int(v) for k, v in raw_map.items()}
+    eg = ((spec.get("delivery_policy") or {}).get("production") or {}).get("engine_gate") or {}
+    freq = str(eg.get("freq") or "").lower()
+    label_col = str(label_col)
+    freq_hold = hold_map.get(freq)
+    if freq_hold is None:
+        raise ValueError(
+            f"research_spec.label_freq_consistency.freq_unknown: engine_gate.freq={freq!r} "
+            f"不在 freq_hold_days 映射内（{sorted(hold_map)}）"
+        )
+    label_hold = label_hold_days(label_col)
+    if freq_hold != label_hold:
+        inverse = {days: name for name, days in hold_map.items()}
+        raise ValueError(
+            "research_spec.label_freq_consistency.mismatch: "
+            f"engine_gate.freq={freq}（持有 {freq_hold}d）与 recommended_label_col={label_col}"
+            f"（持有 {label_hold}d）不一致。按『调仓频率是多少，label 就应该多少』必须相同："
+            f"要么把 label 改成 {freq_hold}d 标签（label_freq_consistency.freq_hold_days 里有对应档；"
+            "换 label 属改研究口径，须同步重标定 min_abs_ic/min_train_icir 等门槛），"
+            f"要么把 freq 改成与 {label_hold}d 对应的 {inverse.get(label_hold, 'daily')}"
+            "（可用 label_freq_consistency.enforce=false 临时放行）"
+        )
 
 
 def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
@@ -700,6 +773,40 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
         eg["capital"] = _bounded_number(eg.get("capital"), "engine_gate.capital", 10_000, 1_000_000_000)
     if eg.get("min_am20_yuan") is not None:
         eg["min_am20_yuan"] = _bounded_number(eg.get("min_am20_yuan"), "engine_gate.min_am20_yuan", 0, 1_000_000_000_000)
+
+    # ── label 与调仓频率强制一致（2026-10-04 用户定调，fail-closed）──────────────
+    # 规则：engine_gate.freq 的持有期 == label 的持有期（daily↔1d、weekly↔5d、monthly↔20d）。
+    # 模式**未显式声明** freq 时，由 label 派生（这样裸 spec 也自洽）；显式声明但与 label
+    # 矛盾则报错并给出可执行修法（改 label 或改 freq）。
+    _lfc = spec.get("label_freq_consistency")
+    if not isinstance(_lfc, dict):
+        _lfc = {}
+    _lfc["enforce"] = _require_bool(_lfc.get("enforce", True), "label_freq_consistency.enforce")
+    _raw_map = _lfc.get("freq_hold_days")
+    if not isinstance(_raw_map, dict) or not _raw_map:
+        _raw_map = {"daily": 1, "weekly": 5, "monthly": 20}
+    _hold_map: dict[str, int] = {}
+    for _freq_key, _days in _raw_map.items():
+        _hold_map[str(_freq_key).lower()] = int(
+            _bounded_number(_days, f"label_freq_consistency.freq_hold_days.{_freq_key}", 1, 120)
+        )
+    _lfc["freq_hold_days"] = _hold_map
+    spec["label_freq_consistency"] = _lfc
+
+    if _lfc["enforce"]:
+        _label_hold = label_hold_days(spec.get("recommended_label_col"))
+        _freq_to_label = {d: f for f, d in _hold_map.items()}
+        _derived = _freq_to_label.get(_label_hold, "daily")
+        _declared = str(eg.get("freq") or "").lower()
+        if _declared != _derived:
+            # 2026-10-04 用户定调：label 与调仓频率**强制一致**。归一化阶段以 label 为准把
+            # freq 收到对应档位（daily↔1d、weekly↔5d、monthly↔20d），并把白名单收成单值，
+            # 防止 LLM 用别的频率提交；用户显式覆盖 freq 的路径由 API 入口
+            # `ensure_label_freq_consistency` 硬校验（覆盖发生在归一化之后）。
+            eg["freq"] = _derived
+            eg["allowed_freqs"] = [_derived]
+    # 最终一致性校验（fail-closed；与 API 入口共用同一函数，避免口径漂移）
+    ensure_label_freq_consistency(spec, label_col=spec.get("recommended_label_col"))
 
     # ── prompt_policy：分阶段注入策略（2026-09-12 新增）──
     pp = spec.get("prompt_policy")
