@@ -214,6 +214,12 @@ class AgentRun:
         # 时间窗口推断拉回 running（否则前端永远卡绿"运行中"）。
         if self.status in {"stopped", "completed", "failed"}:
             return
+        if self.status == "stopping":
+            # 停止请求已落盘、进程可能还没退出：**不得**被 mtime 启发式拉回 running
+            # （后端重启后 run_meta 是唯一真相）。2026-10-04 实测两次复活事故。
+            self.status = "stopped"
+            self.save_meta()
+            return
         # 终态事件优先，其次若轨迹仍在推进（15 分钟内有新事件）视为 running。
         terminal = _terminal_from_events()
         if terminal is not None:
@@ -473,6 +479,13 @@ def _load_run_from_disk(run_dir: Path) -> AgentRun | None:
                 params["research_spec"] = loaded_spec
                 params.setdefault("research_mode", loaded_spec.get("research_mode"))
     status = _status_from_events(events)
+    # 2026-10-04 实测：stop 已落盘的 run 在后端重启后被下面的"日志 15 分钟内新鲜"启发式
+    # **复活成 running**（当天两次：段 A→B、段 C→D 各害得下一段 monitor 白等 1–2 分钟）。
+    # run_meta 里的终态是后端写的、且子进程只在**启动时**重写该文件（启动之后不再动），
+    # 所以终态优先于启发式推断。
+    persisted_status = str(metadata.get("status") or "")
+    if persisted_status in {"stopped", "stopping", "completed", "failed"}:
+        status = "stopped" if persisted_status == "stopping" else persisted_status
     restored_pid = metadata.get("pid")
     # 外部启动（CLI/脚本）的 run 没有进程句柄：轨迹仍在推进时视为运行中，
     # 而不是误标 interrupted。15 分钟无新事件才回落到事件推导状态。
@@ -830,10 +843,16 @@ def stop_run(run_id: str) -> bool:
         return True
     if run.process.poll() is not None:
         run.refresh()
+        run.save_meta()   # 2026-10-04：终止路径也必须落盘，否则重启后复活（见下）
         return True
     run.process.terminate()
     run.status = "stopping"
+    # 2026-10-04 实测：原实现只在"无句柄"分支 save_meta，终止分支不落盘 →
+    # run_meta 仍写着 running → **后端一重启，已 stop 的 run 就被复活成 running**
+    # （当天两次：段 A→B、段 C→D 各害得下一段 monitor 白等 1–2 分钟）。
+    run.save_meta()
     return True
+
 
 
 def queue_message(run_id: str, content: str) -> bool:
