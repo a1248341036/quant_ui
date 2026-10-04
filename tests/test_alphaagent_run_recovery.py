@@ -55,6 +55,53 @@ def test_pid_alive_probe() -> None:
     assert svc._pid_is_alive(os.getpid()) is True
 
 
+def test_stop_marker_status_is_sticky_across_restore(tmp_path) -> None:
+    """已 stop 的 run（run_meta.status=stopping）在后端重启后不得复活成 running。
+
+    2026-10-04 实测两次：段 A→B、段 C→D 各一次 —— 已 stop 的 run 被"日志 15 分钟内新鲜"
+    的启发式拉回 running，害得下一段 monitor 白等 1–2 分钟才靠再 stop 清掉。
+    """
+    d = _make_run_dir(tmp_path, "stoppedrun", None)
+    meta = json.loads((d / "run_meta.json").read_text(encoding="utf-8"))
+    meta["status"] = "stopping"
+    (d / "run_meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    run = svc._load_run_from_disk(d)
+    assert run is not None
+    assert run.status == "stopped", "run_meta 的终态必须优先于 mtime 启发式"
+    # 没有进程句柄时，refresh 也不得把它拉回 running
+    run.refresh()
+    assert run.status == "stopped"
+
+
+def test_stop_run_persists_status_to_meta(tmp_path) -> None:
+    """终止路径必须 save_meta：否则 run_meta 仍写着 running → 后端重启即复活。"""
+    d = _make_run_dir(tmp_path, "stopwrite", None)
+    run = svc._load_run_from_disk(d)
+    assert run is not None
+
+    class _Proc:
+        terminated = False
+        pid = 424242  # save_meta 会写 pid
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            self.terminated = True
+
+    proc = _Proc()
+    run.process = proc
+    run.status = "running"
+    svc._RUNS[run.run_id] = run
+    try:
+        assert svc.stop_run(run.run_id) is True
+        assert proc.terminated is True
+        meta = json.loads((d / "run_meta.json").read_text(encoding="utf-8"))
+        assert meta.get("status") == "stopping", "stop 必须把状态落盘（本次修复的核心）"
+    finally:
+        svc._RUNS.pop(run.run_id, None)
+
+
 def test_dead_pid_restore_is_interrupted(tmp_path) -> None:
     dead = subprocess.Popen([sys.executable, "-c", "pass"]).pid
     # 让子进程确实退出
