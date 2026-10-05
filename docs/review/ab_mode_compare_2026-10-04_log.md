@@ -273,3 +273,72 @@
 **对后续 A/B 的影响**：下一轮对照起，technical/report 的换手硬门与交付回测节奏都变成日频，
 "周频折让"消失 → 快信号必须靠结构变慢过门；这也让"研报 vs 自挖掘"的比较更接近
 "同一把尺子下的产出率"。
+
+---
+
+## 八、整夜对齐后 A/B（2026-10-05 00:59 → 10:00）——用户定调"跑到明天早上10点"
+
+**协议**：`report` ↔ `technical` **各 2 小时交替**（首段 report，因为上一段 D 是 technical），
+直到 10:00；每段同一套 monitor 参数（`--max-turns 8`、自由探索、`--backend-hidden`、
+`--stall-warn 15`、`--stall-kill 25`、`--restart-backend`）。执行者：`ab_alternate_runner.py`
+（仓库外 `C:\Users\zhoubw\Desktop\quant\`，runner PID 22716）。
+
+**与前几轮的关键差别**：本轮起两个模式都已按 commit `09c06c0` **强制 label↔freq 一致**
+（`label_1d + daily`）：换手硬门 0.50、`avg_rebalance_side_turnover` 口径 ——
+**两段用同一把尺子**，不再有"weekly 折让"。
+
+**已核验（生产口径生效）**：首个 report run `3a6a2b121a10` 的 `run_meta` 显示
+`label_col=label_1d_open_to_open`、`engine_gate.freq=daily`、`allowed_freqs=['daily']`、
+`label_freq_consistency={'enforce': True, 'freq_hold_days': {'daily':1,'weekly':5,'monthly':20}}` ✅
+（后端已由 monitor 以**隐藏窗口**重启，日志落 `logs/backend_console_20261005.log`）。
+
+| 段 | 模式 | 计划窗口 | 实际 run | 评估行 | 提交 | 候选 | 备注 |
+|---|---|---|---|---|---|---|---|
+| E | report | 00:59–02:59 | `3a6a2b121a10`(31.7m) / `0c1de8885481`(55.9m) / `29033fb22598`(18.1m) / `7685d5be4cbb`(跨窗) | **559** | 1 | **0** | 真判定 154 / **PASS 4** / 保真 4/10；唯一提交 `ff_main_lowturn_softgate` 卡盲测 `abs_ic` |
+| F | technical | 03:28–05:28 | `f3612fef8669`(340 train) / `67f382c3f6c8`(151) | **616** | 2 | **0** | 段 E monitor 03:27:40 退出（exit=0），runner 自动切 technical ✅ |
+| G | report | 05:30–07:30 | `d4e160c2efe1`(238 train) / `f1e977e5c3b1`(跨窗) | **610** | **5** | **0** | 真判定 33 / PASS 1；提交全卡盲测/交付门 |
+| H | technical | 08:22–10:00 | `6c91260e4f9c`(67.9m，178 train) / `1ecd976f8bb6`(跨窗) | **496** | 3 | **0** | 段 G monitor 08:22:05 退出；H 因到 10:00 自动收窄为 1h37m |
+
+> 段 E 与旧口径（weekly）的 report 段对比：eval 行 559（B 段 499 / C 段 423）、提交 1（3 / 1）、
+> 复现 PASS 4（4 / 3）、候选 0（0 / 0）——**换成 daily 后 report 段的产出结构没变**：
+> 复现仍能过（PASS 4），但提交仍在盲测/交付门前止步。
+
+> 统计口径与前四段一致（等长窗口逐行时间戳；剔除 judge"跳过"行）。
+> 巡检节奏 10 分钟一次，只报里程碑（run 结束 / 提交 / 候选 / 上游中断 / 看门狗动作）。
+
+### 8.1 整夜结论（4 段自动交替跑完，10 个 run）
+
+**等长窗口（各段前 1h37m，消除 H 段较短影响）**：
+
+| 段 | 模式 | 评估行 | 提交 | 候选 | 复现判定/PASS | 死路硬拦 | 评估行/小时 |
+|---|---|---|---|---|---|---|---|
+| E | report | 453 | 1 | 0 | 82 / 4 | 104 | 279 |
+| F | technical | **538** | 2 | 0 | — | 134 | **332** |
+| G | report | 491 | **5** | 0 | 33 / 1 | 64 | 303 |
+| H | technical | 496 | 3 | 0 | — | 162 | 306 |
+
+（原生窗口 2h 的数字：E 559 / F 616 / G 610 / H 496 评估行；提交 1/2/5/3；**候选全 0**。）
+
+1. **候选 0 : 0** —— 4 段、10 个 run、11 次提交，**没有分出胜负**。
+2. **"自挖掘评估更多"的优势在对齐后大幅收窄**：等长窗口 report 均值 472 行、technical 均值 517 行
+   （每小时 279–303 vs 306–332，technical 仅高 8–10%）。旧口径那轮是 747 vs 499（+50%）。
+   可能与"周频折让消失后，快信号不再被大批推进交付门口反复重试"有关，也可能是 run 间方差
+   —— 要定论需再来一夜（本轮唯一的强观察是**差距变小了**）。
+3. **卡点不同**：
+   - technical：**死路硬拦 104–162 次/段**（自由探索反复撞已知死路），提交卡换手门/ICIR。
+     新口径在生产日志实测生效：`stage_one_failed:avg_rebalance_side_turnover=0.81 > 0.50
+     (rebalance_freq=daily；该指标=按声明频率调仓的单边换手…)`——该因子 `ic=0.0277 / icir=0.2817`
+     已过候选统计线，仍被换手门拦下；
+   - report：**复现仍能过门**（E 段 4 次 PASS、G 段 1 次），提交卡盲测 `abs_ic` / 交付门。
+4. 整夜合计：**提交 15 次、候选 0、复现 PASS 6**；monitor 日志**无**停滞告警/上游中断/退避。
+
+### 8.2 机制验证（本轮顺带确认）
+
+- **自动交替可靠**：`ab_alternate_runner.py`（PID 22716）完成 report→technical→report→technical
+  四段切换，每段 monitor 退出码 0，段间无人工干预；尾段到 10:00 自动收窄并停止开新段。
+- **`--backend-hidden` 生效**：段启动日志为「拉起后端: …（隐藏窗口；日志 → `logs/backend_console_20261005.log`）」
+  ——整夜无控制台窗口可被误关，也没再出现"后端被杀 → 空等 5 分钟"。
+- **口径强制一致在生产生效**：首个 run 的 `run_meta` 即 `engine_gate.freq=daily`、
+  `allowed_freqs=['daily']`、`label_freq_consistency.enforce=True`；拒绝文案同步为新指标名与 0.50 档。
+- **运维注记**：本夜巡检中断过一次（03:31 宿主回合被中断，非实验中断）——**挖掘与 runner 全程未受影响**，
+  runner 日志显示 4 段连续、退出码均为 0。教训：整夜实验应把"实验进程"与"巡检回合"解耦（本轮已如此）。
