@@ -574,6 +574,57 @@ class FactorSubmitService:
         # 门槛前三段耗时分解：DSL 物化 / train 指标 / 组合换手预检
         log_step("submit.precheck", name, mat_ms=mat_ms, train_ms=train_ms, qp_ms=qp_ms)
 
+        # ── stage_one 统计/换手预检（盲测之前，2026-10-06 内存优化 ④）────────
+        # stage_one_stats 只依赖 metrics_train（:492 已算）+ qp_metrics（:510 已算，
+        # :547 已写入 metrics_train["quantile_portfolio"]），不依赖盲测 test_metrics。
+        # 提前判定：统计/换手/自相关任一不达标直接拒绝，跳过盲测的
+        # compute_ingest_metrics（~488s + ~2GB，是 submit 路径最贵的一步）。
+        # 多数候选因子死在 stage_one 统计门（IC/覆盖/换手/自相关），盲测对它们是纯浪费。
+        # 语义等价性：原流程 blind_test→stage_one_stats，新流程 stage_one_stats→blind_test；
+        #   - stage_one 失败：原流程 blind_test 通过后走到 :644 被拒，新流程直接拒（跳过盲测）→ 同结果；
+        #   - blind_test 失败：原流程 :620 被拒，新流程 stage_one 通过后跑盲测被拒 → 同结果；
+        #   - 两者都过：继续 val_retention/similarity → 同结果。
+        gate_reasons = self.checker.stage_one_stats(
+            metrics_train, rebalance_freq=chosen_freq
+        ).fail_reasons
+        log_step(
+            "submit.stage_one_stats",
+            name,
+            ic=metrics_train.get("ic"),
+            icir=metrics_train.get("icir"),
+            coverage=metrics_train.get("factor_coverage"),
+            autocorr=metrics_train.get("cs_pearson_autocorr"),
+            turnover=(metrics_train.get("quantile_portfolio") or {}).get("avg_daily_side_turnover"),
+            fail=gate_reasons or None,
+            ms=_stage_ms(),
+        )
+        if gate_reasons:
+            # stage_one 统计/换手不达标：直接拒绝，不跑盲测（省 ~488s + ~2GB）。
+            # payload 结构对齐盲测拒绝 (:620-642)，delivery_check.blind_test 标记
+            # skipped（未执行，非失败），stage_one.fail_reasons 填实际原因。
+            payload = {
+                "ok": False,
+                "stored": False,
+                "factor_id": factor_id,
+                "factor_name": name,
+                "comment": comment.strip(),
+                "interaction": interaction,
+                "eval_range": {"start": ctx.train_start, "end": ctx.val_end},
+                "metrics": dict(metrics_train),
+                "test_holdout": None,
+                "candidate_stored": False,
+                "rebalance_freq": chosen_freq,
+                "delivery_check": {
+                    "blind_test": {"passed": False, "fail_reasons": [], "skipped": True},
+                    "stage_one": {"passed": False, "fail_reasons": list(gate_reasons)},
+                    "stage_two": {"passed": False, "fail_reasons": []},
+                },
+                "skipped_reason": f"stage_one_failed:{','.join(gate_reasons)}",
+                "error_type": "StageOneError",
+                "error": f"stage_one_failed:{','.join(gate_reasons)}",
+            }
+            return payload
+
         # ── 盲测终审（stage_one 之前，不通过不进候选池）──────────────────
         # test 段从未参与 train/val/engine_gate，是最干净的样本外验证。
         # IC 保留比 ≥ 0.50 + 方向一致性 → 不通过直接拒绝，不消耗后续算力。
@@ -641,19 +692,8 @@ class FactorSubmitService:
             }
             return payload
 
-        gate_reasons = self.checker.stage_one_stats(metrics_train, rebalance_freq=chosen_freq).fail_reasons
-        log_step(
-            "submit.stage_one_stats",
-            name,
-            ic=metrics_train.get("ic"),
-            icir=metrics_train.get("icir"),
-            coverage=metrics_train.get("factor_coverage"),
-            autocorr=metrics_train.get("cs_pearson_autocorr"),
-            turnover=(metrics_train.get("quantile_portfolio") or {}).get("avg_daily_side_turnover"),
-            fail=gate_reasons or None,
-            ms=_stage_ms(),
-        )
-
+        # stage_one_stats 已在盲测前预检（:587），此处 gate_reasons 沿用预检结果。
+        # 盲测通过 + stage_one_stats 通过 → 继续 val_retention / similarity。
         val_metrics: dict[str, Any] = {}
         if not gate_reasons and ctx.val_start > ctx.train_end:
             # 样本外保留比：|val_ic|/|train_ic| ≥ 阈值且方向不反转

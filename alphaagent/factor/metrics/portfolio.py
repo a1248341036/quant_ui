@@ -8,6 +8,7 @@ from typing import Any, Sequence
 import numpy as np
 import pandas as pd
 
+from alphaagent.factor.metrics._factor_cache import factor_f64
 from alphaagent.factor.metrics._label_cache import label_f64
 
 from ._core import spearman_ic
@@ -169,9 +170,12 @@ def quantile_portfolio_metrics(
     grp_cnt: dict[int, int] = {}
     n_days = 0
 
-    f_arr_all = factor.to_numpy(dtype=np.float64, copy=False)
+    f_arr_all = factor_f64(factor)
     l_arr_all = label_f64(label)
     inst_all = np.asarray(factor.index.get_level_values("instrument"))
+    # 调用方传了预计算切片函数就用它（包装层 __init__.py:250 自动注入模块级
+    # _day_slices，identity-cached on id(index)）；否则 slices=None 走 fallback
+    # groupby 路径。f_arr_all/l_arr_all 已是 float64 视图，两条路径都直接复用。
     slices = _day_slices(factor.index, time_level) if _day_slices else None
 
     def _quantile_portfolio_day(xf, yl, inst, el):
