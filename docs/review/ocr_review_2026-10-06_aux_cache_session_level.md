@@ -20,16 +20,21 @@ skill `open-code-review`），只审代码、排除 docs。
 
 ## 结论
 
-**不具备合并条件。** 1 个已实测复现的 **critical 正确性缺陷**（同一 session 内跨因子指标串台，
-直接污染 stage_one 换手硬门），另有 **3 个 high**（stage_one 观测口径静默失真、因子落账数据形态变化、
-辅频表全列聚合反向开销）。**本次只评审、未改任何代码**（全部 findings 状态 = 未修）。
+**评审结论：不具备合并条件。** 1 个已实测复现的 **critical 正确性缺陷**（同一 session 内跨因子指标串台，
+直接污染 stage_one 换手硬门），另有 **3 个 high**（stage_one 观测口径静默失真、error_type 分桶分叉、
+提前拒绝 payload 的落账形态变化）。
 
-| 级别 | 条数 |
-|---|---|
-| Critical | 1 |
-| High | 3 |
-| Medium | 4 |
-| Low | 3 |
+**处置（2026-10-06）**：已按方案 B 修复 **C-1 / H-1 / H-2 / H-3**，落在分支 `fix/aux-cache-crosstalk`
+（基于 `feat/aux-cache-session-level@a82c273`，在独立 worktree `.worktrees/aux-cache-fix` 开发，未触碰
+主工作区检出）。Medium / Low 共 7 条**未修**，留待方案 C。评审当时的状态是「只评审、未改代码」，
+下方 findings 已就地标注修复情况。
+
+| 级别 | 条数 | 修复状态 |
+|---|---|---|
+| Critical | 1 | C-1 ✅ |
+| High | 3 | H-1 / H-2 / H-3 ✅ |
+| Medium | 4 | 未修（留待方案 C） |
+| Low | 3 | 未修（留待方案 C） |
 
 ---
 
@@ -73,6 +78,10 @@ B（_factor_f64_override 绕过缓存）1.7917  ← B 真值
 命中率不受影响：同一次 submit 的 `submit.py:510/:529` 与同一次 eval 的多插件调用传的是**同一 Series 对象**；
 不同表达式/不同候选天然是新对象，自动 miss。备选：由调用方传入表达式/数值指纹作为键。
 
+**✅ 已修**（`fix/aux-cache-crosstalk`）：`_factor_cache.py` 键改为 `id(factor)` + `weakref.ref(factor)`；
+新增 `tests/test_factor_f64_identity.py`（3 用例：身份不共享 / 同对象命中 / 端到端换手-收益对照），
+并用变异插件把 `factor_f64` 换回旧实现验证该文件**确实会红**（3 用例里 2 个失败：数组串台 + 换手 1.625 vs 1.75）。
+
 ---
 
 ## High
@@ -93,11 +102,18 @@ return，该行永不出现。而 `alphaagent/factor/mining/run_metrics.py:61-70
 **建议**：提前拒绝分支补打一条兼容的 `submit.stage_one | ... passed=False | fail=[...]`（或改为按
 `submit.stage_one_stats` 统计并同步改 run_metrics）。
 
+**✅ 已修**：提前拒绝分支补打 `log_step("submit.stage_one", name, passed=False, fail=list(gate_reasons), ms=...)`。
+回归 `tests/test_submit_payload.py::test_submit_stage_one_precheck_observability` 用**真实的**
+`run_metrics._parse_steps` 解析该日志行，断言 `stage_one_fail == 1`、`stage_one_pass == 0`、失败原因直方图非空。
+
 ### H-2 `error_type` 分桶分叉
 
 新路径 `submit.py:623` 写 `"StageOneError"`，既有 stage_one 失败路径 `submit.py:881` 写
 `"StageOneDeliveryCheckError"`；`run_metrics.py:230 _bucket_error` 直接透传原始字符串 →
 同一类失败在 bench 错误直方图里被拆成两个桶，历史对比断档。
+
+**✅ 已修**：提前拒绝路径改用 `StageOneDeliveryCheckError`（与 `submit.py:881` 同源）。全仓 grep 已无
+`StageOneError` 写入点，无测试/脚本断言旧字符串。
 
 ### H-3 仅 stage_one 失败的因子失去原有落账数据（payload 形态变化）
 
@@ -113,6 +129,17 @@ return，该行永不出现。而 `alphaagent/factor/mining/run_metrics.py:61-70
 
 > 说明：REJECT/ACCEPT 的**最终判定**确实等价（stage_one 不过，两条顺序都拒），但**可观测产物不等价**。
 > `submit.py:603` 注释「payload 结构对齐盲测拒绝 (:620-642)」对不上旧 stage_one 拒绝路径（:879 起）。
+
+**✅ 已修（零新增耗时）**：payload `metrics` 改走新增的 `_stage_one_precheck_metrics()`
+（`submit.py:278-304`）—— 补 `train_ic/train_icir/train_rank_ic` 扁平键（与正常路径 `:800-804` 同源）、
+剔除 `group_means` 大数组（与 `:817` 同源），payload 顶层新增 `blind_test_skipped: True` 显式声明盲测未执行；
+函数 docstring 声明本 payload 的 `ic/icir` 是 **train 窗口**值（正常路径为全窗口）。**val/test 指标仍不产出**
+——那是本优化要省下的数百秒，属有意保留的差异，不再让 `None` 冒充「已执行无数据」。
+
+> 修复期复核：`memory/ingestion.py:176-184` 的 `test_*` setdefault 取到 `None` 后，会被
+> `schema._compact_metrics` 的 `_safe_float` 过滤（`memory/schema.py:742-755`），且 `_classify`
+> 不读 `test_ic` → **该处无实际污染**，故本次**未改** `ingestion.py`（避免无效果改动）。
+> 记忆侧的真实影响只剩「这类因子没有盲测证据」，即优化的既定代价。
 
 ---
 
@@ -198,6 +225,8 @@ full split（production_delivery / engine_preview，`eval/service.py:371` 显式
 
 ## 复现与验证记录
 
+### 评审期（全程只读）
+
 | 项 | 命令 / 产物 | 结果 |
 |---|---|---|
 | 缓存键冲突（裸层） | `%TEMP%\repro_factor_cache.py` | `B -> [1 2 3 4 5 6]`（真值 `[9 8 7 6 5 4]`）；`_factor_f64_override` 路径返回真值 |
@@ -205,7 +234,18 @@ full split（production_delivery / engine_preview，`eval/service.py:371` 显式
 | 现有测试（均绿、但不覆盖新缓存契约） | `pytest tests/test_alphaagent_metrics.py tests/test_metrics_fastpaths.py tests/test_submit_metrics_cache.py tests/test_submit_payload.py tests/test_blind_test.py tests/test_delivery_checker.py -q` | **61 passed** |
 | OCR 原始输出 | `%TEMP%\ocr_aux_cache_out.txt` | 7 findings，2 次 provider 500 重试后成功 |
 
-本次评审**全程只读**：未改仓库任何文件（`git status` 与开工前一致，仅原有的 `?? .worktrees/`、`?? blobs/`）。
+评审阶段未改仓库任何文件（`git status` 与开工前一致，仅原有的 `?? .worktrees/`、`?? blobs/`）。
+
+### 修复期（方案 B，worktree `.worktrees/aux-cache-fix`，分支 `fix/aux-cache-crosstalk`）
+
+| 项 | 命令 / 产物 | 结果 |
+|---|---|---|
+| 新增回归文件 | `tests/test_factor_f64_identity.py`（3 用例） | 全绿 |
+| 变异校验（证明用例真能抓到 C-1） | `pytest tests/test_factor_f64_identity.py -q -p ocr_mutation_plugin`（临时插件把 `factor_f64` 换回旧键实现，插件在 `%TEMP%`，不入库） | **2 failed / 1 passed**（数组串台 + 端到端换手 1.625 ≠ 1.75）→ 用例有效 |
+| 相关回归（19 文件，含新增 4 个用例） | `pytest <19 files> -q --tb=no` | **213 用例：208 passed / 5 failed** |
+| 基线对照（同一提交 `a82c273`、独立 worktree `.worktrees/aux-cache-baseline`，18 文件） | `pytest <同集合去掉新文件> -q --tb=no` | **209 用例：204 passed / 5 failed**，失败项与修复后**逐项同一批** |
+| 5 项既存失败 | `test_depth_curve.py::test_tradable_mask_liquidity`、`::test_quantile_portfolio_plugin_depth_lens`、`test_yield_improvements.py::TestNearMissHint`（3 项） | 基线同样失败 → **非本次改动引入** |
+| 导入路径校验 | `python -c "import alphaagent; print(alphaagent.__file__)"`（PYTHONPATH 指向 worktree） | 确认跑的是 worktree 代码而非主工作区 |
 
 ## 为什么本分支的自验证没抓到 C-1（盲区）
 
@@ -215,17 +255,26 @@ full split（production_delivery / engine_preview，`eval/service.py:371` 显式
 的键冲突用例。`tests/test_submit_metrics_cache.py` 只覆盖 ingest 缓存（按数值指纹为键，是对的），
 未覆盖 `factor_f64` 的身份契约。
 
-**建议补两条确定性回归**：
+**✅ 已补（两条都落地）**：
 
-1. `factor_f64`：两个 `name=None`、共享同一 index 对象、数值不同的 Series，必须各自返回自己的数组（含
-   `_factor_f64_override` 对照）；
-2. 同 session 连续两次 submit（或同一 split 面板上两个不同表达式）的 `quantile_portfolio` 换手/收益，
-   必须与「每个因子单独一次干净评估」逐值一致。
+1. `factor_f64`：两个 `name=None`、共享同一 index 对象、数值不同的 Series 必须各自返回自己的数组
+   → `tests/test_factor_f64_identity.py::test_shared_index_and_absent_name_do_not_share_values`
+   （另加 `test_same_series_object_still_hits_cache` 锁住「同对象仍命中」的性能契约）；
+2. 「先算 A 再算 B」的组合指标必须等于「绕过缓存单独算 B」→ 同文件
+   `test_quantile_portfolio_not_contaminated_across_factors`（断言换手 + 多头年化 + 夏普逐值一致，
+   并自带「A/B 换手可区分」的夹具自检，防止用例变成空转）；
+   另在 `tests/test_submit_payload.py::test_submit_stage_one_precheck_observability` 里锁住提前拒绝分支的
+   日志/error_type/payload 口径（H-1/H-2/H-3）。
 
-## 处置建议（待定，本次不改）
+## 处置方案与状态（2026-10-06）
 
-| 方案 | 内容 | 适用 |
+| 方案 | 内容 | 状态 |
 |---|---|---|
-| A（推荐先做） | 只修 C-1（`factor_f64` 键改 `id(factor)` + weakref）+ 补上述两条回归测试 | 最小止血，避免误判/造假继续产生 |
-| B | A + H-1/H-2/H-3（补 `submit.stage_one` 兼容日志、统一 error_type、提前拒绝 payload 对齐旧口径） | 保住 bench 台账与研究记忆可比性 |
-| C | 全量（含 M-1 aux 列收窄、M-2 full split 键、M-3 锁范围、M-4 aux 弱引用化、L-1~L-3） | 与本分支「并发内存优化」的目标闭环 |
+| A | 只修 C-1（`factor_f64` 键改 `id(factor)` + weakref）+ 补上述两条回归测试 | ✅ 已做（`fix/aux-cache-crosstalk`） |
+| B | A + H-1/H-2/H-3（补 `submit.stage_one` 兼容日志、统一 error_type、提前拒绝 payload 口径对齐） | ✅ 已做（本分支；用户 2026-10-06 选定） |
+| C | 全量（含 M-1 aux 列收窄、M-2 full split 键、M-3 锁范围、M-4 aux 弱引用化、L-1~L-3） | ⏸️ 待定（未做） |
+
+**改动文件（方案 B）**：`alphaagent/factor/metrics/_factor_cache.py`（C-1）、
+`alphaagent/factor/mining/delivery/submit.py`（H-1/H-2/H-3 + 新增 `_stage_one_precheck_metrics`）、
+`tests/test_factor_f64_identity.py`（新）、`tests/test_submit_payload.py`（+1 用例）、本文件。
+**明确未改**：`memory/ingestion.py`（复核后确认无实际污染，见 H-3 下的说明）。
