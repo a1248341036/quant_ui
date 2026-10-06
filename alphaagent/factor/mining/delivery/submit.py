@@ -275,6 +275,35 @@ def _cached_ingest_metrics(
     return metrics
 
 
+def _stage_one_precheck_metrics(metrics_train: dict[str, Any]) -> dict[str, Any]:
+    """stage_one 提前拒绝的落账指标：train 窗口指标 + 显式 ``train_*`` 扁平键。
+
+    2026-10-06 OCR 修复（H-3）：正常交付路径会把 metrics_train 展平成 ``train_ic/
+    train_icir/train_rank_ic``（见本文件 reported 构建处），下游研究记忆
+    （``memory/ingestion.py``）与 registry 检索都读这些键；提前拒绝路径原先直接塞
+    ``dict(metrics_train)``，没有扁平键，且把 ``group_means`` 大数组一并带走。
+
+    **口径声明**：本 payload 的 ``ic/icir`` 是 **train 窗口**值（正常路径的 ``ic`` 是
+    全窗口值）；val/test 指标**故意不产出**——盲测与 val 评估正是本优化要省下的
+    数百秒。调用方以 payload 顶层的 ``blind_test_skipped`` +
+    ``delivery_check.blind_test.skipped`` 区分"未执行"与"已执行无数据"。
+    """
+    out = dict(metrics_train)
+    for key in ("ic", "icir", "rank_ic"):
+        val = out.get(key)
+        if val is None:
+            continue
+        try:
+            if np.isfinite(float(val)):
+                out[f"train_{key}"] = round(float(val), 6)
+        except (TypeError, ValueError):
+            continue
+    qp = out.get("quantile_portfolio")
+    if isinstance(qp, dict):  # 与正常路径一致：group_means 不进 payload
+        out["quantile_portfolio"] = {k: v for k, v in qp.items() if k != "group_means"}
+    return out
+
+
 class FactorSubmitService:
     """两阶段提交：海选候选池，再精筛进入正式 FactorZoo。"""
 
@@ -600,8 +629,21 @@ class FactorSubmitService:
         )
         if gate_reasons:
             # stage_one 统计/换手不达标：直接拒绝，不跑盲测（省 ~488s + ~2GB）。
-            # payload 结构对齐盲测拒绝 (:620-642)，delivery_check.blind_test 标记
-            # skipped（未执行，非失败），stage_one.fail_reasons 填实际原因。
+            # 可观测性/口径对齐（2026-10-06 OCR 修复 H-1/H-2/H-3）：
+            #   1) 补打 submit.stage_one 兼容日志 —— run_metrics 按 "submit.stage_one |"
+            #      行统计 stage_one_fail 与失败原因直方图（fail=[...]）；不补则该指标
+            #      静默掉到 0，bench diff 会把"口径丢失"读成"改善"。
+            #   2) error_type 与既有 stage_one 拒绝路径（本文件 StageOneDeliveryCheckError）
+            #      统一，避免 _bucket_error 把同一类失败拆成两个桶。
+            #   3) metrics 走 _stage_one_precheck_metrics（train_* 扁平键，与正常路径同源），
+            #      并用 blind_test_skipped 显式声明盲测未执行（不再让 None 冒充"已执行无数据"）。
+            log_step(
+                "submit.stage_one",
+                name,
+                passed=False,
+                fail=list(gate_reasons),
+                ms=_stage_ms(),
+            )
             payload = {
                 "ok": False,
                 "stored": False,
@@ -610,8 +652,9 @@ class FactorSubmitService:
                 "comment": comment.strip(),
                 "interaction": interaction,
                 "eval_range": {"start": ctx.train_start, "end": ctx.val_end},
-                "metrics": dict(metrics_train),
+                "metrics": _stage_one_precheck_metrics(metrics_train),
                 "test_holdout": None,
+                "blind_test_skipped": True,
                 "candidate_stored": False,
                 "rebalance_freq": chosen_freq,
                 "delivery_check": {
@@ -620,12 +663,12 @@ class FactorSubmitService:
                     "stage_two": {"passed": False, "fail_reasons": []},
                 },
                 "skipped_reason": f"stage_one_failed:{','.join(gate_reasons)}",
-                "error_type": "StageOneError",
+                "error_type": "StageOneDeliveryCheckError",
                 "error": f"stage_one_failed:{','.join(gate_reasons)}",
             }
             return payload
 
-        # ── 盲测终审（stage_one 之前，不通过不进候选池）──────────────────
+        # ── 盲测终审（stage_one 统计门之后：统计不过的因子已提前拒绝，见上）────
         # test 段从未参与 train/val/engine_gate，是最干净的样本外验证。
         # IC 保留比 ≥ 0.50 + 方向一致性 → 不通过直接拒绝，不消耗后续算力。
         test_start = ctx.test_start

@@ -215,3 +215,55 @@ def test_submit_stage_one_fail_returns_payload_not_crash(submit_service, monkeyp
     assert result["stored"] is False
     assert result["candidate_stored"] is False
     assert str(result.get("skipped_reason") or "").startswith("stage_one_failed")
+
+
+def test_submit_stage_one_precheck_observability(submit_service, monkeypatch, caplog, tmp_path):
+    """stage_one 提前拒绝（盲测之前）必须保住观测口径与既有词汇（2026-10-06 OCR H-1/H-2/H-3）。
+
+    H-1：补打 `submit.stage_one |` 日志 —— `run_metrics._parse_steps` 按该行统计
+         stage_one_fail 与失败原因直方图，缺行会让该指标静默归零（bench 误判为改善）。
+    H-2：error_type 复用既有 StageOneDeliveryCheckError，避免 `_bucket_error` 把同一类
+         失败拆成两个桶。
+    H-3：metrics 带 train_* 扁平键（与正常交付路径同源）、不带 group_means 大数组，
+         并以 blind_test_skipped 显式声明"盲测未执行"。
+    """
+    import logging
+
+    from alphaagent.factor.mining.run_metrics import _parse_steps
+
+    monkeypatch.setattr(
+        submit_module, "compute_ingest_metrics",
+        lambda *a, **k: {"ic": 0.02, "icir": 0.08, "coverage": 0.9,
+                         "cs_pearson_autocorr": 0.05, "winsorized_abs_ic_decay": 0.01},
+    )
+    caplog.set_level(logging.INFO, logger="alphaagent.mining.step")
+    result = submit_service.submit(
+        "s1",
+        multi_line_expr="CLOSE",
+        factor_name="factor_precheck",
+        comment="economic logic",
+        review_hook=lambda cand: {"verdict": "approve"},
+        orthogonality_hook=lambda: {"passed": True},
+    )
+
+    # H-2 / H-3
+    assert result["error_type"] == "StageOneDeliveryCheckError"
+    assert result["blind_test_skipped"] is True
+    assert result["test_holdout"] is None
+    assert result["delivery_check"]["blind_test"] == {
+        "passed": False, "fail_reasons": [], "skipped": True
+    }
+    assert result["delivery_check"]["stage_one"]["fail_reasons"]
+    assert result["metrics"]["train_ic"] == pytest.approx(0.02)
+    assert "group_means" not in (result["metrics"].get("quantile_portfolio") or {})
+
+    # H-1：日志行必须能被 run_metrics 真实解析成 stage_one_fail + 原因直方图
+    lines = [r.getMessage() for r in caplog.records if "submit.stage_one |" in r.getMessage()]
+    assert len(lines) == 1, f"提前拒绝必须恰好一条 submit.stage_one 日志: {lines}"
+    run_dir = tmp_path / "run_precheck"
+    run_dir.mkdir()
+    (run_dir / "steps.log").write_text("\n".join(lines), encoding="utf-8")
+    stage, _gate_fails, stage_one_fails = _parse_steps(run_dir)
+    assert stage["stage_one_fail"] == 1
+    assert stage["stage_one_pass"] == 0
+    assert stage_one_fails, "失败原因直方图不得为空（fail=[...] 需可解析）"
