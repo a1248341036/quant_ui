@@ -278,3 +278,9 @@ full split（production_delivery / engine_preview，`eval/service.py:371` 显式
 `alphaagent/factor/mining/delivery/submit.py`（H-1/H-2/H-3 + 新增 `_stage_one_precheck_metrics`）、
 `tests/test_factor_f64_identity.py`（新）、`tests/test_submit_payload.py`（+1 用例）、本文件。
 **明确未改**：`memory/ingestion.py`（复核后确认无实际污染，见 H-3 下的说明）。
+
+> **合并状态（2026-10-06）**：`fix/aux-cache-crosstalk@e5cec85` 已 `--no-ff` 合入
+> `feat/aux-cache-session-level`（merge `64e64cf`）与 `feat/submit-split-materialize`（merge `0048434`，
+> 该分支另含并发提交 `ee2eb05` S1 分段物化：`submit.py` 顶部新增 `_materialize_split_aware` → 在该分支上
+> `submit.py` 行号整体后移约 56 行，例：`_stage_one_precheck_metrics` 由 `:278` 移到 `:334`）。
+> 两次合并均无冲突；两处改动共存并已回归验证（25 passed）。本文修复块行号按修复分支 e5cec85 原样记录。
