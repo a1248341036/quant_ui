@@ -317,7 +317,19 @@ def winsorized_ic(
     诊断需要这一个数，整套 ``evaluate_on_panel`` 重跑纯属浪费（实测单次 submit
     省 ~5s 与一次全窗口长数组驻留）。``min_ic_pairs`` 默认与
     ``evaluate_on_panel.min_ic_pairs`` 同源，调参须同步。
+
+    **前置条件**：``panel`` 必须已按索引排序，且 ``values`` 与该行序对齐。
+    与 ``evaluate_cs_on_panel`` 不同，本函数**不重排** panel——那会让未排序的
+    ``values`` 与排序后的索引错位。索引非单调整时 ``_day_slices`` 会退化为
+    「按首次出现日序」，``cs_ic_summary`` 的 ``iloc[::hold]`` 随之取到不同日点，
+    结果不再等价于 ``evaluate_on_panel(winsorized)["ic"]``（实测 holding_days=20
+    时两者符号相反：0.0835 vs -0.0867），故此处显式拒绝而非静默分叉（OCR review M-3）。
     """
+    if not panel.index.is_monotonic_increasing:
+        raise ValueError(
+            "winsorized_ic 要求 panel 已按索引排序（values 与 panel.index 同序）："
+            "否则按持有期重采样的日点会漂移，与 evaluate_on_panel(winsorized)['ic'] 不再等价"
+        )
     winsorized = cross_sectional_winsorize_values(values, panel)
     factor_series = pd.Series(winsorized, index=panel.index, dtype=np.float32)
     daily_ic = cross_sectional_ic(

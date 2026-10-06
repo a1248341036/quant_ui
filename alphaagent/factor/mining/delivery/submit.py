@@ -42,7 +42,9 @@ from alphaagent.factor.mining.runlog import log_step
 from core import factor_categories
 
 
-def _materialize_split_aware(expr: str, session: Any, panel: pd.DataFrame):
+def _materialize_split_aware(
+    expr: str, session: Any, panel: pd.DataFrame, *, name: str = ""
+):
     """S1 分段物化：train/val/test 三段切片分别求值后按行序拼回全量。
 
     与评估引擎**同切片对象**（``session.get_split_panel(split)``）：
@@ -53,18 +55,29 @@ def _materialize_split_aware(expr: str, session: Any, panel: pd.DataFrame):
     - **未命中时** DSL 中间数组也只按段大小暂驻峰值（train 25.2MB / val 16MB /
       test 20MB 每份，段间顺序执行），而不是全量 62MB/份 的叠加。
 
-    语义：三段独立求值 = 评估引擎的 split 口径（段边界 TS 窗口按段截断），
-    与 train_screen/validation 一致；旧的全量求值在段界处与评估存在隐藏偏差，
-    本路径反而消除该偏差。**三段未完全覆盖全量（自定义窗口有 gap）时回退
-    全量物化**（旧行为），避免缺口行变 NaN 造成语义漂移。
+    语义（2026-10-07 OCR review M-1 实测补正）：
+    - 三段独立求值 = 评估引擎的 split 口径（TS 窗口在段边界按段截断），与
+      train_screen/validation 一致 → **指标口径** ``compute_ingest_metrics`` 与引擎对齐；
+    - 代价是**物化值本身**在段首 ``window-1`` 天与全量物化不同：实测 60 日 × 20 只面板上
+      ``TS_MEAN($close, 5)`` 有 160/1200 行不同，差异恰为 val/test 段首各 4 日。这些行
+      **不是 NaN**（只有 ``min_periods == window`` 的算子才出 NaN），是窗口被截断后的数值变化。
+      因此本路径产出的 ``values_by_key`` / ``values_fp`` 与库入库路径
+      （``ingest.prepare_stored_values`` → ``materialize_to_canonical``，全量口径，供
+      ``ingest_factor`` 与因子实验室使用）在段界处**故意不同**——后者拿不到 session 的分段
+      窗口；若要「同一表达式全库同值」，须先改库入库路径口径，本分支不做统一。
+    - **三段未完全覆盖全量时回退全量物化**（旧行为）：缺口 → 行数不等；重叠 → 重复标签
+      ``reindex`` 抛错。两条都安全回退，不会静默产出 NaN 行。
 
-    返回 ``MaterializeResult`` 或 ``None``（任一异常 → 调用方回退全量物化）。
+    返回 ``MaterializeResult`` 或 ``None``（任一异常 → 调用方回退全量物化），并落一条
+    ``submit.materialize`` 步骤日志（``mode=split`` / ``mode=full`` + 回退原因）——
+    否则「分段优化静默失效、峰值回到 22GB」在生产端不可观测（OCR review M-2）。
     """
     from alphaagent.dsl import eval_factor
     from alphaagent.dsl.eval import collect_aux_intervals_from_expr
     from alphaagent.factor.align import align_series_to_panel
     from alphaagent.factor.types import MaterializeResult
 
+    started = time.perf_counter()
     try:
         parts: list[pd.Series] = []
         for split in ("train", "val", "test"):
@@ -84,18 +97,29 @@ def _materialize_split_aware(expr: str, session: Any, panel: pd.DataFrame):
         if not parts:
             raise ValueError("split 物化：三段切片均为空")
         if sum(len(p) for p in parts) != len(panel):
-            # 三段未完全覆盖（自定义 train/val/test 窗口有 gap）→ 回退全量，
-            # 否则缺口行在结果里变 NaN，与全量求值的语义漂移。
             raise ValueError("split 物化：三段未完全覆盖全量行")
         merged = pd.concat(parts)
         values = align_series_to_panel(merged, panel)
-        return MaterializeResult(
+        result = MaterializeResult(
             values=values,
             expr=expr.strip(),
             aux_tags=collect_aux_intervals_from_expr(expr),
         )
-    except Exception:  # noqa: BLE001 — 任何失败回退全量物化（旧行为），不新增失败点
+    except Exception as exc:  # noqa: BLE001 — 任何失败回退全量物化（旧行为），不新增失败点
+        log_step(
+            "submit.materialize",
+            name,
+            mode="full",
+            reason=f"{type(exc).__name__}:{str(exc)[:80]}",
+        )
         return None
+    log_step(
+        "submit.materialize",
+        name,
+        mode="split",
+        ms=round((time.perf_counter() - started) * 1000),
+    )
+    return result
 
 
 def _visible_range_of(session: Any) -> tuple[str, str] | None:
@@ -544,9 +568,11 @@ class FactorSubmitService:
         # ①+③ 会话域物化：长度恒等于 panel 行数，指标直接可算。
         # S1 分段物化优先：train/val/test 三段切片分别求值，命中评估期
         # FactorValueCache（同切片指纹）且 DSL 中间数组按段约占 1/3；
-        # 任何异常/覆盖不全回退全量物化（旧行为）。
+        # 任何异常/覆盖不全回退全量物化（旧行为），两条路径都有 submit.materialize 日志。
+        # 注意：分段口径会让段首 window-1 天的**物化值**与全量物化不同（详见函数 docstring）
+        # → 与库入库路径（prepare_stored_values，全量）在段界处故意不同。
         t_mat = time.perf_counter()
-        materialized = _materialize_split_aware(expr, session, panel)
+        materialized = _materialize_split_aware(expr, session, panel, name=name)
         if materialized is None:
             materialized = materialize_factor(expr, panel, cache=getattr(session, "factor_cache", None))
         mat_ms = round((time.perf_counter() - t_mat) * 1000)

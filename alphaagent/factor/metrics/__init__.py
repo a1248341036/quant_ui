@@ -288,6 +288,7 @@ __all__ = [
     "cs_ic_summary",
     "evaluate_cs_on_panel",
     "evaluate_on_panel",
+    "winsorized_ic",
     "cross_sectional_winsorize_values",
     "cross_sectional_size_neutralize_values",
     "annualized_long_group_excess_return",
