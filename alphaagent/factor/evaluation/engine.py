@@ -119,10 +119,22 @@ class EvaluationEngine:
         try:
             point = time.perf_counter()
             cache = getattr(session, "factor_cache", None)
+            # 辅频聚合表按 split 复用：同一 split 的 1w 聚合结果是确定性的，
+            # 12 路并发 eval 共享同一份，避免各自重建广播表（2026-10-06 内存优化）。
+            aux_cache = None
+            get_aux_cache = getattr(session, "get_aux_cache", None)
+            if callable(get_aux_cache):
+                try:
+                    aux_cache = get_aux_cache(profile.split)
+                except Exception:  # noqa: BLE001 — 辅缓存不可用时回退到默认行为
+                    aux_cache = None
             if cache is not None:
-                raw = cache.evaluate(multi_line_expr, panel, lambda: eval_factor(multi_line_expr, panel))
+                raw = cache.evaluate(
+                    multi_line_expr, panel,
+                    lambda: eval_factor(multi_line_expr, panel, aux_cache=aux_cache),
+                )
             else:
-                raw = eval_factor(multi_line_expr, panel)
+                raw = eval_factor(multi_line_expr, panel, aux_cache=aux_cache)
             timing["dsl_eval_ms"] = (time.perf_counter() - point) * 1000
             operator_timing = getattr(raw, "attrs", {}).get("operator_timing") if isinstance(raw, pd.Series) else None
             if not isinstance(raw, pd.Series):

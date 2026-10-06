@@ -5,8 +5,9 @@ from __future__ import annotations
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, MutableMapping
 
 import numpy as np
 import pandas as pd
@@ -15,6 +16,11 @@ from alphaagent.data.panel import load_panel, slice_panel
 from alphaagent.factor.cache import FactorValueCache, get_default_cache
 from alphaagent.factor.mining.context import StockEvalContext
 from alphaagent.factor.mining.eval.candidate import CandidateRegistry
+
+# 辅频聚合表（1w 等）按 split 缓存的上限。每个 split 独立 LRU，避免并发 eval
+# 各自重建 1w 聚合表（2026-10-06 并发评测内存归因：eval_factor 默认 aux_cache={}
+# 导致 12 路并发各建一份广播表）。与 aux_cache.py 的 _MAX_CACHE_ENTRIES 对齐。
+_AUX_CACHE_PER_SPLIT_MAX = 32
 
 
 @dataclass
@@ -29,6 +35,12 @@ class StockEvalSession:
     _split_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     factor_cache: FactorValueCache = field(default_factory=get_default_cache, repr=False)
     _column_autocorr_cache: dict[str, float] = field(default_factory=dict, repr=False)
+    # 辅频聚合表按 split 复用：同一 split 的 1w 聚合结果是确定性的，
+    # 12 路并发 eval 共享同一份，避免各自重建（2026-10-06 内存优化）。
+    _aux_cache_by_split: dict[str, "OrderedDict[tuple[int, str, str], pd.DataFrame]"] = field(
+        default_factory=dict, repr=False
+    )
+    _aux_cache_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def get_column_autocorr(self, col: str, default_val: float = 0.5) -> float:
         """获取列的截面一阶自相关（优先读会话级缓存，缺失则现算一次并缓存）。"""
@@ -72,6 +84,22 @@ class StockEvalSession:
             sliced = slice_panel(self.panel, start=start, end=end)
             self._split_cache[split] = sliced
             return sliced, start, end
+
+    def get_aux_cache(self, split: str) -> MutableMapping[tuple[int, str, str], pd.DataFrame]:
+        """返回 split 级辅频聚合表缓存（LRU，上限 32 条）。
+
+        同一 split 的 1w 聚合表是 split panel 的确定性函数，12 路并发 eval
+        共享同一份，避免各自重建广播表（2026-10-06 并发评测内存优化）。
+        key 格式与 ``alphaagent.dsl.stock.aux_cache.get_or_build_aux_panel`` 一致：
+        ``(id(panel), base_interval, tag)``。split view 的 id 稳定（缓存在
+        ``_split_cache``），所以同一 split 的多次 eval 命中同一 key。
+        """
+        with self._aux_cache_lock:
+            cache = self._aux_cache_by_split.get(split)
+            if cache is None:
+                cache = OrderedDict()
+                self._aux_cache_by_split[split] = cache
+            return cache
 
 
 class SessionStore:
@@ -148,6 +176,7 @@ class SessionStore:
             return False
         try:
             session._split_cache.clear()
+            session._aux_cache_by_split.clear()
             session.panel = None  # type: ignore[assignment]
         except Exception:
             pass

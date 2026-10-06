@@ -362,7 +362,16 @@ class StockEvalService:
 
             import numpy as np
 
-            out = eval_factor(multi_line_expr, panel)
+            # 辅频聚合表复用：engine_preview 在 full panel 上跑，与 eval 共享
+            # "full" split 的辅表缓存（2026-10-06 内存优化）。
+            _aux_cache = None
+            _get_aux_cache = getattr(session, "get_aux_cache", None)
+            if callable(_get_aux_cache):
+                try:
+                    _aux_cache = _get_aux_cache("full")
+                except Exception:  # noqa: BLE001
+                    _aux_cache = None
+            out = eval_factor(multi_line_expr, panel, aux_cache=_aux_cache)
             values = out.reindex(panel.index).to_numpy(dtype=np.float64)
             # ST 剔除：与 submit 的 engine_gate 同口径（预演不能比终审宽）
             from alphaagent.factor.metrics.st_mask import mask_values as _st_mask_values
