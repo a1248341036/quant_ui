@@ -163,5 +163,25 @@ unsorted  old=-0.08668568735806184 new=0.08353509289958323  identical=False   �
 | B | A + M-3（`winsorized_ic` 对齐排序预处理 + 声明 values 行序前置条件）+ L-3/L-4 契约显式化 | 小，行为不变 |
 | C | B + M-1 拍板：决定 submit 与库入库是否统一物化口径，并修正提交信息/文档描述 | 需你决策，可能影响既有候选值口径 |
 
-> 本文件只记录评审结果，未改任何代码。评审脚本（`%TEMP%\verify_{split_materialize,split_semantics,ocr_findings}.py`）
+> 本文件记录评审结果与后续修复；评审脚本（`%TEMP%\verify_{split_materialize,split_semantics,ocr_findings}.py`）
 > 均只读、不入库。
+
+## 修复落地（2026-10-07，方案 A + B + L-1）
+
+**提交**：`6049928`（分支 `fix/submit-materialize-review`，基于本分支 `4c56e17`）。
+
+| 编号 | 处理 | 落地位置 |
+|---|---|---|
+| M-1 | **口径显式化**（不改行为）：docstring 记实测差异（`TS_MEAN(5)` 160/1200 行不同、恰为 val/test 段首各 4 日、**非 NaN**），写明 candidate 落库值/`values_fp` 与库入库路径（`prepare_stored_values` 全量口径）在段界**故意不同**及不统一的原因（库路径拿不到 session 分段窗口）；调用点补注释；回归测试把该语义钉死 | `submit.py:45`、`tests/test_split_materialize.py::test_ts_expr_differs_only_at_segment_heads_and_is_not_nan` |
+| M-2 | 两条路径都落 `log_step("submit.materialize", name, mode="split"/"full", reason=...)`；4 个函数内 import 移入 `try`（兑现 docstring 的"任一异常即回退"承诺） | `submit.py:45-120` |
+| M-3 | `winsorized_ic` 入口**显式拒绝**非单调 panel（不做排序，避免 values 与索引错位），docstring 声明 values 行序前置条件 | `ic.py:304-330`、`tests/test_ensure_sorted_and_winsorized_ic.py::test_winsorized_ic_rejects_unsorted_panel` |
+| L-1 | `winsorized_ic` 补入 `__all__` | `metrics/__init__.py:290` |
+| L-2 | 随 M-2 一并修（import 入 `try`） | `submit.py` |
+| L-3 / L-4 | **未做**（契约显式化建议，非缺陷） | — |
+| M-1 的「统一口径」选项 | **未做**：库入库路径无 session 分段窗口，强行统一 = 改库值口径，需单独决策 | — |
+
+**验证**（独立 worktree `.worktrees/submit-materialize-fix`，PYTHONPATH 指向该 worktree）：
+
+- 新增 **11 个用例全绿**：`tests/test_split_materialize.py`（5）+ `tests/test_ensure_sorted_and_winsorized_ic.py`（6，含 hold=1/20 逐位一致、乱序拒绝、`ensure_sorted` 同一对象短路）。
+- 相关回归 **16 文件 / 136 用例：134 passed / 2 failed**；2 项均为 `test_depth_curve` 的**既存失败**（基线 `a82c273` 同样失败，非本次引入）。
+- 行为差异仅两处：① 新增 `submit.materialize` 步骤日志；② 非单调 panel 传给 `winsorized_ic` 时由「静默分叉」变为 `ValueError`（生产唯一调用方传的是已 `ensure_sorted` 的面板）。
