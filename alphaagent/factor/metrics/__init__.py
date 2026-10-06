@@ -139,6 +139,7 @@ from .ic import (  # noqa: E402
     cs_ic_summary,
     evaluate_cs_on_panel as _ecsp_raw,
     evaluate_on_panel as _eop_raw,
+    winsorized_ic as _wic_raw,
     cross_sectional_winsorize_values,
     cross_sectional_size_neutralize_values as _cssnv_raw,
     annualized_long_group_excess_return,
@@ -201,6 +202,14 @@ def evaluate_on_panel(values, panel, *, label_col=None, min_ic_pairs=5, holding_
     if label_col is not None:
         kw["label_col"] = label_col
     return _eop_raw(values, panel, min_ic_pairs=min_ic_pairs, holding_days=holding_days, **kw)
+
+
+def winsorized_ic(values, panel, *, label_col=None, min_ic_pairs=5, holding_days=1):
+    kw = {}
+    if label_col is not None:
+        kw["label_col"] = label_col
+    return _wic_raw(values, panel, min_ic_pairs=min_ic_pairs, holding_days=holding_days,
+                    _day_slices=_DSLICE(), **kw)
 
 
 def cross_sectional_size_neutralize_values(values, panel, *, market_cap_field="float_cap",

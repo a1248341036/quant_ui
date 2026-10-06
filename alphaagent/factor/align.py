@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from alphaagent.data.panel import ensure_sorted
 from alphaagent.factor.zoo.index import RowIndex
 
 
@@ -69,6 +70,6 @@ def canonical_align(
 
 def align_series_to_panel(values: pd.Series, panel: pd.DataFrame) -> np.ndarray:
     """panel index 顺序对齐（panel 须已与 row_index 同序）。"""
-    panel = panel.sort_index()
+    panel = ensure_sorted(panel)
     aligned = values.reindex(panel.index)
     return aligned.to_numpy(dtype=np.float32, copy=False)

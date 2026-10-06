@@ -109,6 +109,21 @@ def slice_panel(
     return panel.loc[mask]
 
 
+def ensure_sorted(panel: pd.DataFrame) -> pd.DataFrame:
+    """已按索引排序则原样返回，否则返回排序副本（热路径专用）。
+
+    pandas 的 ``sort_index()`` 对**已排序**面板也无条件 ``take`` 整表拷贝：
+    实测 7,782,511 行 × 176 列面板一次 ``sort_index()`` 瞬时新增 ~15GB
+    （整表拷贝 + MultiIndex 排序机械）、耗时 ~5s。submit/评估热路径上该调用
+    曾出现 3 份全量拷贝同时存活（compute_ingest_metrics 内 153/227/214 三处），
+    是 31GB 机器上 21GB 峰值的主因。session 面板加载时本就有序（切片视图亦然），
+    经此短路后排序退化为一次 O(n) 单调性检查（索引对象级缓存）。
+    """
+    if panel.index.is_monotonic_increasing:
+        return panel
+    return panel.sort_index()
+
+
 def _calc_label_1d_open_to_open(adj_open: pd.Series) -> pd.Series:
     open_t1 = adj_open.shift(-1)
     open_t2 = adj_open.shift(-2)
