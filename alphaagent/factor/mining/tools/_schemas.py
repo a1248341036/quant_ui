@@ -51,6 +51,7 @@ _PREDICTION_PARAMETER: dict[str, Any] = {
                 "预期十分位 mean_label 形态；条件式预期（组内/门控/分组结构，"
                 "如 GATED_SIGNAL/CS_GROUP_RANK 因子）用 conditional_subgroup——"
                 "此时 expected_strong_side 可省略，对账不适用全样本形态。"
+                "取值必须用上面 enum 的英文枚举值（勿填中文形态名）。"
             ),
         },
         "expected_strong_side": {
@@ -132,7 +133,7 @@ _PROFILE_EVAL_PARAMETERS: dict[str, Any] = {
             "enum": ["train_screen", "validation", "size_neutral_validation"],
             "description": "冻结的 EvaluationProfile ID；决定 split、transform、metrics 与 rule gate。"
             "训练集海选用 train_screen；样本外验证用 validation / size_neutral_validation。"
-            "（train_screen_lite 等内部 profile 禁止在挖掘期直接评估——错误信息不做枚举引导。）",
+            "只能填上面 enum 里列出的值（内部筛选档位禁止在挖掘期直接评估）。",
         },
         "interaction": _INTERACTION_PARAMETER,
         "prediction": _PREDICTION_PARAMETER,
