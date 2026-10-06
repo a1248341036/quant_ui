@@ -42,6 +42,62 @@ from alphaagent.factor.mining.runlog import log_step
 from core import factor_categories
 
 
+def _materialize_split_aware(expr: str, session: Any, panel: pd.DataFrame):
+    """S1 分段物化：train/val/test 三段切片分别求值后按行序拼回全量。
+
+    与评估引擎**同切片对象**（``session.get_split_panel(split)``）：
+    - ``FactorValueCache`` 的 key ＝ expr + 切片面板指纹 → train/val 段命中
+      评估期（train_screen/validation）留下的磁盘/共享缓存，免重复 DSL 求值；
+    - ``@1w`` 辅助聚合表 key＝ ``id(切片 panel)`` → 与评估引擎命中同一份
+      ``session.get_aux_cache(split)``，不再每次全量重建；
+    - **未命中时** DSL 中间数组也只按段大小暂驻峰值（train 25.2MB / val 16MB /
+      test 20MB 每份，段间顺序执行），而不是全量 62MB/份 的叠加。
+
+    语义：三段独立求值 = 评估引擎的 split 口径（段边界 TS 窗口按段截断），
+    与 train_screen/validation 一致；旧的全量求值在段界处与评估存在隐藏偏差，
+    本路径反而消除该偏差。**三段未完全覆盖全量（自定义窗口有 gap）时回退
+    全量物化**（旧行为），避免缺口行变 NaN 造成语义漂移。
+
+    返回 ``MaterializeResult`` 或 ``None``（任一异常 → 调用方回退全量物化）。
+    """
+    from alphaagent.dsl import eval_factor
+    from alphaagent.dsl.eval import collect_aux_intervals_from_expr
+    from alphaagent.factor.align import align_series_to_panel
+    from alphaagent.factor.types import MaterializeResult
+
+    try:
+        parts: list[pd.Series] = []
+        for split in ("train", "val", "test"):
+            sub, _, _ = session.get_split_panel(split)
+            if sub is None or len(sub) == 0:
+                continue
+            aux_cache = session.get_aux_cache(split)
+            cache = getattr(session, "factor_cache", None)
+
+            def _eval(sub=sub, aux_cache=aux_cache):
+                return eval_factor(expr, sub, aux_cache=aux_cache)
+
+            out = cache.evaluate(expr, sub, _eval) if cache is not None else _eval()
+            if not isinstance(out, pd.Series):
+                raise TypeError(f"因子输出须为 Series，得到 {type(out)!r}")
+            parts.append(out)
+        if not parts:
+            raise ValueError("split 物化：三段切片均为空")
+        if sum(len(p) for p in parts) != len(panel):
+            # 三段未完全覆盖（自定义 train/val/test 窗口有 gap）→ 回退全量，
+            # 否则缺口行在结果里变 NaN，与全量求值的语义漂移。
+            raise ValueError("split 物化：三段未完全覆盖全量行")
+        merged = pd.concat(parts)
+        values = align_series_to_panel(merged, panel)
+        return MaterializeResult(
+            values=values,
+            expr=expr.strip(),
+            aux_tags=collect_aux_intervals_from_expr(expr),
+        )
+    except Exception:  # noqa: BLE001 — 任何失败回退全量物化（旧行为），不新增失败点
+        return None
+
+
 def _visible_range_of(session: Any) -> tuple[str, str] | None:
     """会话的挖掘可见区间（train ∪ val，剔除盲测段）；取不到返回 None。
 
@@ -457,8 +513,13 @@ class FactorSubmitService:
             ctx, max_cs_corr=self.criteria.candidate.max_abs_corr, similar_top_k=self.similar_top_k
         )
         # ①+③ 会话域物化：长度恒等于 panel 行数，指标直接可算。
+        # S1 分段物化优先：train/val/test 三段切片分别求值，命中评估期
+        # FactorValueCache（同切片指纹）且 DSL 中间数组按段约占 1/3；
+        # 任何异常/覆盖不全回退全量物化（旧行为）。
         t_mat = time.perf_counter()
-        materialized = materialize_factor(expr, panel, cache=getattr(session, "factor_cache", None))
+        materialized = _materialize_split_aware(expr, session, panel)
+        if materialized is None:
+            materialized = materialize_factor(expr, panel, cache=getattr(session, "factor_cache", None))
         mat_ms = round((time.perf_counter() - t_mat) * 1000)
         cand_values = materialized.values
         if stage_one_policy.clip_pct is not None:
