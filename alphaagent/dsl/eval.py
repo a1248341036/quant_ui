@@ -499,14 +499,10 @@ def eval_multi_line_factor(
     # 别名表本身是"目标列确实存在才改写"（见 dsl/core/field_aliases.py 约定），
     # 所以面板只有 `turnover` 而没有 `turnover_rate` 时，这里不会改写、表达式照旧可用。
     multi_line_expr, _alias_hits = apply_field_aliases(multi_line_expr, list(df.columns))
-    # 面板列裁剪：只保留表达式引用到的列，减少 _column_bindings 与辅面板构建开销。
-    # 索引/行序不变，输出 Series 仍与完整面板对齐。
-    if len(df.columns) > 1:
-        _refs = referenced_column_names(multi_line_expr)
-        if _refs:
-            pruned = [c for c in df.columns if str(c) in _refs]
-            if pruned:
-                df = df[pruned]
+    # 辅频聚合表构建：必须在列裁剪之前用原始 df，保证 id(df) 稳定
+    # （session 级 aux_cache 按 id(panel) 命中；裁剪后 df 是新对象，id 会变，
+    #  导致 cache 永远 miss）。aux panel 只用表达式 required 的列，裁剪不影响结果。
+    # 2026-10-06 并发评测内存优化：12 路并发 eval 共享同一 split 的 1w 聚合表。
     required = collect_aux_intervals_from_expr(multi_line_expr)
     use_multi = bool(required) or (df_60m is not None)
     aux: Dict[str, pd.DataFrame] = {}
@@ -522,6 +518,15 @@ def eval_multi_line_factor(
             aux_panels=aux_panels,
             aux_cache=aux_cache,
         )
+
+    # 面板列裁剪：只保留表达式引用到的列，减少 _column_bindings 开销。
+    # 索引/行序不变，输出 Series 仍与完整面板对齐。
+    if len(df.columns) > 1:
+        _refs = referenced_column_names(multi_line_expr)
+        if _refs:
+            pruned = [c for c in df.columns if str(c) in _refs]
+            if pruned:
+                df = df[pruned]
 
     if columns is not None:
         cols = list(columns)

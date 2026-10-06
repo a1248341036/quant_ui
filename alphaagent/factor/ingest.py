@@ -8,16 +8,16 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from alphaagent.data.panel import load_panel, slice_panel
+from alphaagent.data.panel import ensure_sorted, load_panel, slice_panel
 from alphaagent.dsl import eval_factor
 from alphaagent.dsl.eval import collect_aux_intervals_from_expr
 from alphaagent.factor.align import align_series_to_panel, canonical_align
 from alphaagent.factor.metrics import coverage as metric_coverage
 from alphaagent.factor.metrics import (
     annualized_long_group_excess_return,
-    cross_sectional_winsorize_values,
     evaluate_on_panel,
     factor_skew_kurtosis,
+    winsorized_ic,
 )
 from alphaagent.factor.metrics.st_mask import mask_values as mask_st_values
 from alphaagent.factor.types import DEFAULT_INGEST_POLICY, IngestPolicy, IngestResult, MaterializeResult
@@ -55,7 +55,7 @@ def clip_values(
 
 def materialize_factor(expr: str, panel: pd.DataFrame, *, cache=None) -> MaterializeResult:
     """DSL 求值并对齐 panel 行序。"""
-    panel = panel.sort_index()
+    panel = ensure_sorted(panel)
 
     def _eval():
         return eval_factor(expr, panel)
@@ -96,7 +96,7 @@ def materialize_to_canonical(
     zoo: FactorZoo,
 ) -> MaterializeResult:
     """求值并对齐到因子库 canonical row_id。"""
-    panel = panel.sort_index()
+    panel = ensure_sorted(panel)
     out = eval_factor(expr, panel)
     if not isinstance(out, pd.Series):
         raise TypeError(f"因子输出须为 Series，得到 {type(out)!r}")
@@ -118,7 +118,7 @@ def materialize_slice_to_canonical(
     end: str,
 ) -> MaterializeResult:
     """在 panel 日期子集上求值，并对齐到完整 canonical index（窗口外为 NaN）。"""
-    panel = panel.sort_index()
+    panel = ensure_sorted(panel)
     panel_slice = slice_panel(panel, start=start, end=end)
     if panel_slice.empty:
         raise ValueError(f"panel 切片为空: start={start!r} end={end!r}")
@@ -150,7 +150,7 @@ def compute_ingest_metrics(
     policy: IngestPolicy,
 ) -> dict[str, Any]:
     """按 policy 在 eval 区间计算入库指标；coverage 为 eval 区间口径。"""
-    panel_sorted = panel.sort_index()
+    panel_sorted = ensure_sorted(panel)
     eval_values, eval_panel = _slice_values_with_panel(
         stored_values,
         panel_sorted,
@@ -167,13 +167,14 @@ def compute_ingest_metrics(
     metrics = evaluate_on_panel(
         eval_values, eval_panel, label_col=policy.label_col, holding_days=holding_days
     )
-    winsorized_values = cross_sectional_winsorize_values(eval_values, eval_panel)
-    winsorized_metrics = evaluate_on_panel(
-        winsorized_values, eval_panel, label_col=policy.label_col, holding_days=holding_days
+    # winsorized 只为算 winsorized_ic 一个数（decay 诊断）：单遍直算，跳过
+    # rank_ic/自相关/decile/mls_fmb 等重件（原整套 evaluate_on_panel 重跑）。
+    winsorized_ic_value = winsorized_ic(
+        eval_values, eval_panel, label_col=policy.label_col, holding_days=holding_days
     )
     raw_abs_ic = abs(float(metrics["ic"]))
-    winsorized_abs_ic = abs(float(winsorized_metrics["ic"]))
-    metrics["winsorized_ic"] = winsorized_metrics["ic"]
+    winsorized_abs_ic = abs(float(winsorized_ic_value))
+    metrics["winsorized_ic"] = winsorized_ic_value
     metrics["winsorized_abs_ic_decay"] = (
         max(0.0, (raw_abs_ic - winsorized_abs_ic) / raw_abs_ic)
         if np.isfinite(raw_abs_ic) and raw_abs_ic > 0.0 and np.isfinite(winsorized_abs_ic)
@@ -224,7 +225,7 @@ def _slice_values_with_panel(
     end: str | None = None,
 ) -> tuple[np.ndarray, pd.DataFrame]:
     """按日期切片 panel，并取对应位置的因子值。"""
-    panel = panel.sort_index()
+    panel = ensure_sorted(panel)
     sub = slice_panel(panel, start=start, end=end)
     if sub.empty:
         raise ValueError(f"panel 切片为空: start={start!r} end={end!r}")

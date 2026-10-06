@@ -42,6 +42,86 @@ from alphaagent.factor.mining.runlog import log_step
 from core import factor_categories
 
 
+def _materialize_split_aware(
+    expr: str, session: Any, panel: pd.DataFrame, *, name: str = ""
+):
+    """S1 分段物化：train/val/test 三段切片分别求值后按行序拼回全量。
+
+    与评估引擎**同切片对象**（``session.get_split_panel(split)``）：
+    - ``FactorValueCache`` 的 key ＝ expr + 切片面板指纹 → train/val 段命中
+      评估期（train_screen/validation）留下的磁盘/共享缓存，免重复 DSL 求值；
+    - ``@1w`` 辅助聚合表 key＝ ``id(切片 panel)`` → 与评估引擎命中同一份
+      ``session.get_aux_cache(split)``，不再每次全量重建；
+    - **未命中时** DSL 中间数组也只按段大小暂驻峰值（train 25.2MB / val 16MB /
+      test 20MB 每份，段间顺序执行），而不是全量 62MB/份 的叠加。
+
+    语义（2026-10-07 OCR review M-1 实测补正）：
+    - 三段独立求值 = 评估引擎的 split 口径（TS 窗口在段边界按段截断），与
+      train_screen/validation 一致 → **指标口径** ``compute_ingest_metrics`` 与引擎对齐；
+    - 代价是**物化值本身**在段首 ``window-1`` 天与全量物化不同：实测 60 日 × 20 只面板上
+      ``TS_MEAN($close, 5)`` 有 160/1200 行不同，差异恰为 val/test 段首各 4 日。这些行
+      **不是 NaN**（只有 ``min_periods == window`` 的算子才出 NaN），是窗口被截断后的数值变化。
+      因此本路径产出的 ``values_by_key`` / ``values_fp`` 与库入库路径
+      （``ingest.prepare_stored_values`` → ``materialize_to_canonical``，全量口径，供
+      ``ingest_factor`` 与因子实验室使用）在段界处**故意不同**——后者拿不到 session 的分段
+      窗口；若要「同一表达式全库同值」，须先改库入库路径口径，本分支不做统一。
+    - **三段未完全覆盖全量时回退全量物化**（旧行为）：缺口 → 行数不等；重叠 → 重复标签
+      ``reindex`` 抛错。两条都安全回退，不会静默产出 NaN 行。
+
+    返回 ``MaterializeResult`` 或 ``None``（任一异常 → 调用方回退全量物化），并落一条
+    ``submit.materialize`` 步骤日志（``mode=split`` / ``mode=full`` + 回退原因）——
+    否则「分段优化静默失效、峰值回到 22GB」在生产端不可观测（OCR review M-2）。
+    """
+    from alphaagent.dsl import eval_factor
+    from alphaagent.dsl.eval import collect_aux_intervals_from_expr
+    from alphaagent.factor.align import align_series_to_panel
+    from alphaagent.factor.types import MaterializeResult
+
+    started = time.perf_counter()
+    try:
+        parts: list[pd.Series] = []
+        for split in ("train", "val", "test"):
+            sub, _, _ = session.get_split_panel(split)
+            if sub is None or len(sub) == 0:
+                continue
+            aux_cache = session.get_aux_cache(split)
+            cache = getattr(session, "factor_cache", None)
+
+            def _eval(sub=sub, aux_cache=aux_cache):
+                return eval_factor(expr, sub, aux_cache=aux_cache)
+
+            out = cache.evaluate(expr, sub, _eval) if cache is not None else _eval()
+            if not isinstance(out, pd.Series):
+                raise TypeError(f"因子输出须为 Series，得到 {type(out)!r}")
+            parts.append(out)
+        if not parts:
+            raise ValueError("split 物化：三段切片均为空")
+        if sum(len(p) for p in parts) != len(panel):
+            raise ValueError("split 物化：三段未完全覆盖全量行")
+        merged = pd.concat(parts)
+        values = align_series_to_panel(merged, panel)
+        result = MaterializeResult(
+            values=values,
+            expr=expr.strip(),
+            aux_tags=collect_aux_intervals_from_expr(expr),
+        )
+    except Exception as exc:  # noqa: BLE001 — 任何失败回退全量物化（旧行为），不新增失败点
+        log_step(
+            "submit.materialize",
+            name,
+            mode="full",
+            reason=f"{type(exc).__name__}:{str(exc)[:80]}",
+        )
+        return None
+    log_step(
+        "submit.materialize",
+        name,
+        mode="split",
+        ms=round((time.perf_counter() - started) * 1000),
+    )
+    return result
+
+
 def _visible_range_of(session: Any) -> tuple[str, str] | None:
     """会话的挖掘可见区间（train ∪ val，剔除盲测段）；取不到返回 None。
 
@@ -275,6 +355,35 @@ def _cached_ingest_metrics(
     return metrics
 
 
+def _stage_one_precheck_metrics(metrics_train: dict[str, Any]) -> dict[str, Any]:
+    """stage_one 提前拒绝的落账指标：train 窗口指标 + 显式 ``train_*`` 扁平键。
+
+    2026-10-06 OCR 修复（H-3）：正常交付路径会把 metrics_train 展平成 ``train_ic/
+    train_icir/train_rank_ic``（见本文件 reported 构建处），下游研究记忆
+    （``memory/ingestion.py``）与 registry 检索都读这些键；提前拒绝路径原先直接塞
+    ``dict(metrics_train)``，没有扁平键，且把 ``group_means`` 大数组一并带走。
+
+    **口径声明**：本 payload 的 ``ic/icir`` 是 **train 窗口**值（正常路径的 ``ic`` 是
+    全窗口值）；val/test 指标**故意不产出**——盲测与 val 评估正是本优化要省下的
+    数百秒。调用方以 payload 顶层的 ``blind_test_skipped`` +
+    ``delivery_check.blind_test.skipped`` 区分"未执行"与"已执行无数据"。
+    """
+    out = dict(metrics_train)
+    for key in ("ic", "icir", "rank_ic"):
+        val = out.get(key)
+        if val is None:
+            continue
+        try:
+            if np.isfinite(float(val)):
+                out[f"train_{key}"] = round(float(val), 6)
+        except (TypeError, ValueError):
+            continue
+    qp = out.get("quantile_portfolio")
+    if isinstance(qp, dict):  # 与正常路径一致：group_means 不进 payload
+        out["quantile_portfolio"] = {k: v for k, v in qp.items() if k != "group_means"}
+    return out
+
+
 class FactorSubmitService:
     """两阶段提交：海选候选池，再精筛进入正式 FactorZoo。"""
 
@@ -457,8 +566,15 @@ class FactorSubmitService:
             ctx, max_cs_corr=self.criteria.candidate.max_abs_corr, similar_top_k=self.similar_top_k
         )
         # ①+③ 会话域物化：长度恒等于 panel 行数，指标直接可算。
+        # S1 分段物化优先：train/val/test 三段切片分别求值，命中评估期
+        # FactorValueCache（同切片指纹）且 DSL 中间数组按段约占 1/3；
+        # 任何异常/覆盖不全回退全量物化（旧行为），两条路径都有 submit.materialize 日志。
+        # 注意：分段口径会让段首 window-1 天的**物化值**与全量物化不同（详见函数 docstring）
+        # → 与库入库路径（prepare_stored_values，全量）在段界处故意不同。
         t_mat = time.perf_counter()
-        materialized = materialize_factor(expr, panel, cache=getattr(session, "factor_cache", None))
+        materialized = _materialize_split_aware(expr, session, panel, name=name)
+        if materialized is None:
+            materialized = materialize_factor(expr, panel, cache=getattr(session, "factor_cache", None))
         mat_ms = round((time.perf_counter() - t_mat) * 1000)
         cand_values = materialized.values
         if stage_one_policy.clip_pct is not None:
@@ -574,7 +690,72 @@ class FactorSubmitService:
         # 门槛前三段耗时分解：DSL 物化 / train 指标 / 组合换手预检
         log_step("submit.precheck", name, mat_ms=mat_ms, train_ms=train_ms, qp_ms=qp_ms)
 
-        # ── 盲测终审（stage_one 之前，不通过不进候选池）──────────────────
+        # ── stage_one 统计/换手预检（盲测之前，2026-10-06 内存优化 ④）────────
+        # stage_one_stats 只依赖 metrics_train（:492 已算）+ qp_metrics（:510 已算，
+        # :547 已写入 metrics_train["quantile_portfolio"]），不依赖盲测 test_metrics。
+        # 提前判定：统计/换手/自相关任一不达标直接拒绝，跳过盲测的
+        # compute_ingest_metrics（~488s + ~2GB，是 submit 路径最贵的一步）。
+        # 多数候选因子死在 stage_one 统计门（IC/覆盖/换手/自相关），盲测对它们是纯浪费。
+        # 语义等价性：原流程 blind_test→stage_one_stats，新流程 stage_one_stats→blind_test；
+        #   - stage_one 失败：原流程 blind_test 通过后走到 :644 被拒，新流程直接拒（跳过盲测）→ 同结果；
+        #   - blind_test 失败：原流程 :620 被拒，新流程 stage_one 通过后跑盲测被拒 → 同结果；
+        #   - 两者都过：继续 val_retention/similarity → 同结果。
+        gate_reasons = self.checker.stage_one_stats(
+            metrics_train, rebalance_freq=chosen_freq
+        ).fail_reasons
+        log_step(
+            "submit.stage_one_stats",
+            name,
+            ic=metrics_train.get("ic"),
+            icir=metrics_train.get("icir"),
+            coverage=metrics_train.get("factor_coverage"),
+            autocorr=metrics_train.get("cs_pearson_autocorr"),
+            turnover=(metrics_train.get("quantile_portfolio") or {}).get("avg_daily_side_turnover"),
+            fail=gate_reasons or None,
+            ms=_stage_ms(),
+        )
+        if gate_reasons:
+            # stage_one 统计/换手不达标：直接拒绝，不跑盲测（省 ~488s + ~2GB）。
+            # 可观测性/口径对齐（2026-10-06 OCR 修复 H-1/H-2/H-3）：
+            #   1) 补打 submit.stage_one 兼容日志 —— run_metrics 按 "submit.stage_one |"
+            #      行统计 stage_one_fail 与失败原因直方图（fail=[...]）；不补则该指标
+            #      静默掉到 0，bench diff 会把"口径丢失"读成"改善"。
+            #   2) error_type 与既有 stage_one 拒绝路径（本文件 StageOneDeliveryCheckError）
+            #      统一，避免 _bucket_error 把同一类失败拆成两个桶。
+            #   3) metrics 走 _stage_one_precheck_metrics（train_* 扁平键，与正常路径同源），
+            #      并用 blind_test_skipped 显式声明盲测未执行（不再让 None 冒充"已执行无数据"）。
+            log_step(
+                "submit.stage_one",
+                name,
+                passed=False,
+                fail=list(gate_reasons),
+                ms=_stage_ms(),
+            )
+            payload = {
+                "ok": False,
+                "stored": False,
+                "factor_id": factor_id,
+                "factor_name": name,
+                "comment": comment.strip(),
+                "interaction": interaction,
+                "eval_range": {"start": ctx.train_start, "end": ctx.val_end},
+                "metrics": _stage_one_precheck_metrics(metrics_train),
+                "test_holdout": None,
+                "blind_test_skipped": True,
+                "candidate_stored": False,
+                "rebalance_freq": chosen_freq,
+                "delivery_check": {
+                    "blind_test": {"passed": False, "fail_reasons": [], "skipped": True},
+                    "stage_one": {"passed": False, "fail_reasons": list(gate_reasons)},
+                    "stage_two": {"passed": False, "fail_reasons": []},
+                },
+                "skipped_reason": f"stage_one_failed:{','.join(gate_reasons)}",
+                "error_type": "StageOneDeliveryCheckError",
+                "error": f"stage_one_failed:{','.join(gate_reasons)}",
+            }
+            return payload
+
+        # ── 盲测终审（stage_one 统计门之后：统计不过的因子已提前拒绝，见上）────
         # test 段从未参与 train/val/engine_gate，是最干净的样本外验证。
         # IC 保留比 ≥ 0.50 + 方向一致性 → 不通过直接拒绝，不消耗后续算力。
         test_start = ctx.test_start
@@ -641,19 +822,8 @@ class FactorSubmitService:
             }
             return payload
 
-        gate_reasons = self.checker.stage_one_stats(metrics_train, rebalance_freq=chosen_freq).fail_reasons
-        log_step(
-            "submit.stage_one_stats",
-            name,
-            ic=metrics_train.get("ic"),
-            icir=metrics_train.get("icir"),
-            coverage=metrics_train.get("factor_coverage"),
-            autocorr=metrics_train.get("cs_pearson_autocorr"),
-            turnover=(metrics_train.get("quantile_portfolio") or {}).get("avg_daily_side_turnover"),
-            fail=gate_reasons or None,
-            ms=_stage_ms(),
-        )
-
+        # stage_one_stats 已在盲测前预检（:587），此处 gate_reasons 沿用预检结果。
+        # 盲测通过 + stage_one_stats 通过 → 继续 val_retention / similarity。
         val_metrics: dict[str, Any] = {}
         if not gate_reasons and ctx.val_start > ctx.train_end:
             # 样本外保留比：|val_ic|/|train_ic| ≥ 阈值且方向不反转
