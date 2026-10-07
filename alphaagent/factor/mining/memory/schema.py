@@ -838,6 +838,23 @@ class SchemaMixin:
         from alphaagent.factor.mining.research_spec import DEFAULT_RESEARCH_SPEC
         _ep = DEFAULT_RESEARCH_SPEC["evaluation_policy"]
         _th = float(_ep["min_train_abs_ic"])
+        # 档位感知（2026-10-07）：各档海选线不同（technical 0.02 / technical_weekly 0.03 /
+        # technical_monthly 0.053 / fundamental 0.035），verdict 必须按本 run 档位判定，
+        # 否则慢档的 train_passed / near_miss 会被错标（此前只读全局默认线，与
+        # tools/_dispatch._candidate_ic_bar 的档位感知口径漂移）。取 mode 的
+        # evaluation_overrides（与 _dispatch 同一真源写法：registry 覆盖 → 全局默认回落）。
+        _mode = str((metrics or {}).get("research_mode") or "").strip()
+        if _mode:
+            try:
+                from core.research_modes import RESEARCH_MODES
+
+                _mode_bar = (getattr(RESEARCH_MODES.get(_mode), "evaluation_overrides", {}) or {}).get(
+                    "min_train_abs_ic"
+                )
+                if _mode_bar is not None:
+                    _th = float(_mode_bar)
+            except Exception:  # noqa: BLE001 — 未知档位/导入异常时回落全局默认线
+                pass
         _icir_soft = float(_ep.get("min_train_icir_soft", 0.2))
         _cov = float(_ep["min_train_coverage"])
         _val_abs_ic = float(_ep["min_val_abs_ic"])

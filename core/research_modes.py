@@ -115,28 +115,38 @@ RESEARCH_MODES: dict[str, ResearchModeSpec] = {
             "PIT 日频）结合价量信息挖掘A股日频因子，先训练集评估，再验证集检验；"
             "只有通过验证和去重门槛的因子才提交。"
         ),
-        # 基本面为慢因子：季频 PIT 信号弱，统计门槛放宽松，但可交易性只小幅放松。
-        # 2026-09-11 观察池口径：technical 候选线回到 0.020/0.28 后与 fundamental
-        # 同值——本档 override 保留作为"量纲锚"（technical 若再调整，fundamental
-        # 仍锚定 0.020/0.28/0.012），仅 val 保留比（0.65）与 production 更严项是实差异。
+        # 基本面为慢因子：季频 PIT 信号弱，val 保留比更严（0.65/0.70），可交易性小幅放松。
+        # ── 2026-10-07 门槛重锚（label 尺度对齐）────────────────────────────
+        # 本档是 label_20d + monthly，但历史门槛沿用 1d 尺度的 0.020/0.28/0.012（当时
+        # technical 也是 0.020/0.28，属"同值量纲锚"）。label_20d 会系统性放大 IC/ICIR，
+        # 使本档门槛形同虚设——实测（基本面族近似子集 n=9，同 panel/label 配对）：
+        #   20d 分布 p50 |IC| 0.0371 / |ICIR| 0.4174；旧线 0.020/0.28 过线率 **77.8%**
+        #   （技术慢档同口径 36.6%）。
+        # 双锚重锚到 **0.035 / 0.45 / 0.021**：
+        #   锚① 文献：月度基本面实测 PE TTM 0.0529/0.6995、PB 0.0557/0.4888、
+        #        ROE 0.0172/0.2277 → 中位量级 ≈ 0.035/0.45；
+        #   锚② 选择性：该族过线率 44.4%，与技术慢档（36.6%）同量级。
+        # 三个层次（evaluation/candidate/production）按同一比例（IC ×1.75、ICIR ×1.607）
+        # 重锚，本档原有内部关系（production=candidate）与 val 保留比（0.65/0.70）不变；
+        # engine_gate 年化门（0.02/0.4）未动——缺该档真实回测实测。
         evaluation_overrides={
-            "min_train_abs_ic": 0.020,
-            "min_train_icir": 0.28,
-            "min_val_abs_ic": 0.012,
+            "min_train_abs_ic": 0.035,   # 0.020 × 1.75
+            "min_train_icir": 0.45,      # 0.28  × 1.607
+            "min_val_abs_ic": 0.021,     # 0.012 × 1.75
             "min_val_ic_retention_ratio": 0.5,
         },
         candidate_overrides={
-            "min_abs_ic": 0.020,
-            "min_icir": 0.28,
-            "min_val_abs_ic": 0.012,
+            "min_abs_ic": 0.035,
+            "min_icir": 0.45,
+            "min_val_abs_ic": 0.021,
             # 2026-08-29 审计：11 个候选 8 个 val 保留比 <65%（train→val 衰减
             # 严重），10d 持有期对季频 PIT 信号过短也是成因之一（切 label_20d）
             "min_val_ic_retention": 0.65,
         },
         production_overrides={
-            "min_train_abs_ic": 0.020,   # technical 0.025 → 0.020
-            "min_train_icir": 0.28,      # technical 0.30 → 0.28
-            "min_val_abs_ic": 0.012,     # technical 0.015 → 0.012
+            "min_train_abs_ic": 0.035,   # 本档 production 历史上与 candidate 同值（保持）
+            "min_train_icir": 0.45,
+            "min_val_abs_ic": 0.021,
             "min_val_ic_retention": 0.70,
             "min_val_long_excess": 0.0,
             "max_winsorized_abs_ic_decay": 0.12,  # technical 0.10 → 0.12
@@ -190,6 +200,38 @@ RESEARCH_MODES: dict[str, ResearchModeSpec] = {
             "weekly 调仓路径，先训练集评估，再验证集检验；"
             "只有通过验证和去重门槛的因子才提交。"
         ),
+        # ── 慢档门槛标定（2026-10-07，v2：文献锚 + 选择性对齐）─────────────
+        # 背景：min_abs_ic / min_icir / min_val_abs_ic 按 **label_1d 尺度**标定；慢 label 会系统性
+        # 放大同一因子的 IC/ICIR，沿用 1d 线会让慢档门近乎失效（选择性失衡）。
+        # **双锚**（v1 只按"选择性对齐"等比放大，绝对值会被推到文献罕见区间，故 v2 加文献锚）：
+        #   锚①（绝对量级，外部基准）：日频 Rank-IC ≥0.02 有筛选价值、0.03~0.05 可用；
+        #        月度 IC 0.02~0.06 属正常有效、0.05~0.10 属"很好"；ICIR 有效线 0.3（0.5 算强）；
+        #        文献实测月度因子 PE TTM 0.0529/0.6995、PB 0.0557/0.4888、ROE 0.0172/0.2277。
+        #   锚②（相对选择性）：慢档在同一因子池上的过线率与主档（1d）持平，避免慢档灌水。
+        # 实测配对数据（候选池 42 因子 × label_1d/5d/20d，train 2020-2022，n=41）：
+        #   |IC| p50 1d 0.0205 → 5d 0.0312 → 20d 0.0496；|ICIR| p50 0.2698 → 0.4351 → 0.7432
+        #   该池过线率：主档选 0.02/0.28 → 36.6%；本档选 0.030/0.450 → **36.6%（持平）**；
+        #   若按 v1 等比放大到 0.0355/0.504 则仅 26.8%（过严，绝对值亦超文献量级）。
+        # 换算规则：candidate/evaluation 用本档 IC/ICIR 线；production 按主档"正式库更严"倍数
+        #   （IC ×1.25、ICIR ×0.30/0.28）派生；min_val_abs_ic 按本档 IC 线/主档 0.02 的倍数放大。
+        # 刻意不动：min_val_ic_retention（比值口径，与 label 尺度无关）、
+        #   min_coverage / min_cs_autocorr / max_abs_corr（因子侧属性，与 label 无关）、
+        #   engine_gate 的 min_excess_annual / min_excess_sharpe（年化口径，缺该档实测，暂继承主档）。
+        evaluation_overrides={
+            "min_train_abs_ic": 0.030,    # 文献"有意义线"（锚①）且选择性对齐（锚②）
+            "min_train_icir": 0.450,      # 选择性对齐；文献有效线 0.3 之上
+            "min_val_abs_ic": 0.0225,     # 0.015 × (0.030/0.02)
+        },
+        candidate_overrides={
+            "min_abs_ic": 0.030,
+            "min_icir": 0.450,
+            "min_val_abs_ic": 0.0225,
+        },
+        production_overrides={
+            "min_train_abs_ic": 0.0375,   # 0.030 × 1.25（主档正式库更严倍数）
+            "min_train_icir": 0.4821,     # 0.450 × 0.30/0.28
+            "min_val_abs_ic": 0.0225,
+        },
         engine_gate_overrides={
             "freq": "weekly",
             "allowed_freqs": ["weekly"],
@@ -262,6 +304,32 @@ RESEARCH_MODES: dict[str, ResearchModeSpec] = {
             "monthly 调仓路径，先训练集评估，再验证集检验；"
             "只有通过验证和去重门槛的因子才提交。"
         ),
+        # ── 慢档门槛标定（2026-10-07，v2：文献锚 + 选择性对齐）─────────────
+        # 方法同 technical_weekly（见该档注释）：双锚 = ① 文献绝对量级、② 与主档选择性持平。
+        # 本档选定 **0.053 / 0.650**：
+        #   锚①：月度 IC 0.05~0.10 属文献"很好"区间下沿，ICIR 0.65 与经典月度因子 PE TTM
+        #        （实测 0.0529 / 0.6995）同档 → 准入线不低于成熟因子水平，且未进"罕见/查泄漏"区；
+        #   锚②：该池过线率 **36.6%，与主档（0.02/0.28 → 36.6%）持平**；
+        #        v1 等比放大到 0.0573/0.849 仅 22%（过严，且绝对值超文献最强档）；
+        #        文献锚更松档 0.040/0.60 为 58.5%（选择性偏松，会灌水）。
+        # 实测分位对照：|IC| p50 1d 0.0205 → 20d 0.0496；|ICIR| p50 0.2698 → 0.7432。
+        # production 仍按主档"正式库更严"倍数派生；min_val_abs_ic 按本档 IC 线倍数放大。
+        # 未动的项及理由同 technical_weekly。重标定建议在慢档 run 数据积累后复核。
+        evaluation_overrides={
+            "min_train_abs_ic": 0.053,    # 文献"很好"下沿 + 选择性对齐
+            "min_train_icir": 0.650,      # 与经典月度因子（PE TTM 0.70）同档
+            "min_val_abs_ic": 0.0398,     # 0.015 × (0.053/0.02)
+        },
+        candidate_overrides={
+            "min_abs_ic": 0.053,
+            "min_icir": 0.650,
+            "min_val_abs_ic": 0.0398,
+        },
+        production_overrides={
+            "min_train_abs_ic": 0.0663,   # 0.053 × 1.25
+            "min_train_icir": 0.6964,     # 0.650 × 0.30/0.28
+            "min_val_abs_ic": 0.0398,
+        },
         engine_gate_overrides={
             "freq": "monthly",
             "allowed_freqs": ["monthly"],

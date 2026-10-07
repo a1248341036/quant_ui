@@ -242,6 +242,31 @@ label/panel 列加载/engine_gate 频率的语义。迁移脚本
 - **档位现状**：`technical` / `report` 已从 `label_1d + weekly` 收成 **`label_1d + daily`**
   （`allowed_freqs=["daily"]`）；`fundamental`(20d+monthly) / `technical_daily`(1d+daily) /
   `technical_weekly`(5d+weekly) / `technical_monthly`(20d+monthly) 本来就是对齐的。
+- **慢档门槛标定（2026-10-07）**：`technical_weekly` / `technical_monthly` 此前**只对齐了
+  label/freq，没有自己的门槛**——继承 1d 标定的 `min_abs_ic=0.02 / min_icir=0.28 /
+  min_val_abs_ic=0.015` 等。而 label 持有期会系统性改变同一因子的 IC/ICIR 量级（配对实测：
+  候选池 42 因子 × label_1d/5d/20d，train 2020-2022，n=41；5d/1d 中位放大 1.776/1.800、
+  20d/1d 放大 2.865/3.032）⇒ 沿用 1d 线会让慢档门近乎失效。
+  标定采用**双锚**：①**文献绝对量级**（日频 Rank-IC ≥0.02 有筛选价值、0.03–0.05 可用；月度
+  IC 0.02–0.06 正常、0.05–0.10 属"很好"；ICIR 有效线 0.3；文献实测月度 PE TTM 0.0529/0.6995）；
+  ②**与主档选择性持平**（同一实测池过线率均 **36.6%**）。
+  落地值：`technical_weekly` candidate/evaluation **0.030 / 0.450**（production 0.0375 / 0.4821）；
+  `technical_monthly` **0.053 / 0.650**（production 0.0663 / 0.6964）；`min_val_abs_ic` 按本档 IC
+  线/主档 0.02 的倍数（0.0225 / 0.0398）。与 label 尺度无关的项（val 保留比 / coverage /
+  cs_autocorr / max_abs_corr / engine_gate 年化门）**刻意不动**。明细见
+  `docs/review/tech_slow_tier_threshold_calibration_20261007.md` 与 `core/research_modes.py`
+  两档注释，不变量由 `tests/test_slow_tier_thresholds.py` 锁定；重标定脚本
+  `scripts/calibrate_slow_tier_thresholds.py`。
+- **fundamental 档同批重锚（2026-10-07）**：它同为 label_20d + monthly，却沿用 1d 尺度的
+  `0.020/0.28/0.012`（2026-09-11"与 technical 同值量纲锚"）⇒ 实测基本面族近似子集（n=9）
+  过线率 **77.8%**，门形同虚设。按同法双锚重锚到 **0.035 / 0.45 / 0.021**（文献月度基本面
+  量级 PE 0.0529/0.6995、PB 0.0557/0.4888、ROE 0.0172/0.2277；该族过线率 44.4%），三层
+  同比例（IC ×1.75、ICIR ×1.607）重锚，保持 production==candidate 与 val 保留比 0.65/0.70。
+- **判定侧档位感知修复（2026-10-07）**：`tools/_dispatch._near_miss_verdict` 早已按档位取
+  `candidate_overrides["min_abs_ic"]`，而 `memory/schema.py:_classify` 只读全局
+  `DEFAULT_RESEARCH_SPEC` 的 `min_train_abs_ic`（0.02），且 `memory/ingestion.py` 到落库阶段才把
+  `research_mode` 写进 metrics ⇒ 慢档/基本面档会把低于本档线的 IC 标成 `train_passed`。现已在
+  `record` 调用 `_classify` 前 `setdefault` 档位元数据、`_classify` 按档取线（未知档位回落全局）。
 - **换手门改用调仓口径**：`delivery_checker.stage_one_stats` 取
   `quantile_portfolio.avg_rebalance_side_turnover`（每 hold 日调一次的真实换手），
   旧记录回落 `avg_daily_side_turnover`；daily↔1d 时两者相等（历史行为不变）。

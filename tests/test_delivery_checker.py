@@ -252,13 +252,15 @@ def test_fundamental_criteria_prompt_reflects_mode():
 
     fund = default_research_spec("fundamental")
     c = DeliveryCriteria.from_spec(fund)
-    assert c.candidate.min_abs_ic == 0.020  # 2026-09-11 与精筛对齐
-    assert c.candidate.min_icir == 0.28
-    assert c.candidate.min_val_abs_ic == 0.012  # fundamental override：慢因子量纲锚（保持 0.012）
-    assert c.production.min_train_abs_ic == 0.020
-    assert c.production.min_train_icir == 0.28
+    # 2026-10-07 重锚：本档是 label_20d + monthly，原 0.020/0.28/0.012 是 1d 尺度值，
+    # 在 20d label 下形同虚设（实测基本面族 n=9 过线率 77.8%）→ 双锚重锚到 0.035/0.45/0.021。
+    assert c.candidate.min_abs_ic == 0.035
+    assert c.candidate.min_icir == 0.45
+    assert c.candidate.min_val_abs_ic == 0.021  # 0.012 × 1.75（同比例重锚）
+    assert c.production.min_train_abs_ic == 0.035  # 本档 production 与 candidate 同值（历史关系保留）
+    assert c.production.min_train_icir == 0.45
     assert c.engine_gate.freq == "monthly"
     assert c.engine_gate.min_excess_annual == 0.02
 
     text = c.to_prompt_text()
-    assert "0.012" in text and "0.28" in text and "monthly" in text
+    assert "0.021" in text and "0.45" in text and "monthly" in text
