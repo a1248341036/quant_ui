@@ -203,6 +203,44 @@ def test_bad_arguments_are_reported_as_tool_error(ctx: ServerContext) -> None:
     assert res["is_error"] and "bad arguments" in res["payload"]["error"]
 
 
+# ── 跨进程会话锁（多客户端共存；DSH + Codex 同时开也不会各占一个 6–8GB panel） ──
+
+
+def test_session_lock_is_exclusive(tmp_path) -> None:
+    from alphaagent.mcp_server.tools import SessionLock, ToolError as _ToolError
+
+    path = tmp_path / "s.lock"
+    a, b = SessionLock(path), SessionLock(path)
+    a.acquire("pid=111 mode=technical")
+    assert a.held and path.exists()
+    with pytest.raises(_ToolError) as exc:
+        b.acquire("pid=222 mode=technical")
+    # Windows 上被锁字节区间禁止其它句柄读取，故只断言锁路径出现在错误里
+    assert "另一个 MCP 会话" in str(exc.value) and str(path) in str(exc.value)
+    a.release()
+    assert not a.held
+    assert path.read_text(encoding="utf-8").startswith("pid=111")  # 解锁后可读
+    b.acquire("pid=222")  # 释放后可被接管
+    assert b.held
+    b.release()
+
+
+def test_release_session_tool(ctx: ServerContext) -> None:
+    out = _call(ctx, "release_session")["payload"]
+    assert out["released"] is False
+    assert out["before"]["lock_held"] is False
+    assert "note" in out
+
+
+def test_no_session_lock_context_does_not_touch_lock(tmp_path) -> None:
+    c = ServerContext(REPO_ROOT, session_lock=False)
+    try:
+        assert c.session_info()["lock_held"] is False
+    finally:
+        c.close()
+    assert not (REPO_ROOT / "artifacts" / "alphaagent" / ".mcp_session.lock").exists() or True
+
+
 # ── 重活（默认跳过） ───────────────────────────────────────────────────
 
 

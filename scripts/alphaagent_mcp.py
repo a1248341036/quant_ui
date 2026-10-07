@@ -97,6 +97,8 @@ def main() -> int:
     ap.add_argument("--selftest", action="store_true", help="协议 + 轻量工具自检")
     ap.add_argument("--with-eval", action="store_true", help="自检时额外跑一次真实评估（载 panel）")
     ap.add_argument("--log-level", default="WARNING")
+    ap.add_argument("--no-session-lock", action="store_true",
+                    help="关闭跨进程会话锁（多客户端同时挖矿会各自占 6–8GB panel，内存自负）")
     args = ap.parse_args()
 
     # stdout 是协议流：日志一律写 stderr
@@ -107,7 +109,7 @@ def main() -> int:
         print(json.dumps(DESCRIPTORS, ensure_ascii=False, indent=1))
         return 0
 
-    ctx = ServerContext(args.root)
+    ctx = ServerContext(args.root, session_lock=not args.no_session_lock)
     if args.selftest:
         return _selftest(args.with_eval)
 

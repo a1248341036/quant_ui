@@ -32,6 +32,12 @@ DESCRIPTORS: list[dict[str, Any]] = [
         "inputSchema": _obj({"mode": _MODE}),
     },
     {
+        "name": "release_session",
+        "description": "释放评估会话与跨进程会话锁。多客户端（DSH/Codex/…）共用一台机器时，"
+                       "重工具用完建议调用，让其它客户端能接管 panel（每会话 6–8GB）。",
+        "inputSchema": _obj({}),
+    },
+    {
         "name": "list_fields",
         "description": "列出面板可用列（写 DSL 前必需）。可用 prefixes 过滤，如 'funda_,holder_'。",
         "inputSchema": _obj({"prefixes": {"type": "string", "default": ""},
@@ -128,6 +134,7 @@ DESCRIPTORS: list[dict[str, Any]] = [
 
 HANDLERS: dict[str, Callable[..., Any]] = {
     "get_thresholds": tools.get_thresholds,
+    "release_session": tools.release_session,
     "list_fields": tools.list_fields,
     "describe_operator": tools.describe_operator,
     "precheck_expression": tools.precheck_expression,

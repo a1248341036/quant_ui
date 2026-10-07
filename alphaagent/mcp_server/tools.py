@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import time
 from pathlib import Path
@@ -47,6 +48,74 @@ class ToolError(Exception):
     """工具级错误：以 MCP result(isError=true) 返回，供 agent 自行修正后重试。"""
 
 
+class SessionLock:
+    """跨进程会话锁（OS 文件锁，进程退出自动释放，无陈旧锁问题）。
+
+    为什么需要：每个 MCP 客户端（DSH / Codex / Cursor）会各起一个 stdio server 进程，
+    而每个进程的评估会话要占 6–8GB panel。多客户端同时挖矿会直接把内存打爆，
+    故同一时刻只允许一个进程持有"重会话"；后来者拿到明确错误（而不是 OOM）。
+    只读/轻量工具（门槛/字段/算子/预检/台账/记忆查询）不受影响。
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = Path(path)
+        self._fh: Any = None
+
+    def _try_lock(self, fh: Any) -> None:
+        if os.name == "nt":
+            import msvcrt
+
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        else:  # pragma: no cover — 本仓运行在 Windows
+            import fcntl
+
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def acquire(self, info: str) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        fh = open(self.path, "a+", encoding="utf-8")
+        try:
+            self._try_lock(fh)
+        except OSError as exc:
+            # Windows 上被锁的字节区间会拒绝其它句柄读取 → 读取持有者信息需容错
+            owner = ""
+            try:
+                fh.seek(0)
+                owner = (fh.read() or "").strip().replace("\n", " ")[:200]
+            except OSError:
+                owner = "(被锁，读取受限；见上方路径)"
+            fh.close()
+            raise ToolError(
+                f"另一个 MCP 会话正持有评估会话（锁：{self.path}；当前持有者：{owner or '未知'}）。"
+                "请稍后重试，或结束另一个客户端后重连；确实需要并行时用 --no-session-lock 启动（内存自负）。"
+            ) from exc
+        fh.seek(0)
+        fh.truncate()
+        fh.write(info + "\n")
+        fh.flush()
+        self._fh = fh
+
+    def release(self) -> None:
+        if self._fh is not None:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+
+                    self._fh.seek(0)
+                    msvcrt.locking(self._fh.fileno(), msvcrt.LK_UNLCK, 1)
+            except OSError:  # noqa: BLE001 — 解锁失败随进程退出自然释放
+                logger.debug("unlock failed", exc_info=True)
+            try:
+                self._fh.close()
+            finally:
+                self._fh = None
+
+    @property
+    def held(self) -> bool:
+        return self._fh is not None
+
+
 # ── 路径 ──────────────────────────────────────────────────────────────
 
 
@@ -67,15 +136,18 @@ def _panel_parquet(ctx: "ServerContext") -> Path | None:
 
 
 class ServerContext:
-    """服务器上下文：仓库根 + 单会话缓存（panel 很重，串行复用）。"""
+    """服务器上下文：仓库根 + 单会话缓存（panel 很重，串行复用）+ 跨进程会话锁。"""
 
-    def __init__(self, root: Path | str | None = None) -> None:
+    def __init__(self, root: Path | str | None = None, *, session_lock: bool = True) -> None:
         self.root = Path(root).resolve() if root else ROOT
         self._lock = threading.Lock()
         self._key: tuple[str, str, bool] | None = None
         self._svc: Any = None
         self._sid: str | None = None
         self._load_ms: float = 0.0
+        self._session_lock: SessionLock | None = (
+            SessionLock(self.root / "artifacts" / "alphaagent" / ".mcp_session.lock") if session_lock else None
+        )
 
     def session(self, mode: str, *, fundamentals: bool = False) -> tuple[Any, str]:
         label = MODE_LABEL.get(mode)
@@ -86,6 +158,10 @@ class ServerContext:
             if self._svc is not None and self._key == key:
                 return self._svc, self._sid
             self._release_locked()
+            if self._session_lock is not None and not self._session_lock.held:
+                self._session_lock.acquire(
+                    f"pid={os.getpid()} mode={mode} label={label} at={time.strftime('%Y-%m-%d %H:%M:%S')}"
+                )
             from alphaagent.data.adapters.cnequity import CNE_SOURCE
             from alphaagent.factor.mining.eval.schemas import SessionCreateRequest
             from alphaagent.factor.mining.service import StockEvalService
@@ -103,7 +179,8 @@ class ServerContext:
 
     def session_info(self) -> dict[str, Any]:
         return {"mode": (self._key or (None,))[0], "session_id": self._sid,
-                "load_ms": self._load_ms, "open": self._svc is not None}
+                "load_ms": self._load_ms, "open": self._svc is not None,
+                "lock_held": bool(self._session_lock and self._session_lock.held)}
 
     def _release_locked(self) -> None:
         if self._svc is not None and self._sid:
@@ -112,6 +189,15 @@ class ServerContext:
             except Exception:  # noqa: BLE001 — 释放失败不应影响后续会话
                 logger.warning("release_session failed", exc_info=True)
         self._svc, self._sid, self._key = None, None, None
+        if self._session_lock is not None and self._session_lock.held:
+            self._session_lock.release()
+
+    def release_session(self) -> dict[str, Any]:
+        """显式释放评估会话与跨进程锁（多客户端共享机器时的礼貌动作）。"""
+        with self._lock:
+            was_open = self._svc is not None
+            self._release_locked()
+            return {"released": was_open}
 
     def close(self) -> None:
         with self._lock:
@@ -126,6 +212,14 @@ def _crit(mode: str):
     from alphaagent.factor.mining.research_spec import effective_research_spec
 
     return DeliveryCriteria.from_spec(effective_research_spec(mode))
+
+
+def release_session(ctx: ServerContext) -> dict:
+    """显式释放评估会话与跨进程会话锁（多客户端共用机器时用完即放，让别的客户端能接管 panel）。"""
+    before = ctx.session_info()
+    out = ctx.release_session()
+    return {**out, "before": before,
+            "note": "已释放 panel 会话与重会话锁；下次调用评估类工具会自动重新开（约 5–15s）。"}
 
 
 def get_thresholds(ctx: ServerContext, mode: str = "technical") -> dict:
