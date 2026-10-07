@@ -242,6 +242,15 @@ label/panel 列加载/engine_gate 频率的语义。迁移脚本
 - **档位现状**：`technical` / `report` 已从 `label_1d + weekly` 收成 **`label_1d + daily`**
   （`allowed_freqs=["daily"]`）；`fundamental`(20d+monthly) / `technical_daily`(1d+daily) /
   `technical_weekly`(5d+weekly) / `technical_monthly`(20d+monthly) 本来就是对齐的。
+- **慢档门槛标定（2026-10-07）**：`technical_weekly` / `technical_monthly` 此前**只对齐了
+  label/freq，没有自己的门槛**——继承 1d 标定的 `min_abs_ic=0.02 / min_icir=0.28 /
+  min_val_abs_ic=0.015` 等。配对实测（候选池 42 个因子 × label_1d/5d/20d，train 2020-2022，
+  n=41）显示同一因子在 label_5d 上 |IC|/|ICIR| 中位放大 **1.776 / 1.800** 倍、label_20d 上
+  放大 **2.865 / 3.032** 倍 ⇒ 沿用 1d 线会让慢档门近乎失效（选择性失衡）。故按该比值**等比
+  放大**（weekly：candidate 0.0355/0.504、production 0.0444/0.540；monthly：0.0573/0.849、
+  0.0716/0.9096；`min_val_abs_ic` 同步放大）。与 label 尺度无关的项（val 保留比 / coverage /
+  cs_autocorr / max_abs_corr / engine_gate 年化门）**刻意不动**；数值明细见
+  `core/research_modes.py` 两档的标定注释，不变量由 `tests/test_slow_tier_thresholds.py` 锁定。
 - **换手门改用调仓口径**：`delivery_checker.stage_one_stats` 取
   `quantile_portfolio.avg_rebalance_side_turnover`（每 hold 日调一次的真实换手），
   旧记录回落 `avg_daily_side_turnover`；daily↔1d 时两者相等（历史行为不变）。
