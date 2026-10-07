@@ -244,13 +244,19 @@ label/panel 列加载/engine_gate 频率的语义。迁移脚本
   `technical_weekly`(5d+weekly) / `technical_monthly`(20d+monthly) 本来就是对齐的。
 - **慢档门槛标定（2026-10-07）**：`technical_weekly` / `technical_monthly` 此前**只对齐了
   label/freq，没有自己的门槛**——继承 1d 标定的 `min_abs_ic=0.02 / min_icir=0.28 /
-  min_val_abs_ic=0.015` 等。配对实测（候选池 42 个因子 × label_1d/5d/20d，train 2020-2022，
-  n=41）显示同一因子在 label_5d 上 |IC|/|ICIR| 中位放大 **1.776 / 1.800** 倍、label_20d 上
-  放大 **2.865 / 3.032** 倍 ⇒ 沿用 1d 线会让慢档门近乎失效（选择性失衡）。故按该比值**等比
-  放大**（weekly：candidate 0.0355/0.504、production 0.0444/0.540；monthly：0.0573/0.849、
-  0.0716/0.9096；`min_val_abs_ic` 同步放大）。与 label 尺度无关的项（val 保留比 / coverage /
-  cs_autocorr / max_abs_corr / engine_gate 年化门）**刻意不动**；数值明细见
-  `core/research_modes.py` 两档的标定注释，不变量由 `tests/test_slow_tier_thresholds.py` 锁定。
+  min_val_abs_ic=0.015` 等。而 label 持有期会系统性改变同一因子的 IC/ICIR 量级（配对实测：
+  候选池 42 因子 × label_1d/5d/20d，train 2020-2022，n=41；5d/1d 中位放大 1.776/1.800、
+  20d/1d 放大 2.865/3.032）⇒ 沿用 1d 线会让慢档门近乎失效。
+  标定采用**双锚**：①**文献绝对量级**（日频 Rank-IC ≥0.02 有筛选价值、0.03–0.05 可用；月度
+  IC 0.02–0.06 正常、0.05–0.10 属"很好"；ICIR 有效线 0.3；文献实测月度 PE TTM 0.0529/0.6995）；
+  ②**与主档选择性持平**（同一实测池过线率均 **36.6%**）。
+  落地值：`technical_weekly` candidate/evaluation **0.030 / 0.450**（production 0.0375 / 0.4821）；
+  `technical_monthly` **0.053 / 0.650**（production 0.0663 / 0.6964）；`min_val_abs_ic` 按本档 IC
+  线/主档 0.02 的倍数（0.0225 / 0.0398）。与 label 尺度无关的项（val 保留比 / coverage /
+  cs_autocorr / max_abs_corr / engine_gate 年化门）**刻意不动**。明细见
+  `docs/review/tech_slow_tier_threshold_calibration_20261007.md` 与 `core/research_modes.py`
+  两档注释，不变量由 `tests/test_slow_tier_thresholds.py` 锁定；重标定脚本
+  `scripts/calibrate_slow_tier_thresholds.py`。
 - **换手门改用调仓口径**：`delivery_checker.stage_one_stats` 取
   `quantile_portfolio.avg_rebalance_side_turnover`（每 hold 日调一次的真实换手），
   旧记录回落 `avg_daily_side_turnover`；daily↔1d 时两者相等（历史行为不变）。
