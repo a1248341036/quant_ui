@@ -84,3 +84,35 @@ memory_record · run_summary
 2. 评估/提交一律**走 `_dispatch` 工具层**（保留记忆死路硬拦、同质化熔断、interaction 契约）；若确需直连服务（如批量评估），提供 `--no-guards` 并在 run 记录中留痕；
 3. MCP server **照 CNEquity 手写 stdio JSON-RPC**（`CNEquity/src/cnequity/mcp_server/protocol.py`，避免 `mcp` SDK 的 15 个传递依赖）；
 4. 会话由 server 内部管理（panel 6–8GB/会话，需串行/池化），对外只暴露 `session` 句柄或隐式复用。
+
+---
+
+## 实现状态（2026-10-07，v1 已落地）
+
+`alphaagent/mcp_server/`（`protocol.py` / `catalog.py` / `tools.py`）+ 入口 `scripts/alphaagent_mcp.py`，
+测试 `tests/test_alphaagent_mcp_server.py`。**已实现 14 个工具**：
+
+| 工具 | 读写 | 备注 |
+|---|---|---|
+| `get_thresholds` | 读 | 四档生效门槛（候选/正式库/engine_gate/换手门），断言与 `DeliveryCriteria` 逐项一致 |
+| `list_fields` | 读 | 面板列 + 族计数（读 parquet schema，不载 panel） |
+| `describe_operator` | 读 | 算子目录（全量 / 单算子签名行） |
+| `precheck_expression` | 读 | 复用 `tools/_precheck.py`（与真实工具同一实现） |
+| `list_runs` / `run_summary` | 读 | run 台账 + steps.log 尾部 |
+| `memory_search` / `memory_stats` | 读 | 复用 `ResearchMemoryStore.context_for`（与真实 run 注入同源）/ 饱和度 + 漏斗 |
+| **`eval_batch`** | 读 | ★批量评估（≤60）+ 逐门 PASS/FAIL；一次调用替代数十次工具调用 |
+| `eval_val` | 读 | val 段 + 保留比/方向一致性 |
+| **`library_similarity`** | 读 | ★候选池截面相关性（stage_two 相关墙预警） |
+| **`dry_run_delivery`** | 读 | ★train+val + 相关性 + stage_one/stage_two 全判定，不写库 |
+| `submit_factor` | **写** | 真实交付（`FactorSubmitService.submit`），`confirm=true` 必需 |
+| `memory_record` | **写** | 记忆写回（`record_tool_result`），`confirm=true` 必需 |
+
+**验证**：`pytest tests/test_alphaagent_mcp_server.py`（19 项，含协议/目录一致性/写门/参数校验；
+重活默认跳过，`ALPHAAGENT_MCP_EVAL_TEST=1` 开启）全绿；`scripts/alphaagent_mcp.py --selftest`
+协议自检通过；真实 stdio 端到端（管道喂 JSON-RPC）握手/通知不回复/门槛/写门均符合预期；
+`--selftest --with-eval` 经 MCP 评估 `amt_to_cap 20d` 得 `ic=-0.0707 / icir=-0.643 / turn=0.5977`
+（与此前直连测量逐位一致，口径无漂移）。
+
+**v1 刻意未暴露**：会话生命周期（`create_session`/`release_session`，由 server 内部串行复用）、
+盲测（耗预算）、重筛/晋升脚本（用户拍板）、管理类端点（archive/rename/pin）、数据同步脚本。
+
