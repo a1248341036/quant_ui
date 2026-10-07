@@ -115,28 +115,38 @@ RESEARCH_MODES: dict[str, ResearchModeSpec] = {
             "PIT 日频）结合价量信息挖掘A股日频因子，先训练集评估，再验证集检验；"
             "只有通过验证和去重门槛的因子才提交。"
         ),
-        # 基本面为慢因子：季频 PIT 信号弱，统计门槛放宽松，但可交易性只小幅放松。
-        # 2026-09-11 观察池口径：technical 候选线回到 0.020/0.28 后与 fundamental
-        # 同值——本档 override 保留作为"量纲锚"（technical 若再调整，fundamental
-        # 仍锚定 0.020/0.28/0.012），仅 val 保留比（0.65）与 production 更严项是实差异。
+        # 基本面为慢因子：季频 PIT 信号弱，val 保留比更严（0.65/0.70），可交易性小幅放松。
+        # ── 2026-10-07 门槛重锚（label 尺度对齐）────────────────────────────
+        # 本档是 label_20d + monthly，但历史门槛沿用 1d 尺度的 0.020/0.28/0.012（当时
+        # technical 也是 0.020/0.28，属"同值量纲锚"）。label_20d 会系统性放大 IC/ICIR，
+        # 使本档门槛形同虚设——实测（基本面族近似子集 n=9，同 panel/label 配对）：
+        #   20d 分布 p50 |IC| 0.0371 / |ICIR| 0.4174；旧线 0.020/0.28 过线率 **77.8%**
+        #   （技术慢档同口径 36.6%）。
+        # 双锚重锚到 **0.035 / 0.45 / 0.021**：
+        #   锚① 文献：月度基本面实测 PE TTM 0.0529/0.6995、PB 0.0557/0.4888、
+        #        ROE 0.0172/0.2277 → 中位量级 ≈ 0.035/0.45；
+        #   锚② 选择性：该族过线率 44.4%，与技术慢档（36.6%）同量级。
+        # 三个层次（evaluation/candidate/production）按同一比例（IC ×1.75、ICIR ×1.607）
+        # 重锚，本档原有内部关系（production=candidate）与 val 保留比（0.65/0.70）不变；
+        # engine_gate 年化门（0.02/0.4）未动——缺该档真实回测实测。
         evaluation_overrides={
-            "min_train_abs_ic": 0.020,
-            "min_train_icir": 0.28,
-            "min_val_abs_ic": 0.012,
+            "min_train_abs_ic": 0.035,   # 0.020 × 1.75
+            "min_train_icir": 0.45,      # 0.28  × 1.607
+            "min_val_abs_ic": 0.021,     # 0.012 × 1.75
             "min_val_ic_retention_ratio": 0.5,
         },
         candidate_overrides={
-            "min_abs_ic": 0.020,
-            "min_icir": 0.28,
-            "min_val_abs_ic": 0.012,
+            "min_abs_ic": 0.035,
+            "min_icir": 0.45,
+            "min_val_abs_ic": 0.021,
             # 2026-08-29 审计：11 个候选 8 个 val 保留比 <65%（train→val 衰减
             # 严重），10d 持有期对季频 PIT 信号过短也是成因之一（切 label_20d）
             "min_val_ic_retention": 0.65,
         },
         production_overrides={
-            "min_train_abs_ic": 0.020,   # technical 0.025 → 0.020
-            "min_train_icir": 0.28,      # technical 0.30 → 0.28
-            "min_val_abs_ic": 0.012,     # technical 0.015 → 0.012
+            "min_train_abs_ic": 0.035,   # 本档 production 历史上与 candidate 同值（保持）
+            "min_train_icir": 0.45,
+            "min_val_abs_ic": 0.021,
             "min_val_ic_retention": 0.70,
             "min_val_long_excess": 0.0,
             "max_winsorized_abs_ic_decay": 0.12,  # technical 0.10 → 0.12

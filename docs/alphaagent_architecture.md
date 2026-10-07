@@ -257,6 +257,16 @@ label/panel 列加载/engine_gate 频率的语义。迁移脚本
   `docs/review/tech_slow_tier_threshold_calibration_20261007.md` 与 `core/research_modes.py`
   两档注释，不变量由 `tests/test_slow_tier_thresholds.py` 锁定；重标定脚本
   `scripts/calibrate_slow_tier_thresholds.py`。
+- **fundamental 档同批重锚（2026-10-07）**：它同为 label_20d + monthly，却沿用 1d 尺度的
+  `0.020/0.28/0.012`（2026-09-11"与 technical 同值量纲锚"）⇒ 实测基本面族近似子集（n=9）
+  过线率 **77.8%**，门形同虚设。按同法双锚重锚到 **0.035 / 0.45 / 0.021**（文献月度基本面
+  量级 PE 0.0529/0.6995、PB 0.0557/0.4888、ROE 0.0172/0.2277；该族过线率 44.4%），三层
+  同比例（IC ×1.75、ICIR ×1.607）重锚，保持 production==candidate 与 val 保留比 0.65/0.70。
+- **判定侧档位感知修复（2026-10-07）**：`tools/_dispatch._near_miss_verdict` 早已按档位取
+  `candidate_overrides["min_abs_ic"]`，而 `memory/schema.py:_classify` 只读全局
+  `DEFAULT_RESEARCH_SPEC` 的 `min_train_abs_ic`（0.02），且 `memory/ingestion.py` 到落库阶段才把
+  `research_mode` 写进 metrics ⇒ 慢档/基本面档会把低于本档线的 IC 标成 `train_passed`。现已在
+  `record` 调用 `_classify` 前 `setdefault` 档位元数据、`_classify` 按档取线（未知档位回落全局）。
 - **换手门改用调仓口径**：`delivery_checker.stage_one_stats` 取
   `quantile_portfolio.avg_rebalance_side_turnover`（每 hold 日调一次的真实换手），
   旧记录回落 `avg_daily_side_turnover`；daily↔1d 时两者相等（历史行为不变）。

@@ -182,6 +182,15 @@ class IngestionMixin:
                 metrics.setdefault("test_ic_retention", holdout.get("ic_retention"))
             metrics.setdefault("train_ic", metrics.get("ic"))
             metrics.setdefault("train_icir", metrics.get("icir"))
+        # 档位随评估进入 verdict 判定（2026-10-07）：各档海选线不同（technical 0.02 /
+        # technical_weekly 0.03 / technical_monthly 0.053 / fundamental 0.035），_classify
+        # 必须先拿到本 run 档位才能正确判 train_passed / near_miss；run 档位在启动时即确定
+        # （run_freq_context），此前只在落库阶段（下方 metrics_compact）合入，判定阶段拿不到。
+        if run_freq_context:
+            for _meta_key in ("research_mode", "rebalance_freq", "freq_source"):
+                _meta_val = run_freq_context.get(_meta_key)
+                if _meta_val:
+                    metrics.setdefault(_meta_key, _meta_val)
         error = str(result.get("error") or result.get("skipped_reason") or "")
         verdict, conclusion = self._classify(name, result, metrics, error)
         # A) 预测-对账：被证伪的预测追加进 conclusion（FTS 可检索），

@@ -136,3 +136,35 @@ def test_label_freq_consistency_still_holds(mode: str) -> None:
     """标定不得破坏 2026-10-04 的 label↔freq 强制一致（构建期 fail-closed）。"""
     ensure_label_freq_consistency(effective_research_spec(mode))
     ensure_label_freq_consistency(default_research_spec(mode))
+
+
+# ── fundamental 档（label_20d + monthly）────────────────────────────────
+# 2026-10-07 重锚：原 0.020/0.28/0.012 是 1d 尺度值（当时与 technical 同值"量纲锚"），
+# 在 20d label 下形同虚设（实测基本面族近似子集 n=9 过线率 77.8%）。新线 0.035/0.45/0.021：
+# ① 文献月度基本面实测中位量级（PE 0.0529/0.6995、PB 0.0557/0.4888、ROE 0.0172/0.2277）；
+# ② 该族过线率 44.4%（与技术慢档 36.6% 同量级）。三层同比例（IC ×1.75、ICIR ×1.607）重锚，
+# 保持本档"production == candidate"与 val 保留比（0.65/0.70）不变。
+FUNDA_BAR = (0.035, 0.45)
+FUNDA_VAL_IC = 0.021
+FUNDA_LEVELS = [
+    ("evaluation_policy", "min_train_abs_ic", "min_train_icir"),
+    ("delivery_policy.candidate", "min_abs_ic", "min_icir"),
+    ("delivery_policy.production", "min_train_abs_ic", "min_train_icir"),
+]
+
+
+def test_fundamental_reanchored_to_20d_scale() -> None:
+    """fundamental 三层同比例重锚到 0.035/0.45/0.021（保持其内部关系）。"""
+    spec = effective_research_spec("fundamental")
+    ic_bar, icir_bar = FUNDA_BAR
+    for path, ic_key, icir_key in FUNDA_LEVELS:
+        assert _get(spec, path, ic_key) == pytest.approx(ic_bar, abs=1e-4), f"{path}.{ic_key}"
+        assert _get(spec, path, icir_key) == pytest.approx(icir_bar, abs=1e-4), f"{path}.{icir_key}"
+        assert _get(spec, path, "min_val_abs_ic") == pytest.approx(FUNDA_VAL_IC, abs=1e-4), path
+
+
+def test_fundamental_bar_within_literature_range() -> None:
+    """新线必须落在文献实测月度基本面因子区间内（PE/PB/ROE），既不虚高也不形同虚设。"""
+    ic_bar, icir_bar = FUNDA_BAR
+    assert 0.017 <= ic_bar <= 0.056, f"IC 线 {ic_bar} 超出文献月度基本面区间 0.017~0.056"
+    assert 0.23 <= icir_bar <= 0.70, f"ICIR 线 {icir_bar} 超出文献月度基本面区间 0.23~0.70"

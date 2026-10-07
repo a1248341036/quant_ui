@@ -165,13 +165,16 @@ class TestNearMissVerdict:
         assert _near_miss_verdict({"ic": 0.020, "icir": 0.3, "factor_coverage": 0.99}) is False
 
     def test_dispatch_helper_fundamental_mode(self):
-        # fundamental 档候选线 0.020（与 technical 同值）→ near_miss 带 [0.016, 0.020)
+        # fundamental 档候选线 0.035（2026-10-07 按 20d 尺度重锚）→ near_miss 带 [0.028, 0.035)
         assert _near_miss_verdict(
-            {"ic": 0.017, "icir": 0.3, "factor_coverage": 0.99, "research_mode": "fundamental"}
+            {"ic": 0.030, "icir": 0.3, "factor_coverage": 0.99, "research_mode": "fundamental"}
         ) is True
         assert _near_miss_verdict(
+            {"ic": 0.017, "icir": 0.3, "factor_coverage": 0.99, "research_mode": "fundamental"}
+        ) is False  # 0.017 < 0.8×0.035=0.028：该 IC 对 20d 尺度太低，已是 weak
+        assert _near_miss_verdict(
             {"ic": 0.017, "icir": 0.3, "factor_coverage": 0.99, "research_mode": "technical"}
-        ) is True  # 两档候选线同为 0.020，带相同
+        ) is True  # technical 候选线 0.020 → 带 [0.016, 0.020)
         assert _near_miss_verdict(
             {"ic": 0.014, "icir": 0.3, "factor_coverage": 0.99, "research_mode": "technical"}
         ) is False  # 0.014 < 0.8×0.020=0.016
@@ -186,13 +189,26 @@ class TestNearMissVerdict:
         )
         assert verdict == "near_miss"
         assert "接近海选线" in conclusion
-        # fundamental 档：IC 0.017 应为 near_miss 而非 weak（候选线 0.020）
-        metrics_f = {"ic": 0.017, "icir": 0.30, "factor_coverage": 0.99,
+        # 档位感知（2026-10-07）：海选线按 run 档位取（fundamental 0.035 / technical 0.02），
+        # 否则慢档/基本面档的 train_passed 与 near_miss 会被错标。
+        metrics_f = {"ic": 0.030, "icir": 0.30, "factor_coverage": 0.99,
                      "research_mode": "fundamental"}
         verdict_f, _ = SchemaMixin._classify(
             "evaluate_factor", result, metrics_f, error=""
         )
-        assert verdict_f == "near_miss"
+        assert verdict_f == "near_miss"  # 0.030 ∈ [0.8×0.035, 0.035)
+        metrics_f_low = {"ic": 0.020, "icir": 0.30, "factor_coverage": 0.99,
+                         "research_mode": "fundamental"}
+        verdict_low, _ = SchemaMixin._classify(
+            "evaluate_factor", result, metrics_f_low, error=""
+        )
+        assert verdict_low == "weak"  # 0.020 < 0.8×0.035：低于本档 near_miss 带
+        metrics_t = {"ic": 0.030, "icir": 0.30, "factor_coverage": 0.99,
+                     "research_mode": "technical"}
+        verdict_t, _ = SchemaMixin._classify(
+            "evaluate_factor", result, metrics_t, error=""
+        )
+        assert verdict_t == "train_passed"  # 同一 IC 在 technical（线 0.02）已过线 → 档位确已生效
 
     def test_memory_classify_promising_unchanged(self):
         from alphaagent.factor.mining.memory.schema import SchemaMixin

@@ -128,24 +128,34 @@ class TestResearchSpec:
         assert spec["research_mode"] == "fundamental"
         assert spec["recommended_label_col"] == "label_20d_close_to_close"
 
-    def test_fundamental_thresholds_looser_than_technical(self) -> None:
-        """基本面模式门槛应比 technical 放宽（慢因子弱信号），但可交易性门禁保留。"""
+    def test_fundamental_thresholds_anchored_to_20d_scale(self) -> None:
+        """fundamental 是 label_20d + monthly 档：统计门槛按 **20d 尺度**锚定，绝对值高于 1d 的
+        technical；但对自身因子族仍是"宽容处置"——val 保留比更严、engine_gate 年化门更松、
+        换手硬门保留。
+
+        2026-10-07 重锚：原 0.020/0.28/0.012 沿用 1d 尺度（当时与 technical 同值"量纲锚"），
+        在 20d label 下形同虚设（实测基本面族近似子集 n=9 过线率 77.8%）→ 双锚重锚到
+        0.035/0.45/0.021（文献月度基本面量级 + 该族选择性 44.4%）。
+        """
         tech = normalize_research_spec(default_research_spec("technical"))
         fund = normalize_research_spec(default_research_spec("fundamental"))
 
-        # 统计门槛：基本面必须 ≤ technical（宽松或持平），不允许更严
-        assert fund["evaluation_policy"]["min_train_abs_ic"] <= tech["evaluation_policy"]["min_train_abs_ic"]
-        assert fund["evaluation_policy"]["min_train_icir"] <= tech["evaluation_policy"]["min_train_icir"]
-        assert fund["evaluation_policy"]["min_val_abs_ic"] <= tech["evaluation_policy"]["min_val_abs_ic"]
-        assert fund["delivery_policy"]["candidate"]["min_abs_ic"] <= tech["delivery_policy"]["candidate"]["min_abs_ic"]
-        assert fund["delivery_policy"]["candidate"]["min_icir"] <= tech["delivery_policy"]["candidate"]["min_icir"]
-        assert fund["delivery_policy"]["production"]["min_train_abs_ic"] <= tech["delivery_policy"]["production"]["min_train_abs_ic"]
-        assert fund["delivery_policy"]["production"]["min_train_icir"] <= tech["delivery_policy"]["production"]["min_train_icir"]
-        assert fund["delivery_policy"]["production"]["min_val_abs_ic"] <= tech["delivery_policy"]["production"]["min_val_abs_ic"]
+        # 统计门槛：label 尺度不同（20d vs 1d），绝对值必须更严
+        assert fund["evaluation_policy"]["min_train_abs_ic"] > tech["evaluation_policy"]["min_train_abs_ic"]
+        assert fund["evaluation_policy"]["min_train_icir"] > tech["evaluation_policy"]["min_train_icir"]
+        assert fund["evaluation_policy"]["min_val_abs_ic"] > tech["evaluation_policy"]["min_val_abs_ic"]
+        assert fund["delivery_policy"]["candidate"]["min_abs_ic"] > tech["delivery_policy"]["candidate"]["min_abs_ic"]
+        assert fund["delivery_policy"]["candidate"]["min_icir"] > tech["delivery_policy"]["candidate"]["min_icir"]
+        assert fund["delivery_policy"]["production"]["min_train_abs_ic"] > tech["delivery_policy"]["production"]["min_train_abs_ic"]
+        assert fund["delivery_policy"]["production"]["min_train_icir"] > tech["delivery_policy"]["production"]["min_train_icir"]
+        assert fund["delivery_policy"]["production"]["min_val_abs_ic"] > tech["delivery_policy"]["production"]["min_val_abs_ic"]
 
+        # 对自身因子族的宽容处置仍在：val 保留比更严（季频 PIT 衰减快）
+        assert fund["delivery_policy"]["candidate"]["min_val_ic_retention"] > tech["delivery_policy"]["candidate"]["min_val_ic_retention"]
+        assert fund["delivery_policy"]["production"]["min_val_ic_retention"] > tech["delivery_policy"]["production"]["min_val_ic_retention"]
         # 换手性硬门：基本面保留（防排名日度剧变）
         assert fund["delivery_policy"]["candidate"]["min_cs_autocorr"] == 0.18
-        # engine_gate：月频、超额与夏普门槛不低于 technical 的 2/3 力度
+        # engine_gate：月频、年化超额与夏普门槛低于 technical
         assert fund["delivery_policy"]["production"]["engine_gate"]["freq"] == "monthly"
         assert fund["delivery_policy"]["production"]["engine_gate"]["min_excess_annual"] < tech["delivery_policy"]["production"]["engine_gate"]["min_excess_annual"]
         assert fund["delivery_policy"]["production"]["engine_gate"]["min_excess_sharpe"] < tech["delivery_policy"]["production"]["engine_gate"]["min_excess_sharpe"]
@@ -153,8 +163,8 @@ class TestResearchSpec:
     def test_fundamental_override_preserves_defaults(self) -> None:
         """用户显式覆盖门槛时，基本面默认值不应污染 technical 默认。"""
         fund = normalize_research_spec({"research_mode": "fundamental"})
-        assert fund["delivery_policy"]["candidate"]["min_abs_ic"] == 0.020
-        assert fund["delivery_policy"]["production"]["min_train_abs_ic"] == 0.020
+        assert fund["delivery_policy"]["candidate"]["min_abs_ic"] == 0.035
+        assert fund["delivery_policy"]["production"]["min_train_abs_ic"] == 0.035
         assert fund["delivery_policy"]["production"]["engine_gate"]["min_excess_annual"] == 0.02
 
     def test_invalid_mode_raises(self) -> None:

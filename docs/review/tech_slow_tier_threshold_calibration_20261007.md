@@ -74,19 +74,67 @@ label 与调仓频率**（2026-10-04 fail-closed 一致性规则），统计门�
 （因子侧属性）、`engine_gate.min_excess_annual` / `min_excess_sharpe`（年化口径，**缺该档实测数据**，
 暂继承主档）；换手门槛本就按频率分档（0.50/0.65/0.80），未改动。
 
+## 5.1 fundamental 档重锚（2026-10-07，总体一致化）
+
+`fundamental` 同为 **label_20d + monthly** 档，但历史门槛沿用 1d 尺度的 `0.020/0.28/0.012`
+（2026-09-11 的"与 technical 同值量纲锚"）→ 在 20d label 下同样形同虚设：
+
+- 实测（基本面族近似子集 n=9，同 panel/label 配对）：20d 分布 p50 `|IC| 0.0371 / |ICIR| 0.4174`；
+  旧线过线率 **77.8%**（技术慢档同口径 36.6%）。
+- 双锚重锚到 **0.035 / 0.45 / 0.021**：① 文献月度基本面实测中位量级（PE TTM 0.0529/0.6995、
+  PB 0.0557/0.4888、ROE 0.0172/0.2277）；② 该族过线率 **44.4%**（与技术慢档同量级）。
+- 三个层次按同一比例（IC ×1.75、ICIR ×1.607）重锚，保持本档"production == candidate"
+  与 val 保留比（0.65/0.70）、engine_gate（0.02/0.4）不变。
+
+| 项 | 旧值(1d 尺度) | 新值(20d 尺度) |
+|---|---|---|
+| evaluation `min_train_abs_ic` / `min_train_icir` / `min_val_abs_ic` | 0.020 / 0.28 / 0.012 | **0.035 / 0.45 / 0.021** |
+| candidate `min_abs_ic` / `min_icir` / `min_val_abs_ic` | 0.020 / 0.28 / 0.012 | **0.035 / 0.45 / 0.021** |
+| production `min_train_abs_ic` / `min_train_icir` / `min_val_abs_ic` | 0.020 / 0.28 / 0.012 | **0.035 / 0.45 / 0.021** |
+
+## 5.2 判定侧口径修复（同批，2026-10-07）
+
+重锚后暴露两条判定路径的**阈值来源漂移**：
+
+- `tools/_dispatch._near_miss_verdict` → `_candidate_ic_bar(mode)`：**档位感知**（读
+  `RESEARCH_MODES[mode].candidate_overrides["min_abs_ic"]`，回落全局默认）；
+- `memory/schema.py:_classify` → 只读 `DEFAULT_RESEARCH_SPEC["evaluation_policy"]` 的**全局**
+  `min_train_abs_ic`（0.02），**不感知档位**；且 `memory/ingestion.py` 直到落库阶段才把
+  `research_mode` 合进 `metrics_compact`，判定阶段拿不到档位。
+
+⇒ 若不修，慢档/基本面档会把**低于本档海选线**的 IC 标成 `train_passed`、并把 near_miss 判错。
+修复（两处小改）：`schema._classify` 按 `metrics["research_mode"]` 取该档
+`evaluation_overrides["min_train_abs_ic"]`（未知档位/异常回落全局默认）；`ingestion.record`
+在调用 `_classify` **之前**把 `run_freq_context` 的档位元数据 `setdefault` 进 `metrics`。
+
 ## 6. 不变量与回归
 
 `tests/test_slow_tier_thresholds.py` 锁定：候选/评估线 == 文献锚定值（可复算）→ production 派生关系 →
 三档严格递增 → 线值落在文献可解释区间（IC ≤0.10、ICIR ≤1.0）→ 尺度无关项不动 →
-engine_gate 继承 → label↔freq 一致性不破。
+engine_gate 继承 → label↔freq 一致性不破；并新增 **fundamental 重锚**两测（三层 0.035/0.45/0.021、
+落在文献月度基本面区间 0.017~0.056 / 0.23~0.70）。
+判定侧口径由 `tests/test_yield_improvements.py::test_memory_classify_near_miss` 锁定
+（同一 IC=0.030：fundamental→`near_miss`、technical→`train_passed`，证明档位已生效）。
 
-受影响并已通过的既有测试：`test_label_freq_consistency.py`、`test_prompt_consistency_audit.py`、
-`test_engine_gate_buffer_band.py`、`test_auto_mode_and_freq.py`、`test_unified_library.py`。
+受影响并已同步更新的既有测试：`test_delivery_checker.py`（fundamental 门槛与 prompt 渲染）、
+`test_alphaagent_smoke.py`（"fundamental 比 technical 宽松"改为"按 20d 尺度锚定"）、
+`test_yield_improvements.py`（near_miss 带 [0.028, 0.035)）；另经
+`test_label_freq_consistency.py`、`test_prompt_consistency_audit.py`、
+`test_engine_gate_buffer_band.py`、`test_auto_mode_and_freq.py`、`test_unified_library.py`、
+`test_mining_memory_footprint.py` 全量回归。
+
+**已知既有失败（与本次改动无关，HEAD 亦红）**：`test_yield_improvements.py::TestNearMissHint`
+的 3 例（hint 文案/PIT 警戒键与实现漂移）——已用 `git stash` 在 HEAD 复现同样失败，属独立遗留问题。
 
 ## 7. 已知局限 / 后续
 
-- 池为**候选池 42 个表达式**（偏技术族、"未过线候选"），非全体生成分布；单一 train 窗口；
+- 技术族池为**候选池 42 个表达式**（偏技术族、"未过线候选"），非全体生成分布；单一 train 窗口；
   慢档真实 run 数据积累后应复核；
+- **fundamental 的重锚证据较弱**：其"基本面族近似子集"仅 **n=9**（且按表达式内容启发式归类，
+  含 holder/事件类），非严格的基本面档因子分布 ⇒ 建议后续用 `--research-mode fundamental`
+  的真实 run 数据或专门的配对测量复核（方法同本脚本，把因子池换成基本面族）；
+- 判定侧 `_classify` 现在按档位取线，但**用户自定义 override（research_spec overrides）未纳入**
+  （用 registry 的 mode override；`_dispatch` 路径同样如此 ⇒ 两路径保持一致，未扩大差异）；
 - 未测量 val 段尺度比（用 train 近似）；val 保留比是比值口径，与尺度无关；
 - `engine_gate` 年化门槛（0.03/0.5）未按档调整——需要慢档真实回测（年化超额/夏普分布），属独立工作；
 - **最终裁决仍是 engine_gate**（真实行情、含成本、按 freq 调仓）：IC 线只做研究侧准入，
