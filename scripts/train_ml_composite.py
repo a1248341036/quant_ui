@@ -234,6 +234,17 @@ def main() -> None:
         entries = [e for e in entries if e.name in passed_names]
         print(f"筛选报告过滤：{rep_path} passed={len(passed_names)} 个，"
               f"命中 {len(entries)}/{before} 个（名单与当前池不一致时以交集为准）")
+        # 复用已有报告时同步填充筛选摘要，保持"筛选元数据进 report.json/记忆"契约一致
+        # （否则 report.screening 为 null，且被过滤因子在枚举阶段即剔除，审计无法区分）。
+        screening_summary = {
+            "n_runs": rep.get("n_runs"),
+            "min_score": rep.get("min_score"),
+            "window": rep.get("window") or str(rep_path),
+            "n_total": rep.get("n_total") or len(passed_names),
+            "n_passed": len(passed_names),
+            "rows": rep.get("rows") or [],
+            "source": str(rep_path),
+        }
     print(f"因子枚举：{len(entries)} 个（去重后）")
     if len(entries) < 2:
         print("因子数不足（<2），无法组合。请先挖掘入库更多因子（或核对白名单拼写）。")
@@ -471,6 +482,8 @@ def main() -> None:
 
     # ④b mRMR 推荐模式（B 族）：不训练，只输出"强+互补"推荐清单供前端一键勾选
     if args.recommend_k > 0:
+        if args.screen or args.screen_only:
+            print("[warn] --recommend-k>0 推荐模式不训练模型，其后的 --screen/--screen-only 不会执行")
         from alphaagent.factor.stacking.model import mrmr_rank_features
 
         if len(dataset.feature_names) < 2:
@@ -522,6 +535,9 @@ def main() -> None:
         )
 
         n_runs = int(args.null_runs) if args.null_runs else NULL_IMPORTANCE_RUNS
+        if n_runs < 5:
+            print(f"--null-runs 至少 5（75 分位需足够样本），收到 {n_runs}。")
+            sys.exit(1)
         min_score = float(args.min_score) if args.min_score is not None else SCREEN_MIN_SCORE
         _emit_event(
             out_dir,
@@ -569,6 +585,10 @@ def main() -> None:
             sys.exit(0)
         apply_screening(dataset, screening_rows)
         print(f"筛选后特征 {len(dataset.feature_names)} 个进入训练")
+        if len(dataset.feature_names) < 2:
+            print(f"Null Importance 筛选后有效特征仅 {len(dataset.feature_names)} 个（<2），"
+                  f"继续训练会崩溃或产出退化组合。建议调低 --min-score 或核对 screening.json 后重试。")
+            sys.exit(1)
 
     # ⑤ walk-forward 训练
     #   strict：train 从 mining_end 起步（只用挖掘期后干净段，fold 少）；

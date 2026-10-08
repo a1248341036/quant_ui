@@ -120,3 +120,48 @@ def test_apply_screening_drops_and_audits():
     assert dropped["b"]["library"] == "production_x"
     assert dropped["c"]["library"] == "candidate_x"
     assert "null_importance_score" in dropped["b"]["reason"]
+
+
+def test_apply_screening_preserves_insufficient_window_reason():
+    """M2 回归：rows 自带 reason（样本不足/未真正执行筛选）时，dropped 审计必须
+    原样透传，不得伪装成"正常筛选后 score 不过线"。"""
+    ds = SimpleNamespace(
+        feature_matrix=np.zeros((4, 2), dtype=np.float32),
+        feature_names=["a", "b"],
+        entries=[
+            SimpleNamespace(name="a", library="candidate_x"),
+            SimpleNamespace(name="b", library="production_x"),
+        ],
+        dropped=[],
+    )
+    rows = [
+        {"name": "a", "actual": None, "null_p75": None, "score": None,
+         "passed": False, "reason": "insufficient_window_samples=12"},
+        {"name": "b", "actual": None, "null_p75": None, "score": None,
+         "passed": False, "reason": "insufficient_window_samples=12"},
+    ]
+    apply_screening(ds, rows)
+    assert ds.feature_names == []
+    dropped = {d["name"]: d for d in ds.dropped}
+    assert dropped["a"]["reason"] == "insufficient_window_samples=12"
+    assert dropped["b"]["reason"] == "insufficient_window_samples=12"
+
+
+def test_apply_screening_drops_to_zero_is_extraordinary():
+    """M1 语义：筛选把特征清到 0 列是可能的（样本不足全 fail），调用方应能据此
+    显式中止，而不是让空特征矩阵流进训练。此处验证 apply_screening 的边界行为
+    （0 列），train_ml_composite 侧已加 <2 防护。"""
+    ds = SimpleNamespace(
+        feature_matrix=np.zeros((4, 1), dtype=np.float32),
+        feature_names=["a"],
+        entries=[SimpleNamespace(name="a", library="candidate_x")],
+        dropped=[],
+    )
+    rows = [
+        {"name": "a", "actual": None, "null_p75": None, "score": None,
+         "passed": False, "reason": "insufficient_window_samples=12"},
+    ]
+    apply_screening(ds, rows)
+    assert ds.feature_names == []
+    assert ds.feature_matrix.shape == (4, 0)
+    assert [d["name"] for d in ds.dropped] == ["a"]
