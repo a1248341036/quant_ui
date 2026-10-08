@@ -122,3 +122,67 @@ OCR 只选了 2 个核心文件；`tests/test_null_importance_screen.py` 已人�
   最小修法），并补两条回归测试。
 2. L1-L4 为入口校验/审计契约类，可随分支合入后择机处理；L4 与 M1 同链，建议与 M1 一并修。
 3. 修复走分支提交（用户定合并时机）；本结论已写入 `docs/review/`。
+
+---
+
+# 追加：全量分支 review（2026-10-08，用户要求"全部一起 review"）
+
+对 `main...feat/factor-ml-screening` 全量对比跑 OCR（5 文件、6 评论、27m29s；
+screening.py 因代理 500 重试 7 次后恢复，1 条规划失败被放弃），并人工补查
+OCR 未选的 memory/ingestion.py、memory/schema.py（合计 10 行，均为注释同步，
+无逻辑变化）。**6 条全部确认属实、全部已修**（`fix/null-importance-screen-guards-2`）：
+
+## M1. [bug · medium] `train_ml_composite.py:239` 复用 screening-report 的元数据失真（上轮 L2 修复残留）
+
+- **证据**：上一轮修复后 `screening_summary` 的 `n_total/n_passed/rows` 直接照抄
+  旧报告（`n_total: rep.get("n_total") or len(passed_names)`），但实际入模因子 =
+  `passed ∩ 当前池`（还叠加 `--include-factors` 交集、max_corr 冗余剔除）——
+  report.screening 显示旧批次通过数，无法还原本次真实特征集，与注释"契约一致"意图矛盾。
+  另 `window: rep.get("window") or str(rep_path)` 会把文件路径当筛选窗口展示。
+- **修复**：`n_total=before`（过滤前）、`n_passed=len(entries)`（过滤后实际入模）、
+  `window=rep.get("window")`（缺失置 None，绝不拿路径冒充窗口）、rows 保留来源快照。
+
+## L1. [bug · low] `train_ml_composite.py:537` `--null-runs 0` 被 truthiness 静默回退
+
+- **证据**：`n_runs = int(args.null_runs) if args.null_runs else NULL_IMPORTANCE_RUNS` —
+  显式传 0 被当作"未提供"回退默认 80，收不到"至少 5"的硬校验；且与 `--min-score`
+  的 `is not None` 风格不一致。
+- **修复**：`if args.null_runs is not None`，0 落入 `<5` 校验明确报错。
+
+## L2. [other · low] `train_ml_composite.py:227-232` screening-report 坏文件防护不全
+
+- **证据**：只捕 `OSError, json.JSONDecodeError`；非 UTF-8 文件抛 `UnicodeDecodeError`
+  （ValueError 子类未被捕），rows 缺 "name" 键在 try 之外抛 KeyError → 裸 traceback。
+- **修复**：补 `UnicodeDecodeError` 捕获 + rows 结构校验（list 且每元素 dict 含 name），
+  非法即友好报错 `sys.exit(1)`。
+
+## L3. [maintainability · low] `core/research_modes.py:166` `_MONTHLY_20D_OVERRIDES` 共享可变状态
+
+- **证据**：`**_MONTHLY_20D_OVERRIDES` 展开只浅拷贝，四个嵌套 dict 与模块常量是
+  **同一对象**；ResearchModeSpec 虽 frozen 但字段是可变 dict，未来按档单独重标定会
+  **静默同时改掉 technical_monthly 与"唯一事实源"常量**。
+- **修复**：两处展开（fundamental / technical_monthly）改 `**copy.deepcopy(...)`，
+  每档持有独立子 dict + 注释说明。
+
+## L4. [maintainability · low] `screening.py:213-216` apply_screening 无痕丢列
+
+- **证据**：rows 未覆盖全部特征名时（跨数据集复用 rows），未覆盖列被 keep_idx 静默
+  裁剪但不写 dropped —— feature_names/entries 与 feature_matrix 同步截断却无审计痕迹。
+- **修复**：裁剪前 `uncovered = set(names) - set(rows_by_name)`，非空即 raise
+  `ValueError("rows 未包含特征: [...]")`（校验先于任何修改）。
+
+## L5. [other · low] `screening.py:126` 行数不一致静默错位取样
+
+- **证据**：`win` 由 dates 与 label 共同构造后直接索引 `feature_matrix[win]/label[win]`；
+  调用方传行数不一致（公共 API，测试也裸调用）会布尔索引错位，LightGBM 在错误样本上
+  训练、筛选结论失真且无告警。
+- **修复**：掩码构造前校验 `len(date_np) == label.shape[0] == feature_matrix.shape[0]`，
+  失败 raise 明确错误。
+
+## 测试
+
+- `tests/test_null_importance_screen.py` 新增 2 条（L4 rows 未覆盖拒绝、L5 shape 不匹配拒绝），
+  现 9 例全绿；stacking 相邻 3 文件 + research_modes/delivery_checker/slow_tier/smoke 全绿。
+- `tests/test_yield_improvements.py::TestNearMissHint` 3 条失败经 main worktree 复核为
+  **main 既存问题**（断言 "窗口微调" 与文案 "微调窗口长度" 顺序漂移 + PIT warning 附属键
+  断言过时），与分支无关，另行处理。
