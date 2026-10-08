@@ -226,23 +226,29 @@ def main() -> None:
         rep_path = Path(args.screening_report)
         try:
             rep = json.loads(rep_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             print(f"读取 --screening-report {rep_path} 失败：{exc}")
             sys.exit(1)
-        passed_names = {str(r["name"]) for r in (rep.get("rows") or []) if r.get("passed")}
+        rows = rep.get("rows") or []
+        if not isinstance(rows, list) or any(not isinstance(r, dict) or "name" not in r for r in rows):
+            print(f"--screening-report {rep_path} 结构非法：rows 应为 [{name, passed}, ...]")
+            sys.exit(1)
+        passed_names = {str(r["name"]) for r in rows if r.get("passed")}
         before = len(entries)
         entries = [e for e in entries if e.name in passed_names]
         print(f"筛选报告过滤：{rep_path} passed={len(passed_names)} 个，"
               f"命中 {len(entries)}/{before} 个（名单与当前池不一致时以交集为准）")
         # 复用已有报告时同步填充筛选摘要，保持"筛选元数据进 report.json/记忆"契约一致
         # （否则 report.screening 为 null，且被过滤因子在枚举阶段即剔除，审计无法区分）。
+        # n_total/n_passed 按**本次实际交集**重算（旧报告通过数 ≠ 本次入模数），window
+        # 缺失时置 None（绝不拿文件路径冒充筛选窗口）。
         screening_summary = {
             "n_runs": rep.get("n_runs"),
             "min_score": rep.get("min_score"),
-            "window": rep.get("window") or str(rep_path),
-            "n_total": rep.get("n_total") or len(passed_names),
-            "n_passed": len(passed_names),
-            "rows": rep.get("rows") or [],
+            "window": rep.get("window"),
+            "n_total": before,
+            "n_passed": len(entries),
+            "rows": rows,
             "source": str(rep_path),
         }
     print(f"因子枚举：{len(entries)} 个（去重后）")
@@ -534,7 +540,7 @@ def main() -> None:
             screen_dataset,
         )
 
-        n_runs = int(args.null_runs) if args.null_runs else NULL_IMPORTANCE_RUNS
+        n_runs = int(args.null_runs) if args.null_runs is not None else NULL_IMPORTANCE_RUNS
         if n_runs < 5:
             print(f"--null-runs 至少 5（75 分位需足够样本），收到 {n_runs}。")
             sys.exit(1)

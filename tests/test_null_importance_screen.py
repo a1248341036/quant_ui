@@ -165,3 +165,44 @@ def test_apply_screening_drops_to_zero_is_extraordinary():
     assert ds.feature_names == []
     assert ds.feature_matrix.shape == (4, 0)
     assert [d["name"] for d in ds.dropped] == ["a"]
+
+
+def test_apply_screening_rejects_uncovered_rows():
+    """全量 review L4：rows 与 feature_names 不同源时显式报错，禁止无痕丢列。"""
+    ds = SimpleNamespace(
+        feature_matrix=np.zeros((4, 3), dtype=np.float32),
+        feature_names=["a", "b", "c"],
+        entries=[
+            SimpleNamespace(name="a", library="production_x"),
+            SimpleNamespace(name="b", library="production_x"),
+            SimpleNamespace(name="c", library="candidate_x"),
+        ],
+        dropped=[],
+    )
+    rows = [
+        {"name": "a", "actual": 1.0, "null_p75": 1.0, "score": 0.0, "passed": True},
+    ]
+    try:
+        apply_screening(ds, rows)
+        raise AssertionError("rows 缺列应抛 ValueError")
+    except ValueError as exc:
+        assert "rows 未包含特征" in str(exc) and "b" in str(exc) and "c" in str(exc)
+    # 报错前不得改动 dataset（校验先于裁剪）
+    assert ds.feature_names == ["a", "b", "c"]
+    assert ds.dropped == []
+
+
+def test_null_importance_scores_rejects_shape_mismatch():
+    """全量 review L5：dates/label/feature_matrix 行数不一致时显式报错，防静默错位。"""
+    feats = np.zeros((10, 2), dtype=np.float32)
+    label = np.zeros(9, dtype=np.float32)  # 少 1 行
+    dts = pd.Series(pd.bdate_range("2023-01-02", periods=10))
+    try:
+        null_importance_scores(
+            feats, label, dts, ["a", "b"],
+            window_start="2023-01-02", window_end="2024-12-31",
+            n_runs=5, num_boost_round=20,
+        )
+        raise AssertionError("行数不一致应抛 ValueError")
+    except ValueError as exc:
+        assert "行数不一致" in str(exc)

@@ -121,6 +121,10 @@ def null_importance_scores(
         raise ValueError(f"n_runs 至少 5（75 分位需足够样本），收到 {n_runs}")
 
     date_np = pd.to_datetime(pd.Series(dates)).to_numpy()
+    if len(date_np) != label.shape[0] or feature_matrix.shape[0] != label.shape[0]:
+        raise ValueError(
+            f"dates({len(date_np)})/label({label.shape[0]})/feature_matrix({feature_matrix.shape[0]}) 行数不一致"
+        )
     start = np.datetime64(pd.Timestamp(window_start))
     end = np.datetime64(pd.Timestamp(window_end))
     win = (date_np >= start) & (date_np < end) & np.isfinite(label)
@@ -212,6 +216,11 @@ def apply_screening(dataset, rows: Sequence[dict]) -> None:
     keep = {r["name"] for r in rows if r["passed"]}
     names = dataset.feature_names
     rows_by_name = {r["name"]: r for r in rows}
+    # 裁剪前校验 rows 覆盖全部特征：rows 与 feature_names 不同源时，未覆盖列会被
+    # keep_idx 静默裁剪、又不写 dropped，成为无痕丢列（审计链断裂）。
+    uncovered = set(names) - set(rows_by_name)
+    if uncovered:
+        raise ValueError(f"rows 未包含特征: {sorted(uncovered)}（rows 与 feature_names 不同源）")
     # 先收集原 library 映射再裁剪（裁剪后 entries 索引错位，不能再用原 i 查）
     lib_by_name = {e.name: e.library for e in dataset.entries}
     keep_idx = [i for i, n in enumerate(names) if n in keep]

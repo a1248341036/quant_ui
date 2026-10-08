@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 
 
@@ -163,7 +164,9 @@ RESEARCH_MODES: dict[str, ResearchModeSpec] = {
         # 同步对齐：val 保留比 0.65/0.70→0.50、engine_gate 年化门 0.02/0.4→0.03/0.5、
         #   max_winsorized_abs_ic_decay 0.12→0.10、allowed_freqs 收成 [monthly]。
         # 本档相对 technical_monthly 的唯一区别 = needs_fundamentals=True（载入 funda_* 列）。
-        **_MONTHLY_20D_OVERRIDES,
+        # deepcopy 展开：fundamental 与 technical_monthly 各自持有独立子 dict，防止
+        # 共享同一可变对象（原地改某档会静默污染另一档与"唯一事实源"常量）。
+        **copy.deepcopy(_MONTHLY_20D_OVERRIDES),
     ),
     # ── 三对齐子档位（2026-09-20）──
     # label 持有期 = 调仓频率持有期；快/中/慢信号分轨，各走对应 label + freq + 门槛。
@@ -319,8 +322,9 @@ RESEARCH_MODES: dict[str, ResearchModeSpec] = {
         # 实测分位对照：|IC| p50 1d 0.0205 → 20d 0.0496；|ICIR| p50 0.2698 → 0.7432。
         # production 仍按主档"正式库更严"倍数派生；min_val_abs_ic 按本档 IC 线倍数放大。
         # 未动的项及理由同 technical_weekly。重标定建议在慢档 run 数据积累后复核。
-        # 数值统一引用 _MONTHLY_20D_OVERRIDES（20d 门槛唯一来源，见文件顶部常量定义）。
-        **_MONTHLY_20D_OVERRIDES,
+        # 数值统一引用 _MONTHLY_20D_OVERRIDES（20d 门槛唯一来源，见文件顶部常量定义）；
+        # deepcopy 展开防共享可变状态（理由同 fundamental 档）。
+        **copy.deepcopy(_MONTHLY_20D_OVERRIDES),
     ),
 }
 
