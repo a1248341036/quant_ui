@@ -45,7 +45,7 @@ def _build(n_inst: int = N_INST, n_days: int = N_DAYS, seed: int = 11, shuffle: 
     x[missing] = np.nan
     cap[missing] = np.nan
     extreme = rng.random(n) < 0.002
-    x[extreme] = np.inf                               # ±inf 口径差异
+    x[extreme] = np.where(rng.random(int(extreme.sum())) < 0.5, np.inf, -np.inf)  # ±inf 双向口径
     cap[extreme] = np.nan
 
     if shuffle:
@@ -272,3 +272,51 @@ def test_residualize_degenerate_segments(monkeypatch):
     out2 = ops.CS_RESIDUALIZE(P(y2), P(z1)).iloc[:, 0].to_numpy()
     assert np.isnan(out2[d3]).all()
     assert np.isfinite(out2[~d3]).mean() > 0.8
+
+
+def test_winsorize_nan_quantile_bounds(monkeypatch):
+    """-inf 截面使 q_lo 插值出 NaN → 整段 NaN，与 np.clip 传播一致。
+
+    OCR 2026-10-08 finding：q_lo=NaN 且 q_hi 有限时旧内核会错输出 q_hi（有限值）。
+    注意不对称性：+inf 只会把 q_hi 插值成 **+inf**（a + g·(b−a) = finite + g·inf），
+    clip 上界无效但两路径一致输出有限值，不产生 NaN——NaN 边界只可能来自
+    -inf 作插值下端点（sorted 升序下 q_hi 区间的下端点不可能为 -inf）。"""
+    days = pd.bdate_range("2021-03-01", periods=3)
+    idx = pd.MultiIndex.from_product(
+        [days, [f"S{i}" for i in range(100)]], names=["datetime", "instrument"]
+    )
+    day_arr = np.asarray(idx.get_level_values("datetime"))
+    rng = np.random.default_rng(4)
+    vals = rng.normal(size=len(idx))
+    pos0 = np.flatnonzero(day_arr == days[0])
+    vals[pos0] = np.linspace(1.0, 100.0, 100)
+    vals[pos0[0]] = -np.inf                    # 单个 -inf：q_lo 插值跨 -inf → NaN
+    pos1 = np.flatnonzero(day_arr == days[1])
+    vals[pos1] = np.linspace(1.0, 100.0, 100)
+    vals[pos1[0]] = np.inf                     # 单个 +inf：q_hi → +inf，clip 上界无效
+    P = pd.DataFrame(vals, index=idx, columns=["v"])
+    _assert_same("WINSORIZE·NaN 分位边界", lambda: ops.CS_WINSORIZE(P, 0.01, 0.99), monkeypatch)
+    out = ops.CS_WINSORIZE(P, 0.01, 0.99).iloc[:, 0].to_numpy()
+    assert np.isnan(out[day_arr == days[0]]).all(), "q_lo=NaN 的截面必须整段 NaN"
+    assert np.isfinite(out[day_arr == days[1]]).mean() > 0.9, "q_hi=+inf 只是 clip 上界无效，非 NaN"
+    assert np.isfinite(out[day_arr == days[2]]).mean() > 0.9  # 正常截面不受影响
+
+
+def test_bucket_all_equal_segment_is_nan(monkeypatch):
+    """截面内有限值全相等且数量 ≥ n_bins → 两条路径都整段 NaN。
+
+    OCR 2026-10-08 曾误报此处分叉（以为 qcut 会抛 ValueError 走 rank 重建）；
+    实证 pd.qcut 对全等值不抛异常而是返回全 NaN codes，快慢路径一致。用例锁定该语义。"""
+    days = pd.bdate_range("2021-04-01", periods=3)
+    idx = pd.MultiIndex.from_product(
+        [days, [f"S{i}" for i in range(40)]], names=["datetime", "instrument"]
+    )
+    day_arr = np.asarray(idx.get_level_values("datetime"))
+    rng = np.random.default_rng(5)
+    vals = rng.normal(size=len(idx))
+    vals[day_arr == days[0]] = 3.0                    # 40 个全等值（≥ n_bins=5）
+    P = pd.DataFrame(vals, index=idx, columns=["v"])
+    _assert_same("BUCKET·全等值截面", lambda: ops.CS_BUCKET(P, 5), monkeypatch)
+    out = ops.CS_BUCKET(P, 5).iloc[:, 0].to_numpy()
+    assert np.isnan(out[day_arr == days[0]]).all(), "全等值截面必须整段 NaN（pd.qcut 同语义）"
+    assert np.isfinite(out[day_arr != days[0]]).mean() > 0.9

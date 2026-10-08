@@ -303,6 +303,9 @@ def _winsorize_kernel(arr, bounds, lower_pct: float, upper_pct: float):
     """逐日把有效值 clip 到 ``[lower_pct, upper_pct]`` 分位之间。
 
     有效值口径同 pandas ``groupby.quantile``：只丢 NaN，±inf 参与分位计算再被 clip。
+    任一分位边界为 NaN（截面含 ±inf 时线性插值跨 inf 会出现，-inf → q_lo、+inf → q_hi）
+    → 整段 NaN，与 ``np.clip`` 的 NaN 传播一致（OCR 2026-10-08 finding：q_lo=NaN 且
+    q_hi 有限时，``t < q_hi`` 恒 False 会错输出 q_hi，必须显式护栏）。
     """
     out = np.full(arr.shape[0], np.nan, dtype=np.float32)
     for d in prange(bounds.shape[0] - 1):
@@ -324,11 +327,12 @@ def _winsorize_kernel(arr, bounds, lower_pct: float, upper_pct: float):
         sorted_vals = np.sort(vals)
         q_lo = _quantile_gb(sorted_vals, lower_pct)
         q_hi = _quantile_gb(sorted_vals, upper_pct)
+        if q_lo != q_lo or q_hi != q_hi:
+            continue  # NaN 边界 → 整段 NaN（np.clip 语义），不进入下方有限值循环
         for i in range(st, en):
             v = arr[i]
             if _not_nan(v):
-                # np.clip(v, q_lo, q_hi) == minimum(maximum(v, q_lo), q_hi)：
-                # 边界为 NaN（含 inf 的截面做插值时会出现）时结果必须整体 NaN
+                # np.clip(v, q_lo, q_hi) == minimum(maximum(v, q_lo), q_hi)（边界已保证有限）
                 t = v if v > q_lo else q_lo
                 out[i] = np.float32(t if t < q_hi else q_hi)
     return out
