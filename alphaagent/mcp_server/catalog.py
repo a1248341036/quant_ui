@@ -126,22 +126,25 @@ DESCRIPTORS: list[dict[str, Any]] = [
     {
         "name": "submit_factor",
         "description": "**写**：真实交付（stage_one → 盲测 → stage_two → engine_gate）。stage_one 过即入候选池"
-                       "（candidate_stored=true）；正式库需再过 stage_two 与 engine_gate。必须 confirm=true。",
+                       "（candidate_stored=true）；正式库需再过 stage_two 与 engine_gate。必须 confirm=true。"
+                       "universe 指定股票池：评估与全部交付门在池内算（与 dry_run_delivery 同池口径）；缺省 all=全市场。",
         "inputSchema": _obj({"multi_line_expr": _EXPR, "factor_name": {"type": "string"},
                              "comment": {"type": "string", "description": "机制与经济直觉（必填）"},
                              "mode": _MODE, "confirm": {"type": "boolean", "default": False},
-                             "fundamentals": {"type": "boolean", "default": False}},
+                             "fundamentals": {"type": "boolean", "default": False},
+                             "universe": _UNIVERSE},
                             ["multi_line_expr", "factor_name", "comment"]),
     },
     {
         "name": "memory_record",
         "description": "**写**：把一次评估写回 research_memory（跨 run 学习；直驱挖掘不写回会让系统记忆看不见）。"
-                       "必须 confirm=true。",
+                       "必须 confirm=true。universe 指定股票池（缺省 all）。",
         "inputSchema": _obj({"multi_line_expr": _EXPR, "factor_name": {"type": "string", "default": "expr"},
                              "mode": _MODE,
                              "split": {"type": "string", "enum": ["train", "val"], "default": "train"},
                              "run_id": {"type": "string", "default": "mcp-session"},
-                             "confirm": {"type": "boolean", "default": False}},
+                             "confirm": {"type": "boolean", "default": False},
+                             "universe": _UNIVERSE},
                             ["multi_line_expr"]),
     },
 ]

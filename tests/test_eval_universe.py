@@ -61,7 +61,7 @@ def test_describe_universe_is_readable():
     assert "全市场" in describe_universe("all")
     assert "前 300" in describe_universe("top300cap")
     assert "301" in describe_universe("mid301_800cap")
-    assert "szcomp" not in available_universes() or "szcomp" in available_universes()
+    assert {"szcomp", "chinext"} <= set(available_universes())
 
 
 def test_apply_universe_all_is_noop():
