@@ -76,6 +76,8 @@ def warm(pnl):
     ops.CS_WINSORIZE(small["close"], 0.01, 0.99)
     ops.CS_NEUTRALIZE(small["close"], g)
     ops.CS_GROUP_RANK(small["close"], g)
+    ops.CS_ZSCORE(small["close"])
+    ops.CS_RESIDUALIZE(small["close"], g)
 
 
 def _timed(fn, *args, **kw) -> float:
@@ -96,16 +98,18 @@ BUDGET_CASES = [
     ("MUTUAL_INFO_LAG", 2.0),
 ]
 
-# 截面算子（cs_accel）预算：720k 行面板实测 0.006~0.010 s，留 ~5 倍余量。
+# 截面算子（cs_accel）预算：720k 行面板实测 0.002~0.010 s，留 ~8 倍余量。
 # 取值必须**低于** pandas 回落路径（实测 RANK 0.123 s / CS_WINSORIZE 0.063 s /
-# CS_BUCKET 0.393 s / CS_NEUTRALIZE 0.231 s / CS_GROUP_RANK 0.641 s），
-# 否则快路径退化成 pandas 也照样过门禁。
+# CS_BUCKET 0.393 s / CS_NEUTRALIZE 0.231 s / CS_GROUP_RANK 0.641 s /
+# CS_ZSCORE 0.032 s / CS_RESIDUALIZE 0.123 s），否则快路径退化成 pandas 也照样过门禁。
 CS_BUDGET_CASES = [
     ("RANK", 0.030),
     ("CS_WINSORIZE", 0.030),
     ("CS_BUCKET", 0.040),
     ("CS_NEUTRALIZE", 0.040),
     ("CS_GROUP_RANK", 0.050),
+    ("CS_ZSCORE", 0.015),
+    ("CS_RESIDUALIZE", 0.030),
 ]
 
 
@@ -124,6 +128,8 @@ def test_cs_operator_within_budget(pnl, warm, name, budget):
         "CS_BUCKET": lambda: ops.CS_BUCKET(cap, 10),
         "CS_NEUTRALIZE": lambda: ops.CS_NEUTRALIZE(close, bucket),
         "CS_GROUP_RANK": lambda: ops.CS_GROUP_RANK(close, bucket),
+        "CS_ZSCORE": lambda: ops.CS_ZSCORE(close),
+        "CS_RESIDUALIZE": lambda: ops.CS_RESIDUALIZE(close, bucket),
     }
     elapsed = _timed(dispatch[name])
     assert elapsed < budget, (
@@ -190,4 +196,6 @@ def test_cs_fast_path_wired(pnl):
     assert cs_accel.bucket(arr, bounds, 10) is not None
     assert cs_accel.neutralize(arr, arr, bounds) is not None
     assert cs_accel.group_rank_pct(arr, arr, bounds) is not None
+    assert cs_accel.zscore(arr, bounds, 1) is not None
+    assert cs_accel.residualize(arr, arr.reshape(-1, 1), bounds) is not None
     assert cs_accel.rank_pct(arr, None) is None, "乱序/无边界时必须回落"

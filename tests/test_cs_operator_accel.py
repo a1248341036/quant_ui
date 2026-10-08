@@ -1,17 +1,19 @@
 """CS_* 截面算子 Numba 快路径 vs pandas 回落路径 一致性门禁。
 
 2026-10-08：``RANK`` / ``CS_WINSORIZE`` / ``CS_BUCKET`` / ``CS_NEUTRALIZE`` /
-``CS_GROUP_RANK`` 从 pandas 逐日实现改为 ``cs_accel`` 的 Numba 逐日并行内核
-（实测 7.78M 行面板上快 12~44 倍）。本门禁在同一输入上跑两条路径并要求一致：
+``CS_GROUP_RANK`` / ``CS_ZSCORE`` / ``CS_RESIDUALIZE`` 从 pandas 逐日实现改为
+``cs_accel`` 的 Numba 逐日并行内核（实测 7.78M 行面板上快 9~40 倍）。本门禁在
+同一输入上跑两条路径并要求一致：
 
 - NaN 位置逐个一致；
 - 取值最大绝对偏差 ≤ 1e-6（float32 输出的舍入差；CS_BUCKET 输出为整数档号，
   该容差仍能抓住任何错分档）。
 
 覆盖：并列值（rank/winsorize/qcut 的并列分支）、常数截面、±inf（各算子口径不同：
-RANK / CS_WINSORIZE 视 inf 为有效值，CS_BUCKET / CS_NEUTRALIZE / CS_GROUP_RANK
-按 isfinite 过滤）、组内单样本、有效样本 < n_bins 的截面、多档 CS_BUCKET、
-乱序面板（快路径必须自动回落）。
+RANK / CS_WINSORIZE / CS_ZSCORE 视 inf 为有效值（ZSCORE 含 inf 截面整段 NaN），
+CS_BUCKET / CS_NEUTRALIZE / CS_GROUP_RANK / CS_RESIDUALIZE 按 isfinite 过滤）、
+组内单样本、有效样本 < n_bins 的截面、多档 CS_BUCKET、CS_ZSCORE 的 ddof 两档、
+CS_RESIDUALIZE 的常数控制/逐位精确共线/双控制变量、乱序面板（快路径必须自动回落）。
 """
 from __future__ import annotations
 
@@ -106,12 +108,26 @@ CASE_NAMES = [
     "CS_NEUTRALIZE(x,group)",
     "CS_GROUP_RANK(x,bucket10)",
     "CS_GROUP_RANK(x,group)",
+    "CS_ZSCORE",
+    "CS_ZSCORE(ddof=0)",
+    "CS_RESIDUALIZE(x,group)",
+    "CS_RESIDUALIZE(x,group,log)",
+    "CS_RESIDUALIZE(x,group,2x)",
+    "CS_RESIDUALIZE(x,group,group)",
+    "CS_RESIDUALIZE(x,const)",
 ]
 
 
 def _cases(p):
     x, g = p["x"], p["group"]
     bucket10 = ops.CS_BUCKET(g, 10)
+    garr = g.iloc[:, 0].to_numpy(dtype=float)
+    g2x = pd.DataFrame(garr * 2.0, index=g.index, columns=["g2"])    # ×2 逐位精确 → 共线
+    with np.errstate(invalid="ignore"):
+        glog = pd.DataFrame(np.log(garr), index=g.index, columns=["glog"])  # 真实双控制
+    gconst = pd.DataFrame(
+        np.where(np.isnan(garr), np.nan, 7.0), index=g.index, columns=["gc"]
+    )
     return {
         "RANK": lambda: ops.RANK(x),
         "CS_RANK 别名": lambda: ops.CS_RANK(x),
@@ -125,6 +141,13 @@ def _cases(p):
         "CS_NEUTRALIZE(x,group)": lambda: ops.CS_NEUTRALIZE(x, g),
         "CS_GROUP_RANK(x,bucket10)": lambda: ops.CS_GROUP_RANK(x, bucket10),
         "CS_GROUP_RANK(x,group)": lambda: ops.CS_GROUP_RANK(x, g),
+        "CS_ZSCORE": lambda: ops.CS_ZSCORE(x),
+        "CS_ZSCORE(ddof=0)": lambda: ops.CS_ZSCORE(x, ddof=0),
+        "CS_RESIDUALIZE(x,group)": lambda: ops.CS_RESIDUALIZE(x, g),
+        "CS_RESIDUALIZE(x,group,log)": lambda: ops.CS_RESIDUALIZE(x, g, glog),
+        "CS_RESIDUALIZE(x,group,2x)": lambda: ops.CS_RESIDUALIZE(x, g, g2x),
+        "CS_RESIDUALIZE(x,group,group)": lambda: ops.CS_RESIDUALIZE(x, g, g),
+        "CS_RESIDUALIZE(x,const)": lambda: ops.CS_RESIDUALIZE(x, gconst),
     }
 
 
@@ -175,6 +198,8 @@ def test_env_switch_disables_fast_path(monkeypatch):
     assert cs_accel.neutralize(arr, arr, bounds) is None
     assert cs_accel.group_rank_pct(arr, arr, bounds) is None
     assert cs_accel.bucket(arr, bounds, 4) is None
+    assert cs_accel.zscore(arr, bounds, 1) is None
+    assert cs_accel.residualize(arr, arr.reshape(-1, 1), bounds) is None
     # 算子本身仍可用（回落 pandas 路径）
     assert ops.RANK(p["x"]).shape == p["x"].shape
 
@@ -191,3 +216,59 @@ def test_group_rank_single_sample_is_one(monkeypatch):
     assert out[0] == pytest.approx(1.0)      # 组 0 只有一个样本
     assert out[1] == pytest.approx(0.5)      # 组 1 两个样本
     assert out[2] == pytest.approx(1.0)
+
+
+def _mini_index():
+    days = pd.bdate_range("2021-01-04", periods=4)
+    idx = pd.MultiIndex.from_product(
+        [days, [f"S{i}" for i in range(6)]], names=["datetime", "instrument"]
+    )
+    return idx, np.asarray(idx.get_level_values("datetime")), days
+
+
+def test_zscore_constant_day_is_nan(monkeypatch):
+    """某日截面全为同一值 → std=0 → 整段 NaN（新旧一致，锁定语义）。"""
+    idx, day_arr, days = _mini_index()
+    rng = np.random.default_rng(9)
+    y = rng.normal(size=len(idx))
+    d0 = day_arr == days[0]
+    y[d0] = 2.5
+    P = pd.DataFrame(y, index=idx, columns=["v"])
+    _assert_same("CS_ZSCORE 常数截面", lambda: ops.CS_ZSCORE(P), monkeypatch)
+    out = ops.CS_ZSCORE(P).iloc[:, 0].to_numpy()
+    assert np.isnan(out[d0]).all(), "std=0 的截面必须整段 NaN"
+    assert np.isfinite(out[~d0]).mean() > 0.9
+
+
+def test_residualize_degenerate_segments(monkeypatch):
+    """常数控制 / 逐位精确共线 / 有效样本 < k+2 → 整段 NaN，正常段有值。"""
+    idx, day_arr, days = _mini_index()
+    rng = np.random.default_rng(11)
+    y = rng.normal(size=len(idx))
+    z1 = rng.normal(size=len(idx))
+    P = lambda a: pd.DataFrame(a, index=idx, columns=["v"])
+
+    # 1) 控制变量某日为常数 → 该日 NaN（matrix_rank 必判缺秩）
+    zc = z1.copy()
+    zc[day_arr == days[0]] = 3.14
+    _assert_same("残差化·常数控制", lambda: ops.CS_RESIDUALIZE(P(y), P(zc)), monkeypatch)
+    out = ops.CS_RESIDUALIZE(P(y), P(zc)).iloc[:, 0].to_numpy()
+    assert np.isnan(out[day_arr == days[0]]).all()
+    assert np.isfinite(out[day_arr != days[0]]).mean() > 0.8
+
+    # 2) 双控制变量逐位精确共线（z2 = 2·z1，×2 是位精确缩放）→ 全部截面 NaN
+    z2 = 2.0 * z1
+    _assert_same(
+        "残差化·精确共线", lambda: ops.CS_RESIDUALIZE(P(y), P(z1), P(z2)), monkeypatch
+    )
+    assert np.isnan(ops.CS_RESIDUALIZE(P(y), P(z1), P(z2)).iloc[:, 0].to_numpy()).all()
+
+    # 3) 某日只剩 2 个有效行（k=1 需 ≥3）→ 该日 NaN
+    y2 = y.copy()
+    d3 = day_arr == days[2]
+    d3_pos = np.flatnonzero(d3)
+    y2[d3_pos[:4]] = np.nan
+    _assert_same("残差化·低样本", lambda: ops.CS_RESIDUALIZE(P(y2), P(z1)), monkeypatch)
+    out2 = ops.CS_RESIDUALIZE(P(y2), P(z1)).iloc[:, 0].to_numpy()
+    assert np.isnan(out2[d3]).all()
+    assert np.isfinite(out2[~d3]).mean() > 0.8

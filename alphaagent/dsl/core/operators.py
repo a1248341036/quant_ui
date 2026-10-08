@@ -2155,6 +2155,11 @@ def CS_ZSCORE(df: pd.DataFrame, ddof: int = 1) -> pd.DataFrame:
 
     ser = _first_series(df)
     arr = ser.to_numpy(dtype=float, copy=False)
+    # Numba 逐日并行快路径（面板按 datetime 排序时启用，见 cs_accel）
+    fast = _cs_accel.zscore(arr, _datetime_group_bounds(df), d)
+    if fast is not None:
+        return pd.DataFrame(fast, index=df.index, columns=df.columns[:1])
+    # 回落：面板乱序 / numba 不可用 / ALPHA_DSL_CS_ACCEL=0
     day_level = ser.index.get_level_values("datetime")
     grp = ser.groupby(level="datetime", sort=False)
     mean_arr = grp.mean().reindex(day_level).to_numpy(dtype=float)
@@ -2339,6 +2344,10 @@ def CS_RESIDUALIZE(
     ctrl = np.column_stack([
         _first_series(item).to_numpy(dtype=float, copy=False) for item in controls
     ])
+    # Numba 逐日并行快路径（面板按 datetime 排序时启用，见 cs_accel）
+    fast = _cs_accel.residualize(ys, ctrl, _datetime_group_bounds(x))
+    if fast is not None:
+        return pd.DataFrame(fast, index=x.index, columns=x.columns[:1])
     result = np.full(len(x), np.nan, dtype=np.float32)
     # groupby.indices 位置数组：绕开 MultiIndex engine（并发评估线程安全，见 CS_NEUTRALIZE）
     for _, pos in x.groupby(level="datetime", sort=False).indices.items():

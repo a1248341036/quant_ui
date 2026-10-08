@@ -24,6 +24,19 @@
 3. CS_BUCKET 复刻 ``pd.qcut(labels=False, duplicates="drop")``：``linspace(0,1,n+1)``
    的第 k 个分位是 ``k * (1/n)``（末位强制 1.0），去重后 ``searchsorted(side="left")``，
    再把 ``== edges[0]`` 的 id 提到 1（``include_lowest=True``）。
+4. CS_ZSCORE 的 mean/std 用 pandas ``group_var`` 的 **Welford 单遍** mean/M2 算法
+   （非两遍 E[x²]-E[x]²，浮点末位不同）；``count <= ddof``、``std`` 非有限或为 0
+   时整段 NaN。±inf 参与 Welford 会自然把 M2 变成 NaN/inf → 整段 NaN，与旧实现的
+   ``bad`` 掩码一致，无需特判。
+5. CS_RESIDUALIZE 复刻 ``np.linalg.matrix_rank([1, z]) < k+1 → 整段 NaN`` 的共线
+   判定，但**不做 SVD**：``s(D)²`` 是未中心化 Gram 的特征值，``det(G) = n * det(S_中心)``
+   是恒等式（S 用中心化累加，无消去灾难），故 ``λ_min ≤ λ_max·(max(n,k+1)·eps)²``
+   可写成 ``n·det(S) ≤ (n + Σz²)²·(max(n,k+1)·eps)²``（λ_max 用 tr 代入，阈值放宽
+   ≤ 9 倍，仅影响病态带）。另加 ``det(S) ≤ 1e-11·S11·S22`` 噪声护栏：|r|→1 的
+   窄带里正规方程本身失准，宁可整段 NaN（与 matrix_rank 在该带的行为同向）。
+   残差用中心化正规方程闭式解（k ≤ 2），生产控制变量（市值/流动性/行业档，
+   |r| ≤ 0.999）与 SVD lstsq 的偏差 ≪ 1e-6；1-|r| < 1e-8 的对抗性输入两条路径
+   都已进入数值脆弱区，语义以 NaN 优先。
 
 面板未按 datetime 非递减排序（``bounds is None``）、numba 缺失、或
 ``ALPHA_DSL_CS_ACCEL=0/off/false/no`` 时，公共函数返回 ``None``，调用方回落原
@@ -383,9 +396,164 @@ def _bucket_kernel(arr, bounds, n_bins: int):
     return out
 
 
-# -----------------------------------------------------------------------------
-# 公共入口：不可用时返回 None，调用方回落 pandas 路径
-# -----------------------------------------------------------------------------
+@njit(cache=True, parallel=True, nogil=True)
+def _zscore_kernel(arr, bounds, ddof: int):
+    """逐日 ``(x - mean) / std``，Welford 单遍 mean/M2（pandas ``group_var`` 同款）。
+
+    NaN 跳过、±inf 参与（会把 M2 自然变成 NaN/inf → std 非有限 → 整段 NaN，
+    与旧实现的 ``bad`` 掩码一致，无需特判）；``count <= ddof`` 或 ``std == 0``
+    时整段 NaN（pandas ``std`` 的 NaN 语义）。
+    """
+    out = np.full(arr.shape[0], np.nan, dtype=np.float32)
+    for d in prange(bounds.shape[0] - 1):
+        st = bounds[d]
+        en = bounds[d + 1]
+        count = 0
+        mean = 0.0
+        m2 = 0.0
+        for i in range(st, en):
+            v = arr[i]
+            if v == v:  # notna：仅 NaN 跳过，±inf 参与
+                count += 1
+                delta = v - mean
+                mean += delta / count
+                m2 += delta * (v - mean)
+        if count <= ddof:
+            continue
+        std = np.sqrt(m2 / (count - ddof))  # m2<0 → NaN；inf → inf；NaN → NaN
+        if not np.isfinite(std) or std == 0.0:
+            continue  # 旧实现 bad 掩码：整段 NaN
+        for i in range(st, en):
+            v = arr[i]
+            if v == v:
+                out[i] = np.float32((v - mean) / std)
+    return out
+
+
+@njit(cache=True, parallel=True, nogil=True)
+def _residualize_kernel(yv, zv, bounds, k: int):
+    """逐日把 y 对控制变量 [1, z] 回归取残差（k = 1 或 2）。
+
+    复刻旧实现三段判定：``isfinite(y) & all(isfinite(z))`` 取有效行；
+    ``n < k+2`` 整段 NaN；``matrix_rank([1, z]) < k+1``（共线）整段 NaN。
+    共线判定不用 SVD：det(G) = n·det(S_中心) 是恒等式（见模块 docstring 第 5 条），
+    阈值 ``n·det(S) ≤ (n + Σz²)²·(max(n,k+1)·eps)²`` 复刻 matrix_rank 的
+    ``s_min ≤ s_max·max(M,N)·eps``；残差用中心化正规方程闭式解。
+    """
+    eps = 2.220446049250313e-16
+    out = np.full(yv.shape[0], np.nan, dtype=np.float32)
+    for d in prange(bounds.shape[0] - 1):
+        st = bounds[d]
+        en = bounds[d + 1]
+        c = 0
+        for i in range(st, en):
+            if np.isfinite(yv[i]):
+                ok = True
+                for j in range(k):
+                    if not np.isfinite(zv[i, j]):
+                        ok = False
+                        break
+                if ok:
+                    c += 1
+        if c < k + 2:
+            continue  # 有效样本不足：整段 NaN（旧实现 min_obs）
+        pos = np.empty(c, dtype=np.int64)
+        ys = np.empty(c, dtype=np.float64)
+        z1 = np.empty(c, dtype=np.float64)
+        z2 = np.empty(c, dtype=np.float64)
+        t = 0
+        for i in range(st, en):
+            if np.isfinite(yv[i]):
+                ok = True
+                for j in range(k):
+                    if not np.isfinite(zv[i, j]):
+                        ok = False
+                        break
+                if ok:
+                    pos[t] = i
+                    ys[t] = yv[i]
+                    z1[t] = zv[i, 0]
+                    if k == 2:
+                        z2[t] = zv[i, 1]
+                    t += 1
+
+        n = c
+        sy = 0.0
+        sz1 = 0.0
+        sz2 = 0.0
+        sq1 = 0.0
+        sq2 = 0.0
+        lo1 = z1[0]
+        hi1 = z1[0]
+        lo2 = z2[0]
+        hi2 = z2[0]
+        for t in range(n):
+            y = ys[t]
+            w = z1[t]
+            sy += y
+            sz1 += w
+            sq1 += w * w
+            if w < lo1:
+                lo1 = w
+            elif w > hi1:
+                hi1 = w
+            if k == 2:
+                w2 = z2[t]
+                sz2 += w2
+                sq2 += w2 * w2
+                if w2 < lo2:
+                    lo2 = w2
+                elif w2 > hi2:
+                    hi2 = w2
+        if lo1 == hi1:  # 控制变量逐位常数 → 与截距列精确共线
+            continue
+        if k == 2 and lo2 == hi2:
+            continue
+        ybar = sy / n
+        z1bar = sz1 / n
+        s11 = 0.0
+        s12 = 0.0
+        s22 = 0.0
+        c1 = 0.0
+        c2 = 0.0
+        for t in range(n):
+            dy = ys[t] - ybar
+            dz1 = z1[t] - z1bar
+            s11 += dz1 * dz1
+            c1 += dy * dz1
+            if k == 2:
+                dz2 = z2[t] - sz2 / n
+                s12 += dz1 * dz2
+                s22 += dz2 * dz2
+                c2 += dy * dz2
+
+        m_rank = n if n > k + 1 else k + 1  # matrix_rank 的 max(M, N)
+        tol_det = m_rank * eps
+        if k == 1:
+            # det(G) = n·S11；λ_max ≤ tr = n + Σz1²（PSD 下 λ_max ≥ tr/2，阈值最多宽 4 倍）
+            if n * s11 <= (n + sq1) * (n + sq1) * tol_det * tol_det:
+                continue
+            if s11 <= 0.0:
+                continue
+            b1 = c1 / s11
+            for t in range(n):
+                out[pos[t]] = np.float32((ys[t] - ybar) - b1 * (z1[t] - z1bar))
+        else:
+            ds = s11 * s22 - s12 * s12
+            tr = n + sq1 + sq2
+            if n * ds <= tr * tr * tol_det * tol_det:
+                continue
+            if ds <= 1e-11 * s11 * s22 or ds <= 0.0:
+                continue  # |r|→1 噪声护栏：正规方程失准带，宁可整段 NaN
+            b1 = (c1 * s22 - c2 * s12) / ds
+            b2 = (c2 * s11 - c1 * s12) / ds
+            z2bar = sz2 / n
+            for t in range(n):
+                out[pos[t]] = np.float32(
+                    (ys[t] - ybar) - b1 * (z1[t] - z1bar) - b2 * (z2[t] - z2bar)
+                )
+        # 残差 = (y-ȳ) - b·(z-z̄)，与 y - [1,z]@beta 代数恒等（β0 = ȳ - b·z̄）
+    return out
 
 
 def _prepare(arr) -> np.ndarray:
@@ -436,3 +604,22 @@ def bucket(arr, bounds, n_bins: int):
     if bd is None:
         return None
     return _bucket_kernel(_prepare(arr), bd, int(n_bins))
+
+
+def zscore(arr, bounds, ddof: int):
+    """``CS_ZSCORE`` 快路径；不可用返回 None。"""
+    bd = _prepare_bounds(bounds)
+    if bd is None:
+        return None
+    return _zscore_kernel(_prepare(arr), bd, int(ddof))
+
+
+def residualize(y, z, bounds):
+    """``CS_RESIDUALIZE`` 快路径；不可用返回 None。"""
+    bd = _prepare_bounds(bounds)
+    if bd is None:
+        return None
+    zc = np.ascontiguousarray(z, dtype=np.float64)
+    if zc.ndim != 2 or zc.shape[1] not in (1, 2):
+        return None
+    return _residualize_kernel(_prepare(y), zc, bd, int(zc.shape[1]))
