@@ -122,3 +122,18 @@ worktree 内 `tests/test_alphaagent_mcp_server.py` 20 测 = 17 过 / 2 skipped /
 **验证**: 模块导入 OK；`test_eval_universe` 9/9 过（含 D4 新断言）；`test_alphaagent_mcp_server` 19 过（含新增 `test_universe_validation_before_panel_load`：非法池名入口早失败、不触发面板加载）/ 2 失败为 worktree 缺 artifacts·logs 环境性 / 2 skip。
 
 **合并状态**: 待用户定夺（分支 3 commits ahead of main：`8371b61` feat + `7692d8b` review docs + `f8e59ac` fix）。
+
+---
+
+## 第二轮 OCR（2026-10-09，审查对象 = 修复提交 `f8e59ac`，4 findings 全核为真、零误报）
+
+| # | 严重度 | 项 | 核验结论 | 修复 |
+|---|---|---|---|---|
+| R2-1 | 中 | `library_similarity` 只补了 universe 维度、未透传 fundamentals → `dry_run(fundamentals=True)` 时相关墙另开**无基本面**会话（6-8GB 重建 + 特征体系错位，表达式含 funda_* 时 materialize 失败被吞） | ✅ 属实；且验证中确认 `StageOneCorrelation` 对空证据按 `max_abs_corr=0` **fail-open 判 passed**（delivery_checker.py:164-172） | ✅ 已修（`842014f`）：加 `fundamentals` 参数透传会话 + catalog schema 同步；sim 失败时 dry_run 把 stage_one_correlation/stage_two 降级为 `passed=None` + `fail_reasons+=similarity_unavailable`（仅工具层标注，不动 checker 本体） |
+| R2-2 | 低 | `library_similarity` 响应未回显 universe（其他工具都已回显） | ✅ 属实 | ✅ 已修：两条 return 补 `universe` |
+| R2-3 | 低 | `_norm_universe` 对非字符串入参（如 `universe: 123`）抛 AttributeError 而非契约承诺的 ToolError | ✅ 属实（protocol 不做 inputSchema 类型校验，原始参数直达 handler） | ✅ 已修：`str(universe or UNIVERSE_ALL)` 规整，非法输入统一 ValueError→ToolError（附可用清单） |
+| R2-4 | 中 | `memory_record` 不带 universe：条目签名纯表达式（schema.py:790），同因子跨池落同一条目、metrics 无法按池区分 | ✅ 属实（observation 逐次追加、metrics 无池字段） | ✅ 已修：universe 进 `arguments_raw` + `run_freq_context`；ingestion `freq_meta` 白名单加 universe——observation metrics 逐次携带池名，可按池归因。签名级分池记账仍属 P2 |
+
+**第二轮验证**: 模块导入 OK；`test_eval_universe` 9/9；`test_alphaagent_mcp_server` 19 过（含扩展断言：`universe=123` 非字符串入参拒绝）/ 2 环境性 / 2 skip。
+
+**合并状态（最终）**: 待用户定夺——分支 5 commits ahead of main：`8371b61` feat → `7692d8b` docs(一轮结论) → `f8e59ac` fix(一轮) → `2cf4a84` docs(回写) → `842014f` fix(二轮)。两轮 OCR 共 6 findings，全部核为真、全部修复，剩余开放项仅 P2（evaluated_universe 进 factorzoo 候选元数据 + 签名级分池记账 + 跨池敏感性报表）。
