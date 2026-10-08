@@ -1151,7 +1151,10 @@ def main() -> None:
         oos_ic=report.get("oos_ic_blended", {}).get("ic_mean"),
         oos_ir=report.get("oos_ic_blended", {}).get("ic_ir"),
         gate_passed=gate_result.get("passed") if gate_result else None,
-        out_dir=str(out_dir),
+        # 不再传 out_dir=...：与 _emit_event 首个位置参数同名会 TypeError
+        # （2026-10-08 实锤：gate 评估完成后 session_end 事件崩溃 exit 1），
+        # 事件文件本身就在 out_dir 下，路径冗余。
+        artifact_dir=str(out_dir),
     )
 
 
