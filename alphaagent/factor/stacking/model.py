@@ -540,7 +540,12 @@ def fit_scheme_compare_scores(
             numer = np.where(oos_fin, aligned * wv[None, :], 0.0).sum(axis=1)
             ok = avail_any & (denom > 1e-12)
             vals = np.where(ok, numer / np.maximum(denom, 1e-12), np.nan)
-            out[name][oos_idx[ok]] = vals[ok].astype(np.float32)
+            # oos_idx 已按 avail_any 过滤（长度=在场行数），vals 是未过滤 OOS 全行
+            # 集（长度=OOS 行数）——必须同样先按 avail_any 过滤再写入，否则当某折
+            # OOS 存在"全部投票因子均 NaN"的行时长度不匹配（IndexError，
+            # 2026-10-08 实锤：oos_idx=578763 vs ok=579205）。与上方 equal 分支
+            # `out["equal"][oos_idx] = eq[avail_any]` 同构。
+            out[name][oos_idx] = vals[avail_any].astype(np.float32)
     return out
 
 

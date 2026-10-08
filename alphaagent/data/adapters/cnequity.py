@@ -376,6 +376,21 @@ def _find_cached_panel(
                     continue
             elif not include_fundamentals and has_funda:
                 continue  # 基本面开关不匹配，跳过
+            # 按请求区间裁剪后再返回：命中语义是"缓存覆盖 ⊇ 请求区间"即可复用，
+            # 但返回必须裁到请求区间——否则更宽的缓存（如 blind_test 构建的
+            # [2020-01-01 ~ 2026-09-30] 全量面板）会把请求区间之外的日期回流给
+            # tuning 调用方。2026-10-08 实锤：tuning 请求 end=2024-12-31 命中宽
+            # 缓存未裁剪，walk-forward 折直接铺到 2026-09，OOS 消费了 2025+ 盲测段
+            # （"盲测物理隔离"宣称失效）。闭区间语义与上方命中判断一致。
+            if req_start is not None or req_end is not None:
+                dts_lv = df.index.get_level_values("datetime")
+                keep = np.ones(len(df), dtype=bool)
+                if req_start is not None:
+                    keep &= np.asarray(dts_lv >= req_start)
+                if req_end is not None:
+                    keep &= np.asarray(dts_lv <= req_end)
+                if not keep.all():
+                    df = df[keep]
             logger.info(
                 "CNE adapter: panel 命中磁盘缓存 %s (%d 行, %d 列, 签名 %s)",
                 path.name, len(df), df.shape[1], want_sig,
