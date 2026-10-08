@@ -139,13 +139,13 @@ def test_label_freq_consistency_still_holds(mode: str) -> None:
 
 
 # ── fundamental 档（label_20d + monthly）────────────────────────────────
-# 2026-10-07 重锚：原 0.020/0.28/0.012 是 1d 尺度值（当时与 technical 同值"量纲锚"），
-# 在 20d label 下形同虚设（实测基本面族近似子集 n=9 过线率 77.8%）。新线 0.035/0.45/0.021：
-# ① 文献月度基本面实测中位量级（PE 0.0529/0.6995、PB 0.0557/0.4888、ROE 0.0172/0.2277）；
-# ② 该族过线率 44.4%（与技术慢档 36.6% 同量级）。三层同比例（IC ×1.75、ICIR ×1.607）重锚，
-# 保持本档"production == candidate"与 val 保留比（0.65/0.70）不变。
-FUNDA_BAR = (0.035, 0.45)
-FUNDA_VAL_IC = 0.021
+# 2026-10-08 门槛统一：门槛只由 label 持有期唯一决定、与数据面无关。fundamental 与
+# technical_monthly 同为 label_20d，**共用同一套 20d 门槛**（_MONTHLY_20D_OVERRIDES，
+# 见 core/research_modes.py；数值 = technical_monthly 的双锚标定 0.053/0.65/0.0398）。
+# 取代此前 fundamental 独立标定的 0.035/0.45/0.021（"文献月度基本面量级"）——那造成
+# 同为 label_20d 却门槛不同（技术月频 0.053/0.65 vs 基本面松 0.035/0.45）的矛盾。
+MONTHLY_BAR = (0.053, 0.650)
+MONTHLY_VAL_IC = 0.0398
 FUNDA_LEVELS = [
     ("evaluation_policy", "min_train_abs_ic", "min_train_icir"),
     ("delivery_policy.candidate", "min_abs_ic", "min_icir"),
@@ -153,18 +153,40 @@ FUNDA_LEVELS = [
 ]
 
 
-def test_fundamental_reanchored_to_20d_scale() -> None:
-    """fundamental 三层同比例重锚到 0.035/0.45/0.021（保持其内部关系）。"""
-    spec = effective_research_spec("fundamental")
-    ic_bar, icir_bar = FUNDA_BAR
+def test_fundamental_inherits_monthly_20d_scale() -> None:
+    """fundamental 与 technical_monthly 同为 label_20d：三层门槛完全一致（同源 _MONTHLY_20D_OVERRIDES）。"""
+    fund = effective_research_spec("fundamental")
+    m20 = effective_research_spec("technical_monthly")
     for path, ic_key, icir_key in FUNDA_LEVELS:
-        assert _get(spec, path, ic_key) == pytest.approx(ic_bar, abs=1e-4), f"{path}.{ic_key}"
-        assert _get(spec, path, icir_key) == pytest.approx(icir_bar, abs=1e-4), f"{path}.{icir_key}"
-        assert _get(spec, path, "min_val_abs_ic") == pytest.approx(FUNDA_VAL_IC, abs=1e-4), path
+        # 与 technical_monthly 逐字段一致（唯一真源：shared 20d 常量）
+        assert _get(fund, path, ic_key) == _get(m20, path, ic_key), f"{path}.{ic_key}"
+        assert _get(fund, path, icir_key) == _get(m20, path, icir_key), f"{path}.{icir_key}"
+        assert _get(fund, path, "min_val_abs_ic") == _get(m20, path, "min_val_abs_ic"), f"{path}.min_val_abs_ic"
+    # 逐层绝对值（与 technical_monthly 相同）：evaluation/candidate 0.053/0.65，production ×1.25 更严
+    assert _get(fund, "evaluation_policy", "min_train_abs_ic") == pytest.approx(0.053, abs=1e-4)
+    assert _get(fund, "delivery_policy.candidate", "min_abs_ic") == pytest.approx(0.053, abs=1e-4)
+    assert _get(fund, "delivery_policy.production", "min_train_abs_ic") == pytest.approx(0.0663, abs=1e-4)  # 0.053 × 1.25
+    assert _get(fund, "delivery_policy.production", "min_train_icir") == pytest.approx(0.6964, abs=1e-4)  # 0.650 × 0.30/0.28
 
 
 def test_fundamental_bar_within_literature_range() -> None:
-    """新线必须落在文献实测月度基本面因子区间内（PE/PB/ROE），既不虚高也不形同虚设。"""
-    ic_bar, icir_bar = FUNDA_BAR
-    assert 0.017 <= ic_bar <= 0.056, f"IC 线 {ic_bar} 超出文献月度基本面区间 0.017~0.056"
-    assert 0.23 <= icir_bar <= 0.70, f"ICIR 线 {icir_bar} 超出文献月度基本面区间 0.23~0.70"
+    """20d 线必须落在文献实测月度因子有效区间（PE/PB 月度量级），既不高也不形同虚设。"""
+    ic_bar, icir_bar = MONTHLY_BAR
+    assert 0.02 <= ic_bar <= 0.06, f"IC 线 {ic_bar} 超出月度有效量级 0.02~0.06"
+    assert 0.3 <= icir_bar <= 0.70, f"ICIR 线 {icir_bar} 超出月度有效量级 0.3~0.70"
+
+
+def test_fundamental_scale_free_matches_monthly() -> None:
+    """与 label 尺度无关的项：fundamental 与 technical_monthly（及主档）完全一致，
+    不再有基本面档独有放宽。"""
+    fund = effective_research_spec("fundamental")
+    m20 = effective_research_spec("technical_monthly")
+    for path, key in SCALE_FREE:
+        assert _get(fund, path, key) == _get(m20, path, key), f"{path}.{key} 应同值"
+    eg_f = (fund["delivery_policy"]["production"] or {}).get("engine_gate") or {}
+    eg_m = (m20["delivery_policy"]["production"] or {}).get("engine_gate") or {}
+    assert eg_f["min_excess_annual"] == eg_m["min_excess_annual"] == 0.03
+    assert eg_f["min_excess_sharpe"] == eg_m["min_excess_sharpe"] == 0.5
+    pd_f = (fund["delivery_policy"]["production"] or {})
+    pd_m = (m20["delivery_policy"]["production"] or {})
+    assert pd_f["max_winsorized_abs_ic_decay"] == pd_m["max_winsorized_abs_ic_decay"] == 0.10

@@ -72,6 +72,46 @@ class ResearchModeSpec:
 #   freq=交付尺子（engine_gate 用真实行情按该频率回测、不读 label），两把尺子的落差由
 #   `min_cs_autocorr` 与 `turnover_thresholds_by_freq` 两个代理门缝住。
 
+# ── 门槛只由 label 持有期唯一决定（2026-10-08 定调）─────────────────────
+# 原则：IC/ICIR/val 门槛与"数据面"（价量 vs 基本面）**彻底无关**，只由预测窗口
+# （label 持有期 1d/5d/20d）决定。同一 label 的所有模式必须共用同一套门槛。
+#   · label_1d   → technical / technical_daily / report 共用 0.020/0.28/0.015
+#   · label_5d   → technical_weekly 用 0.030/0.45/0.0225
+#   · label_20d  → technical_monthly 与 fundamental **共用** _MONTHLY_20D_OVERRIDES
+# 历史教训：fundamental 曾单独标定 0.035/0.45/0.021（"文献月度基本面量级"），
+#   造成同为 label_20d 却门槛不同的矛盾（技术月频 0.053/0.65，基本面松 0.035/0.45）。
+#   故此处抽成单一常量，两个 20d 模式引用同一来源，从结构上杜绝"同口径不同门槛"漂移。
+# 20d 门槛本身沿用 technical_monthly 的双锚标定（2026-10-07 v2：文献锚① + 选择性对齐锚②，
+#   该池过线率 36.6% 与主档持平，见下方 technical_monthly 注释）。
+_MONTHLY_20D_OVERRIDES: dict[str, dict] = {
+    "evaluation_overrides": {
+        "min_train_abs_ic": 0.053,
+        "min_train_icir": 0.650,
+        "min_val_abs_ic": 0.0398,
+        "min_val_ic_retention_ratio": 0.5,
+    },
+    "candidate_overrides": {
+        "min_abs_ic": 0.053,
+        "min_icir": 0.650,
+        "min_val_abs_ic": 0.0398,
+        "min_val_ic_retention": 0.5,
+    },
+    "production_overrides": {
+        "min_train_abs_ic": 0.0663,   # 0.053 × 1.25（主档"正式库更严"倍数）
+        "min_train_icir": 0.6964,     # 0.650 × 0.30/0.28
+        "min_val_abs_ic": 0.0398,
+        "min_val_ic_retention": 0.5,
+        "min_val_long_excess": 0.0,
+        "max_winsorized_abs_ic_decay": 0.10,  # 与 technical 同值（消除基本面档独有放宽）
+    },
+    "engine_gate_overrides": {
+        "freq": "monthly",
+        "min_excess_annual": 0.03,    # 与 technical 同值（消除基本面档独有放宽 0.02）
+        "min_excess_sharpe": 0.5,     # 与 technical 同值（消除基本面档独有放宽 0.4）
+        "allowed_freqs": ["monthly"],
+    },
+}
+
 # ── 注册表（唯一事实源）───────────────────────────────────────────────
 RESEARCH_MODES: dict[str, ResearchModeSpec] = {
     "technical": ResearchModeSpec(
@@ -115,51 +155,15 @@ RESEARCH_MODES: dict[str, ResearchModeSpec] = {
             "PIT 日频）结合价量信息挖掘A股日频因子，先训练集评估，再验证集检验；"
             "只有通过验证和去重门槛的因子才提交。"
         ),
-        # 基本面为慢因子：季频 PIT 信号弱，val 保留比更严（0.65/0.70），可交易性小幅放松。
-        # ── 2026-10-07 门槛重锚（label 尺度对齐）────────────────────────────
-        # 本档是 label_20d + monthly，但历史门槛沿用 1d 尺度的 0.020/0.28/0.012（当时
-        # technical 也是 0.020/0.28，属"同值量纲锚"）。label_20d 会系统性放大 IC/ICIR，
-        # 使本档门槛形同虚设——实测（基本面族近似子集 n=9，同 panel/label 配对）：
-        #   20d 分布 p50 |IC| 0.0371 / |ICIR| 0.4174；旧线 0.020/0.28 过线率 **77.8%**
-        #   （技术慢档同口径 36.6%）。
-        # 双锚重锚到 **0.035 / 0.45 / 0.021**：
-        #   锚① 文献：月度基本面实测 PE TTM 0.0529/0.6995、PB 0.0557/0.4888、
-        #        ROE 0.0172/0.2277 → 中位量级 ≈ 0.035/0.45；
-        #   锚② 选择性：该族过线率 44.4%，与技术慢档（36.6%）同量级。
-        # 三个层次（evaluation/candidate/production）按同一比例（IC ×1.75、ICIR ×1.607）
-        # 重锚，本档原有内部关系（production=candidate）与 val 保留比（0.65/0.70）不变；
-        # engine_gate 年化门（0.02/0.4）未动——缺该档真实回测实测。
-        evaluation_overrides={
-            "min_train_abs_ic": 0.035,   # 0.020 × 1.75
-            "min_train_icir": 0.45,      # 0.28  × 1.607
-            "min_val_abs_ic": 0.021,     # 0.012 × 1.75
-            "min_val_ic_retention_ratio": 0.5,
-        },
-        candidate_overrides={
-            "min_abs_ic": 0.035,
-            "min_icir": 0.45,
-            "min_val_abs_ic": 0.021,
-            # 2026-08-29 审计：11 个候选 8 个 val 保留比 <65%（train→val 衰减
-            # 严重），10d 持有期对季频 PIT 信号过短也是成因之一（切 label_20d）
-            "min_val_ic_retention": 0.65,
-        },
-        production_overrides={
-            "min_train_abs_ic": 0.035,   # 本档 production 历史上与 candidate 同值（保持）
-            "min_train_icir": 0.45,
-            "min_val_abs_ic": 0.021,
-            "min_val_ic_retention": 0.70,
-            "min_val_long_excess": 0.0,
-            "max_winsorized_abs_ic_decay": 0.12,  # technical 0.10 → 0.12
-        },
-        engine_gate_overrides={
-            "freq": "monthly",           # technical weekly → monthly
-            "min_excess_annual": 0.02,   # technical 0.03 → 0.02
-            "min_excess_sharpe": 0.4,    # technical 0.5 → 0.4
-            # list 而非 tuple：本 dict 会直接 update 进 research_spec，normalize
-            # 的 _string_list 校验要求 list（tuple 会让所有非 technical 档
-            # effective/build_run 链路 ValueError，2026-09-22 修复）
-            "allowed_freqs": ["daily", "weekly", "monthly"],
-        },
+        # ═══ 2026-10-08 门槛统一（门槛只由 label 决定，与数据面无关）═════
+        # 本档与 technical_monthly 同为 label_20d，故**共用同一套 20d 门槛**
+        # （_MONTHLY_20D_OVERRIDES，数值来源见文件顶部常量定义）。
+        # 取代此前独立标定的 0.035/0.45/0.021（"文献月度基本面量级"），消除
+        # "同为 label_20d 却门槛不同"的矛盾（技术月频 0.053/0.65 vs 基本面松 0.035/0.45）。
+        # 同步对齐：val 保留比 0.65/0.70→0.50、engine_gate 年化门 0.02/0.4→0.03/0.5、
+        #   max_winsorized_abs_ic_decay 0.12→0.10、allowed_freqs 收成 [monthly]。
+        # 本档相对 technical_monthly 的唯一区别 = needs_fundamentals=True（载入 funda_* 列）。
+        **_MONTHLY_20D_OVERRIDES,
     ),
     # ── 三对齐子档位（2026-09-20）──
     # label 持有期 = 调仓频率持有期；快/中/慢信号分轨，各走对应 label + freq + 门槛。
@@ -315,25 +319,8 @@ RESEARCH_MODES: dict[str, ResearchModeSpec] = {
         # 实测分位对照：|IC| p50 1d 0.0205 → 20d 0.0496；|ICIR| p50 0.2698 → 0.7432。
         # production 仍按主档"正式库更严"倍数派生；min_val_abs_ic 按本档 IC 线倍数放大。
         # 未动的项及理由同 technical_weekly。重标定建议在慢档 run 数据积累后复核。
-        evaluation_overrides={
-            "min_train_abs_ic": 0.053,    # 文献"很好"下沿 + 选择性对齐
-            "min_train_icir": 0.650,      # 与经典月度因子（PE TTM 0.70）同档
-            "min_val_abs_ic": 0.0398,     # 0.015 × (0.053/0.02)
-        },
-        candidate_overrides={
-            "min_abs_ic": 0.053,
-            "min_icir": 0.650,
-            "min_val_abs_ic": 0.0398,
-        },
-        production_overrides={
-            "min_train_abs_ic": 0.0663,   # 0.053 × 1.25
-            "min_train_icir": 0.6964,     # 0.650 × 0.30/0.28
-            "min_val_abs_ic": 0.0398,
-        },
-        engine_gate_overrides={
-            "freq": "monthly",
-            "allowed_freqs": ["monthly"],
-        },
+        # 数值统一引用 _MONTHLY_20D_OVERRIDES（20d 门槛唯一来源，见文件顶部常量定义）。
+        **_MONTHLY_20D_OVERRIDES,
     ),
 }
 
@@ -373,7 +360,8 @@ def ui_options() -> list[dict]:
 # ── 自动定档（2026-09-03，方案 B）─────────────────────────────────────
 # 前端模式下拉（日线技术/基本面）退役后，档位由数据面多选自动推断：
 # 勾选基本面/股东面/机构面/股东集中面（慢因子数据源）→ fundamental 档
-# （label_20d + 松门槛 + monthly 门禁）；其余（纯价量族或混合）→ technical
+# （label_20d + monthly 门禁；门槛与 technical_monthly 共用，2026-10-08 统一——
+#  门槛只由 label 决定，与数据面无关）；其余（纯价量族或混合）→ technical
 # 档（label_1d + 严门槛 + daily 门禁）。混合勾选落 technical：融合因子以
 # 价量为主信号、1d 评估合理。用户显式给 rebalance_freq 时改走对应的
 # technical_{freq} 子档（label 与调仓频率对齐，2026-10-04 起全局强制一致）。

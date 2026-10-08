@@ -140,3 +140,19 @@ engine_gate 继承 → label↔freq 一致性不破；并新增 **fundamental �
 - **最终裁决仍是 engine_gate**（真实行情、含成本、按 freq 调仓）：IC 线只做研究侧准入，
   过严只会饿死 pipeline（v1 的教训），过松会让 stage_two/engine_gate 白烧算力；
 - 复核方法：重跑 `scripts/calibrate_slow_tier_thresholds.py`，若分布或池内过线率显著变动则重议本表。
+
+---
+
+## 8. 更新（2026-10-08）：门槛只由 label 决定、与数据面无关
+
+本评审里 fundamental 独立标定的 **0.035 / 0.45 / 0.021** 已被**废弃撤回**，不再生效。
+
+- **理由**：fundamental 与 technical_monthly 同为 label_20d，却门槛不同（技术月频 0.053/0.65
+  vs 基本面松 0.035/0.45），违反"门槛只由预测窗口 label 唯一决定、数据面无关"的原则。
+- **落地**：`core/research_modes.py` 抽出共享常量 `_MONTHLY_20D_OVERRIDES`，fundamental 与
+  technical_monthly 引用同一来源（0.053 / 0.65 / 0.0398，production 0.0663 / 0.6964 / 0.0398，
+  val 保留比 0.50，engine_gate 年化 0.03 / 夏普 0.5，decay 0.10）；fundamental 相对唯一区别 =
+  `needs_fundamentals=True`。
+- 相关测试/文档已同步：`test_alphaagent_smoke.py`、`test_delivery_checker.py`、
+  `test_slow_tier_thresholds.py`、`test_research_spec_overrides.py`、`test_yield_improvements.py`、
+  `docs/alphaagent_architecture.md`。本条仅作历史存档，勿据此断言当前门槛。
