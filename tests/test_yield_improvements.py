@@ -132,7 +132,8 @@ class TestNearMissHint:
         r = _result(ic=0.018, icir=0.35, cov=0.99, passed=False)
         _attach_yield_hints(r, "expr", {})
         assert "near_miss_hint" in r
-        assert "窗口微调" in r["near_miss_hint"]
+        # 生产文案为"②或微调窗口长度/扩展正交信息源"（2026-10 措辞调整），按现行文案断言
+        assert "微调窗口" in r["near_miss_hint"]
 
     def test_far_below_no_hint(self):
         r = _result(ic=0.005, icir=0.1, cov=0.99, passed=False)
@@ -140,18 +141,21 @@ class TestNearMissHint:
         assert "near_miss_hint" not in r
 
     def test_pit_warning_overrides_near_miss(self):
-        # |IC|=0.08 同时满足 PIT 高线 → 只给 PIT 警戒（return 提前）
+        # |IC|=0.08 同时满足 PIT 高线 → 只给 PIT 警戒（return 提前）。
+        # 2026-10-07 起 PIT 警戒仅对基本面/触及 funda_ 列的因子触发（价量高 IC 属正常
+        # 信号，只有慢标签因子才需防 PIT 伪影），故 expr 必须含 funda_。
         r = _result(ic=0.08, icir=0.9, cov=0.99, passed=False)
-        _attach_yield_hints(r, "expr", {})
+        _attach_yield_hints(r, "funda_pe_ttm", {})
         assert "pit_warning" in r
         assert "near_miss_hint" not in r
 
     def test_pit_warning_threshold(self):
+        # 基本面因子训练 |IC| ≥ 0.045 → PIT 警戒（同上，仅 funda_ 因子触发）
         r = _result(ic=0.046, icir=0.9, cov=0.99, passed=False)
-        _attach_yield_hints(r, "expr", {})
+        _attach_yield_hints(r, "funda_pe_ttm", {})
         assert "pit_warning" in r
         r2 = _result(ic=0.043, icir=0.9, cov=0.99, passed=False)
-        _attach_yield_hints(r2, "expr", {})
+        _attach_yield_hints(r2, "funda_pe_ttm", {})
         assert "pit_warning" not in r2
 
 
