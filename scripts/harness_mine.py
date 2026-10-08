@@ -87,14 +87,22 @@ def main() -> int:
     ap.add_argument("--out", default="", help="逐行结果写出路径（JSONL）")
     ap.add_argument("--val", action="store_true", help="对 train 全门通过者追加 val 评估")
     ap.add_argument("--fundamentals", action="store_true", help="会话载入 funda_* 列")
+    ap.add_argument("--universe", default="all",
+                    help="股票池（评估口径，非因子属性）：all / top300cap / mid301_800cap / "
+                         "szcomp / chinext（规则池可自填数字，如 top500cap）")
+    ap.add_argument("--panel", default=str(CNE_SOURCE),
+                    help="面板路径：默认 cne:// 实时构建；也可传已有 parquet 缓存（省构建时间）")
     args = ap.parse_args()
 
     label = MODE_LABEL[args.mode]
+    from alphaagent.factor.mining.eval.universe import describe_universe, parse_universe
+    universe = parse_universe(args.universe)["name"]   # 非法池名早失败（附可用清单）
     factors = json.loads(Path(args.factors).read_text(encoding="utf-8"))
     if args.limit:
         factors = factors[: args.limit]
     c = DeliveryCriteria.from_spec(effective_research_spec(args.mode))
-    print(f"[mine] mode={args.mode} label={label} 因子 {len(factors)} 个；门槛 "
+    print(f"[mine] mode={args.mode} label={label} 股票池={universe}（{describe_universe(universe)}）"
+          f" 因子 {len(factors)} 个；门槛 "
           f"|IC|>={c.candidate.min_abs_ic} |ICIR|>={c.candidate.min_icir} cov>={c.candidate.min_coverage} "
           f"autocorr>={c.candidate.min_cs_autocorr} turnover<={c.turnover_gate_limit} (freq={c.engine_gate.freq})",
           flush=True)
@@ -102,7 +110,8 @@ def main() -> int:
     svc = StockEvalService(max_parallel_eval=1)
     t0 = time.perf_counter()
     resp = svc.create_session(SessionCreateRequest(
-        panel_path=str(CNE_SOURCE), label_col=label, include_fundamentals=args.fundamentals,
+        panel_path=str(args.panel), label_col=label, include_fundamentals=args.fundamentals,
+        universe=universe,
     ))
     sid = resp.session_id
     print(f"[mine] session={sid} rows={resp.panel_rows} load={time.perf_counter() - t0:.0f}s", flush=True)
@@ -127,7 +136,8 @@ def main() -> int:
             except Exception as exc:  # noqa: BLE001 — 单因子失败不中断批量
                 got, err = {}, f"{type(exc).__name__}: {str(exc)[:300]}"
             fails = _flags(args.mode, got) if got else ["eval_error"]
-            rows.append({"mode": args.mode, "name": name, "why": f.get("why", ""), "expr": expr,
+            rows.append({"mode": args.mode, "universe": universe, "name": name,
+                         "why": f.get("why", ""), "expr": expr,
                          "ms": round((time.perf_counter() - t) * 1000), "err": err, **got,
                          "fails": fails, "pass_stage_one_pre": not fails})
             print(f"  [{i:2d}/{len(factors)}] {name:34s} {'PASS' if not fails else 'fail':4s} "

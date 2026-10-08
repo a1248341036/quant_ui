@@ -198,6 +198,16 @@ def test_eval_batch_validation_before_panel_load(ctx: ServerContext) -> None:
     assert _call(ctx, "dry_run_delivery", multi_line_expr="")["is_error"]
 
 
+def test_universe_validation_before_panel_load(ctx: ServerContext) -> None:
+    # OCR D1/D2 修复回归（2026-10-09）：非法池名在工具入口早失败（附可用清单），不触发面板加载
+    r = _call(ctx, "eval_batch", exprs=["CS_ZSCORE($ret)"], universe="hs300")
+    assert r["is_error"] and "股票池" in r["payload"]["error"]
+    r2 = _call(ctx, "dry_run_delivery", multi_line_expr="CS_ZSCORE($ret)", universe="nope")
+    assert r2["is_error"] and "股票池" in r2["payload"]["error"]
+    r3 = _call(ctx, "eval_batch", exprs=["CS_ZSCORE($ret)"], universe=123)
+    assert r3["is_error"]  # OCR R2-3：非字符串入参也须拒绝（str 规整后走统一 ToolError 路径）
+
+
 def test_bad_arguments_are_reported_as_tool_error(ctx: ServerContext) -> None:
     res = _call(ctx, "get_thresholds", unexpected_arg=1)
     assert res["is_error"] and "bad arguments" in res["payload"]["error"]

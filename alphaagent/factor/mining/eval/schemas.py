@@ -34,6 +34,9 @@ class SessionCreateRequest:
     """数据面聚焦（用户勾选的面名）。非空时 panel 按面裁剪列族（省内存）。"""
     engine_gate_policy: dict | None = None
     """engine_gate 交付策略：train 过线因子自动附 val 窗口引擎预演（可交易口径）。"""
+    universe: str = "all"
+    """股票池（评估口径，非因子属性）：all / top<N>cap / mid<A>_<B>cap / szcomp / chinext。
+    见 eval/universe.py；非成分股票整行剔除，IC/覆盖率/换手/回测全在池内计算。"""
 
 
 @dataclass

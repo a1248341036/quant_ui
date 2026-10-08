@@ -48,6 +48,19 @@ class ToolError(Exception):
     """工具级错误：以 MCP result(isError=true) 返回，供 agent 自行修正后重试。"""
 
 
+def _norm_universe(universe: str) -> str:
+    """规范化池名（strip+lower）并早校验；非法名转 ToolError（附可用清单）。
+
+    所有带 ``universe`` 的工具在入口统一调用：响应/元数据回显规范化名，
+    与会话缓存键、面板口径严格一致（OCR review D2，2026-10-09）。
+    """
+    from alphaagent.factor.mining.eval.universe import UNIVERSE_ALL, parse_universe
+    try:
+        return parse_universe(str(universe or UNIVERSE_ALL))["name"]  # 非字符串入参（如数字）也统一走 ValueError→ToolError（OCR R2-3）
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
+
+
 class SessionLock:
     """跨进程会话锁（OS 文件锁，进程退出自动释放，无陈旧锁问题）。
 
@@ -149,18 +162,21 @@ class ServerContext:
             SessionLock(self.root / "artifacts" / "alphaagent" / ".mcp_session.lock") if session_lock else None
         )
 
-    def session(self, mode: str, *, fundamentals: bool = False) -> tuple[Any, str]:
+    def session(self, mode: str, *, fundamentals: bool = False, universe: str = "all") -> tuple[Any, str]:
         label = MODE_LABEL.get(mode)
         if label is None:
             raise ToolError(f"unknown mode {mode!r}; expected one of {sorted(MODE_LABEL)}")
-        key = (mode, label, bool(fundamentals))
+        universe = _norm_universe(universe)  # 早失败：非法池名直接报错（附可用清单）
+        # 缓存键必须含 universe：池子不同的面板不能复用（否则拿全市场面板冒充池内）
+        key = (mode, label, bool(fundamentals), universe)
         with self._lock:
             if self._svc is not None and self._key == key:
                 return self._svc, self._sid
             self._release_locked()
             if self._session_lock is not None and not self._session_lock.held:
                 self._session_lock.acquire(
-                    f"pid={os.getpid()} mode={mode} label={label} at={time.strftime('%Y-%m-%d %H:%M:%S')}"
+                    f"pid={os.getpid()} mode={mode} label={label} universe={universe} "
+                    f"at={time.strftime('%Y-%m-%d %H:%M:%S')}"
                 )
             from alphaagent.data.adapters.cnequity import CNE_SOURCE
             from alphaagent.factor.mining.eval.schemas import SessionCreateRequest
@@ -170,15 +186,18 @@ class ServerContext:
             svc = StockEvalService(max_parallel_eval=1)
             resp = svc.create_session(SessionCreateRequest(
                 panel_path=str(CNE_SOURCE), label_col=label, include_fundamentals=fundamentals,
+                universe=universe,
             ))
             self._svc, self._sid, self._key = svc, resp.session_id, key
             self._load_ms = round((time.perf_counter() - t0) * 1000)
-            logger.info("session opened mode=%s label=%s rows=%s load_ms=%s",
-                        mode, label, resp.panel_rows, self._load_ms)
+            logger.info("session opened mode=%s label=%s universe=%s rows=%s load_ms=%s",
+                        mode, label, universe, resp.panel_rows, self._load_ms)
             return svc, self._sid
 
     def session_info(self) -> dict[str, Any]:
-        return {"mode": (self._key or (None,))[0], "session_id": self._sid,
+        k = self._key or (None, None, None, None)
+        return {"mode": k[0], "session_id": self._sid,
+                "universe": k[3],
                 "load_ms": self._load_ms, "open": self._svc is not None,
                 "lock_held": bool(self._session_lock and self._session_lock.held)}
 
@@ -466,12 +485,19 @@ def eval_batch(
     split: str = "train",
     fundamentals: bool = False,
     quantile_n: int = 10,
+    universe: str = "all",
 ) -> dict:
-    """★ 批量评估（一次调用评多个因子）+ 逐门 PASS/FAIL（真源门槛）。"""
+    """★ 批量评估（一次调用评多个因子）+ 逐门 PASS/FAIL（真源门槛）。
+
+    ``universe``：股票池（评估口径，非因子属性）—— ``all`` / ``top300cap`` /
+    ``mid301_800cap`` / ``szcomp`` / ``chinext``。非成分股票整行剔除。
+    研报复现建议同一批因子跨池各评一次（结果按池记账）。
+    """
     if mode not in MODE_LABEL:
         raise ToolError(f"unknown mode {mode!r}; expected one of {sorted(MODE_LABEL)}")
     if split not in ("train", "val"):
         raise ToolError("split must be 'train' or 'val'")
+    universe = _norm_universe(universe)  # 入口规范化+早校验（响应回显与键一致，OCR D2）
     items: list[dict] = []
     for i, e in enumerate(exprs or []):
         items.append({"name": f"expr_{i + 1}", "expr": e} if isinstance(e, str) else dict(e))
@@ -483,7 +509,7 @@ def eval_batch(
         if not str(it.get("expr") or "").strip():
             raise ToolError(f"expression #{items.index(it) + 1} is empty")
 
-    svc, sid = ctx.session(mode, fundamentals=fundamentals)
+    svc, sid = ctx.session(mode, fundamentals=fundamentals, universe=universe)
     rows: list[dict] = []
     for it in items:
         t0 = time.perf_counter()
@@ -502,19 +528,20 @@ def eval_batch(
                      "turnover_daily": metrics.get("avg_daily_side_turnover"),
                      "fails": fails, "pass_stage_one_pre": not fails})
     n_pass = sum(1 for r in rows if r["pass_stage_one_pre"])
-    return {"mode": mode, "label_col": MODE_LABEL[mode], "split": split, "n": len(rows),
-            "n_pass_stage_one_pre": n_pass,
+    return {"mode": mode, "label_col": MODE_LABEL[mode], "split": split, "universe": universe,
+            "n": len(rows), "n_pass_stage_one_pre": n_pass,
             "thresholds": get_thresholds(ctx, mode)["candidate"], "rows": rows,
             "note": "pass_stage_one_pre 是按真源门槛的**预检**（未含库内相关性与 engine_gate）；"
                     "过门后建议先 dry_run_delivery 再 submit_factor。"}
 
 
 def eval_val(ctx: ServerContext, multi_line_expr: str, mode: str = "technical",
-             fundamentals: bool = False, quantile_n: int = 10) -> dict:
-    """样本外（val 段）评估 + 与 train 的保留比。"""
+             fundamentals: bool = False, quantile_n: int = 10, universe: str = "all") -> dict:
+    """样本外（val 段）评估 + 与 train 的保留比（``universe`` 同 ``eval_batch``）。"""
     if not str(multi_line_expr or "").strip():
         raise ToolError("multi_line_expr is required")
-    svc, sid = ctx.session(mode, fundamentals=fundamentals)
+    universe = _norm_universe(universe)  # 入口规范化+早校验（响应回显与键一致，OCR D2）
+    svc, sid = ctx.session(mode, fundamentals=fundamentals, universe=universe)
     train_m, _ = _evaluate(svc, sid, str(multi_line_expr), "expr", "train", int(quantile_n))
     val_m, _ = _evaluate(svc, sid, str(multi_line_expr), "expr", "val", int(quantile_n))
     retention = None
@@ -522,7 +549,7 @@ def eval_val(ctx: ServerContext, multi_line_expr: str, mode: str = "technical",
         retention = abs(val_m["ic"]) / abs(train_m["ic"]) if abs(train_m["ic"]) > 1e-12 else None
     sign_consistent = (None if train_m.get("ic") in (None, 0) or val_m.get("ic") is None
                        else (train_m["ic"] * val_m["ic"] > 0))
-    return {"mode": mode, "label_col": MODE_LABEL[mode],
+    return {"mode": mode, "label_col": MODE_LABEL[mode], "universe": universe,
             "train": {k: train_m.get(k) for k in ("ic", "icir", "coverage")},
             "val": {k: val_m.get(k) for k in ("ic", "icir", "coverage")},
             "val_ic_retention": retention, "sign_consistent": sign_consistent,
@@ -531,8 +558,13 @@ def eval_val(ctx: ServerContext, multi_line_expr: str, mode: str = "technical",
 
 
 def library_similarity(ctx: ServerContext, multi_line_expr: str, mode: str = "technical",
-                       top_k: int = 3) -> dict:
-    """★ 与**候选池已有因子**的截面相关性（stage_two 相关性墙的提前预警）。"""
+                       top_k: int = 3, universe: str = "all",
+                       fundamentals: bool = False) -> dict:
+    """★ 与**候选池已有因子**的截面相关性（stage_two 相关性墙的提前预警）。
+
+    ``universe``/``fundamentals`` 同 ``eval_batch``：相关性必须在**同一会话口径**内比较
+    （同池 + 同基本面列装载）——任一维度不一致都会另开 6-8GB 会话且特征体系错位（OCR R2-1）。
+    """
     from alphaagent.factor.mining.delivery.submit import (
         _candidate_registry_similarity,
         _materialize_split_aware,
@@ -541,7 +573,8 @@ def library_similarity(ctx: ServerContext, multi_line_expr: str, mode: str = "te
     from alphaagent.factor.metrics import materialize_factor
     from core import factor_categories
 
-    svc, sid = ctx.session(mode)
+    universe = _norm_universe(universe)  # 入口规范化+早校验（OCR D2）
+    svc, sid = ctx.session(mode, fundamentals=fundamentals, universe=universe)
     session = svc.sessions.get(sid)
     panel = session.panel
     expr = str(multi_line_expr)
@@ -554,29 +587,32 @@ def library_similarity(ctx: ServerContext, multi_line_expr: str, mode: str = "te
         top_k=int(top_k), cache=getattr(session, "factor_cache", None), visible_range=visible,
     )
     if sim is None:
-        return {"similarity": None, "note": "候选 registry 为空或不可比"}
+        return {"similarity": None, "universe": universe, "note": "候选 registry 为空或不可比"}
     max_corr = sim.get("max_abs_corr")
     limit = _crit(mode).candidate.max_abs_corr
-    return {"similarity": sim, "max_abs_corr": max_corr, "limit": limit,
+    return {"similarity": sim, "max_abs_corr": max_corr, "limit": limit, "universe": universe,
             "passes_stage_two_correlation": (max_corr is not None and max_corr <= limit),
             "note": "> limit 时 stage_two（正式库晋升）会被拒；入库候选池不受此门限制。"}
 
 
 def dry_run_delivery(ctx: ServerContext, multi_line_expr: str, mode: str = "technical",
-                     fundamentals: bool = False, quantile_n: int = 10) -> dict:
+                     fundamentals: bool = False, quantile_n: int = 10,
+                     universe: str = "all") -> dict:
     """★ 只读交付预检：train+val 评估 + 候选相关性 + 各 stage 判定（不写任何库）。"""
     from alphaagent.factor.mining.delivery.delivery_checker import DeliveryChecker
 
     expr = str(multi_line_expr or "").strip()
     if not expr:
         raise ToolError("multi_line_expr is required")
-    svc, sid = ctx.session(mode, fundamentals=fundamentals)
+    universe = _norm_universe(universe)  # 入口规范化+早校验（OCR D2）
+    svc, sid = ctx.session(mode, fundamentals=fundamentals, universe=universe)
     train_m, _ = _evaluate(svc, sid, expr, "mcp_dryrun", "train", int(quantile_n))
     val_m, _ = _evaluate(svc, sid, expr, "mcp_dryrun", "val", int(quantile_n))
     sim: dict | None = None
     sim_err: str | None = None
     try:
-        sim = library_similarity(ctx, expr, mode).get("similarity")
+        sim = library_similarity(ctx, expr, mode, universe=universe,
+                                 fundamentals=fundamentals).get("similarity")  # OCR D1/R2-1：相关墙与 train/val 同会话同面板
     except Exception as exc:  # noqa: BLE001 — 相似度为诊断项，失败不阻断
         sim_err = f"{type(exc).__name__}: {str(exc)[:200]}"
     checker = DeliveryChecker(_crit(mode))
@@ -585,15 +621,24 @@ def dry_run_delivery(ctx: ServerContext, multi_line_expr: str, mode: str = "tech
     def _pack(stage) -> dict:
         return {"passed": getattr(stage, "passed", None), "fail_reasons": list(getattr(stage, "fail_reasons", []) or [])}
 
+    s1c = _pack(checker.stage_one_correlation(sim))
+    s2 = _pack(checker.stage_two(train_m, val_m, sim))
+    if sim is None and sim_err:
+        # OCR R2-1：StageOneCorrelation 对空证据按 max_abs_corr=0 fail-open（delivery_checker.py:164-172）
+        # ——相似度失败时相关门判定不可信，显式降级为 passed=None + 原因，防止预检静默放行
+        for st in (s1c, s2):
+            st["passed"] = None
+            st["fail_reasons"] = sorted(set(st["fail_reasons"]) | {"similarity_unavailable"})
     return {
         "mode": mode, "label_col": MODE_LABEL[mode], "rebalance_freq": freq,
+        "universe": universe,
         "train": {k: train_m.get(k) for k in ("ic", "icir", "coverage", "cs_pearson_autocorr", "avg_rebalance_side_turnover")},
         "val": {k: val_m.get(k) for k in ("ic", "icir", "coverage")},
         "gate_precheck_fails": _gate_fails(mode, train_m),
         "stage_one": _pack(checker.stage_one_stats(train_m, rebalance_freq=freq)),
         "stage_one_val_retention": _pack(checker.stage_one_val_retention(train_m, val_m)),
-        "stage_one_correlation": _pack(checker.stage_one_correlation(sim)),
-        "stage_two": _pack(checker.stage_two(train_m, val_m, sim)),
+        "stage_one_correlation": s1c,
+        "stage_two": s2,
         "candidate_similarity_max_abs_corr": (sim or {}).get("max_abs_corr"),
         "similarity_error": sim_err,
         "note": "只读预检，未写候选池；engine_gate（净值回测）仅在 submit 时执行。",
@@ -608,8 +653,14 @@ def submit_factor(
     mode: str = "technical",
     confirm: bool = False,
     fundamentals: bool = False,
+    universe: str = "all",
 ) -> dict:
-    """**写**：走真实交付链路（stage_one → 盲测 → stage_two → engine_gate）入库。需 confirm=true。"""
+    """**写**：走真实交付链路（stage_one → 盲测 → stage_two → engine_gate）入库。需 confirm=true。
+
+    ``universe``：股票池（OCR D3①）——交付门在池内算，与 ``dry_run_delivery`` 同池口径；
+    缺省 ``all`` = 全市场（与历史行为一致）。响应回显规范化池名；候选元数据按池记账
+    （evaluated_universe 进 factorzoo）仍属 P2。
+    """
     if not confirm:
         raise ToolError("submit_factor 是写操作：确认后请传 confirm=true（建议先 dry_run_delivery）")
     expr, name = str(multi_line_expr or "").strip(), str(factor_name or "").strip()
@@ -617,10 +668,11 @@ def submit_factor(
         raise ToolError("multi_line_expr 与 factor_name 均必填")
     if not str(comment or "").strip():
         raise ToolError("comment 必填：需说明机制与经济直觉（与真实 run 的提交要求一致）")
+    universe = _norm_universe(universe)
     from alphaagent.factor.mining.delivery.submit import FactorSubmitService
     from alphaagent.factor.mining.research_spec import effective_research_spec
 
-    svc, sid = ctx.session(mode, fundamentals=fundamentals)
+    svc, sid = ctx.session(mode, fundamentals=fundamentals, universe=universe)
     submitter = FactorSubmitService(
         svc, repo_root=ctx.root, research_mode=mode, max_cs_corr=0.8,
         delivery_policy=(effective_research_spec(mode).get("delivery_policy") or {}),
@@ -628,13 +680,15 @@ def submit_factor(
     )
     res = submitter.submit(sid, multi_line_expr=expr, factor_name=name, comment=str(comment),
                            rebalance_freq=MODE_FREQ[mode])
-    logger.info("submit_factor name=%s candidate_stored=%s stored=%s skipped=%s",
-                name, res.get("candidate_stored"), res.get("stored"), res.get("skipped_reason"))
+    logger.info("submit_factor name=%s universe=%s candidate_stored=%s stored=%s skipped=%s",
+                name, universe, res.get("candidate_stored"), res.get("stored"), res.get("skipped_reason"))
     keep = ("ok", "stored", "candidate_stored", "candidate_storage", "skipped_reason", "error",
             "error_type", "promotion_status", "review_status", "factor_id", "rebalance_freq",
             "delivery_check", "test_holdout", "candidate_similarity", "engine_backtest", "metrics",
             "candidate_registry_path", "candidate_dsl_path")
-    return {k: res.get(k) for k in keep if k in res}
+    out = {k: res.get(k) for k in keep if k in res}
+    out["universe"] = universe
+    return out
 
 
 def memory_record(
@@ -645,6 +699,7 @@ def memory_record(
     split: str = "train",
     run_id: str = "mcp-session",
     confirm: bool = False,
+    universe: str = "all",
 ) -> dict:
     """**写**：把一次评估写回 `research_memory`（跨 run 学习；harness 直驱的最大缺口）。"""
     if not confirm:
@@ -652,17 +707,23 @@ def memory_record(
     expr = str(multi_line_expr or "").strip()
     if not expr:
         raise ToolError("multi_line_expr is required")
-    svc, sid = ctx.session(mode)
+    universe = _norm_universe(universe)  # OCR D3①：记忆记录与评估同池口径
+    svc, sid = ctx.session(mode, universe=universe)
     metrics, raw = _evaluate(svc, sid, expr, str(factor_name or "expr"), split, 10)
     from alphaagent.factor.mining.memory.store import ResearchMemoryStore
 
     store = ResearchMemoryStore(_memory_db(ctx))
     row = {"name": "evaluate_factor" if split == "train" else "eval_on_val_set",
-           "arguments_raw": json.dumps({"multi_line_expr": expr, "factor_name": factor_name}, ensure_ascii=False),
+           "arguments_raw": json.dumps({"multi_line_expr": expr, "factor_name": factor_name,
+                                        "universe": universe}, ensure_ascii=False),
            "result": raw}
     wrote = store.record_tool_result(
         run_id=str(run_id or "mcp-session"), row=row,
-        run_freq_context={"rebalance_freq": MODE_FREQ[mode], "research_mode": mode, "freq_source": "mcp"},
+        # OCR R2-4：universe 随 observation.metrics 落库，跨池评估可按池归因（条目签名仍为
+        # 纯表达式——同因子跨池共存于一个条目，逐次 observation 各自带池名）
+        run_freq_context={"rebalance_freq": MODE_FREQ[mode], "research_mode": mode,
+                          "freq_source": "mcp", "universe": universe},
     )
-    return {"recorded": bool(wrote), "run_id": run_id, "metrics": {k: metrics.get(k) for k in ("ic", "icir", "coverage")},
+    return {"recorded": bool(wrote), "run_id": run_id, "universe": universe,
+            "metrics": {k: metrics.get(k) for k in ("ic", "icir", "coverage")},
             "entry": wrote}
