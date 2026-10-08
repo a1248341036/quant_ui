@@ -25,7 +25,21 @@ from . import _pitlib
 
 logger = logging.getLogger(__name__)
 
-_ALL_INST_COLS = ["inst_count", "inst_ratio", "inst_mv", "inst_days_since"]
+# 机构类型 → 面板列中段（源 ``holder_type`` 取值，curated 实测；``summary`` 是汇总行，单独处理）
+_TYPE_SLUG: dict[str, str] = {
+    "fund": "fund",
+    "qfii": "qfii",
+    "insurance": "insurance",
+    "social_security": "social_security",
+    "broker": "broker",
+    "trust": "trust",
+}
+# 分类型列：inst_<type>_ratio（%）、inst_<type>_count（家数）、inst_<type>_mv（元）
+_TYPE_COLS: list[str] = [
+    f"inst_{slug}_{metric}" for slug in _TYPE_SLUG.values() for metric in ("ratio", "count", "mv")
+]
+
+_ALL_INST_COLS = ["inst_count", "inst_ratio", "inst_mv", *_TYPE_COLS, "inst_days_since"]
 
 PLUGIN = DataSourcePlugin(
     name="institutional",
@@ -87,6 +101,56 @@ def _aggregate_per_period(raw: pl.DataFrame) -> pl.DataFrame:
     ).select(["symbol", "report_period", "inst_count", "inst_ratio", "inst_mv"])
 
 
+def _per_type_columns(raw: pl.DataFrame) -> pl.DataFrame:
+    """(symbol, report_period) → 各机构类型的持股比例 / 家数 / 市值（宽列）。
+
+    研报（如"基金增持"事件、机构结构类因子）需要**分类型**持仓，而不是只有汇总；
+    源表 ``holding_shares`` 实为家数、``holding_ratio`` 为比例(%)、``holding_mv`` 为市值(元)。
+    某期缺少某类型时该列为空（不填 0，避免把"未披露"误当"无持仓"）。
+    """
+    typed = (
+        raw.filter(pl.col("holder_type").is_in(list(_TYPE_SLUG)))
+        .sort(["symbol", "report_period", "holder_type"])
+        .unique(subset=["symbol", "report_period", "holder_type"], keep="last")
+        .select(
+            [
+                pl.col("symbol"),
+                pl.col("report_period"),
+                pl.col("holder_type"),
+                pl.col("holding_ratio").cast(pl.Float64, strict=False).alias("ratio"),
+                pl.col("holding_shares").cast(pl.Float64, strict=False).alias("count"),
+                pl.col("holding_mv").cast(pl.Float64, strict=False).alias("mv"),
+            ]
+        )
+    )
+    if typed.is_empty():
+        return pl.DataFrame(
+            {
+                "symbol": pl.Series([], dtype=pl.Utf8),
+                "report_period": pl.Series([], dtype=pl.Utf8),
+                **{c: pl.Series([], dtype=pl.Float64) for c in _TYPE_COLS},
+            }
+        )
+    wide = typed.pivot(
+        on="holder_type",
+        index=["symbol", "report_period"],
+        values=["ratio", "count", "mv"],
+        aggregate_function="last",
+    )
+    # polars pivot(多 values) 产出列名形如 ``ratio_fund`` → 重命名为 ``inst_fund_ratio``
+    rename = {
+        f"{metric}_{slug}": f"inst_{slug}_{metric}"
+        for metric in ("ratio", "count", "mv")
+        for slug in _TYPE_SLUG.values()
+        if f"{metric}_{slug}" in wide.columns
+    }
+    wide = wide.rename(rename)
+    for col in _TYPE_COLS:
+        if col not in wide.columns:
+            wide = wide.with_columns(pl.lit(None, dtype=pl.Float64).alias(col))
+    return wide.select(["symbol", "report_period", *_TYPE_COLS])
+
+
 def load(
     dataset: str,
     *,
@@ -102,6 +166,12 @@ def load(
     if raw.is_empty():
         raise ValueError("institutional: 无数据")
     agg = _aggregate_per_period(raw)
+    per_type = _per_type_columns(raw)
+    if per_type.height:
+        agg = agg.join(per_type, on=["symbol", "report_period"], how="left")
+    else:
+        for col in _TYPE_COLS:
+            agg = agg.with_columns(pl.lit(None, dtype=pl.Float64).alias(col))
     actual = _disclosure_actual_by_period()
     events = agg.join(actual, on=["symbol", "report_period"], how="left")
     events = events.rename({"actual_date": "_pit_date"})

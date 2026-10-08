@@ -83,6 +83,9 @@ _BALANCE_COLS = {
     "fix_assets": "funda_fixed_assets",
     "goodwill": "funda_goodwill",
     "money_cap": "funda_cash",
+    # 制造业/科技类研报高频：在建工程（产能扩张）与无形资产
+    "cip_total": "funda_cip",
+    "intan_assets": "funda_intangible_assets",
 }
 
 _CASHFLOW_COLS = {
@@ -114,6 +117,17 @@ _FINA_INDICATOR_COLS = {
     "tr_yoy": "funda_tr_yoy",
     "ocf_yoy": "funda_ocf_yoy",
     "roe_yoy": "funda_roe_yoy",
+    # 单季度口径（研报"单季 ROE / 单季营收同比"因子的直接来源，2026-10-08 补）
+    "q_roe": "funda_q_roe",
+    "q_dt_roe": "funda_q_dt_roe",
+    "q_sales_yoy": "funda_q_sales_yoy",
+    # 同比与周转（研报因子表高频字段，2026-10-08 补）
+    "dt_netprofit_yoy": "funda_dt_netprofit_yoy",
+    "fa_turn": "funda_fa_turn",
+    "assets_turn": "funda_assets_turn",
+    "ar_turn": "funda_ar_turn",
+    "roe_waa": "funda_roe_waa",
+    "roe_dt": "funda_roe_dt",
 }
 
 _ALL_FUNDA_COLS = [
