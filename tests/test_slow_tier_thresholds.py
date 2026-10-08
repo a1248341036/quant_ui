@@ -190,3 +190,63 @@ def test_fundamental_scale_free_matches_monthly() -> None:
     pd_f = (fund["delivery_policy"]["production"] or {})
     pd_m = (m20["delivery_policy"]["production"] or {})
     assert pd_f["max_winsorized_abs_ic_decay"] == pd_m["max_winsorized_abs_ic_decay"] == 0.10
+
+
+# ── 数据面正交：fundamental_{freq} 门槛 == 同频率 technical_{freq} 门槛 ─────────
+# 2026-10-08 定调：门槛只由 label 唯一决定，与数据面（价量 vs 基本面）彻底无关。
+# fundamental_daily/weekly（基本面数据面 × daily/weekly）与 technical 主档/
+# technical_weekly 同为 label_1d/label_5d，门槛必须完全一致（唯一区别是
+# needs_fundamentals=True + fundamental_* 信号族，即"载哪些列/挖哪些族"）。
+FREQ_PAIRS = [
+    ("fundamental_daily", "technical"),        # 1d 档
+    ("fundamental_weekly", "technical_weekly"),  # 5d 档
+    ("fundamental", "technical_monthly"),      # 20d 档（已在前节逐字段锁定，这里再走统一口径）
+]
+LEVEL_KEYS = [
+    ("evaluation_policy", "min_train_abs_ic"),
+    ("evaluation_policy", "min_train_icir"),
+    ("evaluation_policy", "min_val_abs_ic"),
+    ("delivery_policy.candidate", "min_abs_ic"),
+    ("delivery_policy.candidate", "min_icir"),
+    ("delivery_policy.candidate", "min_val_abs_ic"),
+    ("delivery_policy.production", "min_train_abs_ic"),
+    ("delivery_policy.production", "min_train_icir"),
+    ("delivery_policy.production", "min_val_abs_ic"),
+]
+
+
+@pytest.mark.parametrize("funda_mode,tech_mode", FREQ_PAIRS)
+def test_fundamental_freq_tier_thresholds_match_technical(funda_mode: str, tech_mode: str) -> None:
+    """同 label 档内：基本面数据面门槛 == 价量数据面门槛（唯一真源：label 档常量）。"""
+    fund = effective_research_spec(funda_mode)
+    tech = effective_research_spec(tech_mode)
+    for path, key in LEVEL_KEYS:
+        assert _get(fund, path, key) == _get(tech, path, key), (
+            f"{funda_mode}.{path}.{key} 应与 {tech_mode} 相同（{_get(tech, path, key)}）"
+            f"，实际 {_get(fund, path, key)}"
+        )
+    eg_f = (fund["delivery_policy"]["production"] or {}).get("engine_gate") or {}
+    eg_t = (tech["delivery_policy"]["production"] or {}).get("engine_gate") or {}
+    assert eg_f["freq"] == eg_t["freq"]
+    assert eg_f["allowed_freqs"] == eg_t["allowed_freqs"]
+    assert eg_f.get("min_excess_annual") == eg_t.get("min_excess_annual")
+    assert eg_f.get("min_excess_sharpe") == eg_t.get("min_excess_sharpe")
+
+
+def test_fundamental_freq_tiers_keep_data_surface_semantics() -> None:
+    """数据面正交的边界条件：门槛无条件跟频率走，但数据面语义（载列/信号族）跟随 fundamental_*。"""
+    for mode in ("fundamental_daily", "fundamental_weekly"):
+        spec = effective_research_spec(mode)
+        # 基本面数据面仍载 funda_* 列、开放 fundamental_* 信号族
+        assert _get(spec, "search_policy", "allowed_signal_families") == [
+            "fundamental_quality", "fundamental_growth",
+            "fundamental_value", "fundamental_revision",
+        ]
+        # label 跟随频率（daily→1d、weekly→5d），engine_gate 白名单收紧到单频率
+        from alphaagent.factor.mining.research_spec import ensure_label_freq_consistency
+
+        ensure_label_freq_consistency(spec)
+        if mode == "fundamental_daily":
+            assert spec.get("recommended_label_col") == "label_1d_open_to_open"
+        else:
+            assert spec.get("recommended_label_col") == "label_5d_close_to_close"

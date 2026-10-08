@@ -130,7 +130,7 @@ def main() -> int:
         val_start=DEFAULT_VAL_START,
         val_end=DEFAULT_VAL_END,
         label_col=label_col,
-        include_fundamentals=(mode == "fundamental"),
+        include_fundamentals=mode.startswith("fundamental"),  # 数据面语义（含 fundamental_daily/weekly）
     )
     cfg = MiningConfig(eval=ctx, research_spec=spec, max_tokens=4096)
 

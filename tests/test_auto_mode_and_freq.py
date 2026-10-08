@@ -17,18 +17,30 @@ from core.research_modes import infer_research_mode
 
 # ── 自动定档 ──
 
-@pytest.mark.parametrize("facets,expected", [
-    ([], "technical"),
-    (None, "technical"),
-    (["价量面"], "technical"),
-    (["价量面", "量能面", "筹码面"], "technical"),
-    (["基本面"], "fundamental"),
-    (["股东面"], "fundamental"),
-    (["价量面", "基本面"], "fundamental"),
-    (["量能面", "股东面"], "fundamental"),
+# ── 自动定档（数据面 × 调仓频率两个正交维度，2026-10-08 正交化）──
+
+@pytest.mark.parametrize("facets,freq,expected", [
+    # 未指定频率 → 数据面惯性默认：基本面 → fundamental（monthly），价量 → technical
+    ([], None, "technical"),
+    (None, None, "technical"),
+    (["价量面"], None, "technical"),
+    (["价量面", "量能面", "筹码面"], None, "technical"),
+    (["基本面"], None, "fundamental"),
+    (["股东面"], None, "fundamental"),
+    (["价量面", "基本面"], None, "fundamental"),
+    (["量能面", "股东面"], None, "fundamental"),
+    # 显式频率 → 数据面正交：基本面数据面也按频率落档（门槛/label 跟随频率）
+    (["基本面"], "daily", "fundamental_daily"),
+    (["基本面"], "weekly", "fundamental_weekly"),
+    (["基本面"], "monthly", "fundamental"),
+    (["价量面", "基本面"], "weekly", "fundamental_weekly"),
+    (["股东面"], "daily", "fundamental_daily"),
+    (["价量面"], "daily", "technical_daily"),
+    (["价量面"], "weekly", "technical_weekly"),
+    (["价量面"], "monthly", "technical_monthly"),
 ])
-def test_infer_research_mode(facets, expected):
-    assert infer_research_mode(facets) == expected
+def test_infer_research_mode(facets, freq, expected):
+    assert infer_research_mode(facets, freq) == expected
 
 
 def test_infer_research_mode_strips_and_ignores_blanks():
@@ -101,14 +113,53 @@ def test_start_endpoint_wires_freq_and_mode(monkeypatch):
     assert eg["allowed_freqs"] == ["weekly"]
 
 
+def test_start_endpoint_fundamental_orthogonal_freq(monkeypatch):
+    """2026-10-08 数据面正交：勾基本面 + weekly 不再被锁在 fundamental（monthly），
+    而是落到 fundamental_weekly（label_5d + weekly + 5d 门槛）——数据面只决定
+    信号族/载列，调仓频率决定 label 与门槛。"""
+    from backend.routers import alphaagent as router_mod
+
+    captured = {}
+
+    class _FakeRun:
+        def snapshot(self):
+            return {"run_id": "fake_orth", "status": "running"}
+
+    def _fake_start_run(payload):
+        captured.update(payload)
+        return _FakeRun()
+
+    monkeypatch.setattr(router_mod.service, "start_run", _fake_start_run)
+
+    req = router_mod.StartRequest(focus_facets=["基本面"], rebalance_freq="weekly")
+    result = router_mod.start(req)
+
+    assert result["run_id"] == "fake_orth"
+    assert captured["research_mode"] == "fundamental_weekly"
+    eg = captured["research_spec"]["delivery_policy"]["production"]["engine_gate"]
+    assert eg["freq"] == "weekly"
+    assert eg["allowed_freqs"] == ["weekly"]
+    # 门槛跟随频率（5d 档），与数据面无关
+    crit = captured["research_spec"]["delivery_policy"]["candidate"]
+    assert crit["min_abs_ic"] == 0.030
+    # 数据面仍决定载列/信号族（fundamental_* 族）
+    assert captured["research_spec"]["search_policy"]["allowed_signal_families"] == [
+        "fundamental_quality", "fundamental_growth",
+        "fundamental_value", "fundamental_revision",
+    ]
+
+
 def test_start_endpoint_rejects_label_freq_mismatch(monkeypatch):
-    """2026-10-04 强制一致：慢档（label_20d）配 weekly 频率必须被拒，而不是静默放行。"""
+    """2026-10-04 强制一致仍生效：显式钉死的模式与频率持有期不符必须被拒，
+    而不是静默放行。正交化后自动推断不再产生冲突（数据面×频率自由组合），
+    冲突只会来自用户同时显式指定不匹配的 research_mode + rebalance_freq。"""
     from fastapi import HTTPException
 
     from backend.routers import alphaagent as router_mod
 
     monkeypatch.setattr(router_mod.service, "start_run", lambda payload: None)
-    req = router_mod.StartRequest(focus_facets=["基本面"], rebalance_freq="weekly")
+    # 显式钉 technical（label_1d + daily）却要求 weekly 交付 → 422
+    req = router_mod.StartRequest(research_mode="technical", rebalance_freq="weekly")
     with pytest.raises(HTTPException) as exc:
         router_mod.start(req)
     assert exc.value.status_code == 422
@@ -178,7 +229,20 @@ def test_report_mode_registered_and_exposed_to_frontend():
     assert get_research_mode("report").needs_fundamentals is True
     values = [opt["value"] for opt in ui_options()]
     assert "report" in values
-    assert not any(v.startswith("technical_") for v in values)  # 内部子档不外露
+    # internal 标记语义（2026-10-08 数据面正交）：top-level 档位（technical/fundamental/
+    # report）internal=False 且永远在列；内部子档（technical_*/fundamental_*）internal=True，
+    # 供前端下拉过滤、switchResearchMode 白名单与门槛文件读写仍全量可达。
+    top = [o for o in ui_options() if not o["internal"]]
+    assert [o["value"] for o in top] == ["technical", "fundamental", "report"]
+    internals = [o["value"] for o in ui_options() if o["internal"]]
+    assert sorted(internals) == sorted([
+        "technical_daily", "technical_weekly", "technical_monthly",
+        "fundamental_daily", "fundamental_weekly",
+    ])
+    # 子档元数据齐全（前端 switchResearchMode 需要 hint/default_user_message）
+    for o in ui_options():
+        if o["internal"]:
+            assert o["hint"] and o["default_user_message"]
 
 
 def test_start_endpoint_report_mode_passthrough(monkeypatch):

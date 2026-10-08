@@ -161,7 +161,8 @@ class PitSuspicionDiagnostic(BaseDiagnostic):
             return None
         # P1-3 动态细分：仅对基本面/慢标签因子或触及 funda_ 列的因子警示 PIT 伪影
         expr_str = str(ctx.expr or "").lower()
-        is_funda = "funda_" in expr_str or str(ctx.research_mode) == "fundamental"
+        # fundamental / fundamental_daily / fundamental_weekly 均为基本面数据面（2026-10-08 正交化）
+        is_funda = "funda_" in expr_str or str(ctx.research_mode).startswith("fundamental")
         if not is_funda:
             return None
 

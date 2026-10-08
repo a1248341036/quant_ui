@@ -12,9 +12,12 @@ from alphaagent.mcp_server import tools
 
 _MODE = {
     "type": "string",
-    "enum": ["technical", "technical_weekly", "technical_monthly", "fundamental"],
+    "enum": [
+        "technical", "technical_daily", "technical_weekly", "technical_monthly",
+        "fundamental", "fundamental_daily", "fundamental_weekly",
+    ],
     "default": "technical",
-    "description": "研究档位（决定评估 label 与交付调仓频率）",
+    "description": "研究档位（数据面 × 调仓频率：决定评估 label、信号族与交付调仓频率）",
 }
 
 

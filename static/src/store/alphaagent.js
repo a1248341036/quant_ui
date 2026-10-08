@@ -160,13 +160,33 @@ export const agentStore = reactive({
     const overrides = agentStore.specOverridesByMode[mode] || {}
     return Object.keys(overrides).length > 0
   }),
-  // 方案 B：档位由数据面组合推断（与后端 core.research_modes.infer_research_mode 同口径）
+  // 方案 B + 2026-10-08 数据面正交：档位由「数据面 × 调仓频率」两个正交维度推断
+  // （与后端 core.research_modes.infer_research_mode 同口径，保持一致——否则前端把
+  // 推断档显式提交时会绕过后端推断，正交化在前端路径失效）。
+  // 数据面只决定信号族/载列；调仓频率决定 label 与门槛（门槛与数据面无关）。
   inferredMode: computed(() => {
     const slow = ['基本面', '股东面', '机构面', '股东集中面']
-    return slow.some(f => (agentStore.form.focus_facets || []).includes(f)) ? 'fundamental' : 'technical'
+    const freq = agentStore.form.rebalance_freq
+    const isSlow = slow.some(f => (agentStore.form.focus_facets || []).includes(f))
+    if (isSlow) {
+      if (freq === 'daily') return 'fundamental_daily'
+      if (freq === 'weekly') return 'fundamental_weekly'
+      return 'fundamental'  // 自动/月频 → 基本面数据面 × monthly（label_20d）
+    }
+    if (freq === 'daily') return 'technical_daily'
+    if (freq === 'weekly') return 'technical_weekly'
+    if (freq === 'monthly') return 'technical_monthly'
+    return 'technical'
   }),
   inferredModeLabel: computed(() => {
-    return agentStore.inferredMode === 'fundamental' ? '慢信号档（label_20d · 月调仓）' : '短周期档（label_1d · 周调仓）'
+    const m = agentStore.inferredMode
+    if (m === 'fundamental_daily') return '基本面档（label_1d · 日调仓）'
+    if (m === 'fundamental_weekly') return '基本面档（label_5d · 周调仓）'
+    if (m === 'fundamental') return '基本面档（label_20d · 月调仓）'
+    if (m === 'technical_daily') return '短周期档（label_1d · 日调仓）'
+    if (m === 'technical_weekly') return '中周期档（label_5d · 周调仓）'
+    if (m === 'technical_monthly') return '慢信号档（label_20d · 月调仓）'
+    return '短周期档（label_1d · 日调仓）'
   }),
   // 研报档 pin：research_mode=report 是"先复现研报机制、再单维发散"的独立顶层档位
   // （core.research_modes 注册表第三项），由页头「研报」按钮显式选中。选中后**不再**
@@ -180,7 +200,16 @@ export const agentStore = reactive({
     const mode = agentStore.current?.research_mode
     if (!mode) return ''
     const hit = agentStore.researchModes.find(m => m.value === mode)
-    return hit ? hit.label : mode
+    if (hit) return hit.label
+    // 内部子档（数据面正交，2026-10-08）不在 research-modes 列表里，映射友好标签
+    const SUB_LABEL = {
+      fundamental_daily: '基本面·日频',
+      fundamental_weekly: '基本面·周频',
+      technical_daily: '日线技术·日频',
+      technical_weekly: '日线技术·周频',
+      technical_monthly: '日线技术·月频',
+    }
+    return SUB_LABEL[mode] || mode
   }),
   // 档位标签（composer 徽标 / 门槛弹窗标题）：pin 研报时按研报档语义显示，而非推断档，
   // 否则弹窗标题会写"短周期档"而实际在改 report 档的门槛。
@@ -191,7 +220,7 @@ export const agentStore = reactive({
   }),
   effectiveModeHint: computed(() => (agentStore.reportPinned
     ? '已 pin 研报档：复现阶段喂机制卡、发散阶段用研报 RAG，需载入基本面列。再点页头「研报」取消，回到按数据面自动定档。'
-    : '档位由数据面自动推断：勾选基本面/股东/机构/股东集中面 → 慢信号档（label_20d+松门槛+月调仓）；其余 → 短周期档（label_1d+严门槛+周调仓）；页头「研报」可 pin 研报档')),
+    : '档位由「数据面 × 调仓频率」正交推断（2026-10-08）：基本面/股东/机构/股东集中面 → 基本面档（载 funda_* 列、开放基本面信号族），价量面 → 行情档；调仓频率决定 label 与门槛（日 1d / 周 5d / 月 20d，门槛与数据面无关）。页头「研报」可 pin 研报档')),
   researchSpecDirty: computed(() => {
     const mode = agentStore.form.research_mode
     const effective = agentStore.specDefaultsByMode[mode]
@@ -807,6 +836,9 @@ export const agentStore = reactive({
   async loadResearchModes() {
     try {
       const r = await api('/api/alphaagent/research-modes?t=' + Date.now())
+      // 全量注册档位（含 internal 子档：technical_*/fundamental_*）。
+      // internal 子档不显式展示，但 switchResearchMode 白名单 / 门槛文件读写
+      // 都以全量列表为准（syncInferredMode 会切到 fundamental_weekly 等子档）。
       this.researchModes = (r.modes || []).map(m => ({
         value: m.value,
         label: m.label,
@@ -814,8 +846,10 @@ export const agentStore = reactive({
         recommended_label_col: m.recommended_label_col,
         default_user_message: m.default_user_message,
         needs_fundamentals: m.needs_fundamentals,
+        internal: Boolean(m.internal),
       }))
-      this.researchModeOptions = this.researchModes.map(m => ({ value: m.value, label: m.label }))
+      // 下拉/按钮只展示顶层档位（数据面 top-level），内部子档不外露
+      this.researchModeOptions = this.researchModes.filter(m => !m.internal).map(m => ({ value: m.value, label: m.label }))
       // data 初始 research_mode 可能不在列表里 → 回退第一个
       if (!this.researchModes.some(m => m.value === this.form.research_mode) && this.researchModes.length) {
         this.form.research_mode = this.researchModes[0].value

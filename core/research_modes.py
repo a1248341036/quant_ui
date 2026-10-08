@@ -75,9 +75,13 @@ class ResearchModeSpec:
 # ── 门槛只由 label 持有期唯一决定（2026-10-08 定调）─────────────────────
 # 原则：IC/ICIR/val 门槛与"数据面"（价量 vs 基本面）**彻底无关**，只由预测窗口
 # （label 持有期 1d/5d/20d）决定。同一 label 的所有模式必须共用同一套门槛。
-#   · label_1d   → technical / technical_daily / report 共用 0.020/0.28/0.015
-#   · label_5d   → technical_weekly 用 0.030/0.45/0.0225
-#   · label_20d  → technical_monthly 与 fundamental **共用** _MONTHLY_20D_OVERRIDES
+#   · label_1d   → technical / technical_daily / fundamental_daily / report 共用 0.020/0.28/0.015
+#   · label_5d   → technical_weekly / fundamental_weekly 共用 _WEEKLY_5D_OVERRIDES（0.030/0.45/0.0225）
+#   · label_20d  → technical_monthly 与 fundamental 共用 _MONTHLY_20D_OVERRIDES
+# **数据面正交（2026-10-08 定调）**：fundamental 是**数据面**（只决定 signal_families 与
+# needs_fundamentals，不是独立"慢信号模式"），与调仓频率彻底正交——基本面数据面同样可以
+# 选 daily/weekly/monthly 任一频率，门槛随频率取对应 label 档：fundamental_daily=1d 档、
+# fundamental_weekly=5d 档、fundamental（monthly）=20d 档。
 # 历史教训：fundamental 曾单独标定 0.035/0.45/0.021（"文献月度基本面量级"），
 #   造成同为 label_20d 却门槛不同的矛盾（技术月频 0.053/0.65，基本面松 0.035/0.45）。
 #   故此处抽成单一常量，两个 20d 模式引用同一来源，从结构上杜绝"同口径不同门槛"漂移。
@@ -112,6 +116,31 @@ _MONTHLY_20D_OVERRIDES: dict[str, dict] = {
     },
 }
 
+# 5d（label_5d）门槛唯一来源（供 technical_weekly 与 fundamental_weekly 共用）。
+# 抽成常量的理由同 _MONTHLY_20D_OVERRIDES：数据面正交后，每个 label 档都会被两个
+# 数据面（价量/基本面）的模式引用，从结构上杜绝"同 label 不同门槛"漂移。
+_WEEKLY_5D_OVERRIDES: dict[str, dict] = {
+    "evaluation_overrides": {
+        "min_train_abs_ic": 0.030,    # 文献"有意义线"（锚①）且选择性对齐（锚②）
+        "min_train_icir": 0.450,      # 选择性对齐；文献有效线 0.3 之上
+        "min_val_abs_ic": 0.0225,     # 0.015 × (0.030/0.02)
+    },
+    "candidate_overrides": {
+        "min_abs_ic": 0.030,
+        "min_icir": 0.450,
+        "min_val_abs_ic": 0.0225,
+    },
+    "production_overrides": {
+        "min_train_abs_ic": 0.0375,   # 0.030 × 1.25（主档正式库更严倍数）
+        "min_train_icir": 0.4821,     # 0.450 × 0.30/0.28
+        "min_val_abs_ic": 0.0225,
+    },
+    "engine_gate_overrides": {
+        "freq": "weekly",
+        "allowed_freqs": ["weekly"],
+    },
+}
+
 # ── 注册表（唯一事实源）───────────────────────────────────────────────
 RESEARCH_MODES: dict[str, ResearchModeSpec] = {
     "technical": ResearchModeSpec(
@@ -140,7 +169,7 @@ RESEARCH_MODES: dict[str, ResearchModeSpec] = {
     "fundamental": ResearchModeSpec(
         mode_id="fundamental",
         label="基本面",
-        hint="funda_* 财务基本面因子（PIT），label_20d 收盘到收盘",
+        hint="funda_* 财务基本面因子（PIT），label_20d 收盘到收盘（基本面数据面·月频档）",
         recommended_label_col="label_20d_close_to_close",
         signal_families=(
             "fundamental_quality", "fundamental_growth",
@@ -155,15 +184,63 @@ RESEARCH_MODES: dict[str, ResearchModeSpec] = {
             "PIT 日频）结合价量信息挖掘A股日频因子，先训练集评估，再验证集检验；"
             "只有通过验证和去重门槛的因子才提交。"
         ),
-        # ═══ 2026-10-08 门槛统一（门槛只由 label 决定，与数据面无关）═════
-        # 本档与 technical_monthly 同为 label_20d，故**共用同一套 20d 门槛**
-        # （_MONTHLY_20D_OVERRIDES，数值来源见文件顶部常量定义）。
-        # 取代此前独立标定的 0.035/0.45/0.021（"文献月度基本面量级"），消除
-        # "同为 label_20d 却门槛不同"的矛盾（技术月频 0.053/0.65 vs 基本面松 0.035/0.45）。
-        # 同步对齐：val 保留比 0.65/0.70→0.50、engine_gate 年化门 0.02/0.4→0.03/0.5、
-        #   max_winsorized_abs_ic_decay 0.12→0.10、allowed_freqs 收成 [monthly]。
-        # 本档相对 technical_monthly 的唯一区别 = needs_fundamentals=True（载入 funda_* 列）。
+        # ═══ 2026-10-08 数据面正交：fundamental 是**数据面**，不是独立"慢信号模式" ═══
+        # 数据面（基本面 vs 价量）只决定 signal_families 与 needs_fundamentals；调仓频率
+        # 由用户单独选择（infer_research_mode 按 rebalance_freq 落到对应子档）。本档 =
+        # 基本面数据面 × **monthly**（label_20d），与 technical_monthly 共用同一套 20d
+        # 门槛（_MONTHLY_20D_OVERRIDES）；若用户选 weekly/daily 频率则走
+        # fundamental_weekly / fundamental_daily 子档（门槛随频率取 5d/1d 档）。
+        # 取代此前"基本面 = 慢信号锁 20d"的耦合（2026-09-02 infer_research_mode 把
+        # 基本面/股东面直接钉死到本档）；也取代 2026-10-08 之前的独立标定
+        # 0.035/0.45/0.021（"文献月度基本面量级"）——同 label 必须同门槛，见文件顶部区块。
         **_MONTHLY_20D_OVERRIDES,
+    ),
+    "fundamental_daily": ResearchModeSpec(
+        mode_id="fundamental_daily",
+        label="基本面·日频",
+        hint="基本面数据面（funda_* PIT）× daily 调仓：label_1d，门槛 1d 档",
+        recommended_label_col="label_1d_open_to_open",
+        signal_families=(
+            "fundamental_quality", "fundamental_growth",
+            "fundamental_value", "fundamental_revision",
+        ),
+        forbidden_families=("pure_size", "pure_price_momentum"),
+        needs_fundamentals=True,
+        candidate_dir="candidate_main",
+        production_dir="production_main",
+        default_user_message=(
+            "请基于已载入的基本面字段（盈利质量、杠杆、现金流、财报科目等，"
+            "PIT 日频）结合价量信息挖掘A股日频因子，daily 调仓路径，"
+            "先训练集评估，再验证集检验；只有通过验证和去重门槛的因子才提交。"
+        ),
+        # 数据面正交子档：基本面数据面 × daily。门槛 = 1d 档（DEFAULT_RESEARCH_SPEC
+        # 默认值，与 technical/technical_daily/report 同源），engine_gate 收成 daily。
+        engine_gate_overrides={
+            "freq": "daily",
+            "allowed_freqs": ["daily"],
+        },
+    ),
+    "fundamental_weekly": ResearchModeSpec(
+        mode_id="fundamental_weekly",
+        label="基本面·周频",
+        hint="基本面数据面（funda_* PIT）× weekly 调仓：label_5d，门槛 5d 档",
+        recommended_label_col="label_5d_close_to_close",
+        signal_families=(
+            "fundamental_quality", "fundamental_growth",
+            "fundamental_value", "fundamental_revision",
+        ),
+        forbidden_families=("pure_size", "pure_price_momentum"),
+        needs_fundamentals=True,
+        candidate_dir="candidate_main",
+        production_dir="production_main",
+        default_user_message=(
+            "请基于已载入的基本面字段（盈利质量、杠杆、现金流、财报科目等，"
+            "PIT 日频）结合价量信息挖掘A股日频因子，weekly 调仓路径，"
+            "先训练集评估，再验证集检验；只有通过验证和去重门槛的因子才提交。"
+        ),
+        # 数据面正交子档：基本面数据面 × weekly。门槛 = 5d 档（与 technical_weekly
+        # 共用 _WEEKLY_5D_OVERRIDES，见文件顶部常量定义），engine_gate 收成 weekly。
+        **_WEEKLY_5D_OVERRIDES,
     ),
     # ── 三对齐子档位（2026-09-20）──
     # label 持有期 = 调仓频率持有期；快/中/慢信号分轨，各走对应 label + freq + 门槛。
@@ -221,25 +298,8 @@ RESEARCH_MODES: dict[str, ResearchModeSpec] = {
         # 刻意不动：min_val_ic_retention（比值口径，与 label 尺度无关）、
         #   min_coverage / min_cs_autocorr / max_abs_corr（因子侧属性，与 label 无关）、
         #   engine_gate 的 min_excess_annual / min_excess_sharpe（年化口径，缺该档实测，暂继承主档）。
-        evaluation_overrides={
-            "min_train_abs_ic": 0.030,    # 文献"有意义线"（锚①）且选择性对齐（锚②）
-            "min_train_icir": 0.450,      # 选择性对齐；文献有效线 0.3 之上
-            "min_val_abs_ic": 0.0225,     # 0.015 × (0.030/0.02)
-        },
-        candidate_overrides={
-            "min_abs_ic": 0.030,
-            "min_icir": 0.450,
-            "min_val_abs_ic": 0.0225,
-        },
-        production_overrides={
-            "min_train_abs_ic": 0.0375,   # 0.030 × 1.25（主档正式库更严倍数）
-            "min_train_icir": 0.4821,     # 0.450 × 0.30/0.28
-            "min_val_abs_ic": 0.0225,
-        },
-        engine_gate_overrides={
-            "freq": "weekly",
-            "allowed_freqs": ["weekly"],
-        },
+        # 数值统一引用 _WEEKLY_5D_OVERRIDES（5d 门槛唯一来源，见文件顶部常量定义）。
+        **_WEEKLY_5D_OVERRIDES,
     ),
     # ── 研报模式（2026-09-29 新增）───────────────────────────────────
     # 目标：**先照研报机制复现**一个忠实因子，**再围绕该机制单向发散**。
@@ -337,11 +397,13 @@ def mode_ids() -> list[str]:
 
 
 def ui_options() -> list[dict]:
-    """前端研究模式按钮/因子库类别/保存下拉共享的选项。
+    """前端研究模式按钮/因子库类别/保存下拉共享的选项（单一事实源）。
 
-    返回全部顶层档位（technical/fundamental/report）；三对齐子档（technical_daily/
-    weekly/monthly）是内部档位，由 infer_research_mode 依据 rebalance_freq
-    自动选用，不暴露给前端下拉（避免污染 UI）。
+    返回**全部**注册档位（含 internal 标记）：三对齐子档（technical_daily/weekly/
+    monthly）与数据面正交子档（fundamental_daily/weekly）标记 internal=True——
+    前端下拉据此过滤（researchModeOptions 只展示顶层档位），但 switchResearchMode
+    的白名单用全量列表（子档也允许切换，否则 syncInferredMode 静默失效）。存/读
+    门槛文件（/research-specs/{mode}）同样以全部档位为准。
     """
     return [
         {
@@ -351,20 +413,27 @@ def ui_options() -> list[dict]:
             "recommended_label_col": spec.recommended_label_col,
             "default_user_message": spec.default_user_message,
             "needs_fundamentals": spec.needs_fundamentals,
+            "internal": spec.mode_id.startswith(("technical_", "fundamental_")),
         }
         for spec in RESEARCH_MODES.values()
-        if not spec.mode_id.startswith("technical_")
     ]
 
 
-# ── 自动定档（2026-09-03，方案 B）─────────────────────────────────────
-# 前端模式下拉（日线技术/基本面）退役后，档位由数据面多选自动推断：
-# 勾选基本面/股东面/机构面/股东集中面（慢因子数据源）→ fundamental 档
-# （label_20d + monthly 门禁；门槛与 technical_monthly 共用，2026-10-08 统一——
-#  门槛只由 label 决定，与数据面无关）；其余（纯价量族或混合）→ technical
-# 档（label_1d + 严门槛 + daily 门禁）。混合勾选落 technical：融合因子以
-# 价量为主信号、1d 评估合理。用户显式给 rebalance_freq 时改走对应的
-# technical_{freq} 子档（label 与调仓频率对齐，2026-10-04 起全局强制一致）。
+# ── 自动定档（2026-09-03，方案 B；2026-10-08 数据面正交化）────────────
+# 前端模式下拉（日线技术/基本面）退役后，档位由「数据面多选 × 调仓频率」两个
+# **正交**维度自动推断：
+#   · 数据面（基本面/股东面/机构面/股东集中面 vs 价量族）只决定载不载 funda_* 列、
+#     开放哪些信号族（fundamental 数据面 → fundamental_* 族；价量面 → 行情族）——
+#     见模式声明里的 needs_fundamentals / signal_families；
+#   · 调仓频率（daily/weekly/monthly）决定 label 与门槛（1d/5d/20d 档），
+#     与数据面无关（2026-10-08 用户定调：门槛只由 label 唯一决定）。
+# 组合落到具体档位：fundamental_daily / fundamental_weekly / fundamental（=monthly）/
+# technical_daily / technical_weekly / technical_monthly；未显式给频率时按数据面
+# 惯性取默认：基本面 → fundamental（monthly，季度数据自然月频调仓）、价量 → technical
+# （label_1d）。混合勾选（价量+基本面）走对应数据面频率档：信号族与列加载按
+# focus_facets 联动（见 alphaagent_service），评估门槛只看选中的频率。
+# 2026-10-04 起 label 与调仓频率**强制一致**（见本文件顶部区块），模式未显式声明
+# freq 时由 label 派生，不一致直接拒启动。
 
 _SLOW_FACETS: frozenset[str] = frozenset({"基本面", "股东面", "机构面", "股东集中面"})
 
@@ -373,16 +442,21 @@ def infer_research_mode(
     focus_facets: list[str] | tuple[str, ...] | None,
     rebalance_freq: str | None = None,
 ) -> str:
-    """按数据面多选自动推断研究档位（mode_id：technical/fundamental/technical_*）。
+    """按「数据面 × 调仓频率」两个正交维度自动推断研究档位（纯函数，前后端共享）。
 
-    纯函数，前后端共享。空/未选 → technical（label_1d + daily 门禁）。
-    显式传入 rebalance_freq（daily/weekly/monthly）时，价量面走对应**对齐**子档
-    （technical_daily/weekly/monthly，label 持有期 == 调仓持有期）；基本面面仍走
-    fundamental。2026-10-04 起 label 与调仓频率**强制一致**（见本文件顶部区块），
-    主档 technical/report 也已收成 1d + daily，不再有"解耦"组合。
+    数据面 → 信号族/载列（fundamental 数据面 vs 价量数据面）；频率 → label + 门槛。
+    空/未选数据面 → 价量面（technical）。未显式传 rebalance_freq 时：
+      基本面数据面 → fundamental（monthly 缺省：季度 PIT 数据自然月频调仓）；
+      价量数据面 → technical（label_1d + daily 门禁）。
+    显式传 rebalance_freq（daily/weekly/monthly）时按频率落对齐子档：
+      基本面数据面 → fundamental_{freq}（daily/weekly；monthly 回落到 fundamental）；
+      价量数据面 → technical_{freq}（monthly 回落到 technical_monthly）。
+    label 与调仓频率**强制一致**（2026-10-04 起，见本文件顶部区块）。
     """
     facets = {str(f).strip() for f in (focus_facets or []) if str(f).strip()}
     if facets & _SLOW_FACETS:
+        if rebalance_freq in ("daily", "weekly"):
+            return f"fundamental_{rebalance_freq}"
         return "fundamental"
     if rebalance_freq in ("daily", "weekly", "monthly"):
         return f"technical_{rebalance_freq}"
