@@ -182,8 +182,9 @@ class IngestionMixin:
                 metrics.setdefault("test_ic_retention", holdout.get("ic_retention"))
             metrics.setdefault("train_ic", metrics.get("ic"))
             metrics.setdefault("train_icir", metrics.get("icir"))
-        # 档位随评估进入 verdict 判定（2026-10-07）：各档海选线不同（technical 0.02 /
-        # technical_weekly 0.03 / technical_monthly 0.053 / fundamental 0.035），_classify
+        # 档位随评估进入 verdict 判定（2026-10-07，2026-10-08 统一）：各档海选线不同
+        # （technical 0.02 / technical_weekly 0.03 / technical_monthly & fundamental 0.053），
+        # 门槛只由 label 决定、数据面不改变门槛，_classify
         # 必须先拿到本 run 档位才能正确判 train_passed / near_miss；run 档位在启动时即确定
         # （run_freq_context），此前只在落库阶段（下方 metrics_compact）合入，判定阶段拿不到。
         if run_freq_context:

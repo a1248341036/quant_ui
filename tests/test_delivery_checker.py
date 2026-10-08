@@ -251,16 +251,19 @@ def test_fundamental_criteria_prompt_reflects_mode():
     from alphaagent.factor.mining.research_spec import default_research_spec
 
     fund = default_research_spec("fundamental")
+    m20 = default_research_spec("technical_monthly")
     c = DeliveryCriteria.from_spec(fund)
-    # 2026-10-07 重锚：本档是 label_20d + monthly，原 0.020/0.28/0.012 是 1d 尺度值，
-    # 在 20d label 下形同虚设（实测基本面族 n=9 过线率 77.8%）→ 双锚重锚到 0.035/0.45/0.021。
-    assert c.candidate.min_abs_ic == 0.035
-    assert c.candidate.min_icir == 0.45
-    assert c.candidate.min_val_abs_ic == 0.021  # 0.012 × 1.75（同比例重锚）
-    assert c.production.min_train_abs_ic == 0.035  # 本档 production 与 candidate 同值（历史关系保留）
-    assert c.production.min_train_icir == 0.45
+    mc = DeliveryCriteria.from_spec(m20)
+    # 2026-10-08 门槛统一：fundamental 与 technical_monthly 同为 label_20d，共用 _MONTHLY_20D_OVERRIDES
+    # （门槛只由 label 唯一决定，与数据面无关）。此前 0.035/0.45 独立标定已废弃。
+    assert c.candidate.min_abs_ic == 0.053 == mc.candidate.min_abs_ic
+    assert c.candidate.min_icir == 0.65 == mc.candidate.min_icir
+    assert c.candidate.min_val_abs_ic == 0.0398 == mc.candidate.min_val_abs_ic
+    assert c.production.min_train_abs_ic == 0.0663 == mc.production.min_train_abs_ic
+    assert c.production.min_train_icir == 0.6964 == mc.production.min_train_icir
     assert c.engine_gate.freq == "monthly"
-    assert c.engine_gate.min_excess_annual == 0.02
+    assert c.engine_gate.min_excess_annual == 0.03 == mc.engine_gate.min_excess_annual
+    assert c.engine_gate.min_excess_sharpe == 0.5 == mc.engine_gate.min_excess_sharpe
 
     text = c.to_prompt_text()
-    assert "0.021" in text and "0.45" in text and "monthly" in text
+    assert "0.0398" in text and "0.65" in text and "monthly" in text

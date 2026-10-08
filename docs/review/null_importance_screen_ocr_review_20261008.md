@@ -1,0 +1,188 @@
+# Null Importance 因子预筛选 OCR Review（feat/factor-ml-screening @ 39a9278）
+
+- 日期：2026-10-08
+- 范围：`git show 39a9278`（相对父提交 1dd0fa6 的唯一新提交）
+- 文件：`alphaagent/factor/stacking/screening.py`（新增 228 行）、`scripts/train_ml_composite.py`（+92）、`tests/test_null_importance_screen.py`（新增 122 行）
+- 工具：open-code-review（ocr）→ 6 条评论（2 medium / 4 low）；**全部经人工逐条验证**，无 high，无误报。
+
+## 背景
+
+组合链路此前"先全上、训练完再挑"：置换贡献是事后诊断（全因子污染下评估），gain
+importance 被分布属性虚高污染。本提交在训练前加 Stage 0 Null Importance 预筛选：
+打乱标签 N 次训练 LightGBM-RF 对照，逐因子 `score=log(actual/(1+null_75分位))`，
+本质为逐因子置换检验；窗口 = [panel 起点, mining_end)，验证/盲测段不参与（时间隔离契约）。
+
+## 结论摘要
+
+- **2 条 medium 均确认属实**，都落在同一根因：**筛选结果未做"剩余特征数/审计原因"
+  的兜底校验**，在小样本（`n_valid<200`）或全量剔除时会把"未能执行筛选"误当
+  "正常筛选后全踢"，或在空特征上继续训练崩溃/退化。
+- 4 条 low 全部属实（均为入口校验/审计契约类，风险集中在 CLI 参数组合与复用路径）。
+- 新增测试覆盖了设计意图的 5 个断言面，质量良好；但**未覆盖**本 review 的 medium
+  场景（筛选后 <2 特征的崩溃路径、insufficient_window reasons 透传），修复后应补测。
+
+## Medium
+
+### M1. `apply_screening` 后缺剩余特征数防护 → 空特征继续训练崩溃/退化
+
+- **证据**：`scripts/train_ml_composite.py:570-571`
+
+  ```python
+  apply_screening(dataset, screening_rows)
+  print(f"筛选后特征 {len(dataset.feature_names)} 个进入训练")
+  ```
+
+  之后直接进入 ⑤ walk-forward 训练，无 `<2` 校验。对比同文件既有守卫：
+  - 枚举阶段 `train_ml_composite.py:238-240`（`len(entries) < 2 → sys.exit(1)`）；
+  - mRMR 块 `train_ml_composite.py:476-478`（`len(dataset.feature_names) < 2 → sys.exit(1)`）。
+- **触发路径（真实）**：`screening.py:128-134` 在 `n_valid < 200` 或 `K == 0` 时**必然全判 fail**
+  （宁缺毋滥，`passed=False`）。此时 `--screen`（非 `--screen-only`）继续训练：
+  - 0 列 → Ridge/LightGBM 裸 ValueError traceback（无提示）；
+  - 1 列 → 单因子退化组合静默产出。
+- **最小修法**：`apply_screening(dataset, screening_rows)` 之后补：
+
+  ```python
+  if len(dataset.feature_names) < 2:
+      print(f"Null Importance 筛选后有效特征仅 {len(dataset.feature_names)} 个（<2），"
+            f"继续训练会崩溃或产出退化组合。建议调低 --min-score 或核对 screening.json 后重试。")
+      sys.exit(1)
+  ```
+
+- **补测**：`tests/test_null_importance_screen.py` 增加"全量 fail 后 apply_screening +
+  剩余 <2"的 CLI/单元路径断言。
+
+### M2. `apply_screening` 丢弃审计原因：把"筛选未执行"伪装成"全踢"
+
+- **证据**：`alphaagent/factor/stacking/screening.py:219-228`（dropped 拼接）只用
+  score/actual/null_p75 拼 reason；而 `screening.py:128-134` 样本不足提前返回时每行带
+  `reason="insufficient_window_samples=N"`（actual/null_p75/score 全 None）：
+
+  ```python
+  # screening.py:130-133
+  {"name": n, "actual": None, "null_p75": None, "score": None,
+   "passed": False, "reason": f"insufficient_window_samples={n_valid}"}
+  ```
+
+  → 落盘 `dataset.dropped` 变成 `null_importance_score=None (actual=None, null_p75=None)`，
+  后续记忆/审计无法区分"全体因子因样本不足被迫判 fail"与"正常筛选后连噪声本底都过不了"
+  两种截然不同的结论，容易对因子库误判。
+- **最小修法**：`screening.py:223-224` 优先透传 rows 自带 reason：
+
+  ```python
+  "reason": rows_by_name[n].get("reason") or (
+      f"null_importance_score={rows_by_name[n]['score']}"
+      f" (actual={rows_by_name[n]['actual']}, null_p75={rows_by_name[n]['null_p75']})"
+  ),
+  ```
+
+- **补测**：`test_apply_screening_drops_and_audits` 增补"rows 带 insufficient_window_samples
+  reason 时 dropped 原样透传"断言。
+
+## Low（属实，择要）
+
+### L1. `--screen`/`--screen-only` 与 `--recommend-k>0` 组合 → 筛选被静默跳过
+- **证据**：`train_ml_composite.py:473-510`：`recommend_k > 0` 时 mRMR 块无条件
+  `sys.exit(0)`（line 510），其后的 ④c 筛选块（line 516+）根本不执行，无任何提示。
+- **最小修法**：在 `recommend_k > 0` 分支前打印 warn："推荐模式不训练，--screen/--screen-only 不会执行"，
+  或将两者声明为互斥参数。
+
+### L2. 复用 `--screening-report` 时 `screening_summary` 恒为 None，report.json 审计缺失
+- **证据**：`train_ml_composite.py:225-236`（复用名单只过滤 entries），
+  `screening_summary` 初始 None（line 215），`report.json` 的 `"screening"` 字段（line 1005）为 null；
+  且被过滤因子在枚举阶段即被剔除，不进 `dataset.dropped` —— 审计上无法区分
+  "从未入选"与"被 Null Importance 剔除"。
+- **最小修法**：读取报告时同步填充 `screening_summary`（n_total/n_passed/rows/来源路径）。
+
+### L3. `--null-runs` 入口无校验，传 0/1/3 裸 ValueError traceback
+- **证据**：`train_ml_composite.py:524` 未校验；`screening.py:120-121` 抛
+  `ValueError("n_runs 至少 5...")`，但此时已 emit ml_stage 事件，报错无友好提示。
+- **最小修法**：CLI 解析处钳制 `n_runs`（如 `<5 → sys.exit(1)` 给出指引），或捕获后友好报错。
+
+### L4. `screen_dataset` 对空 panel 无前置防护
+- **证据**：`screening.py:186-187`：panel 空时 `dts.min()` 抛
+  `ValueError: zero-size array to reduction operation minimum`，报错与筛选语义无关；
+  `K==0`（冗余过滤后无特征）时 `null_importance_scores` 返回空 rows，`apply_screening` 把
+  特征矩阵清零继续下行（与 M1 同链）。
+- **最小修法**：取 `dts.min()` 前显式校验 panel 非空并给明确错误（或返回空白名单）。
+
+## 未覆盖文件补查结论
+
+OCR 只选了 2 个核心文件；`tests/test_null_importance_screen.py` 已人工补读：
+
+- 5 例覆盖：判别力（真信号过/噪声与 style 被压下 + 排序）、确定性（种子固定逐字段一致）、
+  阈值单调性、窗口不足宁缺毋滥（reason 标注）、裁剪审计（library 取自裁剪前映射不错位）。
+  断言精确（含字段集合 pin），质量良好。
+- **缺口**：如上 M1/M2 补测；另 `test_structure_and_determinism` 的字段集合断言
+  （`set(r1) == {...}`）与 `reason` 键的兼容性——正常窗口 rows 无 reason 键、不足窗口有，
+  当前两用例各自成立不受影响，但将来加字段会触发该断言失败（属 pin 行为，可接受，注明即可）。
+
+## 建议
+
+1. M1/M2 属"筛选决策可被静默绕过/失真"的判定侧问题，建议在分支合入前修复（均为 3-5 行改动的
+  最小修法），并补两条回归测试。
+2. L1-L4 为入口校验/审计契约类，可随分支合入后择机处理；L4 与 M1 同链，建议与 M1 一并修。
+3. 修复走分支提交（用户定合并时机）；本结论已写入 `docs/review/`。
+
+---
+
+# 追加：全量分支 review（2026-10-08，用户要求"全部一起 review"）
+
+对 `main...feat/factor-ml-screening` 全量对比跑 OCR（5 文件、6 评论、27m29s；
+screening.py 因代理 500 重试 7 次后恢复，1 条规划失败被放弃），并人工补查
+OCR 未选的 memory/ingestion.py、memory/schema.py（合计 10 行，均为注释同步，
+无逻辑变化）。**6 条全部确认属实、全部已修**（`fix/null-importance-screen-guards-2`）：
+
+## M1. [bug · medium] `train_ml_composite.py:239` 复用 screening-report 的元数据失真（上轮 L2 修复残留）
+
+- **证据**：上一轮修复后 `screening_summary` 的 `n_total/n_passed/rows` 直接照抄
+  旧报告（`n_total: rep.get("n_total") or len(passed_names)`），但实际入模因子 =
+  `passed ∩ 当前池`（还叠加 `--include-factors` 交集、max_corr 冗余剔除）——
+  report.screening 显示旧批次通过数，无法还原本次真实特征集，与注释"契约一致"意图矛盾。
+  另 `window: rep.get("window") or str(rep_path)` 会把文件路径当筛选窗口展示。
+- **修复**：`n_total=before`（过滤前）、`n_passed=len(entries)`（过滤后实际入模）、
+  `window=rep.get("window")`（缺失置 None，绝不拿路径冒充窗口）、rows 保留来源快照。
+
+## L1. [bug · low] `train_ml_composite.py:537` `--null-runs 0` 被 truthiness 静默回退
+
+- **证据**：`n_runs = int(args.null_runs) if args.null_runs else NULL_IMPORTANCE_RUNS` —
+  显式传 0 被当作"未提供"回退默认 80，收不到"至少 5"的硬校验；且与 `--min-score`
+  的 `is not None` 风格不一致。
+- **修复**：`if args.null_runs is not None`，0 落入 `<5` 校验明确报错。
+
+## L2. [other · low] `train_ml_composite.py:227-232` screening-report 坏文件防护不全
+
+- **证据**：只捕 `OSError, json.JSONDecodeError`；非 UTF-8 文件抛 `UnicodeDecodeError`
+  （ValueError 子类未被捕），rows 缺 "name" 键在 try 之外抛 KeyError → 裸 traceback。
+- **修复**：补 `UnicodeDecodeError` 捕获 + rows 结构校验（list 且每元素 dict 含 name），
+  非法即友好报错 `sys.exit(1)`。
+
+## L3. [maintainability · low] `core/research_modes.py:166` `_MONTHLY_20D_OVERRIDES` 共享可变状态
+
+- **证据**：`**_MONTHLY_20D_OVERRIDES` 展开只浅拷贝，四个嵌套 dict 与模块常量是
+  **同一对象**；ResearchModeSpec 虽 frozen 但字段是可变 dict，未来按档单独重标定会
+  **静默同时改掉 technical_monthly 与"唯一事实源"常量**。
+- **修复**：两处展开（fundamental / technical_monthly）改 `**copy.deepcopy(...)`，
+  每档持有独立子 dict + 注释说明。
+
+## L4. [maintainability · low] `screening.py:213-216` apply_screening 无痕丢列
+
+- **证据**：rows 未覆盖全部特征名时（跨数据集复用 rows），未覆盖列被 keep_idx 静默
+  裁剪但不写 dropped —— feature_names/entries 与 feature_matrix 同步截断却无审计痕迹。
+- **修复**：裁剪前 `uncovered = set(names) - set(rows_by_name)`，非空即 raise
+  `ValueError("rows 未包含特征: [...]")`（校验先于任何修改）。
+
+## L5. [other · low] `screening.py:126` 行数不一致静默错位取样
+
+- **证据**：`win` 由 dates 与 label 共同构造后直接索引 `feature_matrix[win]/label[win]`；
+  调用方传行数不一致（公共 API，测试也裸调用）会布尔索引错位，LightGBM 在错误样本上
+  训练、筛选结论失真且无告警。
+- **修复**：掩码构造前校验 `len(date_np) == label.shape[0] == feature_matrix.shape[0]`，
+  失败 raise 明确错误。
+
+## 测试
+
+- `tests/test_null_importance_screen.py` 新增 2 条（L4 rows 未覆盖拒绝、L5 shape 不匹配拒绝），
+  现 9 例全绿；stacking 相邻 3 文件 + research_modes/delivery_checker/slow_tier/smoke 全绿。
+- `tests/test_yield_improvements.py::TestNearMissHint` 3 条失败经 main worktree 复核为
+  **main 既存问题**（断言 "窗口微调" 与文案 "微调窗口长度" 顺序漂移 + PIT warning 附属键
+  断言过时），与分支无关，另行处理。

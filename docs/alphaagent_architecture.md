@@ -257,11 +257,15 @@ label/panel 列加载/engine_gate 频率的语义。迁移脚本
   `docs/review/tech_slow_tier_threshold_calibration_20261007.md` 与 `core/research_modes.py`
   两档注释，不变量由 `tests/test_slow_tier_thresholds.py` 锁定；重标定脚本
   `scripts/calibrate_slow_tier_thresholds.py`。
-- **fundamental 档同批重锚（2026-10-07）**：它同为 label_20d + monthly，却沿用 1d 尺度的
-  `0.020/0.28/0.012`（2026-09-11"与 technical 同值量纲锚"）⇒ 实测基本面族近似子集（n=9）
-  过线率 **77.8%**，门形同虚设。按同法双锚重锚到 **0.035 / 0.45 / 0.021**（文献月度基本面
-  量级 PE 0.0529/0.6995、PB 0.0557/0.4888、ROE 0.0172/0.2277；该族过线率 44.4%），三层
-  同比例（IC ×1.75、ICIR ×1.607）重锚，保持 production==candidate 与 val 保留比 0.65/0.70。
+- **门槛只由 label 唯一决定、与数据面无关（2026-10-08 统一）**：此前 fundamental 档（label_20d
+  + monthly）沿用 1d 尺度时实测基本面族过线率 77.8% 形同虚设，2026-10-07 曾双锚重锚到独立标定的
+  **0.035 / 0.45 / 0.021**（文献月度基本面量级 PE/PB/ROE；该族过线率 44.4%）。但这样造成
+  **同为 label_20d 却门槛不同**（技术月频 0.053/0.65 vs 基本面松 0.035/0.45）的矛盾。定调统一：
+  IC/ICIR/val 门槛与"数据面"（价量 vs 基本面）彻底无关，只由预测窗口 label 决定。
+  落地：`core/research_modes.py` 抽出共享常量 `_MONTHLY_20D_OVERRIDES`（0.053 / 0.65 / 0.0398，
+  production 0.0663 / 0.6964 / 0.0398，val 保留比 0.50，engine_gate 年化 0.03 / 夏普 0.5，
+  decay 0.10），fundamental 与 technical_monthly **共用同一常量**；fundamental 相对技术月频的
+  唯一区别是 `needs_fundamentals=True`（载入 funda_* 列）。
 - **判定侧档位感知修复（2026-10-07）**：`tools/_dispatch._near_miss_verdict` 早已按档位取
   `candidate_overrides["min_abs_ic"]`，而 `memory/schema.py:_classify` 只读全局
   `DEFAULT_RESEARCH_SPEC` 的 `min_train_abs_ic`（0.02），且 `memory/ingestion.py` 到落库阶段才把
