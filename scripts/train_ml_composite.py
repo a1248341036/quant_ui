@@ -139,6 +139,22 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--recommend-k", type=int, default=0,
                     help=">0 时进入 mRMR 推荐模式：构建数据集后按 '强+互补' 输出 Top-k 推荐清单"
                          "（不训练模型），写 recommend.json 并退出。因子值已进磁盘缓存，随后的完整训练可复用")
+    ap.add_argument("--screen", action="store_true",
+                    help="训练前先跑 Null Importance 预筛选（Stage 0 辨真伪）：打乱标签 N 次训练 RF，"
+                         "剔除真实重要性不超过噪声本底的假因子后再继续训练。"
+                         "筛选窗口=[panel 起点, mining_end)，验证段/盲测段绝不参与")
+    ap.add_argument("--screen-only", action="store_true",
+                    help="只跑 Null Importance 筛选并写 screening.json 后退出（不训练）——"
+                         "先看筛选报告再决定是否训练；因子值已进磁盘缓存，随后训练秒级复用")
+    ap.add_argument("--screening-report", default=None,
+                    help="读取已有 screening.json 的 passed 名单过滤因子（与 --include-factors 叠加取交集）。"
+                         "典型用法：先 --screen-only 出报告，确认后传本参数复用（缓存命中，秒级）")
+    ap.add_argument("--null-runs", type=int, default=None,
+                    help="Null Importance 打乱标签重跑次数（默认取模块常量 80，最小 5；"
+                         "调小提速但 75 分位数抖动、临界因子判定不稳）")
+    ap.add_argument("--min-score", type=float, default=None,
+                    help="筛选通过线 score=log(actual/(1+null_75分位))（默认取模块常量 0.0；"
+                         "调大更严、真实 IC 低但非零的因子可能被误杀，调负放宽为只剔完全无信号因子）")
     ap.add_argument("--multi-path-shifts", default="",
                     help="多路径对照：逗号分隔的折边界平移月数（如 0,2,4 → 额外 2、4 两条路径）。"
                          "每条平移独立重训一遍同模型，输出 OOS IC/ICIR/Sharpe/回撤 的路径分布——"
@@ -196,6 +212,8 @@ def main() -> None:
         llm_assist=args.llm_assist,
     )
 
+    screening_summary: dict | None = None  # ④c Null Importance 筛选摘要（report.json 引用）
+
     # ① 因子枚举
     entries = collect_factor_entries(
         modes=tuple(args.modes), include_candidate=not args.no_candidate, include_production=True
@@ -204,6 +222,18 @@ def main() -> None:
         wanted = {str(n).strip() for n in args.include_factors if str(n).strip()}
         entries = [e for e in entries if e.name in wanted]
         print(f"因子白名单：请求 {len(wanted)} 个，命中 {len(entries)} 个")
+    if args.screening_report:
+        rep_path = Path(args.screening_report)
+        try:
+            rep = json.loads(rep_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"读取 --screening-report {rep_path} 失败：{exc}")
+            sys.exit(1)
+        passed_names = {str(r["name"]) for r in (rep.get("rows") or []) if r.get("passed")}
+        before = len(entries)
+        entries = [e for e in entries if e.name in passed_names]
+        print(f"筛选报告过滤：{rep_path} passed={len(passed_names)} 个，"
+              f"命中 {len(entries)}/{before} 个（名单与当前池不一致时以交集为准）")
     print(f"因子枚举：{len(entries)} 个（去重后）")
     if len(entries) < 2:
         print("因子数不足（<2），无法组合。请先挖掘入库更多因子（或核对白名单拼写）。")
@@ -478,6 +508,67 @@ def main() -> None:
         )
         print(f"推荐已写入 {out_dir / 'recommend.json'}（因子值已进磁盘缓存，直接点训练会命中缓存）")
         sys.exit(0)
+
+    # ④c Null Importance 预筛选（Stage 0 辨真伪）：打乱标签对照训练，剔除
+    #    "gain importance 全部来自分布属性"的假因子后再进训练。窗口 =
+    #    [panel 起点, mining_end)，与 holdout 训练段起点一致；mining_end 之后
+    #    的验证段/盲测段行绝不参与筛选决策（时间隔离契约同 stacking 包）。
+    if args.screen or args.screen_only:
+        from alphaagent.factor.stacking.screening import (
+            NULL_IMPORTANCE_RUNS,
+            SCREEN_MIN_SCORE,
+            apply_screening,
+            screen_dataset,
+        )
+
+        n_runs = int(args.null_runs) if args.null_runs else NULL_IMPORTANCE_RUNS
+        min_score = float(args.min_score) if args.min_score is not None else SCREEN_MIN_SCORE
+        _emit_event(
+            out_dir,
+            "ml_stage",
+            stage="null_importance_screening",
+            title="Null Importance 因子辨真伪",
+            message=f"打乱标签 {n_runs} 次训练 RF 对照，窗口 [panel起点 ~ {mining_end.date()})，min_score={min_score}",
+            n_runs=n_runs,
+            min_score=min_score,
+        )
+        passed, screening_rows = screen_dataset(
+            dataset,
+            n_runs=n_runs,
+            min_score=min_score,
+            progress=lambda msg: print(" ", msg, flush=True),
+        )
+        n_total = len(dataset.feature_names)
+        print(f"Null Importance 筛选：{n_total} 个中通过 {len(passed)}、剔除 {n_total - len(passed)}")
+        for r in screening_rows:
+            tag = "PASS" if r["passed"] else "DROP"
+            print(f"  [{tag}] {r['name']}: score={r['score']} actual={r['actual']} null75={r['null_p75']}")
+        screening_summary = {
+            "n_runs": n_runs,
+            "min_score": min_score,
+            "window": f"[panel起点 ~ {mining_end.date()})",
+            "n_total": n_total,
+            "n_passed": len(passed),
+            "rows": screening_rows,
+        }
+        (out_dir / "screening.json").write_text(
+            json.dumps(screening_summary, ensure_ascii=False, indent=1), encoding="utf-8"
+        )
+        print(f"筛选报告已写入 {out_dir / 'screening.json'}")
+        _emit_event(
+            out_dir,
+            "ml_screened",
+            title="Null Importance 筛选完成",
+            n_total=n_total,
+            n_passed=len(passed),
+            n_dropped=n_total - len(passed),
+        )
+        if args.screen_only:
+            print("--screen-only：筛选完成，退出（未训练）。确认名单后可传 "
+                  f"--screening-report {out_dir / 'screening.json'} 复用（缓存命中，秒级）")
+            sys.exit(0)
+        apply_screening(dataset, screening_rows)
+        print(f"筛选后特征 {len(dataset.feature_names)} 个进入训练")
 
     # ⑤ walk-forward 训练
     #   strict：train 从 mining_end 起步（只用挖掘期后干净段，fold 少）；
@@ -911,6 +1002,7 @@ def main() -> None:
         "oos_ic_blended": _blended_oos_ic(stacked, dataset.label, dts, first_oos),
         "scheme_compare": scheme_compare,
         "multi_path": multi_path,
+        "screening": screening_summary,
     }
     if args.llm_assist:
         report["llm_recommendation"] = llm_recommendation_meta  # None=回退全量；否则含名单摘要/指纹/是否复用
