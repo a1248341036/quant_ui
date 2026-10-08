@@ -112,7 +112,9 @@ DESCRIPTORS: list[dict[str, Any]] = [
         "description": "★与**候选池已有因子**的截面相关性（stage_two 相关性墙提前预警；>max_abs_corr 会挡住正式库晋升）。",
         "inputSchema": _obj({"multi_line_expr": _EXPR, "mode": _MODE,
                              "top_k": {"type": "integer", "default": 3},
-                             "universe": _UNIVERSE}, ["multi_line_expr"]),
+                             "universe": _UNIVERSE,
+                             "fundamentals": {"type": "boolean", "default": False}},
+                            ["multi_line_expr"]),
     },
     {
         "name": "dry_run_delivery",

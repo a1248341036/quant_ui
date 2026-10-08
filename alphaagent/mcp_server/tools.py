@@ -54,9 +54,9 @@ def _norm_universe(universe: str) -> str:
     所有带 ``universe`` 的工具在入口统一调用：响应/元数据回显规范化名，
     与会话缓存键、面板口径严格一致（OCR review D2，2026-10-09）。
     """
-    from alphaagent.factor.mining.eval.universe import parse_universe
+    from alphaagent.factor.mining.eval.universe import UNIVERSE_ALL, parse_universe
     try:
-        return parse_universe(universe)["name"]
+        return parse_universe(str(universe or UNIVERSE_ALL))["name"]  # 非字符串入参（如数字）也统一走 ValueError→ToolError（OCR R2-3）
     except ValueError as exc:
         raise ToolError(str(exc)) from exc
 
@@ -558,10 +558,12 @@ def eval_val(ctx: ServerContext, multi_line_expr: str, mode: str = "technical",
 
 
 def library_similarity(ctx: ServerContext, multi_line_expr: str, mode: str = "technical",
-                       top_k: int = 3, universe: str = "all") -> dict:
+                       top_k: int = 3, universe: str = "all",
+                       fundamentals: bool = False) -> dict:
     """★ 与**候选池已有因子**的截面相关性（stage_two 相关性墙的提前预警）。
 
-    ``universe`` 同 ``eval_batch``：相关性也应在**同一股票池**内比较（池内比池内）。
+    ``universe``/``fundamentals`` 同 ``eval_batch``：相关性必须在**同一会话口径**内比较
+    （同池 + 同基本面列装载）——任一维度不一致都会另开 6-8GB 会话且特征体系错位（OCR R2-1）。
     """
     from alphaagent.factor.mining.delivery.submit import (
         _candidate_registry_similarity,
@@ -572,7 +574,7 @@ def library_similarity(ctx: ServerContext, multi_line_expr: str, mode: str = "te
     from core import factor_categories
 
     universe = _norm_universe(universe)  # 入口规范化+早校验（OCR D2）
-    svc, sid = ctx.session(mode, universe=universe)
+    svc, sid = ctx.session(mode, fundamentals=fundamentals, universe=universe)
     session = svc.sessions.get(sid)
     panel = session.panel
     expr = str(multi_line_expr)
@@ -585,10 +587,10 @@ def library_similarity(ctx: ServerContext, multi_line_expr: str, mode: str = "te
         top_k=int(top_k), cache=getattr(session, "factor_cache", None), visible_range=visible,
     )
     if sim is None:
-        return {"similarity": None, "note": "候选 registry 为空或不可比"}
+        return {"similarity": None, "universe": universe, "note": "候选 registry 为空或不可比"}
     max_corr = sim.get("max_abs_corr")
     limit = _crit(mode).candidate.max_abs_corr
-    return {"similarity": sim, "max_abs_corr": max_corr, "limit": limit,
+    return {"similarity": sim, "max_abs_corr": max_corr, "limit": limit, "universe": universe,
             "passes_stage_two_correlation": (max_corr is not None and max_corr <= limit),
             "note": "> limit 时 stage_two（正式库晋升）会被拒；入库候选池不受此门限制。"}
 
@@ -609,7 +611,8 @@ def dry_run_delivery(ctx: ServerContext, multi_line_expr: str, mode: str = "tech
     sim: dict | None = None
     sim_err: str | None = None
     try:
-        sim = library_similarity(ctx, expr, mode, universe=universe).get("similarity")  # OCR D1：相关墙必须与 train/val 同池
+        sim = library_similarity(ctx, expr, mode, universe=universe,
+                                 fundamentals=fundamentals).get("similarity")  # OCR D1/R2-1：相关墙与 train/val 同会话同面板
     except Exception as exc:  # noqa: BLE001 — 相似度为诊断项，失败不阻断
         sim_err = f"{type(exc).__name__}: {str(exc)[:200]}"
     checker = DeliveryChecker(_crit(mode))
@@ -618,6 +621,14 @@ def dry_run_delivery(ctx: ServerContext, multi_line_expr: str, mode: str = "tech
     def _pack(stage) -> dict:
         return {"passed": getattr(stage, "passed", None), "fail_reasons": list(getattr(stage, "fail_reasons", []) or [])}
 
+    s1c = _pack(checker.stage_one_correlation(sim))
+    s2 = _pack(checker.stage_two(train_m, val_m, sim))
+    if sim is None and sim_err:
+        # OCR R2-1：StageOneCorrelation 对空证据按 max_abs_corr=0 fail-open（delivery_checker.py:164-172）
+        # ——相似度失败时相关门判定不可信，显式降级为 passed=None + 原因，防止预检静默放行
+        for st in (s1c, s2):
+            st["passed"] = None
+            st["fail_reasons"] = sorted(set(st["fail_reasons"]) | {"similarity_unavailable"})
     return {
         "mode": mode, "label_col": MODE_LABEL[mode], "rebalance_freq": freq,
         "universe": universe,
@@ -626,8 +637,8 @@ def dry_run_delivery(ctx: ServerContext, multi_line_expr: str, mode: str = "tech
         "gate_precheck_fails": _gate_fails(mode, train_m),
         "stage_one": _pack(checker.stage_one_stats(train_m, rebalance_freq=freq)),
         "stage_one_val_retention": _pack(checker.stage_one_val_retention(train_m, val_m)),
-        "stage_one_correlation": _pack(checker.stage_one_correlation(sim)),
-        "stage_two": _pack(checker.stage_two(train_m, val_m, sim)),
+        "stage_one_correlation": s1c,
+        "stage_two": s2,
         "candidate_similarity_max_abs_corr": (sim or {}).get("max_abs_corr"),
         "similarity_error": sim_err,
         "note": "只读预检，未写候选池；engine_gate（净值回测）仅在 submit 时执行。",
@@ -703,11 +714,15 @@ def memory_record(
 
     store = ResearchMemoryStore(_memory_db(ctx))
     row = {"name": "evaluate_factor" if split == "train" else "eval_on_val_set",
-           "arguments_raw": json.dumps({"multi_line_expr": expr, "factor_name": factor_name}, ensure_ascii=False),
+           "arguments_raw": json.dumps({"multi_line_expr": expr, "factor_name": factor_name,
+                                        "universe": universe}, ensure_ascii=False),
            "result": raw}
     wrote = store.record_tool_result(
         run_id=str(run_id or "mcp-session"), row=row,
-        run_freq_context={"rebalance_freq": MODE_FREQ[mode], "research_mode": mode, "freq_source": "mcp"},
+        # OCR R2-4：universe 随 observation.metrics 落库，跨池评估可按池归因（条目签名仍为
+        # 纯表达式——同因子跨池共存于一个条目，逐次 observation 各自带池名）
+        run_freq_context={"rebalance_freq": MODE_FREQ[mode], "research_mode": mode,
+                          "freq_source": "mcp", "universe": universe},
     )
     return {"recorded": bool(wrote), "run_id": run_id, "universe": universe,
             "metrics": {k: metrics.get(k) for k in ("ic", "icir", "coverage")},

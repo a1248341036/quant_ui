@@ -247,7 +247,7 @@ class IngestionMixin:
         if run_freq_context:
             freq_meta = {
                 key: run_freq_context.get(key)
-                for key in ("rebalance_freq", "research_mode", "freq_source")
+                for key in ("rebalance_freq", "research_mode", "freq_source", "universe")
                 if run_freq_context.get(key)
             }
             if freq_meta:
