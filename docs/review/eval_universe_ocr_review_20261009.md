@@ -106,3 +106,19 @@ worktree 内 `tests/test_alphaagent_mcp_server.py` 20 测 = 17 过 / 2 skipped /
 | O1 | 低 | NaN tot_cap 剔除未文档化 | docstring 补句 | 一句 |
 
 **合并建议**: D1 必修（一行）后合并；D2/D4 顺手；D3 择一处理或明确记入 P2 待办。
+
+---
+
+## 实施与验证（2026-10-09，fix commit `f8e59ac`）
+
+| 项 | 状态 |
+|---|---|
+| D1 | ✅ 已修：dry_run 内 `library_similarity(..., universe=universe)` 同池调用 |
+| D2 | ✅ 已修：新增 `_norm_universe` 助手（早校验转 ToolError），四个读工具入口统一规范化；dry_run 响应补 `universe` 字段 |
+| D3① | ✅ 已修：`submit_factor` / `memory_record` 增加 `universe` 参数透传会话（交付门随池，与 dry_run 同池口径），catalog schema 同步，响应回显 universe；候选元数据 `evaluated_universe` 记账仍属 P2 |
+| D4 | ✅ 已修：恒真断言改为 `assert {"szcomp", "chinext"} <= set(available_universes())` |
+| O1 | ✅ 已修：universe.py docstring 补「NaN tot_cap 按非成员剔除」语义 |
+
+**验证**: 模块导入 OK；`test_eval_universe` 9/9 过（含 D4 新断言）；`test_alphaagent_mcp_server` 19 过（含新增 `test_universe_validation_before_panel_load`：非法池名入口早失败、不触发面板加载）/ 2 失败为 worktree 缺 artifacts·logs 环境性 / 2 skip。
+
+**合并状态**: 待用户定夺（分支 3 commits ahead of main：`8371b61` feat + `7692d8b` review docs + `f8e59ac` fix）。
