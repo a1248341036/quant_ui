@@ -184,6 +184,8 @@ def screen_dataset(
     起点一致；验证段/盲测段（mining_end 之后）的行不参与。
     """
     dts = pd.DatetimeIndex(dataset.panel.index.get_level_values("datetime"))
+    if len(dts) == 0:
+        raise ValueError("panel 为空，无法执行 Null Importance 筛选（请检查数据区间）")
     window_start = dts.min()
     rows = null_importance_scores(
         dataset.feature_matrix,
@@ -220,8 +222,10 @@ def apply_screening(dataset, rows: Sequence[dict]) -> None:
         {
             "name": n,
             "library": lib_by_name.get(n, ""),
-            "reason": f"null_importance_score={rows_by_name[n]['score']}"
-                      f" (actual={rows_by_name[n]['actual']}, null_p75={rows_by_name[n]['null_p75']})",
+            "reason": rows_by_name[n].get("reason") or (
+                f"null_importance_score={rows_by_name[n]['score']}"
+                f" (actual={rows_by_name[n]['actual']}, null_p75={rows_by_name[n]['null_p75']})"
+            ),
         }
         for n in names
         if n not in keep and n in rows_by_name
