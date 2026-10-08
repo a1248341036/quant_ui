@@ -158,6 +158,7 @@ class StockEvalService:
             asset_type=req.asset_type,
             focus_facets=tuple(getattr(req, "focus_facets", ()) or ()),
             engine_gate_policy=getattr(req, "engine_gate_policy", None),
+            universe=getattr(req, "universe", "all") or "all",
         )
         session = self.sessions.create(ctx)
         # 板块口径一致性检测：面板开关与因子库建库口径不一致时警告（不阻断）

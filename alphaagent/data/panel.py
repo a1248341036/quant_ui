@@ -49,8 +49,24 @@ _DERIVED_COLUMNS = (
 
 
 def _coerce_datetime_index(panel: pd.DataFrame) -> pd.DataFrame:
-    """确保 MultiIndex datetime 层为 DatetimeIndex。"""
+    """确保索引为 ``(datetime, instrument)`` 且 datetime 层是 DatetimeIndex。
+
+    兼容两种落盘形态（2026-10-08 补）：
+    1. **索引已是** ``(datetime, instrument)``：CNE adapter 实时构建的面板，只需保证
+       datetime 层是 DatetimeIndex；
+    2. ``datetime``/``instrument``（或 ``date``/``code``）只是**普通列**：面板缓存
+       parquet 以 ``reset_index()`` 落盘时即如此 —— 此前直接返回 RangeIndex，
+       导致 ``--panel <缓存文件>`` 在 ``slice_panel`` 处 KeyError；现按列重建索引。
+    """
     if not isinstance(panel.index, pd.MultiIndex):
+        cols = set(panel.columns)
+        if {"datetime", "instrument"} <= cols:
+            return _coerce_datetime_index(panel.set_index(["datetime", "instrument"]))
+        if {"date", "code"} <= cols:
+            return _coerce_datetime_index(
+                panel.set_index(["date", "code"]).rename_axis(
+                    index={"date": "datetime", "code": "instrument"})
+            )
         return panel
     if panel.index.names[0] != "datetime":
         return panel

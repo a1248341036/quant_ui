@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 import uuid
@@ -16,6 +17,8 @@ from alphaagent.data.panel import load_panel, slice_panel
 from alphaagent.factor.cache import FactorValueCache, get_default_cache
 from alphaagent.factor.mining.context import StockEvalContext
 from alphaagent.factor.mining.eval.candidate import CandidateRegistry
+
+logger = logging.getLogger(__name__)
 
 # 辅频聚合表（1w 等）按 split 缓存的上限。每个 split 独立 LRU，避免并发 eval
 # 各自重建 1w 聚合表（2026-10-06 并发评测内存归因：eval_factor 默认 aux_cache={}
@@ -134,6 +137,18 @@ class SessionStore:
         else:
             dropped_funda = 0
         panel = slice_panel(panel, start=cov_start, end=cov_end)
+        # 股票池（评估口径，非因子属性）：非成分股票**整行剔除**，
+        # 使 IC / 覆盖率 / 换手 / 分组 / 引擎回测全部在池内计算。all 时零开销。
+        from alphaagent.factor.mining.eval.universe import apply_universe
+        universe_name = getattr(ctx, "universe", "all") or "all"
+        panel, universe_meta = apply_universe(panel, universe_name)
+        if universe_name != "all":
+            logger.info(
+                "会话股票池 %s（%s）：%d → %d 行（%.0f 只/日）",
+                universe_name, universe_meta.get("universe_desc", ""),
+                universe_meta["rows_before"], universe_meta["rows_after"],
+                universe_meta.get("stocks_per_day") or 0.0,
+            )
         load_ms = (time.perf_counter() - t0) * 1000
         session_id = uuid.uuid4().hex
         session = StockEvalSession(
@@ -147,6 +162,9 @@ class SessionStore:
                 "include_fundamentals": ctx.include_fundamentals,
                 "asset_type": ctx.asset_type,
                 "dropped_fundamental_cols": dropped_funda,
+                "universe": universe_name,
+                "universe_desc": universe_meta.get("universe_desc"),
+                "universe_rows_after": universe_meta["rows_after"],
             },
         )
         with self._lock:

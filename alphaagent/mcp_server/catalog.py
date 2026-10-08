@@ -25,6 +25,16 @@ def _obj(props: dict[str, Any], required: list[str] | None = None) -> dict[str, 
 
 _EXPR = {"type": "string", "description": "多行 DSL 表达式（末行为输出，如 `z = TS_MEAN($ret, 20)\\nCS_ZSCORE(z)`）"}
 
+# 股票池（评估口径，非因子属性）：非成分股票整行剔除，IC/覆盖率/换手/回测全在池内算。
+# 规则池零数据依赖（按面板 tot_cap 每日排名）；指数池依赖面板 idx_* 列。
+_UNIVERSE = {
+    "type": "string",
+    "default": "all",
+    "description": "股票池（评估口径，非因子属性）：all（全市场）/ top300cap（每日市值前300）/ "
+                   "mid301_800cap（市值第301~800名）/ szcomp（深证成指成分）/ chinext（创业板指成分）。"
+                   "研报复现建议同一批因子跨池各评一次（结果按池记账）。",
+}
+
 DESCRIPTORS: list[dict[str, Any]] = [
     {
         "name": "get_thresholds",
@@ -86,6 +96,7 @@ DESCRIPTORS: list[dict[str, Any]] = [
             "fundamentals": {"type": "boolean", "default": False,
                              "description": "会话是否载入 funda_* 列（用基本面字段时必须 true）"},
             "quantile_n": {"type": "integer", "default": 10},
+            "universe": _UNIVERSE,
         }, ["exprs"]),
     },
     {
@@ -93,13 +104,15 @@ DESCRIPTORS: list[dict[str, Any]] = [
         "description": "样本外（val 段）评估 + 与 train 的 IC 保留比 / 方向一致性。",
         "inputSchema": _obj({"multi_line_expr": _EXPR, "mode": _MODE,
                              "fundamentals": {"type": "boolean", "default": False},
-                             "quantile_n": {"type": "integer", "default": 10}}, ["multi_line_expr"]),
+                             "quantile_n": {"type": "integer", "default": 10},
+                             "universe": _UNIVERSE}, ["multi_line_expr"]),
     },
     {
         "name": "library_similarity",
         "description": "★与**候选池已有因子**的截面相关性（stage_two 相关性墙提前预警；>max_abs_corr 会挡住正式库晋升）。",
         "inputSchema": _obj({"multi_line_expr": _EXPR, "mode": _MODE,
-                             "top_k": {"type": "integer", "default": 3}}, ["multi_line_expr"]),
+                             "top_k": {"type": "integer", "default": 3},
+                             "universe": _UNIVERSE}, ["multi_line_expr"]),
     },
     {
         "name": "dry_run_delivery",
@@ -107,7 +120,8 @@ DESCRIPTORS: list[dict[str, Any]] = [
                        "submit 之前必跑。",
         "inputSchema": _obj({"multi_line_expr": _EXPR, "mode": _MODE,
                              "fundamentals": {"type": "boolean", "default": False},
-                             "quantile_n": {"type": "integer", "default": 10}}, ["multi_line_expr"]),
+                             "quantile_n": {"type": "integer", "default": 10},
+                             "universe": _UNIVERSE}, ["multi_line_expr"]),
     },
     {
         "name": "submit_factor",

@@ -149,18 +149,23 @@ class ServerContext:
             SessionLock(self.root / "artifacts" / "alphaagent" / ".mcp_session.lock") if session_lock else None
         )
 
-    def session(self, mode: str, *, fundamentals: bool = False) -> tuple[Any, str]:
+    def session(self, mode: str, *, fundamentals: bool = False, universe: str = "all") -> tuple[Any, str]:
         label = MODE_LABEL.get(mode)
         if label is None:
             raise ToolError(f"unknown mode {mode!r}; expected one of {sorted(MODE_LABEL)}")
-        key = (mode, label, bool(fundamentals))
+        from alphaagent.factor.mining.eval.universe import parse_universe
+
+        universe = (parse_universe(universe)["name"])  # 早失败：非法池名直接报错（附可用清单）
+        # 缓存键必须含 universe：池子不同的面板不能复用（否则拿全市场面板冒充池内）
+        key = (mode, label, bool(fundamentals), universe)
         with self._lock:
             if self._svc is not None and self._key == key:
                 return self._svc, self._sid
             self._release_locked()
             if self._session_lock is not None and not self._session_lock.held:
                 self._session_lock.acquire(
-                    f"pid={os.getpid()} mode={mode} label={label} at={time.strftime('%Y-%m-%d %H:%M:%S')}"
+                    f"pid={os.getpid()} mode={mode} label={label} universe={universe} "
+                    f"at={time.strftime('%Y-%m-%d %H:%M:%S')}"
                 )
             from alphaagent.data.adapters.cnequity import CNE_SOURCE
             from alphaagent.factor.mining.eval.schemas import SessionCreateRequest
@@ -170,15 +175,18 @@ class ServerContext:
             svc = StockEvalService(max_parallel_eval=1)
             resp = svc.create_session(SessionCreateRequest(
                 panel_path=str(CNE_SOURCE), label_col=label, include_fundamentals=fundamentals,
+                universe=universe,
             ))
             self._svc, self._sid, self._key = svc, resp.session_id, key
             self._load_ms = round((time.perf_counter() - t0) * 1000)
-            logger.info("session opened mode=%s label=%s rows=%s load_ms=%s",
-                        mode, label, resp.panel_rows, self._load_ms)
+            logger.info("session opened mode=%s label=%s universe=%s rows=%s load_ms=%s",
+                        mode, label, universe, resp.panel_rows, self._load_ms)
             return svc, self._sid
 
     def session_info(self) -> dict[str, Any]:
-        return {"mode": (self._key or (None,))[0], "session_id": self._sid,
+        k = self._key or (None, None, None, None)
+        return {"mode": k[0], "session_id": self._sid,
+                "universe": k[3],
                 "load_ms": self._load_ms, "open": self._svc is not None,
                 "lock_held": bool(self._session_lock and self._session_lock.held)}
 
@@ -466,8 +474,14 @@ def eval_batch(
     split: str = "train",
     fundamentals: bool = False,
     quantile_n: int = 10,
+    universe: str = "all",
 ) -> dict:
-    """★ 批量评估（一次调用评多个因子）+ 逐门 PASS/FAIL（真源门槛）。"""
+    """★ 批量评估（一次调用评多个因子）+ 逐门 PASS/FAIL（真源门槛）。
+
+    ``universe``：股票池（评估口径，非因子属性）—— ``all`` / ``top300cap`` /
+    ``mid301_800cap`` / ``szcomp`` / ``chinext``。非成分股票整行剔除。
+    研报复现建议同一批因子跨池各评一次（结果按池记账）。
+    """
     if mode not in MODE_LABEL:
         raise ToolError(f"unknown mode {mode!r}; expected one of {sorted(MODE_LABEL)}")
     if split not in ("train", "val"):
@@ -483,7 +497,7 @@ def eval_batch(
         if not str(it.get("expr") or "").strip():
             raise ToolError(f"expression #{items.index(it) + 1} is empty")
 
-    svc, sid = ctx.session(mode, fundamentals=fundamentals)
+    svc, sid = ctx.session(mode, fundamentals=fundamentals, universe=universe)
     rows: list[dict] = []
     for it in items:
         t0 = time.perf_counter()
@@ -502,19 +516,19 @@ def eval_batch(
                      "turnover_daily": metrics.get("avg_daily_side_turnover"),
                      "fails": fails, "pass_stage_one_pre": not fails})
     n_pass = sum(1 for r in rows if r["pass_stage_one_pre"])
-    return {"mode": mode, "label_col": MODE_LABEL[mode], "split": split, "n": len(rows),
-            "n_pass_stage_one_pre": n_pass,
+    return {"mode": mode, "label_col": MODE_LABEL[mode], "split": split, "universe": universe,
+            "n": len(rows), "n_pass_stage_one_pre": n_pass,
             "thresholds": get_thresholds(ctx, mode)["candidate"], "rows": rows,
             "note": "pass_stage_one_pre 是按真源门槛的**预检**（未含库内相关性与 engine_gate）；"
                     "过门后建议先 dry_run_delivery 再 submit_factor。"}
 
 
 def eval_val(ctx: ServerContext, multi_line_expr: str, mode: str = "technical",
-             fundamentals: bool = False, quantile_n: int = 10) -> dict:
-    """样本外（val 段）评估 + 与 train 的保留比。"""
+             fundamentals: bool = False, quantile_n: int = 10, universe: str = "all") -> dict:
+    """样本外（val 段）评估 + 与 train 的保留比（``universe`` 同 ``eval_batch``）。"""
     if not str(multi_line_expr or "").strip():
         raise ToolError("multi_line_expr is required")
-    svc, sid = ctx.session(mode, fundamentals=fundamentals)
+    svc, sid = ctx.session(mode, fundamentals=fundamentals, universe=universe)
     train_m, _ = _evaluate(svc, sid, str(multi_line_expr), "expr", "train", int(quantile_n))
     val_m, _ = _evaluate(svc, sid, str(multi_line_expr), "expr", "val", int(quantile_n))
     retention = None
@@ -522,7 +536,7 @@ def eval_val(ctx: ServerContext, multi_line_expr: str, mode: str = "technical",
         retention = abs(val_m["ic"]) / abs(train_m["ic"]) if abs(train_m["ic"]) > 1e-12 else None
     sign_consistent = (None if train_m.get("ic") in (None, 0) or val_m.get("ic") is None
                        else (train_m["ic"] * val_m["ic"] > 0))
-    return {"mode": mode, "label_col": MODE_LABEL[mode],
+    return {"mode": mode, "label_col": MODE_LABEL[mode], "universe": universe,
             "train": {k: train_m.get(k) for k in ("ic", "icir", "coverage")},
             "val": {k: val_m.get(k) for k in ("ic", "icir", "coverage")},
             "val_ic_retention": retention, "sign_consistent": sign_consistent,
@@ -531,8 +545,11 @@ def eval_val(ctx: ServerContext, multi_line_expr: str, mode: str = "technical",
 
 
 def library_similarity(ctx: ServerContext, multi_line_expr: str, mode: str = "technical",
-                       top_k: int = 3) -> dict:
-    """★ 与**候选池已有因子**的截面相关性（stage_two 相关性墙的提前预警）。"""
+                       top_k: int = 3, universe: str = "all") -> dict:
+    """★ 与**候选池已有因子**的截面相关性（stage_two 相关性墙的提前预警）。
+
+    ``universe`` 同 ``eval_batch``：相关性也应在**同一股票池**内比较（池内比池内）。
+    """
     from alphaagent.factor.mining.delivery.submit import (
         _candidate_registry_similarity,
         _materialize_split_aware,
@@ -541,7 +558,7 @@ def library_similarity(ctx: ServerContext, multi_line_expr: str, mode: str = "te
     from alphaagent.factor.metrics import materialize_factor
     from core import factor_categories
 
-    svc, sid = ctx.session(mode)
+    svc, sid = ctx.session(mode, universe=universe)
     session = svc.sessions.get(sid)
     panel = session.panel
     expr = str(multi_line_expr)
@@ -563,14 +580,15 @@ def library_similarity(ctx: ServerContext, multi_line_expr: str, mode: str = "te
 
 
 def dry_run_delivery(ctx: ServerContext, multi_line_expr: str, mode: str = "technical",
-                     fundamentals: bool = False, quantile_n: int = 10) -> dict:
+                     fundamentals: bool = False, quantile_n: int = 10,
+                     universe: str = "all") -> dict:
     """★ 只读交付预检：train+val 评估 + 候选相关性 + 各 stage 判定（不写任何库）。"""
     from alphaagent.factor.mining.delivery.delivery_checker import DeliveryChecker
 
     expr = str(multi_line_expr or "").strip()
     if not expr:
         raise ToolError("multi_line_expr is required")
-    svc, sid = ctx.session(mode, fundamentals=fundamentals)
+    svc, sid = ctx.session(mode, fundamentals=fundamentals, universe=universe)
     train_m, _ = _evaluate(svc, sid, expr, "mcp_dryrun", "train", int(quantile_n))
     val_m, _ = _evaluate(svc, sid, expr, "mcp_dryrun", "val", int(quantile_n))
     sim: dict | None = None
