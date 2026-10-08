@@ -75,6 +75,12 @@ $Py         = Join-Path $RepoRoot ".venv\Scripts\python.exe"
 $RefreshData= Join-Path $RepoRoot "scripts\refresh_data.py"
 $GuiModule  = Join-Path $PSScriptRoot "CneDailyGui.psm1"
 
+# 预置步骤清单：CLI worker（-NoGui 子进程）也必须加载。GUI 模块含 WPF 不便在子进程导入，
+# 而没有这份清单，波次失败时无法把受阻数据集标记进对账清单——
+# 2026-10-08 看板报"存在失败项"却一个名字都不点、清单全空，即此因。
+$StepsData = Join-Path $PSScriptRoot "CneDailySteps.ps1"
+if ((-not $Global:CnePredefinedSteps) -and (Test-Path $StepsData)) { . $StepsData }
+
 # 额外日志（终端已有实时输出，此文件做留底）
 $Stamp   = Get-Date -Format "yyyyMMdd"
 $LogFile = Join-Path $LogDir "daily-$Stamp.log"
@@ -213,6 +219,7 @@ function Execute-CnePipeline {
         $fullArgs = @($CmdArgs) + "--config", $Config
 
         $lines = [System.Collections.Generic.List[string]]::new()
+        $script:LastCmdErrors = [System.Collections.Generic.List[string]]::new()
         & $Cne @fullArgs 2>&1 | ForEach-Object {
             $line = $_.ToString()
             Write-Host $line
@@ -258,6 +265,9 @@ function Execute-CnePipeline {
                 Notify-Step "正在扫描同花顺板块行情: $($matches[1])..."
             } elseif ($line -match "st_coverage:\s+skipping\s+receipt") {
                 # 忽略内部未就绪凭证跳过日志
+            } elseif ($line -match '^(Error|Traceback)\b' -or $line -match '\b(ERROR|CRITICAL)\b') {
+                # 捕获失败原因（摄入锁被占用、Traceback 等），供完成摘要与受阻标记点名
+                $script:LastCmdErrors.Add($line)
             }
         }
         if ($lines.Count -gt 0) {
@@ -268,6 +278,7 @@ function Execute-CnePipeline {
     }
 
     function Run-PyCommand([string[]]$CmdArgs, [string]$JobName) {
+        $script:LastCmdErrors = [System.Collections.Generic.List[string]]::new()
         Write-PipelineLog "$JobName start"
         Notify-Step "正在执行: $JobName"
         $lines = [System.Collections.Generic.List[string]]::new()
@@ -276,6 +287,9 @@ function Execute-CnePipeline {
             Write-Host $line
             $lines.Add($line)
             Notify-Step $line
+            if ($line -match '^(Error|Traceback)\b' -or $line -match '\b(ERROR|CRITICAL)\b') {
+                $script:LastCmdErrors.Add($line)
+            }
         }
         if ($lines.Count -gt 0) {
             $text = ($lines -join "`n") + "`n"
@@ -287,7 +301,11 @@ function Execute-CnePipeline {
             Record-Result $JobName "success" 0 "--" "更新成功"
         } else {
             Write-PipelineLog "$JobName FAILED (exit=$exitCode)"
-            Record-Result $JobName "failed" 0 "--" "执行失败"
+            foreach ($e in $script:LastCmdErrors) { $failErrors.Add($e) }
+            $errFirst = ""
+            if ($script:LastCmdErrors.Count -gt 0) { $errFirst = ($script:LastCmdErrors[0] -replace '\s+', ' ').Trim() }
+            $note = if ($errFirst) { "失败: $errFirst" } else { "执行失败" }
+            Record-Result $JobName "failed" 0 "--" $note
         }
         return $exitCode
     }
@@ -304,6 +322,8 @@ function Execute-CnePipeline {
     Write-PipelineLog "--- reconcile stale runs ---"
     $null = Run-CneCommand @("clean", "--reconcile-runs", "--dry-run")
 
+    # 失败原因收集（跨波次/跨命令累积，供完成摘要点名）
+    $failErrors = [System.Collections.Generic.List[string]]::new()
     $failedGates  = @()
     $failedSoft   = @()
     $summary      = [System.Collections.Generic.List[pscustomobject]]::new()
@@ -335,6 +355,10 @@ function Execute-CnePipeline {
         } else {
             Write-PipelineLog "wave $wave FAILED (exit=$exitCode, see $LogFile)"
             $summary.Add([pscustomobject]@{ Wave = $wave; Status = "FAILED"; Kind = $(if ($isGate) { "gate" } else { "soft" }) })
+            foreach ($e in $script:LastCmdErrors) { $failErrors.Add($e) }
+            $errFirst = ""
+            if ($script:LastCmdErrors.Count -gt 0) { $errFirst = ($script:LastCmdErrors[0] -replace '\s+', ' ').Trim() }
+            $blockedNote = if ($errFirst) { "受阻: $errFirst" } else { "受阻未执行: 前置步骤报错导致波次提前中断" }
             if ($isGate) {
                 $failedGates += $wave
             } else {
@@ -346,7 +370,7 @@ function Execute-CnePipeline {
                 foreach ($r in $resultsList) { [void]$recordedNames.Add($r.Dataset) }
                 foreach ($pre in $Global:CnePredefinedSteps) {
                     if ($pre.Wave -eq $wave -and -not $recordedNames.Contains($pre.Dataset)) {
-                        Record-Result $pre.Dataset "failed" 0 "--" "受阻未执行: 前置步骤报错导致波次提前中断"
+                        Record-Result $pre.Dataset "failed" 0 "--" $blockedNote
                     }
                 }
             }
@@ -401,7 +425,11 @@ function Execute-CnePipeline {
                 Write-PipelineLog "stale retry FAILED (see $LogFile)"
                 $staleStatus = "FAILED"
                 $failedSoft += "stale-retry"
-                Record-Result "stale_retry" "failed" 0 "--" "部分补抓失败"
+                foreach ($e in $script:LastCmdErrors) { $failErrors.Add($e) }
+                $errFirst = ""
+                if ($script:LastCmdErrors.Count -gt 0) { $errFirst = ($script:LastCmdErrors[0] -replace '\s+', ' ').Trim() }
+                $note = if ($errFirst) { "补抓失败: $errFirst" } else { "部分补抓失败" }
+                Record-Result "stale_retry" "failed" 0 "--" $note
             }
         }
     }
@@ -436,14 +464,35 @@ function Execute-CnePipeline {
     Notify-Phase "流水线更新完成" 8 8 100.0
     $doneMessage = ""
 
+    # 失败原因摘要：取第一条错误行压成单行并截断，让完成摘要直接点名原因
+    $reasonText = ""
+    if ($failErrors.Count -gt 0) {
+        $r = (($failErrors | Select-Object -First 1) -replace '\s+', ' ').Trim()
+        if ($r.Length -gt 90) { $r = $r.Substring(0, 90) + "…" }
+        $reasonText = " — $r"
+    }
+
     if ($failedGates.Count -gt 0) {
         $isAllSuccess = $false
-        $doneMessage = "核心门禁失败: $($failedGates -join ', ')"
-        Write-PipelineLog "==== daily pipeline DONE — GATE FAILED: $($failedGates -join ', ') ===="
+        $doneMessage = "核心门禁失败: $($failedGates -join ', ')$reasonText"
+        Write-PipelineLog "==== daily pipeline DONE — GATE FAILED: $($failedGates -join ', ')$reasonText ===="
     } elseif ($failedSoft.Count -gt 0) {
         $isAllSuccess = $SoftFailOk
-        $doneMessage = "数据同步完成（部分软波次有提示: $($failedSoft -join ', ')）"
-        Write-PipelineLog "==== daily pipeline DONE — soft FAILED (warn-only): $($failedSoft -join ', ') ===="
+        # 点名失败项：优先逐个数据集（中文名对照），超过 8 个收敛为计数
+        $failedNames = @(
+            $resultsList | Where-Object { $_.Status -eq 'failed' } | ForEach-Object {
+                $cn = if ($Global:CneDatasetNames[$_.Dataset]) { $Global:CneDatasetNames[$_.Dataset] } else { $_.Dataset }
+                "$cn($($_.Dataset))"
+            } | Select-Object -Unique
+        )
+        $names = if ($failedNames.Count -gt 0) {
+            $head = ($failedNames | Select-Object -First 8) -join '、'
+            if ($failedNames.Count -gt 8) { "$head 等 $($failedNames.Count) 项" } else { $head }
+        } else {
+            $failedSoft -join ', '
+        }
+        $doneMessage = "数据同步完成，失败项: $names$reasonText"
+        Write-PipelineLog "==== daily pipeline DONE — soft FAILED (warn-only): $($failedSoft -join ', ')$reasonText ===="
     } else {
         $isAllSuccess = $true
         $doneMessage = "全部数据集与波次同步成功！"
