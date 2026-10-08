@@ -54,6 +54,14 @@ def test_wide_cache_hit_is_sliced_to_requested_range(tmp_path, monkeypatch):
         start=req_start, end=req_end, include_fundamentals=False
     )
 
+    # 必须走缓存命中路径（重建路径会带全部插件列、天然满足日期断言，
+    # 测试会假通过——2026-10-08 实锤：切片代码 NameError 被扫描异常
+    # except 吃掉后静默走重建）。允许 _enrich_trade_flags 补 is_trade/
+    # is_st/not_st 标记列；出现其他插件列 = 走了重建路径。
+    extra = set(df.columns) - {"adj_close", "float_cap"}
+    assert extra <= {"is_trade", "is_st", "not_st"}, (
+        f"出现重建路径的插件列（缓存未命中）: {sorted(extra)[:5]}"
+    )
     dts = df.index.get_level_values("datetime")
     assert dts.min() >= pd.Timestamp(req_start)
     assert dts.max() <= pd.Timestamp(req_end)

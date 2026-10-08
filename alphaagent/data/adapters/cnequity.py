@@ -39,6 +39,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Sequence
 
+import numpy as np
 import pandas as pd
 
 from alphaagent.data.adapters.registry import (
