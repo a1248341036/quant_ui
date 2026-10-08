@@ -70,6 +70,14 @@ def warm(pnl):
     ops.CROWD_SHARE(small["close"], small["volume"], 20, "high", 0.9)
     ops.VOLUME_CLOCK_VPIN(small["close"], small["volume"], 5, 5e5)
     ops.MUTUAL_INFO_LAG(small["close"], small["volume"], 30, 1)
+    # 截面算子（cs_accel 内核，2026-10-08）
+    g = ops.CS_BUCKET(small["float_cap"], 10)
+    ops.RANK(small["close"])
+    ops.CS_WINSORIZE(small["close"], 0.01, 0.99)
+    ops.CS_NEUTRALIZE(small["close"], g)
+    ops.CS_GROUP_RANK(small["close"], g)
+    ops.CS_ZSCORE(small["close"])
+    ops.CS_RESIDUALIZE(small["close"], g)
 
 
 def _timed(fn, *args, **kw) -> float:
@@ -89,6 +97,45 @@ BUDGET_CASES = [
     ("VOLUME_CLOCK_VPIN", 1.0),
     ("MUTUAL_INFO_LAG", 2.0),
 ]
+
+# 截面算子（cs_accel）预算：720k 行面板实测 0.002~0.010 s，留 ~8 倍余量。
+# 取值必须**低于** pandas 回落路径（实测 RANK 0.123 s / CS_WINSORIZE 0.063 s /
+# CS_BUCKET 0.393 s / CS_NEUTRALIZE 0.231 s / CS_GROUP_RANK 0.641 s /
+# CS_ZSCORE 0.032 s / CS_RESIDUALIZE 0.123 s），否则快路径退化成 pandas 也照样过门禁。
+CS_BUDGET_CASES = [
+    ("RANK", 0.030),
+    ("CS_WINSORIZE", 0.030),
+    ("CS_BUCKET", 0.040),
+    ("CS_NEUTRALIZE", 0.040),
+    ("CS_GROUP_RANK", 0.050),
+    ("CS_ZSCORE", 0.015),
+    ("CS_RESIDUALIZE", 0.030),
+]
+
+
+@pytest.mark.parametrize("name,budget", CS_BUDGET_CASES)
+def test_cs_operator_within_budget(pnl, warm, name, budget):
+    from alphaagent.dsl.core import cs_accel
+
+    if not cs_accel.cs_accel_enabled():
+        pytest.skip("numba / cs_accel 快路径不可用，回落 pandas 路径")
+
+    close, cap = pnl["close"], pnl["float_cap"]
+    bucket = ops.CS_BUCKET(cap, 10)
+    dispatch = {
+        "RANK": lambda: ops.RANK(close),
+        "CS_WINSORIZE": lambda: ops.CS_WINSORIZE(close, 0.01, 0.99),
+        "CS_BUCKET": lambda: ops.CS_BUCKET(cap, 10),
+        "CS_NEUTRALIZE": lambda: ops.CS_NEUTRALIZE(close, bucket),
+        "CS_GROUP_RANK": lambda: ops.CS_GROUP_RANK(close, bucket),
+        "CS_ZSCORE": lambda: ops.CS_ZSCORE(close),
+        "CS_RESIDUALIZE": lambda: ops.CS_RESIDUALIZE(close, bucket),
+    }
+    elapsed = _timed(dispatch[name])
+    assert elapsed < budget, (
+        f"{name} 耗时 {elapsed:.3f}s 超预算 {budget}s —— cs_accel 快路径可能未生效"
+        f"（检查 ALPHA_DSL_CS_ACCEL / 面板是否按 datetime 排序）"
+    )
 
 
 @pytest.mark.parametrize("name,budget", BUDGET_CASES)
@@ -130,3 +177,25 @@ def test_fast_path_wired(pnl):
     assert order.shape[0] == len(pnl["close"])
     assert bounds[0] == 0 and bounds[-1] == len(pnl["close"])
     assert (np.diff(bounds) > 0).all(), "品种区间边界必须严格递增"
+
+
+def test_cs_fast_path_wired(pnl):
+    """CS_* 快路径必须真在生效：内核入口不返回 None（否则门禁等于空转）。"""
+    from alphaagent.dsl.core import cs_accel
+
+    if not cs_accel.cs_accel_enabled():
+        pytest.skip("numba / cs_accel 快路径不可用")
+    close = pnl["close"]
+    arr = close.iloc[:, 0].to_numpy(dtype=float)
+    from alphaagent.dsl.core.ops_kit import datetime_group_bounds
+
+    bounds = datetime_group_bounds(close)
+    assert bounds is not None, "排序面板必须产出归组边界"
+    assert cs_accel.rank_pct(arr, bounds) is not None
+    assert cs_accel.winsorize(arr, bounds, 0.01, 0.99) is not None
+    assert cs_accel.bucket(arr, bounds, 10) is not None
+    assert cs_accel.neutralize(arr, arr, bounds) is not None
+    assert cs_accel.group_rank_pct(arr, arr, bounds) is not None
+    assert cs_accel.zscore(arr, bounds, 1) is not None
+    assert cs_accel.residualize(arr, arr.reshape(-1, 1), bounds) is not None
+    assert cs_accel.rank_pct(arr, None) is None, "乱序/无边界时必须回落"

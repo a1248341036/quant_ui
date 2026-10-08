@@ -189,8 +189,28 @@ def datetime_group_bounds(df: pd.DataFrame) -> np.ndarray:
     利用 datetime 层连续相等构成运行区间：``boundaries[i]`` 是第 i 个 datetime 组
     的起始行下标，最后一个组的下界为 ``len(df)``。供 CS_* 算子避免 groupby 回调
     开销（每组一次 Python 调用 → 一次切片运算）。面板未按 datetime 排序时返回 None。
+
+    2026-10-08：优先用 MultiIndex 的 **level codes** 判序（codes 同层内等价于值序，
+    且 level 升序时单调性一致）。7.78M 行面板上 ``get_level_values("datetime")``
+    要物化 45 ms + 比较 74 ms/次，而 codes 判序约 2 ms/次 —— 对每个 CS_* 算子的
+    单次调用都是固定成本，故走快路。level 非升序或含缺失码（-1）时回落值路径。
     """
-    dts = df.index.get_level_values("datetime")
+    index = df.index
+    pos: int | None = None
+    if isinstance(index, pd.MultiIndex) and "datetime" in index.names:
+        pos = index.names.index("datetime")
+    if pos is not None and len(index.levels[pos]) > 0:
+        codes = index.codes[pos]
+        if index.levels[pos].is_monotonic_increasing and codes.min() >= 0:
+            n = codes.shape[0]
+            if n == 0:
+                return np.zeros(1, dtype=np.int64)
+            if n > 1 and not (codes[1:] >= codes[:-1]).all():
+                return None
+            change = np.flatnonzero(codes[1:] != codes[:-1]) + 1
+            return np.concatenate(([0], change, [n])).astype(np.int64)
+
+    dts = index.get_level_values("datetime")
     if len(dts) == 0:
         return np.zeros(1, dtype=np.int64)
     # 快速检查 datetime 层是否非递减（sorted 面板的契约）

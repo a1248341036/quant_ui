@@ -16,6 +16,7 @@ from .dyn_window import (
 )
 from . import accel as _accel
 from . import chip_daily as _chip_daily
+from . import cs_accel as _cs_accel
 from .ops_kit import (
     Window,
     as_int_window as _as_int_window,
@@ -2131,7 +2132,11 @@ def RANK(df: pd.DataFrame) -> pd.DataFrame:
     _validate_cs_panel(df, name="RANK")
 
     ser = _first_series(df)
-    # groupby.rank 为 C 内核向量化，NaN 自动不参与
+    # Numba 逐日并行快路径（面板按 datetime 排序时启用，见 cs_accel）
+    fast = _cs_accel.rank_pct(ser.to_numpy(dtype=float, copy=False), _datetime_group_bounds(df))
+    if fast is not None:
+        return pd.DataFrame(fast, index=df.index, columns=df.columns[:1])
+    # 回落：面板乱序 / numba 不可用 / ALPHA_DSL_CS_ACCEL=0。groupby.rank 为 C 内核，NaN 自动不参与
     out = ser.groupby(level="datetime", sort=False).rank(pct=True, method="average")
     return _out_frame(out.astype(np.float32), df)
 
@@ -2150,6 +2155,11 @@ def CS_ZSCORE(df: pd.DataFrame, ddof: int = 1) -> pd.DataFrame:
 
     ser = _first_series(df)
     arr = ser.to_numpy(dtype=float, copy=False)
+    # Numba 逐日并行快路径（面板按 datetime 排序时启用，见 cs_accel）
+    fast = _cs_accel.zscore(arr, _datetime_group_bounds(df), d)
+    if fast is not None:
+        return pd.DataFrame(fast, index=df.index, columns=df.columns[:1])
+    # 回落：面板乱序 / numba 不可用 / ALPHA_DSL_CS_ACCEL=0
     day_level = ser.index.get_level_values("datetime")
     grp = ser.groupby(level="datetime", sort=False)
     mean_arr = grp.mean().reindex(day_level).to_numpy(dtype=float)
@@ -2189,6 +2199,9 @@ def CS_WINSORIZE(
 
     ser = _first_series(df)
     arr = ser.to_numpy(dtype=float, copy=False)
+    fast = _cs_accel.winsorize(arr, _datetime_group_bounds(df), lo, hi)
+    if fast is not None:
+        return pd.DataFrame(fast, index=df.index, columns=df.columns[:1])
     day_level = ser.index.get_level_values("datetime")
     # 全向量化：一次 groupby.quantile（C 内核）求每日上下分位，再按行广播 clip，
     # 消除逐日 Python 回调（1454 天 → 1 次 groupby + 1 次 reindex + 1 次 clip）。
@@ -2214,8 +2227,11 @@ def CS_BUCKET(df: pd.DataFrame, n_bins: int) -> pd.DataFrame:
 
     ser = _first_series(df)
     arr = ser.to_numpy(dtype=float, copy=False)
-    out = np.full(len(arr), np.nan, dtype=np.float32)
     bounds = _datetime_group_bounds(df)
+    fast = _cs_accel.bucket(arr, bounds, n)
+    if fast is not None:
+        return pd.DataFrame(fast, index=df.index, columns=df.columns[:1])
+    out = np.full(len(arr), np.nan, dtype=np.float32)
     if bounds is None:
         # 面板未按 datetime 排序：回落逐日 groupby 路径
         return _per_datetime_transform(df, lambda s: _bucket_cs_fallback(s, n))
@@ -2248,6 +2264,9 @@ def CS_NEUTRALIZE(x: pd.DataFrame, group: pd.DataFrame) -> pd.DataFrame:
 
     xs = _first_series(x).to_numpy(dtype=float, copy=False)
     gs = _first_series(group).to_numpy(dtype=float, copy=False)
+    fast = _cs_accel.neutralize(xs, gs, _datetime_group_bounds(x))
+    if fast is not None:
+        return pd.DataFrame(fast, index=x.index, columns=x.columns[:1])
     result = np.full(len(x), np.nan, dtype=np.float32)
 
     # groupby.indices 直接给位置数组：等价于 get_indexer(sub.index)，
@@ -2276,7 +2295,7 @@ def CS_GROUP_RANK(x: pd.DataFrame, group: pd.DataFrame) -> pd.DataFrame:
     """组内截面百分位秩：每个 datetime 内先按 ``group`` 分组，再对 ``x`` 做 rank(pct=True)。
 
     用于双重排序交互，例如“同一流动性组内的反转强度”。NaN 不参与排名；
-    组内只有一个有效样本时输出 0.5。
+    组内只有一个有效样本时输出 1.0（pandas ``rank(pct=True)`` 语义）。
     """
     _validate_cs_panel(x, name="CS_GROUP_RANK")
     _validate_cs_panel(group, name="CS_GROUP_RANK")
@@ -2285,6 +2304,9 @@ def CS_GROUP_RANK(x: pd.DataFrame, group: pd.DataFrame) -> pd.DataFrame:
 
     xs = _first_series(x).to_numpy(dtype=float, copy=False)
     gs = _first_series(group).to_numpy(dtype=float, copy=False)
+    fast = _cs_accel.group_rank_pct(xs, gs, _datetime_group_bounds(x))
+    if fast is not None:
+        return pd.DataFrame(fast, index=x.index, columns=x.columns[:1])
     result = np.full(len(x), np.nan, dtype=np.float32)
     # groupby.indices 位置数组：绕开 MultiIndex engine（并发评估线程安全，见 CS_NEUTRALIZE）
     for _, pos in x.groupby(level="datetime", sort=False).indices.items():
@@ -2322,6 +2344,10 @@ def CS_RESIDUALIZE(
     ctrl = np.column_stack([
         _first_series(item).to_numpy(dtype=float, copy=False) for item in controls
     ])
+    # Numba 逐日并行快路径（面板按 datetime 排序时启用，见 cs_accel）
+    fast = _cs_accel.residualize(ys, ctrl, _datetime_group_bounds(x))
+    if fast is not None:
+        return pd.DataFrame(fast, index=x.index, columns=x.columns[:1])
     result = np.full(len(x), np.nan, dtype=np.float32)
     # groupby.indices 位置数组：绕开 MultiIndex engine（并发评估线程安全，见 CS_NEUTRALIZE）
     for _, pos in x.groupby(level="datetime", sort=False).indices.items():
