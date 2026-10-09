@@ -41,8 +41,6 @@ from alphaagent.factor.mining.service import StockEvalService  # noqa: E402
 
 # 正交性检查依赖（与 agentscope 链路 _orthogonality_check 同源，2026-10-09 前移到挖掘预筛）
 from alphaagent.factor.mining.agent.agentscope_tools import (  # noqa: E402
-    _ORTHO_BLOCK_DAYS,
-    _ORTHO_N_DATES,
     _sample_orthogonality_panel,
 )
 from alphaagent.data.panel import slice_panel  # noqa: E402
@@ -337,21 +335,26 @@ def main() -> int:
             except Exception as exc:  # noqa: BLE001 — 单因子失败不中断批量
                 got, err = {}, f"{type(exc).__name__}: {str(exc)[:300]}"
             fails = _flags(args.mode, got) if got else ["eval_error"]
+            # pass_stage_one_pre = 统计预筛结果（不含正交门，与 mcp eval_batch 同名字段契约一致）
+            pass_stage_one_pre = not fails
             ortho: dict[str, Any] | None = None
-            if not fails and args.check_ortho:
+            if pass_stage_one_pre and args.check_ortho:
                 # stage_one 预筛通过 → 立即查正交性（前移自 agentscope _orthogonality_check）
                 threshold = args.max_cs_corr if args.max_cs_corr > 0 else _ortho_threshold()
                 session = svc.sessions.get(sid)
                 ortho = _orthogonality_check(session, expr, threshold, exclude_factor_id=name)
                 if not ortho.get("passed"):
-                    fails.append(
-                        f"orthogonal<{threshold}(max_corr={ortho.get('max_abs_corr'):.3f}"
-                        f",block={ortho.get('blocked_factor_id')})"
-                    )
+                    if ortho.get("error"):
+                        fails.append(f"ortho_error={ortho['error']}")
+                    else:
+                        fails.append(
+                            f"orthogonal<{threshold}(max_corr={ortho.get('max_abs_corr'):.3f}"
+                            f",block={ortho.get('blocked_factor_id')})"
+                        )
             rows.append({"mode": args.mode, "universe": universe, "name": name,
                          "why": f.get("why", ""), "expr": expr,
                          "ms": round((time.perf_counter() - t) * 1000), "err": err, **got,
-                         "fails": fails, "pass_stage_one_pre": not fails,
+                         "fails": fails, "pass_stage_one_pre": pass_stage_one_pre,
                          "orthogonality": ortho})
             ortho_str = ""
             if ortho is not None:
@@ -370,7 +373,8 @@ def main() -> int:
             _flush()
 
         if args.val:
-            survivors = [r for r in rows if r.get("pass_stage_one_pre")]
+            # 送 val 按全门（含正交）：统计预筛 + 正交都过的才送 val
+            survivors = [r for r in rows if not r.get("fails")]
             print(f"\n[mine] 送 val 的因子 {len(survivors)} 个", flush=True)
             for r in survivors:
                 try:
@@ -390,11 +394,12 @@ def main() -> int:
     finally:
         svc.release_session(sid)
 
-    n_pass = sum(1 for r in rows if r.get("pass_stage_one_pre"))
-    print(f"\n[mine] 完成：{len(rows)} 次评估，stage_one 预检通过 {n_pass} 个，"
-          f"用时 {time.perf_counter() - t0:.0f}s", flush=True)
+    n_stat_pass = sum(1 for r in rows if r.get("pass_stage_one_pre"))
+    n_full_pass = sum(1 for r in rows if not r.get("fails"))
+    print(f"\n[mine] 完成：{len(rows)} 次评估，stage_one 统计预检通过 {n_stat_pass} 个，"
+          f"含正交门全通过 {n_full_pass} 个，用时 {time.perf_counter() - t0:.0f}s", flush=True)
     for r in rows:
-        if r.get("pass_stage_one_pre"):
+        if not r.get("fails"):
             print(f"  ★ {r['name']}: ic={r['ic']} icir={r['icir']} cov={r['coverage']} "
                   f"ac={r['cs_autocorr']} turn={r['turnover_rebalance']}", flush=True)
     return 0
