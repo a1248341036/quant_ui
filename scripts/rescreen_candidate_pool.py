@@ -129,10 +129,13 @@ def rescreen(registry_path: Path, *, apply: bool, hard: bool = False) -> dict:
         mode = _mode_of(entry)
         checker = checkers.get(mode) or checkers["technical"]
         train, val, test, sim = _evidence(entry)
+        # rebalance_freq 透传：月频因子用月频换手门(0.80)，日频用日频门(0.50)。
+        # 不透传则 stage_one_stats 默认 daily，月频因子被日频门误拒（2026-10-09 发现）。
+        rebalance_freq = str(entry.get("rebalance_freq") or "daily").strip() or "daily"
         reasons: list[str] = []
         for tag, res in (
             ("blind", checker.blind_test(train, test)),
-            ("stage_one", checker.stage_one_stats(train)),
+            ("stage_one", checker.stage_one_stats(train, rebalance_freq=rebalance_freq)),
             ("val", checker.stage_one_val_retention(train, val)),
             ("corr", checker.stage_one_correlation(sim)),
         ):
