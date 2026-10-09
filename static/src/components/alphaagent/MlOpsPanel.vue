@@ -33,11 +33,12 @@
         <!-- ── 生效分数 ── -->
         <div class="card sub">
           <h4>当前生效分数</h4>
-          <table v-if="ops.score?.exists">
+          <p v-if="ops.score?.error" class="err left">分数概况加载失败：{{ ops.score.error }}</p>
+          <table v-else-if="ops.score?.exists">
             <tbody>
-              <tr><th>来源训练</th><td>{{ ops.score.source_train_id || '—' }}<span class="muted">（{{ ops.score.source_rows?.toLocaleString() }} 行全池分数）</span></td></tr>
+              <tr><th>来源训练</th><td>{{ ops.score.source_train_id || '—' }}<span class="muted">（{{ ops.score.source_rows?.toLocaleString() ?? '—' }} 行全池分数）</span></td></tr>
               <tr><th>日期覆盖</th><td>{{ ops.score.date_min }} ~ {{ ops.score.date_max }}（{{ ops.score.days }} 个交易日）</td></tr>
-              <tr><th>股票数</th><td>{{ ops.score.n_codes }} 只 / 最新日 {{ ops.score.latest_day_codes }} 只</td></tr>
+              <tr><th>股票数</th><td>{{ ops.score.n_codes }} 只 / 最新日 {{ ops.score.latest_day_codes ?? '—' }} 只</td></tr>
               <tr>
                 <th>低价过滤（≤10 元）</th>
                 <td>
@@ -74,7 +75,8 @@
         <!-- ── 模拟盘对照 ── -->
         <div class="card sub">
           <h4>模拟盘对照</h4>
-          <table v-if="ops.paper_accounts?.length && !ops.paper_accounts[0].error">
+          <p v-if="ops.paper_accounts?.[0]?.error" class="err left">模拟盘读取失败：{{ ops.paper_accounts[0].error }}</p>
+          <table v-else-if="ops.paper_accounts?.length">
             <thead><tr><th>账户</th><th>池/频率/TopN</th><th>状态</th><th>权益</th><th>累计盈亏</th><th>持仓</th><th>起始日</th></tr></thead>
             <tbody>
               <tr v-for="a in ops.paper_accounts" :key="a.id">
@@ -82,7 +84,7 @@
                 <td>{{ a.universe }} · {{ a.freq }} · {{ a.top_n }}</td>
                 <td>{{ a.status }}</td>
                 <td>{{ fmt(a.equity) }}</td>
-                <td :class="a.pnl >= 0 ? 'pos' : 'neg'">{{ fmt(a.pnl) }}（{{ a.pnl_pct }}%）</td>
+                <td :class="(a.pnl ?? 0) >= 0 ? 'pos' : 'neg'">{{ fmt(a.pnl) }}（{{ a.pnl_pct ?? 0 }}%）</td>
                 <td>{{ a.n_positions ?? '—' }}</td>
                 <td>{{ a.start_date || '—' }}</td>
               </tr>
