@@ -26,6 +26,56 @@ def shrink_covariance(rets: np.ndarray) -> np.ndarray:
     return _shrink_cov(mat)
 
 
+def portfolio_vol(close_wide: pd.DataFrame | None,
+                  window: int = 60,
+                  codes: list | None = None,
+                  min_obs: int | None = None,
+                  periods_per_year: int = 252) -> float:
+    """持仓等权组合日收益的滚动已实现波动（年化）——vol targeting 的 σ_p 预测。
+
+    close_wide 为收盘价宽表（index=交易日、columns=code、停牌/缺失为 NaN）；
+    codes 为当前持仓票（None=全部列）。取最近 window+1 行，逐日对"当日有
+    有效收益的票"等权平均得到组合日收益序列，样本 std（ddof=1）后按
+    √periods_per_year 年化。
+
+    选择滚动已实现波动而非 shrink_covariance：权重出口每个调仓日只需要一个
+    标量 σ_p，等权组合日收益的滚动 std 为 O(window×N) 且无优化器不稳定问题；
+    协方差法仍留给完整优化器（weights_from_returns）。
+
+    安全退化（窗口不足/数据无效 → 返回 NaN，调用方将 vol scale 退化为 1）：
+    - close_wide 为 None/空、codes 全部不在列中、window <= 0；
+    - 有效收益观测数 < min_obs（默认 max(2, window//2)，即窗口不足）；
+    - 全部收益非有限（NaN/inf，如 0 价格污染）。
+    σ_p 恰为 0（收益恒为 0，如长期停牌价格不变）时返回 0.0，由调用方按
+    "零波动=数据不可信"退化为 scale=1，而非放大仓位。
+    """
+    if close_wide is None or window <= 0:
+        return float("nan")
+    frame = close_wide
+    if codes is not None:
+        cols = [c for c in codes if c in frame.columns]
+        if not cols:
+            return float("nan")
+        frame = frame[cols]
+    if frame.empty or frame.shape[1] == 0:
+        return float("nan")
+    frame = frame.tail(int(window) + 1)
+    # fill_method=None：停牌/缺失保持 NaN（不前向填充），停牌日被逐日等权
+    # 均值剔除；复牌日收益跨停牌期结转（lump），与 pct_change 语义一致。
+    rets = frame.pct_change(fill_method=None)
+    port = rets.mean(axis=1)
+    vals = port.to_numpy(dtype=float)
+    vals = vals[np.isfinite(vals)]
+    if min_obs is None:
+        min_obs = max(2, int(window) // 2)
+    if len(vals) < max(2, int(min_obs)):
+        return float("nan")
+    sigma_daily = float(np.std(vals, ddof=1))
+    if not np.isfinite(sigma_daily):
+        return float("nan")
+    return float(sigma_daily * np.sqrt(periods_per_year))
+
+
 def _project(w: np.ndarray, max_weight: float | None) -> np.ndarray:
     """把权重投影到可行域：非负、单票上限、归一化。"""
     w = np.maximum(w, 0.0)
