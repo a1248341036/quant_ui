@@ -46,7 +46,8 @@ def _build_tool_row(entry: dict, split: str) -> dict | None:
         return None
 
     mode = _mode_to_research_mode(entry.get("mode"))
-    err = entry.get("err")
+    # val 段的 error 取 val_err（harness_mine.py 第 391 行：eval_val 失败时写 val_err 不写 val）
+    err = entry.get("err") if split == "train" else (entry.get("val_err") or entry.get("err"))
 
     # tool name 映射
     if split == "val":
@@ -105,8 +106,8 @@ def main() -> int:
                     help="JSONL 所在目录")
     ap.add_argument("--pattern", default="batch*_rows.jsonl",
                     help="文件 glob 模式")
-    ap.add_argument("--run-id", default="harness-import",
-                    help="写入研究记忆的 run_id")
+    ap.add_argument("--run-id", default="",
+                    help="写入研究记忆的 run_id（缺省自动 harness-import-<YYYYMMDD-HHMMSS>）")
     ap.add_argument("--db", default=None,
                     help="research_memory.db 路径（缺省用 service 默认）")
     ap.add_argument("--dry-run", action="store_true",
@@ -114,6 +115,8 @@ def main() -> int:
     ap.add_argument("--skip-val", action="store_true",
                     help="跳过 val 段（只导 train）")
     args = ap.parse_args()
+    if not args.run_id:
+        args.run_id = f"harness-import-{time.strftime('%Y%m%d-%H%M%S')}"
 
     # 定位 db
     if args.db:
@@ -143,45 +146,53 @@ def main() -> int:
     for f in files:
         batch_name = os.path.basename(f)
         batch_count = 0
-        try:
-            for line in open(f, encoding="utf-8"):
-                line = line.strip()
+        with open(f, encoding="utf-8") as fh:
+            for line_no, raw_line in enumerate(fh, 1):
+                line = raw_line.strip()
                 if not line:
                     continue
-                entry = json.loads(line)
-                # train 段
-                row = _build_tool_row(entry, "train")
-                if row is None:
+                try:
+                    entry = json.loads(line)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[import] WARN: {batch_name}:{line_no} json.loads failed: {exc}")
                     skipped += 1
                     continue
-                if not args.dry_run:
-                    res = store.record_tool_result(
-                        run_id=args.run_id,
-                        row=row,
-                        run_freq_context={"research_mode": _mode_to_research_mode(entry.get("mode"))},
-                        enable_sspm_write=False,  # harness 直驱不写 SSPM cells
-                    )
-                    if res:
-                        batch_count += 1
-                        total_observations += 1
-                else:
-                    batch_count += 1
-
-                # val 段（如果有）
-                if not args.skip_val and isinstance(entry.get("val"), dict):
-                    row_val = _build_tool_row(entry, "val")
-                    if row_val is not None and not args.dry_run:
-                        store.record_tool_result(
+                try:
+                    # train 段
+                    row = _build_tool_row(entry, "train")
+                    if row is None:
+                        skipped += 1
+                        continue
+                    if not args.dry_run:
+                        res = store.record_tool_result(
                             run_id=args.run_id,
-                            row=row_val,
+                            row=row,
                             run_freq_context={"research_mode": _mode_to_research_mode(entry.get("mode"))},
-                            enable_sspm_write=False,
+                            enable_sspm_write=False,  # harness 直驱不写 SSPM cells
                         )
-                        total_observations += 1
-                    elif row_val is not None and args.dry_run:
-                        total_observations += 1
-        except Exception as exc:  # noqa: BLE001
-            print(f"[import] WARN: {batch_name} error: {exc}")
+                        if res:
+                            batch_count += 1
+                    else:
+                        batch_count += 1
+                    total_observations += 1  # train 段（dry-run 和真实模式都计数，保持口径一致）
+
+                    # val 段（如果有 val 数据或 val_err）
+                    has_val = isinstance(entry.get("val"), dict) or entry.get("val_err")
+                    if not args.skip_val and has_val:
+                        row_val = _build_tool_row(entry, "val")
+                        if row_val is not None:
+                            if not args.dry_run:
+                                store.record_tool_result(
+                                    run_id=args.run_id,
+                                    row=row_val,
+                                    run_freq_context={"research_mode": _mode_to_research_mode(entry.get("mode"))},
+                                    enable_sspm_write=False,
+                                )
+                            total_observations += 1
+                except Exception as exc:  # noqa: BLE001 — 单行异常不拖垮整个批次
+                    print(f"[import] WARN: {batch_name}:{line_no} record failed: {exc}")
+                    skipped += 1
+                    continue
         total_entries += batch_count
         if batch_count:
             print(f"  {batch_name}: {batch_count} entries")
