@@ -574,9 +574,13 @@ def _run_one_factor(
             vol_target_annual=(float(risk["vol_target_annual"])
                                if risk.get("vol_target_annual") is not None
                                else None),
-            vol_target_lo=float(risk.get("vol_target_lo", 0.3) or 0.3),
-            vol_target_hi=float(risk.get("vol_target_hi", 1.5) or 1.5),
-            vol_target_window=int(risk.get("vol_target_window", 60) or 60),
+            vol_target_lo=(float(risk["vol_target_lo"])
+                           if risk.get("vol_target_lo") is not None else 0.3),
+            vol_target_hi=(float(risk["vol_target_hi"])
+                           if risk.get("vol_target_hi") is not None else 1.5),
+            vol_target_window=(int(risk["vol_target_window"])
+                               if risk.get("vol_target_window") is not None
+                               else 60),
             sell_down_to_target=bool(risk.get("sell_down_to_target", False)),
             weight_band=(float(risk["weight_band"])
                          if risk.get("weight_band") is not None else 0.15),

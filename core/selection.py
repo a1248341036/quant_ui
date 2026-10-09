@@ -249,10 +249,16 @@ class PortfolioBuilder:
                                        codes=[self.codes[k] for k in chosen])
                          if hist is not None else float("nan"))
                 vol_scale = policy.vol_scale_for(sigma)
-                # vol targeting 开启：regime × vol 两个系数相乘后整体 clip
-                # 到 [vol_target_lo, vol_target_hi]。
-                scale = float(np.clip(scale * vol_scale,
-                                      policy.vol_target_lo, policy.vol_target_hi))
+                if vol_scale != 1.0:
+                    # vol targeting 有效（σ_p 可用）：regime × vol 相乘后整体
+                    # clip 到 [vol_target_lo, vol_target_hi]。
+                    # σ_p 无效时 vol_scale_for 恒返回 1.0（安全退化语义），
+                    # 跳过 clip——否则弱市 regime_scale 已低于 lo 时会被 clip
+                    # 强制抬仓，违背"σ_p 无效→不干预"的退化语义
+                    # （OCR 2026-10-09 low finding）。
+                    scale = float(np.clip(scale * vol_scale,
+                                          policy.vol_target_lo,
+                                          policy.vol_target_hi))
         if scale != 1.0 and targets:
             targets = {k: v * scale for k, v in targets.items()}
         return chosen, targets

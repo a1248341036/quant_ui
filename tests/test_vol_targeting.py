@@ -288,3 +288,27 @@ def test_run_backtest_vol_target_end_to_end(panel):
     low = run_backtest(**common, vol_target_annual=1e-4)
     assert len(low["nav"]) > 0 and low["nav"].notna().all()
     assert not np.allclose(off["nav"].to_numpy(), low["nav"].to_numpy())
+
+
+def test_build_targets_sigma_invalid_keeps_regime_scale_no_clip_lift():
+    """σ_p 无效 + 弱市 regime 降仓：scale 保持 regime_scale 原值，不被 clip 抬到 lo。
+
+    OCR 2026-10-09 low finding：σ_p 无效 → vol_scale=1.0（安全退化语义），
+    此时若仍执行 clip(scale, lo, hi)，regime_scale=0.2 < lo=0.3 的弱市降仓
+    会被强制抬升到 0.3。正确行为：σ_p 无效时跳过 clip，scale=regime_scale。
+    """
+    policy = SelectionPolicy(
+        vol_target_annual=0.25, vol_target_lo=0.3, vol_target_hi=1.5,
+        vol_target_window=60,
+        # 弱市触发：market_adx(50) < regime_adx(100) → scale_for_regime=0.2 < lo
+        regime_adx=100.0, regime_scale=0.2,
+    )
+    builder = PortfolioBuilder(["a", "b"])
+    cand = np.arange(2)
+    scores = np.array([1.0, 0.5])
+    # close_wide=None 且无 close_history → sigma=NaN → vol_scale=1.0 → 跳过 clip
+    chosen, targets = builder.build_targets(policy, cand, scores, market_adx=50.0,
+                                            close_wide=None)
+    assert set(chosen) == {0, 1}
+    # 等权 0.5 × regime_scale 0.2 = 0.1；若被旧逻辑 clip 会变成 0.5 × 0.3 = 0.15
+    assert all(v == pytest.approx(0.5 * 0.2) for v in targets.values())
