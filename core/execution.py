@@ -27,8 +27,10 @@ class ExecutionResult:
 class _CashExecutionAdapter:
     """现金/整手/开盘成交执行器。
 
-    该类刻意保持当前 ``core.engine`` 的撮合顺序：先卖后买；目标权重只
-    影响买入预算，卖不出时保留持仓。它不改变信号日和执行日的定义。
+    该类刻意保持当前 ``core.engine`` 的撮合顺序：先卖后买；默认（
+    sell_down_to_target=False）目标权重只影响买入预算，卖不出时保留持仓；
+    开启双向调仓后名单内持仓还会按目标权重部分减仓。它不改变信号日和
+    执行日的定义。
     """
 
     def __init__(
@@ -138,8 +140,17 @@ class StockExecutionAdapter(_CashExecutionAdapter):
         signal_idx: int,
         exec_idx: int,
         max_weight: float | None = None,
+        sell_down_to_target: bool = False,
+        weight_band: float = 0.15,
     ) -> ExecutionResult:
-        """按目标权重在执行日开盘成交，返回新现金、持仓和明细。"""
+        """按目标权重在执行日开盘成交，返回新现金、持仓和明细。
+
+        sell_down_to_target=True 时启用双向调仓：名单内持仓若当前权重
+        高于目标权重且超出 weight_band，按整手向下卖出差额（部分减仓，
+        status="rebalanced" 区别于清仓）；同时买入段对已持仓改为按
+        “目标市值−当前市值”增量补足，避免卖出释放的现金当天被整额买回。
+        False（默认）时两参数不生效，行为与旧版逐位一致。
+        """
         result = ExecutionResult(float(cash), positions)
         signal_date = self.dates[signal_idx].date().isoformat()
         exec_date = self.dates[exec_idx].date().isoformat()
@@ -182,6 +193,64 @@ class StockExecutionAdapter(_CashExecutionAdapter):
                 "price": px, "fee": fee, "amount": amount, "status": "filled",
             })
 
+        # 再减仓（sell-down-to-target，可选）：名单内持仓目标权重缩小时，
+        # 把超出目标的部分按整手向下卖出，释放的现金供同日买入段使用。
+        # 开关关闭时整段跳过，行为与旧版逐位一致。
+        if sell_down_to_target and portfolio_value > 0:
+            band = max(float(weight_band), 0.0)
+            for k in list(result.positions.keys()):
+                pct = targets.get(k, 0.0)
+                if pct <= 0:
+                    continue
+                if max_weight:
+                    pct = min(pct, float(max_weight))
+                shares = result.positions[k]
+                if shares <= 0:
+                    continue
+                if not self.valid_open[exec_idx, k]:
+                    result.rejections.append({
+                        "date": exec_date, "signal_date": signal_date,
+                        "code": self.codes[k], "side": "sell",
+                        "status": "rejected", "reason": "停牌/无开盘价",
+                    })
+                    continue
+                if self.limit_down is not None and self.limit_down[exec_idx, k]:
+                    result.rejections.append({
+                        "date": exec_date, "signal_date": signal_date,
+                        "code": self.codes[k], "side": "sell",
+                        "status": "rejected", "reason": "跌停卖不出",
+                    })
+                    continue
+                # 估值口径：执行日开盘价。portfolio_value 由调用方按信号日
+                # 收盘估值，两口径间的漂移是二阶小量，由 weight_band 吸收。
+                px_raw = float(self.open_mat[exec_idx, k])
+                excess_value = shares * px_raw - portfolio_value * pct
+                if excess_value <= portfolio_value * band:
+                    continue  # 容差带内不动
+                lots = int(excess_value / px_raw // self.lot_size)
+                if lots < 1:
+                    continue  # 差额不足一手：整手向下取整后不动
+                shares_sell = lots * self.lot_size
+                px = px_raw * (1.0 - self.slippage - self.spread)
+                impact = self._impact(shares_sell * px,
+                                      float(self.am20_mat[signal_idx, k])
+                                      if np.isfinite(self.am20_mat[signal_idx, k]) else None)
+                px *= (1.0 - impact)
+                amount = shares_sell * px
+                fee = self._fee(amount, self.sell_cost)
+                result.cash += amount - fee
+                result.sell_amount += amount
+                # 差额按整手向下且目标权重 > 0，卖出股数严格小于持仓股数，
+                # 此路径只部分减仓、不做清仓（清仓由上一段负责）。
+                result.positions[k] = shares - shares_sell
+                result.sold_codes.append(self.codes[k])
+                result.trades_detail.append({
+                    "date": self.dates[exec_idx], "signal_date": self.dates[signal_idx],
+                    "code": self.codes[k], "side": "sell", "shares": float(shares_sell),
+                    "price": px, "fee": fee, "amount": amount,
+                    "status": "rebalanced", "reason": "sell_down",
+                })
+
         # 后买入：预算、现金、整手和流动性依次限制成交量。
         for k in chosen_list:
             if not self.valid_open[exec_idx, k]:
@@ -219,6 +288,15 @@ class StockExecutionAdapter(_CashExecutionAdapter):
             if max_weight:
                 pct = min(pct, float(max_weight))
             budget = portfolio_value * pct
+            if sell_down_to_target:
+                # 双向调仓（增量预算）：目标权重是持仓市值语义而非买入预算
+                # 语义，已持仓标的按“目标市值−当前市值”补足，避免把卖出段
+                # 释放的现金当天整额买回同一持仓。仅开关开启时生效。
+                held = float(result.positions.get(k, 0.0))
+                if held > 0:
+                    budget -= held * float(self.open_mat[exec_idx, k])
+                    if budget <= 0:
+                        continue  # 已在目标之上/恰在目标：买 0，不做负买入
             px = float(self.open_mat[exec_idx, k]) * (1.0 + self.slippage + self.spread)
             # 冲击按目标预算额近似（整手股数未定前的名义金额）
             impact = self._impact(budget,
@@ -450,8 +528,16 @@ class FundNavExecutionAdapter(_CashExecutionAdapter):
         signal_idx: int,
         exec_idx: int,
         max_weight: float | None = None,
+        sell_down_to_target: bool = False,
+        weight_band: float = 0.15,
     ) -> ExecutionResult:
-        """基金申赎执行：先赎回非目标持仓，后申购目标持仓。"""
+        """基金申赎执行：先赎回非目标持仓，后申购目标持仓。
+
+        sell_down_to_target=True 时启用双向调仓：名单内基金若当前市值
+        高于目标市值且超出 weight_band，按金额差额部分赎回（份额精度
+        0.01 向下取整，基金无整手约束）；买入段对已持有基金按增量预算
+        补足。False（默认）时两参数不生效，行为与旧版逐位一致。
+        """
         result = ExecutionResult(float(cash), positions)
         signal_date = self.dates[signal_idx].date().isoformat()
         exec_date = self.dates[exec_idx].date().isoformat()
@@ -484,6 +570,51 @@ class FundNavExecutionAdapter(_CashExecutionAdapter):
                 "status": "filled",
             })
 
+        # 再减仓（sell-down-to-target，可选）：名单内基金按金额差额部分
+        # 赎回（基金无整手约束，份额精度 0.01 向下取整）。开关关闭时整段
+        # 跳过，行为与旧版逐位一致。
+        if sell_down_to_target and portfolio_value > 0:
+            band = max(float(weight_band), 0.0)
+            for k in list(result.positions.keys()):
+                pct = targets.get(k, 0.0)
+                if pct <= 0:
+                    continue
+                if max_weight:
+                    pct = min(pct, float(max_weight))
+                shares = result.positions[k]
+                if shares <= 0:
+                    continue
+                if not self.valid_open[exec_idx, k]:
+                    result.rejections.append({
+                        "date": exec_date, "signal_date": signal_date,
+                        "code": self.codes[k], "side": "sell",
+                        "status": "rejected", "reason": "无净值",
+                    })
+                    continue
+                nav = float(self.open_mat[exec_idx, k])
+                excess_value = shares * nav - portfolio_value * pct
+                if excess_value <= portfolio_value * band:
+                    continue  # 容差带内不动
+                redeem_shares = float(int(excess_value / nav * 100)) / 100.0
+                if redeem_shares < 0.01:
+                    continue  # 差额不足最小份额精度
+                proceeds, fee, _ = self._redeem(redeem_shares, nav, k, exec_idx)
+                result.cash += proceeds
+                result.sell_amount += redeem_shares * nav
+                remaining = shares - redeem_shares
+                if remaining <= 1e-9:
+                    result.positions.pop(k)
+                    self._lots.pop(k, None)
+                else:
+                    result.positions[k] = remaining
+                result.sold_codes.append(self.codes[k])
+                result.trades_detail.append({
+                    "date": self.dates[exec_idx], "signal_date": self.dates[signal_idx],
+                    "code": self.codes[k], "side": "sell", "shares": float(redeem_shares),
+                    "price": nav, "fee": fee, "amount": redeem_shares * nav,
+                    "status": "rebalanced", "reason": "sell_down",
+                })
+
         # 后申购：按目标权重分配预算
         for k in chosen_list:
             if not self.valid_open[exec_idx, k]:
@@ -498,6 +629,14 @@ class FundNavExecutionAdapter(_CashExecutionAdapter):
             if max_weight:
                 pct = min(pct, float(max_weight))
             budget = portfolio_value * pct
+            if sell_down_to_target:
+                # 双向调仓（增量预算）：已持有基金按“目标市值−当前市值”补足，
+                # 避免把赎回释放的现金当天整额申购回同一基金。仅开关开启时生效。
+                held = float(result.positions.get(k, 0.0))
+                if held > 0:
+                    budget -= held * nav
+                    if budget <= 0:
+                        continue  # 已在目标之上/恰在目标：买 0，不做负申购
             budget = min(budget, result.cash)
             if budget < nav * 0.01:
                 result.rejections.append({

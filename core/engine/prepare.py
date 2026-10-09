@@ -81,6 +81,12 @@ def _prepare_backtest(cfg) -> dict:
     chandelier_period = cfg.chandelier_period
     regime_adx = cfg.regime_adx
     regime_scale = cfg.regime_scale
+    vol_target_annual = cfg.vol_target_annual
+    vol_target_lo = cfg.vol_target_lo
+    vol_target_hi = cfg.vol_target_hi
+    vol_target_window = cfg.vol_target_window
+    sell_down_to_target = cfg.sell_down_to_target
+    weight_band = cfg.weight_band
     selection_mode = cfg.selection_mode
     selection_pct = cfg.selection_pct
     min_positions = cfg.min_positions
@@ -212,7 +218,20 @@ def _prepare_backtest(cfg) -> dict:
     exec_set = ({i for i in exec_dates if i != start_idx}
                 if (warmup_days and not use_cash) else set(exec_dates))
 
-    portfolio_builder = PortfolioBuilder(codes_used, industry_map, industry_cap)
+    vol_on = vol_target_annual is not None
+    # vol targeting 数据通道：把收盘价宽表与调仓信号日序列挂到 builder 上，
+    # build_targets 按调用顺序消费信号日、切片"截至该日"的窗口估 σ_p
+    # （消费日期 ≤ 真实信号日，无前视）。功能关（vol_on=False）时不注入，
+    # builder 保持旧默认状态。
+    vol_signal_dates = None
+    if vol_on:
+        vol_signal_dates = [dates[i] for i in sorted(set(
+            i for i in (e - 1 for e in exec_dates if e > 0) if 0 <= i < T))]
+    portfolio_builder = PortfolioBuilder(
+        codes_used, industry_map, industry_cap,
+        close_history=close if vol_on else None,
+        signal_dates=vol_signal_dates,
+    )
     # 选股策略对象：把散装选股参数收拢，选股逻辑统一走 build_targets
     selection_policy = SelectionPolicy(
         count_mode=selection_mode, top_n=top_n, pct=selection_pct,
@@ -220,6 +239,8 @@ def _prepare_backtest(cfg) -> dict:
         ascending=ascending, min_score=min_score,
         industry_cap=industry_cap,
         regime_adx=regime_adx, regime_scale=regime_scale,
+        vol_target_annual=vol_target_annual, vol_target_lo=vol_target_lo,
+        vol_target_hi=vol_target_hi, vol_target_window=vol_target_window,
     )
 
     return {
@@ -243,6 +264,8 @@ def _prepare_backtest(cfg) -> dict:
         "warmup_days": warmup_days, "cash_mode": cash_mode,
         "limit_flags": limit_flags, "slippage_bps": slippage_bps,
         "max_participation": max_participation, "max_weight": max_weight,
+        "sell_down_to_target": sell_down_to_target,
+        "weight_band": weight_band,
         "industry_map": industry_map, "industry_cap": industry_cap,
         "factor_builder": factor_builder, "external_scores": external_scores,
         "factor_weights": factor_weights,

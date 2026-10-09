@@ -10,9 +10,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
+import pandas as pd
+
+from .portfolio import portfolio_vol
 
 
 @dataclass
@@ -31,6 +34,9 @@ class SelectionPolicy:
       5. 权重       当前等权；扩展点。
       6. 弱市叠加   ``regime_adx``/``regime_scale``：市场 ADX 中位数低于
                     阈值时目标权重乘以 regime_scale。
+      7. 波动率目标 ``vol_target_annual``：σ_p（持仓等权组合滚动已实现波动，
+                    年化）高于目标时按 target/σ_p 降仓（scale clip 到
+                    [vol_target_lo, hi]）；None=功能关，恒等。
     """
 
     count_mode: str = "top_n"          # top_n | top_pct
@@ -43,6 +49,11 @@ class SelectionPolicy:
     industry_cap: int | None = None
     regime_adx: float | None = None
     regime_scale: float = 0.5
+    # ── 波动率目标制仓位（vol targeting，默认 None=关，行为与旧版一致）──
+    vol_target_annual: float | None = None   # 目标年化波动率；None=功能关
+    vol_target_lo: float = 0.3               # 缩放系数下限
+    vol_target_hi: float = 1.5               # 缩放系数上限（低波时加仓封顶）
+    vol_target_window: int = 60              # σ_p 估计窗口（交易日）
 
     def quality(self, scores) -> np.ndarray:
         """方向归一化的质量分：越大越好（买小时取负）。"""
@@ -65,12 +76,37 @@ class SelectionPolicy:
             return 1.0
         return float(self.regime_scale) if market_adx < self.regime_adx else 1.0
 
+    def vol_scale_for(self, sigma_p) -> float:
+        """波动率目标缩放系数：clip(vol_target_annual / σ_p, lo, hi)。
+
+        σ_p > 目标 → scale<1 降仓；σ_p < 目标 → 加仓但封顶 hi。
+        功能关（vol_target_annual=None）或 σ_p 无效（None/NaN/≤0——含
+        零波动与窗口不足的安全退化值）→ 1.0（恒等）。
+        """
+        if self.vol_target_annual is None or sigma_p is None:
+            return 1.0
+        sigma_p = float(sigma_p)
+        if not np.isfinite(sigma_p) or sigma_p <= 0.0:
+            return 1.0
+        return float(np.clip(self.vol_target_annual / sigma_p,
+                             self.vol_target_lo, self.vol_target_hi))
+
 
 @dataclass
 class PortfolioBuilder:
     codes: list[str]
     industry_map: dict[str, str] | None = None
     industry_cap: int | None = None
+    # ── vol targeting 数据通道（engine 路径由 prepare 注入，默认 None=不启用）──
+    # close_history：收盘价宽表（全窗口）；signal_dates：调仓信号日（升序）。
+    # build_targets 每次调用按顺序消费一个信号日，切片出"截至该信号日"的
+    # 窗口估 σ_p——消费日期 ≤ 真实信号日，故无前视。已知局限：某信号日
+    # 无有效候选时 simulate 跳过调用，该信号日由后续调用按序补位消费，
+    # σ_p 截止日可能滞后若干个调仓期（只会滞后、绝不前视）；滞后到窗口
+    # 不足时安全退化为 scale=1。显式传 close_wide 可绕过该通道。
+    close_history: pd.DataFrame | None = None
+    signal_dates: list | None = None
+    _vol_cursor: int = field(default=0, init=False, repr=False, compare=False)
 
     def rank_select(
         self,
@@ -146,8 +182,9 @@ class PortfolioBuilder:
         market_adx=None,
         buffer_keep: set[int] | None = None,
         buffer_ratio: float = 0.0,
+        close_wide: pd.DataFrame | None = None,
     ) -> tuple[list[int], dict[int, float]]:
-        """选股流水线唯一入口：门控 → 排名计数 → 等权 → 弱市叠加。
+        """选股流水线唯一入口：门控 → 排名计数 → 等权 → 弱市/波动率叠加。
 
         candidates/scores 为同序数组（scores 对应候选的因子值）。
         返回 (chosen_list, targets)；无票过门控时返回 ([], {})。
@@ -155,6 +192,14 @@ class PortfolioBuilder:
         buffer_keep/buffer_ratio（P1-1 Buffer Zone，spec §4.1）：老持仓在 top-(N+M) 内
         则保留，空缺从严格 top-N 补足。buffer_keep 为老持仓 code_idx 集合，
         buffer_ratio=0.0 或 buffer_keep=None 时退化为严格 top-N（向后兼容）。
+
+        vol targeting（policy.vol_target_annual 非 None 时启用）：σ_p 用持仓
+        等权组合的滚动已实现波动（core.portfolio.portfolio_vol）估计，
+        vol_scale = clip(target/σ_p, lo, hi)，与弱市 regime_scale 相乘后整体
+        clip 到 [vol_target_lo, vol_target_hi]。close_wide 为显式传入的收盘价
+        窗口（须已截到信号日，供库外调用/单测使用，优先于 builder 通道）；
+        缺省走 builder 的 close_history+signal_dates 通道（prepare 注入，按
+        调用顺序消费信号日切片，无前视）。
         """
         cand = np.asarray(candidates)
         sc = np.asarray(scores, dtype=float)
@@ -193,6 +238,40 @@ class PortfolioBuilder:
                     chosen = old_in_buffer[:long_n]
         targets = self.equal_weights(chosen)
         scale = policy.scale_for_regime(market_adx)
+        if policy.vol_target_annual is not None:
+            hist = close_wide
+            if hist is None and self.close_history is not None:
+                # 引擎通道：每次调用对应一个调仓信号日，消费切片"截至当日"
+                # 的窗口（无前视）；空选股调用也消费，保持游标与信号日对齐。
+                hist = self._consume_signal_slice()
+            if targets:
+                sigma = (portfolio_vol(hist, window=policy.vol_target_window,
+                                       codes=[self.codes[k] for k in chosen])
+                         if hist is not None else float("nan"))
+                vol_scale = policy.vol_scale_for(sigma)
+                if vol_scale != 1.0:
+                    # vol targeting 有效（σ_p 可用）：regime × vol 相乘后整体
+                    # clip 到 [vol_target_lo, vol_target_hi]。
+                    # σ_p 无效时 vol_scale_for 恒返回 1.0（安全退化语义），
+                    # 跳过 clip——否则弱市 regime_scale 已低于 lo 时会被 clip
+                    # 强制抬仓，违背"σ_p 无效→不干预"的退化语义
+                    # （OCR 2026-10-09 low finding）。
+                    scale = float(np.clip(scale * vol_scale,
+                                          policy.vol_target_lo,
+                                          policy.vol_target_hi))
         if scale != 1.0 and targets:
             targets = {k: v * scale for k, v in targets.items()}
         return chosen, targets
+
+    def _consume_signal_slice(self) -> pd.DataFrame | None:
+        """按调用顺序消费下一个调仓信号日，返回截至该日的收盘价窗口。
+
+        signal_dates 未注入（None/空）时返回 None——拒绝在全窗口上估 σ_p，
+        避免把未来数据泄漏进早期调仓（前视）；消费位置越过末尾时钳制在
+        最后一个信号日（方向安全：最多滞后，不会前视）。
+        """
+        if not self.signal_dates:
+            return None
+        pos = min(self._vol_cursor, len(self.signal_dates) - 1)
+        self._vol_cursor += 1
+        return self.close_history.loc[:self.signal_dates[pos]]
