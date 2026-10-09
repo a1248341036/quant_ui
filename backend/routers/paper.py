@@ -24,20 +24,6 @@ JQ_UNIVERSE = "全A主板"
 _jq_codes_cache: list[str] | None = None
 
 
-def _jq_repro_import():
-    """导入 scripts/jq_repro/jq_data(全A主板域面板构建). 失败返回 None."""
-    import sys
-    d = PROJECT_ROOT / "scripts" / "jq_repro"
-    if str(d) not in sys.path:
-        sys.path.insert(0, str(d))
-    try:
-        import jq_data  # noqa
-        return jq_data
-    except Exception as exc:  # noqa: BLE001
-        print(f"[paper] jq_data 导入失败: {exc}", flush=True)
-        return None
-
-
 def _jq_mainboard_codes() -> list[str]:
     """全A主板域代码(00/60 前缀, 与 CNE 日线数据域一致). 轻量读取."""
     global _jq_codes_cache
@@ -61,14 +47,17 @@ def _jq_mainboard_codes() -> list[str]:
 
 
 def _jq_panel(end: str | None = None) -> pd.DataFrame:
-    """全A主板事件面板(CNE 全市场日线, 前复权), 近 800 天."""
-    jd = _jq_repro_import()
-    if jd is None:
-        raise RuntimeError("全A主板面板构建失败: jq_data 不可用")
-    end_ts = pd.Timestamp(end) if end else pd.Timestamp.today()
-    start = (end_ts - pd.Timedelta(days=800)).date().isoformat()
-    panel, _, _ = jd.load_panel(start, end_ts.date().isoformat())
-    return panel
+    """全A主板事件面板（CNE 全市场日线，前复权），近 800 天。
+
+    2026-10-09 修复：原实现走 jd.load_panel，只产出 7 列
+    （缺 high/low/turn20/volume），engine 因子回放 KeyError: 'turn20'，
+    /api/paper/run 的 jq 分支从未真正跑通。改用 _stock_panel——与普通
+    股票账户同一 11 列口径（含 turn20/am20 滚动因子，_finalize_stock_df
+    一致口径），避免双面板口径漂移。
+    """
+    codes_map = _stock_codes_by_universe()
+    all_codes = sorted(set().union(*codes_map.values()))
+    return _stock_panel(all_codes, end)
 
 
 class AccountRequest(BaseModel):

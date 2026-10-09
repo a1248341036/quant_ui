@@ -59,9 +59,28 @@ try {
         exit 0
     }
 } catch {
-    Write-Log "backend offline (port 17891 not responding), skipping paper run"
-    Write-Log "==== paper daily DONE (backend offline) ===="
-    exit 0
+    # ── 后端离线：降级走离线重放（进程内 run_paper_trade，不依赖 17891）──
+    Write-Log "backend offline (port 17891 not responding), falling back to offline replay"
+    $offlineArgs = @("-X", "utf8", (Join-Path $RepoRoot "scripts\paper_offline_run.py"))
+    if ($ExecDate) { $offlineArgs += $ExecDate }
+    $out = & $Py @offlineArgs 2>&1
+    $outText = ($out | Out-String).Trim()
+    foreach ($line in ($outText -split "`n")) { if ($line.Trim()) { Write-Log "  [py] $($line.Trim())" } }
+    try {
+        $j = ($outText -split "`n" | Where-Object { $_.Trim().StartsWith("{") } | Select-Object -Last 1) | ConvertFrom-Json
+        if ($j.ok) {
+            Write-Log "offline replay OK: run_date=$($j.run_date), accounts=$(@($j.accounts).Count)"
+            Write-Log "==== paper daily DONE (offline) ===="
+            exit 0
+        }
+        Write-Log "offline replay FAILED: $($j.error)"
+        Write-Log "==== paper daily DONE (offline failed) ===="
+        exit 1
+    } catch {
+        Write-Log "offline replay FAILED: unparseable output"
+        Write-Log "==== paper daily DONE (offline failed) ===="
+        exit 1
+    }
 }
 
 # 2. 执行模拟盘
