@@ -38,9 +38,11 @@ def main() -> int:
     skipped = [a["id"] for a in accounts
                if a.get("status") == "active" and a["id"] not in jq_ids]
     if not jq_ids:
-        print(json.dumps({"ok": False, "error": "no_offline_capable_accounts",
+        # 无可离线处理账户属正常跳过，与在线路径零账户语义对齐，避免定时任务误报失败。
+        print(json.dumps({"ok": True, "run_date": None, "accounts": [],
+                          "offline": True,
                           "skipped_needing_backend": skipped}, ensure_ascii=False))
-        return 1
+        return 0
 
     panel = _jq_panel(exec_date)
     codes = {JQ_UNIVERSE: sorted(panel["code"].unique())}
