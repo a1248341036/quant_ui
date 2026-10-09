@@ -956,6 +956,14 @@ async def stacking_events(train_id: str):
     )
 
 
+@router.get("/stacking/ops")
+def stacking_ops() -> dict[str, Any]:
+    """ML 组合运营总览：生效分数 / 最新名单 / 模拟盘对照 / 训练历史 / 周节奏。"""
+    from backend import stacking_ops_service
+
+    return stacking_ops_service.get_ops_overview()
+
+
 # ══════════════════════════════════════════════════════════════════════
 #  组合因子库（composite factors）：固化组合分数为可复现条目
 # ══════════════════════════════════════════════════════════════════════

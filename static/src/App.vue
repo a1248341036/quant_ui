@@ -36,6 +36,9 @@
       <button :class="{active: tab==='paper'}" @click="switchTab('paper')">
         <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M8 9h8M8 13h5"/></svg>模拟盘
       </button>
+      <button :class="{active: tab==='mlops'}" @click="switchTab('mlops')">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v3m0 12v3M3 12h3m12 0h3"/><circle cx="12" cy="12" r="4"/></svg>ML运营
+      </button>
       <button :class="{active: tab==='history'}" @click="switchTab('history')">
         <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>历史
       </button>
@@ -62,6 +65,7 @@
     <JqRun v-else-if="tab==='jqrun'" />
     <AlphaAgent v-else-if="tab==='alphaagent'" />
     <Paper v-else-if="tab==='paper'" />
+    <MlOpsPanel v-else-if="tab==='mlops'" />
     <History v-else-if="tab==='history'" />
 
     <Account v-else-if="tab==='account'" />
@@ -88,10 +92,11 @@ import History from './views/History.vue'
 import Account from './views/Account.vue'
 import DataView from './views/Data.vue'
 import Sentiment from './views/Sentiment.vue'
+import MlOpsPanel from './components/alphaagent/MlOpsPanel.vue'
 
 export default {
   name: 'App',
-  components: { Dashboard, Pool, Stock, Backtest, Composite, CodeView, JqRun, AlphaAgent, Paper, History, Account, DataView, Sentiment },
+  components: { Dashboard, Pool, Stock, Backtest, Composite, CodeView, JqRun, AlphaAgent, Paper, History, Account, DataView, Sentiment, MlOpsPanel },
   data() {
     return {
       store,
