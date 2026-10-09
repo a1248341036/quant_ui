@@ -98,14 +98,14 @@ memory_suggest / memory_form / memory_distill / run_end`），k=v 字段 + turn 
 
 | 阶段 | 门槛（默认） | 写入位置 |
 |---|---|---|
-| 盲测终审（stage_one 之前） | \|test IC\| ≥ 0.010（2026-09-11 新增绝对下限，防死门 t≈2.5）, test/train IC 保留比 ≥ 0.50, 方向一致 | 不进任何库（不通过直接拒） |
+| 盲测终审（stage_one 之前） | \|test IC\| ≥ 0.015（2026-10-09 起与 val 段一致；慢档按 label 对齐 5d=0.0225 / 20d=0.0398，见评估档位区）, test/train IC 保留比 ≥ 0.50, 方向一致 | 不进任何库（不通过直接拒） |
 | candidate（观察池，2026-09-11 第二版） | \|train IC\| ≥ 0.020, \|train ICIR\| > 0.28, coverage > 0.85, max_corr < 0.5, lag1 自相关 ≥ 0.18, val 保留比 ≥ 0.5, \|val IC\| ≥ 0.012 | candidate_main/（统一大库） |
 | production | \|train IC\| ≥ 0.025, \|train ICIR\| ≥ 0.30, \|val IC\| ≥ 0.015, val 保留比 ≥ 0.60, winsorized 衰减 ≤ 0.10, max_corr < 0.4 | production_main/（统一大库） |
 
 > **2026-09-11 门槛演进（两轮）**：第一版曾把进池线抬到与精筛对齐（0.025/0.30，
 > 预筛池）——实测 technical 日频带（IC 0.015~0.03）几乎清空（25 条候选仅 1 条 tech
 > 存活），遂回改为**观察池**：进池线回到 0.020/0.28（晋升线之下半档），val（≥0.012）
-> 与盲测（≥0.010）绝对门保留——三段绝对门防"train 行 OOS 死"的假因子，量纲按各段
+> 与盲测（1d ≥0.015、2026-10-09 与 val 对齐；此前 0.010）绝对门保留——三段绝对门防"train 行 OOS 死"的假因子，量纲按各段
 > 噪声折算（统一数字 ≠ 统一严格度；全段统一 0.02 会使 technical 存活为 0，实测）。
 > `evaluation_policy`（评估屏幕线）同步 0.020/0.28/0.012；fundamental 档 override 与
 > technical 同值（0.020/0.28/0.012，作为量纲锚），仅 val 保留比 0.65 与 production 更严项

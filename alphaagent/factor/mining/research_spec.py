@@ -425,6 +425,8 @@ def default_research_spec(mode: str = "technical") -> dict[str, Any]:
         spec["delivery_policy"]["production"]["engine_gate"].update(
             mode_spec.engine_gate_overrides
         )
+    if mode_spec.blind_test_overrides:
+        spec["delivery_policy"]["blind_test"].update(mode_spec.blind_test_overrides)
     # 研报模式的流程开关（复现/发散阶段、复现门禁、锁定轮数）；其他模式为空 dict。
     if getattr(mode_spec, "report_policy_overrides", None):
         spec.setdefault("report_policy", {}).update(mode_spec.report_policy_overrides)

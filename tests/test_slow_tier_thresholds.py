@@ -29,6 +29,7 @@ from alphaagent.factor.mining.research_spec import (
     effective_research_spec,
     ensure_label_freq_consistency,
 )
+from alphaagent.factor.mining.delivery_criteria import DeliveryCriteria
 
 # 主档（label_1d）标定线 = 对标基准
 BASE_IC, BASE_ICIR, BASE_VAL_IC = 0.02, 0.28, 0.015
@@ -190,3 +191,30 @@ def test_fundamental_scale_free_matches_monthly() -> None:
     pd_f = (fund["delivery_policy"]["production"] or {})
     pd_m = (m20["delivery_policy"]["production"] or {})
     assert pd_f["max_winsorized_abs_ic_decay"] == pd_m["max_winsorized_abs_ic_decay"] == 0.10
+
+
+# ── 盲测绝对门与 val 段一致（2026-10-09 用户定调）───────────────────────
+# 盲测是唯一诚实样本外，绝对门与各档 val 段绝对门同一把尺子：1d→0.015、5d→0.0225、
+# 20d→0.0398（= 各档 min_val_abs_ic）。旧 0.010 的 t≈2.5 论证依赖 ~410 独立日样本，
+# 实测 IC 自相关 0.998+ 新息样本远少，且 20d 档 0.010 仅为候选线 0.053 的 1/5 量纲失配。
+BLIND_EXPECTED_ABS_IC = {
+    "technical": 0.015,
+    "technical_weekly": 0.0225,
+    "technical_monthly": 0.0398,
+    "fundamental": 0.0398,
+}
+
+
+@pytest.mark.parametrize("mode", sorted(BLIND_EXPECTED_ABS_IC))
+def test_blind_test_abs_ic_aligns_with_val_gate(mode: str) -> None:
+    """盲测绝对门 == 本档 val 段绝对门（test 段与 val 同一把尺子）。"""
+    spec = effective_research_spec(mode)
+    blind = spec["delivery_policy"]["blind_test"]
+    prod = spec["delivery_policy"]["production"]
+    assert blind["min_test_abs_ic"] == pytest.approx(prod["min_val_abs_ic"], abs=1e-4)
+    assert blind["min_test_abs_ic"] == pytest.approx(BLIND_EXPECTED_ABS_IC[mode], abs=1e-4)
+
+
+def test_blind_test_canonical_default_matches_1d_val() -> None:
+    """canonical 默认（1d 口径）= 1d val 绝对门 0.015。"""
+    assert DeliveryCriteria.defaults().blind_test.min_test_abs_ic == pytest.approx(0.015, abs=1e-4)
