@@ -28,16 +28,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from alphaagent.factor.mining.memory.expressions import (  # noqa: E402
-    _parse_expression_structure,
-    _structure_fingerprint,
-)
+from alphaagent.factor.mining.memory.expressions import expression_features  # noqa: E402 公共入口（算子/变量/窗口/指纹）
 
 DEFAULT_REGISTRY = (
     ROOT / "artifacts" / "alphaagent" / "factorzoo" / "candidate_main" / "mining_candidate_registry.json"
@@ -50,6 +48,8 @@ def load_factors(path: Path) -> list[dict]:
         raise ValueError("factors 必须是列表 [{name, expr, ...}, ...]")
     rows: list[dict] = []
     for i, item in enumerate(data):
+        if not isinstance(item, dict):
+            raise ValueError(f"第 {i} 个因子项必须是 dict {{name, expr, ...}}，实际为 {type(item).__name__}")
         name = str(item.get("name") or f"f{i}")
         expr = str(item.get("expr") or "")
         if not expr.strip():
@@ -84,7 +84,8 @@ def load_registry(path: Path, *, expect_file: bool = False) -> list[tuple[str, s
 
 
 def _struct(expr: str) -> dict:
-    return _parse_expression_structure(expr or "")
+    """表达式结构特征（公共入口 expression_features；fingerprint 与 AST 指纹同源）。"""
+    return expression_features(expr or "")
 
 
 def precheck(factors: list[dict], registry: list[tuple[str, str]]) -> dict:
@@ -94,7 +95,7 @@ def precheck(factors: list[dict], registry: list[tuple[str, str]]) -> dict:
         st = _struct(row["expr"])
         entries.append({
             "name": row["name"],
-            "fp": _structure_fingerprint(row["expr"]) or "",
+            "fp": str(st.get("fingerprint") or ""),
             "ops": sorted(set(st.get("operators") or [])),  # 集合化：嵌套重复算子不算不同族
         })
 
@@ -111,7 +112,8 @@ def precheck(factors: list[dict], registry: list[tuple[str, str]]) -> dict:
     # 1b. 与 candidate registry 的 EXACT 碰撞
     reg_by_fp: dict[str, list[str]] = {}
     for rname, rexpr in registry:
-        fp = _structure_fingerprint(rexpr) or ""
+        st = _struct(rexpr)
+        fp = str(st.get("fingerprint") or "")
         if fp:
             reg_by_fp.setdefault(fp, []).append(rname)
     exact_registry: list[dict] = []
@@ -206,7 +208,7 @@ def main() -> int:
     # registry 加载：显式传入但缺失/损坏 → 硬错（防"EXACT 0 处"假阴性 fail-open）；
     # 默认路径缺失（worktree/未同步 artifacts）→ 降级告警，registry 检查跳过。
     reg_path = Path(args.registry)
-    explicit = args.registry != str(DEFAULT_REGISTRY)
+    explicit = os.path.normcase(str(reg_path.resolve())) != os.path.normcase(str(DEFAULT_REGISTRY.resolve()))
     try:
         registry = load_registry(reg_path, expect_file=explicit)
     except (FileNotFoundError, ValueError) as exc:
