@@ -21,6 +21,10 @@ import json
 import sys
 import time
 from pathlib import Path
+from typing import Any
+
+import numpy as np
+import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -34,6 +38,20 @@ from alphaagent.factor.mining.eval.schemas import (  # noqa: E402
 )
 from alphaagent.factor.mining.research_spec import effective_research_spec  # noqa: E402
 from alphaagent.factor.mining.service import StockEvalService  # noqa: E402
+
+# 正交性检查依赖（与 agentscope 链路 _orthogonality_check 同源，2026-10-09 前移到挖掘预筛）
+from alphaagent.factor.mining.agent.agentscope_tools import (  # noqa: E402
+    _ORTHO_BLOCK_DAYS,
+    _ORTHO_N_DATES,
+    _sample_orthogonality_panel,
+)
+from alphaagent.data.panel import slice_panel  # noqa: E402
+from alphaagent.dsl import eval_factor  # noqa: E402
+from alphaagent.factor.align import align_series_to_panel  # noqa: E402
+from alphaagent.factor.metrics import spearman_ic  # noqa: E402
+from alphaagent.factor.zoo import FactorZoo  # noqa: E402
+from alphaagent.core.paths import FACTORZOO_DIR  # noqa: E402
+from core import factor_categories  # noqa: E402
 
 # 档位 → 该档评估 label（与 core/research_modes.py 的 recommended_label_col 一致）
 MODE_LABEL = {
@@ -79,6 +97,181 @@ def _extract(res: dict) -> dict:
     }
 
 
+def _ortho_threshold() -> float:
+    """离线正交门阈值：取 evaluation_policy.orthogonality_max_corr（与 agentscope 链路同源）。"""
+    try:
+        from alphaagent.factor.evaluation.defaults import DEFAULT_EVALUATION_POLICY
+
+        return float(DEFAULT_EVALUATION_POLICY.get("orthogonality_max_corr", 0.7))
+    except Exception:  # noqa: BLE001
+        return 0.7
+
+
+def _orthogonality_check(
+    session: Any,
+    multi_line_expr: str,
+    max_corr: float,
+    exclude_factor_id: str | None = None,
+) -> dict[str, Any]:
+    """挖掘预筛阶段正交性检查（与 agentscope _orthogonality_check 同源，2026-10-09 前移）。
+
+    在 stage_one 预筛通过后、候选池存储前执行：抽样可见区间面板（train∪val，剔除盲测），
+    与 production_main / candidate_main / candidate_registry 已有因子算 Spearman 相关，
+    max_abs_corr >= max_corr 则标记 fail_orthogonal 并附 top-3 相似因子清单。
+
+    避免挖掘产出的因子"过 stage_one → 入候选池 → stage_two 才被正交拒绝"的算力浪费。
+
+    exclude_factor_id：跳过该 factor_id（重测已入库因子时排除自己，避免自相关 1.0 误判）。
+    """
+    result: dict[str, Any] = {
+        "passed": True,
+        "skipped_reason": None,
+        "threshold": max_corr,
+        "max_abs_corr": 0.0,
+        "compared_factors": 0,
+        "blocked_factor_id": None,
+        "similar_factors": [],
+    }
+    try:
+        panel = getattr(session, "panel", None)
+        ctx = getattr(session, "ctx", None)
+        if panel is None or ctx is None:
+            result["skipped_reason"] = "session_missing_panel_or_ctx"
+            return result
+        # 可见区间 = train ∪ val（剔除盲测段，防泄漏）
+        try:
+            start, end = ctx.visible_range()
+        except Exception:  # noqa: BLE001
+            result["skipped_reason"] = "visible_range_unavailable"
+            return result
+        visible = slice_panel(panel, start=start, end=end)
+        sampled = _sample_orthogonality_panel(visible)
+
+        # 统一大库：production_main + candidate_main + FACTORZOO_DIR（去重）
+        roots: list = []
+        for root in (
+            factor_categories.production_dir("technical"),
+            factor_categories.candidate_dir("technical"),
+            FACTORZOO_DIR,
+        ):
+            if root not in roots:
+                roots.append(root)
+        zoos = []
+        for root in roots:
+            try:
+                zoos.append(FactorZoo.open(root))
+            except (FileNotFoundError, OSError):
+                continue
+        registry_path = factor_categories.candidate_registry_path("technical")
+        registry = (
+            json.loads(registry_path.read_text(encoding="utf-8"))
+            if registry_path.is_file()
+            else {}
+        )
+        if sum(z.n_factors for z in zoos) == 0 and not registry:
+            result["skipped_reason"] = "empty_factor_libraries"
+            return result
+
+        raw = eval_factor(multi_line_expr, sampled)
+        if not isinstance(raw, pd.Series):
+            raise TypeError(f"factor_output_must_be_series:{type(raw)!r}")
+        compared: set[str] = set()
+        corr_pairs: list[tuple[str, float]] = []
+        sampled_keys = sampled.index
+        new_values = np.asarray(
+            pd.Series(
+                np.asarray(align_series_to_panel(raw, sampled), dtype=np.float64),
+                index=sampled.index,
+            ).reindex(sampled_keys),
+            dtype=np.float64,
+        )
+
+        # 正式库 + 候选库 dense 因子
+        for zoo in zoos:
+            rows = zoo.index.rows
+            selected_dates = set(sampled.index.get_level_values("datetime"))
+            subset = rows[rows["datetime"].isin(selected_dates)]
+            if subset.empty:
+                continue
+            row_ids = subset["row_id"].to_numpy(dtype=np.int64)
+            for factor_id in zoo.catalog.list_factor_ids()[:20]:
+                if factor_id in compared:
+                    continue
+                if exclude_factor_id is not None and factor_id == exclude_factor_id:
+                    continue  # 重测已入库因子时排除自己
+                compared.add(factor_id)
+                try:
+                    subset_keys = pd.MultiIndex.from_arrays(
+                        [
+                            pd.to_datetime(subset["datetime"]).to_numpy(),
+                            subset["instrument"].astype(str).to_numpy(),
+                        ],
+                        names=["datetime", "instrument"],
+                    )
+                    old_by_key = pd.Series(
+                        np.asarray(zoo.read_factor(factor_id)[row_ids], dtype=np.float64),
+                        index=subset_keys,
+                    )
+                    old_values = np.asarray(old_by_key.reindex(sampled_keys), dtype=np.float64)
+                except Exception:  # noqa: BLE001
+                    continue
+                valid = np.isfinite(old_values) & np.isfinite(new_values)
+                if int(valid.sum()) < 30:
+                    continue
+                corr = abs(float(spearman_ic(old_values[valid], new_values[valid], min_pairs=30)))
+                if np.isfinite(corr):
+                    corr_pairs.append((factor_id, corr))
+                if np.isfinite(corr) and corr > result["max_abs_corr"]:
+                    result["max_abs_corr"] = corr
+                    result["blocked_factor_id"] = factor_id
+
+        # 候选池 registry-only 因子（无 dense 值，用 DSL 在抽样面板上现算）
+        for factor_id, entry in sorted(registry.items()):
+            if factor_id in compared or not isinstance(entry, dict):
+                continue
+            if exclude_factor_id is not None and factor_id == exclude_factor_id:
+                continue  # 重测已入库因子时排除自己，避免自相关 1.0 误判
+            expr = str(entry.get("expr") or "").strip()
+            if not expr:
+                continue
+            compared.add(factor_id)
+            try:
+                old_raw = eval_factor(expr, sampled)
+                old_values = np.asarray(
+                    pd.Series(
+                        np.asarray(align_series_to_panel(old_raw, sampled), dtype=np.float64),
+                        index=sampled.index,
+                    ).reindex(sampled_keys),
+                    dtype=np.float64,
+                )
+            except Exception:  # noqa: BLE001
+                continue
+            valid = np.isfinite(old_values) & np.isfinite(new_values)
+            if int(valid.sum()) < 30:
+                continue
+            corr = abs(float(spearman_ic(old_values[valid], new_values[valid], min_pairs=30)))
+            if np.isfinite(corr):
+                corr_pairs.append((factor_id, corr))
+            if np.isfinite(corr) and corr > result["max_abs_corr"]:
+                result["max_abs_corr"] = corr
+                result["blocked_factor_id"] = factor_id
+
+        result["compared_factors"] = len(compared)
+        corr_pairs.sort(key=lambda p: -p[1])
+        result["similar_factors"] = [
+            {"factor_id": fid, "corr": round(c, 4)} for fid, c in corr_pairs[:3]
+        ]
+        result["passed"] = result["max_abs_corr"] < max_corr
+        return result
+    except Exception as exc:  # noqa: BLE001
+        return {
+            **result,
+            "passed": False,
+            "skipped_reason": None,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Harness 挖掘：批量评估自研因子")
     ap.add_argument("--mode", default="technical", choices=sorted(MODE_LABEL))
@@ -86,6 +279,14 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--out", default="", help="逐行结果写出路径（JSONL）")
     ap.add_argument("--val", action="store_true", help="对 train 全门通过者追加 val 评估")
+    ap.add_argument("--check-orthogonality", dest="check_ortho", action="store_true",
+                    default=True,
+                    help="stage_one 预筛通过后立即查与库内/候选池因子的截面 Spearman 相关（默认开，"
+                         "前移自 agentscope _orthogonality_check，避免过线后入候选池再被正交拒绝）")
+    ap.add_argument("--no-check-orthogonality", dest="check_ortho", action="store_false",
+                    help="关闭正交性检查（仅做 stage_one 统计预筛）")
+    ap.add_argument("--max-cs-corr", type=float, default=0.0,
+                    help="正交门阈值；0 = 取 evaluation_policy.orthogonality_max_corr 默认值（与 agentscope 同源）")
     ap.add_argument("--fundamentals", action="store_true", help="会话载入 funda_* 列")
     ap.add_argument("--universe", default="all",
                     help="股票池（评估口径，非因子属性）：all / top300cap / mid301_800cap / "
@@ -136,14 +337,36 @@ def main() -> int:
             except Exception as exc:  # noqa: BLE001 — 单因子失败不中断批量
                 got, err = {}, f"{type(exc).__name__}: {str(exc)[:300]}"
             fails = _flags(args.mode, got) if got else ["eval_error"]
+            ortho: dict[str, Any] | None = None
+            if not fails and args.check_ortho:
+                # stage_one 预筛通过 → 立即查正交性（前移自 agentscope _orthogonality_check）
+                threshold = args.max_cs_corr if args.max_cs_corr > 0 else _ortho_threshold()
+                session = svc.sessions.get(sid)
+                ortho = _orthogonality_check(session, expr, threshold, exclude_factor_id=name)
+                if not ortho.get("passed"):
+                    fails.append(
+                        f"orthogonal<{threshold}(max_corr={ortho.get('max_abs_corr'):.3f}"
+                        f",block={ortho.get('blocked_factor_id')})"
+                    )
             rows.append({"mode": args.mode, "universe": universe, "name": name,
                          "why": f.get("why", ""), "expr": expr,
                          "ms": round((time.perf_counter() - t) * 1000), "err": err, **got,
-                         "fails": fails, "pass_stage_one_pre": not fails})
+                         "fails": fails, "pass_stage_one_pre": not fails,
+                         "orthogonality": ortho})
+            ortho_str = ""
+            if ortho is not None:
+                if ortho.get("skipped_reason"):
+                    ortho_str = f" ortho=skip({ortho['skipped_reason']})"
+                else:
+                    ortho_str = f" ortho={ortho.get('max_abs_corr', 0):.3f}"
+                    if ortho.get("similar_factors"):
+                        top = ortho["similar_factors"][0]
+                        ortho_str += f"({top['factor_id']}:{top['corr']})"
             print(f"  [{i:2d}/{len(factors)}] {name:34s} {'PASS' if not fails else 'fail':4s} "
                   f"ic={got.get('ic')} icir={got.get('icir')} cov={got.get('coverage')} "
                   f"ac={got.get('cs_autocorr')} turn={got.get('turnover_rebalance')} "
-                  f"{rows[-1]['ms']}ms {'; '.join(fails)} {err or ''}", flush=True)
+                  f"{rows[-1]['ms']}ms{'; '.join([''] + fails) if fails else ''} {err or ''}"
+                  f"{ortho_str}", flush=True)
             _flush()
 
         if args.val:
