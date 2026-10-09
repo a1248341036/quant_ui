@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 """模拟盘离线重放入口（后端 17891 不在线时的降级路径）。
 
-复刻 backend /api/paper/run 的 normal 路径（_stock_codes_by_universe →
-_stock_panel → run_paper_trade），不依赖后端进程：
-- 只处理 active 且非 alpha / 非 ETF / 非聚宽池 的股票账户（pred 因子账户在此列）；
-- ETF / AlphaAgent 因子 / 聚宽池账户依赖后端专有数据通道，离线时跳过并写明；
+复刻 backend /api/paper/run 的 jq 分支（_jq_panel → run_paper_trade），
+不依赖后端进程：
+- 只处理 active、非 alpha 且 universe == JQ_UNIVERSE("全A主板") 的账户；
+- ETF / AlphaAgent 因子 / 其他股票池账户离线时跳过，
+  并写入返回结果的 skipped_needing_backend；
 - 幂等由 paper_core 内置保证（同一 exec_date 重复执行自动跳过）。
 
 用法：
@@ -48,7 +49,8 @@ def main() -> int:
         account_ids=jq_ids,
         exec_date=exec_date, dry_run=False,
     )
-    res["ok"] = True
+    res["ok"] = bool(res.get("accounts")) and all(
+        a.get("processed") != "error" for a in res.get("accounts", []))
     res["offline"] = True
     res["skipped_needing_backend"] = skipped
     print(json.dumps(res, ensure_ascii=False, default=str))

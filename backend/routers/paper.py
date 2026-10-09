@@ -24,20 +24,6 @@ JQ_UNIVERSE = "全A主板"
 _jq_codes_cache: list[str] | None = None
 
 
-def _jq_repro_import():
-    """导入 scripts/jq_repro/jq_data(全A主板域面板构建). 失败返回 None."""
-    import sys
-    d = PROJECT_ROOT / "scripts" / "jq_repro"
-    if str(d) not in sys.path:
-        sys.path.insert(0, str(d))
-    try:
-        import jq_data  # noqa
-        return jq_data
-    except Exception as exc:  # noqa: BLE001
-        print(f"[paper] jq_data 导入失败: {exc}", flush=True)
-        return None
-
-
 def _jq_mainboard_codes() -> list[str]:
     """全A主板域代码(00/60 前缀, 与 CNE 日线数据域一致). 轻量读取."""
     global _jq_codes_cache
