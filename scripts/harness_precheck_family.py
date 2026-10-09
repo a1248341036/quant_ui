@@ -203,7 +203,11 @@ def main() -> int:
     except Exception:
         pass
 
-    factors = load_factors(Path(args.factors))
+    try:
+        factors = load_factors(Path(args.factors))
+    except (FileNotFoundError, ValueError, json.JSONDecodeError) as exc:
+        print(f"[precheck] ERROR {exc}", file=sys.stderr)
+        return 2
 
     # registry 加载：显式传入但缺失/损坏 → 硬错（防"EXACT 0 处"假阴性 fail-open）；
     # 默认路径缺失（worktree/未同步 artifacts）→ 降级告警，registry 检查跳过。
