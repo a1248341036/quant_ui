@@ -43,6 +43,7 @@ class ResearchModeSpec:
     candidate_overrides: dict = field(default_factory=dict)       # delivery_policy.candidate
     production_overrides: dict = field(default_factory=dict)      # delivery_policy.production
     engine_gate_overrides: dict = field(default_factory=dict)     # delivery_policy.production.engine_gate
+    blind_test_overrides: dict = field(default_factory=dict)      # delivery_policy.blind_test
     # 研报模式专用：report_policy 覆盖（流程开关，如"复现阶段用机制卡、发散阶段用 RAG"）。
     # 非研报模式留空 → 行为与今天完全一致。
     report_policy_overrides: dict = field(default_factory=dict)
@@ -110,6 +111,12 @@ _MONTHLY_20D_OVERRIDES: dict[str, dict] = {
         "min_excess_annual": 0.03,    # 与 technical 同值（消除基本面档独有放宽 0.02）
         "min_excess_sharpe": 0.5,     # 与 technical 同值（消除基本面档独有放宽 0.4）
         "allowed_freqs": ["monthly"],
+    },
+    "blind_test_overrides": {
+        # 2026-10-09 用户定调：盲测绝对门与**本档 val 段绝对门一致**（盲测=唯一诚实样本外，
+        # 与 val 同一把尺子；旧 0.010 论证依赖 ~410 独立日样本 t≈2.5，实测 IC 自相关 0.998+
+        # 新息样本远少，且 0.010 仅为该档候选线 0.053 的 1/5 量纲失配）。
+        "min_test_abs_ic": 0.0398,    # = 20d val 绝对门（min_val_abs_ic）
     },
 }
 
@@ -238,6 +245,10 @@ RESEARCH_MODES: dict[str, ResearchModeSpec] = {
             "min_train_abs_ic": 0.0375,   # 0.030 × 1.25（主档正式库更严倍数）
             "min_train_icir": 0.4821,     # 0.450 × 0.30/0.28
             "min_val_abs_ic": 0.0225,
+        },
+        blind_test_overrides={
+            # 2026-10-09 用户定调：盲测绝对门与本档 val 段绝对门一致（= 5d val 线）。
+            "min_test_abs_ic": 0.0225,
         },
         engine_gate_overrides={
             "freq": "weekly",

@@ -38,7 +38,7 @@ def test_criteria_defaults_match_research_spec():
 
     blind = criteria_dp["blind_test"]
     assert blind["min_ic_retention"] == 0.50
-    assert blind["min_test_abs_ic"] == 0.010  # 2026-09-11 盲测绝对下限（防死门）
+    assert blind["min_test_abs_ic"] == 0.015  # 2026-10-09 起盲测绝对下限与 val 段一致（1d val=0.015）
 
     prod = criteria_dp["production"]
     assert prod["min_train_abs_ic"] == 0.025
