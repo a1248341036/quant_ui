@@ -58,13 +58,24 @@ def load_factors(path: Path) -> list[dict]:
     return rows
 
 
-def load_registry(path: Path) -> list[tuple[str, str]]:
-    """候选注册表 → [(name, expr), ...]（缺 expr 的条目跳过；文件不存在返回空）。"""
-    if not path.exists():
+def load_registry(path: Path, *, expect_file: bool = False) -> list[tuple[str, str]]:
+    """候选注册表 → [(name, expr), ...]（缺 expr 的条目跳过）。
+
+    - 文件不存在：默认路径（worktree/未同步 artifacts）→ 返回 []（降级，由调用方告警）；
+      显式传入（expect_file=True）→ FileNotFoundError（路径拼错必须暴露，防 fail-open）。
+    - 文件存在但 JSON 损坏/顶层非 dict → ValueError（防"registry EXACT 0 处"假阴性）。
+    """
+    p = Path(path)
+    if not p.exists():
+        if expect_file:
+            raise FileNotFoundError(f"registry 不存在: {path}")
         return []
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise ValueError(f"registry 解析失败（{path}）: {exc}") from exc
     if not isinstance(data, dict):
-        return []
+        raise ValueError(f"registry 顶层必须是 dict（keyed by 因子名）: {path}")
     out: list[tuple[str, str]] = []
     for name, entry in data.items():
         if isinstance(entry, dict) and entry.get("expr"):
@@ -87,17 +98,15 @@ def precheck(factors: list[dict], registry: list[tuple[str, str]]) -> dict:
             "ops": sorted(set(st.get("operators") or [])),  # 集合化：嵌套重复算子不算不同族
         })
 
-    # 1a. 批内 EXACT（同结构指纹）
+    # 1a. 批内 EXACT（同结构指纹）→ 按指纹分组（同组 = 可互相替代的重复）
     exact_batch: list[list[str]] = []
-    seen_fp: dict[str, str] = {}
+    fp_groups: dict[str, list[str]] = {}
     for e in entries:
-        fp = e["fp"]
-        if not fp:
-            continue
-        if fp in seen_fp:
-            exact_batch.append([seen_fp[fp], e["name"]])
-        else:
-            seen_fp[fp] = e["name"]
+        if e["fp"]:
+            fp_groups.setdefault(e["fp"], []).append(e["name"])
+    for names in fp_groups.values():
+        if len(names) > 1:
+            exact_batch.append(names)
 
     # 1b. 与 candidate registry 的 EXACT 碰撞
     reg_by_fp: dict[str, list[str]] = {}
@@ -156,8 +165,8 @@ def format_report(rep: dict, n: int) -> str:
     if rep["exact_batch"]:
         lines.append("")
         lines.append("[!] EXACT_DUPLICATE（批内同指纹——同构换窗长/变量也被 AST 指纹归一化捕获）：")
-        for a, b in rep["exact_batch"]:
-            lines.append(f"  {a} == {b}（保留一个即可）")
+        for grp in rep["exact_batch"]:
+            lines.append(f"  {' == '.join(grp)}（组内同构重复，保留一个即可）")
     if rep["exact_registry"]:
         lines.append("")
         lines.append("[!] EXACT_DUPLICATE（撞候选池 registry——已评估过，纯重复劳动）：")
@@ -193,7 +202,20 @@ def main() -> int:
         pass
 
     factors = load_factors(Path(args.factors))
-    registry = load_registry(Path(args.registry))
+
+    # registry 加载：显式传入但缺失/损坏 → 硬错（防"EXACT 0 处"假阴性 fail-open）；
+    # 默认路径缺失（worktree/未同步 artifacts）→ 降级告警，registry 检查跳过。
+    reg_path = Path(args.registry)
+    explicit = args.registry != str(DEFAULT_REGISTRY)
+    try:
+        registry = load_registry(reg_path, expect_file=explicit)
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"[precheck] ERROR {exc}", file=sys.stderr)
+        return 2
+    if not reg_path.exists() and not explicit:
+        print("[precheck][warn] 默认候选池 registry 不存在（worktree/未同步 artifacts？）"
+              "——registry 撞库与同算子集检查已跳过；如需检查用 --registry 指向主仓库路径。",
+              file=sys.stderr)
     rep = precheck(factors, registry)
 
     if args.json:

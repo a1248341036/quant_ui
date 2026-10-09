@@ -100,8 +100,19 @@ def test_load_factors_requires_nonempty_expr() -> None:
             pass
 
 
+def test_exact_batch_three_same_fp_one_group() -> None:
+    """三个同指纹因子 → 单个组（不是多对拆分，便于保留一个即可的决策）。"""
+    factors = _mk_factors(
+        ("x1", "TS_MEAN($close, 5)"),
+        ("x2", "TS_MEAN($close, 20)"),
+        ("x3", "TS_MEAN($close, 60)"),
+    )
+    rep = precheck(factors, registry=[])
+    assert rep["exact_batch"] == [["x1", "x2", "x3"]]
+
+
 def test_load_registry_filters_missing_expr() -> None:
-    """registry 加载：无 expr 条目跳过、文件不存在返回空。"""
+    """registry 加载：无 expr 条目跳过、文件不存在（默认路径）返回空。"""
     with tempfile.TemporaryDirectory() as d:
         p = Path(d) / "reg.json"
         p.write_text(
@@ -112,7 +123,31 @@ def test_load_registry_filters_missing_expr() -> None:
             encoding="utf-8",
         )
         assert load_registry(p) == [("ok", "TS_MEAN($close, 5)")]
-    assert load_registry(Path(d) / "reg.json") == []  # 目录已删 → 文件不存在
+    assert load_registry(Path(d) / "reg.json") == []  # 目录已删 → 文件不存在（降级）
+
+
+def test_load_registry_expect_file_missing_raises() -> None:
+    """显式传入但文件不存在 → FileNotFoundError（防"EXACT 0 处"假阴性 fail-open）。"""
+    try:
+        load_registry(Path("C:/definitely/not/here/reg.json"), expect_file=True)
+        raise AssertionError("应抛出 FileNotFoundError")
+    except FileNotFoundError:
+        pass
+
+
+def test_load_registry_bad_json_raises() -> None:
+    """文件存在但 JSON 损坏 / 顶层非 dict → ValueError（不静默返回空）。"""
+    import pytest as _pytest
+
+    with tempfile.TemporaryDirectory() as d:
+        bad = Path(d) / "bad.json"
+        bad.write_text("{ not json !!", encoding="utf-8")
+        with _pytest.raises(ValueError):
+            load_registry(bad)
+        not_dict = Path(d) / "list.json"
+        not_dict.write_text(json.dumps([{"expr": "x"}]), encoding="utf-8")
+        with _pytest.raises(ValueError):
+            load_registry(not_dict)
 
 
 def test_format_report_smoke() -> None:
