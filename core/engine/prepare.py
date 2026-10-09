@@ -85,6 +85,8 @@ def _prepare_backtest(cfg) -> dict:
     vol_target_lo = cfg.vol_target_lo
     vol_target_hi = cfg.vol_target_hi
     vol_target_window = cfg.vol_target_window
+    sell_down_to_target = cfg.sell_down_to_target
+    weight_band = cfg.weight_band
     selection_mode = cfg.selection_mode
     selection_pct = cfg.selection_pct
     min_positions = cfg.min_positions
@@ -262,6 +264,8 @@ def _prepare_backtest(cfg) -> dict:
         "warmup_days": warmup_days, "cash_mode": cash_mode,
         "limit_flags": limit_flags, "slippage_bps": slippage_bps,
         "max_participation": max_participation, "max_weight": max_weight,
+        "sell_down_to_target": sell_down_to_target,
+        "weight_band": weight_band,
         "industry_map": industry_map, "industry_cap": industry_cap,
         "factor_builder": factor_builder, "external_scores": external_scores,
         "factor_weights": factor_weights,

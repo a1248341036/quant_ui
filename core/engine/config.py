@@ -93,6 +93,21 @@ class BacktestConfig:
     vol_target_lo: float = 0.3
     vol_target_hi: float = 1.5
     vol_target_window: int = 60
+    # ── 执行层双向调仓（sell-down-to-target，2026-10 新增，默认关）──
+    # sell_down_to_target：名单内持仓目标权重缩小时部分减仓到目标。
+    #   False（默认）= 关：卖出只发生在标的退出目标名单时，名单内持仓不
+    #   减仓——权重缩放层（vol targeting/regime）调低目标后仓位降不下来，
+    #   风险承诺被结构性封顶。True = 开：对 targets[k]>0 的持仓，当前权重
+    #   高于目标权重且超出 weight_band 时按整手向下卖出差额（status=
+    #   "rebalanced"）；同时买入段对已持仓改为按“目标市值−当前市值”增量
+    #   补足，避免卖出释放的现金当天被整额买回同一持仓。（仅 cash_mode=True
+    #   的现金撮合路径生效；long_short 多空与旧权重连续模型不受影响。）
+    # weight_band：权重容差带（占组合市值的小数）。超额权重 ≤ band 不交易，
+    #   避免微小偏离反复产生换手。默认 0.15，量级对齐 no_trade_band（容忍
+    #   15% 成员变化不调仓）。调小 → 更贴近目标、换手/费用上升；调大 →
+    #   更省换手、偏离持续更久。
+    sell_down_to_target: bool = False
+    weight_band: float = 0.15
 
 
 def run_backtest_config(cfg: BacktestConfig) -> dict:
@@ -169,6 +184,8 @@ def run_backtest(
     vol_target_lo: float = 0.3,
     vol_target_hi: float = 1.5,
     vol_target_window: int = 60,
+    sell_down_to_target: bool = False,
+    weight_band: float = 0.15,
 ) -> dict:
     """事件驱动回测：T+1、一手 100 股、费用、可承载性过滤。
 
@@ -245,5 +262,7 @@ def run_backtest(
         vol_target_lo=vol_target_lo,
         vol_target_hi=vol_target_hi,
         vol_target_window=vol_target_window,
+        sell_down_to_target=sell_down_to_target,
+        weight_band=weight_band,
     )
     return run_backtest_config(cfg)
