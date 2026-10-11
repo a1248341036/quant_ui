@@ -71,7 +71,7 @@
               :class="{ sortable: c.sortable, active: lib.sortKey === c.key }"
               @click="c.sortable && toggleLibSort(c.key)"
               :title="c.sortable ? '点击排序' : ''">
-            {{ c.label }}<span v-if="lib.sortKey === c.key">{{ lib.sortDir > 0 ? ' ▲' : ' ▼' }}</span>
+            {{ c.key === 'created_at' && lib.library === 'removed' ? '删除时间' : c.label }}<span v-if="lib.sortKey === c.key">{{ lib.sortDir > 0 ? ' ▲' : ' ▼' }}</span>
           </th>
           <th></th>
         </tr>
@@ -308,7 +308,7 @@ export default {
           case 'status': return String(f.status || '')
           case 'rebalance_freq': return String(f.rebalance_freq || '')
           case 'facets': return String(f.facets_label || '')
-          case 'created_at': { const t = Date.parse(f.created_at || ''); return Number.isFinite(t) ? t : -Infinity }
+          case 'created_at': { const t = Date.parse(this.lib.library === 'removed' ? f.removed_at : f.created_at); return Number.isFinite(t) ? t : -Infinity }
           default: {
             const raw = key === 'ic' ? f.metrics?.ic : key === 'icir' ? f.metrics?.icir : f[key]
             const v = parseFloat(raw)
@@ -326,7 +326,7 @@ export default {
       const e = this.lib.exportEnd ? new Date(this.lib.exportEnd + 'T23:59:59').getTime() : null
       if (!s && !e) return this.libFactorsSorted
       return this.libFactorsFaceted.filter(f => {
-        const t = Date.parse(f.created_at || '')
+        const t = Date.parse(this.lib.library === 'removed' ? (f.removed_at || '') : (f.created_at || ''))
         if (!Number.isFinite(t)) return false
         if (s && t < s) return false
         if (e && t > e) return false

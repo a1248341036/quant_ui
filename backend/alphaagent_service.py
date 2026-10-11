@@ -1455,9 +1455,9 @@ def _archive_to_removed(
     """把被删因子归档进回收站（removed_main/），返回前确保 registry 已写盘。
 
     - removed registry 条目 = 原条目 + removed_at / removed_from / removed_reason
-    - 表达式（.dsl 或 expr 字段）一并落盘到 removed_main/expressions/，
-      前端"已删除因子库"页签可直接展示与对比；已存在删除库的同名因子不做
-      二次归档（幂等，防止重复删除同一因子时数据丢失）。
+    - 表达式落盘顺序：entry.expr → 原 expression_file（DSL 尚未删）→ expr_text；
+      落盘到 removed_main/expressions/，前端"已删除因子库"页签可直接展示与对比；
+      已存在删除库的同名因子不做二次归档（幂等，防止重复删除时数据丢失）。
     """
     removed_root = factor_categories.removed_dir(category)
     removed_root.mkdir(parents=True, exist_ok=True)
@@ -1470,8 +1470,18 @@ def _archive_to_removed(
     arch["removed_from"] = source_library
     arch["removed_reason"] = reason
 
-    # 表达式落盘：entry.expr 优先，否则读原库 DSL；从未知来源归档时用传入文本
+    # 表达式落盘：entry.expr 优先，否则按原 expression_file（DSL 尚未删除）补读，
+    # 再回落显式传入的 expr_text；确保所有条目表达式随归档落盘、不依赖原库存活。
     expr = str(arch.get("expr") or "").strip()
+    if not expr:
+        rel = str(entry.get("expression_file") or "")
+        if rel:
+            rel_path = ROOT / rel
+            if rel_path.is_file():
+                try:
+                    expr = rel_path.read_text(encoding="utf-8").strip()
+                except OSError:
+                    expr = ""
     if not expr and expr_text:
         expr = expr_text.strip()
     if expr:
@@ -2015,6 +2025,10 @@ def delete_factor(factor_id: str, *, library: str = "production", category: str 
     prod_root = factor_categories.production_dir(category)
     cand_root = _candidate_root(category)
 
+    # 回收站只读：不接受对 removed 库的删除（前端已禁用，后端防御性拒绝）
+    if library == "removed":
+        return {"error": "readonly_library"}
+
     root = prod_root if library == "production" else cand_root
     factor_names: list[str] = []
     expressions: list[str] = []
@@ -2053,26 +2067,29 @@ def delete_factor(factor_id: str, *, library: str = "production", category: str 
                     factor_names.append(str(meta.name).strip())
                 if str(meta.expr or "").strip():
                     expressions.append(str(meta.expr))
-            # 归档到回收站（生产库条目：zoo meta + delivered registry 合并）
-            arch_entry: dict[str, Any] = {
-                "name": str(getattr(meta, "name", "") or ""),
-                "expr": str(getattr(meta, "expr", "") or ""),
-            }
-            prod_reg_path = root / "mining_delivered_registry.json"
-            if prod_reg_path.is_file():
-                try:
-                    _prod_reg = json.loads(prod_reg_path.read_text(encoding="utf-8"))
-                except (json.JSONDecodeError, OSError):
-                    _prod_reg = {}
-                reg_entry = _prod_reg.get(factor_id)
-                if isinstance(reg_entry, dict):
-                    arch_entry = {**arch_entry, **reg_entry}
-            if arch_entry.get("name") or arch_entry.get("expr"):
-                _archive_to_removed(
-                    factor_id, arch_entry, category=category,
-                    source_library="production", reason="deleted_from_production",
-                )
             zoo.delete_factor(factor_id)
+            # 归档到回收站（生产库条目：zoo meta + delivered registry 合并）。
+            # 必须在 zoo.delete_factor 成功之后：避免僵尸条目（meta 为 None 但
+            # registry 残留）删除失败却先写入回收站，造成两侧状态矛盾。
+            if meta is not None:
+                arch_entry: dict[str, Any] = {
+                    "name": str(getattr(meta, "name", "") or ""),
+                    "expr": str(getattr(meta, "expr", "") or ""),
+                }
+                prod_reg_path = root / "mining_delivered_registry.json"
+                if prod_reg_path.is_file():
+                    try:
+                        _prod_reg = json.loads(prod_reg_path.read_text(encoding="utf-8"))
+                    except (json.JSONDecodeError, OSError):
+                        _prod_reg = {}
+                    reg_entry = _prod_reg.get(factor_id)
+                    if isinstance(reg_entry, dict):
+                        arch_entry = {**arch_entry, **reg_entry}
+                if arch_entry.get("name") or arch_entry.get("expr"):
+                    _archive_to_removed(
+                        factor_id, arch_entry, category=category,
+                        source_library="production", reason="deleted_from_production",
+                    )
         except KeyError:
             return {"error": "factor_not_found"}
 
