@@ -26,8 +26,25 @@ def _make_panel(n_days: int = 40, n_inst: int = 30, seed: int = 7) -> pd.DataFra
 
 
 def _make_tools(panel: pd.DataFrame) -> SimpleNamespace:
-    session = SimpleNamespace(panel=panel)
+    # 2026-09-24 盲测隔离后 _visible_panel(session) 要求 session.ctx.visible_range()
+    # （train∪val 可见段唯一真源）；fixture 不同步会导致 _orthogonality_check
+    # 走 visible_range_unavailable 空转（compared_factors=0、similar_factors=[]）。
+    ctx = SimpleNamespace(visible_range=lambda: ("2000-01-01", "2099-12-31"))
+    session = SimpleNamespace(panel=panel, ctx=ctx)
     return SimpleNamespace(service=SimpleNamespace(sessions={"s1": session}), session_id="s1")
+
+
+def _patch_factor_dirs(monkeypatch, tmp_path: Path, cand_root: Path, reg_path: Path):
+    """统一 monkeypatch 因子库目录：production/candidate/FACTORZOO 收敛到临时目录，
+    避免 _orthogonality_check 读到真实 artifact 大库（fixture 隔离，防 flaky）。"""
+    from pytest import MonkeyPatch
+
+    m: MonkeyPatch = monkeypatch
+    m.setattr("alphaagent.core.paths.FACTORZOO_DIR", cand_root, raising=False)
+    import core.factor_categories as fc
+    m.setattr(fc, "production_dir", lambda mode: tmp_path / "prod_missing", raising=False)
+    m.setattr(fc, "candidate_dir", lambda mode: cand_root, raising=False)
+    m.setattr(fc, "candidate_registry_path", lambda mode: reg_path, raising=False)
 
 
 def _zoo_with_factor(root: Path, panel: pd.DataFrame, factor_id: str, values: np.ndarray):
@@ -52,13 +69,7 @@ def test_ortho_reports_top_similar_factors(tmp_path, monkeypatch):
     # registry 同样放一个高相关 DSL
     reg_path = tmp_path / "registry.json"
     reg_path.write_text(json_dumps({"reg_high": {"expr": "RANK($close)"}}), encoding="utf-8")
-
-    monkeypatch.setattr(
-        "alphaagent.core.paths.FACTORZOO_DIR", fp, raising=False)
-    import core.factor_categories as fc
-    monkeypatch.setattr(fc, "candidate_dir", lambda mode: fp, raising=False)
-    monkeypatch.setattr(fc, "candidate_registry_path",
-                        lambda mode: reg_path, raising=False)
+    _patch_factor_dirs(monkeypatch, tmp_path, fp, reg_path)
 
     res = _orthogonality_check(tools, "RANK($close)")
     assert res["compared_factors"] >= 1
@@ -75,11 +86,7 @@ def test_ortho_low_corr_passes(tmp_path, monkeypatch):
     # 库内因子与 $close 无关的噪声 → 低相关通过
     rng = np.random.default_rng(3)
     _zoo_with_factor(fp, panel, "noise_v1", rng.normal(0, 1, len(panel)))
-    monkeypatch.setattr("alphaagent.core.paths.FACTORZOO_DIR", fp, raising=False)
-    import core.factor_categories as fc
-    monkeypatch.setattr(fc, "candidate_dir", lambda mode: fp, raising=False)
-    monkeypatch.setattr(fc, "candidate_registry_path",
-                        lambda mode: tmp_path / "missing.json", raising=False)
+    _patch_factor_dirs(monkeypatch, tmp_path, fp, tmp_path / "missing.json")
 
     res = _orthogonality_check(tools, "RANK($close)")
     assert res["passed"] is True

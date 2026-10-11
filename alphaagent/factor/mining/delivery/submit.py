@@ -396,7 +396,7 @@ class FactorSubmitService:
         expr_dir: Path | None = None,
         repo_root: Path,
         research_mode: str = "technical",
-        max_cs_corr: float = 0.8,
+        max_cs_corr: float = 0.8,  # DEPRECATED：仅兼容旧调用签名，不参与任何判定
         delivery_policy: dict[str, Any] | None = None,
         similar_top_k: int = 3,
         overwrite: bool = False,
@@ -420,7 +420,6 @@ class FactorSubmitService:
             else factor_categories.production_expr_dir(research_mode)
         )
         self.repo_root = Path(repo_root).resolve()
-        self.max_cs_corr = max_cs_corr
         self.delivery_policy = delivery_policy or {}
         # 两阶段门槛单一来源：由 research_spec 注入的 delivery_policy 构造，
         # 缺失键回落 canonical 默认（与 DEFAULT_RESEARCH_SPEC 一致）。
