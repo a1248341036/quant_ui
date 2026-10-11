@@ -164,13 +164,13 @@ def test_delete_factor_archives_to_removed(tmp_path, monkeypatch):
         lambda: type("Idx", (), {"delete_factor": lambda self, uid: None})(),
     )
 
-    res = svc.delete_factor("del_me", library="candidate", category="technical")
+    res = svc.delete_factor("del_me", library="candidate", category="technical", reason="与保留因子相关性 0.95，冗余")
     assert res["ok"] is True
-    # 回收站已归档
+    # 回收站已归档（含用户填写原因）
     got = json.loads((tmp_path / "removed_main" / "mining_removed_registry.json").read_text(encoding="utf-8"))
     assert got["del_me"]["name"] == "del_me"
     assert got["del_me"]["removed_from"] == "candidate"
-    assert got["del_me"]["removed_reason"] == "deleted_from_candidate"
+    assert got["del_me"]["removed_reason"] == "与保留因子相关性 0.95，冗余"
     assert got["del_me"]["removed_at"]
     # DSL 已在归档时落盘
     assert (tmp_path / "removed_main" / "expressions" / "del_me.dsl").is_file()
@@ -179,6 +179,39 @@ def test_delete_factor_archives_to_removed(tmp_path, monkeypatch):
         (tmp_path / "candidate_main" / "mining_candidate_registry.json").read_text(encoding="utf-8")
     )
     assert cand_on_disk == {}
+
+
+def test_delete_factor_reason_fallback(tmp_path, monkeypatch):
+    """reason 为空时回落默认标记（脚本/存量调用兼容）。"""
+    import backend.alphaagent_service as svc
+
+    cand_reg = {"legacy_x": {"name": "legacy_x", "expr": "$close"}}
+    monkeypatch.setattr(svc, "_candidate_registry", lambda category: dict(cand_reg))
+    monkeypatch.setattr(svc, "_removed_registry", lambda category: {})
+    monkeypatch.setattr(factor_categories, "removed_dir", lambda mode: tmp_path / "removed_main")
+    monkeypatch.setattr(factor_categories, "removed_registry_path",
+                        lambda mode: tmp_path / "removed_main" / "mining_removed_registry.json")
+    monkeypatch.setattr(svc, "_candidate_root", lambda category: tmp_path / "candidate_main")
+    (tmp_path / "candidate_main").mkdir(parents=True, exist_ok=True)
+
+    class _FakeMemory2:
+        def __init__(self, path):
+            self.path = path
+
+        def purge_factor(self, **kw):
+            return 0
+
+    monkeypatch.setattr(
+        "alphaagent.factor.mining.research_memory.ResearchMemoryStore", _FakeMemory2
+    )
+    monkeypatch.setattr(
+        "alphaagent.factor.index.get_factor_index",
+        lambda: type("Idx", (), {"delete_factor": lambda self, uid: None})(),
+    )
+
+    svc.delete_factor("legacy_x", library="candidate", category="technical")  # 不传 reason
+    got = json.loads((tmp_path / "removed_main" / "mining_removed_registry.json").read_text(encoding="utf-8"))
+    assert got["legacy_x"]["removed_reason"] == "deleted_from_candidate"
 
 
 def test_delete_factor_rejects_removed_library(tmp_path, monkeypatch):

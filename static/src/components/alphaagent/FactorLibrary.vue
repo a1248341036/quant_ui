@@ -167,6 +167,32 @@
         </div>
       </div>
     </Teleport>
+
+    <!-- 删除因子弹窗：填写删除原因（必填），归档进已删除因子库 -->
+    <Teleport to="body">
+      <div v-if="deleteTarget" class="factor-modal-overlay" @click="closeDelete()">
+        <div class="factor-modal factor-modal-sm" @click.stop>
+          <div class="factor-modal-head">
+            <strong>删除因子</strong>
+            <code>{{ deleteTarget.name }}</code>
+            <button class="factor-modal-close" @click="closeDelete()">×</button>
+          </div>
+          <div class="factor-modal-body">
+            <div class="factor-modal-section">
+              <label>删除原因 <em class="required">（必填，将记录到已删除因子库）</em></label>
+              <textarea v-model="deleteReason" class="delete-reason-input" rows="3"
+                placeholder="例如：与 vsi_ilw20_dbl_ema3 相关性 0.95，冗余淘汰" @keydown.enter.exact.prevent="doDelete()"></textarea>
+              <div v-if="deleteError" class="delete-reason-error">{{ deleteError }}</div>
+              <div v-if="deleteBusy" class="delete-reason-busy">删除中…</div>
+            </div>
+          </div>
+          <div class="factor-modal-foot">
+            <button class="factor-modal-btn" @click="closeDelete()">取消</button>
+            <button class="factor-modal-btn factor-modal-btn-danger" :disabled="deleteBusy" @click="doDelete()">确认删除</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -216,6 +242,11 @@ export default {
         ],
       },
       factorDetail: null,
+      // 删因弹窗（填写必填删除原因）
+      deleteTarget: null,
+      deleteReason: '',
+      deleteBusy: false,
+      deleteError: '',
     }
   },
   computed: {
@@ -474,13 +505,40 @@ export default {
         this.lib.error = e.message
       }
     },
-    async confirmDelete(f) {
-      if (!confirm('确认删除因子 ' + f.name + ' (' + String(f.factor_id).slice(0, 8) + ')？')) return
+    confirmDelete(f) {
+      this.deleteTarget = f
+      this.deleteReason = ''
+      this.deleteError = ''
+      this.deleteBusy = false
+    },
+    closeDelete() {
+      if (this.deleteBusy) return
+      this.deleteTarget = null
+      this.deleteReason = ''
+      this.deleteError = ''
+    },
+    async doDelete() {
+      if (!this.deleteTarget) return
+      const reason = this.deleteReason.trim()
+      if (!reason) {
+        this.deleteError = '请填写删除原因（必填）'
+        return
+      }
+      this.deleteError = ''
+      this.deleteBusy = true
+      const f = this.deleteTarget
       try {
-        await api('/api/alphaagent/factors/' + encodeURIComponent(f.factor_id) + '?library=' + this.lib.library + '&category=' + this.lib.category, { method: 'DELETE' })
+        await api('/api/alphaagent/factors/' + encodeURIComponent(f.factor_id)
+          + '?library=' + this.lib.library + '&category=' + this.lib.category
+          + '&reason=' + encodeURIComponent(reason),
+          { method: 'DELETE' })
+        this.deleteTarget = null
+        this.deleteReason = ''
+        this.deleteBusy = false
         this.loadFactors()
       } catch (e) {
-        this.lib.error = e.message
+        this.deleteBusy = false
+        this.deleteError = e.message
       }
     },
   },

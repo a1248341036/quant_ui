@@ -2010,11 +2010,17 @@ def get_factor_detail(factor_id: str, *, library: str = "production", category: 
     return detail
 
 
-def delete_factor(factor_id: str, *, library: str = "production", category: str = "technical") -> dict[str, Any]:
+def delete_factor(
+    factor_id: str, *, library: str = "production", category: str = "technical",
+    reason: str = "",
+) -> dict[str, Any]:
     """删除一个因子，并同步清除研究记忆/RAG 中的相关条目。
 
     删除口径以 factor_uid（中台 ID，identity.factor_uid 确定性派生）为主，
     name/expression 文本匹配仅作存量未回填行的兜底；同时从 factor_index.db 移除。
+
+    reason: 用户填写的删除原因（前端必填），归档进回收站 removed_reason；
+            为空时回落默认标记（存量调用方/脚本兼容）。
     """
     from alphaagent.factor.identity import factor_uid
     from alphaagent.factor.index import get_factor_index
@@ -2041,7 +2047,7 @@ def delete_factor(factor_id: str, *, library: str = "production", category: str 
         entry = registry.pop(factor_id)
         _archive_to_removed(
             factor_id, entry, category=category, source_library="candidate",
-            reason="deleted_from_candidate",
+            reason=reason.strip() or "deleted_from_candidate",
         )
         if str(entry.get("name") or "").strip():
             factor_names.append(str(entry["name"]).strip())
@@ -2088,7 +2094,7 @@ def delete_factor(factor_id: str, *, library: str = "production", category: str 
                 if arch_entry.get("name") or arch_entry.get("expr"):
                     _archive_to_removed(
                         factor_id, arch_entry, category=category,
-                        source_library="production", reason="deleted_from_production",
+                        source_library="production", reason=reason.strip() or "deleted_from_production",
                     )
         except KeyError:
             return {"error": "factor_not_found"}
