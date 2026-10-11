@@ -6,6 +6,10 @@
 max_cs_corr / delivery_policy / similar_top_k / overwrite），因此判定口径与真实 run 相同：
 stage_one（统计门槛）→ 盲测（test 段）→ stage_two（精筛 + 库内正交）→ engine_gate（净值回测）。
 stage_one 通过即 `candidate_stored=true`（候选写入 `artifacts/.../candidate_main/`）。
+自 2026-10-11 起携 `orthogonality_hook`（复用 `agentscope_run` 同款 `_orthogonality_check`：
+抽样 train∪val 可见段 + production/candidate 大库 + 候选注册表 DSL 比对，阈值收口配置中心
+`evaluation_policy.orthogonality_max_corr`=0.7），修复以往 harness 直驱 submit 恒跳过
+`offline_orthogonality`（hook_not_configured）导致近亲因子可无墙灌入候选池的缺陷。
 
 用法：
     .venv\\Scripts\\python.exe scripts\\harness_submit.py --mode technical_monthly --factors winners.json
@@ -26,6 +30,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from alphaagent.data.adapters.cnequity import CNE_SOURCE  # noqa: E402
+from alphaagent.factor.mining.agent.agentscope_tools import _orthogonality_check  # noqa: E402
 from alphaagent.factor.mining.delivery.submit import FactorSubmitService  # noqa: E402
 from alphaagent.factor.mining.eval.schemas import SessionCreateRequest  # noqa: E402
 from alphaagent.factor.mining.research_spec import effective_research_spec  # noqa: E402
@@ -45,14 +50,31 @@ MODE_FREQ = {
 }
 _KEEP = ("ok", "stored", "candidate_stored", "candidate_storage", "skipped_reason", "error",
          "error_type", "promotion_status", "review_status", "factor_id", "rebalance_freq",
-         "delivery_check", "test_holdout", "candidate_similarity", "engine_backtest")
+         "delivery_check", "test_holdout", "offline_orthogonality", "candidate_similarity",
+         "engine_backtest")
+
+
+def _make_orthogonality_hook(svc: StockEvalService, sid: str, expr: str):
+    """构造与 agentscope_run 同款离线正交 hook（复用 _orthogonality_check）。
+
+    _orthogonality_check 只读 tools.service / tools.session_id / tools.report_reproduce_gate
+    三处，用轻量 stub 承载，判定阈值回落配置中心（evaluation_policy.orthogonality_max_corr=0.7）。
+    """
+    class _OrthoToolsStub:
+        service = svc
+        session_id = sid
+        report_reproduce_gate = None
+
+    return lambda: _orthogonality_check(_OrthoToolsStub(), expr)
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Harness 挖掘：真实交付入库")
     ap.add_argument("--mode", default="technical_monthly", choices=sorted(MODE_LABEL))
     ap.add_argument("--factors", required=True, help="JSON: [{name, expr, comment, evidence?}, ...]")
-    ap.add_argument("--max-cs-corr", type=float, default=0.8, help="离线正交门（与 MiningConfig 默认一致）")
+    ap.add_argument("--max-cs-corr", type=float, default=0.8,
+                    help="(兼容保留) 实际生效的离线正交阈值由 _orthogonality_check 取配置中心 "
+                         "evaluation_policy.orthogonality_max_corr=0.7，本参数不参与判定")
     ap.add_argument("--similar-top-k", type=int, default=3)
     ap.add_argument("--out", default="", help="提交结果写出路径（JSON）")
     ap.add_argument("--fundamentals", action="store_true", help="会话载入 funda_* 列")
@@ -84,6 +106,7 @@ def main() -> int:
                 res = submitter.submit(
                     sid, multi_line_expr=c["expr"], factor_name=c["name"],
                     comment=c.get("comment", ""), evaluation_evidence=c.get("evidence"),
+                    orthogonality_hook=_make_orthogonality_hook(svc, sid, c["expr"]),
                     rebalance_freq=freq,
                 )
             except Exception as exc:  # noqa: BLE001
