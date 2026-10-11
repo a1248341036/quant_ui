@@ -4,6 +4,7 @@
       <div class="lib-tabs">
         <button :class="{active: lib.library==='production'}" @click="switchLibrary('production')">正式因子库</button>
         <button :class="{active: lib.library==='candidate'}" @click="switchLibrary('candidate')">候选因子库</button>
+        <button :class="{active: lib.library==='removed'}" @click="switchLibrary('removed')">已删除因子库</button>
       </div>
       <div class="lib-cat-tabs" v-if="false" hidden>
         <!-- 统一大库（2026-09-03）：模式页签退役——两模式共享同一物理库，类别过滤由 facet 筛选取代 -->
@@ -20,15 +21,15 @@
       </div>
       <span class="lib-count" v-if="lib.data">{{ lib.data.n_factors || 0 }} 个因子</span>
       <button class="lib-export-json" @click="exportAllJSON" :disabled="!lib.data?.factors?.length"
-              :title="'导出当前' + (lib.library==='production'?'正式':'候选') + '因子库全部 ' + (lib.data?.n_factors || 0) + ' 个因子的 registry 和结果到 JSON'">
-        导出{{ lib.library==='production' ? '正式库' : '候选库' }}JSON
+              :title="'导出当前' + libTitle + '全部 ' + (lib.data?.n_factors || 0) + ' 个因子的 registry 和结果到 JSON'">
+        导出{{ libTitle }}JSON
       </button>
       <button class="lib-refresh" @click="loadFactors">刷新</button>
     </div>
     <div v-if="lib.error" class="lib-error">{{ lib.error }}</div>
     <div v-if="lib.loading" class="lib-loading">加载中…</div>
     <div v-if="lib.data && !lib.data.factors?.length && !lib.loading" class="lib-empty">
-      {{ lib.data.error === 'library_not_initialized' ? '因子库尚未初始化，请在挖掘流程中启用因子提交。' : '暂无因子。' }}
+      {{ lib.emptyText }}
     </div>
     <div class="lib-toolbar">
       <span class="lib-toolbar-label">数据面</span>
@@ -88,7 +89,7 @@
           <td>{{ formatMetricValue(f.metrics?.icir) }}</td>
           <td :class="{neg: (f.annualized_return ?? 0) < 0}">{{ formatMetricValue(f.annualized_return ?? '—') }}</td>
           <td>{{ formatMetricValue(f.sharpe ?? '—') }}</td>
-          <td class="lib-time" :title="f.created_at">{{ fmtTime(f.created_at) }}</td>
+          <td class="lib-time" :title="(lib.library==='removed' && f.created_at) ? '原加入时间 ' + f.created_at : ''">{{ lib.library === 'removed' ? fmtTime(f.removed_at) : fmtTime(f.created_at) }}</td>
           <td class="lib-freq">
             <span v-if="f.rebalance_freq" class="lib-freq-tag"
                   :class="'freq-' + f.rebalance_freq"
@@ -102,8 +103,10 @@
           <td class="lib-uid" :title="f.factor_uid || '无 uid（正式库条目未带 registry 记录且名称为空）'">{{ f.factor_uid || '—' }}</td>
           <td class="lib-actions">
             <button class="lib-export" @click.stop="exportOne(f)" title="复制该因子的完整 registry JSON">{{ lib.exportCopied === f.factor_id ? '✓' : '导出' }}</button>
-            <button class="lib-backtest" @click.stop="$emit('backtest', f)">回测</button>
-            <button class="lib-del" @click="confirmDelete(f)">删除</button>
+            <template v-if="lib.library !== 'removed'">
+              <button class="lib-backtest" @click.stop="$emit('backtest', f)">回测</button>
+              <button class="lib-del" @click="confirmDelete(f)">删除</button>
+            </template>
           </td>
         </tr>
       </tbody>
@@ -145,6 +148,16 @@
               <span>状态: {{ factorDetail.status }}</span>
               <span>有限值: {{ factorDetail.finite_count }}</span>
               <span>创建: {{ formatTime(factorDetail.created_at) }}</span>
+            </div>
+            <div class="factor-modal-section" v-if="lib.library === 'removed' && factorDetail.removed_at">
+              <label>删除信息</label>
+              <table class="factor-seg-table">
+                <tbody>
+                  <tr><td class="seg-label">删除时间</td><td>{{ formatTime(factorDetail.removed_at) }}</td></tr>
+                  <tr><td class="seg-label">删除来源</td><td>{{ factorDetail.removed_from === 'production' ? '正式因子库' : '候选因子库' }}</td></tr>
+                  <tr><td class="seg-label">删除原因</td><td>{{ factorDetail.removed_reason || '—' }}</td></tr>
+                </tbody>
+              </table>
             </div>
             <details class="factor-modal-section">
               <label>Registry 记录</label>
@@ -257,6 +270,15 @@ export default {
       }
       const base = `多头组合：Q10 分组、无成本、持有 ${hold} 天；引擎净值为含成本调仓回测`
       return pbs ? base : base + '（该因子早于三段组合指标入库，组合收益行不可用，IC 行完整）'
+    },
+    libTitle() {
+      return this.lib.library === 'production' ? '正式库' : this.lib.library === 'removed' ? '已删除库' : '候选库'
+    },
+    libEmptyText() {
+      if (this.lib.data?.error === 'library_not_initialized') return '因子库尚未初始化，请在挖掘流程中启用因子提交。'
+      return this.lib.library === 'removed'
+        ? '暂无已删除因子。删除候选/正式库因子时会归档到此处。'
+        : '暂无因子。'
     },
     libFactorsFaceted() {
       const facet = this.lib.facetFilter
