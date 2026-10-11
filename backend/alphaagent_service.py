@@ -2082,6 +2082,12 @@ def delete_factor(
                     "name": str(getattr(meta, "name", "") or ""),
                     "expr": str(getattr(meta, "expr", "") or ""),
                 }
+                # 带原 expression_file（相对项目根 ROOT，与候选库口径一致）：
+                # zoo.delete_factor 不删 expressions/ 目录，即使 expr 为空也能
+                # 在归档时按原 DSL 补读，避免表达式静默丢失。
+                prod_dsl = root / "expressions" / f"{factor_id}.dsl"
+                if prod_dsl.is_file():
+                    arch_entry["expression_file"] = str(prod_dsl.relative_to(ROOT))
                 prod_reg_path = root / "mining_delivered_registry.json"
                 if prod_reg_path.is_file():
                     try:
@@ -2091,11 +2097,17 @@ def delete_factor(
                     reg_entry = _prod_reg.get(factor_id)
                     if isinstance(reg_entry, dict):
                         arch_entry = {**arch_entry, **reg_entry}
-                if arch_entry.get("name") or arch_entry.get("expr"):
-                    _archive_to_removed(
-                        factor_id, arch_entry, category=category,
-                        source_library="production", reason=reason.strip() or "deleted_from_production",
-                    )
+                # 归档失败不阻断删除主流程：因子已从正式库删除，后续 delivered
+                # registry 清理 / memory purge / index 清理必须照常执行，否则
+                # 删除不可追溯且研究记忆残留陈旧数据。
+                try:
+                    if arch_entry.get("name") or arch_entry.get("expr"):
+                        _archive_to_removed(
+                            factor_id, arch_entry, category=category,
+                            source_library="production", reason=reason.strip() or "deleted_from_production",
+                        )
+                except Exception as exc:
+                    logger.warning("delete_factor: production archive to removed failed for %s: %s", factor_id, exc)
         except KeyError:
             return {"error": "factor_not_found"}
 

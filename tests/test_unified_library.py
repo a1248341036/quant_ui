@@ -220,3 +220,47 @@ def test_delete_factor_rejects_removed_library(tmp_path, monkeypatch):
 
     res = svc.delete_factor("anything", library="removed", category="technical")
     assert res == {"error": "readonly_library"}
+
+
+def test_delete_factor_production_archive_failure_does_not_abort(tmp_path, monkeypatch):
+    """生产库归档失败不中断删除主流程（因子已删，后续清理必须照常执行）。"""
+    import backend.alphaagent_service as svc
+
+    class _Meta:
+        name = "prod_x"
+        expr = "$close"
+
+    class _Zoo:
+        catalog = {"prod_x": _Meta()}
+
+        def delete_factor(self, factor_id):
+            pass  # 模拟正式库删除成功（不抛异常）
+
+    monkeypatch.setattr("alphaagent.factor.zoo.FactorZoo.open",
+                        staticmethod(lambda root, **kw: _Zoo()))
+    monkeypatch.setattr(factor_categories, "production_dir", lambda mode: tmp_path / "production_main")
+    (tmp_path / "production_main").mkdir(parents=True, exist_ok=True)
+
+    # 归档抛异常（如 registry 损坏）→ 不应中断删除
+    def _boom(*a, **k):
+        raise IOError("removed registry write failed")
+
+    monkeypatch.setattr(svc, "_archive_to_removed", _boom)
+
+    class _FakeMemory3:
+        def __init__(self, path):
+            self.path = path
+
+        def purge_factor(self, **kw):
+            return 0
+
+    monkeypatch.setattr(
+        "alphaagent.factor.mining.research_memory.ResearchMemoryStore", _FakeMemory3
+    )
+    monkeypatch.setattr(
+        "alphaagent.factor.index.get_factor_index",
+        lambda: type("Idx", (), {"delete_factor": lambda self, uid: None})(),
+    )
+
+    res = svc.delete_factor("prod_x", library="production", category="technical", reason="t")
+    assert res["ok"] is True
