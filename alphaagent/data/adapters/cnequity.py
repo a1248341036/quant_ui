@@ -380,6 +380,18 @@ def _find_cached_panel(
                 "CNE adapter: panel 命中磁盘缓存 %s (%d 行, %d 列, 签名 %s)",
                 path.name, len(df), df.shape[1], want_sig,
             )
+            # 命中覆盖超集缓存时按请求区间裁剪：请求 [a, b] 可能命中覆盖到更晚
+            # 日期的缓存，若不裁剪会把区间外数据（如 2025+ 盲测段）带进调用方，
+            # 破坏 tuning 模式的物理时间隔离。起点侧同时收紧到请求起点。
+            if req_start is not None or req_end is not None:
+                dts = df.index.get_level_values("datetime")
+                keep = pd.Series(True, index=df.index)
+                if req_start is not None:
+                    keep &= dts >= req_start
+                if req_end is not None:
+                    keep &= dts <= req_end
+                if not bool(keep.all()):
+                    df = df.loc[keep]
             return df
     except Exception as exc:  # noqa: BLE001
         logger.warning("CNE panel 缓存扫描异常（忽略，将重建）: %s", exc)

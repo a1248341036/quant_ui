@@ -517,7 +517,8 @@ def fit_scheme_compare_scores(
         avail_any = oos_fin.any(axis=1)
         if not avail_any.any():
             continue
-        oos_idx = np.where(oos_rows)[0][avail_any]
+        oos_idx_full = np.where(oos_rows)[0]
+        oos_idx = oos_idx_full[avail_any]
         Xo = feature_matrix[oos_rows][:, voting]
         signs = np.asarray([1.0 if mean_ic[j] > 0 else -1.0 for j in voting], dtype=np.float64)
         aligned = Xo * signs[None, :]  # 符号对齐：谁在投票谁带方向
@@ -540,7 +541,7 @@ def fit_scheme_compare_scores(
             numer = np.where(oos_fin, aligned * wv[None, :], 0.0).sum(axis=1)
             ok = avail_any & (denom > 1e-12)
             vals = np.where(ok, numer / np.maximum(denom, 1e-12), np.nan)
-            out[name][oos_idx[ok]] = vals[ok].astype(np.float32)
+            out[name][oos_idx_full[ok]] = vals[ok].astype(np.float32)
     return out
 
 

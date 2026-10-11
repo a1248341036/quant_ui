@@ -69,6 +69,21 @@ def test_schemes_robust_to_missing_members():
         assert ic > 0.005, f"{name} 缺失场景 IC={ic:.4f} 应保持为正"
 
 
+def test_schemes_tolerate_full_empty_oos_rows():
+    """OOS rows with all-NA members (avail_any=False) must not break ICIR/HRP index (regression 2026-10-11)."""
+    feats, label, dts, folds = _synthetic(seed=11)
+    rng = np.random.default_rng(5)
+    rows = np.arange(feats.shape[0])
+    rng.shuffle(rows)
+    empty = rows[: int(len(rows) * 0.2)]  # 20% rows fully NaN (incl. the strong-signal column)
+    feats = feats.copy()
+    feats[empty, :] = np.nan
+    scores = fit_scheme_compare_scores(feats, label, dts, folds)
+    assert set(scores) == {"equal", "icir", "hrp"}
+    for name, arr in scores.items():
+        assert np.isfinite(arr).sum() > 0, f"{name} should still produce valid scores"
+
+
 def test_scheme_compare_report_shape():
     """报告结构：stacked 参考行在前、每行含三口径 + ic_gap、gap 对齐 stacked 为 0。"""
     feats, label, dts, folds = _synthetic()

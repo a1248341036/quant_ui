@@ -1151,7 +1151,6 @@ def main() -> None:
         oos_ic=report.get("oos_ic_blended", {}).get("ic_mean"),
         oos_ir=report.get("oos_ic_blended", {}).get("ic_ir"),
         gate_passed=gate_result.get("passed") if gate_result else None,
-        out_dir=str(out_dir),
     )
 
 
