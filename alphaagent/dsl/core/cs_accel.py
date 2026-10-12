@@ -299,6 +299,151 @@ def _group_rank_pct_kernel(xv, gv, bounds):
 
 
 @njit(cache=True, parallel=True, nogil=True)
+def _group_agg_kernel(xv, gv, bounds, op: int, ddof: int):
+    """逐日按 ``group`` 值分组做聚合（op 选算子：0=MEAN 1=SUM 2=STD 3=MEDIAN 4=ZSCORE 5=COUNT）。
+
+    有效成员 = ``isfinite(group) & isfinite(x)``；输出仅落在有效成员上（组号非有限
+    或 x 非有限的行保持 NaN）。MEAN/SUM/MEDIAN 要求组内有效样本 >= 1（单样本=自身）；
+    STD/ZSCORE 要求 ``n > ddof`` 且 std 有限非零（复刻 CS_ZSCORE 的 Welford 护栏：
+    常数组 -> 整组 NaN）。MEDIAN 偶数取中间两值均值（同 pandas ``median``）。
+    op==5（COUNT）时调用方把 x 传成 gv，即统计有限组号成员数。
+    """
+    out = np.full(xv.shape[0], np.nan, dtype=np.float32)
+    for d in prange(bounds.shape[0] - 1):
+        st = bounds[d]
+        en = bounds[d + 1]
+        cg = 0
+        for i in range(st, en):
+            if np.isfinite(gv[i]):
+                cg += 1
+        if cg == 0:
+            continue
+        gsel = np.empty(cg, dtype=np.float64)
+        gpos = np.empty(cg, dtype=np.int64)
+        j = 0
+        for i in range(st, en):
+            g = gv[i]
+            if np.isfinite(g):
+                gsel[j] = g
+                gpos[j] = i
+                j += 1
+        order = np.argsort(gsel)
+        i0 = 0
+        while i0 < cg:
+            i1 = i0 + 1
+            g0 = gsel[order[i0]]
+            while i1 < cg and gsel[order[i1]] == g0:
+                i1 += 1
+            n = 0
+            for t in range(i0, i1):
+                if np.isfinite(xv[gpos[order[t]]]):
+                    n += 1
+            if op == 5:
+                if n >= 1:
+                    cnt = np.float32(n)
+                    for t in range(i0, i1):
+                        out[gpos[order[t]]] = cnt
+                i0 = i1
+                continue
+            if n < 1:
+                i0 = i1
+                continue
+            vals = np.empty(n, dtype=np.float64)
+            pos = np.empty(n, dtype=np.int64)
+            k = 0
+            for t in range(i0, i1):
+                p = gpos[order[t]]
+                v = xv[p]
+                if np.isfinite(v):
+                    vals[k] = v
+                    pos[k] = p
+                    k += 1
+            if op == 0:  # MEAN
+                s = 0.0
+                for k in range(n):
+                    s += vals[k]
+                outv = np.float32(s / n)
+                for k in range(n):
+                    out[pos[k]] = outv
+            elif op == 1:  # SUM
+                s = 0.0
+                for k in range(n):
+                    s += vals[k]
+                outv = np.float32(s)
+                for k in range(n):
+                    out[pos[k]] = outv
+            elif op == 2:  # STD
+                mean = 0.0
+                m2 = 0.0
+                for k in range(n):
+                    v = vals[k]
+                    c = k + 1
+                    delta = v - mean
+                    mean += delta / c
+                    m2 += delta * (v - mean)
+                if n > ddof:
+                    std = np.sqrt(m2 / (n - ddof))
+                    if np.isfinite(std) and std != 0.0:
+                        outv = np.float32(std)
+                        for k in range(n):
+                            out[pos[k]] = outv
+            elif op == 3:  # MEDIAN
+                sv = np.sort(vals)
+                if n % 2 == 1:
+                    med = sv[n // 2]
+                else:
+                    med = 0.5 * (sv[n // 2 - 1] + sv[n // 2])
+                outv = np.float32(med)
+                for k in range(n):
+                    out[pos[k]] = outv
+            else:  # op == 4 ZSCORE
+                mean = 0.0
+                m2 = 0.0
+                for k in range(n):
+                    v = vals[k]
+                    c = k + 1
+                    delta = v - mean
+                    mean += delta / c
+                    m2 += delta * (v - mean)
+                if n > ddof:
+                    std = np.sqrt(m2 / (n - ddof))
+                    if np.isfinite(std) and std != 0.0:
+                        for k in range(n):
+                            out[pos[k]] = np.float32((vals[k] - mean) / std)
+            i0 = i1
+    return out
+
+
+@njit(cache=True, parallel=True, nogil=True)
+def _scale_kernel(arr, bounds, target: float):
+    """逐日截面 ``SCALE``：``x * (a / sum|x|)``（WQ101 ``scale``）。
+
+    ``sum|x|`` 由 ``isfinite`` 成员累计（+/-inf 视缺失：不进分母、该行保持 NaN，与
+    ``CS_BUCKET``/``CS_NEUTRALIZE`` 口径一致）；``sum|x| <= 0`` 或非有限时整日 NaN。
+    """
+    out = np.full(arr.shape[0], np.nan, dtype=np.float32)
+    for d in prange(bounds.shape[0] - 1):
+        st = bounds[d]
+        en = bounds[d + 1]
+        s = 0.0
+        n = 0
+        for i in range(st, en):
+            v = arr[i]
+            if np.isfinite(v):
+                s += abs(v)
+                n += 1
+        if n == 0 or s <= 0.0 or not np.isfinite(s):
+            continue
+        factor = np.float32(target / s)
+        for i in range(st, en):
+            v = arr[i]
+            if np.isfinite(v):
+                out[i] = np.float32(v * factor)
+    return out
+
+
+
+@njit(cache=True, parallel=True, nogil=True)
 def _winsorize_kernel(arr, bounds, lower_pct: float, upper_pct: float):
     """逐日把有效值 clip 到 ``[lower_pct, upper_pct]`` 分位之间。
 
@@ -592,6 +737,23 @@ def group_rank_pct(x, group, bounds):
     if bd is None:
         return None
     return _group_rank_pct_kernel(_prepare(x), _prepare(group), bd)
+
+
+def group_agg(x, group, bounds, op: int, ddof: int = 1):
+    """``CS_GROUP_MEAN/SUM/STD/MEDIAN/ZSCORE/COUNT`` 快路径；不可用返回 None。"""
+    bd = _prepare_bounds(bounds)
+    if bd is None:
+        return None
+    return _group_agg_kernel(_prepare(x), _prepare(group), bd, int(op), int(ddof))
+
+
+def scale(arr, bounds, target: float = 1.0):
+    """``SCALE`` 快路径；不可用返回 None。"""
+    bd = _prepare_bounds(bounds)
+    if bd is None:
+        return None
+    return _scale_kernel(_prepare(arr), bd, float(target))
+
 
 
 def winsorize(arr, bounds, lower_pct: float, upper_pct: float):

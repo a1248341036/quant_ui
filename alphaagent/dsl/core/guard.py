@@ -47,6 +47,8 @@ _NEG_INT_EXEMPT = frozenset(
         "RANK", "DIVERGENCE_RANK", "SEQUENCE",
         "CS_BUCKET", "CS_DEMEAN", "CS_GROUP_RANK", "CS_NEUTRALIZE",
         "CS_RESIDUALIZE", "CS_WINSORIZE", "CS_ZSCORE",
+        "CS_GROUP_MEAN", "CS_GROUP_SUM", "CS_GROUP_STD", "CS_GROUP_MEDIAN",
+        "CS_GROUP_ZSCORE", "CS_GROUP_COUNT", "SCALE",
         # 其他负数合法的工具
         "FILLNA",
     }

@@ -1117,6 +1117,17 @@ def TS_RANKCORR(df1: pd.DataFrame, df2: pd.DataFrame, window: int) -> pd.DataFra
     )
 
 
+def TS_AUTOCORR(x: pd.DataFrame, window: int, lag: int = 1) -> pd.DataFrame:
+    """滚动自相关：``TS_CORR(x, DELAY(x, lag), window)`` 的糖封装。
+
+    风格/行业收益动量延续判定：lag 期正自相关 = 动量延续，负 = 均值回归。探针实测
+    A 股风格收益 lag1 自相关为负——追风格动量无效、应反向再平衡。``lag`` 处数据
+    不足或有效对数 < 2 时输出 NaN（同 ``TS_CORR``）。
+    """
+    return TS_CORR(x, DELAY(x, int(lag)), int(window))
+
+
+
 def MUTUAL_INFO_LAG(
     df_close: pd.DataFrame,
     df_volume: pd.DataFrame,
@@ -2251,6 +2262,37 @@ def CS_BUCKET(df: pd.DataFrame, n_bins: int) -> pd.DataFrame:
     return pd.DataFrame(out, index=df.index, columns=df.columns[:1])
 
 
+def SCALE(df: pd.DataFrame, a: float = 1.0) -> pd.DataFrame:
+    """截面绝对和归一：每个 datetime 内使 ``sum|x| = a``（WQ101 ``scale``）。
+
+    输出 ``x * (a / sum|x|)``；``a`` 可为负（符号翻转）。``sum|x|`` 由 ``isfinite``
+    成员累计，非有限行保持 NaN（与 ``CS_BUCKET``/``CS_NEUTRALIZE`` 口径一致）；
+    ``sum|x| <= 0`` 或非有限时该截面为 NaN（isfinite 成员下不会出现，护栏保留）。
+    """
+    _validate_cs_panel(df, name="SCALE")
+    a = float(a)
+    ser = _first_series(df)
+    arr = ser.to_numpy(dtype=float, copy=False)
+    fast = _cs_accel.scale(arr, _datetime_group_bounds(df), a)
+    if fast is not None:
+        return pd.DataFrame(fast, index=df.index, columns=df.columns[:1])
+    result = np.full(len(df), np.nan, dtype=np.float32)
+    # groupby.indices 位置数组：绕开 MultiIndex engine（并发评估线程安全，见 CS_NEUTRALIZE）
+    for _, pos in ser.groupby(level="datetime", sort=False).indices.items():
+        pos = np.asarray(pos, dtype=np.int64)
+        v = arr[pos]
+        finite = np.isfinite(v)
+        if not finite.any():
+            continue
+        s = float(np.abs(v[finite]).sum())
+        if s <= 0.0 or not np.isfinite(s):
+            continue
+        factor = np.float32(a / s)
+        result[pos[finite]] = (v[finite] * factor).astype(np.float32)
+    return pd.DataFrame(result, index=df.index, columns=df.columns[:1])
+
+
+
 def CS_NEUTRALIZE(x: pd.DataFrame, group: pd.DataFrame) -> pd.DataFrame:
     """截面组内去均值：每个 datetime 内按 ``group`` 分组，输出 ``x - group_mean(x)``。
 
@@ -2320,6 +2362,122 @@ def CS_GROUP_RANK(x: pd.DataFrame, group: pd.DataFrame) -> pd.DataFrame:
             ranks = pd.Series(x_day[mask]).rank(pct=True, method="average")
             result[pos[mask]] = ranks.to_numpy(dtype=np.float32)
     return pd.DataFrame(result, index=x.index, columns=x.columns[:1])
+
+
+def _cs_group_reduce(
+    x: pd.DataFrame,
+    group: pd.DataFrame,
+    *,
+    op: int,
+    ddof: int,
+    name: str,
+) -> pd.DataFrame:
+    """CS_GROUP_* 公共实现（op 语义同 ``_cs_accel.group_agg``）。"""
+    _validate_cs_panel(x, name=name)
+    _validate_cs_panel(group, name=name)
+    if not x.index.equals(group.index):
+        raise ValueError(f"{name}: x 与 group 须同索引")
+
+    xs = _first_series(x).to_numpy(dtype=float, copy=False)
+    gs = _first_series(group).to_numpy(dtype=float, copy=False)
+    fast = _cs_accel.group_agg(xs, gs, _datetime_group_bounds(x), op, ddof)
+    if fast is not None:
+        return pd.DataFrame(fast, index=x.index, columns=x.columns[:1])
+
+    result = np.full(len(x), np.nan, dtype=np.float32)
+    # groupby.indices 位置数组：绕开 MultiIndex engine（并发评估线程安全，见 CS_NEUTRALIZE）
+    for _, pos in x.groupby(level="datetime", sort=False).indices.items():
+        pos = np.asarray(pos, dtype=np.int64)
+        x_day = xs[pos]
+        g_day = gs[pos]
+        for g_val in np.unique(g_day[np.isfinite(g_day)]):
+            mask = np.isfinite(g_day) & (g_day == g_val) & np.isfinite(x_day)
+            if not mask.any():
+                continue
+            vals = x_day[mask]
+            if op == 0:  # MEAN
+                result[pos[mask]] = np.float32(np.mean(vals))
+            elif op == 1:  # SUM
+                result[pos[mask]] = np.float32(np.sum(vals))
+            elif op == 2:  # STD
+                if vals.size <= ddof:
+                    continue
+                sd = float(pd.Series(vals).std(ddof=ddof))
+                if not np.isfinite(sd) or sd == 0.0:
+                    continue
+                result[pos[mask]] = np.float32(sd)
+            elif op == 3:  # MEDIAN
+                result[pos[mask]] = np.float32(np.median(vals))
+            elif op == 4:  # ZSCORE
+                if vals.size <= ddof:
+                    continue
+                sd = float(pd.Series(vals).std(ddof=ddof))
+                if not np.isfinite(sd) or sd == 0.0:
+                    continue
+                result[pos[mask]] = (
+                    (vals - np.float32(np.mean(vals))) / np.float32(sd)
+                ).astype(np.float32)
+            elif op == 5:  # COUNT（x 与 group 同阵）
+                result[pos[mask]] = np.float32(vals.size)
+    return pd.DataFrame(result, index=x.index, columns=x.columns[:1])
+
+
+def CS_GROUP_MEAN(x: pd.DataFrame, group: pd.DataFrame) -> pd.DataFrame:
+    """组内均值聚合：每个 datetime 内按 ``group`` 分组，输出各组 ``x`` 的均值。
+
+    行业/风格层因子原料，例如行业动量
+    ``RANK(CS_GROUP_MEAN(TS_SUM($ret,20), $industry_sw_l1))`` 或行业相对强度
+    ``DIVIDE($ret, CS_GROUP_MEAN($ret, $industry_sw_l1))``。``group`` 须为离散组号
+    （可用 ``CS_BUCKET`` 构造，或传行业列）；组号与 ``x`` 均有限的行输出所在组均值，
+    组内仅 1 个有效样本时输出该值自身。
+    """
+    return _cs_group_reduce(x, group, op=0, ddof=1, name="CS_GROUP_MEAN")
+
+
+def CS_GROUP_SUM(x: pd.DataFrame, group: pd.DataFrame) -> pd.DataFrame:
+    """组内求和聚合：每个 datetime 内按 ``group`` 分组，输出各组 ``x`` 之和。
+
+    行业资金面/成交额聚合原料，例如 ``CS_GROUP_SUM($amount, $industry_sw_l1)``。
+    组内仅 1 个有效样本时输出该值自身。
+    """
+    return _cs_group_reduce(x, group, op=1, ddof=1, name="CS_GROUP_SUM")
+
+
+def CS_GROUP_STD(x: pd.DataFrame, group: pd.DataFrame, ddof: int = 1) -> pd.DataFrame:
+    """组内样本标准差：每个 datetime 内按 ``group`` 分组，输出各组 ``x`` 的标准差。
+
+    行业离散度/波动原料。要求组内有效样本 ``> ddof``；常数组或有效样本不足时该组
+    NaN（对齐 ``CS_ZSCORE`` 的 ``std == 0`` 护栏，避免退化的 0 波动信息）。
+    """
+    return _cs_group_reduce(x, group, op=2, ddof=int(ddof), name="CS_GROUP_STD")
+
+
+def CS_GROUP_MEDIAN(x: pd.DataFrame, group: pd.DataFrame) -> pd.DataFrame:
+    """组内中位数：每个 datetime 内按 ``group`` 分组，输出各组 ``x`` 的中位数。
+
+    行业稳健集中度：对离群股价免疫；组内仅 1 个有效样本时输出该值自身。
+    """
+    return _cs_group_reduce(x, group, op=3, ddof=1, name="CS_GROUP_MEDIAN")
+
+
+def CS_GROUP_ZSCORE(x: pd.DataFrame, group: pd.DataFrame, ddof: int = 1) -> pd.DataFrame:
+    """组内标准化：``(x - group_mean) / group_std``（行业内 z-score）。
+
+    ⊃ ``CS_NEUTRALIZE`` 的去均值，只披露行业内相对分布、不押行业涨跌，例如行业
+    PE/PB 相对位置 ``CS_GROUP_ZSCORE($pb, $industry_sw_l1)``。要求组内有效样本
+    ``> ddof`` 且 std 有限非零，否则该组 NaN。
+    """
+    return _cs_group_reduce(x, group, op=4, ddof=int(ddof), name="CS_GROUP_ZSCORE")
+
+
+def CS_GROUP_COUNT(group: pd.DataFrame) -> pd.DataFrame:
+    """组内有效样本数：每个 datetime 内按 ``group`` 分组，输出各组有限组号的数量。
+
+    行业宽度（成员数）原料，例如 ``CS_GROUP_COUNT($industry_sw_l1)``。
+    ``group`` 非有限的行保持 NaN，其余行输出所在组的成员计数。
+    """
+    return _cs_group_reduce(group, group, op=5, ddof=1, name="CS_GROUP_COUNT")
+
 
 
 def CS_RESIDUALIZE(
@@ -2752,6 +2910,70 @@ def REGRESI(
 def RESI(df1: pd.DataFrame, p: int = 5, n_jobs: int = 1) -> pd.DataFrame:
     """对 SEQUENCE(p) 的滚动残差，等价 REGRESI(df1, SEQUENCE(p), p)。"""
     return REGRESI(df1, SEQUENCE(int(p)), p, n_jobs=n_jobs)
+
+
+def calculate_rsq(y: np.ndarray, x: np.ndarray) -> float:
+    """带截距回归 ``y ~ x`` 的 R2；有效样本 < 2 或 SS_tot <= 0 时 NaN。"""
+    y = np.asarray(y, dtype=float).ravel()
+    x = np.asarray(x, dtype=float).ravel()
+    if y.shape[0] != x.shape[0]:
+        raise ValueError(
+            f"calculate_rsq: y/x 长度须一致 (len(y)={y.shape[0]}, len(x)={x.shape[0]})。"
+            "TS_RSQ 对时间回归，请配 SEQUENCE(p)。"
+        )
+    mask = np.isfinite(y) & np.isfinite(x)
+    if mask.sum() < 2:
+        return float("nan")
+    yv, xv = y[mask], x[mask]
+    X = np.column_stack([xv, np.ones(len(xv))])
+    beta, _, _, _ = np.linalg.lstsq(X, yv, rcond=None)
+    pred = beta[0] * xv + beta[1]
+    ss_res = float(np.sum((yv - pred) ** 2))
+    ss_tot = float(np.sum((yv - yv.mean()) ** 2))
+    if ss_tot <= 0.0 or not np.isfinite(ss_tot):
+        return float("nan")
+    rsq = 1.0 - ss_res / ss_tot
+    if not np.isfinite(rsq):
+        return float("nan")
+    return rsq
+
+
+def rolling_rsq(df1_group: pd.DataFrame, x: np.ndarray, p: int) -> pd.Series:
+    """对固定 x 逐窗滚动回归 R2（Numba 快路径，失败回落逐窗 lstsq）。"""
+    y = df1_group.iloc[:, 0]
+    n = len(y)
+    try:
+        out = _accel.roll_rsq(
+            y.to_numpy(dtype=float, copy=False),
+            np.asarray(x, dtype=float),
+            p,
+        )
+        return pd.Series(out, index=df1_group.index, dtype=np.float32)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("rolling_rsq: Numba roll_rsq 回退逐窗 lstsq: %s", exc)
+    out = np.full(n, np.nan)
+    for i in range(p - 1, n):
+        yy = y.iloc[i - p + 1 : i + 1].to_numpy()
+        out[i] = calculate_rsq(yy, x)
+    return pd.Series(out, index=df1_group.index)
+
+
+def TS_RSQ(df: pd.DataFrame, p: int = 5, n_jobs: int = 1) -> pd.DataFrame:
+    """对时间 ``1..p`` 的滚动回归 R2（趋势线性度，qlib Alpha158 ``RSQR``）。
+
+    趋势越接近直线 R2 越接近 1，锯齿/噪声趋势 R2 偏低；是 ``SLOPE``/``REGBETA``
+    的拟合优度视角，配合用于判断趋势可信度。
+    """
+    p = int(p)
+    if p < 1:
+        raise ValueError("TS_RSQ: 窗口长度须 >= 1")
+    xvec = SEQUENCE(p)
+    parts = Parallel(n_jobs=n_jobs)(
+        delayed(rolling_rsq)(grp, xvec, p) for _, grp in _gb_instrument(df)
+    )
+    ser = pd.concat(parts).sort_index()
+    return _out_frame(ser, df)
+
 
 
 # -----------------------------------------------------------------------------

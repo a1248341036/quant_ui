@@ -55,7 +55,7 @@ _CATALOG_GROUPS: list[tuple[str, Callable[[str], bool]]] = [
      lambda n: n.startswith("TS_")),
     ("时序基础（差分/滞后/均线——高频主力，窗口语义见签名）",
      lambda n: n in {"DELAY", "DELTA", "EMA", "SMA", "WMA", "SIGNAL_BLEND"}),
-    ("截面变换与分组（CS_、RANK）", lambda n: n.startswith("CS_") or n == "RANK"),
+    ("截面变换与分组（CS_、SCALE、RANK）", lambda n: n.startswith("CS_") or n in {"RANK", "SCALE"}),
     ("筹码分布（CHIP_）", lambda n: n.startswith("CHIP_")),
     ("拥挤度（CROWD_）", lambda n: n.startswith("CROWD_")),
     ("缺口结构（PRICE_）", lambda n: n.startswith("PRICE_")),
