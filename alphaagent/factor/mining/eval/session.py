@@ -13,7 +13,7 @@ from typing import Any, MutableMapping
 import numpy as np
 import pandas as pd
 
-from alphaagent.data.panel import load_panel, slice_panel
+from alphaagent.data.panel import load_panel, panel_columns, slice_panel
 from alphaagent.factor.cache import FactorValueCache, get_default_cache
 from alphaagent.factor.mining.context import StockEvalContext
 from alphaagent.factor.mining.eval.candidate import CandidateRegistry
@@ -124,10 +124,24 @@ class SessionStore:
                 focus_facets=getattr(ctx, "focus_facets", ()) or None,
             )
         else:
-            panel = load_panel(ctx.panel_path)
+            # include_fundamentals=False 时按需取列加载（排除 funda_*），替代
+            # "整表加载再 drop" —— drop(columns=...) 会对数值块整块复制 ~6GB 私有拷贝
+            # （pandas 未开 CoW 实测），是批量技术档内存 16-17GB 的另一大来源。
+            if ctx.include_fundamentals:
+                panel = load_panel(ctx.panel_path)
+            else:
+                cols = panel_columns(ctx.panel_path)
+                if cols is None:
+                    panel = load_panel(ctx.panel_path)
+                else:
+                    panel = load_panel(
+                        ctx.panel_path,
+                        columns=[c for c in cols if not str(c).startswith("funda_")] or None,
+                    )
 
         dropped_funda = 0
         if not ctx.include_fundamentals:
+            # 兜底：按需取列失败/仍含 funda_* 时才走 drop（正常路径应为空）
             funda_cols = [c for c in panel.columns if str(c).startswith("funda_")]
             if funda_cols:
                 panel = panel.drop(columns=funda_cols)

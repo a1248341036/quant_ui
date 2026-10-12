@@ -22,6 +22,7 @@ from alphaagent.data.adapters.panel_mmap import (
     read_panel_arrow_mmap,
     write_panel_arrow,
 )
+from alphaagent.data.panel import load_panel, panel_columns
 
 pytestmark = pytest.mark.skipif(
     not is_available(), reason="pyarrow unavailable"
@@ -143,4 +144,102 @@ print(f"CHILD_OK {total:.3f}", flush=True)
     src = flat.set_index(["datetime", "instrument"])
     np.testing.assert_allclose(
         panel["adj_close"].to_numpy(), src["adj_close"].to_numpy(), rtol=1e-6
+    )
+
+
+def _write_sibling(flat: pd.DataFrame, tmp_path: Path, name: str):
+    """写出同 key 的 .parquet + .arrow 双格式缓存（与 cnequity 落盘形态一致）。"""
+    pq = tmp_path / f"{name}.parquet"
+    flat.set_index(["datetime", "instrument"]).to_parquet(pq)
+    arrow = pq.with_suffix(".arrow")
+    assert write_panel_arrow(arrow, flat) is True
+    return pq
+
+
+def test_load_panel_prefers_arrow_mmap(tmp_path: Path):
+    """同 key 存在 .arrow 时 load_panel 走 mmap：数值列只读（零拷贝视图）。"""
+    flat = _sample_flat()
+    pq = _write_sibling(flat, tmp_path, "panel_v9_prefer")
+    panel = load_panel(pq)
+    assert isinstance(panel.index, pd.MultiIndex)
+    assert panel.index.names == ["datetime", "instrument"]
+    src = flat.set_index(["datetime", "instrument"])
+    for col in src.columns:
+        np.testing.assert_allclose(panel[col].to_numpy(), src[col].to_numpy(), rtol=1e-6)
+    assert panel["adj_close"].dtype == np.float32
+    # mmap 契约：数值列是只读视图（parquet 拷贝路径是可写的）
+    assert panel["adj_close"].to_numpy(copy=False).flags.writeable is False
+
+
+def test_load_panel_falls_back_to_parquet_without_arrow(tmp_path: Path):
+    """无 .arrow 兄弟文件时回退 pd.read_parquet（可写拷贝，行为不变）。"""
+    flat = _sample_flat()
+    pq = tmp_path / "panel_v9_noarrow.parquet"
+    flat.set_index(["datetime", "instrument"]).to_parquet(pq)
+    panel = load_panel(pq)
+    src = flat.set_index(["datetime", "instrument"])
+    for col in src.columns:
+        np.testing.assert_allclose(panel[col].to_numpy(), src[col].to_numpy(), rtol=1e-6)
+    assert panel["adj_close"].to_numpy(copy=False).flags.writeable is True
+
+
+def test_load_panel_falls_back_when_arrow_corrupt(tmp_path: Path):
+    """.arrow 损坏时 read_panel_arrow_mmap 返回 None → 回退 parquet，值一致。"""
+    flat = _sample_flat()
+    pq = _write_sibling(flat, tmp_path, "panel_v9_bad")
+    pq.with_suffix(".arrow").write_bytes(b"not-an-arrow-file" * 200)
+    panel = load_panel(pq)
+    src = flat.set_index(["datetime", "instrument"])
+    np.testing.assert_allclose(
+        panel["adj_close"].to_numpy(), src["adj_close"].to_numpy(), rtol=1e-6
+    )
+
+
+def test_load_panel_columns_subset(tmp_path: Path):
+    """columns= 只返回选定列：mmap 路径过滤构造，索引与 dtype 保持。"""
+    flat = _sample_flat()
+    pq = _write_sibling(flat, tmp_path, "panel_v9_cols")
+    panel = load_panel(pq, columns=["adj_close"])
+    assert list(panel.columns) == ["adj_close"]
+    assert panel.index.names == ["datetime", "instrument"]
+    src = flat.set_index(["datetime", "instrument"])
+    np.testing.assert_allclose(
+        panel["adj_close"].to_numpy(), src["adj_close"].to_numpy(), rtol=1e-6
+    )
+    assert panel["adj_close"].dtype == np.float32
+    # 仍是 mmap 零拷贝视图（未被整表 drop 复制）
+    assert panel["adj_close"].to_numpy(copy=False).flags.writeable is False
+
+
+def test_panel_columns_metadata(tmp_path: Path):
+    """panel_columns 元数据级取全量列名（含索引列），不物化数据。"""
+    flat = _sample_flat()
+    pq = _write_sibling(flat, tmp_path, "panel_v9_meta")
+    cols = panel_columns(pq)
+    assert cols is not None
+    assert set(cols) == {"datetime", "instrument", "adj_close", "volume", "funda_ocf"}
+
+
+def test_load_panel_columns_parquet_fallback_keeps_index(tmp_path: Path):
+    """columns= 落到 parquet 回退路径：reset 列形态补索引列、index 形态不误补，
+    MultiIndex 都不被丢。"""
+    flat = _sample_flat()
+    src = flat.set_index(["datetime", "instrument"])
+    # 形态 1：datetime/instrument 是普通列（CNE 缓存 reset_index 落盘形态）
+    pq = tmp_path / "panel_v9_cols_reset.parquet"
+    flat.to_parquet(pq)
+    panel = load_panel(pq, columns=["adj_close"])
+    assert list(panel.columns) == ["adj_close"]
+    assert panel.index.names == ["datetime", "instrument"]
+    np.testing.assert_allclose(
+        panel["adj_close"].to_numpy(), src["adj_close"].to_numpy(), rtol=1e-6
+    )
+    # 形态 2：datetime/instrument 是 parquet index
+    pq2 = tmp_path / "panel_v9_cols_index.parquet"
+    src.to_parquet(pq2)
+    panel2 = load_panel(pq2, columns=["adj_close"])
+    assert list(panel2.columns) == ["adj_close"]
+    assert panel2.index.names == ["datetime", "instrument"]
+    np.testing.assert_allclose(
+        panel2["adj_close"].to_numpy(), src["adj_close"].to_numpy(), rtol=1e-6
     )

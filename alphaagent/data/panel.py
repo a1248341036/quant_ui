@@ -9,8 +9,10 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
+from typing import Sequence
 
 import numpy as np
 import pandas as pd
@@ -18,6 +20,8 @@ import pandas as pd
 from alphaagent.core.paths import PANEL_PATH
 from alphaagent.core.types import OUTPUT_COLUMNS
 from alphaagent.data.universe import filter_universe
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_PANEL_PATH = PANEL_PATH
 
@@ -354,15 +358,82 @@ def _enrich_panel(
     return panel
 
 
-def load_panel(path: Path | str = DEFAULT_PANEL_PATH) -> pd.DataFrame:
-    """加载 panel parquet。"""
+def load_panel(
+    path: Path | str = DEFAULT_PANEL_PATH,
+    columns: Sequence[str] | None = None,
+) -> pd.DataFrame:
+    """加载 panel：优先 arrow mmap（跨进程共享物理页），无则回退 parquet。
+
+    批量/CLI 直传 CNE 缓存 parquet（``harness_mine --panel ...``、
+    ``recheck_engine_gate --panel ...`` 等）此前走 ``pd.read_parquet`` → 每进程
+    解压一份 ~8GB 私有拷贝，N 个进程 N 倍膨胀；同 key 的 ``.arrow``（panel_mmap
+    双格式缓存）存在时改走 ``read_panel_arrow_mmap`` 零拷贝映射，数值列跨进程
+    共享物理页，worker / 多会话不再各自拷贝一份。
+
+    注意：arrow 读回已是 ``(datetime, instrument)`` MultiIndex 且保持缓存落盘
+    顺序（有序）——此处**不再走 ``_coerce_datetime_index`` 的 sort_index**：pandas
+    ``sort_index`` 会对数值块整块复制（本机 2.3.3 未开 CoW 实测），会毁掉 mmap
+    共享；仅当顺序异常时才退化排序（代价是失去共享，但语义与 parquet 路径一致）。
+
+    ``columns``：只加载这些数据列（None = 全部）。mmap 路径直接过滤列构造，
+    未选中的列不建视图也不 fault 对应文件页；parquet 回退路径用
+    ``pd.read_parquet(columns=...)``，并自动补回 ``datetime``/``instrument`` 索引列
+    （缓存 parquet 以 reset_index 落盘，缺索引列会丢 MultiIndex）。
+    """
     p = Path(path)
     if not p.is_file():
         raise FileNotFoundError(f"panel 不存在: {p}")
-    panel = pd.read_parquet(p)
+    arrow = p.with_suffix(".arrow")
+    if arrow.is_file():
+        from alphaagent.data.adapters.panel_mmap import read_panel_arrow_mmap
+
+        panel = read_panel_arrow_mmap(arrow, columns=columns)
+        if panel is not None:
+            dt = panel.index.get_level_values("datetime")
+            if isinstance(dt, pd.DatetimeIndex) and dt.is_monotonic_increasing:
+                return panel
+            logger.warning(
+                "panel arrow 缓存未按 datetime 排序（%s），退化为复制排序", arrow.name
+            )
+            return panel.sort_index()
+    if columns is not None:
+        cols = list(columns)
+        # 缓存 parquet 的索引可能 reset_index 成普通列，也可能仍作为 parquet index；
+        # 以元数据为准补齐索引列，避免 read_parquet(columns=...) 对索引形态抛 KeyError。
+        meta_cols = panel_columns(p)
+        if meta_cols is not None:
+            for extra in ("datetime", "instrument"):
+                if extra in meta_cols and extra not in cols:
+                    cols.append(extra)
+        panel = pd.read_parquet(p, columns=cols)
+    else:
+        panel = pd.read_parquet(p)
     if "instrument" not in panel.index.names and "code" in panel.index.names:
         panel = panel.rename_axis(index={"code": "instrument"})
     return _coerce_datetime_index(panel)
+
+
+def panel_columns(path: Path | str) -> list[str] | None:
+    """元数据级读取 panel 列名（不物化数据、不 fault 数据页）。失败返回 None。
+
+    批量/CLI 按需取列（如 ``include_fundamentals=False`` 时排除 ``funda_*``）时先用它
+    拿全量列名做筛选，避免整表 mmap/parquet 加载后再 ``drop`` 对数值块整块复制。
+    """
+    p = Path(path)
+    try:
+        if p.is_file() and p.suffix == ".arrow":
+            import pyarrow as pa
+            import pyarrow.ipc as ipc
+
+            with pa.memory_map(str(p), "r") as src:
+                return list(ipc.open_file(src).schema.names)
+        if p.is_file():
+            import pyarrow.parquet as pq
+
+            return list(pq.read_schema(str(p)).names)
+    except Exception as exc:  # noqa: BLE001 — 元数据读取失败不阻断主流程
+        logger.warning("panel 列名读取失败（%s），按全量加载: %s", p.name, exc)
+    return None
 
 
 def save_panel(panel: pd.DataFrame, path: Path | str) -> Path:
