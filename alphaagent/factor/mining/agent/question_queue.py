@@ -250,7 +250,13 @@ def _apply_prioritize_method_types(rows: list[dict[str, Any]],
     _rp = (spec or {}).get("report_policy") or {}
     priorities = [str(x) for x in (_rp.get("prioritize_method_types") or [])]
     rotation = (spec or {}).get("rotation_policy") or {}
-    if not priorities or not rotation.get("enabled"):
+    if not priorities:
+        return rows
+    if not rotation.get("enabled"):
+        # 与 _apply_exclude_method_types 等一致：配置了却不生效时显式告警，
+        # 不留「运营以为开了轮动优先、实际静默失效」的 fail-open。
+        logger.warning("prioritize_method_types=%s 已配置但 rotation_policy.enabled=False "
+                       "→ 本次未按方法类型优先排序", priorities)
         return rows
     if not any("method_type" in r for r in rows):
         logger.info("prioritize_method_types=%s（rotation 开启）但题库无 method_type 字段（旧题库），不排序",

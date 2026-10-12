@@ -537,34 +537,43 @@ def _industry_ic_table(
     weights 为对应组的有效样本数（后续按组内样本加权）。组内样本数 < min_cover
     的组被剔除；无任何有效组返回 None。算法与 cross_sectional_rank_ic 同构：
     组内 rank 化后按 Pearson 公式（ddof=1）一次聚合，避免逐日 Python 循环。
+
+    结果按 (field, min_cover) 缓存到 context.cache：同一 profile 评估内
+    industry_within_rank_ic 与 industry_ic_dispersion 总是成对出现，共享
+    一次矩阵计算（挖掘循环对每因子 × 3 profile 各少一遍 groupby.rank）。
     """
+    cache_key = ("industry_ic_table", field, int(min_cover))
+    if cache_key in context.cache:
+        return context.cache[cache_key]
+
     dates = context.panel.index.get_level_values("datetime")
     industry = context.panel[field].to_numpy(copy=False)
     factor = context.factor.to_numpy(dtype=np.float64, copy=False)
     label = context.label.to_numpy(dtype=np.float64, copy=False)
     df = pd.DataFrame({"d": dates, "g": industry, "f": factor, "y": label})
     df = df.dropna(subset=["f", "y", "g"])
-    if df.empty:
-        return None
-    df["fr"] = df.groupby(["d", "g"], sort=False)["f"].rank()
-    df["yr"] = df.groupby(["d", "g"], sort=False)["y"].rank()
-    df["xy"] = df["fr"] * df["yr"]
-    agg = df.groupby(["d", "g"], sort=False).agg(
-        n=("xy", "size"), ex=("fr", "mean"), ey=("yr", "mean"),
-        exy=("xy", "mean"), sx=("fr", "std"), sy=("yr", "std"),
-    )
-    agg = agg[agg["n"] >= max(int(min_cover), 2)]
-    if agg.empty:
-        return None
-    n = agg["n"].to_numpy(dtype=np.float64)
-    cov = (agg["exy"].to_numpy() - agg["ex"].to_numpy() * agg["ey"].to_numpy()) * n / (n - 1)
-    denom = agg["sx"].to_numpy() * agg["sy"].to_numpy()
-    ic_vals = np.where(denom > 1e-12, cov / np.where(denom > 1e-12, denom, np.nan), np.nan)
-    ic = pd.Series(ic_vals, index=agg.index, name="industry_ic")
-    ic = ic[np.isfinite(ic.to_numpy(dtype=float, copy=False))]
-    if ic.empty:
-        return None
-    return ic, agg.loc[ic.index, "n"]
+    table = None
+    if not df.empty:
+        df["fr"] = df.groupby(["d", "g"], sort=False)["f"].rank()
+        df["yr"] = df.groupby(["d", "g"], sort=False)["y"].rank()
+        df["xy"] = df["fr"] * df["yr"]
+        agg = df.groupby(["d", "g"], sort=False).agg(
+            n=("xy", "size"), ex=("fr", "mean"), ey=("yr", "mean"),
+            exy=("xy", "mean"), sx=("fr", "std"), sy=("yr", "std"),
+        )
+        agg = agg[agg["n"] >= max(int(min_cover), 2)]
+        if not agg.empty:
+            n = agg["n"].to_numpy(dtype=np.float64)
+            cov = (agg["exy"].to_numpy() - agg["ex"].to_numpy() * agg["ey"].to_numpy()) * n / (n - 1)
+            denom = agg["sx"].to_numpy() * agg["sy"].to_numpy()
+            safe_denom = np.where(denom > 1e-12, denom, np.nan)
+            ic_vals = cov / safe_denom
+            ic = pd.Series(ic_vals, index=agg.index, name="industry_ic")
+            ic = ic[np.isfinite(ic.to_numpy(dtype=float, copy=False))]
+            if not ic.empty:
+                table = ic, agg.loc[ic.index, "n"]
+    context.cache[cache_key] = table
+    return table
 
 
 def _missing_industry(field: str) -> dict[str, Any]:

@@ -201,5 +201,11 @@ def resolve_profiles(spec: dict[str, Any] | None = None) -> dict[str, Evaluation
         for _pid in ("train_screen", "validation", "production_delivery"):
             if _pid in raw_defaults:
                 prev = list(raw_defaults[_pid].get("metrics") or [])
-                raw_defaults[_pid]["metrics"] = prev + _rotation_metrics
+                # 幂等：生产链路会把前端回传/续跑冻结的 evaluation_profiles 再走一遍
+                # build_run_research_spec → resolve_profiles，此时 prev 已含轮动项；
+                # 按 plugin 名去重，避免 3→6→9… 重复追加导致 profile 指纹漂移。
+                existing = {m.get("plugin") for m in prev if isinstance(m, dict)}
+                raw_defaults[_pid]["metrics"] = prev + [
+                    m for m in _rotation_metrics if m.get("plugin") not in existing
+                ]
     return {profile_id: _profile_from_mapping(profile_id, value) for profile_id, value in raw_defaults.items()}

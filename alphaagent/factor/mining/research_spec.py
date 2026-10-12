@@ -123,6 +123,16 @@ def _default_delivery_policy() -> dict[str, Any]:
     return DeliveryCriteria.defaults().to_spec_dict()
 
 
+# prioritize_method_types 的合法 method_type 白名单（P1）：本文件唯一真源，
+# 需与 scripts/classify_report_methods.py 的 LABELS 保持集合相等
+# （tests/test_research_spec_rotation_policy.py 有漂移断言）。白名单只做合法性
+# 校验，不替 exclude_method_types / 优先级决定取舍。
+METHOD_TYPE_LABELS = frozenset({
+    "rule_formula", "factor_test", "portfolio_combo", "event_driven",
+    "timing_rotation", "ml_model", "graph_deep", "other",
+})
+
+
 DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
     "version": 1,
     "research_mode": "technical",
@@ -910,10 +920,7 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
         rp.get("prioritize_method_types", []),
         "report_policy.prioritize_method_types",
     )
-    _unknown_prioritized = set(rp["prioritize_method_types"]) - {
-        "rule_formula", "factor_test", "portfolio_combo", "event_driven",
-        "timing_rotation", "ml_model", "graph_deep", "other",
-    }
+    _unknown_prioritized = set(rp["prioritize_method_types"]) - METHOD_TYPE_LABELS
     if _unknown_prioritized:
         raise ValueError(
             "report_policy.prioritize_method_types 含未知方法类型:"

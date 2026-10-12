@@ -3,13 +3,27 @@
 
 from __future__ import annotations
 
+import importlib.util
+from pathlib import Path
+
 import pytest
 
 from alphaagent.factor.mining.research_spec import (
     DEFAULT_RESEARCH_SPEC,
+    METHOD_TYPE_LABELS,
     build_run_research_spec,
     normalize_research_spec,
 )
+
+
+def _load_classify_report_labels() -> frozenset[str]:
+    """从 scripts/classify_report_methods.py 直接加载 LABELS，避免依赖 scripts 为包。"""
+    src = Path(__file__).resolve().parents[1] / "scripts" / "classify_report_methods.py"
+    spec = importlib.util.spec_from_file_location("classify_report_methods", src)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return frozenset(module.LABELS)
 
 
 class TestRotationPolicyDefaults:
@@ -89,3 +103,17 @@ class TestPrioritizeMethodTypes:
     def test_non_string_list_rejected(self) -> None:
         with pytest.raises(ValueError):
             normalize_research_spec({"report_policy": {"prioritize_method_types": "timing_rotation"}})
+
+
+class TestPrioritizeWhitelistSingleSource:
+    # OCR (P1) low：research_spec 白名单是 classify_report_methods.LABELS 的静态拷贝，
+    # 防止"新增/改名 method_type → 白名单忘记同步 → 合法优先级被误拒"或反向漂移。
+    def test_whitelist_equals_classify_labels(self) -> None:
+        assert METHOD_TYPE_LABELS == _load_classify_report_labels()
+
+    def test_every_classify_label_accepted(self) -> None:
+        labels = _load_classify_report_labels()
+        spec = normalize_research_spec({
+            "report_policy": {"prioritize_method_types": sorted(labels)},
+        })
+        assert set(spec["report_policy"]["prioritize_method_types"]) == labels
