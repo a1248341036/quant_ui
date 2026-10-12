@@ -390,7 +390,7 @@ function Execute-CnePipeline {
                                 $agg = $null; $rows = 0; $allSkip = $true
                                 foreach ($b in $g.Group) {
                                     switch ($b.status) {
-                                        "success"    { $agg = "success"; $allSkip = $false }
+                                        "success"    { if ($null -eq $agg) { $agg = "success" }; $allSkip = $false }
                                         "warning"    { if ($agg -ne "failed") { $agg = "warning" }; $allSkip = $false }
                                         "failed"     { $agg = "failed"; $allSkip = $false }
                                         "running"    { $agg = "failed"; $allSkip = $false }
@@ -398,9 +398,9 @@ function Execute-CnePipeline {
                                         "superseded" { if ($null -eq $agg) { $agg = "success" } }
                                         "skip"       { }
                                         "skipped"    { }
-                                        default      { if ($agg -ne "failed") { $agg = "warning" }; $allSkip = $false }
+                                        default      { $agg = "failed"; $allSkip = $false }
                                     }
-                                    if ($b.rows_written -gt $rows) { $rows = $b.rows_written }
+                                    if ($b.status -eq "success") { $rows += $b.rows_written }
                                 }
                                 if ($null -eq $agg) { $agg = if ($allSkip) { "skip" } else { "failed" } }
                                 $batchByDataset[$g.Name] = [pscustomobject]@{ status = $agg; rows_written = $rows }
