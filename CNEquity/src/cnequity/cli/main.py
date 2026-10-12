@@ -4,7 +4,7 @@ import json
 import logging
 import os
 import sys
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import click
@@ -1696,9 +1696,49 @@ def verify(config_path: str, only: str | None, repair: bool, kinds: str | None):
     is_flag=True,
     help="Per-dataset freshness: coverage, watermark, and staleness vs the last trading day.",
 )
-def status(config_path: str, show_datasets: bool):
-    """Show latest run status, or per-dataset freshness with --datasets."""
+@click.option(
+    "--run-id",
+    default=None,
+    help="Show the manifest truth (per-batch statuses) for one run instead of the latest summary.",
+)
+def status(config_path: str, show_datasets: bool, run_id: str | None):
+    """Show latest run status, per-dataset freshness with --datasets, or per-batch truth with --run-id."""
     cfg = _cfg(config_path)
+
+    if run_id:
+        manifest = Manifest(cfg.manifest_path)
+        run = manifest.get_run(run_id)
+        if not run:
+            raise click.ClickException(f"Unknown run_id: {run_id}")
+        batches = []
+        for b in manifest.get_batches_for_run(run_id):
+            elapsed = None
+            start, end = b["started_at"], b["finished_at"]
+            if start and end:
+                try:
+                    elapsed = (
+                        datetime.fromisoformat(end) - datetime.fromisoformat(start)
+                    ).total_seconds()
+                except ValueError:
+                    elapsed = None
+            batches.append(
+                {
+                    "dataset": b["dataset"],
+                    "status": b["status"],
+                    "rows_read": b["rows_read"],
+                    "rows_written": b["rows_written"],
+                    "elapsed": elapsed,
+                    "error_message": b["error_message"],
+                }
+            )
+        click.echo(
+            json.dumps(
+                {"run": dict(run), "status": run["status"], "batches": batches},
+                indent=2,
+                default=str,
+            )
+        )
+        return
 
     if show_datasets:
         import polars as pl_mod

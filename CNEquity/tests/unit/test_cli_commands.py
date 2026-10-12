@@ -178,6 +178,70 @@ def test_status_latest_run(cfg_path, monkeypatch):
     assert payload["status"] == "success"
 
 
+def test_status_run_id_reports_real_batches(cfg_path, monkeypatch):
+    class FakeManifest:
+        def __init__(self, *a, **k):
+            pass
+
+        def get_run(self, run_id):
+            return {
+                "run_id": run_id,
+                "job_name": "daily",
+                "status": "failed",
+                "started_at": "2026-10-12T08:00:00",
+                "finished_at": "2026-10-12T08:30:00",
+            }
+
+        def get_batches_for_run(self, run_id):
+            return [
+                {
+                    "dataset": "fund_flow",
+                    "status": "failed",
+                    "rows_read": 0,
+                    "rows_written": 0,
+                    "started_at": "2026-10-12T08:10:00",
+                    "finished_at": "2026-10-12T08:20:00",
+                    "error_message": "push2 timeout",
+                },
+                {
+                    "dataset": "valuation_metrics",
+                    "status": "success",
+                    "rows_read": 100,
+                    "rows_written": 100,
+                    "started_at": "2026-10-12T08:05:00",
+                    "finished_at": "2026-10-12T08:06:00",
+                    "error_message": None,
+                },
+            ]
+
+    monkeypatch.setattr("cnequity.cli.main.Manifest", FakeManifest)
+    result = CliRunner().invoke(cli, ["status", "--run-id", "w1", "--config", cfg_path])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["run"]["status"] == "failed"
+    assert len(payload["batches"]) == 2
+    by_ds = {b["dataset"]: b for b in payload["batches"]}
+    assert by_ds["fund_flow"]["status"] == "failed"
+    assert by_ds["valuation_metrics"]["status"] == "success"
+    assert by_ds["valuation_metrics"]["rows_written"] == 100
+    # elapsed 由 started_at/finished_at 计算（失败批次无 finish 时为 None）
+    assert by_ds["valuation_metrics"]["elapsed"] == 60.0
+
+
+def test_status_run_id_unknown(cfg_path, monkeypatch):
+    class FakeManifest:
+        def __init__(self, *a, **k):
+            pass
+
+        def get_run(self, run_id):
+            return None
+
+    monkeypatch.setattr("cnequity.cli.main.Manifest", FakeManifest)
+    result = CliRunner().invoke(cli, ["status", "--run-id", "missing", "--config", cfg_path])
+    assert result.exit_code != 0
+    assert "Unknown run_id" in result.output
+
+
 def test_status_datasets_all_fresh(cfg_path, monkeypatch):
     monkeypatch.setattr(
         "cnequity.cli.main._last_trading_day",
