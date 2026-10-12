@@ -116,6 +116,7 @@ class SessionStore:
 
         # 数据源分支：cne:// 走 adapter 实时构建，否则读 parquet 文件
         from alphaagent.data.adapters.cnequity import is_cne_source, load_panel_from_cne
+        excluded_funda = 0
         if is_cne_source(ctx.panel_path):
             panel = load_panel_from_cne(
                 start=cov_start, end=cov_end, universe_mask=False,
@@ -134,6 +135,9 @@ class SessionStore:
                 if cols is None:
                     panel = load_panel(ctx.panel_path)
                 else:
+                    excluded_funda = sum(
+                        1 for c in cols if str(c).startswith("funda_")
+                    )
                     panel = load_panel(
                         ctx.panel_path,
                         columns=[c for c in cols if not str(c).startswith("funda_")] or None,
@@ -147,9 +151,8 @@ class SessionStore:
                 panel = panel.drop(columns=funda_cols)
                 dropped_funda = len(funda_cols)
             else:
-                dropped_funda = 0
-        else:
-            dropped_funda = 0
+                # 按需取列已排除：如实记录排除的 funda 列数（保持元数据语义）
+                dropped_funda = excluded_funda
         panel = slice_panel(panel, start=cov_start, end=cov_end)
         # 股票池（评估口径，非因子属性）：非成分股票**整行剔除**，
         # 使 IC / 覆盖率 / 换手 / 分组 / 引擎回测全部在池内计算。all 时零开销。

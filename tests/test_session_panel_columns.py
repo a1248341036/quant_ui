@@ -46,9 +46,9 @@ def test_session_no_fundamentals_loads_subset_no_drop_copy(tmp_path: Path):
     ctx = StockEvalContext(panel_path=pq, include_fundamentals=False)
     session = SessionStore().create(ctx)
 
-    # 会话面板不含 funda_* 列，且走的是按需取列（未触发 drop 计数）
+    # 会话面板不含 funda_* 列,按需取列路径如实记录排除列数（本夹具 1 个 funda_ocf）
     assert not any(str(c).startswith("funda_") for c in session.panel.columns)
-    assert session.meta["dropped_fundamental_cols"] == 0
+    assert session.meta["dropped_fundamental_cols"] == 1
     # 数值列仍是 mmap 零拷贝只读视图 —— 若发生了 drop 整块复制，这里会是可写
     arr = session.panel["adj_close"].to_numpy(copy=False)
     assert arr.flags.writeable is False
