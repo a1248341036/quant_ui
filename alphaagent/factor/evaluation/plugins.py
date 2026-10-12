@@ -524,3 +524,158 @@ def quantile_portfolio(context: EvaluationContext, params: dict[str, Any]) -> di
             out["tradable_domain"] = {"available": False, "error": f"{type(exc).__name__}: {exc}"}
 
     return out
+
+# ── 行业/风格轮动诊断 metrics（P1，2026-10-12；只披露、不参与任何准入规则）──
+
+
+def _industry_ic_table(
+    context, field: str, min_cover: int,
+) -> tuple[pd.Series, pd.Series] | None:
+    """按 (日, 行业) 组计算行业内 Rank IC。
+
+    返回 (ic, weights)：ic 为 MultiIndex (date, industry) 的 Spearman IC，
+    weights 为对应组的有效样本数（后续按组内样本加权）。组内样本数 < min_cover
+    的组被剔除；无任何有效组返回 None。算法与 cross_sectional_rank_ic 同构：
+    组内 rank 化后按 Pearson 公式（ddof=1）一次聚合，避免逐日 Python 循环。
+    """
+    dates = context.panel.index.get_level_values("datetime")
+    industry = context.panel[field].to_numpy(copy=False)
+    factor = context.factor.to_numpy(dtype=np.float64, copy=False)
+    label = context.label.to_numpy(dtype=np.float64, copy=False)
+    df = pd.DataFrame({"d": dates, "g": industry, "f": factor, "y": label})
+    df = df.dropna(subset=["f", "y", "g"])
+    if df.empty:
+        return None
+    df["fr"] = df.groupby(["d", "g"], sort=False)["f"].rank()
+    df["yr"] = df.groupby(["d", "g"], sort=False)["y"].rank()
+    df["xy"] = df["fr"] * df["yr"]
+    agg = df.groupby(["d", "g"], sort=False).agg(
+        n=("xy", "size"), ex=("fr", "mean"), ey=("yr", "mean"),
+        exy=("xy", "mean"), sx=("fr", "std"), sy=("yr", "std"),
+    )
+    agg = agg[agg["n"] >= max(int(min_cover), 2)]
+    if agg.empty:
+        return None
+    n = agg["n"].to_numpy(dtype=np.float64)
+    cov = (agg["exy"].to_numpy() - agg["ex"].to_numpy() * agg["ey"].to_numpy()) * n / (n - 1)
+    denom = agg["sx"].to_numpy() * agg["sy"].to_numpy()
+    ic_vals = np.where(denom > 1e-12, cov / np.where(denom > 1e-12, denom, np.nan), np.nan)
+    ic = pd.Series(ic_vals, index=agg.index, name="industry_ic")
+    ic = ic[np.isfinite(ic.to_numpy(dtype=float, copy=False))]
+    if ic.empty:
+        return None
+    return ic, agg.loc[ic.index, "n"]
+
+
+def _missing_industry(field: str) -> dict[str, Any]:
+    return {
+        "within_rank_ic": float("nan"),
+        "market_rank_ic": float("nan"),
+        "within_minus_market": float("nan"),
+        "n_days": 0,
+        "n_industries_used": 0,
+        "note": f"panel 缺少行业字段 {field}（P1 轮动诊断未计算）",
+    }
+
+
+@metric("industry_within_rank_ic")
+def industry_within_rank_ic(context: EvaluationContext, params: dict[str, Any]) -> dict[str, Any]:
+    """行业内 Rank IC：按行业分组、组内日度 Spearman，按组内样本数加权。
+
+    与全市场 Rank IC 对比：within 显著低于 market ⇒ 因子 alpha 主要是行业贝塔
+    而非行业内选股能力（行业轮动假阳性的第一道观测）。只披露，不设门槛。
+    """
+    field = str(params.get("field", "industry_sw_l1"))
+    min_cover = int(params.get("min_cover", 15))
+    if field not in context.panel.columns:
+        return _missing_industry(field)
+    table = _industry_ic_table(context, field, min_cover)
+    if table is None:
+        return {**_missing_industry(field), "note": "无有效行业组（行业内样本不足）"}
+    ic, weights = table
+    w = weights.to_numpy(dtype=np.float64)
+    total = float(w.sum())
+    within_ic = float(np.sum(ic.to_numpy(dtype=np.float64) * w) / total) if total > 0 else float("nan")
+    market = context.daily_rank_ic()
+    market_ic = float(market.mean()) if market.notna().any() else float("nan")
+    diff = within_ic - market_ic if np.isfinite(market_ic) else float("nan")
+    return {
+        "within_rank_ic": within_ic,
+        "market_rank_ic": market_ic,
+        "within_minus_market": diff,
+        "n_days": int(ic.index.get_level_values(0).nunique()),
+        "n_industries_used": int(ic.index.get_level_values(1).nunique()),
+        "note": "行业内日度 Rank IC 按行业有效样本数加权；within_minus_market<0 越大=越依赖行业贝塔。",
+    }
+
+
+@metric("industry_exposure_r2")
+def industry_exposure_r2(context: EvaluationContext, params: dict[str, Any]) -> dict[str, Any]:
+    """行业暴露 R²：逐日因子值对行业组均值的方差解释占比（SS_between/SS_total）。
+
+    R²=0 无行业暴露；≈1 纯行业哑变量。配合 industry_within_rank_ic 判断
+    「全市场 IC 高、行业内 IC 低、暴露高」= 行业 beta 而非行业内 alpha。
+    """
+    field = str(params.get("field", "industry_sw_l1"))
+    if field not in context.panel.columns:
+        return {"exposure_r2": float("nan"), "n_days": 0, "note": f"panel 缺少行业字段 {field}"}
+    dates = context.panel.index.get_level_values("datetime")
+    industry = context.panel[field].to_numpy(copy=False)
+    factor = context.factor.to_numpy(dtype=np.float64, copy=False)
+    df = pd.DataFrame({"d": dates, "g": industry, "f": factor}).dropna(subset=["f", "g"])
+    if df.empty:
+        return {"exposure_r2": float("nan"), "n_days": 0, "note": "无有效因子/行业对"}
+    day_mean = df.groupby("d")["f"].transform("mean")
+    group_mean = df.groupby(["d", "g"])["f"].transform("mean")
+    ss_total = (df["f"] - day_mean).pow(2).groupby(df["d"]).sum()
+    ss_between = (group_mean - day_mean).pow(2).groupby(df["d"]).sum()
+    r2 = (ss_between / ss_total.replace(0, np.nan)).dropna()
+    if r2.empty:
+        return {"exposure_r2": float("nan"), "n_days": 0, "note": "方差分解退化（单行业/单股票日）"}
+    return {
+        "exposure_r2": float(r2.mean()),
+        "n_days": int(len(r2)),
+        "note": "逐日 SS_between/SS_total 均值；≈1 表示因子几乎完全由行业哑变量解释。",
+    }
+
+
+@metric("industry_ic_dispersion")
+def industry_ic_dispersion(context: EvaluationContext, params: dict[str, Any]) -> dict[str, Any]:
+    """行业 IC 离散度：各行业整段 IC 均值的截面分布。
+
+    行业间差异大 ⇒ 「行业间有差异化 alpha」的轮动信号候选；差异小 ⇒ 因子各行业
+    普适（稳定 alpha 而非轮动）。每行业至少 min_days 个有效日才纳入统计。
+    """
+    field = str(params.get("field", "industry_sw_l1"))
+    min_cover = int(params.get("min_cover", 15))
+    min_days = int(params.get("min_days", 20))
+    if field not in context.panel.columns:
+        return {"dispersion_std": float("nan"), "dispersion_iqr": float("nan"),
+                "mean_ic": float("nan"), "n_industries": 0, "top3": {}, "bottom3": {},
+                "note": f"panel 缺少行业字段 {field}"}
+    table = _industry_ic_table(context, field, min_cover)
+    if table is None:
+        return {"dispersion_std": float("nan"), "dispersion_iqr": float("nan"),
+                "mean_ic": float("nan"), "n_industries": 0, "top3": {}, "bottom3": {},
+                "note": "无有效行业组（行业内样本不足）"}
+    ic, _ = table
+    df = ic.reset_index()
+    df.columns = ["d", "g", "ic"]
+    per = df.groupby("g")["ic"].agg(n_days="count", mean="mean")
+    per = per[per["n_days"] >= max(int(min_days), 1)]
+    if per.empty:
+        return {"dispersion_std": float("nan"), "dispersion_iqr": float("nan"),
+                "mean_ic": float("nan"), "n_industries": 0, "top3": {}, "bottom3": {},
+                "note": f"无行业有效日 ≥ {min_days}（min_days 过大或样本过短）"}
+    means = per["mean"]
+    q1, q3 = np.nanpercentile(means.to_numpy(dtype=float), [25, 75])
+    rounded = lambda kv: {str(k): round(float(v), 5) for k, v in kv.items()}  # noqa: E731
+    return {
+        "dispersion_std": float(means.std(ddof=1)) if len(means) > 1 else float("nan"),
+        "dispersion_iqr": float(q3 - q1) if np.isfinite(q1) and np.isfinite(q3) else float("nan"),
+        "mean_ic": float(means.mean()),
+        "n_industries": int(len(means)),
+        "top3": rounded(means.nlargest(3).to_dict()),
+        "bottom3": rounded(means.nsmallest(3).to_dict()),
+        "note": "行业 IC 均值截面 std/IQR；top3/bottom3 为最强/最弱行业（展示用，不设门槛）。",
+    }

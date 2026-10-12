@@ -363,6 +363,12 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
         # 默认排除 deprecated + suspect：**不再为已知做不出的题烧整轮预算**
         # （实测单题最多烧 49~54 次判定、占当夜判定 47%）。旧题库无该字段 → 不筛。
         "exclude_perf_labels": ["deprecated", "suspect"],
+        # 轮动课题优先（2026-10-12，P1；默认空，不改变派发顺序）：非空且
+        # rotation_policy.enabled=True 时，load_question_queue 将 method_type 命中
+        # 本列表的课题稳定排到队首（不删题不缩池）。与 exclude_method_types 正交：
+        # 排除在前（方法论准入），优先级在后（轮动模式排序）。取值须为
+        # scripts/classify_report_methods.py 的 LABELS 之一。
+        "prioritize_method_types": [],
         # 复现通过后锁定该课题的发散轮数（2026-10-03 收口：此前只存在于
         # report_channels.reproduce_lock_rounds 的 .get(...,3)，从未进配置中心，违反三件套）。
         # 语义：复现过线后同一课题继续发散的轮数。调大→单题挖得更深、铺题更慢；调小→铺题快、单题浅。
@@ -389,6 +395,28 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
         "report_prior_max_chars": 1600,
         "report_prior_top_k": 4,
         "include_negatives": True,
+    },
+    # ── rotation_policy：行业/风格轮动 P1（2026-10-12；默认全关，不改任何现有行为）──
+    "rotation_policy": {
+        # 轮动模式总开关：False = rotation_guide 不渲染、诊断 metrics 不挂 profile、
+        # 课题不按方法类型优先排序（逐字节旧行为）。True 后 P1 组件才生效。
+        # 影响模式：全部模式（开关在顶层，与研报/技术模式正交）。
+        "enabled": False,
+        # 行业分组键：P0 已保证聚焦面板恒载 industry_sw_l1/industry_sw_code。
+        # 取值影响行业诊断 metric 与后续 P2 StyleRegime 的分组口径，须与 panel 列一致。
+        "industry_field": "industry_sw_l1",
+        # 行业内有效样本下限（只数）：某日某行业有效 (factor,label) 股票数低于此值，
+        # 该行业当日 IC 记 NaN 不进加权。默认 15：一级行业日截面大多 50~300 只，
+        # 15 足够算 Spearman 且过滤尾部小行业噪声；调大（如 30）小行业整段消失，
+        # 调小（如 5）保留更多行业但小样本 IC 噪声大。影响行业诊断 metrics。
+        "min_industry_cover": 15,
+        # 行业 IC 序列统计所需的最少有效日（行业离散度 metric 用）：某行业有效日
+        # 低于此值则不参与行业 IC 离散度统计。默认 20：避免只出现过几天的
+        # 小行业用噪声 IC 撑高离散度；调大更稳但剔除更多不连续行业。
+        "min_industry_days": 20,
+        # 行业诊断 metrics 是否挂到评估 profile（enabled=True 且此键=True 才挂载；
+        # 单独 True 不生效，防止半配置状态）。仅影响评估输出，不设门槛。
+        "report_industry_metrics": True,
     },
 }
 
@@ -875,6 +903,22 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
         rp.get("exclude_perf_labels", ["deprecated", "suspect"]),
         "report_policy.exclude_perf_labels",
     )
+    # 轮动课题优先（P1）：非空且 rotation_policy.enabled=True 时对 method_type 优先排序
+    # （不删题不缩池，见 question_queue._apply_prioritize_method_types）。白名单与
+    # scripts/classify_report_methods.py 的 LABELS 对齐；旧题库无 method_type → 不生效。
+    rp["prioritize_method_types"] = _string_list(
+        rp.get("prioritize_method_types", []),
+        "report_policy.prioritize_method_types",
+    )
+    _unknown_prioritized = set(rp["prioritize_method_types"]) - {
+        "rule_formula", "factor_test", "portfolio_combo", "event_driven",
+        "timing_rotation", "ml_model", "graph_deep", "other",
+    }
+    if _unknown_prioritized:
+        raise ValueError(
+            "report_policy.prioritize_method_types 含未知方法类型:"
+            + ",".join(sorted(_unknown_prioritized))
+        )
     rp["reproduce_lock_rounds"] = int(_bounded_number(
         rp.get("reproduce_lock_rounds", 3), "report_policy.reproduce_lock_rounds", 0, 12
     ))
@@ -928,6 +972,30 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
         )
     rp["reproduce_shape_requirement"] = _shape_req
     spec["report_policy"] = rp
+
+    # ── rotation_policy：行业/风格轮动 P1（默认全关，不改现有行为）──
+    rotation = spec.get("rotation_policy")
+    if not isinstance(rotation, dict):
+        rotation = {}
+    rotation["enabled"] = _require_bool(
+        rotation.get("enabled", False), "rotation_policy.enabled"
+    )
+    rotation["industry_field"] = str(
+        rotation.get("industry_field", "industry_sw_l1") or "industry_sw_l1"
+    )
+    rotation["min_industry_cover"] = int(_bounded_number(
+        rotation.get("min_industry_cover", 15),
+        "rotation_policy.min_industry_cover", 5, 200,
+    ))
+    rotation["min_industry_days"] = int(_bounded_number(
+        rotation.get("min_industry_days", 20),
+        "rotation_policy.min_industry_days", 5, 500,
+    ))
+    rotation["report_industry_metrics"] = _require_bool(
+        rotation.get("report_industry_metrics", True),
+        "rotation_policy.report_industry_metrics",
+    )
+    spec["rotation_policy"] = rotation
 
     profiles = resolve_profiles(spec)
     spec["evaluation_profiles"] = {profile_id: profile.as_dict() for profile_id, profile in profiles.items()}

@@ -183,4 +183,23 @@ def resolve_profiles(spec: dict[str, Any] | None = None) -> dict[str, Evaluation
             raise ValueError(f"research_spec.evaluation_profiles.{profile_id}_must_be_object")
         base = raw_defaults.get(profile_id, {"profile_id": profile_id, "version": 1})
         raw_defaults[profile_id] = {**base, **copy.deepcopy(override), "profile_id": profile_id}
+
+    # ── 行业/风格轮动 P1 诊断 metrics（2026-10-12）──────────────────────────
+    # rotation_policy.enabled + report_industry_metrics 同时为真才挂载；
+    # 只追加不覆盖（用户 override 的 metrics 保留），train_screen_lite 不挂
+    # （吞吐敏感）。这些 metric 只写评估输出，不参与任何准入规则。
+    rotation = (spec or {}).get("rotation_policy") or {}
+    if rotation.get("enabled") and rotation.get("report_industry_metrics"):
+        _rfield = str(rotation.get("industry_field") or "industry_sw_l1")
+        _rcover = int(rotation.get("min_industry_cover") or 15)
+        _rdays = int(rotation.get("min_industry_days") or 20)
+        _rotation_metrics = [
+            {"plugin": "industry_within_rank_ic", "params": {"field": _rfield, "min_cover": _rcover}},
+            {"plugin": "industry_exposure_r2", "params": {"field": _rfield, "min_cover": _rcover}},
+            {"plugin": "industry_ic_dispersion", "params": {"field": _rfield, "min_cover": _rcover, "min_days": _rdays}},
+        ]
+        for _pid in ("train_screen", "validation", "production_delivery"):
+            if _pid in raw_defaults:
+                prev = list(raw_defaults[_pid].get("metrics") or [])
+                raw_defaults[_pid]["metrics"] = prev + _rotation_metrics
     return {profile_id: _profile_from_mapping(profile_id, value) for profile_id, value in raw_defaults.items()}

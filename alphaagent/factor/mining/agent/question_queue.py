@@ -127,10 +127,11 @@ def load_question_queue(spec: dict[str, Any] | None = None) -> list[dict[str, An
                 if line.strip():
                     questions.append(json.loads(line))
             if questions:
-                return _apply_exclude_perf_labels(
-                    _apply_exclude_method_types(
-                        _apply_require_report_structure(
-                            _apply_require_factor_records(questions, spec), spec), spec), spec)
+                return _apply_prioritize_method_types(
+                    _apply_exclude_perf_labels(
+                        _apply_exclude_method_types(
+                            _apply_require_report_structure(
+                                _apply_require_factor_records(questions, spec), spec), spec), spec), spec)
         except Exception as e:
             logger.warning("读取问题题库失败: %s", e)
 
@@ -234,6 +235,32 @@ def _apply_exclude_perf_labels(rows: list[dict[str, Any]],
     logger.info("exclude_perf_labels=%s: %d → %d 道（排除已知做不出的题，省下整轮预算）",
                 excluded, len(rows), len(kept))
     return kept
+
+
+def _apply_prioritize_method_types(rows: list[dict[str, Any]],
+                                   spec: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """``report_policy.prioritize_method_types``：轮动模式下把指定方法类型的课题稳定置队首。
+
+    P1 目标：重点挖掘时鼓励轮动风格因子。仅在 `rotation_policy.enabled=True`
+    且优先级列表非空时生效；用稳定排序把命中题提到队首（命中题之间、非命中题
+    之间均保持原相对顺序），**不删题不缩池**。旧题库无 method_type 字段 → 不排序。
+    """
+    if not rows:
+        return rows
+    _rp = (spec or {}).get("report_policy") or {}
+    priorities = [str(x) for x in (_rp.get("prioritize_method_types") or [])]
+    rotation = (spec or {}).get("rotation_policy") or {}
+    if not priorities or not rotation.get("enabled"):
+        return rows
+    if not any("method_type" in r for r in rows):
+        logger.info("prioritize_method_types=%s（rotation 开启）但题库无 method_type 字段（旧题库），不排序",
+                    priorities)
+        return rows
+    priority_set = set(priorities)
+    hit_count = sum(1 for r in rows if str(r.get("method_type") or "") in priority_set)
+    logger.info("prioritize_method_types=%s（rotation 开启）: %d 道中 %d 道命中，稳定前置",
+                priorities, len(rows), hit_count)
+    return sorted(rows, key=lambda r: (str(r.get("method_type") or "") not in priority_set))
 
 
 def find_question(question_id: str, spec: dict[str, Any] | None = None) -> dict[str, Any] | None:
