@@ -186,7 +186,7 @@ class TestPromptScopeProjection:
         import copy
 
         cols = copy.deepcopy(_COLS)
-        cols = [c for c in cols if c not in ("industry_sw_l1", "industry_zx_l1")]
+        cols = [c for c in cols if c not in ("industry_sw_l1", "industry_sw_code")]
         text = _prompt(["业绩面"], panel_columns=cols)
         assert "$industry_sw_l1" in text  # 明确点名，警告不可引用
         assert "本 run 面板并未加载" in text
@@ -194,8 +194,8 @@ class TestPromptScopeProjection:
 
     def test_present_neutral_columns_still_usable(self):
         """行业列在面板里时仍是通用中性列，不出反幻觉警告。"""
-        # _COLS 含 industry_sw_l1；把 zx 也补进面板 → 两个中性列都 present，无警告
-        text = _prompt(["业绩面"], panel_columns=_COLS + ["industry_zx_l1"])
+        # _COLS 含 industry_sw_l1；把 industry_sw_code 也补进面板 → 两个中性列都 present，无警告
+        text = _prompt(["业绩面"], panel_columns=_COLS + ["industry_sw_code"])
         assert "本 run 面板并未加载" not in text
 
 

@@ -14,8 +14,10 @@ ORDER = 135
 REQUIRED = False
 SEP_BEFORE = "\n\n---\n\n"
 
-# 不属于任何数据面的通用列：聚焦时始终可用（市值/可交易标记/行业分组）
-_NEUTRAL_COLUMNS = ("float_cap", "tot_cap", "is_trade", "not_st", "industry_sw_l1", "industry_zx_l1")
+# 不属于任何数据面的通用列：聚焦时始终可用（市值/可交易标记/行业分组）。
+# 2026-10-12：industry_zx_l1 从未有插件供给，换成实际由 plugins/industry.py
+# 供给并随聚焦 run 恒载的 industry_sw_code（细分行业中性化分组键）。
+_NEUTRAL_COLUMNS = ("float_cap", "tot_cap", "is_trade", "not_st", "industry_sw_l1", "industry_sw_code")
 
 
 def enabled(ctx) -> bool:  # noqa: ANN001
