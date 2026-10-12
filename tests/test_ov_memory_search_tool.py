@@ -25,6 +25,10 @@ class _FakeStore:
         self.rag = rag
         self.lesson_calls: list[dict] = []
         self.rag_calls: list[dict] = []
+        self.client = object()
+
+    def _get_client(self):
+        return self.client
 
     def retrieve_lessons(self, *, research_mode, query_text, limit, max_chars):
         self.lesson_calls.append(
@@ -97,6 +101,40 @@ def test_ov_unavailable_degrades_gracefully(tmp_path, monkeypatch):
     assert "降级" in out["note"]
 
 
+def test_ov_connection_down_marks_unavailable(tmp_path, monkeypatch):
+    """OV 服务宕机时（懒初始化构造成功但建连失败）也必须返回 available=False。"""
+    store = _FakeStore()
+    store.client = None
+    monkeypatch.setattr(tools, "_ov_store", lambda: store)
+    ctx = _fake_ctx(tmp_path)
+    out = tools.ov_memory_search(ctx, research_goal="anything")
+    assert out["available"] is False
+    assert out["block"] == ""
+    assert store.lesson_calls == []  # 未连通不应发起检索
+
+
+def test_ov_store_singleton_cache(tmp_path, monkeypatch):
+    """成功构造后的 OVStore 单例复用，避免逐调用重建连接。"""
+    import alphaagent.factor.mining.memory.ov_store as ovs
+
+    calls = []
+
+    class _CountingStore(ovs.OVStore):
+        def __init__(self, endpoint="", **kw):
+            calls.append(endpoint)
+            self.endpoint = endpoint
+            self.inject_max_chars = kw.get("inject_max_chars", 2400)
+            self._client = object()
+
+    monkeypatch.setattr(ovs, "OVStore", _CountingStore)
+    monkeypatch.setattr(tools, "_OV_STORE_CACHE", None)
+    monkeypatch.delenv("OV_ENDPOINT", raising=False)
+    a = tools._ov_store()
+    b = tools._ov_store()
+    assert a is b
+    assert len(calls) == 1
+
+
 def test_ov_store_factory_uses_env_endpoint(tmp_path, monkeypatch):
     """_ov_store 优先读 OV_ENDPOINT，缺省 127.0.0.1:1933（与 ov_store 默认一致）。"""
     import alphaagent.factor.mining.memory.ov_store as ovs
@@ -112,10 +150,12 @@ def test_ov_store_factory_uses_env_endpoint(tmp_path, monkeypatch):
             self._client = object()
 
     monkeypatch.setattr(ovs, "OVStore", _CaptureStore)
+    monkeypatch.setattr(tools, "_OV_STORE_CACHE", None)
     monkeypatch.delenv("OV_ENDPOINT", raising=False)
     tools._ov_store()
     assert seen["endpoint"] == "http://127.0.0.1:1933"
 
+    monkeypatch.setattr(tools, "_OV_STORE_CACHE", None)
     monkeypatch.setenv("OV_ENDPOINT", "http://127.0.0.1:9999")
     tools._ov_store()
     assert seen["endpoint"] == "http://127.0.0.1:9999"

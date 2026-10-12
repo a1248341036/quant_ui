@@ -416,13 +416,25 @@ def memory_search(ctx: ServerContext, research_goal: str, limit: int = 12) -> di
             "note": "block 即真实 run 每轮注入的记忆块（同源 context_for）。"}
 
 
+_OV_STORE_CACHE: Any = None
+
+
 def _ov_store():
-    """OpenViking 长期记忆接入实例（懒初始化，失败静默 → None）。"""
+    """OpenViking 长期记忆接入实例（模块级单例缓存，失败静默 → None，下次重试）。
+
+    不缓存失败结果：OV 服务恢复后下次调用能自动重连；成功建连一次后复用，避免
+    每次 ov_memory_search 重复网络握手（OCR v2：performance low）。
+    """
+    global _OV_STORE_CACHE
+    if _OV_STORE_CACHE is not None:
+        return _OV_STORE_CACHE
     try:
         from alphaagent.factor.mining.memory.ov_store import OVStore
 
         endpoint = os.environ.get("OV_ENDPOINT") or "http://127.0.0.1:1933"
-        return OVStore(endpoint=endpoint)
+        store = OVStore(endpoint=endpoint)
+        _OV_STORE_CACHE = store
+        return store
     except Exception as exc:  # noqa: BLE001
         logger.warning("OVStore 构造失败（OpenViking 记忆不可用）: %s", exc)
         return None
@@ -447,7 +459,7 @@ def ov_memory_search(
     - `include_report_knowledge`：额外返回研报正文机制摘录（研报 RAG 块）
     """
     store = _ov_store()
-    if store is None:
+    if store is None or store._get_client() is None:
         return {"research_goal": research_goal, "block": "", "block_chars": 0,
                 "source": "openviking", "available": False,
                 "note": "OpenViking 不可用（降级：用 memory_search 查 SQLite 记忆）"}
