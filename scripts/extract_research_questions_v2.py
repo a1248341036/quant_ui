@@ -28,12 +28,44 @@ sys.path.insert(0, str(REPO))
 
 from alphaagent.core.llm_provider import chat_json, load_codex_provider  # noqa: E402
 
-# 复用公式抽取脚本的算子/字段索引（`load_index` 带缓存），确保**同一口径**：
-# 不给这份清单，模型只能给 LaTeX/文字，抽不出本仓 DSL（试点 18/18 篇 expr_local=None 的根因）。
-sys.path.insert(0, str(REPO / "scripts"))
-from extract_factor_records import load_index  # noqa: E402
+# 算子/字段索引（原 extract_factor_records.load_index 于 2026-10-12 随离线抽取
+# 管道删除，此处内联同一口径实现）：不给清单，模型只能给 LaTeX/文字，抽不出
+# 本仓 DSL（试点 18/18 篇 expr_local=None 的根因）。
+_RE_FIELD = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)")
+_INDEX_CACHE = REPO / "data" / "research_reports" / "knowledge" / "operator_index.json"
+_INDEX_SRC = [
+    REPO / "alphaagent" / "dsl" / "core" / "operators.py",
+    REPO / "alphaagent" / "factor" / "mining" / "prompt" / "modules" / "data_fields.py",
+]
 
-_OPS, _FLDS = load_index()
+
+def _load_index() -> tuple[set[str], set[str]]:
+    """算子/字段集合：优先读落盘缓存（源文件 mtime 未变即复用），否则重建写回。"""
+    stamp = {str(f): f.stat().st_mtime for f in _INDEX_SRC if f.exists()}
+    if _INDEX_CACHE.exists():
+        try:
+            blob = json.loads(_INDEX_CACHE.read_text(encoding="utf-8"))
+            if blob.get("stamp") == stamp:
+                return set(blob["operators"]), set(blob["fields"])
+        except Exception:  # noqa: BLE001
+            pass
+    from alphaagent.dsl.core import operators as ops_mod
+    from alphaagent.factor.mining.prompt.modules import data_fields as df_mod
+
+    operators = {n for n in dir(ops_mod) if n.isupper() and not n.startswith("_")}
+    text = "\n".join(str(getattr(df_mod, n)) for n in dir(df_mod)
+                     if isinstance(getattr(df_mod, n), str))
+    fields = set(_RE_FIELD.findall(text))
+    fields |= {str(c).lstrip("$") for c in getattr(df_mod, "FF_PANEL_COLUMNS", ())}
+    _INDEX_CACHE.parent.mkdir(parents=True, exist_ok=True)
+    _INDEX_CACHE.write_text(
+        json.dumps({"stamp": stamp, "operators": sorted(operators),
+                    "fields": sorted(fields)}, ensure_ascii=False),
+        encoding="utf-8")
+    return operators, fields
+
+
+_OPS, _FLDS = _load_index()
 OPRE_FULL = re.compile(r"\b([A-Z][A-Z0-9_]{2,})\b")
 OPS_TEXT = ", ".join(sorted(_OPS))[:6000]
 FLDS_TEXT = ", ".join(sorted(_FLDS))[:6000]
