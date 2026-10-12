@@ -1169,10 +1169,16 @@ def render_factor_records_block(
         # 存量 jsonl 不必重抽也能显示正确——抽取时算好的旧值可能是空的）
         _facets = list(rec.get("focus_facets") or [])
         if not _facets:
-            try:
-                from scripts._factor_expr_tools import infer_focus_facets
+            # 内联原 scripts/_factor_expr_tools.infer_focus_facets（该脚本已随离线抽取
+            # 管道删除）：复用 alphaagent.factor.facets 的既有面定义，不新造面名。
+            from alphaagent.factor.facets import FACET_DEFS, expr_facets
 
-                _facets = infer_focus_facets(rec.get("expr_local"), rec.get("fields_local") or [])
+            try:
+                hits = expr_facets(str(rec.get("expr_local") or ""))
+                for _field in rec.get("fields_local") or []:
+                    hits |= expr_facets("$" + str(_field).lstrip("$"))
+                order = {name: i for i, (name, _) in enumerate(FACET_DEFS)}
+                _facets = sorted(hits, key=lambda f: order.get(f, len(order)))
             except Exception:  # noqa: BLE001
                 _facets = []
         facets = "、".join(str(f) for f in _facets) or "-"
