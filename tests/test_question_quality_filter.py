@@ -2,8 +2,8 @@
 """质量标签准入门回归测试（2026-10-03）。
 
 背景：实测单题最多烧 49~54 次判定却从未过线（占当夜判定预算 47%）——
-`scripts/label_question_quality.py` 依已落盘日志 + 状态机打出 `perf_label`，
-准入门按标签排除"效果不好"的题。
+`perf_label` 由已落盘日志 + 状态机打出（原生成脚本 `scripts/label_question_quality.py`
+已于 2026-10-07 随离线抽取管道一并移除），准入门按标签排除"效果不好"的题。
 """
 from __future__ import annotations
 
