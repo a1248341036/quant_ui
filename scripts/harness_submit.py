@@ -38,15 +38,21 @@ from alphaagent.factor.mining.service import StockEvalService  # noqa: E402
 
 MODE_LABEL = {
     "technical": "label_1d_open_to_open",
+    "technical_daily": "label_1d_open_to_open",
     "technical_weekly": "label_5d_close_to_close",
     "technical_monthly": "label_20d_close_to_close",
     "fundamental": "label_20d_close_to_close",
+    "fundamental_daily": "label_1d_open_to_open",
+    "fundamental_weekly": "label_5d_close_to_close",
 }
 MODE_FREQ = {
     "technical": "daily",
+    "technical_daily": "daily",
     "technical_weekly": "weekly",
     "technical_monthly": "monthly",
     "fundamental": "monthly",
+    "fundamental_daily": "daily",
+    "fundamental_weekly": "weekly",
 }
 _KEEP = ("ok", "stored", "candidate_stored", "candidate_storage", "skipped_reason", "error",
          "error_type", "promotion_status", "review_status", "factor_id", "rebalance_freq",

@@ -209,21 +209,29 @@ label/panel 列加载/engine_gate 频率的语义。迁移脚本
   - **动态层 6 点**（记忆系统多注入源信号打架，v1.0 未覆盖）：D1 禁止段 vs 推荐段同框（推荐段赢——给了具体父本+编辑类型+置信度，可操作性强压过签名级 DO NOT）；**D2 饱和度警告 vs 编辑推荐同框（核心根因）**——`recommend_edits`（`retrieval.py:618-658`）主路径只查 APV veto，**不查族级饱和度**，vwap 族饱和度 >0.4 触发警告但推荐段照样推 vwap 族；D3 产出率块 vs 编辑推荐同框（`recommend_edits` 排序键 `delta*conf` 不看族级历史过线率）；D4 重复表达式警告 vs 推荐段同框；D5 禁止段签名级，换算子/换字段即绕过；D6 D 轨"新族开拓" vs 推荐段"旧族深耕"。
   - **修复优先级**：P0（S4 换手率统一 + S6 1d/weekly 协调，直接 0 入库根因）→ P1（D2 `recommend_edits` 加族级饱和度门控 + D1/D3/D4 记忆系统自洽）→ P2（S1/S2/S3/S5/S7/S8 静态文本对齐）→ P3（D5/D6 长尾 + 可选 evaluate_factor 族级饱和硬拦截）。验收：test run 换手率拒绝比例 68%→<30%、`recommend_edits` 推荐族饱和度 >0.4 占比 =0%、vwap 族评估占比 34%→<20%。
 
-## 评估档位自动推断 + 调仓频率（2026-09-03，方案 B）
+## 评估档位自动推断 + 调仓频率（2026-09-03 方案 B，2026-10-08 数据面正交化）
 
-前端"日线技术/基本面"模式下拉退役，档位由数据面多选自动推断：
-- `core.research_modes.infer_research_mode(focus_facets, rebalance_freq)`：勾选基本面/股东面 → fundamental 档
-  （label_20d + 松门槛 + monthly 门禁）；其余/未选 → technical 档（label_1d + 严门槛 + **daily** 门禁，
-  2026-10-04 起与 label 对齐，见下节）；显式给 rebalance_freq 时价量面走
-  `technical_{daily,weekly,monthly}` 对齐子档（label 5d/20d 跟随）。纯函数，前后端同口径。
-- 前端 composer 显示推断档位徽章（`inferredModeLabel`），勾面变化经 `syncInferredMode()` 自动
-  切换 spec（复用 `switchResearchMode` 链路：门槛弹窗/保存门槛/label_col 跟随全部保留）。
+前端"日线技术/基本面"模式下拉退役，档位由 **数据面 × 调仓频率** 两个**正交**维度自动推断：
+- `core.research_modes.infer_research_mode(focus_facets, rebalance_freq)`：**数据面只决定
+  信号族与载列**（基本面/股东/机构/股东集中面 → `needs_fundamentals=True` + `fundamental_*`
+  信号族；其余 → 行情族），**调仓频率决定 label 与门槛**（daily↔1d、weekly↔5d、
+  monthly↔20d）。组合落档：基本面面 → `fundamental`（monthly 缺省）/ `fundamental_daily` /
+  `fundamental_weekly`；价量面 → `technical` / `technical_daily` / `technical_weekly` /
+  `technical_monthly`。纯函数，前后端同口径（前端 store `inferredMode` 同步，避免前端
+  显式提交时绕过后端推断）。2026-10-08 起**不再有"基本面锁 monthly"的耦合**——勾基本面 +
+  周频调仓 = `fundamental_weekly`（5d label + 5d 门槛），与同频率价量面档门槛**逐字段一致**
+  （见 `tests/test_slow_tier_thresholds.py` 数据面正交节）。
+- 前端 composer 显示推断档位徽章（`inferredModeLabel`），勾面/调频变化经 `syncInferredMode()`
+  自动切换 spec（复用 `switchResearchMode` 链路：门槛弹窗/保存门槛/label_col 跟随全部保留；
+  `ui_options()` 返回全量档位 + `internal` 标记，下拉只展示顶层档位，白名单/门槛文件读写全量可达）。
 - `StartRequest.rebalance_freq`（daily/weekly/monthly，可空）：用户显式指定时写入
   `spec.delivery_policy.production.engine_gate.freq`，并把档位落到 label 对齐的子档；
-  若与档位 label 矛盾（如在 1d/20d label 档上选 weekly）→ **422 拒绝**（fail-closed）。
-  `DeliveryCriteria.to_prompt_text` 渲染 "rebalance_freq 必传" 指令约束 LLM；`allowed_freqs` 白名单生效。
-  前端 composer 新增 "调仓" 选择器（自动/日/周/月）。
-- `research_mode` 参数兼容保留：显式传入优先于自动推断（历史调用方/脚本不受影响）。
+  自动推断（数据面×频率正交）**不会**产生 label/freq 矛盾；矛盾只来自用户**同时显式指定**
+  不匹配的 `research_mode` + `rebalance_freq`（如 pin `technical`（1d）却选 weekly）→ **422 拒绝**
+  （fail-closed）。`DeliveryCriteria.to_prompt_text` 渲染 "rebalance_freq 必传" 指令约束 LLM；
+  `allowed_freqs` 白名单生效。前端 composer 有独立 "调仓" 选择器（自动/日/周/月）+ 数据面多选。
+- `research_mode` 参数兼容保留：显式传入优先于自动推断（历史调用方/脚本不受影响；
+  `fundamental` 仍是基本面面 × monthly 的合法档位）。
 - 因子库页模式页签退役（`FactorLibrary.vue`），由 facet 筛选 chips（全部/八面/融合）取代；
   ML 组合训练的 `collect_factor_entries` 按解析后库路径去重，避免大库下重复枚举。
 
@@ -241,7 +249,9 @@ label/panel 列加载/engine_gate 频率的语义。迁移脚本
   （**所有** API/脚本/monitor 启动路径的唯一收口 → `RunAdmissionError`）。
 - **档位现状**：`technical` / `report` 已从 `label_1d + weekly` 收成 **`label_1d + daily`**
   （`allowed_freqs=["daily"]`）；`fundamental`(20d+monthly) / `technical_daily`(1d+daily) /
-  `technical_weekly`(5d+weekly) / `technical_monthly`(20d+monthly) 本来就是对齐的。
+  `technical_weekly`(5d+weekly) / `technical_monthly`(20d+monthly) 本来就是对齐的；
+  2026-10-08 数据面正交新增 `fundamental_daily`(1d+daily) / `fundamental_weekly`(5d+weekly)，
+  门槛分别取 1d 默认线与 `_WEEKLY_5D_OVERRIDES`。
 - **慢档门槛标定（2026-10-07）**：`technical_weekly` / `technical_monthly` 此前**只对齐了
   label/freq，没有自己的门槛**——继承 1d 标定的 `min_abs_ic=0.02 / min_icir=0.28 /
   min_val_abs_ic=0.015` 等。而 label 持有期会系统性改变同一因子的 IC/ICIR 量级（配对实测：
@@ -264,8 +274,14 @@ label/panel 列加载/engine_gate 频率的语义。迁移脚本
   IC/ICIR/val 门槛与"数据面"（价量 vs 基本面）彻底无关，只由预测窗口 label 决定。
   落地：`core/research_modes.py` 抽出共享常量 `_MONTHLY_20D_OVERRIDES`（0.053 / 0.65 / 0.0398，
   production 0.0663 / 0.6964 / 0.0398，val 保留比 0.50，engine_gate 年化 0.03 / 夏普 0.5，
-  decay 0.10），fundamental 与 technical_monthly **共用同一常量**；fundamental 相对技术月频的
-  唯一区别是 `needs_fundamentals=True`（载入 funda_* 列）。
+  decay 0.10），fundamental 与 technical_monthly **共用同一常量**；同批抽出
+  `_WEEKLY_5D_OVERRIDES`（0.030 / 0.450 / 0.0225，production 0.0375 / 0.4821），
+  fundamental_weekly 与 technical_weekly 共用。**全谱系每 label 档只有一个门槛真源**：
+  1d=默认线（0.020/0.28/0.015，technical / technical_daily / fundamental_daily /
+  report）、5d=`_WEEKLY_5D_OVERRIDES`、20d=`_MONTHLY_20D_OVERRIDES`。因此 fundamental
+  面不再有"独立门槛"——fundamental / fundamental_daily / fundamental_weekly 相对同频率
+  价量面档的唯一区别是 `needs_fundamentals=True`（载入 funda_* 列）+ `fundamental_*`
+  信号族（数据面正交，2026-10-08）。
 - **判定侧档位感知修复（2026-10-07）**：`tools/_dispatch._near_miss_verdict` 早已按档位取
   `candidate_overrides["min_abs_ic"]`，而 `memory/schema.py:_classify` 只读全局
   `DEFAULT_RESEARCH_SPEC` 的 `min_train_abs_ic`（0.02），且 `memory/ingestion.py` 到落库阶段才把

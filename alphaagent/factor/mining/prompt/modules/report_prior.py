@@ -97,8 +97,8 @@ def _score_card(card: dict[str, Any], focus_facets: set[str], mode: str) -> floa
         # focus 为空时的回退口径：兼顾模式与通用面
         score += 2.0
 
-    # 2. 模式偏好（基本面/量价）
-    if mode == "fundamental" and ("基本面" in facets or "机构面" in facets):
+    # 2. 模式偏好（基本面/量价）——数据面正交后基本面意图含 fundamental_* 子档
+    if mode.startswith("fundamental") and ("基本面" in facets or "机构面" in facets):
         score += 5.0
     elif mode == "technical" and ("价量面" in facets or "量能面" in facets or "筹码面" in facets):
         score += 5.0

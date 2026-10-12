@@ -60,7 +60,7 @@ def _mode_config(mode: str) -> MiningConfig:
         val_start=DEFAULT_VAL_START,
         val_end=DEFAULT_VAL_END,
         label_col=label_col,
-        include_fundamentals=(mode == "fundamental"),
+        include_fundamentals=mode.startswith("fundamental"),  # 数据面语义（含 fundamental_daily/weekly）
     )
     return MiningConfig(eval=ctx, research_spec=spec, max_tokens=4096)
 
@@ -94,7 +94,7 @@ def _promote_one(
         val_start=dates["val_start"],
         val_end=dates["val_end"],
         label_col=dates["label_col"],
-        include_fundamentals=(mode == "fundamental"),
+        include_fundamentals=mode.startswith("fundamental"),  # 数据面语义（含 fundamental_daily/weekly）
     )
     cfg.eval = ctx
     root = ROOT

@@ -121,7 +121,13 @@ def test_serve_stdio_roundtrip(ctx: ServerContext) -> None:
 # ── 轻量工具（真源一致性） ─────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("mode", ["technical", "technical_weekly", "technical_monthly", "fundamental"])
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "technical", "technical_daily", "technical_weekly", "technical_monthly",
+        "fundamental", "fundamental_daily", "fundamental_weekly",
+    ],
+)
 def test_get_thresholds_matches_delivery_criteria(ctx: ServerContext, mode: str) -> None:
     out = _call(ctx, "get_thresholds", mode=mode)["payload"]
     crit = DeliveryCriteria.from_spec(effective_research_spec(mode))

@@ -54,9 +54,12 @@ from core import factor_categories  # noqa: E402
 # 档位 → 该档评估 label（与 core/research_modes.py 的 recommended_label_col 一致）
 MODE_LABEL = {
     "technical": "label_1d_open_to_open",
+    "technical_daily": "label_1d_open_to_open",
     "technical_weekly": "label_5d_close_to_close",
     "technical_monthly": "label_20d_close_to_close",
     "fundamental": "label_20d_close_to_close",
+    "fundamental_daily": "label_1d_open_to_open",
+    "fundamental_weekly": "label_5d_close_to_close",
 }
 
 

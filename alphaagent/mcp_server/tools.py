@@ -31,15 +31,21 @@ ROOT = Path(__file__).resolve().parents[2]
 # 档位 → 评估 label / 交付调仓频率（与 core/research_modes.py 一致）
 MODE_LABEL = {
     "technical": "label_1d_open_to_open",
+    "technical_daily": "label_1d_open_to_open",
     "technical_weekly": "label_5d_close_to_close",
     "technical_monthly": "label_20d_close_to_close",
     "fundamental": "label_20d_close_to_close",
+    "fundamental_daily": "label_1d_open_to_open",
+    "fundamental_weekly": "label_5d_close_to_close",
 }
 MODE_FREQ = {
     "technical": "daily",
+    "technical_daily": "daily",
     "technical_weekly": "weekly",
     "technical_monthly": "monthly",
     "fundamental": "monthly",
+    "fundamental_daily": "daily",
+    "fundamental_weekly": "weekly",
 }
 MAX_BATCH = 60
 

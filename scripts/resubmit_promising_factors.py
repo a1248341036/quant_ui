@@ -187,7 +187,7 @@ def main() -> int:
         val_start="2023-01-01",
         val_end="2024-12-31",
         label_col=label_col,
-        include_fundamentals=(args.mode == "fundamental"),
+        include_fundamentals=args.mode.startswith("fundamental"),  # 数据面语义（含 fundamental_daily/weekly）
     )
     cfg = MiningConfig(eval=ctx, research_spec=spec, max_tokens=4096)
     service = StockEvalService(max_parallel_eval=1)
