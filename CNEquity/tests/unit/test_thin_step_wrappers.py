@@ -103,6 +103,58 @@ def test_institutional_holdings_rejects_partial_period(cfg, monkeypatch):
         research.step_institutional_holdings(cfg, date(2024, 6, 28), "r-partial", {})
 
 
+def test_institutional_holdings_allows_sparse_latest_quarter(cfg, monkeypatch):
+    # Q2 complete + Q3 just started being populated: the latest quarter may
+    # be sparse while its disclosure window is still in progress.
+    q2_symbols = [f"{600000 + i:06d}.SH" for i in range(200)]
+    q3_symbols = [f"{620000 + i:06d}.SH" for i in range(24)]
+    symbols = q2_symbols + q3_symbols
+    monkeypatch.setattr(
+        research,
+        "fetch_institutional_holdings",
+        lambda *args, **kwargs: pl.DataFrame(
+            {
+                "symbol": symbols,
+                "holder_type": ["fund"] * len(symbols),
+                "report_period": ["2024Q2"] * len(q2_symbols)
+                + ["2024Q3"] * len(q3_symbols),
+                "holding_shares": [1.0] * len(symbols),
+                "holding_ratio": [0.1] * len(symbols),
+                "holding_mv": [1.0] * len(symbols),
+            }
+        ),
+    )
+
+    result = research.step_institutional_holdings(cfg, date(2024, 6, 28), "r-fresh", {})
+    assert result["rows_written"] == len(symbols)
+
+
+def test_institutional_holdings_rejects_sparse_old_quarter(cfg, monkeypatch):
+    # Once more than one period is observed, an older sparse quarter is still
+    # a cutoff/truncation signal even when the latest quarter is complete.
+    q2_symbols = [f"{600000 + i:06d}.SH" for i in range(24)]
+    q3_symbols = [f"{620000 + i:06d}.SH" for i in range(200)]
+    symbols = q2_symbols + q3_symbols
+    monkeypatch.setattr(
+        research,
+        "fetch_institutional_holdings",
+        lambda *args, **kwargs: pl.DataFrame(
+            {
+                "symbol": symbols,
+                "holder_type": ["fund"] * len(symbols),
+                "report_period": ["2024Q2"] * len(q2_symbols)
+                + ["2024Q3"] * len(q3_symbols),
+                "holding_shares": [1.0] * len(symbols),
+                "holding_ratio": [0.1] * len(symbols),
+                "holding_mv": [1.0] * len(symbols),
+            }
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="institutional_holdings: incomplete quarterly snapshot"):
+        research.step_institutional_holdings(cfg, date(2024, 6, 28), "r-old", {})
+
+
 def test_snapshot_steps_reject_backfill(cfg, monkeypatch):
     cfg._backfill = True
     calls = {"consensus": 0, "calendar": 0}
