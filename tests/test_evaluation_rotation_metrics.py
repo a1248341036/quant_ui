@@ -150,3 +150,51 @@ class TestProfileMount:
         plugins = [m["plugin"] for m in profiles["validation"].metrics]
         assert plugins[0] == "cross_sectional_core"
         assert plugins[-1] == "industry_ic_dispersion"
+
+
+class TestRotationDiagTelemetry:
+    """P1 行业诊断透传：_engine_result_to_legacy 顶层键 + format_eval_response 保留。"""
+
+    def test_legacy_carries_industry_rotation(self) -> None:
+        from alphaagent.factor.mining.eval.service import _engine_result_to_legacy
+
+        raw = {
+            "ok": True,
+            "metrics": {
+                "cross_sectional_core": {
+                    "ic": 0.05, "icir": 0.9, "factor_coverage": 0.9,
+                    "cs_pearson_autocorr": 0.9, "n_days": 36,
+                },
+                "industry_within_rank_ic": {"within_rank_ic": 0.04, "n_days": 700},
+                # exposure_r2 / dispersion 允许缺失（部分 profile 可能没算到）
+            },
+        }
+        legacy = _engine_result_to_legacy(raw)
+        assert legacy["industry_rotation"]["industry_within_rank_ic"] == {
+            "within_rank_ic": 0.04, "n_days": 700,
+        }
+        assert "industry_exposure_r2" not in (legacy["industry_rotation"] or {})
+        # 无行业指标时不产出键
+        assert "industry_rotation" not in _engine_result_to_legacy({"ok": True, "metrics": {}})
+
+    def test_format_eval_response_preserves_industry_rotation(self) -> None:
+        from alphaagent.factor.mining.eval.response import format_eval_response
+
+        raw = {
+            "ok": True, "split": "train",
+            "date_range": {"start": "2020-01-01", "end": "2022-12-31"},
+            "summary": {
+                "ic": 0.05, "icir": 0.9, "n_days": 36, "factor_coverage": 0.9,
+                "cs_pearson_autocorr": 0.9,
+            },
+            "industry_rotation": {
+                "industry_within_rank_ic": {"within_rank_ic": 0.04, "n_days": 700},
+                "industry_exposure_r2": {"exposure_r2": 0.0, "n_days": 700},
+            },
+            "timing_ms": {},
+        }
+        out = format_eval_response(raw)
+        assert out["ok"] is True
+        rot = out["industry_rotation"]["industry_within_rank_ic"]
+        assert rot["within_rank_ic"] == 0.04 and rot["n_days"] == 700
+        assert out["industry_rotation"]["industry_exposure_r2"]["exposure_r2"] == 0.0

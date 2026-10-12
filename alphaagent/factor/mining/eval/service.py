@@ -87,6 +87,15 @@ def _engine_result_to_legacy(raw: dict[str, Any]) -> dict[str, Any]:
         "label_quantile_n": raw.get("label_quantile_n"),
         "eval_wall_seconds": (raw.get("timing_ms") or {}).get("total_ms", 0) / 1000.0,
     }
+    # 行业/风格轮动 P1 诊断透传（2026-10-12）：rotation_policy.enabled 时
+    # train_screen/validation 挂载的 3 个行业指标（只披露、不参与准入规则）。
+    # 挂在顶层（summary 走 _format_summary 白名单会被滤掉），与 quantile_portfolio
+    # 的换手透传同款，供 harness 直驱 / MCP / agentscope 统一读取。
+    _rot_keys = ("industry_within_rank_ic", "industry_exposure_r2", "industry_ic_dispersion")
+    _rot = {k: metrics[k] for k in _rot_keys if metrics.get(k) is not None}
+    if _rot:
+        out["industry_rotation"] = _rot
+
     # L1 深度曲线透传（quantile_portfolio 插件的追加键；不存在时整体缺省）
     qp = metrics.get("quantile_portfolio")
     if isinstance(qp, dict) and qp.get("depth_curve"):
