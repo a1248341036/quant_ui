@@ -198,6 +198,8 @@ def test_is_stale_respects_per_dataset_tolerance():
     assert is_stale("margin_trading", date(2026, 7, 6), anchor) is False
     # northbound_holdings quarterly tolerance = 100 → last quarter-end fresh
     assert is_stale("northbound_holdings", date(2026, 6, 30), anchor) is False
+    # disclosure-lag window: mid-Oct with last quarter-end 06-30 must stay fresh
+    assert is_stale("northbound_holdings", date(2026, 6, 30), date(2026, 10, 12)) is False
     # None / unknown handled
     assert is_stale("daily_bars", None, anchor) is False
     assert is_stale("nope", date(2026, 7, 1), anchor) is True  # default tol=1
