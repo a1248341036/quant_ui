@@ -129,4 +129,28 @@ def test_hrp_weights_from_ic_sanity():
 def test_hrp_weights_insufficient_returns_none():
     """样本/成员不足时 HRP 返回 None（调用方回退等权）。"""
     assert _hrp_weights_from_ic(pd.DataFrame({0: [1.0, 2.0, 3.0]})) is None
+
+
+def test_all_nan_oos_rows_do_not_crash():
+    """某折 OOS 存在"全部投票因子均 NaN"的行时不再 IndexError（2026-10-08 实锤回归）。
+
+    修复前：oos_idx 已按 avail_any 过滤、ok/vals 未过滤 → 长度不匹配崩溃
+    （实跑 oos_idx=578763 vs ok=579205）。修复后与 equal 分支同构：
+    先按 avail_any 过滤再写入；不在场行分数保持 NaN。"""
+    feats, label, dts, folds = _synthetic(seed=11)
+    last = folds[-1]
+    oos_mask = np.isin(pd.to_datetime(dts).to_numpy(), last.oos_dates.to_numpy())
+    dead = np.where(oos_mask)[0][:500]
+    assert len(dead) > 0
+    feats_nan = feats.copy()
+    feats_nan[dead] = np.nan  # 模拟停牌股：当日所有因子缺值 → avail_any=False
+    scores = fit_scheme_compare_scores(feats_nan, label, dts, folds)
+    assert set(scores) == {"equal", "icir", "hrp"}
+    for name in ("equal", "icir", "hrp"):
+        assert np.isnan(scores[name][dead]).all(), f"{name} 全 NaN 行应保持 NaN 而非写入分数"
+    # 正常行的分数不受影响（仍应产生有效 OOS 信号）
+    ics = _mean_oos_ic(scores, label, dts, folds)
+    for name, ic in ics.items():
+        assert ic == ic, f"{name} OOS 无有效 IC"
+        assert ic > 0.005
     assert _hrp_weights_from_ic(pd.DataFrame({0: [1.0], 1: [2.0]})) is None

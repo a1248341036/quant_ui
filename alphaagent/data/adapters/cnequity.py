@@ -39,6 +39,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Sequence
 
+import numpy as np
 import pandas as pd
 
 from alphaagent.data.adapters.registry import (
@@ -388,8 +389,6 @@ def _find_cached_panel(
                     keep &= dts <= req_end
                 if not bool(keep.all()):
                     df = df.loc[keep]
-            # 日志在裁剪后打印，行数即调用方实际拿到的面板行数（避免超集缓存
-            # 场景下日志口径与返回值不一致误导 tail 判读覆盖范围）
             logger.info(
                 "CNE adapter: panel 命中磁盘缓存 %s（%d 行, %d 列, 签名 %s, "
                 "已按请求窗口 [%s, %s] 裁剪）",
