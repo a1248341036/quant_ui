@@ -380,9 +380,9 @@ function Execute-CnePipeline {
                 if ($script:LastRunId) {
                     $statusOutput = & $Cne @("status", "--run-id", $script:LastRunId, "--config", $Config) 2>&1 | Out-String
                     try {
-                        $statusObj = $statusOutput | ConvertFrom-Json
-                        if ($statusObj -and $statusObj.batches) {
-                            foreach ($b in $statusObj.batches) {
+                        $runStatus = $statusOutput | ConvertFrom-Json
+                        if ($runStatus -and $runStatus.batches) {
+                            foreach ($b in $runStatus.batches) {
                                 if ($b.dataset) { $batchByDataset[$b.dataset] = $b }
                             }
                         }
