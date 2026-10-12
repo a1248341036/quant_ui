@@ -386,7 +386,7 @@ def test_heatmap_says_whether_a_gap_is_a_fault_or_the_datasets_shape(client):
 
     # Quarterly: nearly every session in its span legitimately has no partition.
     assert rows["northbound_holdings"]["gap_meaning"] == "cadence"
-    assert rows["northbound_holdings"]["cadence_days"] == 100
+    assert rows["northbound_holdings"]["cadence_days"] == 200
 
     # Snapshot: a day nobody ran has no snapshot and cannot be given one,
     # because replaying it would forge rows.

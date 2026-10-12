@@ -624,14 +624,17 @@ _SPECS = [
         max_staleness_days=4,
         description="融资融券",
     ),
-    # Per-stock northbound holdings are quarterly since Aug 2024; tolerate the
-    # gap to the next quarter-end before flagging stale.
+    # Per-stock northbound holdings are quarterly since Aug 2024, and the
+    # exchange serves each report only after disclosure (up to 30-60 days past
+    # quarter-end, e.g. Q3 reports in late Oct). 100 days from the quarter-end
+    # mark only reaches early Oct and flags a healthy lake stale; 200 covers the
+    # next quarter-end gap plus worst-case disclosure lag.
     DatasetSpec(
         "northbound_holdings",
         primary_source="eastmoney",
         tier="L4",
         partition_col="trade_date",
-        max_staleness_days=100,
+        max_staleness_days=200,
         description="陆股通持股（季报）",
     ),
     DatasetSpec(

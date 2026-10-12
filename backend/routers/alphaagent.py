@@ -144,12 +144,16 @@ def start(req: StartRequest) -> dict[str, Any]:
     payload["research_mode"] = mode
     # pydantic 的 default_factory 总会填充 technical 默认 spec，无法用 None 判断。
     # 改用 model_fields_set 判断用户是否显式传了 research_spec：
-    #   - 未传 → 基于 research_mode 构造正确的默认 spec
+    #   - 未传 → 基于 research_mode 构造「默认 + 用户保存覆盖」的有效 spec
     #   - 显式传了 → 保留用户 spec（仍以 research_mode 覆盖模式字段）
+    # 2026-10-12 修复：未传时曾用纯 default（build_default_research_spec）会被
+    # service.build_run_research_spec 当作 explicit，显式默认值覆盖掉
+    # research_specs/<mode>.json 里已保存的门槛（rotation_policy 等）——monitor/
+    # 脚本/裸 API 启动的 run 永远吃不到保存覆盖。改用 effective_research_spec。
     if "research_spec" in req.model_fields_set:
         spec = dict(payload.get("research_spec") or {})
     else:
-        spec = build_default_research_spec(mode)
+        spec = effective_research_spec(mode)
     spec["research_mode"] = mode
     # 2026-10-04：label 与调仓频率强制一致。用户**没显式指定** label_col 时，以该档位的
     # recommended_label_col 为准（否则 weekly 档会被默认的 label_1d 误判为不匹配）；
