@@ -220,10 +220,16 @@ function Execute-CnePipeline {
 
         $lines = [System.Collections.Generic.List[string]]::new()
         $script:LastCmdErrors = [System.Collections.Generic.List[string]]::new()
+        $script:LastRunId = ""
         & $Cne @fullArgs 2>&1 | ForEach-Object {
             $line = $_.ToString()
             Write-Host $line
             $lines.Add($line)
+
+            # 捕获 cne run daily 结尾的 {"run_id": ...} JSON，供失败波次回查 manifest 真实批次
+            if ($line -match '"run_id"\s*:\s*"([^"]+)"') {
+                $script:LastRunId = $matches[1]
+            }
 
             # 解析实时 step 进度与有业务含义的状态
             if ($line -match "Step\s+(\w+)\s+success\s+in\s+([\d\.]+)s\s+\((\d+)\s+rows\)") {
@@ -364,13 +370,42 @@ function Execute-CnePipeline {
             } else {
                 $failedSoft += $wave
             }
-            # 如果波次执行失败，将该波次下所有尚未产生执行记录的预置数据集显式标记为"未执行/已受阻"
+            # 波次失败：先回查该 run 的 manifest 真实逐数据集批次，缺失项按真实状态补齐，
+            # 避免 --quiet 吞掉 INFO 成功行导致"实际成功被误标 failed"的级联误报。
             if ($Global:CnePredefinedSteps) {
                 $recordedNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
                 foreach ($r in $resultsList) { [void]$recordedNames.Add($r.Dataset) }
+
+                $batchByDataset = @{}
+                if ($script:LastRunId) {
+                    $statusOutput = & $Cne @("status", "--run-id", $script:LastRunId, "--config", $Config) 2>&1 | Out-String
+                    try {
+                        $statusObj = $statusOutput | ConvertFrom-Json
+                        if ($statusObj -and $statusObj.batches) {
+                            foreach ($b in $statusObj.batches) {
+                                if ($b.dataset) { $batchByDataset[$b.dataset] = $b }
+                            }
+                        }
+                    } catch {
+                        Write-PipelineLog "wave $wave manifest 回查失败: $($_.Exception.Message)"
+                        $batchByDataset = @{}
+                    }
+                }
+
                 foreach ($pre in $Global:CnePredefinedSteps) {
-                    if ($pre.Wave -eq $wave -and -not $recordedNames.Contains($pre.Dataset)) {
-                        Record-Result $pre.Dataset "failed" 0 "--" $blockedNote
+                    if ($pre.Wave -ne $wave -or $recordedNames.Contains($pre.Dataset)) { continue }
+                    if ($batchByDataset.ContainsKey($pre.Dataset)) {
+                        $b = $batchByDataset[$pre.Dataset]
+                        switch ($b.status) {
+                            "success" { Record-Result $pre.Dataset "success" ([int]$b.rows_written) "--" "实际成功（manifest 确认）" }
+                            "warning" { Record-Result $pre.Dataset "warning" ([int]$b.rows_written) "--" "带警告完成（manifest 确认）" }
+                            { $_ -eq "skipped" -or $_ -eq "skip" } { Record-Result $pre.Dataset "skip" 0 "--" "同周期最新（manifest 确认）" }
+                            "failed"  { Record-Result $pre.Dataset "failed" 0 "--" $blockedNote }
+                            default   { Record-Result $pre.Dataset "warning" 0 "--" "manifest 状态: $($b.status)" }
+                        }
+                    } else {
+                        # manifest 无该批次记录 = 本轮确实未执行（锁冲突/进程中断等）
+                        Record-Result $pre.Dataset "failed" 0 "--" "未执行: 波次中断未产生 batch 记录"
                     }
                 }
             }
