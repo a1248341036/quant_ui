@@ -388,12 +388,26 @@ def load_panel(
         from alphaagent.data.adapters.panel_mmap import read_panel_arrow_mmap
 
         panel = read_panel_arrow_mmap(arrow, columns=columns)
+        if panel is not None and columns is not None:
+            # arrow 对不存在的列会静默跳过（旧 schema 残留、parquet 已更新列集时
+            # 会缺列），这里校验请求列齐全，缺失则回退 parquet 路径。
+            missing = [
+                c for c in columns
+                if c not in ("datetime", "instrument") and c not in panel.columns
+            ]
+            if missing:
+                logger.warning(
+                    "panel arrow 缓存缺列 %s（%s），回退 parquet", missing, arrow.name
+                )
+                panel = None
         if panel is not None:
-            dt = panel.index.get_level_values("datetime")
-            if isinstance(dt, pd.DatetimeIndex) and dt.is_monotonic_increasing:
+            # 校验整个 (datetime, instrument) MultiIndex 全序：仅 datetime 单层单调
+            # 会漏掉同日内 instrument 乱序的旧 arrow，破坏与 parquet 路径的行序一致。
+            if panel.index.is_monotonic_increasing:
                 return panel
             logger.warning(
-                "panel arrow 缓存未按 datetime 排序（%s），退化为复制排序", arrow.name
+                "panel arrow 缓存未按 (datetime, instrument) 全序（%s），退化复制排序",
+                arrow.name,
             )
             return panel.sort_index()
     if columns is not None:

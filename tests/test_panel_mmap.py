@@ -243,3 +243,46 @@ def test_load_panel_columns_parquet_fallback_keeps_index(tmp_path: Path):
     np.testing.assert_allclose(
         panel2["adj_close"].to_numpy(), src["adj_close"].to_numpy(), rtol=1e-6
     )
+
+
+def test_load_panel_falls_back_when_arrow_missing_columns(tmp_path: Path):
+    """arrow 是旧 schema（缺请求列）时回退 parquet，避免静默缺列。"""
+    flat = _sample_flat()
+    pq = _write_sibling(flat, tmp_path, "panel_v9_stale")
+    # 覆盖 arrow 成旧 schema：只剩 datetime/instrument/adj_close
+    stale = flat[["datetime", "instrument", "adj_close"]]
+    assert write_panel_arrow(pq.with_suffix(".arrow"), stale) is True
+    panel = load_panel(pq, columns=["adj_close", "volume"])
+    assert sorted(panel.columns) == ["adj_close", "volume"]
+    assert panel.index.names == ["datetime", "instrument"]
+    src = flat.set_index(["datetime", "instrument"])
+    np.testing.assert_allclose(
+        panel["volume"].to_numpy(), src["volume"].to_numpy(), rtol=1e-6
+    )
+
+
+def test_load_panel_sorts_when_arrow_index_not_fully_ordered(tmp_path: Path):
+    """arrow 内 datetime 单调但 (datetime, instrument) 非全序时退化排序，与 parquet
+    路径行序语义一致。"""
+    dates = pd.date_range("2024-01-01", periods=5, freq="B")
+    insts = [f"S{i:03d}" for i in range(4)]
+    rng = np.random.default_rng(7)
+    rows = []
+    for d in dates:
+        order = list(insts)
+        rng.shuffle(order)
+        for i, inst in enumerate(order):
+            rows.append(
+                {"datetime": d, "instrument": inst, "adj_close": float(i)}
+            )
+    flat = pd.DataFrame(rows)  # datetime 层单调，但同日 instrument 乱序
+    pq = tmp_path / "panel_v9_unsorted.parquet"
+    flat.set_index(["datetime", "instrument"]).to_parquet(pq)
+    write_panel_arrow(pq.with_suffix(".arrow"), flat)
+
+    panel = load_panel(pq)
+    assert panel.index.is_monotonic_increasing  # 退化 sort_index 已全序
+    ref = flat.set_index(["datetime", "instrument"]).sort_index()
+    np.testing.assert_allclose(
+        panel["adj_close"].to_numpy(), ref["adj_close"].to_numpy(), rtol=1e-6
+    )
