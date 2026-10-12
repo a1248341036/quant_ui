@@ -244,7 +244,7 @@
               >⚙ 高级<span class="cfg-adv-arrow">{{ showAdvanced ? '▴' : '▾' }}</span></button>
             </div>
             <div v-if="agent.agentMode==='research' && showAdvanced" class="composer-options composer-options-adv">
-              <label class="composer-date" title="交付门禁的调仓频率：影响 engine_gate 回测与实盘可交易性判定；默认随档位（短周期=weekly，慢信号=monthly）">调仓 <select v-model="agent.form.rebalance_freq" :disabled="agent.agentBusy" class="composer-date-input">
+              <label class="composer-date" title="交付门禁的调仓频率：影响 engine_gate 回测与实盘可交易性判定；默认随档位（短周期=weekly，慢信号=monthly）">调仓 <select v-model="agent.form.rebalance_freq" :disabled="agent.agentBusy" class="composer-date-input" @change="agent.syncInferredMode()">
                 <option value="">自动</option>
                 <option value="daily">日</option>
                 <option value="weekly">周</option>

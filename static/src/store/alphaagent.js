@@ -201,7 +201,8 @@ export const agentStore = reactive({
     if (!mode) return ''
     const hit = agentStore.researchModes.find(m => m.value === mode)
     if (hit) return hit.label
-    // 内部子档（数据面正交，2026-10-08）不在 research-modes 列表里，映射友好标签
+    // 内部子档（数据面正交，2026-10-08）正常已在 research-modes 全量列表里命中；
+    // 仅在后端漏返回某子档时兜底显示友好标签，避免裸 ID。
     const SUB_LABEL = {
       fundamental_daily: '基本面·日频',
       fundamental_weekly: '基本面·周频',
