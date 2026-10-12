@@ -110,6 +110,14 @@ _CACHE_INDEX_COLS = ["datetime", "instrument"]
 #   这些列虽不允许出现在因子里，但提交门禁仍要拿它们跑回测；
 # - adj_close 用于 IC 衰减曲线现算 label（metrics/decay.panel_forward_label）；
 # - float_cap 用于市值中性化；is_trade/not_st/adjfactor 为可交易性与复权口径。
+# 行业列单真源（2026-10-12 P0；OCR low）：_ALWAYS_KEEP_COLUMNS 与
+# _ALWAYS_WANTED_AUX_COLUMNS 都经它引用，避免两侧重复罗列漂移（一侧漏加 ⇒
+# 已保留但从未加载 / 已加载但被裁剪，静默复现 2026-09-27「不可用字段」问题）。
+_INDUSTRY_COLUMNS = frozenset({
+    "industry_sw_l1",
+    "industry_sw_code",
+    "ind_asof_days",
+})
 _ALWAYS_KEEP_COLUMNS = frozenset({
     "open", "high", "low", "close", "amount", "volume", "turnover_rate",
     "adj_close", "adjfactor", "float_cap", "tot_cap", "is_trade", "not_st",
@@ -117,17 +125,12 @@ _ALWAYS_KEEP_COLUMNS = frozenset({
     # industry_members 自 2020-01 起有月度快照）：行业中性化
     # （CS_NEUTRALIZE(f, $industry_sw_l1)）是功能性中立能力，不属于任何数据面，
     # 聚焦裁剪必须保留——旧注释"行业列接入属 P2"已随插件落地失效。
-    "industry_sw_l1", "industry_sw_code", "ind_asof_days",
-})
+}) | _INDUSTRY_COLUMNS
 # 聚焦 run 恒载的中立辅助列（与 _ALWAYS_KEEP_COLUMNS 同源，由 _needed_aux_columns
 # 显式放行）。背景：聚焦裁剪按"列属面 ⊆ 允许范围"过滤辅助插件，行业列不属任何面
 # （_column_facets 为空）会被漏掉，而提示词/评估/交付一直声明 $industry_sw_l1 可用
 # ——这正是 2026-09-27 整夜 run 每 run 报 2~6 次「不可用字段」的根因。
-_ALWAYS_WANTED_AUX_COLUMNS = frozenset({
-    "industry_sw_l1",
-    "industry_sw_code",
-    "ind_asof_days",
-})
+_ALWAYS_WANTED_AUX_COLUMNS = frozenset(_INDUSTRY_COLUMNS)
 # 基本面开关打开时缓存面板必须包含的列族哨兵（每插件一列）。建缓存当天某个
 # 辅助插件加载失败（如 CNE 同步占用 parquet 文件锁）会把缺列面板固化，之后
 # 每次命中都返回残缺面板 → 下游 funda_*/dt_* 因子集体报"不可用字段"。

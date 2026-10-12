@@ -30,7 +30,7 @@ RAW = """### 行业/风格轮动因子构建引导（rotation_guide）
   - `CS_GROUP_RANK(信号, $industry_sw_l1)`：行业内截面百分位秩，输出天然 0~1；
   - `CS_NEUTRALIZE(信号, $industry_sw_l1)`：行业内去均值，之后可接 `CS_ZSCORE`
     或 `RANK` 标准化。
-  典型链路：`CS_ZSCORE(CS_NEUTRALIZE($ret_5d, $industry_sw_l1))`。
+  典型链路：`CS_ZSCORE(CS_NEUTRALIZE(TS_SUM($ret, 5), $industry_sw_l1))`。
 - **「条件 alpha / 轮动信号」**：因子只在特定市场/行业景气状态启用，是行业配置
   型或状态依赖型信号。实现：
   - 首选 `SOFT_GATE(signal, state, strength=0.5)`（连续加权，不塌缩）或

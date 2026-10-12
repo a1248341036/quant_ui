@@ -195,7 +195,8 @@ def resolve_profiles(spec: dict[str, Any] | None = None) -> dict[str, Evaluation
         _rdays = int(rotation.get("min_industry_days") or 20)
         _rotation_metrics = [
             {"plugin": "industry_within_rank_ic", "params": {"field": _rfield, "min_cover": _rcover}},
-            {"plugin": "industry_exposure_r2", "params": {"field": _rfield, "min_cover": _rcover}},
+            # exposure_r2 不做 min_cover 过滤（暴露分解需计入全部股票，见插件 docstring）
+            {"plugin": "industry_exposure_r2", "params": {"field": _rfield}},
             {"plugin": "industry_ic_dispersion", "params": {"field": _rfield, "min_cover": _rcover, "min_days": _rdays}},
         ]
         for _pid in ("train_screen", "validation", "production_delivery"):

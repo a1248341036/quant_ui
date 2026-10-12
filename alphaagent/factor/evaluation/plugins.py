@@ -624,6 +624,10 @@ def industry_exposure_r2(context: EvaluationContext, params: dict[str, Any]) -> 
 
     R²=0 无行业暴露；≈1 纯行业哑变量。配合 industry_within_rank_ic 判断
     「全市场 IC 高、行业内 IC 低、暴露高」= 行业 beta 而非行业内 alpha。
+    注意：本指标纳入**全部股票**（含行业内样本 < min_cover 的小行业），不受
+    min_cover 约束——暴露分解本来就要计入小行业，否则会漏报"因子恰好重仓
+    小行业"的行业 beta。因此它与 within_rank_ic / ic_dispersion 的"有效行业
+    口径"不同是刻意的（profile 挂载只传 field，见 profile.py）。
     """
     field = str(params.get("field", "industry_sw_l1"))
     if field not in context.panel.columns:
