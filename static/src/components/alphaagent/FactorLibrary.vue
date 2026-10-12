@@ -4,6 +4,7 @@
       <div class="lib-tabs">
         <button :class="{active: lib.library==='production'}" @click="switchLibrary('production')">正式因子库</button>
         <button :class="{active: lib.library==='candidate'}" @click="switchLibrary('candidate')">候选因子库</button>
+        <button :class="{active: lib.library==='removed'}" @click="switchLibrary('removed')">已删除因子库</button>
       </div>
       <div class="lib-cat-tabs" v-if="false" hidden>
         <!-- 统一大库（2026-09-03）：模式页签退役——两模式共享同一物理库，类别过滤由 facet 筛选取代 -->
@@ -20,15 +21,15 @@
       </div>
       <span class="lib-count" v-if="lib.data">{{ lib.data.n_factors || 0 }} 个因子</span>
       <button class="lib-export-json" @click="exportAllJSON" :disabled="!lib.data?.factors?.length"
-              :title="'导出当前' + (lib.library==='production'?'正式':'候选') + '因子库全部 ' + (lib.data?.n_factors || 0) + ' 个因子的 registry 和结果到 JSON'">
-        导出{{ lib.library==='production' ? '正式库' : '候选库' }}JSON
+              :title="'导出当前' + libTitle + '全部 ' + (lib.data?.n_factors || 0) + ' 个因子的 registry 和结果到 JSON'">
+        导出{{ libTitle }}JSON
       </button>
       <button class="lib-refresh" @click="loadFactors">刷新</button>
     </div>
     <div v-if="lib.error" class="lib-error">{{ lib.error }}</div>
     <div v-if="lib.loading" class="lib-loading">加载中…</div>
     <div v-if="lib.data && !lib.data.factors?.length && !lib.loading" class="lib-empty">
-      {{ lib.data.error === 'library_not_initialized' ? '因子库尚未初始化，请在挖掘流程中启用因子提交。' : '暂无因子。' }}
+      {{ lib.emptyText }}
     </div>
     <div class="lib-toolbar">
       <span class="lib-toolbar-label">数据面</span>
@@ -70,7 +71,7 @@
               :class="{ sortable: c.sortable, active: lib.sortKey === c.key }"
               @click="c.sortable && toggleLibSort(c.key)"
               :title="c.sortable ? '点击排序' : ''">
-            {{ c.label }}<span v-if="lib.sortKey === c.key">{{ lib.sortDir > 0 ? ' ▲' : ' ▼' }}</span>
+            {{ c.key === 'created_at' && lib.library === 'removed' ? '删除时间' : c.label }}<span v-if="lib.sortKey === c.key">{{ lib.sortDir > 0 ? ' ▲' : ' ▼' }}</span>
           </th>
           <th></th>
         </tr>
@@ -88,7 +89,7 @@
           <td>{{ formatMetricValue(f.metrics?.icir) }}</td>
           <td :class="{neg: (f.annualized_return ?? 0) < 0}">{{ formatMetricValue(f.annualized_return ?? '—') }}</td>
           <td>{{ formatMetricValue(f.sharpe ?? '—') }}</td>
-          <td class="lib-time" :title="f.created_at">{{ fmtTime(f.created_at) }}</td>
+          <td class="lib-time" :title="(lib.library==='removed' && f.created_at) ? '原加入时间 ' + f.created_at : ''">{{ lib.library === 'removed' ? fmtTime(f.removed_at) : fmtTime(f.created_at) }}</td>
           <td class="lib-freq">
             <span v-if="f.rebalance_freq" class="lib-freq-tag"
                   :class="'freq-' + f.rebalance_freq"
@@ -102,8 +103,10 @@
           <td class="lib-uid" :title="f.factor_uid || '无 uid（正式库条目未带 registry 记录且名称为空）'">{{ f.factor_uid || '—' }}</td>
           <td class="lib-actions">
             <button class="lib-export" @click.stop="exportOne(f)" title="复制该因子的完整 registry JSON">{{ lib.exportCopied === f.factor_id ? '✓' : '导出' }}</button>
-            <button class="lib-backtest" @click.stop="$emit('backtest', f)">回测</button>
-            <button class="lib-del" @click="confirmDelete(f)">删除</button>
+            <template v-if="lib.library !== 'removed'">
+              <button class="lib-backtest" @click.stop="$emit('backtest', f)">回测</button>
+              <button class="lib-del" @click="confirmDelete(f)">删除</button>
+            </template>
           </td>
         </tr>
       </tbody>
@@ -146,10 +149,46 @@
               <span>有限值: {{ factorDetail.finite_count }}</span>
               <span>创建: {{ formatTime(factorDetail.created_at) }}</span>
             </div>
+            <div class="factor-modal-section" v-if="lib.library === 'removed' && factorDetail.removed_at">
+              <label>删除信息</label>
+              <table class="factor-seg-table">
+                <tbody>
+                  <tr><td class="seg-label">删除时间</td><td>{{ formatTime(factorDetail.removed_at) }}</td></tr>
+                  <tr><td class="seg-label">删除来源</td><td>{{ factorDetail.removed_from === 'production' ? '正式因子库' : '候选因子库' }}</td></tr>
+                  <tr><td class="seg-label">删除原因</td><td>{{ factorDetail.removed_reason || '—' }}</td></tr>
+                </tbody>
+              </table>
+            </div>
             <details class="factor-modal-section">
               <label>Registry 记录</label>
               <pre class="factor-modal-registry">{{ JSON.stringify(factorDetail.registry_entry || factorDetail.metrics, null, 2) }}</pre>
             </details>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- 删除因子弹窗：填写删除原因（必填），归档进已删除因子库 -->
+    <Teleport to="body">
+      <div v-if="deleteTarget" class="factor-modal-overlay" @click="closeDelete()">
+        <div class="factor-modal factor-modal-sm" @click.stop>
+          <div class="factor-modal-head">
+            <strong>删除因子</strong>
+            <code>{{ deleteTarget.name }}</code>
+            <button class="factor-modal-close" @click="closeDelete()">×</button>
+          </div>
+          <div class="factor-modal-body">
+            <div class="factor-modal-section">
+              <label>删除原因 <em class="required">（必填，将记录到已删除因子库）</em></label>
+              <textarea v-model="deleteReason" class="delete-reason-input" rows="3"
+                placeholder="例如：与 vsi_ilw20_dbl_ema3 相关性 0.95，冗余淘汰" @keydown.enter.exact.prevent="doDelete()"></textarea>
+              <div v-if="deleteError" class="delete-reason-error">{{ deleteError }}</div>
+              <div v-if="deleteBusy" class="delete-reason-busy">删除中…</div>
+            </div>
+          </div>
+          <div class="factor-modal-foot">
+            <button class="factor-modal-btn" @click="closeDelete()">取消</button>
+            <button class="factor-modal-btn factor-modal-btn-danger" :disabled="deleteBusy" @click="doDelete()">确认删除</button>
           </div>
         </div>
       </div>
@@ -203,6 +242,11 @@ export default {
         ],
       },
       factorDetail: null,
+      // 删因弹窗（填写必填删除原因）
+      deleteTarget: null,
+      deleteReason: '',
+      deleteBusy: false,
+      deleteError: '',
     }
   },
   computed: {
@@ -258,6 +302,15 @@ export default {
       const base = `多头组合：Q10 分组、无成本、持有 ${hold} 天；引擎净值为含成本调仓回测`
       return pbs ? base : base + '（该因子早于三段组合指标入库，组合收益行不可用，IC 行完整）'
     },
+    libTitle() {
+      return this.lib.library === 'production' ? '正式库' : this.lib.library === 'removed' ? '已删除库' : '候选库'
+    },
+    libEmptyText() {
+      if (this.lib.data?.error === 'library_not_initialized') return '因子库尚未初始化，请在挖掘流程中启用因子提交。'
+      return this.lib.library === 'removed'
+        ? '暂无已删除因子。删除候选/正式库因子时会归档到此处。'
+        : '暂无因子。'
+    },
     libFactorsFaceted() {
       const facet = this.lib.facetFilter
       const freq = this.lib.freqFilter
@@ -286,7 +339,7 @@ export default {
           case 'status': return String(f.status || '')
           case 'rebalance_freq': return String(f.rebalance_freq || '')
           case 'facets': return String(f.facets_label || '')
-          case 'created_at': { const t = Date.parse(f.created_at || ''); return Number.isFinite(t) ? t : -Infinity }
+          case 'created_at': { const t = Date.parse(this.lib.library === 'removed' ? f.removed_at : f.created_at); return Number.isFinite(t) ? t : -Infinity }
           default: {
             const raw = key === 'ic' ? f.metrics?.ic : key === 'icir' ? f.metrics?.icir : f[key]
             const v = parseFloat(raw)
@@ -304,7 +357,7 @@ export default {
       const e = this.lib.exportEnd ? new Date(this.lib.exportEnd + 'T23:59:59').getTime() : null
       if (!s && !e) return this.libFactorsSorted
       return this.libFactorsFaceted.filter(f => {
-        const t = Date.parse(f.created_at || '')
+        const t = Date.parse(this.lib.library === 'removed' ? (f.removed_at || '') : (f.created_at || ''))
         if (!Number.isFinite(t)) return false
         if (s && t < s) return false
         if (e && t > e) return false
@@ -452,13 +505,40 @@ export default {
         this.lib.error = e.message
       }
     },
-    async confirmDelete(f) {
-      if (!confirm('确认删除因子 ' + f.name + ' (' + String(f.factor_id).slice(0, 8) + ')？')) return
+    confirmDelete(f) {
+      this.deleteTarget = f
+      this.deleteReason = ''
+      this.deleteError = ''
+      this.deleteBusy = false
+    },
+    closeDelete() {
+      if (this.deleteBusy) return
+      this.deleteTarget = null
+      this.deleteReason = ''
+      this.deleteError = ''
+    },
+    async doDelete() {
+      if (!this.deleteTarget) return
+      const reason = this.deleteReason.trim()
+      if (!reason) {
+        this.deleteError = '请填写删除原因（必填）'
+        return
+      }
+      this.deleteError = ''
+      this.deleteBusy = true
+      const f = this.deleteTarget
       try {
-        await api('/api/alphaagent/factors/' + encodeURIComponent(f.factor_id) + '?library=' + this.lib.library + '&category=' + this.lib.category, { method: 'DELETE' })
+        await api('/api/alphaagent/factors/' + encodeURIComponent(f.factor_id)
+          + '?library=' + this.lib.library + '&category=' + this.lib.category
+          + '&reason=' + encodeURIComponent(reason),
+          { method: 'DELETE' })
+        this.deleteTarget = null
+        this.deleteReason = ''
+        this.deleteBusy = false
         this.loadFactors()
       } catch (e) {
-        this.lib.error = e.message
+        this.deleteBusy = false
+        this.deleteError = e.message
       }
     },
   },

@@ -8,6 +8,7 @@
   artifacts/alphaagent/factorzoo/
     candidate_main/            ← 统一候选池（带 facets 标签）
     production_main/           ← 统一正式库（带 facets 标签）
+    removed_main/              ← 已删除因子回收站（2026-10-11 起；删除时归档）
 """
 
 from __future__ import annotations
@@ -55,6 +56,19 @@ def production_registry_path(mode: str) -> Path:
 
 def production_expr_dir(mode: str) -> Path:
     return production_dir(mode) / "expressions"
+
+
+def removed_dir(mode: str) -> Path:
+    """已删除因子回收站（统一目录，跨研究模式共享）。
+
+    2026-10-11 起：任何删除（候选/正式）先把条目+表达式归档到 removed_main，
+    再删原库——删除可追溯、前端"已删除因子库"页签可查。
+    """
+    return FACTORZOO_ROOT / "removed_main"
+
+
+def removed_registry_path(mode: str) -> Path:
+    return removed_dir(mode) / "mining_removed_registry.json"
 
 
 def all_categories() -> list[str]:

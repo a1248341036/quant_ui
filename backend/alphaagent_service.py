@@ -1438,6 +1438,64 @@ def _candidate_registry(category: str = "technical") -> dict[str, Any]:
     return loaded if isinstance(loaded, dict) else {}
 
 
+def _removed_registry(category: str = "technical") -> dict[str, Any]:
+    """已删除因子回收站 registry（统一 removed_main，跨模式共享）。"""
+    return _load_json_dict(factor_categories.removed_registry_path(category))
+
+
+def _archive_to_removed(
+    factor_id: str,
+    entry: dict[str, Any],
+    *,
+    category: str,
+    source_library: str,
+    reason: str,
+    expr_text: str | None = None,
+) -> None:
+    """把被删因子归档进回收站（removed_main/），返回前确保 registry 已写盘。
+
+    - removed registry 条目 = 原条目 + removed_at / removed_from / removed_reason
+    - 表达式落盘顺序：entry.expr → 原 expression_file（DSL 尚未删）→ expr_text；
+      落盘到 removed_main/expressions/，前端"已删除因子库"页签可直接展示与对比；
+      已存在删除库的同名因子不做二次归档（幂等，防止重复删除时数据丢失）。
+    """
+    removed_root = factor_categories.removed_dir(category)
+    removed_root.mkdir(parents=True, exist_ok=True)
+    registry = _removed_registry(category)
+    if factor_id in registry:
+        return  # 已归档，幂等
+    arch = dict(entry)
+    arch.setdefault("factor_uid", str(entry.get("factor_uid") or ""))
+    arch["removed_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+    arch["removed_from"] = source_library
+    arch["removed_reason"] = reason
+
+    # 表达式落盘：entry.expr 优先，否则按原 expression_file（DSL 尚未删除）补读，
+    # 再回落显式传入的 expr_text；确保所有条目表达式随归档落盘、不依赖原库存活。
+    expr = str(arch.get("expr") or "").strip()
+    if not expr:
+        rel = str(entry.get("expression_file") or "")
+        if rel:
+            rel_path = ROOT / rel
+            if rel_path.is_file():
+                try:
+                    expr = rel_path.read_text(encoding="utf-8").strip()
+                except OSError:
+                    expr = ""
+    if not expr and expr_text:
+        expr = expr_text.strip()
+    if expr:
+        dsl_dir = removed_root / "expressions"
+        dsl_dir.mkdir(parents=True, exist_ok=True)
+        (dsl_dir / f"{factor_id}.dsl").write_text(expr + "\n", encoding="utf-8")
+        arch["expr"] = expr
+        arch["expression_file"] = str(removed_root / "expressions" / f"{factor_id}.dsl")
+
+    registry[factor_id] = arch
+    path = factor_categories.removed_registry_path(category)
+    path.write_text(json.dumps(registry, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
 _FREQ_MAP_CACHE: dict[str, Any] = {"stamp": None, "map": {}}
 
 
@@ -1745,6 +1803,20 @@ def _candidate_factor_view(factor_id: str, entry: dict[str, Any], *, category: s
         "extra": entry,
     }
 
+
+def _removed_factor_view(factor_id: str, entry: dict[str, Any]) -> dict[str, Any]:
+    """已删除因子视图：复用候选库字段口径 + 删除元数据。
+
+    表达式已随删除归档在 removed_main/expressions/（entry.expr 有值），
+    不需要（也不应）回退读原库 DSL。
+    """
+    view = _candidate_factor_view(factor_id, entry)  # extra 里已含完整归档条目
+    view["removed_at"] = str(entry.get("removed_at") or "")
+    view["removed_from"] = str(entry.get("removed_from") or "")
+    view["removed_reason"] = str(entry.get("removed_reason") or "")
+    return view
+
+
 def list_factors(*, library: str = "production", category: str = "technical", facet: str | None = None) -> dict[str, Any]:
     """列出因子库中的所有因子。
 
@@ -1778,6 +1850,24 @@ def list_factors(*, library: str = "production", category: str = "technical", fa
             "library": library,
             "category": category,
             "root": str(root),
+            "n_factors": len(factors),
+            "factors": factors,
+            "registry": registry,
+        }
+
+    # 已删除因子回收站（2026-10-11 起）：条目含 removed_at/removed_from/removed_reason
+    if library == "removed":
+        registry = _removed_registry(category)
+        if facet:
+            registry = {
+                fid: e for fid, e in registry.items()
+                if isinstance(e, dict) and _entry_matches_facet(e, facet)
+            }
+        factors = [_removed_factor_view(fid, entry) for fid, entry in sorted(registry.items())]
+        return {
+            "library": library,
+            "category": category,
+            "root": str(factor_categories.removed_dir(category)),
             "n_factors": len(factors),
             "factors": factors,
             "registry": registry,
@@ -1882,6 +1972,15 @@ def get_factor_detail(factor_id: str, *, library: str = "production", category: 
         view["registry_entry"] = entry
         return view
 
+    # 已删除因子回收站
+    if library == "removed":
+        entry = _removed_registry(category).get(factor_id)
+        if not isinstance(entry, dict):
+            return {"error": "factor_not_found"}
+        view = _removed_factor_view(factor_id, entry)
+        view["registry_entry"] = entry
+        return view
+
     # 正式库使用 FactorRepository + delivered registry 富化（与 list_factors 同口径）
     repo = _get_factor_repository()
     try:
@@ -1911,11 +2010,17 @@ def get_factor_detail(factor_id: str, *, library: str = "production", category: 
     return detail
 
 
-def delete_factor(factor_id: str, *, library: str = "production", category: str = "technical") -> dict[str, Any]:
+def delete_factor(
+    factor_id: str, *, library: str = "production", category: str = "technical",
+    reason: str = "",
+) -> dict[str, Any]:
     """删除一个因子，并同步清除研究记忆/RAG 中的相关条目。
 
     删除口径以 factor_uid（中台 ID，identity.factor_uid 确定性派生）为主，
     name/expression 文本匹配仅作存量未回填行的兜底；同时从 factor_index.db 移除。
+
+    reason: 用户填写的删除原因（前端必填），归档进回收站 removed_reason；
+            为空时回落默认标记（存量调用方/脚本兼容）。
     """
     from alphaagent.factor.identity import factor_uid
     from alphaagent.factor.index import get_factor_index
@@ -1925,6 +2030,10 @@ def delete_factor(factor_id: str, *, library: str = "production", category: str 
 
     prod_root = factor_categories.production_dir(category)
     cand_root = _candidate_root(category)
+
+    # 回收站只读：不接受对 removed 库的删除（前端已禁用，后端防御性拒绝）
+    if library == "removed":
+        return {"error": "readonly_library"}
 
     root = prod_root if library == "production" else cand_root
     factor_names: list[str] = []
@@ -1936,6 +2045,10 @@ def delete_factor(factor_id: str, *, library: str = "production", category: str 
         if factor_id not in registry:
             return {"error": "factor_not_found"}
         entry = registry.pop(factor_id)
+        _archive_to_removed(
+            factor_id, entry, category=category, source_library="candidate",
+            reason=reason.strip() or "deleted_from_candidate",
+        )
         if str(entry.get("name") or "").strip():
             factor_names.append(str(entry["name"]).strip())
         if str(entry.get("expr") or "").strip():
@@ -1961,6 +2074,40 @@ def delete_factor(factor_id: str, *, library: str = "production", category: str 
                 if str(meta.expr or "").strip():
                     expressions.append(str(meta.expr))
             zoo.delete_factor(factor_id)
+            # 归档到回收站（生产库条目：zoo meta + delivered registry 合并）。
+            # 必须在 zoo.delete_factor 成功之后：避免僵尸条目（meta 为 None 但
+            # registry 残留）删除失败却先写入回收站，造成两侧状态矛盾。
+            if meta is not None:
+                arch_entry: dict[str, Any] = {
+                    "name": str(getattr(meta, "name", "") or ""),
+                    "expr": str(getattr(meta, "expr", "") or ""),
+                }
+                # 带原 expression_file（相对项目根 ROOT，与候选库口径一致）：
+                # zoo.delete_factor 不删 expressions/ 目录，即使 expr 为空也能
+                # 在归档时按原 DSL 补读，避免表达式静默丢失。
+                prod_dsl = root / "expressions" / f"{factor_id}.dsl"
+                if prod_dsl.is_file():
+                    arch_entry["expression_file"] = str(prod_dsl.relative_to(ROOT))
+                prod_reg_path = root / "mining_delivered_registry.json"
+                if prod_reg_path.is_file():
+                    try:
+                        _prod_reg = json.loads(prod_reg_path.read_text(encoding="utf-8"))
+                    except (json.JSONDecodeError, OSError):
+                        _prod_reg = {}
+                    reg_entry = _prod_reg.get(factor_id)
+                    if isinstance(reg_entry, dict):
+                        arch_entry = {**arch_entry, **reg_entry}
+                # 归档失败不阻断删除主流程：因子已从正式库删除，后续 delivered
+                # registry 清理 / memory purge / index 清理必须照常执行，否则
+                # 删除不可追溯且研究记忆残留陈旧数据。
+                try:
+                    if arch_entry.get("name") or arch_entry.get("expr"):
+                        _archive_to_removed(
+                            factor_id, arch_entry, category=category,
+                            source_library="production", reason=reason.strip() or "deleted_from_production",
+                        )
+                except Exception as exc:
+                    logger.warning("delete_factor: production archive to removed failed for %s: %s", factor_id, exc)
         except KeyError:
             return {"error": "factor_not_found"}
 

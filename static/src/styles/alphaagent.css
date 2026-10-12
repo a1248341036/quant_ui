@@ -562,6 +562,19 @@ textarea.lab-input { resize:vertical; font:12px/1.5 var(--font-mono); }
 .factor-seg-note { margin-top:6px; color:var(--muted); font:10px/1.5 var(--font-mono); }
 .factor-modal-section details summary { cursor:pointer; color:var(--muted); font-size:10px; letter-spacing:.05em; text-transform:uppercase; list-style:none; }
 .factor-modal-section details summary:hover { color:var(--text); }
+.factor-modal-sm { width:min(460px, 92vw); }
+.factor-modal-sm .factor-modal-section label { text-transform:none; color:var(--text); font-size:12px; letter-spacing:0; }
+.factor-modal-sm .factor-modal-section em.required { color:#ff8c69; font-style:normal; font-size:11px; }
+.factor-modal-foot { display:flex; justify-content:flex-end; gap:10px; padding:12px 16px; border-top:1px solid var(--line); }
+.factor-modal-btn { padding:7px 16px; border:1px solid var(--line-strong); border-radius:7px; background:transparent; color:var(--text); font-size:12px; cursor:pointer; }
+.factor-modal-btn:hover { background:rgb(255 255 255 / .07); }
+.factor-modal-btn-danger { border-color:#b3543d; background:rgb(179 84 61 / .18); color:#ff9a7a; }
+.factor-modal-btn-danger:hover { background:rgb(179 84 61 / .32); }
+.factor-modal-btn:disabled { opacity:.5; cursor:not-allowed; }
+.delete-reason-input { width:100%; box-sizing:border-box; padding:8px 10px; border:1px solid var(--line-strong); border-radius:7px; background:rgb(255 255 255 / .04); color:var(--text); font:12px/1.5 var(--font-mono); resize:vertical; }
+.delete-reason-input:focus { outline:none; border-color:var(--accent); }
+.delete-reason-error { margin-top:6px; color:#ff8c69; font-size:11px; }
+.delete-reason-busy { margin-top:6px; color:var(--muted); font-size:11px; }
 
 @media (max-width: 820px) {
   .agent-page { height:auto; min-height:calc(100vh - 110px); }

@@ -1023,9 +1023,13 @@ class DeleteFactorRequest(BaseModel):
 
 
 @router.delete("/factors/{factor_id}")
-def delete_factor(factor_id: str, library: str = "production", category: str = "technical") -> dict[str, Any]:
-    """删除一个因子。"""
-    result = service.delete_factor(factor_id, library=library, category=category)
+def delete_factor(factor_id: str, library: str = "production", category: str = "technical", reason: str = "") -> dict[str, Any]:
+    """删除一个因子（候选/正式库），并归档进回收站 removed_main。
+
+    reason: 用户填写的删除原因（前端必填），写入归档 removed_reason；
+            为空时后端回落默认标记（兼容脚本/存量调用）。
+    """
+    result = service.delete_factor(factor_id, library=library, category=category, reason=reason)
     if "error" in result:
         if result["error"] == "library_not_initialized":
             raise HTTPException(status_code=404, detail=result["error"])
