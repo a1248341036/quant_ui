@@ -416,6 +416,62 @@ def memory_search(ctx: ServerContext, research_goal: str, limit: int = 12) -> di
             "note": "block 即真实 run 每轮注入的记忆块（同源 context_for）。"}
 
 
+def _ov_store():
+    """OpenViking 长期记忆接入实例（懒初始化，失败静默 → None）。"""
+    try:
+        from alphaagent.factor.mining.memory.ov_store import OVStore
+
+        endpoint = os.environ.get("OV_ENDPOINT") or "http://127.0.0.1:1933"
+        return OVStore(endpoint=endpoint)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("OVStore 构造失败（OpenViking 记忆不可用）: %s", exc)
+        return None
+
+
+def ov_memory_search(
+    ctx: ServerContext,
+    research_goal: str = "",
+    research_mode: str = "technical",
+    limit: int = 5,
+    max_chars: int = 2400,
+    include_report_knowledge: bool = False,
+) -> dict:
+    """OpenViking 冷路径语义记忆检索（跨 session 策略教训 + run 研究总结 + 死路族）。
+
+    与 SQLite `memory_search` 互补：SQLite 做表达式级精确去重/热路径记忆；
+    本工具做自然语言语义检索（"vwap 族为什么不该再挖" / "月频 label 配 weekly 换手率"），
+    结果来自 `viking://resources/alphaagent/` 专属库，不碰个人记忆。OpenViking
+    不可用时返回空块（挖掘照常，可回落 SQLite memory_search）。
+
+    - `research_goal`：自然语言查询；留空则按档位模板检索
+    - `include_report_knowledge`：额外返回研报正文机制摘录（研报 RAG 块）
+    """
+    store = _ov_store()
+    if store is None:
+        return {"research_goal": research_goal, "block": "", "block_chars": 0,
+                "source": "openviking", "available": False,
+                "note": "OpenViking 不可用（降级：用 memory_search 查 SQLite 记忆）"}
+    query = str(research_goal or "").strip() or None
+    block = store.retrieve_lessons(
+        research_mode=research_mode, query_text=query, limit=int(limit), max_chars=int(max_chars)
+    )
+    out: dict[str, Any] = {
+        "research_goal": research_goal,
+        "block": block or "",
+        "block_chars": len(block or ""),
+        "source": "openviking",
+        "available": True,
+        "note": "块来自 viking://resources/alphaagent/ 专属库（策略教训/run 研究总结/死路族）。",
+    }
+    if include_report_knowledge:
+        rag = store.retrieve_report_knowledge(
+            research_mode=research_mode, query_text=query, limit=min(4, int(limit)), max_chars=1200
+        )
+        out["report_block"] = rag or ""
+        out["report_block_chars"] = len(rag or "")
+    return out
+
+
 def memory_stats(ctx: ServerContext) -> dict:
     """记忆层统计：面/算子饱和度和漏斗。"""
     store = _memory_store(ctx)

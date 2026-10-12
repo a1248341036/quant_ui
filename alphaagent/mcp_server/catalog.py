@@ -83,6 +83,20 @@ DESCRIPTORS: list[dict[str, Any]] = [
                              "limit": {"type": "integer", "default": 12}}, ["research_goal"]),
     },
     {
+        "name": "ov_memory_search",
+        "description": "OpenViking 冷路径语义记忆检索（跨 session 策略教训 + run 研究总结 + 死路族）。"
+                       "与 memory_search（SQLite 精确记忆）互补；OpenViking 不可用时返回空块。",
+        "inputSchema": _obj({
+            "research_goal": {"type": "string", "default": "",
+                              "description": "自然语言查询（如 'vwap 族为什么不该再挖'）；留空按档位模板"},
+            "research_mode": _MODE,
+            "limit": {"type": "integer", "default": 5},
+            "max_chars": {"type": "integer", "default": 2400},
+            "include_report_knowledge": {"type": "boolean", "default": False,
+                                         "description": "额外返回研报正文机制摘录（研报 RAG 块）"},
+        }),
+    },
+    {
         "name": "memory_stats",
         "description": "记忆层统计：面/算子饱和度 + 研究漏斗。",
         "inputSchema": _obj({}),
@@ -163,6 +177,7 @@ HANDLERS: dict[str, Callable[..., Any]] = {
     "list_runs": tools.list_runs,
     "run_summary": tools.run_summary,
     "memory_search": tools.memory_search,
+    "ov_memory_search": tools.ov_memory_search,
     "memory_stats": tools.memory_stats,
     "eval_batch": tools.eval_batch,
     "eval_val": tools.eval_val,

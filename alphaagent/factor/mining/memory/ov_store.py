@@ -111,19 +111,24 @@ class OVStore:
         focus_facets: Iterable[str] | None = None,
         research_mode: str = "technical",
         *,
+        query_text: str | None = None,
         limit: int = 5,
         max_chars: int | None = None,
     ) -> str:
         """检索跨 session 策略记忆，返回注入 system prompt 的文本块。失败/无 OpenViking 返回空串。
 
         focus_facets 参与 query 构造（如"价量面 量能面 technical 饱和度 教训"），
+        query_text 传入时**优先用自然语言查询**（MCP ov_memory_search 用）——
+        可查 run 研究总结/死路族/策略教训等语义内容；缺省仍走固定模板。
         数字类事实（如具体族统计）由调用方实时查 SQLite 生成，不存 OpenViking 快照。
         """
         client = self._get_client()
         if client is None:
             return ""
         facets = tuple(focus_facets or ())
-        query = " ".join([*facets, research_mode or "technical", "饱和度 教训 死路 换手率"])
+        query = query_text or " ".join(
+            [*facets, research_mode or "technical", "饱和度 教训 死路 换手率"]
+        )
         try:
             results = client.search(query=query, target_uri=SCOPE, limit=limit)
             hits = self._flatten_hits(results, limit)
