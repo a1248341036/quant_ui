@@ -96,6 +96,23 @@ class TestRunSpecMerge:
         assert loaded["research_mode"] == "technical"
         assert loaded["evaluation_policy"]["min_train_abs_ic"] == 0.020
 
+    def test_start_no_explicit_uses_effective_keeps_saved(self) -> None:
+        """POST /runs 未显式传 research_spec 时走 effective（默认+保存覆盖）。
+
+        2026-10-12 修复：此前传纯 default（build_default_research_spec）会被
+        build_run_research_spec 当作 explicit，把 research_specs/<mode>.json 里
+        已保存的覆盖（如 rotation_policy）顶回默认；monitor/裸 API 启动永远丢覆盖。
+        """
+        rs.save_research_spec_overrides("report", {"rotation_policy": {"enabled": True}})
+        # 修复前复现：纯 default 作为 explicit 会顶掉保存覆盖
+        pure = rs.default_research_spec("report")
+        assert pure["rotation_policy"]["enabled"] is False
+        assert rs.build_run_research_spec(pure)["rotation_policy"]["enabled"] is False
+        # 修复后：未显式传 → effective，覆盖保留
+        eff = rs.effective_research_spec("report")
+        assert eff["rotation_policy"]["enabled"] is True
+        assert rs.build_run_research_spec(eff)["rotation_policy"]["enabled"] is True
+
 
 class TestDiff:
     def test_diff_only_changed_keys(self) -> None:
