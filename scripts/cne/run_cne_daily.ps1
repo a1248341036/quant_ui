@@ -382,8 +382,28 @@ function Execute-CnePipeline {
                     try {
                         $runStatus = $statusOutput | ConvertFrom-Json
                         if ($runStatus -and $runStatus.batches) {
-                            foreach ($b in $runStatus.batches) {
-                                if ($b.dataset) { $batchByDataset[$b.dataset] = $b }
+                            # 一个 dataset 一次 run 可能有多个批次（分片/ownership/
+                            # 重试 supersede），单挑一条会按 batch_id 顺序覆盖而误判
+                            # 整体。按 dataset 聚合：任一 failed 或未完成(running/
+                            # stale)则 failed，有 warning 则 warning，全成功才 success。
+                            foreach ($g in ($runStatus.batches | Where-Object { $_.dataset } | Group-Object dataset)) {
+                                $agg = $null; $rows = 0; $allSkip = $true
+                                foreach ($b in $g.Group) {
+                                    switch ($b.status) {
+                                        "success"    { $agg = "success"; $allSkip = $false }
+                                        "warning"    { if ($agg -ne "failed") { $agg = "warning" }; $allSkip = $false }
+                                        "failed"     { $agg = "failed"; $allSkip = $false }
+                                        "running"    { $agg = "failed"; $allSkip = $false }
+                                        "stale"      { $agg = "failed"; $allSkip = $false }
+                                        "superseded" { if ($null -eq $agg) { $agg = "success" } }
+                                        "skip"       { }
+                                        "skipped"    { }
+                                        default      { if ($agg -ne "failed") { $agg = "warning" }; $allSkip = $false }
+                                    }
+                                    if ($b.rows_written -gt $rows) { $rows = $b.rows_written }
+                                }
+                                if ($null -eq $agg) { $agg = if ($allSkip) { "skip" } else { "failed" } }
+                                $batchByDataset[$g.Name] = [pscustomobject]@{ status = $agg; rows_written = $rows }
                             }
                         }
                     } catch {
@@ -401,7 +421,7 @@ function Execute-CnePipeline {
                             "warning" { Record-Result $pre.Dataset "warning" ([int]$b.rows_written) "--" "带警告完成（manifest 确认）" }
                             { $_ -eq "skipped" -or $_ -eq "skip" } { Record-Result $pre.Dataset "skip" 0 "--" "同周期最新（manifest 确认）" }
                             "failed"  { Record-Result $pre.Dataset "failed" 0 "--" $blockedNote }
-                            default   { Record-Result $pre.Dataset "warning" 0 "--" "manifest 状态: $($b.status)" }
+                            default   { Record-Result $pre.Dataset "failed" 0 "--" "manifest 状态未完成: $($b.status)" }
                         }
                     } else {
                         # manifest 无该批次记录 = 本轮确实未执行（锁冲突/进程中断等）
