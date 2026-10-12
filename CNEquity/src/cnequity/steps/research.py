@@ -59,8 +59,13 @@ def _validate_institutional_holdings_snapshot(df):
         df.unique(subset=["symbol", "holder_type", "report_period"])
         .group_by("report_period")
         .agg(pl.len().alias("_holding_rows"))
-        .filter(pl.col("_holding_rows") < _MIN_INSTITUTIONAL_HOLDING_ROWS_PER_PERIOD)
     )
+    seen_periods = counts["report_period"].to_list()
+    # Newest quarter may still be sparse while its disclosure window is in
+    # progress; older quarters must stay complete so cutoff responses fail.
+    if len(seen_periods) >= 2:
+        counts = counts.filter(pl.col("report_period") != max(seen_periods))
+    counts = counts.filter(pl.col("_holding_rows") < _MIN_INSTITUTIONAL_HOLDING_ROWS_PER_PERIOD)
     if not counts.is_empty():
         details = ", ".join(
             f"{row['report_period']}={row['_holding_rows']}" for row in counts.iter_rows(named=True)
