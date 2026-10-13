@@ -35,6 +35,20 @@ class TestRotationPolicyDefaults:
         assert rp["min_industry_days"] == 20
         assert rp["report_industry_metrics"] is True
 
+    def test_state_layer_defaults(self) -> None:
+        rp = DEFAULT_RESEARCH_SPEC["rotation_policy"]
+        assert rp["dims"] == ["size", "value_growth"]
+        assert rp["style_lookback_days"] == 120
+        assert rp["min_state_days"] == 20
+        assert rp["boost_cap"] == 1.25
+        assert rp["boost_source"] == "prior"
+        assert rp["max_daily_turnover"] == 0.20
+        assert rp["strategy_dir"] == "artifacts/alphaagent/rotation_strategies"
+        assert rp["max_test_submissions"] == 2
+        assert rp["max_strategy_submissions"] == 10
+        assert rp["cost_bps"] == 20
+        assert rp["report_state_metrics"] is True
+
     def test_normalize_empty_rotation_keeps_defaults(self) -> None:
         spec = normalize_research_spec({"rotation_policy": {}})
         rp = spec["rotation_policy"]
@@ -43,6 +57,10 @@ class TestRotationPolicyDefaults:
         assert rp["min_industry_cover"] == 15
         assert rp["min_industry_days"] == 20
         assert rp["report_industry_metrics"] is True
+        assert rp["style_lookback_days"] == 120
+        assert rp["min_state_days"] == 20
+        assert rp["boost_source"] == "prior"
+        assert rp["report_state_metrics"] is True
 
     def test_prioritize_defaults_empty(self) -> None:
         spec = normalize_research_spec({})
@@ -67,9 +85,90 @@ class TestRotationPolicyOverride:
         assert rp["min_industry_days"] == 25
         assert rp["report_industry_metrics"] is False
 
+    def test_state_layer_override_roundtrip(self) -> None:
+        spec = normalize_research_spec({
+            "rotation_policy": {
+                "dims": ["size", "momentum"],
+                "style_lookback_days": 90,
+                "min_state_days": 30,
+                "boost_cap": 1.5,
+                "boost_source": "stat",
+                "max_daily_turnover": 0.3,
+                "strategy_dir": "artifacts/x/rotation",
+                "max_test_submissions": 3,
+                "max_strategy_submissions": 5,
+                "cost_bps": 30,
+                "report_state_metrics": False,
+            },
+        })
+        rp = spec["rotation_policy"]
+        assert rp["dims"] == ["size", "momentum"]
+        assert rp["style_lookback_days"] == 90
+        assert rp["min_state_days"] == 30
+        assert rp["boost_cap"] == 1.5
+        assert rp["boost_source"] == "stat"
+        assert rp["max_daily_turnover"] == 0.3
+        assert rp["strategy_dir"] == "artifacts/x/rotation"
+        assert rp["max_test_submissions"] == 3
+        assert rp["max_strategy_submissions"] == 5
+        assert rp["cost_bps"] == 30
+        assert rp["report_state_metrics"] is False
+
     def test_build_run_carries_rotation_enabled(self) -> None:
         run = build_run_research_spec({"rotation_policy": {"enabled": True}})
         assert run["rotation_policy"]["enabled"] is True
+
+
+class TestRotationStatePolicyValidation:
+    @pytest.mark.parametrize("dims", [["not_a_dim"], ["size", "bogus"], "size"])
+    def test_unknown_dim_or_non_list_rejected(self, dims) -> None:  # noqa: ANN001
+        with pytest.raises(ValueError):
+            normalize_research_spec({"rotation_policy": {"dims": dims}})
+
+    @pytest.mark.parametrize("v", [10, 600])
+    def test_style_lookback_out_of_range_rejected(self, v: int) -> None:
+        with pytest.raises(ValueError):
+            normalize_research_spec({"rotation_policy": {"style_lookback_days": v}})
+
+    @pytest.mark.parametrize("v", [3, 600])
+    def test_min_state_days_out_of_range_rejected(self, v: int) -> None:
+        with pytest.raises(ValueError):
+            normalize_research_spec({"rotation_policy": {"min_state_days": v}})
+
+    @pytest.mark.parametrize("v", [0.9, 2.5])
+    def test_boost_cap_out_of_range_rejected(self, v: float) -> None:
+        with pytest.raises(ValueError):
+            normalize_research_spec({"rotation_policy": {"boost_cap": v}})
+
+    @pytest.mark.parametrize("v", ["random", "STAT", 1])
+    def test_boost_source_invalid_rejected(self, v) -> None:  # noqa: ANN001
+        with pytest.raises(ValueError):
+            normalize_research_spec({"rotation_policy": {"boost_source": v}})
+
+    @pytest.mark.parametrize("v", [0.01, 0.6])
+    def test_max_daily_turnover_out_of_range_rejected(self, v: float) -> None:
+        with pytest.raises(ValueError):
+            normalize_research_spec({"rotation_policy": {"max_daily_turnover": v}})
+
+    @pytest.mark.parametrize("v", [0, 11])
+    def test_max_test_submissions_out_of_range_rejected(self, v: int) -> None:
+        with pytest.raises(ValueError):
+            normalize_research_spec({"rotation_policy": {"max_test_submissions": v}})
+
+    @pytest.mark.parametrize("v", [0, 101])
+    def test_max_strategy_submissions_out_of_range_rejected(self, v: int) -> None:
+        with pytest.raises(ValueError):
+            normalize_research_spec({"rotation_policy": {"max_strategy_submissions": v}})
+
+    @pytest.mark.parametrize("v", [-1, 501])
+    def test_cost_bps_out_of_range_rejected(self, v: int) -> None:
+        with pytest.raises(ValueError):
+            normalize_research_spec({"rotation_policy": {"cost_bps": v}})
+
+    @pytest.mark.parametrize("v", [1, "yes", None])
+    def test_report_state_metrics_non_bool_rejected(self, v) -> None:  # noqa: ANN001
+        with pytest.raises(ValueError):
+            normalize_research_spec({"rotation_policy": {"report_state_metrics": v}})
 
 
 class TestRotationPolicyValidation:
