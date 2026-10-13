@@ -6,7 +6,8 @@
 （train∪val∪test），test 段即锁定盲测段（2025+）。挖掘探索期按盲测数据
 筛选迭代 = 多重检验烧盲测段，盲测门禁被架空（单轮实测 19 次调用）。
 
-修复：dispatch 白名单只放行 train_screen / validation / size_neutral_validation；
+修复：dispatch 白名单放行 train/val 口径（train_screen / train_screen_lite /
+train_screen_turnover / validation / size_neutral_validation），只拦 split=full；
 全区间复检只属于 submit_factor 内部链路。
 """
 from __future__ import annotations
@@ -74,3 +75,18 @@ class TestProfileWhitelist:
             "prediction": _PRED,
         })
         assert out.get("error") == "stub_reached_profile"
+
+    def test_train_prescreen_profiles_pass_through(self):
+        out = _tools().dispatch("evaluate_factor", {
+            "profile_id": "train_screen_lite",
+            "multi_line_expr": "RANK($mgn_balance)",
+            "prediction": _PRED,
+        })
+        assert out.get("error") == "stub_reached_profile"  # not whitelist-blocked
+
+        out = _tools().dispatch("evaluate_factor", {
+            "profile_id": "train_screen_turnover",
+            "multi_line_expr": "RANK($mgn_balance)",
+            "prediction": _PRED,
+        })
+        assert out.get("error") == "stub_reached_profile"  # not whitelist-blocked

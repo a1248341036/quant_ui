@@ -78,6 +78,8 @@ _FACET_LOCK_TOOLS = frozenset({
 # 链路内部使用——LLM 探索期直接评估 = 按盲测数据选因子，盲测门禁即被架空。
 _MINING_ALLOWED_PROFILES = frozenset({
     "train_screen",
+    "train_screen_lite",
+    "train_screen_turnover",
     "validation",
     "size_neutral_validation",
 })
