@@ -13,7 +13,7 @@ from typing import Any, MutableMapping
 import numpy as np
 import pandas as pd
 
-from alphaagent.data.panel import load_panel, slice_panel
+from alphaagent.data.panel import load_panel, panel_columns, slice_panel
 from alphaagent.factor.cache import FactorValueCache, get_default_cache
 from alphaagent.factor.mining.context import StockEvalContext
 from alphaagent.factor.mining.eval.candidate import CandidateRegistry
@@ -116,6 +116,7 @@ class SessionStore:
 
         # 数据源分支：cne:// 走 adapter 实时构建，否则读 parquet 文件
         from alphaagent.data.adapters.cnequity import is_cne_source, load_panel_from_cne
+        excluded_funda = 0
         if is_cne_source(ctx.panel_path):
             panel = load_panel_from_cne(
                 start=cov_start, end=cov_end, universe_mask=False,
@@ -124,18 +125,34 @@ class SessionStore:
                 focus_facets=getattr(ctx, "focus_facets", ()) or None,
             )
         else:
-            panel = load_panel(ctx.panel_path)
+            # include_fundamentals=False 时按需取列加载（排除 funda_*），替代
+            # "整表加载再 drop" —— drop(columns=...) 会对数值块整块复制 ~6GB 私有拷贝
+            # （pandas 未开 CoW 实测），是批量技术档内存 16-17GB 的另一大来源。
+            if ctx.include_fundamentals:
+                panel = load_panel(ctx.panel_path)
+            else:
+                cols = panel_columns(ctx.panel_path)
+                if cols is None:
+                    panel = load_panel(ctx.panel_path)
+                else:
+                    excluded_funda = sum(
+                        1 for c in cols if str(c).startswith("funda_")
+                    )
+                    panel = load_panel(
+                        ctx.panel_path,
+                        columns=[c for c in cols if not str(c).startswith("funda_")] or None,
+                    )
 
         dropped_funda = 0
         if not ctx.include_fundamentals:
+            # 兜底：按需取列失败/仍含 funda_* 时才走 drop（正常路径应为空）
             funda_cols = [c for c in panel.columns if str(c).startswith("funda_")]
             if funda_cols:
                 panel = panel.drop(columns=funda_cols)
                 dropped_funda = len(funda_cols)
             else:
-                dropped_funda = 0
-        else:
-            dropped_funda = 0
+                # 按需取列已排除：如实记录排除的 funda 列数（保持元数据语义）
+                dropped_funda = excluded_funda
         panel = slice_panel(panel, start=cov_start, end=cov_end)
         # 股票池（评估口径，非因子属性）：非成分股票**整行剔除**，
         # 使 IC / 覆盖率 / 换手 / 分组 / 引擎回测全部在池内计算。all 时零开销。
