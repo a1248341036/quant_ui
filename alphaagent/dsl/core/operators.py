@@ -2942,10 +2942,11 @@ def rolling_rsq(df1_group: pd.DataFrame, x: np.ndarray, p: int) -> pd.Series:
     """对固定 x 逐窗滚动回归 R2（Numba 快路径，失败回落逐窗 lstsq）。"""
     y = df1_group.iloc[:, 0]
     n = len(y)
+    x = np.asarray(x, dtype=float)[:p]
     try:
         out = _accel.roll_rsq(
             y.to_numpy(dtype=float, copy=False),
-            np.asarray(x, dtype=float),
+            x,
             p,
         )
         return pd.Series(out, index=df1_group.index, dtype=np.float32)
