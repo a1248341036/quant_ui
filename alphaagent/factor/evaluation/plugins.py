@@ -531,26 +531,40 @@ def quantile_portfolio(context: EvaluationContext, params: dict[str, Any]) -> di
 def _industry_ic_table(
     context, field: str, min_cover: int,
 ) -> tuple[pd.Series, pd.Series] | None:
-    """按 (日, 行业) 组计算行业内 Rank IC。
+    """行业内 Rank IC 表（industry 语义包装；算法见 _group_ic_table）。"""
 
-    返回 (ic, weights)：ic 为 MultiIndex (date, industry) 的 Spearman IC，
+    return _group_ic_table(
+        context,
+        field=field,
+        min_cover=min_cover,
+        cache_key=("industry_ic_table", field, int(min_cover)),
+    )
+
+
+def _group_ic_table(
+    context,
+    *,
+    field: str,
+    min_cover: int,
+    cache_key,
+) -> tuple[pd.Series, pd.Series] | None:
+    """按 (日, 分组列) 组内 Rank IC 的泛化实现（行业/风格状态共用）。
+
+    返回 (ic, weights)：ic 为 MultiIndex (date, group) 的 Spearman IC，
     weights 为对应组的有效样本数（后续按组内样本加权）。组内样本数 < min_cover
     的组被剔除；无任何有效组返回 None。算法与 cross_sectional_rank_ic 同构：
     组内 rank 化后按 Pearson 公式（ddof=1）一次聚合，避免逐日 Python 循环。
-
-    结果按 (field, min_cover) 缓存到 context.cache：同一 profile 评估内
-    industry_within_rank_ic 与 industry_ic_dispersion 总是成对出现，共享
-    一次矩阵计算（挖掘循环对每因子 × 3 profile 各少一遍 groupby.rank）。
+    按传入 cache_key 缓存，industry 与 state 两套键独立（profile 内共享矩阵）。
     """
-    cache_key = ("industry_ic_table", field, int(min_cover))
+
     if cache_key in context.cache:
         return context.cache[cache_key]
 
     dates = context.panel.index.get_level_values("datetime")
-    industry = context.panel[field].to_numpy(copy=False)
+    groups = context.panel[field].to_numpy(copy=False)
     factor = context.factor.to_numpy(dtype=np.float64, copy=False)
     label = context.label.to_numpy(dtype=np.float64, copy=False)
-    df = pd.DataFrame({"d": dates, "g": industry, "f": factor, "y": label})
+    df = pd.DataFrame({"d": dates, "g": groups, "f": factor, "y": label})
     df = df.dropna(subset=["f", "y", "g"])
     table = None
     if not df.empty:
@@ -568,7 +582,7 @@ def _industry_ic_table(
             denom = agg["sx"].to_numpy() * agg["sy"].to_numpy()
             safe_denom = np.where(denom > 1e-12, denom, np.nan)
             ic_vals = cov / safe_denom
-            ic = pd.Series(ic_vals, index=agg.index, name="industry_ic")
+            ic = pd.Series(ic_vals, index=agg.index, name="group_ic")
             ic = ic[np.isfinite(ic.to_numpy(dtype=float, copy=False))]
             if not ic.empty:
                 table = ic, agg.loc[ic.index, "n"]
@@ -584,6 +598,69 @@ def _missing_industry(field: str) -> dict[str, Any]:
         "n_days": 0,
         "n_industries_used": 0,
         "note": f"panel 缺少行业字段 {field}（P1 轮动诊断未计算）",
+    }
+
+
+def _missing_state(field: str) -> dict[str, Any]:
+    return {
+        "state_conditional_ic": float("nan"),
+        "market_rank_ic": float("nan"),
+        "state_ic_overall_ratio": float("nan"),
+        "state_ic_series": {},
+        "n_days": 0,
+        "n_states_used": 0,
+        "note": f"panel 缺少 canonical 状态列 {field}（state_conditional_ic 未计算）",
+    }
+
+
+@metric("state_conditional_ic")
+def state_conditional_ic(context: EvaluationContext, params: dict[str, Any]) -> dict[str, Any]:
+    """状态条件 Rank IC：按 canonical style_state 分组、组内日度 Spearman、按样本加权。
+
+    spec §4.1/§4.2：只报告、不豁免任何门槛（全期 engine_gate 是唯一硬 gate）。
+    状态内 IC 样本少（盲测段约 9 个月 × 4~6 状态）无统计力，仅作 LLM 设计审视与
+    "全期 IC vs 状态内 IC"并排展示。只消费 panel 恒载 canonical 状态列，不消费
+    per-strategy 状态序列（§3.4.1 分工）。
+    """
+
+    field = str(params.get("field", "style_state"))
+    min_cover = int(params.get("min_cover", 15))
+    if field not in context.panel.columns:
+        return _missing_state(field)
+    table = _group_ic_table(
+        context,
+        field=field,
+        min_cover=min_cover,
+        cache_key=("state_ic_table", field, int(min_cover)),
+    )
+    if table is None:
+        return {**_missing_state(field), "note": "无有效状态组（组内样本不足）"}
+    ic, weights = table
+    w = weights.to_numpy(dtype=np.float64)
+    total = float(w.sum())
+    cond = float(np.sum(ic.to_numpy(dtype=np.float64) * w) / total) if total > 0 else float("nan")
+    market = context.daily_rank_ic()
+    market_ic = float(market.mean()) if market.notna().any() else float("nan")
+    ratio = cond / market_ic if np.isfinite(market_ic) and market_ic != 0 else float("nan")
+    df = ic.reset_index()
+    df.columns = ["d", "s", "ic"]
+    df["w"] = weights.to_numpy(dtype=np.float64)
+    per_state = df.groupby("s", sort=True).apply(
+        lambda g: float(
+            (g["ic"].to_numpy(dtype=float) * g["w"].to_numpy(dtype=float)).sum()
+            / max(float(g["w"].sum()), 1e-12)
+        ),
+        include_groups=False,
+    )
+    return {
+        "state_conditional_ic": cond,
+        "market_rank_ic": market_ic,
+        "state_ic_overall_ratio": ratio,
+        "state_ic_series": {str(k): round(float(v), 5) for k, v in per_state.items()},
+        "n_days": int(df["d"].nunique()),
+        "n_states_used": int(df["s"].nunique()),
+        "note": "状态内日度 Rank IC 按状态内有效样本加权；state_ic_overall_ratio="
+                "状态内 IC/全期 IC（>1 表示状态条件有信息增量；仅报告，不豁免门槛）。",
     }
 
 

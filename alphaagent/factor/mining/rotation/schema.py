@@ -97,7 +97,7 @@ def validate_design(obj: Any) -> ValidationReport:
 
     # version
     version = obj.get("version", SCHEMA_VERSION)
-    if not _is_number(version) or int(version) < 1:
+    if not _is_number(version) or version != int(version) or int(version) < 1:
         rep.errors.append(f"version 必须为 >=1 的整数，收到 {version!r}")
     elif int(version) > SCHEMA_VERSION:
         rep.errors.append(
@@ -136,7 +136,7 @@ def validate_design(obj: Any) -> ValidationReport:
         isinstance(d, dict) and d.get("threshold_mode") == "quantile" for d in dims
     ):
         qref = obj.get("quantile_benchmark")
-        if qref not in QUANTILE_REFS:
+        if not isinstance(qref, str) or qref not in QUANTILE_REFS:
             rep.errors.append(
                 "threshold_mode=quantile 必须声明量化参考窗 "
                 f"quantile_benchmark ∈ {sorted(QUANTILE_REFS)}"
@@ -144,7 +144,7 @@ def validate_design(obj: Any) -> ValidationReport:
             )
     else:
         qref = obj.get("quantile_benchmark")
-        if qref is not None and qref not in QUANTILE_REFS:
+        if qref is not None and (not isinstance(qref, str) or qref not in QUANTILE_REFS):
             rep.errors.append(
                 f"quantile_benchmark 必须是 {sorted(QUANTILE_REFS)} 之一，收到 {qref!r}"
             )
@@ -210,14 +210,14 @@ def _validate_dimension(
         rep.errors.append(f"{tag} 必须是对象")
         return
     dim = dim_spec.get("dim")
-    if dim not in DIMS:
+    if not isinstance(dim, str) or dim not in DIMS:
         rep.errors.append(f"{tag}.dim 必须是 {sorted(DIMS)} 之一，收到 {dim!r}")
     elif dim in seen_dims:
         rep.errors.append(f"{tag}.dim={dim!r} 重复定义（每维只允许一个）")
     else:
         seen_dims.add(dim)
     carrier = dim_spec.get("carrier")
-    if carrier not in CARRIERS:
+    if not isinstance(carrier, str) or carrier not in CARRIERS:
         rep.errors.append(f"{tag}.carrier 必须是 {sorted(CARRIERS)} 之一，收到 {carrier!r}")
     wd = dim_spec.get("window_days")
     if not _is_number(wd) or not _in_range(wd, WINDOW_DAYS_MIN, WINDOW_DAYS_MAX):
@@ -226,7 +226,7 @@ def _validate_dimension(
             f"收到 {wd!r}"
         )
     mode = dim_spec.get("threshold_mode")
-    if mode not in THRESHOLD_MODES:
+    if not isinstance(mode, str) or mode not in THRESHOLD_MODES:
         rep.errors.append(f"{tag}.threshold_mode 必须是 {sorted(THRESHOLD_MODES)} 之一")
     params = dim_spec.get("params")
     if not isinstance(params, dict):
@@ -240,12 +240,17 @@ def _validate_dimension(
                     f"收到 {q!r}"
                 )
         elif mode == "level":
-            if not _in_range(float(params.get("threshold", 0.0)), LEVEL_SIGNAL_MIN, LEVEL_SIGNAL_MAX):
-                rep.errors.append(f"{tag}.params.threshold 越界")
+            lv = params.get("threshold", 0.0)
+            if not _is_number(lv) or not _in_range(
+                float(lv), LEVEL_SIGNAL_MIN, LEVEL_SIGNAL_MAX
+            ):
+                rep.errors.append(
+                    f"{tag}.params.threshold 必须在 [{LEVEL_SIGNAL_MIN}, "
+                    f"{LEVEL_SIGNAL_MAX}] 内，收到 {lv!r}"
+                )
             if carrier not in LEVEL_ALLOWED_CARRIERS:
                 rep.errors.append(
                     f"{tag} level 模式只允许用于平稳量（变化率/分位），carrier 必须是 "
                     f"{sorted(LEVEL_ALLOWED_CARRIERS)} 之一，收到 {carrier!r}；"
                     "index_spread 等水平量请先强制分位化（改用 quantile）"
                 )
-

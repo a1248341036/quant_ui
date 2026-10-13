@@ -8,6 +8,7 @@ import pandas as pd
 
 from core.rotation.compiler import compile_design
 from core.rotation.style_regime import (
+    build_canonical_signals,
     boost_for_state,
     canonical_design,
     compute_states,
@@ -102,3 +103,41 @@ class TestBoostForState:
         d["mapping"] = {"SMALL_VALUE": {"reversal": 1.1}}
         c = compile_design(d, mode="technical")
         assert boost_for_state(c, "LARGE_GROWTH") == {}
+
+
+class TestBuildCanonicalSignals:
+    def test_produces_industry_momentum_and_core_signals(self) -> None:
+        n_days = 60
+        instruments = [f"S{i:03d}" for i in range(30)]
+        inds = ["IND_A"] * 15 + ["IND_B"] * 15
+        dates = pd.date_range("2023-01-02", periods=n_days, freq="B")
+        mi = pd.MultiIndex.from_product([dates, instruments], names=["datetime", "instrument"])
+        panel = pd.DataFrame(index=mi)
+        panel["industry_sw_l1"] = np.tile(np.array(inds), n_days)
+        panel["float_cap"] = np.abs(np.random.default_rng(0).standard_normal(len(mi))) * 1e9
+        panel["ret"] = np.random.default_rng(1).standard_normal(len(mi)) * 0.01
+        # 行业收益分化：IND_A 正漂移、IND_B 负漂移 => 行业动量日度非零
+        panel["ret"] += np.where(panel["industry_sw_l1"] == "IND_A", 0.002, -0.002)
+        # style_beta 为日频风格收益（每交易日一行）；index_bars 为日频宽基
+        style_beta = pd.DataFrame(
+            {
+                "value": np.random.default_rng(2).standard_normal(n_days),
+                "growth": np.random.default_rng(3).standard_normal(n_days),
+                "momentum": np.random.default_rng(4).standard_normal(n_days),
+            },
+            index=dates,
+        )
+        index_bars = pd.DataFrame(
+            {
+                "000300.SH": np.random.default_rng(5).standard_normal(n_days) + 100,
+                "000905.SH": np.random.default_rng(6).standard_normal(n_days) + 80,
+            },
+            index=dates,
+        )
+        signals = build_canonical_signals(panel, style_beta, index_bars=index_bars)
+        # OCR(high,20261013)：industry_momentum 曾因 MultiIndex/裸数组混排恒为 None
+        assert "industry_momentum" in signals.columns
+        assert int(signals["industry_momentum"].notna().sum()) >= 20
+        assert "size_proxy" in signals.columns
+        assert "value_growth_spread" in signals.columns
+        assert "market_index_momentum" in signals.columns

@@ -20,7 +20,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from core.rotation.compiler import DIM_BUCKETS, CompiledStrategy, compile_design
+from core.rotation.compiler import DIM_BUCKETS, CompiledStrategy
 
 # ── canonical 内置状态（size / value_growth 两维）───────────────────────
 CANONICAL_DIMENSIONS: tuple[dict[str, Any], ...] = (
@@ -112,7 +112,7 @@ def build_canonical_signals(
     - momentum_beta：风格日收益 momentum；
     - market_index_momentum：index_bars 首列收益率；
     - industry_momentum：行业等权收益截面差（最强-最弱行业），panel 需行业+收益列；
-    - margin_chg / northbound_chg / macro_rate_level：aux 透传。
+    - margin_chg / northbound_chg / macro_level：aux 透传。
     """
 
     out: dict[str, pd.Series] = {}
@@ -138,7 +138,7 @@ def build_canonical_signals(
     industry = _build_industry_momentum(panel, industry_field)
     if industry is not None:
         out["industry_momentum"] = industry
-    for key in ("margin_chg", "northbound_chg", "macro_rate_level"):
+    for key in ("margin_chg", "northbound_chg", "macro_level"):
         if aux is not None and key in aux and aux[key] is not None:
             seq = aux[key]
             out[key] = seq if isinstance(seq, pd.Series) else pd.Series(seq)
@@ -199,7 +199,15 @@ def _build_industry_momentum(
     else:
         ret = pd.to_numeric(panel[ret_col], errors="coerce")
     ind = panel[industry_field]
-    df = pd.DataFrame({"d": panel.index.get_level_values("datetime"), "g": ind, "ret": ret})
+    # OCR(high,20261013)：三列统一按位置对齐的 numpy 数组，避免 MultiIndex Series
+    # 被重索引到裸数组的 RangeIndex 导致 g/ret 全 NaN（industry_momentum 永不产出）
+    df = pd.DataFrame(
+        {
+            "d": panel.index.get_level_values("datetime").to_numpy(),
+            "g": ind.to_numpy(),
+            "ret": ret.to_numpy(),
+        }
+    )
     df = df.dropna(subset=["ret", "g"])
     if df.empty:
         return None

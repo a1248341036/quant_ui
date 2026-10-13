@@ -147,3 +147,26 @@ class TestUnregister:
         assert reg.get("rot_a") is None
         assert reg.active("technical") is None
         assert reg.unregister("rot_a") is False
+
+
+class TestModeBinding:
+    """OCR(medium,20261013)：mode 绑定契约缺口补测。"""
+
+    def test_register_same_id_different_mode_rejected(self, tmp_path) -> None:
+        reg = RotationRegistry(tmp_path)
+        _register(reg, "rot_a", mode="technical")
+        with pytest.raises(RotationRegistryError) as ei:
+            reg.register(
+                strategy_id="rot_a", design_fp="fp:rot_a", compile_fp="c:rot_a",
+                mode="fundamental",
+            )
+        assert "mode 冲突" in str(ei.value)
+
+    def test_set_active_with_mismatched_mode_rejected(self, tmp_path) -> None:
+        reg = RotationRegistry(tmp_path)
+        _register(reg, "rot_a", mode="technical")
+        reg.set_active("rot_a")  # mode=None 解析自身 mode，正常
+        assert reg.active("technical") == "rot_a"
+        with pytest.raises(RotationRegistryError) as ei:
+            reg.set_active("rot_a", mode="fundamental")
+        assert "拒绝跨 mode" in str(ei.value)

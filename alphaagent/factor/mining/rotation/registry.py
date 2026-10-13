@@ -15,6 +15,7 @@ Phase 1 只落 registry 元数据 + design/compiled JSON；状态序列可随条
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -39,7 +40,7 @@ class RotationRegistryError(ValueError):
     """registry 操作非法（hash 冲突 / 近重复 / mode 冲突等）。"""
 
 
-@dataclass
+@dataclass(init=False)
 class RotationRegistry:
     root: Path
 
@@ -61,10 +62,14 @@ class RotationRegistry:
         return data
 
     def _save(self, data: dict[str, Any]) -> None:
-        self._path().write_text(
+        # OCR(low,20261013)：registry.json 是真源，改原子写防截断（临时文件 + replace）
+        p = self._path()
+        tmp = p.with_name(p.name + ".tmp")
+        tmp.write_text(
             json.dumps(data, ensure_ascii=False, indent=2, default=_json_default),
             encoding="utf-8",
         )
+        os.replace(tmp, p)
 
     # ── 查询 ──────────────────────────────────────────────────────────
     def list(self, *, mode: str | None = None) -> list[dict[str, Any]]:
@@ -118,7 +123,13 @@ class RotationRegistry:
                 raise RotationRegistryError(
                     "hash 冲突：registry 已有同 id 但不同指纹的条目，拒绝覆盖"
                 )
-            # 幂等：同指纹重复收录为无操作
+            if cur.get("mode") != mode:
+                # OCR(medium,20261013)：同 id 不同 mode = 不同设计，拒绝静默错配
+                raise RotationRegistryError(
+                    f"mode 冲突：registry 已有同 id 但 mode={cur.get('mode')!r} 的条目，"
+                    "同一设计换 mode 应派生不同 strategy_id，拒绝混录"
+                )
+            # 幂等：同 id 同 mode 同指纹重复收录为无操作
             return cur
 
         duplicate, variant_of = self.find_near_duplicate(
@@ -169,6 +180,10 @@ class RotationRegistry:
         if strategy_id in data["entries"]:
             del data["entries"][strategy_id]
             data["active"].pop(strategy_id, None)
+            # OCR(low,20261013)：清掉指向被删条目的 variant_of 悬空引用
+            for e in data["entries"].values():
+                if e.get("variant_of") == strategy_id:
+                    e.pop("variant_of", None)
             self._save(data)
             return True
         return False
@@ -182,6 +197,12 @@ class RotationRegistry:
         mode = mode or entry.get("mode")
         if mode is None:
             raise RotationRegistryError("无法解析 mode")
+        if entry.get("mode") != mode:
+            # OCR(medium,20261013)：mode 绑定契约——策略按自身 mode 登记，禁止跨 mode 顶替
+            raise RotationRegistryError(
+                f"strategy_id {strategy_id} 的 mode={entry.get('mode')!r} 与 "
+                f"传入 mode={mode!r} 不一致，拒绝跨 mode 登记"
+            )
         # 同 mode 单激活：其余条目撤销 active
         for sid, e in data["entries"].items():
             if e.get("mode") == mode and sid != strategy_id:
@@ -245,4 +266,3 @@ def save_design_json(
             encoding="utf-8",
         )
     return strategy_dir
-

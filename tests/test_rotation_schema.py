@@ -184,3 +184,49 @@ class TestMetaFields:
         assert {"size", "value_growth", "momentum", "market_regime"} == legal["dim"]
         assert {"sign", "quantile", "level"} == legal["threshold_mode"]
 
+
+class TestUntrustedInputGuard:
+    """OCR(high,20261013)：LLM 交付不可信 JSON，白名单判断须兼容不可哈希类型。"""
+
+    def test_unhashable_dim_returns_report_not_raise(self) -> None:
+        d = design()
+        d["state_dimensions"][0]["dim"] = ["size"]
+        rep = validate_design(d)
+        assert not rep.ok
+        assert any("dim 必须" in e for e in rep.errors)
+
+    def test_unhashable_carrier_returns_report_not_raise(self) -> None:
+        d = design()
+        d["state_dimensions"][0]["carrier"] = {"x": 1}
+        rep = validate_design(d)
+        assert not rep.ok
+        assert any("carrier 必须" in e for e in rep.errors)
+
+    def test_unhashable_threshold_mode_returns_report_not_raise(self) -> None:
+        d = design()
+        d["state_dimensions"][0]["threshold_mode"] = ["quantile"]
+        rep = validate_design(d)
+        assert not rep.ok
+        assert any("threshold_mode 必须" in e for e in rep.errors)
+
+    def test_unhashable_quantile_benchmark_returns_report_not_raise(self) -> None:
+        d = design()
+        d["quantile_benchmark"] = ["expanding"]
+        rep = validate_design(d)
+        assert not rep.ok
+        assert any("quantile_benchmark" in e for e in rep.errors)
+
+    def test_non_integer_version_rejected(self) -> None:
+        rep = validate_design(design(version=1.5))
+        assert not rep.ok
+        assert any("version" in e for e in rep.errors)
+
+    def test_non_number_level_threshold_rejected(self) -> None:
+        d = design()
+        d["state_dimensions"][0] = {
+            "dim": "market_regime", "carrier": "margin_chg", "window_days": 60,
+            "threshold_mode": "level", "params": {"threshold": "abc"},
+        }
+        rep = validate_design(d)
+        assert not rep.ok
+        assert any("threshold" in e for e in rep.errors)
