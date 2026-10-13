@@ -165,6 +165,25 @@ class TestRotationStatePolicyValidation:
         with pytest.raises(ValueError):
             normalize_research_spec({"rotation_policy": {"cost_bps": v}})
 
+    @pytest.mark.parametrize("key", [
+        "style_lookback_days", "min_state_days", "max_test_submissions",
+        "max_strategy_submissions", "cost_bps",
+    ])
+    def test_fractional_integer_key_rejected_no_truncation(self, key: str) -> None:
+        # OCR(low,20261013)：整数语义键（天/次/bp）小数入参须 fail-fast，
+        # 禁止 int() 静默截断——cost_bps=0.5 若变成 0 会把"0.5bp 成本"
+        # 悄悄改成"零成本回测"，与配置中心三件套"越界被拒"纪律相悖。
+        with pytest.raises(ValueError):
+            normalize_research_spec({"rotation_policy": {key: 0.5}})
+
+    def test_empty_dims_rejected(self) -> None:
+        with pytest.raises(ValueError):
+            normalize_research_spec({"rotation_policy": {"dims": []}})
+
+    def test_dims_deduplicated_preserving_order(self) -> None:
+        spec = normalize_research_spec({"rotation_policy": {"dims": ["size", "size", "momentum"]}})
+        assert spec["rotation_policy"]["dims"] == ["size", "momentum"]
+
     @pytest.mark.parametrize("v", [1, "yes", None])
     def test_report_state_metrics_non_bool_rejected(self, v) -> None:  # noqa: ANN001
         with pytest.raises(ValueError):

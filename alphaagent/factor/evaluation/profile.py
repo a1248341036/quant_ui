@@ -185,16 +185,20 @@ def resolve_profiles(spec: dict[str, Any] | None = None) -> dict[str, Evaluation
         raw_defaults[profile_id] = {**base, **copy.deepcopy(override), "profile_id": profile_id}
 
     # ── 行业/风格轮动 P1 诊断 metrics（2026-10-12）──────────────────────────
-    # rotation_policy.enabled + report_industry_metrics 同时为真才挂载；
-    # 只追加不覆盖（用户 override 的 metrics 保留），train_screen_lite 不挂
-    # （吞吐敏感）。这些 metric 只写评估输出，不参与任何准入规则。
+    # rotation_policy.enabled 为前提：report_industry_metrics 挂行业组指标；
+    # report_state_metrics 挂状态条件 IC（独立开关）。只追加不覆盖（用户
+    # override 的 metrics 保留），train_screen_lite 不挂（吞吐敏感）。
+    # 这些 metric 只写评估输出，不参与任何准入规则。
     rotation = (spec or {}).get("rotation_policy") or {}
     if rotation.get("enabled"):
-        _rfield = str(rotation.get("industry_field") or "industry_sw_l1")
+        # state_conditional_ic 只消费 canonical style_state 列 + min_cover，
+        # 不读 field/days；industry_field/days 仅行业组指标消费，故只在
+        # report_industry_metrics 分支赋值，避免条件性死代码。
         _rcover = int(rotation.get("min_industry_cover") or 15)
-        _rdays = int(rotation.get("min_industry_days") or 20)
         _rotation_metrics: list[dict[str, Any]] = []
         if rotation.get("report_industry_metrics"):
+            _rfield = str(rotation.get("industry_field") or "industry_sw_l1")
+            _rdays = int(rotation.get("min_industry_days") or 20)
             _rotation_metrics += [
                 {"plugin": "industry_within_rank_ic", "params": {"field": _rfield, "min_cover": _rcover}},
                 # exposure_r2 不做 min_cover 过滤（暴露分解需计入全部股票，见插件 docstring）

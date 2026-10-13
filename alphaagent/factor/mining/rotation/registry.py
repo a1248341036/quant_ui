@@ -64,12 +64,16 @@ class RotationRegistry:
     def _save(self, data: dict[str, Any]) -> None:
         # OCR(low,20261013)：registry.json 是真源，改原子写防截断（临时文件 + replace）
         p = self._path()
-        tmp = p.with_name(p.name + ".tmp")
-        tmp.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2, default=_json_default),
-            encoding="utf-8",
-        )
-        os.replace(tmp, p)
+        tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
+        try:
+            tmp.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2, default=_json_default),
+                encoding="utf-8",
+            )
+            os.replace(tmp, p)
+        finally:
+            if tmp.exists():
+                tmp.unlink(missing_ok=True)
 
     # ── 查询 ──────────────────────────────────────────────────────────
     def list(self, *, mode: str | None = None) -> list[dict[str, Any]]:

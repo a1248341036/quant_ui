@@ -9,6 +9,7 @@ carrier 数据体检 / mode 因子族校验 / 最坏换手预门禁属于编译�
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -80,7 +81,14 @@ def _format_legal(legal: dict[str, set[str]]) -> str:
 
 
 def _is_number(v: Any) -> bool:
-    return isinstance(v, (int, float)) and not isinstance(v, bool)
+    # LLM 产出的设计 JSON 可能含 NaN/Infinity 字面量（json.loads 默认接受），
+    # 收紧为"有限实数"：避免下游 int()/比较抛异常，突破"收集 errors 不抛"契约。
+    if not isinstance(v, (int, float)) or isinstance(v, bool):
+        return False
+    try:
+        return math.isfinite(float(v))
+    except (ValueError, OverflowError):
+        return False
 
 
 def _in_range(v: float, lo: float, hi: float) -> bool:

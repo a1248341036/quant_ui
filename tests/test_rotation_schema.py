@@ -221,6 +221,29 @@ class TestUntrustedInputGuard:
         assert not rep.ok
         assert any("version" in e for e in rep.errors)
 
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+    def test_non_finite_version_returns_report_not_raise(self, bad: float) -> None:
+        # json.loads 默认接受 NaN/Infinity 字面量：非有限数必须进报错集合而非抛异常，
+        # 否则"收集 errors 不抛"契约被击穿，LLM 拿不到合法全集无法自纠。
+        rep = validate_design(design(version=bad))
+        assert not rep.ok
+        assert any("version" in e for e in rep.errors)
+
+    @pytest.mark.parametrize(
+        "dim_cfg",
+        [
+            {"dim": "size", "carrier": "style_factor", "window_days": 120,
+             "threshold_mode": "quantile", "params": {"q": float("nan")}},
+            {"dim": "market_regime", "carrier": "margin_chg", "window_days": 60,
+             "threshold_mode": "level", "params": {"threshold": float("inf")}},
+        ],
+    )
+    def test_non_finite_numeric_params_returns_report_not_raise(self, dim_cfg) -> None:  # noqa: ANN001
+        d = design()
+        d["state_dimensions"][0] = dim_cfg
+        rep = validate_design(d)
+        assert not rep.ok
+
     def test_non_number_level_threshold_rejected(self) -> None:
         d = design()
         d["state_dimensions"][0] = {

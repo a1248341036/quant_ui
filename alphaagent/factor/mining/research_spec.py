@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -539,6 +540,19 @@ def _string_list(value: Any, name: str) -> list[str]:
     return [item.strip() for item in value]
 
 
+def _int_bounded_number(value: Any, name: str, lower: float, upper: float) -> int:
+    """整数语义键（天/次/bp）：小数先 fail-fast，避免 int() 静默截断漂移口径。"""
+    if (isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or float(value) != int(float(value))
+            or not lower <= float(value) <= upper):
+        raise ValueError(
+            f"research_spec.{name}_must_be_integer_between_{lower}_and_{upper}"
+        )
+    return int(value)
+
+
 def label_hold_days(label_col: Any) -> int:
     """label 列名 → 名义持有期（交易日）。口径与 engine/submit 侧一致（无数字视为 1d）。"""
     digits = "".join(ch for ch in str(label_col or "") if ch.isdigit())
@@ -1038,23 +1052,25 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
     )
     # ── rotation_policy：状态层/裁决纪律键（Phase 1，默认全关不改既有行为）──
     _ROTATION_DIM_WHITELIST = {"size", "value_growth", "momentum", "market_regime"}
-    rotation["dims"] = _string_list(
+    rotation["dims"] = list(dict.fromkeys(_string_list(
         rotation.get("dims", ["size", "value_growth"]), "rotation_policy.dims"
-    )
+    )))
+    if not rotation["dims"]:
+        raise ValueError("rotation_policy.dims 不能为空：至少需要一个 canonical 维度")
     _unknown_dims = set(rotation["dims"]) - _ROTATION_DIM_WHITELIST
     if _unknown_dims:
         raise ValueError(
             "rotation_policy.dims 含未知状态维度: "
             f"{','.join(sorted(_unknown_dims))}; 合法: {sorted(_ROTATION_DIM_WHITELIST)}"
         )
-    rotation["style_lookback_days"] = int(_bounded_number(
+    rotation["style_lookback_days"] = _int_bounded_number(
         rotation.get("style_lookback_days", 120),
         "rotation_policy.style_lookback_days", 20, 500,
-    ))
-    rotation["min_state_days"] = int(_bounded_number(
+    )
+    rotation["min_state_days"] = _int_bounded_number(
         rotation.get("min_state_days", 20),
         "rotation_policy.min_state_days", 5, 500,
-    ))
+    )
     rotation["boost_cap"] = float(_bounded_number(
         rotation.get("boost_cap", 1.25),
         "rotation_policy.boost_cap", 1.0, 2.0,
@@ -1075,18 +1091,18 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
         rotation.get("strategy_dir", "artifacts/alphaagent/rotation_strategies")
         or "artifacts/alphaagent/rotation_strategies"
     )
-    rotation["max_test_submissions"] = int(_bounded_number(
+    rotation["max_test_submissions"] = _int_bounded_number(
         rotation.get("max_test_submissions", 2),
         "rotation_policy.max_test_submissions", 1, 10,
-    ))
-    rotation["max_strategy_submissions"] = int(_bounded_number(
+    )
+    rotation["max_strategy_submissions"] = _int_bounded_number(
         rotation.get("max_strategy_submissions", 10),
         "rotation_policy.max_strategy_submissions", 1, 100,
-    ))
-    rotation["cost_bps"] = int(_bounded_number(
+    )
+    rotation["cost_bps"] = _int_bounded_number(
         rotation.get("cost_bps", 20),
         "rotation_policy.cost_bps", 0, 500,
-    ))
+    )
     rotation["report_state_metrics"] = _require_bool(
         rotation.get("report_state_metrics", True),
         "rotation_policy.report_state_metrics",
