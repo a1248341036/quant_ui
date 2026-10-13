@@ -54,6 +54,7 @@ WHITELIST: dict[str, set[str]] = {
         "CS_BUCKET",               # 逐日截面 qcut（每日一次，非逐 bar）
         "rolling_beta",            # 滚动 OLS lstsq 回落（numba 优先）
         "rolling_residuals",       # 滚动 OLS lstsq 回落（numba 优先）
+        "rolling_rsq",            # TS_RSQ 滚动 R2 lstsq 回落（numba 优先）
     },
 }
 

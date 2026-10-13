@@ -186,6 +186,11 @@ def format_eval_response(
                 "depth_curve_tradable 与 depth_curve 的差 = 可成交性损耗。"
             )
 
+    # Industry/style rotation P1 diagnostics passthrough (see _engine_result_to_legacy).
+    ind = raw.get("industry_rotation")
+    if isinstance(ind, dict) and ind:
+        out["industry_rotation"] = json_safe(ind)
+
     if raw.get("include_detail_tables") or raw.get("by_month") is not None:
         if "by_month" in raw:
             out["by_month"] = json_safe(raw["by_month"])

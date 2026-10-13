@@ -3200,6 +3200,77 @@ def roll_ols(
     )
 
 
+@njit(cache=True)
+def _roll_rsq_numba(
+    y: np.ndarray,
+    x: np.ndarray,
+    window: int,
+) -> np.ndarray:
+    """固定设计向量 x 的滚动 OLS R2（趋势线性度，qlib Alpha158 RSQR）。
+
+    与 ``np.linalg.lstsq`` 逐窗回归的 R2=1-SS_res/SS_tot 数值一致：窗口内有效样本
+    < 2、分母为 0、SS_tot<=0（常数 y）或 R2 非有限时输出 NaN。
+    """
+    n = y.shape[0]
+    out = np.full(n, np.nan, dtype=np.float32)
+    p = int(window)
+    if p < 1 or x.shape[0] < p or n < p:
+        return out
+    for i in range(p - 1, n):
+        lo = i + 1 - p
+        sx = 0.0
+        sxx = 0.0
+        sy = 0.0
+        sxy = 0.0
+        valid = 0
+        for j in range(p):
+            yj = y[lo + j]
+            if yj == yj:
+                xj = x[j]
+                sx += xj
+                sxx += xj * xj
+                sy += yj
+                sxy += xj * yj
+                valid += 1
+        if valid < 2:
+            continue
+        denom = valid * sxx - sx * sx
+        if denom == 0.0 or not (denom == denom):
+            continue
+        beta = (valid * sxy - sx * sy) / denom
+        alpha = (sy - beta * sx) / valid
+        mean_y = sy / valid
+        ss_tot = 0.0
+        ss_res = 0.0
+        for j in range(p):
+            yj = y[lo + j]
+            if yj == yj:
+                xj = x[j]
+                pred = alpha + beta * xj
+                ss_tot += (yj - mean_y) * (yj - mean_y)
+                ss_res += (yj - pred) * (yj - pred)
+        if not (ss_tot > 0.0 and ss_tot == ss_tot):
+            continue
+        rsq = 1.0 - ss_res / ss_tot
+        if rsq == rsq:
+            out[i] = np.float32(rsq)
+    return out
+
+
+def roll_rsq(
+    y: np.ndarray,
+    x: np.ndarray,
+    window: int,
+) -> np.ndarray:
+    """固定 x 滚动 OLS 拟合优度 R2。"""
+    return _roll_rsq_numba(
+        np.asarray(y, dtype=np.float64),
+        np.asarray(x, dtype=np.float64),
+        int(window),
+    )
+
+
+
 # =============================================================================
 # 按品种边界并行层（boundaries + prange）
 #

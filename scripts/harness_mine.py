@@ -37,6 +37,7 @@ from alphaagent.factor.mining.eval.schemas import (  # noqa: E402
     SessionCreateRequest,
 )
 from alphaagent.factor.mining.research_spec import effective_research_spec  # noqa: E402
+from alphaagent.factor.evaluation.profile import resolve_profiles  # noqa: E402
 from alphaagent.factor.mining.service import StockEvalService  # noqa: E402
 
 # 正交性检查依赖（与 agentscope 链路 _orthogonality_check 同源，2026-10-09 前移到挖掘预筛）
@@ -95,6 +96,8 @@ def _extract(res: dict) -> dict:
         "turnover_daily": res.get("avg_daily_side_turnover"),
         "turnover_rebalance": res.get("avg_rebalance_side_turnover"),
         "n_days": s.get("n_days"),
+        # Rotation P1 industry diagnostics (top-level passthrough, see eval/response.py)
+        "industry_rotation": res.get("industry_rotation"),
     }
 
 
@@ -309,7 +312,8 @@ def main() -> int:
           f"autocorr>={c.candidate.min_cs_autocorr} turnover<={c.turnover_gate_limit} (freq={c.engine_gate.freq})",
           flush=True)
 
-    svc = StockEvalService(max_parallel_eval=1)
+    svc = StockEvalService(max_parallel_eval=1,
+                           profiles=resolve_profiles(effective_research_spec(args.mode)))
     t0 = time.perf_counter()
     resp = svc.create_session(SessionCreateRequest(
         panel_path=str(args.panel), label_col=label, include_fundamentals=args.fundamentals,
@@ -368,11 +372,22 @@ def main() -> int:
                     if ortho.get("similar_factors"):
                         top = ortho["similar_factors"][0]
                         ortho_str += f"({top['factor_id']}:{top['corr']})"
+            rot_str = ""
+            rot = got.get("industry_rotation") or {}
+            if rot:
+                _w = rot.get("industry_within_rank_ic") or {}
+                _e = rot.get("industry_exposure_r2") or {}
+                _d = rot.get("industry_ic_dispersion") or {}
+                def _r3(x):
+                    return None if x is None else round(float(x), 4)
+                rot_str = (f" indIC={_r3(_w.get('within_rank_ic'))}"
+                           f" expR2={_r3(_e.get('exposure_r2'))}"
+                           f" disp={_r3(_d.get('dispersion_std'))}")
             print(f"  [{i:2d}/{len(factors)}] {name:34s} {'PASS' if not fails else 'fail':4s} "
                   f"ic={got.get('ic')} icir={got.get('icir')} cov={got.get('coverage')} "
                   f"ac={got.get('cs_autocorr')} turn={got.get('turnover_rebalance')} "
                   f"{rows[-1]['ms']}ms{'; '.join([''] + fails) if fails else ''} {err or ''}"
-                  f"{ortho_str}", flush=True)
+                  f"{ortho_str}{rot_str}", flush=True)
             _flush()
 
         if args.val:
