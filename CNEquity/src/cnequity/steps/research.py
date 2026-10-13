@@ -63,7 +63,12 @@ def _validate_institutional_holdings_snapshot(df):
     seen_periods = counts["report_period"].to_list()
     # Newest quarter may still be sparse while its disclosure window is in
     # progress; older quarters must stay complete so cutoff responses fail.
-    if len(seen_periods) >= 2:
+    # Exempt the newest observed period unconditionally (not only when >=2
+    # periods are seen): early in a disclosure window the source legitimately
+    # returns ONLY the current sparse quarter (e.g. 2026Q3=13 on 10-12), and the
+    # old len()>=2 gate made such a fresh day fail forever with a hole that
+    # could never be replayed. Sparse older quarters still fail.
+    if seen_periods:
         counts = counts.filter(pl.col("report_period") != max(seen_periods))
     counts = counts.filter(pl.col("_holding_rows") < _MIN_INSTITUTIONAL_HOLDING_ROWS_PER_PERIOD)
     if not counts.is_empty():

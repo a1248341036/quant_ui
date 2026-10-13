@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import polars as pl
@@ -222,45 +223,84 @@ def test_strict_eastmoney_failure_does_not_return_partial_success():
             )
 
 
-def test_strict_daily_fetch_rejects_partial_contract_set(monkeypatch):
+def _partial_contract_fixture(monkeypatch, only_row=True):
+    """Sina returns only the AU0 row (AG0 missing) for the requested day."""
     contracts = (
         ("AU0.SHF", "113.AUM", "沪金主连", "SHF"),
         ("AG0.SHF", "113.AGM", "沪银主连", "SHF"),
     )
+    rows = [
+        {
+            "symbol": "AU0.SHF",
+            "name": "沪金主连",
+            "exchange": "SHF",
+            "open": 900.0,
+            "high": 910.0,
+            "low": 895.0,
+            "close": 905.0,
+            "volume": 1000,
+            "amount": None,
+            "open_interest": 50.0,
+            "source": "sina",
+        }
+    ]
 
     def fake_sina(start, end, *, contracts=None, config=None, **kwargs):
-        return pl.DataFrame(
-            [
-                {
-                    "symbol": "AU0.SHF",
-                    "name": "沪金主连",
-                    "exchange": "SHF",
-                    "trade_date": start,
-                    "open": 900.0,
-                    "high": 910.0,
-                    "low": 895.0,
-                    "close": 905.0,
-                    "volume": 1000,
-                    "amount": None,
-                    "open_interest": 50.0,
-                    "source": "sina",
-                }
-            ]
-        )
+        df = pl.DataFrame(rows)
+        if only_row:
+            df = df.with_columns(pl.lit(start, dtype=pl.Date).alias("trade_date"))
+        return df
 
     monkeypatch.setattr(
         "cnequity.adapters.sina.domestic_futures.fetch_domestic_commodity_bars_range",
         fake_sina,
     )
+    return contracts
 
+
+def test_daily_partial_contract_set_is_tolerated(monkeypatch):
+    """Daily incremental: a single-day missing-contract set must NOT fail the
+    group. The partial day is returned (AS0... AU0 kept), the missing contract is
+    reported via missing_out so the step can raise a warning."""
+    contracts = _partial_contract_fixture(monkeypatch)
+
+    missing_out: list = []
+    out = fetch_commodity_bars_range(
+        date(2026, 7, 21),
+        date(2026, 7, 21),
+        contracts=contracts,
+        config=_sina_enabled_config(),
+        include_offshore=False,
+        strict=True,
+        missing_out=missing_out,
+    )
+    assert out["symbol"].to_list() == ["AU0.SHF"]
+    assert missing_out == ["AG0.SHF"]
+
+
+def test_backfill_single_day_keeps_strict_contract_check(monkeypatch):
+    """Explicit single-day backfill (config._backfill) is still strict: a missing
+    contract is a real hole there and must fail loudly."""
+    contracts = _partial_contract_fixture(monkeypatch)
+    cfg = _sina_enabled_config()
+    cfg._backfill = True
     with pytest.raises(RuntimeError, match="missing 1 domestic contract.*AG0.SHF"):
         fetch_commodity_bars_range(
             date(2026, 7, 21),
             date(2026, 7, 21),
             contracts=contracts,
+            config=cfg,
             include_offshore=False,
             strict=True,
         )
+
+
+def _sina_enabled_config():
+    return SimpleNamespace(
+        sources={"sina": True, "eastmoney": False},
+        _commodity_via_eastmoney=False,
+        _backfill=False,
+    )
 
 
 def test_dataset_count_includes_commodity():

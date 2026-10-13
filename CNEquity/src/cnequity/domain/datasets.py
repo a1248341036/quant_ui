@@ -179,6 +179,13 @@ class DatasetSpec:
     # period boundary.  Step functions call ``should_fetch()`` to check.
     cadence: Cadence = "daily"
     required: bool = True
+    # Whether an ingest failure for this dataset must mark the whole run failed.
+    # Core gate datasets (universe/calendar/status/bars) feed every downstream
+    # consumer, so losing one is a failed day. Auxiliary reference datasets
+    # (fundamentals/capital/research/macro/signals) get a retryable warning
+    # instead: the run stays "warning", their batch stays "failed" for retry /
+    # stale sweep, and one hiccup no longer red-flags the whole group.
+    run_critical: bool = False
     history_horizon_days: int | None = None
     history_floor_date: date | None = None
     source_retired_date: date | None = None
@@ -286,6 +293,7 @@ _SPECS = [
         partition_col=None,
         watermark=False,
         backfill_source="baostock",
+        run_critical=True,
         description="A股全量标的清单（含退市）",
     ),
     DatasetSpec(
@@ -295,6 +303,7 @@ _SPECS = [
         tier="L0",
         partition_col="trade_date",
         partition_granularity="year",
+        run_critical=True,
         description="交易日历",
     ),
     DatasetSpec(
@@ -310,6 +319,7 @@ _SPECS = [
         # sessions when the watermark falls behind.
         fetch_semantics="snapshot",
         backfill_source="baostock",
+        run_critical=True,
         description="停复牌/ST状态",
     ),
     # L1 bars
@@ -322,6 +332,7 @@ _SPECS = [
         coverage_mode="session_dense",
         compactable=True,
         adapter_name="tushare_wide",
+        run_critical=True,
         description="日K线（开高低收量额）",
     ),
     DatasetSpec(
@@ -332,6 +343,7 @@ _SPECS = [
         partition_col="trade_date",
         partition_granularity="year",
         coverage_mode="session_dense",
+        run_critical=True,
         description="指数日K线",
     ),
     # 1-minute bars. Day partitions: ~240 bars × the configured scope, which is
@@ -470,6 +482,7 @@ _SPECS = [
         tier="L2",
         partition_col="ex_date",
         partition_granularity="year",
+        run_critical=True,
         description="除权除息/送转/配股",
     ),
     # 股本变迁 / 权息资料 — the raw event log behind corporate_actions: every

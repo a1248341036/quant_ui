@@ -170,6 +170,7 @@ def fetch_commodity_bars_range(
     contracts: tuple[tuple[str, str, str, str], ...] | None = None,
     include_offshore: bool = True,
     strict: bool = False,
+    missing_out: list | None = None,
 ) -> pl.DataFrame:
     """Fetch continuous-contract daily OHLC for [*start*, *end*] (inclusive).
 
@@ -278,9 +279,24 @@ def fetch_commodity_bars_range(
         )
         missing = sorted(expected - observed)
         if missing:
-            raise RuntimeError(
-                f"commodity_bars missing {len(missing)} domestic contract(s) on "
-                f"{start.isoformat()}: {', '.join(missing[:8])}"
+            # 单日增量偶发缺合约（实测 AG0/CU0/LC0/TA0 等每天不同集合不在当天返回）：
+            # 不 raise、不回滚整组 —— 保留已拿到的合约继续写，缺失清单交给 step 记
+            # warning（failed_contracts），由 retry / stale 再补。历史回填或显式单日
+            # backfill（config._backfill）保持严格，缺失视为真缺口直接失败。
+            if config is not None and getattr(config, "_backfill", False):
+                raise RuntimeError(
+                    f"commodity_bars missing {len(missing)} domestic contract(s) on "
+                    f"{start.isoformat()}: {', '.join(missing[:8])}"
+                )
+            if missing_out is not None:
+                missing_out[:] = missing
+            shown = ", ".join(missing[:8]) + ("..." if len(missing) > 8 else "")
+            logger.warning(
+                "commodity_bars: missing %d domestic contract(s) on %s (%s); "
+                "continuing with partial day",
+                len(missing),
+                start.isoformat(),
+                shown,
             )
 
     offshore = pl.DataFrame()
@@ -307,15 +323,23 @@ def fetch_commodity_bars(
     *,
     config: Config | None = None,
     strict: bool = False,
+    missing_out: list | None = None,
 ) -> pl.DataFrame:
     """Daily / backfill entrypoint.
 
     - Normal incremental: bars for *trade_date* only.
     - ``config._backfill``: full history from ``_backfill_start`` (default 2020-01-01)
       through ``_backfill_end`` or *trade_date*.
+
+    ``missing_out`` (optional) receives the single-day missing contract list so a
+    partial day can be surfaced as a warning instead of silently succeeding.
     """
     if config is not None and getattr(config, "_backfill", False):
         start = getattr(config, "_backfill_start", None) or DEFAULT_BACKFILL_START
         end = getattr(config, "_backfill_end", None) or trade_date
-        return fetch_commodity_bars_range(start, end, config=config, strict=strict)
-    return fetch_commodity_bars_range(trade_date, trade_date, config=config, strict=strict)
+        return fetch_commodity_bars_range(
+            start, end, config=config, strict=strict, missing_out=missing_out
+        )
+    return fetch_commodity_bars_range(
+        trade_date, trade_date, config=config, strict=strict, missing_out=missing_out
+    )

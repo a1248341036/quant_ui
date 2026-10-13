@@ -39,8 +39,13 @@ import polars as pl
 
 from cnequity.config import Config
 from cnequity.domain.datasets import should_fetch
-from cnequity.domain.schemas import PRIMARY_KEYS, data_version_for, with_provenance
-from cnequity.external.tushare_fetch import TUSHARE_PAGE_LIMIT, fetch_range_paged
+from cnequity.domain.schemas import REPORTRC_SCHEMA, PRIMARY_KEYS, data_version_for, with_provenance
+from cnequity.external.tushare_fetch import (
+    TUSHARE_MAX_PAGES_PER_WINDOW,
+    TUSHARE_PAGE_LIMIT,
+    _fetch_with_retry,
+    fetch_range_paged,
+)
 from cnequity.orchestrator.registry import register_step
 from cnequity.storage import StagingWriter
 from cnequity.storage.state import StateStore
@@ -158,6 +163,92 @@ def _fetch_range_paged(
     )
 
 
+# report_rc 专用区间拉取 ──────────────────────────────────────────────
+# report_rc 量级远大于 namechange/stock_st：一年原始行 >10 万，走公共 fetch_range_paged
+# （按年切窗、100 页熔断）会截断；且中间件遇空值返回 ""，max_price 等数值列会在
+# Float64/String 间漂移，跨页 vstack 直接报 SchemaError。故单独实现：按 <=92 天切窗
+# （自然季尺度）+ 每页对数值列 cast Float64 后再 concat。
+_REPORT_RC_WINDOW_DAYS = 92
+
+# 页级数值 cast 集 = 策选 schema 的全部 Float64/Int 列（op_rt/op_pr/np/rd/ev_ebitda 等
+# 都在列中，手写清单漏过它们导致跨页 String/Float64 漂移、concat 报 SchemaError）
+# + 中间件返回但策选 schema 不保留的数值列（avg_price 等）。
+_REPORT_RC_NUMERIC_COLS = tuple(
+    name
+    for name, dtype in REPORTRC_SCHEMA.items()
+    if dtype in (pl.Float64, pl.Int64, pl.Int32)
+) + (
+    "avg_price", "net_profit", "forecast_net_profit", "forecast_inc_rate",
+    "relate_roe", "profit_dedt", "pre_profit",
+)
+
+
+def _report_rc_windows(start: date, end: date) -> list[tuple[date, date]]:
+    """按 <=92 天切窗（自然季尺度）；一年约 11 万原始行，年窗会撞 offset 上限/100 页熔断。"""
+    if (end - start).days <= _REPORT_RC_WINDOW_DAYS:
+        return [(start, end)]
+    windows: list[tuple[date, date]] = []
+    cursor = start
+    while cursor <= end:
+        boundary = min(cursor + timedelta(days=_REPORT_RC_WINDOW_DAYS), end)
+        windows.append((cursor, boundary))
+        cursor = boundary + timedelta(days=1)
+    return windows
+
+
+def _coerce_report_rc_page(page: pl.DataFrame) -> pl.DataFrame:
+    """数值列统一 cast Float64（strict=False，'' → null）；其余列原样保留。"""
+    exprs = []
+    for name in page.columns:
+        if name in _REPORT_RC_NUMERIC_COLS:
+            exprs.append(pl.col(name).cast(pl.Float64, strict=False).alias(name))
+        else:
+            exprs.append(pl.col(name))
+    return page.select(exprs)
+
+
+def _fetch_report_rc_range(
+    pro,
+    api: str,
+    *,
+    interval: float,
+    start: date,
+    end: date,
+) -> pl.DataFrame:
+    """report_rc 全市场日期区间：季度切窗 + 页级数值 cast + offset 翻页。"""
+    frames: list[pl.DataFrame] = []
+    for w_start, w_end in _report_rc_windows(start, end):
+        offset = 0
+        empty_streak = 0
+        for _ in range(TUSHARE_MAX_PAGES_PER_WINDOW):
+            page = _fetch_with_retry(
+                pro,
+                api,
+                interval=interval,
+                start_date=_ts_date(w_start),
+                end_date=_ts_date(w_end),
+                offset=offset,
+                limit=TUSHARE_PAGE_LIMIT,
+            )
+            if page is None or page.is_empty():
+                empty_streak += 1
+                if empty_streak >= 2:
+                    break
+                continue
+            empty_streak = 0
+            frames.append(_coerce_report_rc_page(page))
+            offset += TUSHARE_PAGE_LIMIT
+        else:
+            logger.warning(
+                "%s: 窗口 %s..%s 分页达上限 %d 页仍未取完，结果可能不完整",
+                api,
+                w_start.isoformat(),
+                w_end.isoformat(),
+                TUSHARE_MAX_PAGES_PER_WINDOW,
+            )
+    return pl.concat(frames) if frames else pl.DataFrame()
+
+
 # ─── Strategy 1: Full-market ann_date batch ───────────────────────────
 
 
@@ -227,6 +318,7 @@ def _make_date_range_step(
     api: str,
     depends_on: list[str],
     group: str,
+    fetch_range: Callable | None = None,
 ) -> Callable:
     """Fetch all rows in a date window via ``pro.api(start_date=..., end_date=...)``.
 
@@ -245,7 +337,10 @@ def _make_date_range_step(
 
         state = StateStore(config.meta_root)
         watermark = state.get_date(dataset)
-        if not should_fetch(dataset, watermark, trade_date):
+        # 回填（cne backfill --start/--end）是显式区间覆盖，必须绕过 cadence skip：
+        # report_rc(cadence=quarterly) 的 watermark 常与 trade_date 同季度，被 skip
+        # 后历史拉不进来（快照只留最新分区，研报类 ac_* 覆盖历史近乎全 NaN）。
+        if not getattr(config, "_backfill", False) and not should_fetch(dataset, watermark, trade_date):
             logger.info(
                 "%s: cadence skip (watermark %s in same period as trade_date %s)",
                 dataset,
@@ -270,7 +365,9 @@ def _make_date_range_step(
 
         pro = _get_pro(config)
         interval = config.external_tushare_wide_interval
-        raw = _fetch_range_paged(pro, api, interval=interval, start=start, end=end)
+        raw = (fetch_range or _fetch_range_paged)(
+            pro, api, interval=interval, start=start, end=end
+        )
 
         combined = raw if raw is not None else pl.DataFrame()
         if not combined.is_empty():
@@ -551,51 +648,14 @@ def step_shareholder_counts(config: Config, trade_date: date, run_id: str, conte
     return result
 
 
-# ─── Snapshot step (report_rc) ────────────────────────────────────────
-
-@register_step("report_rc", group="fundamentals", depends_on=["instruments"], parallelizable=False)
-def step_report_rc(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
-    """Fetch report_rc (一致预期研究报告) — single full-market API call."""
-    if not config.external_tushare_wide_token and not os.environ.get("TUSHARE_TOKEN"):
-        return {"status": "warning", "dataset": "report_rc", "error": "tushare_token not configured"}
-
-    state = StateStore(config.meta_root)
-    watermark = state.get_date("report_rc")
-    if not should_fetch("report_rc", watermark, trade_date):
-        logger.info(
-            "report_rc: cadence skip (watermark %s in same period as trade_date %s)",
-            watermark.isoformat() if watermark else "None",
-            trade_date.isoformat(),
-        )
-        state.set_date("report_rc", trade_date)
-        return {"rows_read": 0, "rows_written": 0, "status": "success"}
-
-    from cnequity.external.tushare_fetch import _fetch_with_retry
-
-    pro = _get_pro(config)
-    interval = config.external_tushare_wide_interval
-
-    logger.info("report_rc: fetching full-market snapshot via Tushare")
-    raw = _fetch_with_retry(pro, "report_rc", interval=interval)
-    if raw.is_empty():
-        logger.warning("report_rc: no data returned")
-        return {"rows_read": 0, "rows_written": 0}
-
-    if "ts_code" in raw.columns:
-        raw = raw.rename({"ts_code": "symbol"})
-    if "id" in raw.columns:
-        raw = raw.drop("id")
-
-    raw = _norm_dates(raw)
-    raw = raw.unique(
-        subset=["symbol", "report_date", "org_name", "report_title"],
-        keep="last",
-    )
-    raw = with_provenance(raw, source="tushare", data_version=data_version_for("report_rc"))
-
-    writer = StagingWriter(config.staging_root)
-    writer.write_batch("report_rc", run_id, f"tushare-{trade_date.isoformat()}", raw)
-
-    state.set_date("report_rc", trade_date)
-    logger.info("report_rc: %d rows written to staging, watermark → %s", raw.height, trade_date.isoformat())
-    return {"rows_read": raw.height, "rows_written": raw.height}
+# ─── report_rc（一致预期研报，全市场日期区间回填）────────────────────
+# 历史实现是"单次全市场快照"（pro.report_rc 不传日期，只拉最新 report_date），湖里
+# 永远只有 report_date=2026 一个分区，研报类课题 ac_* 覆盖历史近乎全 NaN。
+# Tushare report_rc 支持 start_date/end_date（按 report_date 过滤），走全市场日期区间；
+# 其年量 >10 万且空值返回 "" 导致数值列类型漂移，故用专用 fetch_range（季度切窗 +
+# 页级数值 cast）；backfill 绕过 cadence（同季度 watermark 不再拦截），
+# `cne backfill report_rc --start/--end` 即可回填历史。
+_make_date_range_step(
+    "report_rc", api="report_rc", depends_on=["instruments"], group="fundamentals",
+    fetch_range=_fetch_report_rc_range,
+)

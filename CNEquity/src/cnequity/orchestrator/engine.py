@@ -61,6 +61,26 @@ def _has_partial_failures(result: dict[str, Any]) -> bool:
     return False
 
 
+def _run_critical_step(name: str) -> bool:
+    """Whether this step failing must fail the whole run.
+
+    Non-dataset bookkeeping steps (compact / derive_* / audit) are critical
+    by default; dataset steps consult ``DatasetSpec.run_critical`` so an
+    auxiliary reference dataset (fundamentals/capital/research/macro/signals)
+    that fails downgrades the run to warning instead of red-flagging the whole
+    group. The failed batch stays failed, so retry / the stale sweep still
+    pick the hole up even though the day is not marked broken.
+    """
+    if not name:
+        return True
+    from cnequity.domain.datasets import DATASETS
+
+    spec = DATASETS.get(name)
+    if spec is not None:
+        return bool(getattr(spec, "run_critical", False))
+    return True
+
+
 class JobEngine:
     """Wave-based ingestion orchestrator."""
 
@@ -85,10 +105,6 @@ class JobEngine:
 
         if run_id and retry_failed_only:
             return self._retry_run(run_id, trade_date)
-
-        # Close crashed peers before we start — otherwise cne status / compact
-        # keep seeing ghosts, and concurrent baostock jobs pile onto a blacklist.
-        self._reconcile_orphans()
 
         if not backfill and job_name != "init" and not is_trading_day(self.config, trade_date):
             logger.info(
@@ -124,6 +140,12 @@ class JobEngine:
             }
         lock_name = DAILY_INGESTION_LOCK if job_name.startswith("daily") else None
         with self._optional_job_lock(lock_name):
+            # Close crashed peers only while holding the global daily lock: a
+            # scheduled next-group firing while the previous group overruns must
+            # not inspect (or falsely orphan) a still-alive peer. A crashed run
+            # releases its file lock on process death, so it is caught the next
+            # time any group runs.
+            self._reconcile_orphans()
             if not run_id:
                 run_id = self.manifest.start_run(job_name, metadata)
             else:
@@ -263,8 +285,15 @@ class JobEngine:
             total_read += result.get("rows_read", 0)
             total_written += result.get("rows_written", 0)
             step_status = result.get("status", "success")
-            had_error = had_error or step_status == "failed"
-            had_warning = had_warning or step_status == "warning"
+            if step_status == "failed":
+                if _run_critical_step(result.get("dataset") or result.get("step") or ""):
+                    had_error = True
+                else:
+                    # 非关键 dataset 失败不连坐整 run：已写数据保留，run 降级 warning；
+                    # batch 仍为 failed，由 retry / stale sweep 补齐缺口。
+                    had_warning = True
+            else:
+                had_warning = had_warning or step_status == "warning"
             updates = result.get("context_updates")
             if updates:
                 with context_lock:

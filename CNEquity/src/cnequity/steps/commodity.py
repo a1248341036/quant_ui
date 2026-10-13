@@ -36,14 +36,27 @@ def step_commodity_bars(config: Config, trade_date: date, run_id: str, context: 
                 f"commodity_bars: {out_of_bounds} row(s) outside {start.isoformat()}..{end.isoformat()}"
             )
         return write_fetched(config, run_id, "commodity_bars", df, source="sina")
-    return run_incremental_fetched(
+    missing_contracts: list[str] = []
+
+    def _fetch(d: date) -> pl.DataFrame:
+        # 单日缺失合约在 adapter 内降级为部分成功（不 raise）；这里接住缺失清单，
+        # 让 step 以 warning 收尾（failed_contracts 触发 _has_partial_failures），
+        # 已写入合约保留、缺口留给 retry / stale。
+        return fetch_commodity_bars(
+            d, config=config, strict=True, missing_out=missing_contracts
+        )
+
+    result = run_incremental_fetched(
         config,
         trade_date,
         run_id,
         "commodity_bars",
-        lambda d: fetch_commodity_bars(d, config=config, strict=True),
+        _fetch,
         # Row-level ``source`` is set by adapters (eastmoney / sina); this is
         # only the fallback stamp when a frame lacks the column.
         source="eastmoney",
         allow_empty=False,
     )
+    if missing_contracts:
+        result["failed_contracts"] = sorted(set(missing_contracts))
+    return result
