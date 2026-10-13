@@ -381,8 +381,11 @@ def _make_date_range_step(
                     logger.info("%s: 分页去重 %d → %d 行", dataset, before, combined.height)
         result = _finalize_and_write(combined, dataset, run_id, trade_date, config)
 
-        state.set_date(dataset, trade_date)
-        logger.info("%s: watermark → %s", dataset, trade_date.isoformat())
+        # watermark_after: backfill 记为实际拉取终点（_backfill_end）而非当天；
+        # 否则 `cne backfill --end Y`（Y<今天）会把 watermark 推到今天，[Y+1,今天] 永不补。
+        watermark_after = end if getattr(config, "_backfill", False) else trade_date
+        state.set_date(dataset, watermark_after)
+        logger.info("%s: watermark -> %s", dataset, watermark_after.isoformat())
         return result
 
     return step

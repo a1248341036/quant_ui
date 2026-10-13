@@ -57,7 +57,7 @@ def test_report_rc_contract_registered():
     spec = get_dataset("report_rc")
     assert spec.primary_source == "tushare"
     assert spec.partition_col == "report_date"
-    assert spec.cadence == "quarterly"
+    assert spec.cadence == "daily"  # update: daily cadence + daily increments
     assert spec.fetch_semantics == "by_date"  # supports `cne backfill`
 
 
@@ -98,22 +98,50 @@ def test_backfill_bypasses_cadence_skip_and_uses_explicit_window(monkeypatch, cf
     assert calls[0]["end_date"] == "20260101"
 
 
-def test_daily_mode_still_respects_cadence_skip(monkeypatch, cfg):
-    """Non-backfill daily runs still follow quarterly cadence: same-quarter
-    watermark must skip without touching the wire."""
+def test_daily_mode_increments_one_day_from_watermark(monkeypatch, cfg):
+    """Daily cadence: report_rc 做每日增量 —— watermark 昨天时拉
+    [watermark+1, trade_date] 一天窗口，不依赖季度边界（修“每季只抓季首一天”）。"""
     _watermark(cfg, date(2026, 10, 12))
     cfg._backfill = False
-    called = {"n": 0}
+    calls: list[dict] = []
+    pages = [_rc_rows(3), pl.DataFrame(), pl.DataFrame()]
 
-    def fake_range(*a, **k):
-        called["n"] += 1
-        return _rc_rows(3)
+    def fake_fetch(pro, api, interval=0.0, **kw):
+        calls.append(kw)
+        return pages.pop(0)
 
-    monkeypatch.setattr(tw, "_fetch_report_rc_range", fake_range)
+    def fake_finalize(combined, dataset, run_id, trade_date, config):
+        return {"rows_read": combined.height, "rows_written": combined.height}
+
+    monkeypatch.setattr(tw, "_fetch_with_retry", fake_fetch)
+    monkeypatch.setattr(tw, "_finalize_and_write", fake_finalize)
     out = get_step("report_rc").fn(cfg, date(2026, 10, 13), "run-daily", {})
-    assert called["n"] == 0
-    assert out["rows_written"] == 0
-    assert out["status"] == "success"
+    assert len(calls) >= 1
+    assert calls[0]["start_date"] == "20261013"
+    assert calls[0]["end_date"] == "20261013"
+    assert out["rows_written"] == 3
+
+
+def test_backfill_watermark_lands_on_backfill_end(monkeypatch, cfg):
+    """Backfill 结束 watermark 记为 _backfill_end（实际拉取终点），不是当天：
+    否则 --end Y < today 后 [Y+1, today] 永不补。（OCR medium 实锤修复）"""
+    _watermark(cfg, date(2026, 1, 1))
+    cfg._backfill = True
+    cfg._backfill_start = date(2026, 1, 1)
+    cfg._backfill_end = date(2026, 1, 31)
+    pages = [_rc_rows(3), pl.DataFrame(), pl.DataFrame()]
+
+    def fake_fetch(pro, api, interval=0.0, **kw):
+        return pages.pop(0) if pages else pl.DataFrame()
+
+    monkeypatch.setattr(tw, "_fetch_with_retry", fake_fetch)
+
+    def fake_finalize(combined, dataset, run_id, trade_date, config):
+        return {"rows_read": combined.height, "rows_written": combined.height}
+
+    monkeypatch.setattr(tw, "_finalize_and_write", fake_finalize)
+    get_step("report_rc").fn(cfg, date(2026, 10, 13), "run-bf-wm", {})
+    assert StateStore(cfg.meta_root).get_date("report_rc") == date(2026, 1, 31)
 
 
 def test_backfill_dedups_on_primary_keys(monkeypatch, cfg):

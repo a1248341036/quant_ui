@@ -39,12 +39,16 @@ def step_commodity_bars(config: Config, trade_date: date, run_id: str, context: 
     missing_contracts: list[str] = []
 
     def _fetch(d: date) -> pl.DataFrame:
-        # 单日缺失合约在 adapter 内降级为部分成功（不 raise）；这里接住缺失清单，
-        # 让 step 以 warning 收尾（failed_contracts 触发 _has_partial_failures），
-        # 已写入合约保留、缺口留给 retry / stale。
-        return fetch_commodity_bars(
-            d, config=config, strict=True, missing_out=missing_contracts
+        # 单日缺失合约在 adapter 内降级为部分成功（不 raise）；这里用局部列表接住
+        # 每天缺失清单再累积（adapter 的 missing_out 是覆盖式赋值，多日窗口下直接
+        # 复用同一列表会丢前序日期），让 step 以 warning 收尾并带全量 failed_contracts。
+        day_missing: list[str] = []
+        df = fetch_commodity_bars(
+            d, config=config, strict=True, missing_out=day_missing
         )
+        if day_missing:
+            missing_contracts.extend(day_missing)
+        return df
 
     result = run_incremental_fetched(
         config,

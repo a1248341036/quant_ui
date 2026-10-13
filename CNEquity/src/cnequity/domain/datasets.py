@@ -1184,9 +1184,13 @@ _SPECS = [
         partition_col="report_date",
         partition_granularity="year",
         watermark=False,
-        cadence="quarterly",
-        # Quarterly cadence: day-based default tolerance would flag stale all quarter.
-        max_staleness_days=100,
+        # 研报（一致预期）每日发布，用 daily cadence 做每日增量（watermark+1..today，
+        # 每天 1 次短调用），避免旧 snapshot/date-range+quarterly 每季只抓季首一天、
+        # 覆盖整季缺失的问题。历史缺口仍走 `cne backfill`.
+        cadence="daily",
+        # Daily cadence 下 tolerance 收缩到一周：研报源正常每天有数据，连续一周无
+        # 新数据基本可判滞后；保留 100 会掩盖“湖里几个月不更新”的问题。
+        max_staleness_days=7,
         description="业绩报告口径",
     ),
     # L7 sentiment (Tushare curated — fetched by steps/tushare_wide.py)
