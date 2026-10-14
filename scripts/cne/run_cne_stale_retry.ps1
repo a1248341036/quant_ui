@@ -1,9 +1,9 @@
 #Requires -Version 7
 <#
 .SYNOPSIS
-  18:00 晚间 stale 补抓（独立计划任务，避免 16:30 流水线在 17:00 睡眠时
-  丢失的尾部重试）。macro_indicators 等日频序列在 16:30 尚未发布当日值，
-  18:00 时通常已出，此任务把水位推进、消除 STALE。
+  23:00 晚间 stale 补抓（独立计划任务 QuantUIDataStaleRetry，排在
+  21:30 日更流水线之后 1.5 小时）：把流水线收尾时仍滞后/失败的批次再抓
+  一遍，推进水位、消除 STALE；全量已对齐时为 no-op。
 #>
 [CmdletBinding()]
 param()
@@ -32,7 +32,7 @@ Write-Log "==== stale retry start ===="
 Write-Log "stale-only exit=$LASTEXITCODE"
 
 # fund_nav 补抓成功后重建基金面板（fund_bars 数据源），否则 fund_bars 会
-# 持续显示 STALE 直到次日 16:30 refresh_data 才重建。
+# 持续显示 STALE 直到次日 21:30 流水线才重建。
 Write-Log "rebuild fund panel"
 & $Py -c 'import sys; sys.path.insert(0, "D:/Quant/quant_ui"); from core.updater import rebuild_fund_panel; rebuild_fund_panel()' 2>&1 | ForEach-Object { Write-Log $_.ToString() }
 Write-Log "rebuild fund panel exit=$LASTEXITCODE"
