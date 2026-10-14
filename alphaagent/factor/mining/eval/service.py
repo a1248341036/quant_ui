@@ -91,7 +91,12 @@ def _engine_result_to_legacy(raw: dict[str, Any]) -> dict[str, Any]:
     # train_screen/validation 挂载的 3 个行业指标（只披露、不参与准入规则）。
     # 挂在顶层（summary 走 _format_summary 白名单会被滤掉），与 quantile_portfolio
     # 的换手透传同款，供 harness 直驱 / MCP / agentscope 统一读取。
-    _rot_keys = ("industry_within_rank_ic", "industry_exposure_r2", "industry_ic_dispersion")
+    _rot_keys = (
+        "industry_within_rank_ic",
+        "industry_exposure_r2",
+        "industry_ic_dispersion",
+        "state_conditional_ic",
+    )
     _rot = {k: metrics[k] for k in _rot_keys if metrics.get(k) is not None}
     if _rot:
         out["industry_rotation"] = _rot

@@ -98,7 +98,10 @@ _CNE_STATE_FILE = (
 # v7: stock_daily_wide 单位归一化（amount 千元→元、vol 手→股、circ_mv/total_mv
 #     万元→元），vwap 从 1/10 修正为正确元/股口径
 # v8: 新数据面（行业 / 公告事件 / 研报视角 / 财报明细 / 指数成分）+ 宽表涨跌停/上市天数等列
-_CACHE_SCHEMA_VERSION = 10  # v10: 聚焦面板恒载行业列（industry_sw_l1/code/ind_asof_days，plugins/industry.py）；改列即 bump，避免命中缺列旧面板
+# v10: 聚焦面板恒载行业列（industry_sw_l1/code/ind_asof_days，plugins/industry.py）
+# v11: 聚焦面板恒载风格状态列（style_state，plugins/style_state.py，state_conditional_ic
+#      的输入，规格 §3.4.1）；改列即 bump，避免命中缺列旧面板
+_CACHE_SCHEMA_VERSION = 11
 # 缓存文件数上限（全量面板 parquet+arrow ≈ 6GB，聚焦面板 ≈ 0.3-2.6GB）。
 # 小磁盘服务器可用 ALPHA_PANEL_CACHE_MAX_FILES 调小（代价：切换数据面组合时重建）。
 _CACHE_MAX_FILES = max(2, int(os.environ.get("ALPHA_PANEL_CACHE_MAX_FILES", "8") or 8))
@@ -118,6 +121,11 @@ _INDUSTRY_COLUMNS = frozenset({
     "industry_sw_code",
     "ind_asof_days",
 })
+# 风格状态列单真源：state_conditional_ic 只消费面板恒载 canonical style_state
+# （plugins/style_state.py 供给）。同样不属任何数据面（_column_facets 为空），
+# 聚焦裁剪/辅助插件过滤须恒载——否则 2026-09-27 行业列的「不可用字段」会以
+# 「面板缺列 → metric 静默 missing」的形式复现（2026-10-14 整夜轮动 run 根因）。
+_STYLE_COLUMNS = frozenset({"style_state"})
 _ALWAYS_KEEP_COLUMNS = frozenset({
     "open", "high", "low", "close", "amount", "volume", "turnover_rate",
     "adj_close", "adjfactor", "float_cap", "tot_cap", "is_trade", "not_st",
@@ -125,12 +133,12 @@ _ALWAYS_KEEP_COLUMNS = frozenset({
     # industry_members 自 2020-01 起有月度快照）：行业中性化
     # （CS_NEUTRALIZE(f, $industry_sw_l1)）是功能性中立能力，不属于任何数据面，
     # 聚焦裁剪必须保留——旧注释"行业列接入属 P2"已随插件落地失效。
-}) | _INDUSTRY_COLUMNS
+}) | _INDUSTRY_COLUMNS | _STYLE_COLUMNS
 # 聚焦 run 恒载的中立辅助列（与 _ALWAYS_KEEP_COLUMNS 同源，由 _needed_aux_columns
 # 显式放行）。背景：聚焦裁剪按"列属面 ⊆ 允许范围"过滤辅助插件，行业列不属任何面
 # （_column_facets 为空）会被漏掉，而提示词/评估/交付一直声明 $industry_sw_l1 可用
 # ——这正是 2026-09-27 整夜 run 每 run 报 2~6 次「不可用字段」的根因。
-_ALWAYS_WANTED_AUX_COLUMNS = frozenset(_INDUSTRY_COLUMNS)
+_ALWAYS_WANTED_AUX_COLUMNS = frozenset(_INDUSTRY_COLUMNS) | _STYLE_COLUMNS
 # 基本面开关打开时缓存面板必须包含的列族哨兵（每插件一列）。建缓存当天某个
 # 辅助插件加载失败（如 CNE 同步占用 parquet 文件锁）会把缺列面板固化，之后
 # 每次命中都返回残缺面板 → 下游 funda_*/dt_* 因子集体报"不可用字段"。
