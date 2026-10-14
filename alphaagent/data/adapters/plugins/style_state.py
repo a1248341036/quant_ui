@@ -35,18 +35,13 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from alphaagent.data.adapters.cnequity import bse_excluded_prefixes
 from alphaagent.data.adapters.registry import DataSourcePlugin
 from core.risk_model import build_exposures, factor_returns
 from core.rotation.compiler import compile_design
 from core.rotation.style_regime import canonical_design, compute_states
 
 logger = logging.getLogger(__name__)
-
-# 与 cnequity 消费侧一致的北交所前缀（QUANT_EXCLUDE_BSE 默认开启；投资者准入）。
-# 权威 canonical（rotation_phase1_validation，v10 缓存面板）剔除 BSE 后算横截面
-# 风格回归，插件重算必须用同一 universe，否则 value/growth 因子收益漂移导致
-# 状态序列与权威不一致（已实测含 BSE 全量 vs 权威按月一致率 35%~100% 波动）。
-_BSE_PREFIXES = ("92", "83", "87", "43")
 
 # 风格暴露的滚动窗口（天）：与 rotation_phase1_validation --style-window 缺省一致。
 STYLE_WINDOW_DAYS = 20
@@ -70,7 +65,10 @@ _STATE_CODES: dict[str, float] = {
 # 不同数据的聚焦 run（start 各异，facet 签名各自 miss 缓存）会以同一 anchor
 # 重算状态，只重做一次整段截面回归、按各自 [start, end] 广播。只保留最近一
 # 窗口，内存有界（网格降到 category，避免整段 swd 常驻）。
-_STATE_CACHE: dict[tuple[str, str | None], tuple[pd.Series, pd.DataFrame]] = {}
+_STATE_CACHE: dict[
+    tuple[str, str | None, str | None, str | None],
+    tuple[pd.Series, pd.DataFrame],
+] = {}
 
 PLUGIN = DataSourcePlugin(
     name="style_state",
@@ -140,7 +138,7 @@ def _state_from_wide(
     logcap = np.log(np.maximum(float_cap.to_numpy(dtype=float), 1e-9))
     size_proxy = pd.Series(
         np.nanmedian(logcap, axis=1), index=close.index, name="size_proxy"
-    ).pct_change(fill_method=None)
+    ).pct_change()
     if not {"value", "growth"} <= set(style_beta.columns):
         raise ValueError(
             f"style_state: 风格因子收益缺 value/growth（实际: {sorted(style_beta.columns)}）"
@@ -174,13 +172,14 @@ def load(
     eff_start = (start_ts if start_ts is not None and start_ts < anchor_ts
                  else anchor_ts)
     eff_start_str = eff_start.strftime("%Y-%m-%d")
-    key = (eff_start_str, end)
+    key = (eff_start_str, end, cne_root, cne_config)
     cached = _STATE_CACHE.get(key)
     if cached is not None:
         market_state, grid = cached
         logger.info(
-            "style_state adapter: 命中进程内状态重算缓存 (anchor=%s end=%s)",
-            eff_start_str, end,
+            "style_state adapter: 命中进程内状态重算缓存 "
+            "(anchor=%s end=%s cne_root=%s cne_config=%s)",
+            eff_start_str, end, cne_root, cne_config,
         )
     else:
         from .express import load as _exp_load
@@ -199,9 +198,13 @@ def load(
                 f"{sorted({'trade_date', 'ts_code', 'close'} - set(swd.columns))}"
             )
 
-        # 与消费侧 panel 同 universe：剔除北交所（准入口径），保证逐日横截面
-        # 回归的风格因子收益与权威 canonical 计算一致。
-        swd = swd[~swd["ts_code"].astype(str).str.startswith(_BSE_PREFIXES)]
+        # 与消费侧 panel 同 universe：按 QUANT_EXCLUDE_BSE 开关剔除北交所
+        # （前缀集合与开关均为 cnequity 单一真源），否则风格因子收益相对
+        # 权威 canonical（v10 面板剔除 BSE 后回归）漂移 → 状态序列不一致
+        # （已实测含 BSE 全量 vs 权威按月一致率 35%~100% 波动）。
+        _bse = bse_excluded_prefixes()
+        if _bse:
+            swd = swd[~swd["ts_code"].astype(str).str.startswith(_bse)]
 
         def _pivot(df: pd.DataFrame, col: str) -> pd.DataFrame:
             sub = df[["trade_date", "ts_code", col]].drop_duplicates(
@@ -221,9 +224,11 @@ def load(
         market_state = _state_from_wide(
             close, amount, turnover, float_cap, pb, roe
         )
-        grid = swd[["trade_date", "ts_code"]].astype(
-            {"ts_code": "category"}
-        ).copy()
+        # swd 是外部原始宽表，reader 不做 PK 去重：剔重后再做广播网格，
+        # 否则重复 (trade_date, ts_code) 会把下游 panel 行数成倍放大。
+        grid = swd[["trade_date", "ts_code"]].drop_duplicates(
+            ["trade_date", "ts_code"], keep="first"
+        ).astype({"ts_code": "category"}).copy()
         _STATE_CACHE.clear()
         _STATE_CACHE[key] = (market_state, grid)
 
