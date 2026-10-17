@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from alphaagent.factor.mining.research_memory import ResearchMemoryStore  # noqa: E402
+from alphaagent.factor.mining.memory.cold_track import COLD_TRACK_METRIC_KEYS  # noqa: E402
 
 
 def _mode_to_research_mode(mode: str) -> str:
@@ -35,12 +36,9 @@ def _mode_to_research_mode(mode: str) -> str:
     return m or "technical"
 
 
-_COLD_FIELDS = (
-    "resid_ic", "train_resid_ic", "train_resid_icir", "val_resid_icir",
-    "val_resid_rank_ic", "coverage", "crowd_proxy_corr", "crowd_proxy_family",
-    "n_fit_days", "n_controls", "min_val_resid_ic", "max_crowd_proxy_corr",
-    "family_novelty", "train_n_days", "val_n_days",
-)
+# 数值证据键与正式管线单一真源（cold_track.COLD_TRACK_METRIC_KEYS）对齐，
+# 字符串元数据（crowd_proxy_family）单独叠加；新增键自动同步，防第四处漂移（R23 OCR 实锤）。
+_COLD_FIELDS = tuple(sorted(COLD_TRACK_METRIC_KEYS)) + ("crowd_proxy_family",)
 
 
 def _build_cold_tool_row(entry: dict, split: str) -> dict | None:
