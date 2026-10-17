@@ -84,6 +84,23 @@ def run_factor_mining(
         auto_realign_panel=config.auto_realign_panel,
     )
 
+    # 冷门赛道骨架快照（run 启动一次性；enabled=false -> None 零注入）
+    try:
+        from alphaagent.factor.mining.memory.cold_track import build_snapshot_for_run
+
+        _crowd_snap = build_snapshot_for_run(
+            config.research_spec or {},
+            production_registry=registry_path,
+            candidate_registry=factor_categories.candidate_registry_path(research_mode),
+            repo_root=root,
+        )
+    except Exception as exc:  # noqa: BLE001 - 快照失败不阻断 run 启动
+        print(
+            "[cold_track] snapshot build failed (run continues): "
+            f"{type(exc).__name__}: {str(exc)[:160]}"
+        )
+        _crowd_snap = None
+
     tools = FactorEvalTools(
         service,
         session_resp.session_id,
@@ -91,6 +108,8 @@ def run_factor_mining(
         focus_facets=getattr(config, "focus_facets", None),
         cognition_policy=(config.research_spec or {}).get("cognition_policy"),
         operator_policy=(config.research_spec or {}).get("operator_policy"),
+        cold_track_policy=(config.research_spec or {}).get("cold_track") or None,
+        crowd_skeletons=_crowd_snap,
     )
     system_prompt = build_system_prompt(
         include_operator_catalog=include_operator_catalog,

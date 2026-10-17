@@ -136,9 +136,14 @@ def _rebuild_conclusion(name: str, result: dict[str, Any], metrics: dict[str, An
 def _extract_fail_detail(name: str, result: dict[str, Any], error: str) -> str | None:
     """从工具结果中提取结构化失效细节字符串。
 
-    格式: ``stage_one:min_abs_ic; correlation:max_corr=0.62``
+    格式: ``stage_one:min_abs_ic; correlation:max_corr=0.62``；冷门赛道结果直接透传
+    ``cold_track:fail_detail=<label>``。
     """
     parts: list[str] = []
+
+    # 冷门赛道 fail_detail（spec §9 R3）：M4 回填后按 data_gap 定向重放
+    if result.get("cold_track") and result.get("fail_detail"):
+        parts.append(f"cold_track:{result.get('fail_detail')}")
 
     # delivery_check 中的 stage 失败原因
     dc = result.get("delivery_check")
