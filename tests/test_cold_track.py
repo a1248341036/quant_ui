@@ -624,3 +624,30 @@ def test_cold_track_result_persists_evidence(tmp_path):
     assert m["family_novelty"] == 1.0
     assert m.get("val_resid_rank_ic") == pytest.approx(-0.0023)
     assert "crowd_proxy_family" not in m
+
+
+
+def test_harness_cold_row_persists_evidence(tmp_path):
+    """harness 导入形状（_build_cold_tool_row：字段在 result["metrics"]）同样持久化证据键。
+    与正式管线顶层形状互补，锁住 R23 的双路径回归。
+    """
+    from alphaagent.factor.mining.research_memory import ResearchMemoryStore
+    args = {"multi_line_expr": "RANK(TS_MEAN($adj_close, 21))", "factor_name": "ct_harness"}
+    metrics = {
+        "research_mode": "technical_monthly",
+        "resid_ic": -0.021, "val_resid_icir": -0.46, "crowd_proxy_corr": 0.10,
+        "n_fit_days": 713, "n_controls": 2, "coverage": 0.95, "factor_coverage": 0.95,
+        "crowd_proxy_family": "momentum_reversal",
+    }
+    result = {"split": "train", "metrics": metrics, "factor_name": "ct_harness",
+              "error": "", "cold_track": True, "cold_track_passed": False, "fail_detail": "no_alpha"}
+    row = {"name": "eval_on_train_set", "arguments_raw": json.dumps(args), "result": result}
+    store = ResearchMemoryStore(tmp_path / "mh.db")
+    entry = store.record_tool_result(run_id="rh", row=row)
+    assert entry is not None
+    m = entry["metrics"]
+    assert m["resid_ic"] == pytest.approx(-0.021)
+    assert m["val_resid_icir"] == pytest.approx(-0.46)
+    assert m["crowd_proxy_corr"] == pytest.approx(0.10)
+    assert m["n_fit_days"] == 713
+    assert "crowd_proxy_family" not in m
