@@ -83,7 +83,11 @@ def main() -> int:
                          "evaluation_policy.orthogonality_max_corr=0.7，本参数不参与判定")
     ap.add_argument("--similar-top-k", type=int, default=3)
     ap.add_argument("--out", default="", help="提交结果写出路径（JSON）")
+    ap.add_argument("--universe", default="all",
+                    help="股票池（评估口径）：all / top300cap / mid301_800cap / mid801_9999cap 等")
     ap.add_argument("--fundamentals", action="store_true", help="会话载入 funda_* 列")
+    ap.add_argument("--panel", default=str(CNE_SOURCE),
+                    help="面板路径：默认 cne:// 实时构建；也可传已有 parquet 缓存（省构建时间）")
     args = ap.parse_args()
 
     label = MODE_LABEL[args.mode]
@@ -93,10 +97,11 @@ def main() -> int:
     svc = StockEvalService(max_parallel_eval=1)
     t0 = time.perf_counter()
     resp = svc.create_session(SessionCreateRequest(
-        panel_path=str(CNE_SOURCE), label_col=label, include_fundamentals=args.fundamentals,
+        panel_path=str(args.panel), label_col=label, include_fundamentals=args.fundamentals,
+        universe=args.universe,
     ))
     sid = resp.session_id
-    print(f"[submit] mode={args.mode} label={label} freq={freq} session={sid} "
+    print(f"[submit] mode={args.mode} label={label} freq={freq} universe={args.universe} session={sid} "
           f"rows={resp.panel_rows} load={time.perf_counter() - t0:.0f}s", flush=True)
     submitter = FactorSubmitService(
         svc, repo_root=ROOT, research_mode=args.mode, max_cs_corr=args.max_cs_corr,
