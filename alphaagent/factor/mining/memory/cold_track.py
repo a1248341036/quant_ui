@@ -38,6 +38,16 @@ CROWD_COARSE_FAMILIES = frozenset({"momentum_reversal", "volatility", "volume_li
 # 冷门赛道通过者 registry provenance（防 M1 成功者自噬骨架，spec §5.3）。
 COLD_TRACK_APPROVAL_PROVENANCE = "cold_track-approval"
 
+# 冷门赛道证据强度指标（数值）：残差化后的独立信息度量 + 拥挤度代理。
+# 单一真源——schema._compact_metrics 白名单与 ingestion 顶层抽取共用，防三处漂移；
+# 字符串元数据（crowd_proxy_family 等）不入 metrics（_safe_float 过滤非数值）。
+COLD_TRACK_METRIC_KEYS: frozenset[str] = frozenset({
+    "resid_ic", "train_resid_ic", "train_resid_icir", "val_resid_icir",
+    "val_resid_rank_ic", "coverage", "crowd_proxy_corr", "family_novelty",
+    "n_fit_days", "n_controls", "min_val_resid_ic", "max_crowd_proxy_corr",
+    "train_n_days", "val_n_days",
+})
+
 
 def crowd_coarse_of(
     family: str, *, facets: set[str] | None = None, expr: str = ""
