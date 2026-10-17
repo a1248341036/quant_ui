@@ -70,6 +70,26 @@ _BLIND_METRIC_KEYS = frozenset({
     "test_ic", "test_icir", "test_rank_ic", "test_ic_retention",
 })
 
+
+def _cold_dead_retryable(entry: dict[str, Any]) -> bool:
+    """cold_dead 条目是否属可重试方向（spec §7.3 样本外纪律）。
+
+    fail_detail=data_gap（待数据回填后重放）与 underpowered（待样本更足时重测）
+    不按永久死路注入负池；no_alpha 是真死路（展示）。冷门模块缺失时按非 retryable
+    处理（黄金基线：全量负池照常注入）。
+    """
+    if str(entry.get("verdict") or "") != "cold_dead":
+        return False
+    fd = str((entry.get("metrics") or {}).get("fail_detail") or entry.get("fail_detail") or "")
+    # 落库值可能是 "cold_track:<label>"（diagnostics._extract_fail_detail 透传）或纯标签：
+    # 统一取 ":" 后段与冷门模块可重试标签精确比对，避免开放子串匹配误判。
+    if ":" in fd:
+        fd = fd.rsplit(":", 1)[-1].strip()
+    from alphaagent.factor.mining.memory.cold_track import COLD_DEAD_RETRYABLE
+
+    return fd in COLD_DEAD_RETRYABLE
+
+
 # 冷门算子一句话机制提示（注入时附上，降低 LLM 编三问的门槛）
 _COLD_OP_HINT = {
     "CROWD_SHARE": "拥挤度：散户/游资集中涌入某维度，拥挤峰值后回吐",
@@ -464,12 +484,18 @@ class RetrievalMixin:
         query_facets: set[str] | None = None,
         facet_scope: set[str] | None = None,
         facet_required: set[str] | None = None,
+        crowd_filter: set[str] | None = None,
     ) -> str:
         """构建单因子证据块（正/负池独立排序 + 各自多样性去重 + 40% 正池配额）。
 
         ``facet_scope``（数据面聚焦的允许范围，含隐含输入面）+ ``facet_required``
         （勾选面）非空时，证据池先按面过滤：未选面的历史证据不再注入，避免
         "照抄未选面父本 → 被拦截 → 重写"的 token 空转。
+
+        ``crowd_filter``（拥挤粗族集合，spec: alphaagent_mining_anti_convergence_spec.md
+        §5.2 M3 记忆父本屏蔽）非空时，正池中 mechanism 落回拥挤族的**历史强者表达式**
+        不注入为父本（机制卡仍可参考），并从跨族保底正向父本中剔除——切断「LLM 把
+        冷门算子套壳在拥挤族骨架上」的回归路径。负池与 A/B/C 轨既有语义不受影响。
         """
         entries = self._retrieval_candidates(research_goal, include_rejected)
         if facet_scope:
@@ -485,9 +511,36 @@ class RetrievalMixin:
         ]
         scored.sort(key=lambda pair: pair[0], reverse=True)
 
+        # M3 父本屏蔽：crowd_filter 非空（实验模式且有骨架）时，正池拥挤族强者不注入。
+        masked_crowd: set[str] = set()
+        if crowd_filter:
+            try:
+                from alphaagent.factor.mining.memory.cold_track import crowd_coarse_of
+
+                def _crowd_masked(e: dict[str, Any]) -> bool:
+                    cf = crowd_coarse_of(
+                        str(e.get("family") or "other"),
+                        expr=str(e.get("expression") or ""),
+                    )
+                    if cf and cf in crowd_filter:
+                        masked_crowd.add(cf)
+                        return True
+                    return False
+
+            except Exception:  # noqa: BLE001 - 冷门模块缺失时黄金基线零改动
+                def _crowd_masked(e: dict[str, Any]) -> bool:  # noqa: F811
+                    return False
+        else:
+            def _crowd_masked(e: dict[str, Any]) -> bool:  # noqa: F811
+                return False
+
         # 正负池分离，各自独立做多样性去重，避免指纹去重跨 verdict 误杀
         pos_pool = [(s, e) for s, e in scored if e.get("verdict") in POSITIVE_VERDICTS_READ]
-        neg_pool = [(s, e) for s, e in scored if e.get("verdict") in NEGATIVE_VERDICTS]
+        neg_pool = [
+            (s, e) for s, e in scored
+            if e.get("verdict") in NEGATIVE_VERDICTS
+            and not _cold_dead_retryable(e)
+        ]
 
         pos_quota = max(1, int(limit * 0.4))
         # 正向保底（2026-09-01）：跨族最优正向因子无条件入选约 2/3 正向配额，
@@ -495,9 +548,12 @@ class RetrievalMixin:
         guaranteed = self._guaranteed_positives(
             max(0, pos_quota - 1), facet_scope=facet_scope, facet_required=facet_required
         )
+        guaranteed = [e for e in guaranteed if not _crowd_masked(e)]
         g_names = {e.get("factor_name") for e in guaranteed}
-        pos_pool_rest = [(s, e) for s, e in pos_pool
-                         if e.get("factor_name") not in g_names]
+        pos_pool_rest = [
+            (s, e) for s, e in pos_pool
+            if e.get("factor_name") not in g_names and not _crowd_masked(e)
+        ]
         bm25_pos = (self._select_diverse(pos_pool_rest, limit=pos_quota - len(guaranteed),
                                          max_per_family=2)
                     if pos_quota > len(guaranteed) else [])
@@ -521,6 +577,16 @@ class RetrievalMixin:
                 block_lines.append("扩展时优先引入正交变量，避免仅改窗口长度的同质微调。")
             for _, entry in positive:
                 block_lines.append(self._format_entry(entry, include_expression, max_expression_chars))
+
+        # 拥挤族屏蔽说明独立于 positive 块：正向全被屏蔽（收敛态）时仍要告知 LLM
+        # 「该族已饱和、表达式不注入为父本」，否则收敛态下无任何说明，模型会误以为正池为空。
+        if masked_crowd:
+            block_lines.append(
+                "（已屏蔽 "
+                f"{len(masked_crowd)} 个已饱和拥挤族强者表达式："
+                f"{'、'.join(sorted(masked_crowd))}——该族已饱和，表达式不注入为父本，"
+                "避免在其骨架上套壳；机制卡仍可参考。）"
+            )
 
         if negative:
             block_lines.append("")
@@ -1343,6 +1409,7 @@ class RetrievalMixin:
         max_inject_chars: int | None = None,
         facet_scope: set[str] | None = None,
         facet_required: set[str] | None = None,
+        crowd_filter: set[str] | None = None,
     ) -> str:
         """构建注入上下文。显示顺序：经验 → 编辑先验 → 饱和度 → 多样性 → 证据。
 
@@ -1423,6 +1490,7 @@ class RetrievalMixin:
                 query_facets=query_facets,
                 facet_scope=facet_scope,
                 facet_required=facet_required,
+                crowd_filter=crowd_filter,
             )
             if factor_block:
                 secondary.append((0, factor_block))

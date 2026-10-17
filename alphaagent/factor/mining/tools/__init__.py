@@ -35,6 +35,8 @@ class FactorEvalTools(_DispatchMixin, _AnalysisMixin):
         operator_policy: dict[str, Any] | None = None,
         homogenization_policy: dict[str, Any] | None = None,
         run_id: str | None = None,
+        cold_track_policy: dict[str, Any] | None = None,
+        crowd_skeletons: dict[str, Any] | None = None,
     ) -> None:
         self.service = service
         self.session_id = session_id
@@ -44,6 +46,21 @@ class FactorEvalTools(_DispatchMixin, _AnalysisMixin):
         self.memory_store = memory_store
         # 当前 run id（log_dir.name）：传给 advisory_for.current_run_id，供 run 内正向豁免判定
         self.run_id = run_id
+        # 冷门赛道双轨评估（spec: alphaagent_mining_anti_convergence_spec.md M1/M2）：
+        # enabled=False（默认）时 dispatch 评估路径逐字节不变（黄金基线）。
+        # crowd_skeletons = run 启动时的骨架快照（build_crowd_skeletons 产物，
+        # 含 signature），仅实验模式注入。
+        self.cold_track_policy = dict(cold_track_policy or {})
+        self.crowd_skeletons = dict(crowd_skeletons or {})
+        # M2 算子冷却（spec §7.3）：冷门算子连续 cold_dead(no_alpha) 达到阈值后，
+        # 冷却期内拦截同算子新候选（避免为挖而挖重复跑必死算子）。run 级状态
+        # （对象生命周期），跨 run 由研究记忆 cold_dead 负证据自然继承。
+        self._cold_op_dead_count: dict[str, int] = {}
+        self._cold_op_cool_left: dict[str, int] = {}
+        # 冷门赛道评估预算计数（spec §7.4 cold_eval_budget_ratio）：分母=三类评估工具总调用，
+        # 分子=真正跑了 evaluate_cold_track 的冷门候选。超限后 _cold_track_shortcut 回落既有评估。
+        self._cold_eval_count: int = 0
+        self._total_eval_count: int = 0
         # 数据面聚焦硬锁定（用户勾选；空 = 未启用，dispatch 不拦截）
         self.focus_facets = tuple(focus_facets or ())
         # 认知对账开关（research_spec.cognition_policy，消融 C1/C2）；缺省全开

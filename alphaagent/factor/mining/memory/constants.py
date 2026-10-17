@@ -37,6 +37,18 @@ POSITIVE_VERDICTS_READ = POSITIVE_VERDICTS | frozenset({LEGACY_VERDICT_TRAIN_PAS
 # 判定「训练过线」时的可接受字面量（新写 train_passed，历史行仍是 promising）。
 TRAIN_PASS_VERDICTS = (VERDICT_TRAIN_PASS, LEGACY_VERDICT_TRAIN_PASS)
 NEGATIVE_VERDICTS = frozenset({"rejected", "revise_required", "weak", "near_miss", "eval_error"})
+# cold_dead（2026-10-17，spec: alphaagent_mining_anti_convergence_spec.md M1）：冷门赛道
+# 残差化后无独立信息/数据缺失/样本不足的负证据。与 weak 的区别：带 fail_detail 三标签
+# （no_alpha / data_gap / underpowered），其中 data_gap 与 underpowered 属可重试方向，
+# 检索注入时不按永久死路展示（COLD_DEAD_RETRYABLE）。归入负集但不加 VERDICT_ORDER。
+COLD_TRACK_VERDICT_DEAD = "cold_dead"
+NEGATIVE_VERDICTS = NEGATIVE_VERDICTS | frozenset({COLD_TRACK_VERDICT_DEAD})
+# cold_approved（2026-10-17，spec: alphaagent_mining_anti_convergence_spec.md M1 §3.3）：
+# 冷门赛道通过（val 残差 IC 达标 + 与拥挤族代表相关 < 上限），但**未过任何综合门槛**
+# （stage_one/正交/换手/engine_gate 均未跑）。独立档位：不进 POSITIVE_VERDICTS_READ
+# （避免被当作"已验证父本"注入正池/父本排序，防止假正证据），也不进负集。
+# VERDICT_ORDER 仅保证展示顺序（介于 train_passed 与 near_miss 之间）。
+COLD_TRACK_VERDICT_APPROVED = "cold_approved"
 
 
 def normalize_verdict(verdict: object) -> str:
@@ -53,6 +65,7 @@ VERDICT_ORDER = {
     "candidate_approved": 2,
     "train_passed": 3,
     LEGACY_VERDICT_TRAIN_PASS: 3,
+    COLD_TRACK_VERDICT_APPROVED: 3.5,
     "near_miss": 4,
     "revise_required": 5,
     "rejected": 6,

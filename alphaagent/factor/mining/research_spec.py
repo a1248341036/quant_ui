@@ -430,6 +430,41 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
         # 单独 True 不生效，防止半配置状态）。仅影响评估输出，不设门槛。
         "report_industry_metrics": True,
     },
+    # ── cold_track：冷门赛道双轨评估 P（默认全关，不改任何现有行为；仅实验模式）─
+    # 客观判定为「新族」的候选若顶层信号算子命中冷门清单（_COLD_OPS），走冷门赛道：
+    # 先对拥挤族骨架残差化，再以样本外残差 IC（val_resid_ic）作为主门槛——不再与
+    # 拥挤族候选拼同一个绝对 IC 墙（spec: alphaagent_mining_anti_convergence_spec.md M1-M3）。
+    # 全部按键仅 enabled=True 时生效；enabled=False 则 golden baseline 逐字节不变。
+    "cold_track": {
+        # 冷门赛道总开关。False = 全链路逐字节旧行为（黄金基线）；True = 实验模式。
+        # 影响模式：全部模式（开关在顶层，与研报/技术模式正交）。
+        "enabled": False,
+        # 冷门赛道样本外残差 IC 门槛（val 段，月/周同值）：
+        # 拥挤族月 0.053/周 0.030 的约 1/3。依据附录 A：R15-R19 冷门算子月频最佳
+        # |IC| 均 <=0.030 且 val 全量样本外更低 -> 0.02 是「有真实独立信息」的保守下限；
+        # 残差化会再剥掉拥挤载荷，残差 IC 通常 <= 原始 IC，故不放水。调大=更严（命中率更低），
+        # 调小=更松（接近噪声）。仅实验模式生效。
+        "min_val_resid_ic": 0.02,
+        # 候选原始信号与拥挤族代表的最大截面 Spearman 相关上限：
+        # 比候选正交门 0.7 / 正式库 0.4 更严（冷门赛道要的就是独立信息面）。
+        # 调大=放行更多与拥挤族相关的候选（稀释独立性）；默认 0.3 为初始值，探针 run 后可依实际分布调整。
+        # 仅实验模式生效。
+        "max_crowd_proxy_corr": 0.3,
+        # 残差化控制变量族数上限（每族 1 列）：防止共线膨胀。默认 8 覆盖
+        # 战役实证的五族（to/reversal/lowvol/liquidity/tri 映射后的粗族）+ 余量。
+        # 调大=控制更全但共线风险升；调小=残差化更弱（残留拥挤载荷）。仅实验模式生效。
+        "max_ctrl_families": 8,
+        # 每 run 冷门赛道评估预算占总评估比例上限：防止冷门赛道侵蚀正常候选轮次。
+        # 0.20 -> 至少 80% 评估走正常候选。调大=冷门探索更激进但拖慢吞吐；仅实验模式生效。
+        "cold_eval_budget_ratio": 0.20,
+        # 单个冷门算子连续 cold_dead(no_alpha) 达到该次数 -> 该算子进入冷却。
+        # 默认 3：按附录 A 必然死的算子最多浪费 3 次评估就冷却，避免为挖而挖。
+        # 调大=冷却更迟（更多失败证据）；调小=冷却更激进。仅实验模式生效。
+        "op_cool_after_dead": 3,
+        # 冷却期跳过该算子推荐的轮数。默认 4：一轮 batch 约 8 候选，4 轮足以让
+        # 拥挤族候选重新占主导。调大=冷却更久；调小=更快回归。仅实验模式生效。
+        "op_cool_skips": 4,
+    },
 }
 
 
@@ -1005,6 +1040,37 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
         "rotation_policy.report_industry_metrics",
     )
     spec["rotation_policy"] = rotation
+
+    # ── cold_track：冷门赛道双轨评估 P（默认全关；校验越界值不静默生效）──
+    cold = spec.get("cold_track")
+    if not isinstance(cold, dict):
+        cold = {}
+    cold["enabled"] = _require_bool(cold.get("enabled", False), "cold_track.enabled")
+    cold["min_val_resid_ic"] = float(_bounded_number(
+        cold.get("min_val_resid_ic", 0.02),
+        "cold_track.min_val_resid_ic", 0.0, 0.053,
+    ))
+    cold["max_crowd_proxy_corr"] = float(_bounded_number(
+        cold.get("max_crowd_proxy_corr", 0.3),
+        "cold_track.max_crowd_proxy_corr", 0.0, 0.9,
+    ))
+    cold["max_ctrl_families"] = int(_bounded_number(
+        cold.get("max_ctrl_families", 8),
+        "cold_track.max_ctrl_families", 1, 12,
+    ))
+    cold["cold_eval_budget_ratio"] = float(_bounded_number(
+        cold.get("cold_eval_budget_ratio", 0.20),
+        "cold_track.cold_eval_budget_ratio", 0.05, 0.5,
+    ))
+    cold["op_cool_after_dead"] = int(_bounded_number(
+        cold.get("op_cool_after_dead", 3),
+        "cold_track.op_cool_after_dead", 1, 20,
+    ))
+    cold["op_cool_skips"] = int(_bounded_number(
+        cold.get("op_cool_skips", 4),
+        "cold_track.op_cool_skips", 0, 50,
+    ))
+    spec["cold_track"] = cold
 
     profiles = resolve_profiles(spec)
     spec["evaluation_profiles"] = {profile_id: profile.as_dict() for profile_id, profile in profiles.items()}

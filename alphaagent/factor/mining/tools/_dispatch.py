@@ -675,6 +675,225 @@ class _DispatchMixin:
         except Exception:  # noqa: BLE001 — 自动 val 是增强信息，失败绝不影响主评估
             pass
 
+    def _cold_track_shortcut(
+        self, expr: str, factor_name: str
+    ) -> dict[str, Any] | None:
+        """冷门赛道短路（spec §3.2/§4.1）：返回冷门赛道评估结果或 None。
+
+        仅 cold_track.enabled=true 且客观判定 track=cold 时生效；否则返回 None，
+        调用方走既有评估路径（黄金基线逐字节不变）。返回 ``{"ok": True, ...}`` 时
+        该结果直接替换既有 train 评估返回；M2 advisory（新族但无冷门顶层算子）
+        返回 ``{"ok": True, "cold_track_advisory": ...}``，调用方必须继续走既有评估
+        并合并 advisory 字段（不短路）。
+        """
+        if not getattr(self, "cold_track_policy", None) or not self.cold_track_policy.get("enabled", False):
+            return None
+        if not self.service or getattr(self.service, "sessions", None) is None:
+            return None
+        try:
+            from alphaagent.factor.mining.memory.cold_track import classify_track
+
+            track, is_new_family, has_cold_root = classify_track(str(expr or ""), str(factor_name or ""))
+        except Exception:  # noqa: BLE001 - 判定失败按普通路径（保守）
+            return None
+        if track == "crowd":
+            if not is_new_family and has_cold_root:
+                # M3 套壳回归（spec §5.2 / §4.1 边界）：顶层信号虽在冷门清单，
+                # 但 classify_family 将机制归回已饱和拥挤族 -> 附注换皮，不获冷门
+                # 低门槛，走拥挤族完整门槛（防止「套壳冷门算子蹭低门槛」）。
+                return {
+                    "ok": True,
+                    "cold_track_advisory": (
+                        "该结构被判为拥挤族换皮：顶层信号算子虽在冷门清单（_COLD_OPS），"
+                        "但 classify_family 将机制归入已饱和拥挤族，不享受冷门赛道低门槛，"
+                        "按普通候选完整门槛评估。套壳冷门算子不改变机制归属——"
+                        "请更换真正的新机制（新细族 + 顶层冷门算子）后再试。"
+                    ),
+                }
+            if is_new_family and not has_cold_root:
+                # M2 advisory：客观新族但顶层信号算子不在冷门清单 -> 提示但不硬拦；
+                # 该候选走普通门槛（不获冷门低门槛）。
+                return {
+                    "ok": True,
+                    "cold_track_advisory": (
+                        "客观新族候选判定为冷门赛道候选需以冷门算子作为顶层信号；"
+                        "当前顶层信号不属于冷门清单（_COLD_OPS），已按普通候选评估，不享受冷门赛道低门槛。"
+                        "若确为冷门机制，请把冷门算子移到表达式顶层后重试。"
+                    ),
+                }
+            return None
+        # M2 算子冷却（spec §7.3）：冷门算子连续 cold_dead(no_alpha) 达标后，
+        # 冷却期内拦截同算子新候选，避免为挖而挖重复跑必死算子。
+        root_op = ""
+        try:
+            from alphaagent.factor.mining.memory.cold_track import signal_root_op
+
+            root_op = signal_root_op(str(expr))
+        except Exception:  # noqa: BLE001 - 未归一化 policy 绝不炸断评估，回落默认冷却参数
+            root_op = ""
+        try:
+            cool_after = int(self.cold_track_policy.get("op_cool_after_dead", 3))
+            cool_skips = int(self.cold_track_policy.get("op_cool_skips", 4))
+        except (TypeError, ValueError):
+            cool_after, cool_skips = 3, 4
+        if root_op:
+            left = self._cold_op_cool_left.get(root_op, 0)
+            if left > 0:
+                self._cold_op_cool_left[root_op] = left - 1
+                return {
+                    "ok": True,
+                    "track": "cold",
+                    "cold_track_blocked": True,
+                    "cold_track_advisory": (
+                        f"冷门算子 {root_op} 已连续 >= {cool_after} 次样本外无独立信息，"
+                        f"进入冷却（剩余 {left - 1} 次检测后解冻）。请切换其它冷门算子"
+                        "或新机制，不要在同算子上重复枚举窗口/参数。"
+                    ),
+                }
+            if self._cold_op_dead_count.get(root_op, 0) >= cool_after:
+                self._cold_op_cool_left[root_op] = cool_skips
+                self._cold_op_dead_count[root_op] = 0
+                return {
+                    "ok": True,
+                    "track": "cold",
+                    "cold_track_blocked": True,
+                    "cold_track_advisory": (
+                        f"冷门算子 {root_op} 已连续 >= {cool_after} 次 cold_dead(no_alpha)，"
+                        f"进入冷却（未来 {cool_skips} 次检测不再评估）。"
+                        "请更换机制或冷门算子，不要在同算子上继续枚举。"
+                    ),
+                }
+        # 客观冷门赛道候选：聚合骨架控制列 + 候选值，跑残差化评估
+        try:
+            session = self.service.sessions.get(self.session_id)
+            if session is None or getattr(session, "panel", None) is None:
+                return None
+            panel = session.panel
+            ctx = getattr(session, "ctx", None)
+            if ctx is None:
+                return None
+            from alphaagent.dsl import eval_factor
+            from alphaagent.factor.align import align_series_to_panel
+
+            # 骨架控制矩阵（run 启动快照语义已由 crowd_skeletons 持有，冻结不更新）
+            skeletons = (self.crowd_skeletons or {}).get("skeletons") or {}
+            if not skeletons:
+                # 骨架缺失（快照失败/registry 空）：回落既有评估路径，
+                # 避免所有客观冷门候选被 no_controls/data_gap 统一拦截（应退化为绝对 IC 而非判死）
+                return None
+            ctrl_values: dict[str, Any] = {}
+            for fam, meta in skeletons.items():
+                sk_expr = (meta or {}).get("expr")
+                if not isinstance(sk_expr, str) or not sk_expr.strip():
+                    continue
+                try:
+                    out = eval_factor(sk_expr, panel)
+                    ctrl_values[fam] = align_series_to_panel(out, panel)
+                except Exception:  # noqa: BLE001 - 某族骨架物化失败不影响其他族
+                    ctrl_values[fam] = None
+            # 候选物化
+            try:
+                cand_out = eval_factor(str(expr), panel)
+                cand_values = align_series_to_panel(cand_out, panel)
+            except Exception as exc:  # noqa: BLE001
+                return {
+                    "ok": False,
+                    "error": f"cold_track_eval_failed: {type(exc).__name__}: {exc}",
+                    "error_type": "ColdTrackEvalError",
+                    "track": "cold",
+                }
+            from alphaagent.factor.mining.eval.residualize import evaluate_cold_track
+
+            # 冷门评估预算上限（spec §7.4）：冷门评估占比 >= cold_eval_budget_ratio 时
+            # 回落既有完整评估路径，避免冷门赛道侵蚀正常候选轮次。
+            try:
+                _budget = float(self.cold_track_policy.get("cold_eval_budget_ratio", 0.20))
+            except (TypeError, ValueError):
+                _budget = 0.20
+            if (
+                _budget >= 0.0
+                and self._total_eval_count > 0
+                and (self._cold_eval_count / self._total_eval_count) >= _budget
+            ):
+                return None
+            result = evaluate_cold_track(
+                cand_values,
+                panel,
+                ctrl_values,
+                ctx,
+                label_col=getattr(ctx, "label_col", None),
+                policy=self.cold_track_policy,
+                family_novelty=bool(is_new_family),
+            )
+            self._cold_eval_count += 1
+        except Exception as exc:  # noqa: BLE001 - 短路失败回落既有评估，绝不阻断
+            log_step(
+                "cold_track.shortcut_error",
+                f"{type(exc).__name__}: {str(exc)[:160]}",
+                level=logging.ERROR,
+            )
+            return None
+        if not isinstance(result, dict):
+            return None
+        base: dict[str, Any] = {
+            "ok": bool(result.get("passed", False)),
+            "passed": bool(result.get("passed", False)),
+            "split": "train",
+            "track": "cold",
+            "cold_track": True,
+        }
+        # 残差化核心指标透传（metrics_json 三键齐全，spec §3.3）
+        for k in (
+            "resid_ic",
+            "train_resid_ic",
+            "train_resid_icir",
+            "val_resid_icir",
+            "val_resid_rank_ic",
+            "train_n_days",
+            "val_n_days",
+            "coverage",
+            "crowd_proxy_corr",
+            "crowd_proxy_family",
+            "family_novelty",
+            "n_fit_days",
+            "n_controls",
+            "min_val_resid_ic",
+            "max_crowd_proxy_corr",
+            "fail_detail",
+        ):
+            if result.get(k) is not None:
+                base[k] = result[k]
+        base["cold_track_passed"] = bool(result.get("passed", False))
+        base["cold_track_verdict"] = (
+            "cold_approval" if result.get("passed") else "cold_dead"
+        )
+        # 冷门赛道通过：指导进入既有 submit 全链路（spec §3.3 第 5 点，不跳过高危环节）
+        if result.get("passed"):
+            base["guidance"] = (
+                "冷门赛道样本外残差 IC 达标且与拥挤族代表相关 < 上限：该候选携带"
+                "独立于已知拥挤族的信息面。可直接 submit_factor 走 stage_two/正交/"
+                "换手/engine_gate 全链路（不因通过冷门赛道而跳过任何高危环节）。"
+            )
+        else:
+            base["error"] = (
+                "cold_dead: 残差化后样本外独立信息不足或与拥挤族高度重叠。"
+                f"fail_detail={result.get('fail_detail') or 'no_alpha'}。"
+                "不要在同一冷门机制上继续同根变异；换机制或等待数据回填（data_gap 方向）。"
+            )
+            base["error_type"] = "ColdDead"
+        # 冷却计数更新：no_alpha 连续累计；data_gap/underpowered 属可重试，归零；
+        # 通过则解除该算子冷却（确证有真实信息）。
+        if root_op:
+            if result.get("passed"):
+                self._cold_op_dead_count[root_op] = 0
+            elif str(result.get("fail_detail") or "no_alpha") == "no_alpha":
+                self._cold_op_dead_count[root_op] = (
+                    self._cold_op_dead_count.get(root_op, 0) + 1
+                )
+            else:
+                self._cold_op_dead_count[root_op] = 0
+        return base
+
     def schemas(self) -> list[dict[str, Any]]:
         out = [
             {
@@ -808,6 +1027,11 @@ class _DispatchMixin:
             if op_block is not None:
                 return op_block
 
+        # 评估预算计数（spec §7.4）：分母 = 三种评估类工具调用总数，
+        # _cold_track_shortcut 里据此控制冷门赛道评估占比上限。
+        if name in ("evaluate_factor", "eval_on_train_set", "eval_on_val_set"):
+            self._total_eval_count += 1
+
         if name == "submit_factor":
             return self._dispatch_submit(arguments)
 
@@ -866,6 +1090,24 @@ class _DispatchMixin:
             gate = self._memory_gate(expr, arguments)
             if isinstance(gate, dict) and gate.get("ok") is False:
                 return gate
+            # 冷门赛道短路（仅 enabled=true 且客观 track=cold 时生效；否则 None 走既有路径）
+            _cold_candidate = self._cold_track_shortcut(
+                expr, str(arguments.get("factor_name") or "expr")
+            )
+            _cold_advice = None
+            if (
+                isinstance(_cold_candidate, dict)
+                and _cold_candidate.get("cold_track_advisory")
+                and _cold_candidate.get("track") != "cold"
+            ):
+                _cold_advice = _cold_candidate.pop("cold_track_advisory")
+            if (
+                isinstance(_cold_candidate, dict)
+                and _cold_candidate.get("track") == "cold"
+            ):
+                if isinstance(gate, dict):
+                    _cold_candidate["memory_advisory"] = gate
+                return _cold_candidate
             if profile_id == "train_screen":
                 # 挖掘海选统一走两段式（lite 先筛）：LLM 无论选 evaluate_factor
                 # 还是 eval_on_train_set，train 评估都享受同一吞吐改造
@@ -907,6 +1149,8 @@ class _DispatchMixin:
                 self._attach_signature_hints(expr, result)
             if isinstance(gate, dict):
                 result["memory_advisory"] = gate
+            if _cold_advice:
+                result["cold_track_advisory"] = _cold_advice
             return result
 
         expr = arguments.get("multi_line_expr")
@@ -957,6 +1201,22 @@ class _DispatchMixin:
             gate = self._memory_gate(expr, arguments)
             if isinstance(gate, dict) and gate.get("ok") is False:
                 return gate
+            # 冷门赛道短路（同 evaluate_factor）：cold 直接返回，新族无冷门根则附 advisory
+            _cold_candidate = self._cold_track_shortcut(expr, str(factor_name or "expr"))
+            _cold_advice = None
+            if (
+                isinstance(_cold_candidate, dict)
+                and _cold_candidate.get("cold_track_advisory")
+                and _cold_candidate.get("track") != "cold"
+            ):
+                _cold_advice = _cold_candidate.pop("cold_track_advisory")
+            if (
+                isinstance(_cold_candidate, dict)
+                and _cold_candidate.get("track") == "cold"
+            ):
+                if isinstance(gate, dict):
+                    _cold_candidate["memory_advisory"] = gate
+                return _cold_candidate
             result = self.service.eval_train(
                 EvalTrainRequest(
                     session_id=self.session_id,
@@ -983,6 +1243,8 @@ class _DispatchMixin:
                 self._attach_signature_hints(expr, result)
             if isinstance(gate, dict):
                 result["memory_advisory"] = gate
+            if _cold_advice:
+                result["cold_track_advisory"] = _cold_advice
             return result
 
         if name == "eval_on_val_set":

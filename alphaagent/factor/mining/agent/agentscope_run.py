@@ -481,6 +481,26 @@ async def run_factor_mining_agentscope(
         overwrite=config.ingest_overwrite,
     )
 
+    # 冷门赛道骨架快照（run 启动一次性，run 内冻结；enabled=false -> None 零注入）
+    try:
+        from alphaagent.factor.mining.memory.cold_track import build_snapshot_for_run
+
+        _crowd_snap = build_snapshot_for_run(
+            config.research_spec or {},
+            production_registry=registry_path,
+            candidate_registry=(
+                getattr(config, "candidate_registry_path", None)
+                or factor_categories.candidate_registry_path(research_mode)
+            ),
+            repo_root=root,
+        )
+    except Exception as exc:  # noqa: BLE001 - 快照失败不阻断 run 启动
+        print(
+            "[cold_track] snapshot build failed (run continues): "
+            f"{type(exc).__name__}: {str(exc)[:160]}"
+        )
+        _crowd_snap = None
+
     log_dir = Path(log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -488,6 +508,15 @@ async def run_factor_mining_agentscope(
     # 步骤日志：每一步（评估/门禁/审查/记忆）一行，落 steps.log + stdout 镜像
     from alphaagent.factor.mining.runlog import log_step, set_turn, setup_run_logger
     setup_run_logger(log_dir)
+    if _crowd_snap:
+        try:
+            log_step(
+                "cold_track.snapshot",
+                f"signature={_crowd_snap.get('signature')} "
+                f"n_skeletons={len(_crowd_snap.get('skeletons') or {})}",
+            )
+        except Exception:  # noqa: BLE001 - 日志失败不影响 run 启动
+            pass
     artifact_dir = log_dir / f"artifacts_{stamp}"
     artifact_dir.mkdir(parents=True, exist_ok=True)
     factorlib_for_manifest = (config.factorlib_path or default_factorlib_path(root)).resolve()
@@ -540,6 +569,8 @@ async def run_factor_mining_agentscope(
         operator_policy=(config.research_spec or {}).get("operator_policy"),
         homogenization_policy=(config.research_spec or {}).get("homogenization_policy"),
         run_id=log_dir.name,
+        cold_track_policy=(config.research_spec or {}).get("cold_track") or None,
+        crowd_skeletons=_crowd_snap,
     )
     # OpenViking 冷路径长期记忆：run 启动检索跨 session 策略教训，注入 system prompt。
     # ov_store 实例保留到 run 结束复用（写回摘要 + 更新死路族）；失败静默，降级纯 SQLite。
@@ -856,6 +887,16 @@ async def run_factor_mining_agentscope(
         focus = getattr(config, "focus_facets", None) or []
         facet_scope = facet_allowed_scope(focus) if focus else None
         facet_required = {str(f) for f in focus} or None
+        # M3 记忆父本屏蔽（spec §5.2）：冷门赛道实验模式（cold_track.enabled=true 且
+        # 骨架已生成）时，注入证据块不展示拥挤族强者表达式——切断套壳回归路径；
+        # 默认/关闭时 crowd_filter=None，黄金基线零改动。
+        crowd_filter = None
+        try:
+            _cold = (config.research_spec or {}).get("cold_track") or {}
+            if _cold.get("enabled") and _crowd_snap and _crowd_snap.get("crowd_families"):
+                crowd_filter = set(_crowd_snap["crowd_families"])
+        except Exception:  # noqa: BLE001 - 屏蔽失败按基线（零改动）
+            crowd_filter = None
         block = memory_store.context_for(
             query,
             limit=limit,
@@ -879,6 +920,7 @@ async def run_factor_mining_agentscope(
             all_attempts=tool_call_rows or None,
             facet_scope=facet_scope,
             facet_required=facet_required,
+            crowd_filter=crowd_filter,
         )
         # 数据面聚焦（用户多选）：每轮追加聚焦提醒，持续引导数据面方向。
         if focus:

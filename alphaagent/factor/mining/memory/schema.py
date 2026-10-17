@@ -814,6 +814,36 @@ class SchemaMixin:
             review_note = f" Reviewer 意见：{canonical}（{first_reason}）。"
         if review_verdict == "reject":
             return "rejected", f"{canonical}：Reviewer 拒绝；{str(reasons[0]) if reasons else '不得重复同构表达式。'}"
+        # 冷门赛道（spec §3.3 第 6 点）：evaluation 层残差化结果独立于 Reviewer 意见。
+        # cold_track_passed=True 由 dispatch 短路直返（不落 submit），此处仅处理
+        # cold_dead 负证据；verdict 带 fail_detail 三标签（no_alpha/data_gap/underpowered）。
+        if result.get("cold_track"):
+            from .constants import COLD_TRACK_VERDICT_APPROVED, COLD_TRACK_VERDICT_DEAD
+            from alphaagent.factor.mining.memory.cold_track import FAIL_DETAILS
+
+            if not result.get("cold_track_passed"):
+                fd = str(result.get("fail_detail") or "no_alpha")
+                if fd not in FAIL_DETAILS:
+                    fd = "no_alpha"
+                _fd_note = {
+                    "no_alpha": "残差化后样本外无独立信息（train/val 同向不显著）。",
+                    "data_gap": "原料缺失（骨架/候选覆盖不足），待数据回填后定向重放。",
+                    "underpowered": "train/val 方向不一致或样本不足，不落永久负证据。",
+                }.get(fd, "")
+                _tail = (
+                    "不要在同一冷门机制上继续同根变异。"
+                    if fd == "no_alpha"
+                    else "待数据回填/样本充足后可沿同方向重放（勿永久判死）。"
+                )
+                return COLD_TRACK_VERDICT_DEAD, (
+                    f"冷门赛道 cold_dead（fail_detail={fd}）：{_fd_note} "
+                    f"{_tail}"
+                )
+            return COLD_TRACK_VERDICT_APPROVED, (
+                "冷门赛道样本外残差 IC 达标且与拥挤族代表相关 < 上限（未过任何综合门槛），"
+                "独立信息面成立，"
+                "应 submit_factor 走 stage_two/正交/换手/engine_gate 全链路。"
+            )
         if name == "submit_factor":
             if result.get("stored"):
                 return "production_approved", "已通过精筛并正式入库，应保留其经济机制并避免重复。" + review_note
