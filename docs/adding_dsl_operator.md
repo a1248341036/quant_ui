@@ -45,16 +45,17 @@ operators.py 实现（唯一必改）
 | 8 | `alphaagent/factor/mining/prompt/modules/behavior_rules.py` | rule 2 等 | 行为准则教学。**可选**：教模型新算子的使用场景与参数语义 | ✅ rule 2 信号积分 DSL 写法改为推荐 `SIGNAL_BLEND(signal, λ)` |
 | 9 | `alphaagent/factor/facets.py` | `FACET_DEFS`（19-34） | 数据面识别（按列/算子前缀匹配）。**仅专属面算子**需要登记 | ❌ 不改（通用） |
 | 10 | `tests/test_dsl_*.py` | 新建或追加 | 语义/边界/目录可见性测试 | ✅ 新建 `tests/test_dsl_signal_blend.py`（5 用例） |
-| 11 | `alphaagent/factor/mining/memory/expressions.py` | `_operator_names()`（60-85 行） | **记忆层算子识别真源 = DSL 注册表 ∪ 静态回落白名单**（进程内缓存）。走 `build_operator_namespace()` 自动跟随，**新算子无需登记**；`_KNOWN_OPERATORS` 仅作注册表不可用时的兜底，**不要再往里加算子** | ❌ 不改（注册表自动覆盖） |
+| 11 | `alphaagent/factor/mining/memory/expressions.py` | `_operator_names()` | **记忆层算子识别真源 = DSL 注册表 ∪ 静态回落白名单**（进程内缓存）。与 `dsl/eval.py` 同源（`build_operator_namespace(extension_modules=resolve_extension_modules())`，含内置 + 环境声明的扩展算子），**新算子无需登记**；`_KNOWN_OPERATORS` 仅作注册表不可用时的兜底，**不要再往里加算子** | ❌ 不改（注册表自动覆盖） |
 
 > **#11 为什么进清单（2026-10-18 事故）**：该文件曾只用硬编码 `_KNOWN_OPERATORS` 识别算子，
 > 清单外一切算子被静默丢弃 —— `_COLD_OPS` 22/22 与 `CS_BUCKET`/`CS_GROUP_RANK`/`NEG`/`SIGNAL_BLEND`
-> 从未进入 `operator_list_json`（实测 16324 条含冷门算子的表达式、**0 条**正确落库），
+> 从未进入 `operator_list_json`（实测 15463 条含冷门算子的表达式、**0 条**正确落库），
 > 且 `CHIP_PEAK_LOC` 撞 `chip_*` 变量前缀规则被误判成**变量**。后果是算子分布软引导
 > （`_operator_diversity_block`）、按算子检索记忆、算子×面台账对冷门算子**结构性失明** ——
 > 即便 100% 的尝试都用冷门算子，统计器读到的使用次数仍是 0，并把刚用过的算子当
 > 「从未用过」推荐回来。**算子名与 `chip_*`/`crowd_*` 字段名同型时，用 `$` 前缀消歧**
-> （`(?<!\$)`）：`$chip_peak_loc` 是字段，`CHIP_PEAK_LOC(...)` 才是算子。
+> （`(?<![\w$])`，边界必须锚在标识符起点之外 —— 只写 `(?<!\$)` 时 `$raw_rank` 会在内部
+> 匹配出算子 `rank`）：`$chip_peak_loc` 是字段，`CHIP_PEAK_LOC(...)` 才是算子。
 > 回归锁定：`tests/test_memory_operator_inventory.py`。
 
 ## 自动机制（无需登记）

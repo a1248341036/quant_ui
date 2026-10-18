@@ -133,6 +133,33 @@ def test_dollar_field_swap_keeps_edit_motif():
     assert extract_edit_motif(parent, child) == "feature_swap_chip"
 
 
+def test_dollar_field_suffix_does_not_leak_operator():
+    """边界必须锚在标识符起点之外：仅写 `(?<!\\$)` 时 `$raw_rank` 会在内部匹配出算子 `rank`。
+
+    （OCR review medium 发现：负向后顾只拦 `$` 紧跟的那一个起始位置。）
+    """
+    st = E._parse_expression_structure("sig = TS_MEAN($raw_rank, 20)")
+    assert st["operators"] == ["ts_mean"]
+    assert "rank" not in st["operators"]
+
+    st2 = E._parse_expression_structure("sig = TS_MEAN($my_volume_rank, 20)\nRANK(sig)")
+    assert st2["operators"] == ["ts_mean", "rank"], "只有独立位置的 RANK 才算算子"
+
+
+def test_real_operator_at_boundaries_still_detected():
+    """收紧边界后，正常写法（行首/括号/逗号/空格后）不得漏识别。"""
+    expr = ("sig = CS_ZSCORE(TS_MEAN(CHIP_PEAK_LOC($adj_close, $volume, 20, $float_cap), 40))\n"
+            "CS_NEUTRALIZE(sig, $industry_sw_l1)")
+    ops = E._parse_expression_structure(expr)["operators"]
+    assert set(ops) >= {"chip_peak_loc", "ts_mean", "cs_zscore", "cs_neutralize"}
+
+
+def test_no_spurious_operator_from_plain_variables():
+    """普通字段（无 $ 冲突）不得凭空产出算子。"""
+    st = E._parse_expression_structure("sig = TS_MEAN($adj_close, 20)\nCS_ZSCORE(sig)")
+    assert st["operators"] == ["ts_mean", "cs_zscore"]
+
+
 # ── 3. 回落语义 ──
 
 
@@ -150,6 +177,46 @@ def test_static_fallback_when_registry_unavailable(monkeypatch):
     assert "cs_neutralize" in names
     # 兜底即旧行为：冷门算子识别不到，但绝不报错
     assert "chip_peak_loc" not in names
+
+
+def test_extension_modules_requested_like_eval(monkeypatch):
+    """与 `dsl/eval.py` 同源：构造命名空间时必须请求环境声明的扩展算子。
+
+    （OCR review low 发现：无参 `build_operator_namespace()` 只含内置算子，
+    扩展算子会在记忆层复现同一类"结构性失明"。）
+    """
+    import alphaagent.dsl.registry as reg
+
+    seen: dict = {}
+
+    def fake_build(**kwargs):
+        seen.update(kwargs)
+        return {"TS_MEAN": object(), "MY_EXT_OP": object()}
+
+    monkeypatch.setattr(reg, "build_operator_namespace", fake_build)
+    monkeypatch.setattr(reg, "resolve_extension_modules", lambda *_a, **_k: ["my.ext"])
+    monkeypatch.setattr(E, "_OPERATOR_NAMES", None)
+
+    names = E._operator_names()
+    assert seen.get("extension_modules") == ["my.ext"], "必须像 eval.py 一样请求扩展算子"
+    assert "my_ext_op" in names
+
+
+def test_extension_failure_degrades_to_builtin(monkeypatch):
+    """扩展算子加载失败 → 只退到"仅内置"，不得整体退到静态白名单。"""
+    import alphaagent.dsl.registry as reg
+
+    def fake_build(**kwargs):
+        if kwargs.get("extension_modules"):
+            raise RuntimeError("bad extension module")
+        return {"TS_MEAN": object(), "CHIP_PEAK_LOC": object()}
+
+    monkeypatch.setattr(reg, "build_operator_namespace", fake_build)
+    monkeypatch.setattr(reg, "resolve_extension_modules", lambda *_a, **_k: ["bad.ext"])
+    monkeypatch.setattr(E, "_OPERATOR_NAMES", None)
+
+    names = E._operator_names()
+    assert "chip_peak_loc" in names, "内置算子仍须可用"
 
 
 # ── 4. 端到端症状回归 ──

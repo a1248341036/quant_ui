@@ -4,10 +4,13 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 from typing import Any
 
 # ── 正则与已知集合 ──
+
+log = logging.getLogger(__name__)
 
 _TOKEN_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9_]{2,}")
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]{2,}")
@@ -50,9 +53,12 @@ _KNOWN_VARIABLES = frozenset({
     "dt_big_order", "bt_block_trade",
 })
 
-# 算子名匹配：`(?<!\$)` 排除显式字段引用（`$chip_peak_loc`）——筹码/拥挤面字段名
-# 与算子名（CHIP_PEAK_LOC / CROWD_SHARE）同型，只靠名字无法消歧，`$` 前缀是唯一判据。
-_FUNC_CALL_RE = re.compile(r"(?<!\$)([a-zA-Z_][a-zA-Z0-9_]*)\s*")
+# 算子名匹配：`(?<![\w$])` 把匹配锚定在**标识符起点之外**，排除显式字段引用
+# （`$chip_peak_loc`）——筹码/拥挤面字段名与算子名（CHIP_PEAK_LOC / CROWD_SHARE）同型，
+# 只靠名字无法消歧，`$` 前缀是唯一判据。
+# 注意用 `[\w$]` 而非只写 `\$`：仅写 `\$` 时引擎仍可从字段名**内部**起配
+# （`$raw_rank` 会在下标 4 处匹配出算子 `rank`），契约不成立。
+_FUNC_CALL_RE = re.compile(r"(?<![\w$])([a-zA-Z_][a-zA-Z0-9_]*)\s*")
 _VAR_RE = re.compile(r"\$?([a-zA-Z_][a-zA-Z0-9_]*)")
 _NUM_RE = re.compile(r"\b(\d+(?:\.\d+)?)\b")
 
@@ -65,25 +71,44 @@ def _operator_names() -> frozenset[str]:
     修复（2026-10-18）：此前算子识别只查 `_KNOWN_OPERATORS` 这份硬编码清单，
     清单外的一切算子被静默丢弃 —— `_COLD_OPS` 22/22 与
     `CS_BUCKET`/`CS_GROUP_RANK`/`NEG`/`SIGNAL_BLEND` 从未进入 `operator_list_json`
-    （实测 16324 条含冷门算子的表达式、0 条正确落库），且 `CHIP_PEAK_LOC` 之类
+    （实测 15463 条含冷门算子的表达式、0 条正确落库），且 `CHIP_PEAK_LOC` 之类
     撞上 `chip_*`/`crowd_*` 变量前缀规则被误判成变量。后果是记忆层的算子统计
     （算子分布软引导、按算子检索、算子×面台账）对冷门算子结构性失明，
     而「冷门算子使用率 <2%」这个立项前提正是由这台失明仪器测出的。
 
-    真源：`alphaagent.dsl.registry.build_operator_namespace()`（按
-    `^[A-Z][A-Z0-9_]*$` + callable 自动收集，无需逐算子登记）。注册表不可用时
-    回落静态白名单，行为与旧版一致而非报错。
+    真源与 `dsl/eval.py` 的求值命名空间对齐：内置算子（`build_operator_namespace`
+    按 `^[A-Z][A-Z0-9_]*$` + callable 自动收集，无需逐算子登记）+ 环境声明的扩展算子
+    （`ALPHAAGENT_DSL_EXTENSIONS` / auto_discover，经 `resolve_extension_modules()`）。
+    注：eval.py 还能接收 run 级 `operator_modules` 入参，记忆层无该上下文，故只覆盖
+    环境声明的扩展算子。
+
+    降级链（任何一步失败都不阻断解析）：① 内置 + 扩展 → ② 仅内置 → ③ 静态白名单
+    （= 旧行为）。降级时打 warning 留痕 —— 否则会"静默退回失明状态"而无人察觉，
+    正是本次要消除的症状。
     """
     global _OPERATOR_NAMES
-    if _OPERATOR_NAMES is None:
-        names = set(_KNOWN_OPERATORS)
-        try:
-            from alphaagent.dsl.registry import build_operator_namespace
+    if _OPERATOR_NAMES is not None:
+        return _OPERATOR_NAMES
+    names: set[str] = set()
+    try:
+        from alphaagent.dsl.registry import (
+            build_operator_namespace,
+            resolve_extension_modules,
+        )
 
-            names |= {str(n).lower() for n in build_operator_namespace()}
-        except Exception:  # noqa: BLE001 — 注册表不可用（裁剪环境/导入期异常）时兜底
-            pass
-        _OPERATOR_NAMES = frozenset(names)
+        try:
+            ns = build_operator_namespace(extension_modules=resolve_extension_modules())
+        except Exception as err:  # noqa: BLE001 — 扩展算子加载失败 → 退到仅内置
+            log.warning("DSL 扩展算子加载失败，算子识别退到仅内置算子: %s", err)
+            ns = build_operator_namespace()
+        names |= {str(n).lower() for n in ns}
+    except Exception as err:  # noqa: BLE001 — 注册表整体不可用 → 退到静态白名单
+        log.warning(
+            "DSL 注册表不可用，算子识别退到静态白名单"
+            "（冷门/新增算子将无法识别，operator_list_json 会退化）: %s",
+            err,
+        )
+    _OPERATOR_NAMES = frozenset(_KNOWN_OPERATORS | names)
     return _OPERATOR_NAMES
 
 # ── 编辑 motif 定义 ──
@@ -264,7 +289,7 @@ def _parse_expression_structure(expression: str) -> dict[str, Any]:
 
     # 窗口参数：将算子与其后续常量关联
     window_params: dict[str, list[int | float]] = {}
-    tokens = re.findall(r"(?<!\$)([a-zA-Z_][a-zA-Z0-9_]*)|(\d+(?:\.\d+)?)", text)
+    tokens = re.findall(r"(?<![\w$])([a-zA-Z_][a-zA-Z0-9_]*)|(\d+(?:\.\d+)?)", text)
     op_queue: list[str] = []
     for name_tok, num_tok in tokens:
         if name_tok:

@@ -54,7 +54,7 @@ _COLD_OPS:        22
 
 | 事实 | 数值 |
 |---|---|
-| 含冷门算子的表达式 | **16 324** / 66 829 条（≈24%） |
+| 含冷门算子的表达式（精确，按算子提取） | **15 463** / 66 829 条（≈23%；粗估前缀匹配为 16 324） |
 | 其中 `operator_list_json` 正确记录 | **0** |
 | 逐算子 | `CHIP_PEAK_LOC` 3583→0、`CHIP_COM_W_GAP` 3508→0、`CROWD_SHARE` 803→0 … |
 
@@ -86,22 +86,40 @@ Top3 集中度 = 100.0%            ← 被抬高，触发软引导注入
 
 ## 4. 修复方案
 
-- `_operator_names()`：`DSL 注册表（build_operator_namespace）∪ 静态回落白名单`，进程内缓存。
-  注册表不可用时回落旧行为（不报错、不静默变空）。
+- `_operator_names()`：真源 = `build_operator_namespace(extension_modules=resolve_extension_modules())`
+  ∪ 静态回落白名单，进程内缓存。**与 `dsl/eval.py` 同源**（含内置 + 环境声明的扩展算子）。
+  降级链 ① 内置+扩展 → ② 仅内置 → ③ 静态白名单（= 旧行为），每级降级打 `warning` 留痕 ——
+  否则会"静默退回失明状态"而无人察觉。
 - **`$` 前缀消歧**：`chip_*`/`crowd_*` 在本仓既作筹码/拥挤面**字段**（`facets.py` 按 `chip_` 识面），
-  又作**算子名**。`_FUNC_CALL_RE` 加 `(?<!\$)`、变量循环对 `$` 前缀直接按字段处理 →
-  `$chip_peak_loc` 是字段、`CHIP_PEAK_LOC(...)` 才是算子（修复期由 `test_sspm_refactor.py`
-  的 motif 断言抓到的真实回归点）。
+  又作**算子名**。`_FUNC_CALL_RE` 与 `window_params` 的 token 正则均加 **`(?<![\w$])`**
+  （边界锚在标识符起点之外；只写 `(?<!\$)` 时 `$raw_rank` 仍会在下标 4 处匹配出算子 `rank`），
+  变量循环对 `$` 前缀直接按字段处理 → `$chip_peak_loc` 是字段、`CHIP_PEAK_LOC(...)` 才是算子
+  （该回归点由 `test_sspm_refactor.py` 的 motif 断言在开发期抓到）。
 - 不新增配置项（无阈值/开关），不触碰门槛与判定口径。
 
 ## 5. 验证
 
-- 新增 `tests/test_memory_operator_inventory.py`（11 用例）：冷门/套壳算子全覆盖、
-  **防漂移守卫**（注册表任何算子都必须被识别）、提取语义、`$` 消歧、回落语义、
-  以及**端到端症状回归**（引导块必须看见冷门算子且不再重复推荐已用算子）。
-- 记忆/挖掘相关 14 个测试文件批量回归：除 `test_facet_focus_lock.py` /
+- 新增 `tests/test_memory_operator_inventory.py`（17 用例）：冷门/套壳算子全覆盖、
+  **防漂移守卫**（注册表任何算子都必须被识别）、提取语义、`$` 消歧与**边界内起配**反例、
+  扩展算子同源与两级降级语义、回落语义，以及**端到端症状回归**
+  （引导块必须看见冷门算子且不再重复推荐已用算子）。
+- 记忆/挖掘相关 18 个测试文件批量回归：除 `test_facet_focus_lock.py` /
   `test_facet_focus_scope.py` 的 **3 项在 `main` 基线即失败**（已用 stash 对照确认与本次改动无关）
   之外全部通过。
+- **存量真实数据验证（只读）**：全库含冷门算子的表达式 **15 463 条**，
+  修复后 **15 463/15 463（100%）** 均能识别出对应冷门算子；
+  其中旧 `operator_list_json` 正确记录的为 **0 条** → 15 463 行为回填候选。
+
+## 5b. OCR review 结果与修复（合并前强制）
+
+`ocr review --from main --to fix/memory-operator-inventory` → 1 文件、3 条发现（0 critical / 0 high /
+1 medium / 2 low），**三条全部采纳并修复**：
+
+| 严重度 | 发现 | 处置 |
+|---|---|---|
+| medium | `(?<!\$)` 只拦住紧跟 `$` 的起始位置，引擎仍可从字段名**内部**起配（`$raw_rank` → 误产出算子 `rank`），注释里"`$` 前缀是唯一判据"的契约不成立 | 改 `(?<![\w$])`（两处正则同步），新增反例测试 `test_dollar_field_suffix_does_not_leak_operator` |
+| low | 回落 `except: pass` 完全静默 → 症状复发不可观测 | 改为分级 warning 留痕 + 降级链 |
+| low | 无参 `build_operator_namespace()` 只含内置算子，扩展算子会在记忆层复现同类失明 | 与 `eval.py` 对齐，传 `resolve_extension_modules()`；新增 `test_extension_modules_requested_like_eval` / `test_extension_failure_degrades_to_builtin` |
 
 ## 6. 复现
 
