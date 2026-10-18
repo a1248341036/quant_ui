@@ -1,0 +1,175 @@
+# -*- coding: utf-8 -*-
+"""记忆层算子清单真源回归（2026-10-18 修复）。
+
+背景：`memory/expressions.py` 曾只用硬编码 `_KNOWN_OPERATORS` 识别算子，清单外
+一切算子被静默丢弃 —— `_COLD_OPS` 22/22 与 `CS_BUCKET`/`CS_GROUP_RANK`/`NEG`/
+`SIGNAL_BLEND` 从未进入 `operator_list_json`（实测 16324 条含冷门算子的表达式、
+0 条正确落库），且 `CHIP_PEAK_LOC` 撞 `chip_*` 变量前缀规则被误判成变量 →
+算子分布软引导 / 按算子检索记忆 / 算子×面台账对冷门算子结构性失明。
+
+本文件锁定四件事：
+1. 算子识别真源 = DSL 注册表 ∪ 静态回落白名单；
+2. 冷门算子被识别为算子、且不再被误判为变量（含窗口参数关联）；
+3. 防漂移守卫：DSL 注册表里的任何算子都必须被记忆层识别；
+4. 注册表不可用时优雅回落静态白名单（不报错、不静默变空）。
+"""
+
+from __future__ import annotations
+
+from alphaagent.dsl.registry import build_operator_namespace
+from alphaagent.factor.mining.memory import expressions as E
+from alphaagent.factor.mining.memory.retrieval import (
+    RetrievalMixin,
+    _COLD_OPS,
+    _SHELL_OPS,
+)
+
+COLD_EXPR = (
+    "signal = CHIP_PEAK_LOC($adj_close, $adj_low, $adj_high, $volume, 120, $float_cap)\n"
+    "sig = CS_ZSCORE(TS_MEAN(signal, 40))\n"
+    "r = CS_NEUTRALIZE(sig, CS_BUCKET(LOG($float_cap), 10))\n"
+    "CS_NEUTRALIZE(r, $industry_sw_l1)"
+)
+
+
+def _attempt(op: str, window: int) -> dict:
+    expr = (
+        f"signal = {op}($adj_close, $adj_low, $adj_high, $volume, {window}, $float_cap)\n"
+        f"sig = CS_ZSCORE(TS_MEAN(signal, {window}))\n"
+        "r = CS_NEUTRALIZE(sig, CS_BUCKET(LOG($float_cap), 10))\n"
+        "CS_NEUTRALIZE(r, $industry_sw_l1)"
+    )
+    return {"expression": expr, "ok": True}
+
+
+# ── 1. 真源与覆盖 ──
+
+
+def test_cold_operators_all_recognized():
+    """22 个冷门算子必须全部被识别（修复前为 0/22）。"""
+    names = E._operator_names()
+    missing = sorted({o.lower() for o in _COLD_OPS} - names)
+    assert not missing, f"冷门算子未被识别: {missing}"
+
+
+def test_shell_operators_all_recognized():
+    """套壳算子同样不能缺（CS_BUCKET/CS_GROUP_RANK/NEG/SIGNAL_BLEND 修复前缺失）。"""
+    names = E._operator_names()
+    missing = sorted({o.lower() for o in _SHELL_OPS} - names)
+    assert not missing, f"套壳算子未被识别: {missing}"
+
+
+def test_registry_operators_are_recognized_guard():
+    """防漂移守卫：DSL 注册表新增算子后，记忆层必须自动跟上，无需改本文件。"""
+    registry = {str(n).lower() for n in build_operator_namespace()}
+    assert registry, "注册表为空，守卫失效"
+    assert registry <= E._operator_names()
+
+
+# ── 2. 提取语义 ──
+
+
+def test_cold_operator_extracted_not_variable():
+    st = E._parse_expression_structure(COLD_EXPR)
+    assert "chip_peak_loc" in st["operators"]
+    assert "chip_peak_loc" not in st["variables"], "冷门算子被误判为变量（chip_* 前缀撞名）"
+    assert "adj_close" in st["variables"] and "volume" in st["variables"]
+    assert "cs_zscore" in st["operators"] and "ts_mean" in st["operators"]
+    assert "cs_bucket" in st["operators"], "套壳算子 CS_BUCKET 缺失"
+
+
+def test_cold_operator_window_params_captured():
+    st = E._parse_expression_structure(COLD_EXPR)
+    assert st["window_params"].get("chip_peak_loc") == [120]
+    assert st["window_params"].get("ts_mean") == [40]
+
+
+def test_expression_features_feeds_operator_list():
+    """ingestion 落库路径（expression_features → operator_list_json）必须带冷门算子。"""
+    feats = E.expression_features(COLD_EXPR)
+    assert "chip_peak_loc" in feats["operators"]
+    assert "chip_peak_loc" not in feats["variables"]
+    assert E.expression_ops(COLD_EXPR) == feats["operators"]
+
+
+def test_crowd_operator_not_treated_as_variable():
+    """CROWD_* 与 crowd_ 变量前缀同型，同样不能落进 variables。"""
+    expr = "sig = CS_ZSCORE(CROWD_SHARE($volume, 10))\nCS_NEUTRALIZE(sig, $industry_sw_l1)"
+    st = E._parse_expression_structure(expr)
+    assert "crowd_share" in st["operators"]
+    assert "crowd_share" not in st["variables"]
+
+
+# ── 2b. `$` 前缀消歧（算子名与字段名同型）──
+
+
+def test_dollar_prefixed_name_is_field_not_operator():
+    """`$chip_peak_loc` 是筹码面**字段**，不是 CHIP_PEAK_LOC 算子。
+
+    `chip_*`/`crowd_*` 在本仓既作筹码/拥挤面字段（facets.py 按 `chip_` 前缀识面），
+    又作算子名（CHIP_PEAK_LOC / CROWD_SHARE）；唯一判据是 `$` 前缀。
+    """
+    st = E._parse_expression_structure("RANK(TS_MEAN($chip_peak_loc, 20))")
+    assert "chip_peak_loc" not in st["operators"]
+    assert "chip_peak_loc" in st["variables"]
+    assert "chip_peak_loc" not in st["window_params"], "$ 前缀字段不得被当算子关联窗口"
+
+
+def test_bare_and_dollar_forms_coexist():
+    """同一表达式里裸算子与 `$` 同名字段各归其位。"""
+    expr = "sig = CS_ZSCORE(CHIP_PEAK_LOC($adj_close, $volume, 20, $float_cap))\n" \
+           "base = TS_MEAN($chip_peak_loc, 20)\nCS_NEUTRALIZE(sig, $industry_sw_l1)"
+    st = E._parse_expression_structure(expr)
+    assert "chip_peak_loc" in st["operators"]
+    assert "chip_peak_loc" in st["variables"]
+
+
+def test_dollar_field_swap_keeps_edit_motif():
+    """端到端：字段替换 motif 仍判 feature_swap_chip（修复期的回归点）。"""
+    from alphaagent.factor.mining.memory.expressions import extract_edit_motif
+
+    parent = "RANK(TS_MEAN($close, 20))"
+    child = "RANK(TS_MEAN($chip_peak_loc, 20))"
+    assert extract_edit_motif(parent, child) == "feature_swap_chip"
+
+
+# ── 3. 回落语义 ──
+
+
+def test_static_fallback_when_registry_unavailable(monkeypatch):
+    """注册表导入/调用失败 → 回落静态白名单，不抛异常（退化为旧行为而非崩掉）。"""
+    import alphaagent.dsl.registry as reg
+
+    def _boom(*_a, **_k):
+        raise ImportError("simulated registry failure")
+
+    monkeypatch.setattr(reg, "build_operator_namespace", _boom)
+    monkeypatch.setattr(E, "_OPERATOR_NAMES", None)
+    names = E._operator_names()
+    assert "ts_mean" in names
+    assert "cs_neutralize" in names
+    # 兜底即旧行为：冷门算子识别不到，但绝不报错
+    assert "chip_peak_loc" not in names
+
+
+# ── 4. 端到端症状回归 ──
+
+
+def test_operator_diversity_block_sees_cold_operators():
+    """修复前：20 次尝试全用冷门算子，统计器仍读到冷门使用 0 次、
+    并把刚用过的算子当「从未用过」推荐回来。修复后必须能看见。"""
+    attempts = [_attempt("CHIP_PEAK_LOC", 20 + i) for i in range(12)]
+    attempts += [_attempt("CROWD_SHARE", 10 + i) for i in range(8)]
+
+    block = RetrievalMixin._operator_diversity_block(None, attempts)
+
+    assert block, "扎堆（Top3 100%）时应当注入软引导"
+    # 分布里必须出现冷门算子及其 [冷门] 标签
+    assert "CHIP_PEAK_LOC" in block and "[冷门]" in block
+    assert "CROWD_SHARE" in block
+    # 用过的算子不得再出现在「低频/未用」推荐清单里
+    assert "CHIP_PEAK_LOC（" not in block
+    assert "CROWD_SHARE（" not in block
+    # 真正没用过的冷门算子仍应被推荐
+    unused = sorted(set(_COLD_OPS) - {"CHIP_PEAK_LOC", "CROWD_SHARE"})
+    assert any(f"{op}（从未用过）" in block for op in unused)

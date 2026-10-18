@@ -13,6 +13,10 @@ _TOKEN_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9_]{2,}")
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]{2,}")
 _STOPWORDS = {"add", "subtract", "multiply", "divide", "ts", "cs", "mean", "std", "rank", "expr", "factor"}
 
+# 静态回落白名单：算子识别的**唯一真源是 DSL 注册表**（见 _operator_names），
+# 这份硬编码清单只在注册表导入失败时兜底。2026-10-18 前的版本只认它，导致清单外
+# 一切算子被静默丢弃（实测 _COLD_OPS 22/22 与 CS_BUCKET/CS_GROUP_RANK/NEG/SIGNAL_BLEND
+# 全部缺失）。不要再往这里加算子——加算子的真源是 dsl/core/operators.py。
 _KNOWN_OPERATORS = frozenset({
     # 时序算子
     "ts_mean", "ts_sum", "ts_std", "ts_var", "ts_median", "ts_max", "ts_min",
@@ -46,9 +50,41 @@ _KNOWN_VARIABLES = frozenset({
     "dt_big_order", "bt_block_trade",
 })
 
-_FUNC_CALL_RE = re.compile(r"([a-zA-Z_][a-zA-Z0-9_]*)\s*")
+# 算子名匹配：`(?<!\$)` 排除显式字段引用（`$chip_peak_loc`）——筹码/拥挤面字段名
+# 与算子名（CHIP_PEAK_LOC / CROWD_SHARE）同型，只靠名字无法消歧，`$` 前缀是唯一判据。
+_FUNC_CALL_RE = re.compile(r"(?<!\$)([a-zA-Z_][a-zA-Z0-9_]*)\s*")
 _VAR_RE = re.compile(r"\$?([a-zA-Z_][a-zA-Z0-9_]*)")
 _NUM_RE = re.compile(r"\b(\d+(?:\.\d+)?)\b")
+
+_OPERATOR_NAMES: frozenset[str] | None = None
+
+
+def _operator_names() -> frozenset[str]:
+    """算子名全集（小写）= DSL 注册表 ∪ 静态回落白名单；进程内缓存一次。
+
+    修复（2026-10-18）：此前算子识别只查 `_KNOWN_OPERATORS` 这份硬编码清单，
+    清单外的一切算子被静默丢弃 —— `_COLD_OPS` 22/22 与
+    `CS_BUCKET`/`CS_GROUP_RANK`/`NEG`/`SIGNAL_BLEND` 从未进入 `operator_list_json`
+    （实测 16324 条含冷门算子的表达式、0 条正确落库），且 `CHIP_PEAK_LOC` 之类
+    撞上 `chip_*`/`crowd_*` 变量前缀规则被误判成变量。后果是记忆层的算子统计
+    （算子分布软引导、按算子检索、算子×面台账）对冷门算子结构性失明，
+    而「冷门算子使用率 <2%」这个立项前提正是由这台失明仪器测出的。
+
+    真源：`alphaagent.dsl.registry.build_operator_namespace()`（按
+    `^[A-Z][A-Z0-9_]*$` + callable 自动收集，无需逐算子登记）。注册表不可用时
+    回落静态白名单，行为与旧版一致而非报错。
+    """
+    global _OPERATOR_NAMES
+    if _OPERATOR_NAMES is None:
+        names = set(_KNOWN_OPERATORS)
+        try:
+            from alphaagent.dsl.registry import build_operator_namespace
+
+            names |= {str(n).lower() for n in build_operator_namespace()}
+        except Exception:  # noqa: BLE001 — 注册表不可用（裁剪环境/导入期异常）时兜底
+            pass
+        _OPERATOR_NAMES = frozenset(names)
+    return _OPERATOR_NAMES
 
 # ── 编辑 motif 定义 ──
 
@@ -192,12 +228,13 @@ def _parse_expression_structure(expression: str) -> dict[str, Any]:
         return {"operators": [], "variables": [], "window_params": {}, "constants": [], "fingerprint": ""}
 
     text = str(expression).strip()
+    known_ops = _operator_names()
 
     # 提取算子（函数名）
     operators: list[str] = []
     for match in _FUNC_CALL_RE.finditer(text):
         name = match.group(1).lower()
-        if name in _KNOWN_OPERATORS:
+        if name in known_ops:
             operators.append(name)
 
     # 提取变量（$close → close）
@@ -205,8 +242,9 @@ def _parse_expression_structure(expression: str) -> dict[str, Any]:
     seen_vars: set[str] = set()
     for match in _VAR_RE.finditer(text):
         name = match.group(1).lower()
-        # 排除算子名和纯数字
-        if name in _KNOWN_OPERATORS:
+        # 显式字段引用（$chip_peak_loc）优先按字段处理：`chip_*`/`crowd_*` 既可能是
+        # 筹码/拥挤面字段，也可能与同名算子（CHIP_PEAK_LOC）撞名，靠 `$` 前缀消歧。
+        if not match.group(0).startswith("$") and name in known_ops:
             continue
         if name in {"true", "false", "null", "none", "nan", "inf"}:
             continue
@@ -226,12 +264,12 @@ def _parse_expression_structure(expression: str) -> dict[str, Any]:
 
     # 窗口参数：将算子与其后续常量关联
     window_params: dict[str, list[int | float]] = {}
-    tokens = re.findall(r"([a-zA-Z_][a-zA-Z0-9_]*)|(\d+(?:\.\d+)?)", text)
+    tokens = re.findall(r"(?<!\$)([a-zA-Z_][a-zA-Z0-9_]*)|(\d+(?:\.\d+)?)", text)
     op_queue: list[str] = []
     for name_tok, num_tok in tokens:
         if name_tok:
             lower = name_tok.lower()
-            if lower in _KNOWN_OPERATORS:
+            if lower in known_ops:
                 op_queue.append(lower)
         elif num_tok and op_queue:
             val = int(num_tok) if "." not in num_tok else float(num_tok)
