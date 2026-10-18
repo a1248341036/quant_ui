@@ -99,10 +99,10 @@ Top3 集中度 = 100.0%            ← 被抬高，触发软引导注入
 
 ## 5. 验证
 
-- 新增 `tests/test_memory_operator_inventory.py`（17 用例）：冷门/套壳算子全覆盖、
+- 新增 `tests/test_memory_operator_inventory.py`（19 用例）：冷门/套壳算子全覆盖、
   **防漂移守卫**（注册表任何算子都必须被识别）、提取语义、`$` 消歧与**边界内起配**反例、
-  扩展算子同源与两级降级语义、回落语义，以及**端到端症状回归**
-  （引导块必须看见冷门算子且不再重复推荐已用算子）。
+  窗口参数尾数泄漏反例、扩展算子同源与两级降级语义、**降级不缓存**、回落语义，
+  以及**端到端症状回归**（引导块必须看见冷门算子且不再重复推荐已用算子）。
 - 记忆/挖掘相关 18 个测试文件批量回归：除 `test_facet_focus_lock.py` /
   `test_facet_focus_scope.py` 的 **3 项在 `main` 基线即失败**（已用 stash 对照确认与本次改动无关）
   之外全部通过。
@@ -112,14 +112,24 @@ Top3 集中度 = 100.0%            ← 被抬高，触发软引导注入
 
 ## 5b. OCR review 结果与修复（合并前强制）
 
-`ocr review --from main --to fix/memory-operator-inventory` → 1 文件、3 条发现（0 critical / 0 high /
-1 medium / 2 low），**三条全部采纳并修复**：
+**第 1 轮**（`--from main --to fix/memory-operator-inventory`）：1 文件、3 条发现
+（0 critical / 0 high / 1 medium / 2 low），三条全部采纳并修复：
 
 | 严重度 | 发现 | 处置 |
 |---|---|---|
 | medium | `(?<!\$)` 只拦住紧跟 `$` 的起始位置，引擎仍可从字段名**内部**起配（`$raw_rank` → 误产出算子 `rank`），注释里"`$` 前缀是唯一判据"的契约不成立 | 改 `(?<![\w$])`（两处正则同步），新增反例测试 `test_dollar_field_suffix_does_not_leak_operator` |
 | low | 回落 `except: pass` 完全静默 → 症状复发不可观测 | 改为分级 warning 留痕 + 降级链 |
-| low | 无参 `build_operator_namespace()` 只含内置算子，扩展算子会在记忆层复现同类失明 | 与 `eval.py` 对齐，传 `resolve_extension_modules()`；新增 `test_extension_modules_requested_like_eval` / `test_extension_failure_degrades_to_builtin` |
+| low | 无参 `build_operator_namespace()` 只含内置算子，扩展算子会在记忆层复现同类失明 | 与 `eval.py` 对齐，传 `resolve_extension_modules()`；新增同源/降级两项测试 |
+
+**第 2 轮**（复验）：2 条发现（0 critical / 0 high / 1 medium / 1 low），两条均采纳：
+
+| 严重度 | 发现 | 处置 |
+|---|---|---|
+| medium（**本轮修复引入的回归**） | lookbehind 只罩标识符分支，数字分支 `(\d+…)` 无边界约束 → `$adv20` / `$industry_sw_l1` 的**尾部数字**被当独立常量关联到最近算子（`TS_MEAN($adv20, 5)` → `{"ts_mean": [20, 5]}`），赘余窗口会写进 `window_params_json` 并干扰 motif 窗口变化判定 | lookbehind 提前到整个 alternation（`(?<![\w$])(?:A|B)`），新增 `test_window_params_no_digit_leak_from_dollar_fields` |
+| low | 降级结果同样被永久缓存 → 一次瞬时失败（扩展文件缺失/导入抖动）把进程钉死在降级态，症状从"静默失明"变成"一次 warning 后永久失明" | **只有 ① 内置+扩展 成功才写缓存**；降级结果不缓存（下次调用重试），告警改为每进程一次防刷屏；新增 `test_degraded_result_not_cached` |
+
+第 1 轮的 medium 与第 2 轮的 medium 都属同一族"命名/边界粒度"问题 —— 这类问题的
+共同后果是**静默的统计口径漂移**，因此每轮都以回归断言锁定，而不是只改代码。
 
 ## 6. 复现
 

@@ -63,10 +63,19 @@ _VAR_RE = re.compile(r"\$?([a-zA-Z_][a-zA-Z0-9_]*)")
 _NUM_RE = re.compile(r"\b(\d+(?:\.\d+)?)\b")
 
 _OPERATOR_NAMES: frozenset[str] | None = None
+_DEGRADED_WARNED = False
+
+
+def _warn_degraded(msg: str, err: BaseException) -> None:
+    """降级告警：每进程只报一次（防刷屏），但降级结果不缓存、下次调用会重试。"""
+    global _DEGRADED_WARNED
+    if not _DEGRADED_WARNED:
+        _DEGRADED_WARNED = True
+        log.warning("%s: %s", msg, err)
 
 
 def _operator_names() -> frozenset[str]:
-    """算子名全集（小写）= DSL 注册表 ∪ 静态回落白名单；进程内缓存一次。
+    """算子名全集（小写）= DSL 注册表 ∪ 静态回落白名单。
 
     修复（2026-10-18）：此前算子识别只查 `_KNOWN_OPERATORS` 这份硬编码清单，
     清单外的一切算子被静默丢弃 —— `_COLD_OPS` 22/22 与
@@ -83,13 +92,15 @@ def _operator_names() -> frozenset[str]:
     环境声明的扩展算子。
 
     降级链（任何一步失败都不阻断解析）：① 内置 + 扩展 → ② 仅内置 → ③ 静态白名单
-    （= 旧行为）。降级时打 warning 留痕 —— 否则会"静默退回失明状态"而无人察觉，
-    正是本次要消除的症状。
+    （= 旧行为）。**只有 ① 成功才写缓存**：降级结果不缓存（下次调用重试），否则一次
+    瞬时失败（扩展文件缺失/导入抖动）会把整个进程钉死在降级态 —— 那正是本次要消除的
+    "结构性失明"，只是从静默退化变成"一次 warning 后永久退化"。降级本身另打 warning 留痕。
     """
     global _OPERATOR_NAMES
     if _OPERATOR_NAMES is not None:
         return _OPERATOR_NAMES
     names: set[str] = set()
+    resolved = False
     try:
         from alphaagent.dsl.registry import (
             build_operator_namespace,
@@ -98,18 +109,32 @@ def _operator_names() -> frozenset[str]:
 
         try:
             ns = build_operator_namespace(extension_modules=resolve_extension_modules())
+            names |= {str(n).lower() for n in ns}
+            resolved = True
         except Exception as err:  # noqa: BLE001 — 扩展算子加载失败 → 退到仅内置
-            log.warning("DSL 扩展算子加载失败，算子识别退到仅内置算子: %s", err)
-            ns = build_operator_namespace()
-        names |= {str(n).lower() for n in ns}
-    except Exception as err:  # noqa: BLE001 — 注册表整体不可用 → 退到静态白名单
-        log.warning(
+            _warn_degraded("DSL 扩展算子加载失败，算子识别退到仅内置算子", err)
+
+        if not resolved:
+            try:
+                names |= {str(n).lower() for n in build_operator_namespace()}
+            except Exception as err:  # noqa: BLE001 — 注册表不可用 → 退到静态白名单
+                _warn_degraded(
+                    "DSL 注册表不可用，算子识别退到静态白名单"
+                    "（冷门/新增算子将无法识别，operator_list_json 会退化）",
+                    err,
+                )
+    except Exception as err:  # noqa: BLE001 — 注册表 import 期异常 → 退到静态白名单
+        _warn_degraded(
             "DSL 注册表不可用，算子识别退到静态白名单"
-            "（冷门/新增算子将无法识别，operator_list_json 会退化）: %s",
+            "（冷门/新增算子将无法识别，operator_list_json 会退化）",
             err,
         )
-    _OPERATOR_NAMES = frozenset(_KNOWN_OPERATORS | names)
-    return _OPERATOR_NAMES
+
+    result = frozenset(_KNOWN_OPERATORS | names)
+    if resolved:
+        _OPERATOR_NAMES = result
+        _DEGRADED_WARNED = False
+    return result
 
 # ── 编辑 motif 定义 ──
 
@@ -289,7 +314,10 @@ def _parse_expression_structure(expression: str) -> dict[str, Any]:
 
     # 窗口参数：将算子与其后续常量关联
     window_params: dict[str, list[int | float]] = {}
-    tokens = re.findall(r"(?<![\w$])([a-zA-Z_][a-zA-Z0-9_]*)|(\d+(?:\.\d+)?)", text)
+    # lookbehind 必须罩住**整个 alternation**：只约束标识符分支时，数字分支仍会从
+    # `$adv20` / `$industry_sw_l1` 内部起配，把尾部数字当成独立常量塞给最近算子
+    # （`TS_MEAN($adv20, 5)` → `{"ts_mean": [20, 5]}`）。
+    tokens = re.findall(r"(?<![\w$])(?:([a-zA-Z_][a-zA-Z0-9_]*)|(\d+(?:\.\d+)?))", text)
     op_queue: list[str] = []
     for name_tok, num_tok in tokens:
         if name_tok:

@@ -160,6 +160,25 @@ def test_no_spurious_operator_from_plain_variables():
     assert st["operators"] == ["ts_mean", "cs_zscore"]
 
 
+def test_window_params_no_digit_leak_from_dollar_fields():
+    """`$adv20` 这类带数字后缀的字段，其尾部数字不得被当成独立常量关联到算子。
+
+    （OCR review 第二轮 medium 发现：lookbehind 只罩标识符分支时，数字分支仍会从
+    字段名内部起配 → `TS_MEAN($adv20, 5)` 产出 `{"ts_mean": [20, 5]}`。）
+    """
+    st = E._parse_expression_structure("sig = TS_MEAN($adv20, 5)")
+    assert st["window_params"] == {"ts_mean": [5]}
+
+    # 真实冷门表达式的末行 `CS_NEUTRALIZE(r, $industry_sw_l1)` 不得给壳算子记入 [1]
+    cold = E._parse_expression_structure(COLD_EXPR)
+    assert "cs_neutralize" not in cold["window_params"]
+    assert cold["window_params"].get("chip_peak_loc") == [120]
+
+    # 正常窗口字面量仍须被关联（收紧边界不得误伤）
+    st3 = E._parse_expression_structure("sig = TS_MEAN($adj_close, 20)\nEMA(sig, 12)")
+    assert st3["window_params"] == {"ts_mean": [20], "ema": [12]}
+
+
 # ── 3. 回落语义 ──
 
 
@@ -217,6 +236,34 @@ def test_extension_failure_degrades_to_builtin(monkeypatch):
 
     names = E._operator_names()
     assert "chip_peak_loc" in names, "内置算子仍须可用"
+
+
+def test_degraded_result_not_cached(monkeypatch):
+    """降级结果不得被永久缓存：注册表恢复后必须自动恢复。
+
+    （OCR review 第二轮 low 发现：瞬时失败若被固化进 `_OPERATOR_NAMES`，
+    整个进程会一直停在降级态 —— 症状从"静默失明"变成"一次 warning 后永久失明"。）
+    """
+    import alphaagent.dsl.registry as reg
+
+    state = {"fail": True}
+
+    def flaky_build(**_kwargs):
+        if state["fail"]:
+            raise RuntimeError("transient registry failure")
+        return {"TS_MEAN": object(), "CHIP_PEAK_LOC": object()}
+
+    monkeypatch.setattr(reg, "build_operator_namespace", flaky_build)
+    monkeypatch.setattr(reg, "resolve_extension_modules", lambda *_a, **_k: [])
+    monkeypatch.setattr(E, "_OPERATOR_NAMES", None)
+
+    degraded = E._operator_names()
+    assert "chip_peak_loc" not in degraded, "瞬时失败时应退到静态白名单"
+
+    state["fail"] = False  # 注册表恢复可用
+    recovered = E._operator_names()
+    assert "chip_peak_loc" in recovered, "降级结果被永久缓存，进程被钉死在失明态"
+    assert "chip_peak_loc" in E._operator_names(), "成功结果应当被缓存"
 
 
 # ── 4. 端到端症状回归 ──
