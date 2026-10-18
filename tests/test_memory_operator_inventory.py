@@ -214,6 +214,30 @@ def test_local_variable_shadowing_operator_name_not_counted():
     assert set(st["window_params"]) == {"ts_mean"}
 
 
+def test_scientific_and_signed_literals_aligned_with_parser():
+    """窗口/常量提取须与 DSL parser 数字语法一致（正负号 + 科学计数法）。
+
+    （OCR review 第四轮 medium：`1e6` 被拆成 `1` 挂到算子——偏差 6 个数量级；
+    `-5` 丢负号；`_NUM_RE` 侧又把 `1e6` 整个跳过，两条路径口径不一致。）
+    parser 同源模式见 `dsl/core/parser.py` 的 `number_pattern`。
+    """
+    st = E._parse_expression_structure("sig = TS_MEAN($close, 1e6)")
+    assert st["window_params"] == {"ts_mean": [1_000_000.0]}
+    assert st["constants"] == [1_000_000.0]
+
+    st2 = E._parse_expression_structure("sig = TS_MEAN($close, -5)")
+    assert st2["window_params"] == {"ts_mean": [-5]}
+    assert st2["constants"] == [-5]
+
+    st3 = E._parse_expression_structure("sig = TS_MEAN($close, .5)")
+    assert st3["window_params"] == {"ts_mean": [0.5]}
+
+    # 字段名/频段里的数字仍不得泄漏，正常窗口仍是整数
+    st4 = E._parse_expression_structure("sig = TS_MEAN($adv20, 5)\ns2 = TS_MEAN($close@60m, 20)")
+    assert st4["window_params"] == {"ts_mean": [5, 20]}
+    assert st4["constants"] == [5, 20]
+
+
 # ── 3. 回落语义 ──
 
 
@@ -335,6 +359,58 @@ def test_success_result_cached_without_retry(monkeypatch):
         E._operator_names()
     assert state["calls"] == calls
     assert E._operator_names() is E._operator_names()
+
+
+def test_degraded_warning_reports_final_tier(monkeypatch, caplog):
+    """双重失败时告警文案必须反映**最终**降级态（静态白名单）。
+
+    （OCR review 第四轮 low：先失败于扩展、再失败于内置时，"退到仅内置"会先把
+    每进程一次的告警额度用掉，最终日志宣称仅内置、实际只剩静态白名单。）
+    """
+    import logging as _logging
+
+    import alphaagent.dsl.registry as reg
+
+    def _boom(**_k):
+        raise RuntimeError("registry down")
+
+    monkeypatch.setattr(reg, "build_operator_namespace", _boom)
+    monkeypatch.setattr(reg, "resolve_extension_modules", lambda *_a, **_k: [])
+    monkeypatch.setattr(E, "_OPERATOR_NAMES", None)
+    monkeypatch.setattr(E, "_OPERATOR_NAMES_DEGRADED_AT", None)
+    monkeypatch.setattr(E, "_DEGRADED_WARNED", False)
+
+    with caplog.at_level(_logging.WARNING, logger=E.__name__):
+        E._operator_names()
+
+    text = " ".join(r.getMessage() for r in caplog.records)
+    assert "静态白名单" in text, f"告警未反映最终档位: {text!r}"
+    assert "退到仅内置算子" not in text
+
+
+def test_degraded_warning_reports_builtin_tier(monkeypatch, caplog):
+    """只失败于扩展时，告警文案应为"退到仅内置算子"。"""
+    import logging as _logging
+
+    import alphaagent.dsl.registry as reg
+
+    def fake_build(**kwargs):
+        if kwargs.get("extension_modules"):
+            raise RuntimeError("bad extension module")
+        return {"TS_MEAN": object(), "CHIP_PEAK_LOC": object()}
+
+    monkeypatch.setattr(reg, "build_operator_namespace", fake_build)
+    monkeypatch.setattr(reg, "resolve_extension_modules", lambda *_a, **_k: ["bad.ext"])
+    monkeypatch.setattr(E, "_OPERATOR_NAMES", None)
+    monkeypatch.setattr(E, "_OPERATOR_NAMES_DEGRADED_AT", None)
+    monkeypatch.setattr(E, "_DEGRADED_WARNED", False)
+
+    with caplog.at_level(_logging.WARNING, logger=E.__name__):
+        E._operator_names()
+
+    text = " ".join(r.getMessage() for r in caplog.records)
+    assert "退到仅内置算子" in text
+    assert "静态白名单" not in text
 
 
 # ── 4. 端到端症状回归 ──

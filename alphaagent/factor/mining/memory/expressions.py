@@ -68,7 +68,22 @@ _KNOWN_VARIABLES = frozenset({
 # ③ 名字仍须落在 `_operator_names()` 内。
 _FUNC_CALL_RE = re.compile(r"(?<![\w$@])([a-zA-Z_][a-zA-Z0-9_]*)(?=\s*\()")
 _VAR_RE = re.compile(r"\$?([a-zA-Z_][a-zA-Z0-9_]*)")
-_NUM_RE = re.compile(r"\b(\d+(?:\.\d+)?)\b")
+# 数字字面量：与 DSL parser 同源（`dsl/core/parser.py` 的 `number_pattern` =
+# `[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?`，DSL 一等支持正负号与科学计数法）。
+# 记忆层不能直接复用 pyparsing 表达式，故此处维护同一语法；**改 DSL 数字语法需同步这里**。
+# 两侧 `(?<![\w.$@])` / `(?![\w.])` 防从标识符或 `@freq` 后缀内部起配
+# （`$adv20` 的 `20`、`$close@60m` 的 `60`）。
+_NUM_LITERAL = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?"
+_NUM_RE = re.compile(rf"(?<![\w.$@])({_NUM_LITERAL})(?![\w.])")
+
+
+def _num_literal(raw: str) -> int | float:
+    """数字字面量 → int（可整数化时）/ float（小数、科学计数法）。"""
+    try:
+        return int(raw)
+    except ValueError:
+        return float(raw)
+
 
 _OPERATOR_NAMES: frozenset[str] | None = None
 _OPERATOR_NAMES_DEGRADED_AT: float | None = None
@@ -107,7 +122,9 @@ def _operator_names() -> frozenset[str]:
     · **但也不每条表达式都重试** —— 持续性故障（扩展模块配置错、import 期报错）下
       `registry.load_operator_module` 会逐次重新 `exec_module`，批量回放时开销可观。
     故：① 成功的集合永久缓存；降级集合缓存 `OPERATOR_NAMES_RETRY_COOLDOWN_S` 秒，
-    窗口内直接复用、过期后重试注册表。降级本身另打 warning 留痕（每进程一次）。
+    窗口内直接复用、过期后重试注册表。降级告警**在回落链落定后**按最终档位打一次
+    （每进程一次）—— 不这样做的话，先失败于扩展、再失败于内置时，日志会宣称"退到仅内置"
+    而实际只剩静态白名单，诊断时被误导。
     """
     global _OPERATOR_NAMES, _OPERATOR_NAMES_DEGRADED_AT
     if _OPERATOR_NAMES is not None:
@@ -117,6 +134,8 @@ def _operator_names() -> frozenset[str]:
             return _OPERATOR_NAMES  # 降级结果：冷却窗口内复用，避免高频重复加载扩展
     names: set[str] = set()
     resolved = False
+    builtin_only = False
+    failure: BaseException | None = None
     try:
         from alphaagent.dsl.registry import (
             build_operator_namespace,
@@ -127,24 +146,27 @@ def _operator_names() -> frozenset[str]:
             ns = build_operator_namespace(extension_modules=resolve_extension_modules())
             names |= {str(n).lower() for n in ns}
             resolved = True
-        except Exception as err:  # noqa: BLE001 — 扩展算子加载失败 → 退到仅内置
-            _warn_degraded("DSL 扩展算子加载失败，算子识别退到仅内置算子", err)
+        except Exception as err:  # noqa: BLE001 — 扩展算子加载失败 → 试仅内置
+            failure = err
 
         if not resolved:
             try:
                 names |= {str(n).lower() for n in build_operator_namespace()}
+                builtin_only = True
             except Exception as err:  # noqa: BLE001 — 注册表不可用 → 退到静态白名单
-                _warn_degraded(
-                    "DSL 注册表不可用，算子识别退到静态白名单"
-                    "（冷门/新增算子将无法识别，operator_list_json 会退化）",
-                    err,
-                )
+                failure = err
     except Exception as err:  # noqa: BLE001 — 注册表 import 期异常 → 退到静态白名单
-        _warn_degraded(
-            "DSL 注册表不可用，算子识别退到静态白名单"
-            "（冷门/新增算子将无法识别，operator_list_json 会退化）",
-            err,
-        )
+        failure = err
+
+    if failure is not None:
+        if builtin_only:
+            _warn_degraded("DSL 扩展算子加载失败，算子识别退到仅内置算子", failure)
+        else:
+            _warn_degraded(
+                "DSL 注册表不可用，算子识别退到静态白名单"
+                "（冷门/新增算子将无法识别，operator_list_json 会退化）",
+                failure,
+            )
 
     result = frozenset(_KNOWN_OPERATORS | names)
     if resolved:
@@ -326,11 +348,10 @@ def _parse_expression_structure(expression: str) -> dict[str, Any]:
                 variables.append(name)
                 seen_vars.add(name)
 
-    # 提取数字常量
+    # 提取数字常量（与 DSL parser 数字语法同源：正负号 + 科学计数法）
     constants: list[int | float] = []
     for match in _NUM_RE.finditer(text):
-        val = match.group(1)
-        constants.append(int(val) if "." not in val else float(val))
+        constants.append(_num_literal(match.group(1)))
 
     # 窗口参数：将算子与其后续常量关联
     window_params: dict[str, list[int | float]] = {}
@@ -340,8 +361,10 @@ def _parse_expression_structure(expression: str) -> dict[str, Any]:
     #    数字当成独立常量塞给最近算子（`TS_MEAN($adv20, 5)` → `{"ts_mean": [20, 5]}`）。
     # ② 标识符分支要求调用形态 `(`，否则中间变量名（如 `delta`）会被推进 op_queue，
     #    把后续常量挂到变量名下。
+    # 数字分支用 `_NUM_LITERAL`（含正负号/科学计数法），与 parser 对齐：
+    # 只写 `\d+(\.\d+)?` 时 `1e6` 会被拆成 `1`（偏差 6 个数量级）、`-5` 会丢负号。
     tokens = re.findall(
-        r"(?<![\w$@])(?:([a-zA-Z_][a-zA-Z0-9_]*)(?=\s*\()|(\d+(?:\.\d+)?))", text
+        rf"(?<![\w$@])(?:([a-zA-Z_][a-zA-Z0-9_]*)(?=\s*\()|({_NUM_LITERAL}))", text
     )
     op_queue: list[str] = []
     for name_tok, num_tok in tokens:
@@ -350,7 +373,7 @@ def _parse_expression_structure(expression: str) -> dict[str, Any]:
             if lower in known_ops:
                 op_queue.append(lower)
         elif num_tok and op_queue:
-            val = int(num_tok) if "." not in num_tok else float(num_tok)
+            val = _num_literal(num_tok)
             # 最后出现的算子取这个常量
             last_op = op_queue[-1]
             window_params.setdefault(last_op, []).append(val)
