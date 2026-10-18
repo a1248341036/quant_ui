@@ -6,7 +6,10 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import time
 from typing import Any
+
+from .constants import OPERATOR_NAMES_RETRY_COOLDOWN_S
 
 # ── 正则与已知集合 ──
 
@@ -53,21 +56,27 @@ _KNOWN_VARIABLES = frozenset({
     "dt_big_order", "bt_block_trade",
 })
 
-# 算子名匹配：`(?<![\w$])` 把匹配锚定在**标识符起点之外**，排除显式字段引用
-# （`$chip_peak_loc`）——筹码/拥挤面字段名与算子名（CHIP_PEAK_LOC / CROWD_SHARE）同型，
-# 只靠名字无法消歧，`$` 前缀是唯一判据。
-# 注意用 `[\w$]` 而非只写 `\$`：仅写 `\$` 时引擎仍可从字段名**内部**起配
-# （`$raw_rank` 会在下标 4 处匹配出算子 `rank`），契约不成立。
-_FUNC_CALL_RE = re.compile(r"(?<![\w$])([a-zA-Z_][a-zA-Z0-9_]*)\s*")
+# 算子名匹配：三重约束共同保证「只认真的算子调用」——
+# ① `(?<![\w$@])` 把匹配锚定在**标识符起点之外**：排除显式字段引用（`$chip_peak_loc`）、
+#    排除字段名**内部**起配（只写 `\$` 时 `$raw_rank` 会在下标 4 处匹配出算子 `rank`）、
+#    排除 `@freq` 后缀内部起配（`$close@60m` 的 `60`）。
+#    `$` 前缀是字段/算子同名（CHIP_PEAK_LOC 的 `chip_*` 面、CROWD_SHARE 的 `crowd_*` 面）
+#    的唯一消歧判据；`@` 是 DSL 混频后缀语法（`$field@5m/@1d/@1w`）。
+# ② `(?=\s*\()` 要求**调用形态**：DSL 里算子必然被调用，而 `delta`/`delay`/`scale`/`pow`/
+#    `exp`/`inv`/`cast`/`neg` 等注册表算子名同时是常见中间变量名，不要求 `(` 会把
+#    `delta = TS_MEAN(...)` 和随后的裸引用 `RANK(delta)` 都计成算子、并把它挤出 variables。
+# ③ 名字仍须落在 `_operator_names()` 内。
+_FUNC_CALL_RE = re.compile(r"(?<![\w$@])([a-zA-Z_][a-zA-Z0-9_]*)(?=\s*\()")
 _VAR_RE = re.compile(r"\$?([a-zA-Z_][a-zA-Z0-9_]*)")
 _NUM_RE = re.compile(r"\b(\d+(?:\.\d+)?)\b")
 
 _OPERATOR_NAMES: frozenset[str] | None = None
+_OPERATOR_NAMES_DEGRADED_AT: float | None = None
 _DEGRADED_WARNED = False
 
 
 def _warn_degraded(msg: str, err: BaseException) -> None:
-    """降级告警：每进程只报一次（防刷屏），但降级结果不缓存、下次调用会重试。"""
+    """降级告警：每进程只报一次（防刷屏）；降级结果按冷却窗口重试，不永久固化。"""
     global _DEGRADED_WARNED
     if not _DEGRADED_WARNED:
         _DEGRADED_WARNED = True
@@ -92,13 +101,20 @@ def _operator_names() -> frozenset[str]:
     环境声明的扩展算子。
 
     降级链（任何一步失败都不阻断解析）：① 内置 + 扩展 → ② 仅内置 → ③ 静态白名单
-    （= 旧行为）。**只有 ① 成功才写缓存**：降级结果不缓存（下次调用重试），否则一次
-    瞬时失败（扩展文件缺失/导入抖动）会把整个进程钉死在降级态 —— 那正是本次要消除的
-    "结构性失明"，只是从静默退化变成"一次 warning 后永久退化"。降级本身另打 warning 留痕。
+    （= 旧行为）。缓存语义（两个约束互相拉扯，取冷却窗口中庸）：
+    · **不永久固化降级结果** —— 否则一次瞬时失败（扩展文件缺失/导入抖动）会把整个进程
+      钉死在降级态，症状从"静默失明"变成"一次 warning 后永久失明"；
+    · **但也不每条表达式都重试** —— 持续性故障（扩展模块配置错、import 期报错）下
+      `registry.load_operator_module` 会逐次重新 `exec_module`，批量回放时开销可观。
+    故：① 成功的集合永久缓存；降级集合缓存 `OPERATOR_NAMES_RETRY_COOLDOWN_S` 秒，
+    窗口内直接复用、过期后重试注册表。降级本身另打 warning 留痕（每进程一次）。
     """
-    global _OPERATOR_NAMES
+    global _OPERATOR_NAMES, _OPERATOR_NAMES_DEGRADED_AT
     if _OPERATOR_NAMES is not None:
-        return _OPERATOR_NAMES
+        if _OPERATOR_NAMES_DEGRADED_AT is None:
+            return _OPERATOR_NAMES  # ① 成功结果：永久缓存
+        if time.monotonic() - _OPERATOR_NAMES_DEGRADED_AT < OPERATOR_NAMES_RETRY_COOLDOWN_S:
+            return _OPERATOR_NAMES  # 降级结果：冷却窗口内复用，避免高频重复加载扩展
     names: set[str] = set()
     resolved = False
     try:
@@ -133,7 +149,11 @@ def _operator_names() -> frozenset[str]:
     result = frozenset(_KNOWN_OPERATORS | names)
     if resolved:
         _OPERATOR_NAMES = result
+        _OPERATOR_NAMES_DEGRADED_AT = None
         _DEGRADED_WARNED = False
+    else:
+        _OPERATOR_NAMES = result
+        _OPERATOR_NAMES_DEGRADED_AT = time.monotonic()
     return result
 
 # ── 编辑 motif 定义 ──
@@ -314,10 +334,15 @@ def _parse_expression_structure(expression: str) -> dict[str, Any]:
 
     # 窗口参数：将算子与其后续常量关联
     window_params: dict[str, list[int | float]] = {}
-    # lookbehind 必须罩住**整个 alternation**：只约束标识符分支时，数字分支仍会从
-    # `$adv20` / `$industry_sw_l1` 内部起配，把尾部数字当成独立常量塞给最近算子
-    # （`TS_MEAN($adv20, 5)` → `{"ts_mean": [20, 5]}`）。
-    tokens = re.findall(r"(?<![\w$])(?:([a-zA-Z_][a-zA-Z0-9_]*)|(\d+(?:\.\d+)?))", text)
+    # 两个边界约束缺一不可（与 _FUNC_CALL_RE 同源）：
+    # ① lookbehind 必须罩住**整个 alternation**：只约束标识符分支时，数字分支仍会从
+    #    `$adv20` / `$industry_sw_l1` / `$close@60m` 内部起配，把字段名或 `@freq` 后缀里的
+    #    数字当成独立常量塞给最近算子（`TS_MEAN($adv20, 5)` → `{"ts_mean": [20, 5]}`）。
+    # ② 标识符分支要求调用形态 `(`，否则中间变量名（如 `delta`）会被推进 op_queue，
+    #    把后续常量挂到变量名下。
+    tokens = re.findall(
+        r"(?<![\w$@])(?:([a-zA-Z_][a-zA-Z0-9_]*)(?=\s*\()|(\d+(?:\.\d+)?))", text
+    )
     op_queue: list[str] = []
     for name_tok, num_tok in tokens:
         if name_tok:

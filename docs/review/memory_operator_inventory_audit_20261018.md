@@ -54,7 +54,7 @@ _COLD_OPS:        22
 
 | 事实 | 数值 |
 |---|---|
-| 含冷门算子的表达式（精确，按算子提取） | **15 463** / 66 829 条（≈23%；粗估前缀匹配为 16 324） |
+| 表达式文本含任一冷门算子名的行 | **15 463** / 66 829 条（≈23%；粗估前缀匹配为 16 324） |
 | 其中 `operator_list_json` 正确记录 | **0** |
 | 逐算子 | `CHIP_PEAK_LOC` 3583→0、`CHIP_COM_W_GAP` 3508→0、`CROWD_SHARE` 803→0 … |
 
@@ -90,25 +90,38 @@ Top3 集中度 = 100.0%            ← 被抬高，触发软引导注入
   ∪ 静态回落白名单，进程内缓存。**与 `dsl/eval.py` 同源**（含内置 + 环境声明的扩展算子）。
   降级链 ① 内置+扩展 → ② 仅内置 → ③ 静态白名单（= 旧行为），每级降级打 `warning` 留痕 ——
   否则会"静默退回失明状态"而无人察觉。
-- **`$` 前缀消歧**：`chip_*`/`crowd_*` 在本仓既作筹码/拥挤面**字段**（`facets.py` 按 `chip_` 识面），
-  又作**算子名**。`_FUNC_CALL_RE` 与 `window_params` 的 token 正则均加 **`(?<![\w$])`**
-  （边界锚在标识符起点之外；只写 `(?<!\$)` 时 `$raw_rank` 仍会在下标 4 处匹配出算子 `rank`），
-  变量循环对 `$` 前缀直接按字段处理 → `$chip_peak_loc` 是字段、`CHIP_PEAK_LOC(...)` 才是算子
+- **`$`/`@` 边界消歧**：`chip_*`/`crowd_*` 在本仓既作筹码/拥挤面**字段**（`facets.py` 按 `chip_` 识面），
+  又作**算子名**；`@freq` 是 DSL 一等混频后缀（`$field@5m/@1d/@1w`）。`_FUNC_CALL_RE` 与
+  `window_params` 的 token 正则均用 **`(?<![\w$@])`**（边界锚在标识符起点之外；只写 `(?<!\$)`
+  时 `$raw_rank` 会在下标 4 处匹配出算子 `rank`，只写 `[\w$]` 时 `$close@60m` 的 `60`
+  会被当成窗口常量），变量循环对 `$` 前缀直接按字段处理 →
+  `$chip_peak_loc` 是字段、`CHIP_PEAK_LOC(...)` 才是算子
   （该回归点由 `test_sspm_refactor.py` 的 motif 断言在开发期抓到）。
-- 不新增配置项（无阈值/开关），不触碰门槛与判定口径。
+- **要求调用形态**：`_FUNC_CALL_RE` 加 `(?=\s*\()`。DSL 里算子必然被调用，而注册表算子名含
+  `delta`/`delay`/`scale`/`pow`/`exp`/`inv`/`cast`/`neg` 等常见中间变量名，不要求 `(` 会把
+  `delta = TS_MEAN(...)` 与随后的裸引用 `RANK(delta)` 都计成算子并把它挤出 variables。
+- **降级不永久固化 + 冷却节流**：只有 ① 成功才永久缓存；降级集合缓存
+  `OPERATOR_NAMES_RETRY_COOLDOWN_S`（`memory/constants.py`，60s）后重试，兼顾
+  "瞬时失败能自愈"与"持续故障不逐条重复 `exec_module`"。
+- 新增 1 个可调常量（冷却秒数）已收口到记忆层配置中心 `memory/constants.py`，带取值理由与
+  调大/调小后果；不触碰任何评估门槛与判定口径。
 
 ## 5. 验证
 
-- 新增 `tests/test_memory_operator_inventory.py`（19 用例）：冷门/套壳算子全覆盖、
+- 新增 `tests/test_memory_operator_inventory.py`（22 用例）：冷门/套壳算子全覆盖、
   **防漂移守卫**（注册表任何算子都必须被识别）、提取语义、`$` 消歧与**边界内起配**反例、
-  窗口参数尾数泄漏反例、扩展算子同源与两级降级语义、**降级不缓存**、回落语义，
+  `$xxx20` 尾部数字与 `@freq` 后缀数字的窗口泄漏反例、同名中间变量反例、
+  扩展算子同源与两级降级语义、降级冷却与成功缓存语义、回落语义，
   以及**端到端症状回归**（引导块必须看见冷门算子且不再重复推荐已用算子）。
 - 记忆/挖掘相关 18 个测试文件批量回归：除 `test_facet_focus_lock.py` /
   `test_facet_focus_scope.py` 的 **3 项在 `main` 基线即失败**（已用 stash 对照确认与本次改动无关）
   之外全部通过。
-- **存量真实数据验证（只读）**：全库含冷门算子的表达式 **15 463 条**，
-  修复后 **15 463/15 463（100%）** 均能识别出对应冷门算子；
-  其中旧 `operator_list_json` 正确记录的为 **0 条** → 15 463 行为回填候选。
+- **存量真实数据验证（只读）**：全库表达式文本含冷门算子名的 **15 463 条**，
+  修复后 **15 458 条（99.97%）** 能识别出对应冷门算子；旧 `operator_list_json` 正确记录的
+  为 **0 条** → 15 458 行为回填候选。
+  剩余 5 条经逐行核查**全部是 `verdict=eval_error` 的非法写法**（把算子当列名裸用、
+  缺调用括号，如 `RANK(CHIP_PEAK_LOC)`、`CS_ZSCORE(NEG(CHIP_ENTROPY))`）——
+  即调用形态收紧恰好只排除了这些本就评估失败的行，无合法表达式被误杀。
 
 ## 5b. OCR review 结果与修复（合并前强制）
 
@@ -125,11 +138,21 @@ Top3 集中度 = 100.0%            ← 被抬高，触发软引导注入
 
 | 严重度 | 发现 | 处置 |
 |---|---|---|
-| medium（**本轮修复引入的回归**） | lookbehind 只罩标识符分支，数字分支 `(\d+…)` 无边界约束 → `$adv20` / `$industry_sw_l1` 的**尾部数字**被当独立常量关联到最近算子（`TS_MEAN($adv20, 5)` → `{"ts_mean": [20, 5]}`），赘余窗口会写进 `window_params_json` 并干扰 motif 窗口变化判定 | lookbehind 提前到整个 alternation（`(?<![\w$])(?:A|B)`），新增 `test_window_params_no_digit_leak_from_dollar_fields` |
-| low | 降级结果同样被永久缓存 → 一次瞬时失败（扩展文件缺失/导入抖动）把进程钉死在降级态，症状从"静默失明"变成"一次 warning 后永久失明" | **只有 ① 内置+扩展 成功才写缓存**；降级结果不缓存（下次调用重试），告警改为每进程一次防刷屏；新增 `test_degraded_result_not_cached` |
+| medium（**本轮修复引入的回归**） | lookbehind 只罩标识符分支，数字分支 `(\d+…)` 无边界约束 → `$adv20` / `$industry_sw_l1` 的**尾部数字**被当独立常量关联到最近算子（`TS_MEAN($adv20, 5)` → `{"ts_mean": [20, 5]}`），赘余窗口会写进 `window_params_json` 并干扰 motif 窗口变化判定 | lookbehind 提前到整个 alternation（`(?<![\w$])(?:A\|B)`），新增 `test_window_params_no_digit_leak_from_dollar_fields` |
+| low | 降级结果同样被永久缓存 → 一次瞬时失败（扩展文件缺失/导入抖动）把进程钉死在降级态，症状从"静默失明"变成"一次 warning 后永久失明" | 改为降级结果不永久固化；新增 `test_degraded_result_not_cached` |
 
-第 1 轮的 medium 与第 2 轮的 medium 都属同一族"命名/边界粒度"问题 —— 这类问题的
-共同后果是**静默的统计口径漂移**，因此每轮都以回归断言锁定，而不是只改代码。
+**第 3 轮**（复验）：3 条发现（0 critical / 0 high / 1 medium / 2 low），三条均采纳：
+
+| 严重度 | 发现 | 处置 |
+|---|---|---|
+| medium | `@freq` 后缀内部仍会起配：`TS_MEAN($volume@60m, 20)` → `{"ts_mean": [60, 20]}`，与 `$adv20` 同机理、只换了分隔符；混频表达式会带着错误窗口参数落库 | 否定后顾改为 `(?<![\w$@])`；新增 `test_freq_suffix_digit_not_leaked_into_window_params`（含混频多行表达式） |
+| low | 第 2 轮"降级不缓存"反过来导致持续性故障时**每条表达式**都重新 `exec_module` 加载扩展，热路径开销可观 | 改为「成功永久缓存 + 降级集合按 `OPERATOR_NAMES_RETRY_COOLDOWN_S` 冷却后重试」，常量收口 `memory/constants.py`；新增 `test_degraded_result_retry_cooldown` / `test_success_result_cached_without_retry` |
+| low | 算子识别不要求调用形态 → 与算子同名的中间变量（`delta`/`delay`/`scale`…）被计成算子并挤出 variables | `_FUNC_CALL_RE` 加 `(?=\s*\()`；新增 `test_local_variable_shadowing_operator_name_not_counted` |
+
+三轮 medium 全属同一族"**边界/粒度**"问题（起配位置、alternation 作用域、分隔符集合），
+共同后果都是**静默的统计口径漂移**；因此每轮都以回归断言锁定，而不是只改代码。
+第 2、3 轮的 medium 都是前一轮修复自身引入的，说明这类正则边界改动必须配合
+"反例测试 + 真实存量数据复核"两道验证，不能只看正向用例是否通过。
 
 ## 6. 复现
 

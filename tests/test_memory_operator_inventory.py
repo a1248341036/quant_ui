@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+import time
+
 from alphaagent.dsl.registry import build_operator_namespace
 from alphaagent.factor.mining.memory import expressions as E
 from alphaagent.factor.mining.memory.retrieval import (
@@ -179,6 +181,39 @@ def test_window_params_no_digit_leak_from_dollar_fields():
     assert st3["window_params"] == {"ts_mean": [20], "ema": [12]}
 
 
+def test_freq_suffix_digit_not_leaked_into_window_params():
+    """`$close@60m` 的 `60` 不得被当成窗口常量（OCR review 第三轮 medium）。
+
+    `@freq` 是 DSL 一等混频语法（`$field@5m/@1d/@1w`，见 dsl/eval.py 头部与
+    dsl/core/parser.py），与 `$adv20` 尾部数字同类：分隔符不同、泄漏机理相同。
+    """
+    st = E._parse_expression_structure("sig = TS_MEAN($volume@60m, 20)")
+    assert st["window_params"] == {"ts_mean": [20]}
+
+    mixed = (
+        "x = TS_MEAN($open@5m, 5)\n"
+        "y = TS_MEAN($close@1d, 20)\n"
+        "RANK(SUBTRACT(y, x))"
+    )
+    st2 = E._parse_expression_structure(mixed)
+    assert st2["window_params"] == {"ts_mean": [5, 20]}
+    assert "rank" in st2["operators"] and "subtract" in st2["operators"]
+
+
+def test_local_variable_shadowing_operator_name_not_counted():
+    """与算子同名的中间变量不得被计成算子（OCR review 第三轮 low）。
+
+    注册表算子含 delta/delay/scale/pow/exp/inv/cast/neg 等常见变量名；不要求调用形态
+    时，`delta = ...` 与随后的裸引用 `RANK(delta)` 都会被计成算子并把它挤出 variables。
+    """
+    expr = "delta = SUBTRACT(TS_MEAN($close, 5), TS_MEAN($close, 20))\nRANK(delta)"
+    st = E._parse_expression_structure(expr)
+    assert "delta" not in st["operators"]
+    assert st["operators"] == ["subtract", "ts_mean", "ts_mean", "rank"]
+    # 裸引用也不得进入窗口关联队列
+    assert set(st["window_params"]) == {"ts_mean"}
+
+
 # ── 3. 回落语义 ──
 
 
@@ -191,6 +226,7 @@ def test_static_fallback_when_registry_unavailable(monkeypatch):
 
     monkeypatch.setattr(reg, "build_operator_namespace", _boom)
     monkeypatch.setattr(E, "_OPERATOR_NAMES", None)
+    monkeypatch.setattr(E, "_OPERATOR_NAMES_DEGRADED_AT", None)
     names = E._operator_names()
     assert "ts_mean" in names
     assert "cs_neutralize" in names
@@ -215,6 +251,7 @@ def test_extension_modules_requested_like_eval(monkeypatch):
     monkeypatch.setattr(reg, "build_operator_namespace", fake_build)
     monkeypatch.setattr(reg, "resolve_extension_modules", lambda *_a, **_k: ["my.ext"])
     monkeypatch.setattr(E, "_OPERATOR_NAMES", None)
+    monkeypatch.setattr(E, "_OPERATOR_NAMES_DEGRADED_AT", None)
 
     names = E._operator_names()
     assert seen.get("extension_modules") == ["my.ext"], "必须像 eval.py 一样请求扩展算子"
@@ -233,37 +270,71 @@ def test_extension_failure_degrades_to_builtin(monkeypatch):
     monkeypatch.setattr(reg, "build_operator_namespace", fake_build)
     monkeypatch.setattr(reg, "resolve_extension_modules", lambda *_a, **_k: ["bad.ext"])
     monkeypatch.setattr(E, "_OPERATOR_NAMES", None)
+    monkeypatch.setattr(E, "_OPERATOR_NAMES_DEGRADED_AT", None)
 
     names = E._operator_names()
     assert "chip_peak_loc" in names, "内置算子仍须可用"
 
 
-def test_degraded_result_not_cached(monkeypatch):
-    """降级结果不得被永久缓存：注册表恢复后必须自动恢复。
+def test_degraded_result_retry_cooldown(monkeypatch):
+    """降级结果不永久固化，但按冷却窗口节流重试。
 
-    （OCR review 第二轮 low 发现：瞬时失败若被固化进 `_OPERATOR_NAMES`，
-    整个进程会一直停在降级态 —— 症状从"静默失明"变成"一次 warning 后永久失明"。）
+    第二轮 low：瞬时失败若被固化进 `_OPERATOR_NAMES`，进程会一直停在降级态
+    （症状从"静默失明"变成"一次 warning 后永久失明"）。
+    第三轮 low：反过来，完全不缓存会让持续性故障时**每条表达式**都重新
+    `exec_module` 加载扩展，热路径开销可观。故取冷却窗口中庸。
     """
     import alphaagent.dsl.registry as reg
 
-    state = {"fail": True}
+    state = {"fail": True, "calls": 0}
 
     def flaky_build(**_kwargs):
+        state["calls"] += 1
         if state["fail"]:
-            raise RuntimeError("transient registry failure")
+            raise RuntimeError("registry failure")
         return {"TS_MEAN": object(), "CHIP_PEAK_LOC": object()}
 
     monkeypatch.setattr(reg, "build_operator_namespace", flaky_build)
     monkeypatch.setattr(reg, "resolve_extension_modules", lambda *_a, **_k: [])
     monkeypatch.setattr(E, "_OPERATOR_NAMES", None)
+    monkeypatch.setattr(E, "_OPERATOR_NAMES_DEGRADED_AT", None)
+    monkeypatch.setattr(E, "OPERATOR_NAMES_RETRY_COOLDOWN_S", 60.0)
 
-    degraded = E._operator_names()
-    assert "chip_peak_loc" not in degraded, "瞬时失败时应退到静态白名单"
+    assert "chip_peak_loc" not in E._operator_names(), "失败时应退到静态白名单"
+    calls_after_failure = state["calls"]
 
-    state["fail"] = False  # 注册表恢复可用
-    recovered = E._operator_names()
-    assert "chip_peak_loc" in recovered, "降级结果被永久缓存，进程被钉死在失明态"
-    assert "chip_peak_loc" in E._operator_names(), "成功结果应当被缓存"
+    for _ in range(5):
+        E._operator_names()
+    assert state["calls"] == calls_after_failure, "冷却窗口内不得重复加载注册表/扩展"
+
+    # 冷却过期 → 重试注册表并自动恢复（不重启进程）
+    state["fail"] = False
+    monkeypatch.setattr(E, "_OPERATOR_NAMES_DEGRADED_AT", time.monotonic() - 61.0)
+    assert "chip_peak_loc" in E._operator_names(), "冷却过期后必须重试注册表并恢复"
+    assert "chip_peak_loc" in E._operator_names(), "恢复后的成功结果应永久缓存"
+
+
+def test_success_result_cached_without_retry(monkeypatch):
+    """① 成功的集合永久缓存：后续调用不得再触碰注册表。"""
+    import alphaagent.dsl.registry as reg
+
+    state = {"calls": 0}
+
+    def counting_build(**_kwargs):
+        state["calls"] += 1
+        return {"TS_MEAN": object()}
+
+    monkeypatch.setattr(reg, "build_operator_namespace", counting_build)
+    monkeypatch.setattr(reg, "resolve_extension_modules", lambda *_a, **_k: [])
+    monkeypatch.setattr(E, "_OPERATOR_NAMES", None)
+    monkeypatch.setattr(E, "_OPERATOR_NAMES_DEGRADED_AT", None)
+
+    E._operator_names()
+    calls = state["calls"]
+    for _ in range(5):
+        E._operator_names()
+    assert state["calls"] == calls
+    assert E._operator_names() is E._operator_names()
 
 
 # ── 4. 端到端症状回归 ──
