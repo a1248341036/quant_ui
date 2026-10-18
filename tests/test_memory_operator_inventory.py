@@ -238,6 +238,19 @@ def test_scientific_and_signed_literals_aligned_with_parser():
     assert st4["constants"] == [5, 20]
 
 
+def test_number_paths_share_identical_boundaries():
+    r"""两条数字提取路径（constants / window_params）必须共用同一对边界常量。
+
+    （OCR review 第五轮 low：token 分支曾缺右侧 `(?![\w.])`、lookbehind 少 `.`，
+    "同源/对齐"的注释名不副实，遇 `1e6x` / `..5` / `5m` 这类形态会一条收、一条拒。）
+    """
+    for token in ("1e6", "-5", ".5", "5.", "1e6x", "..5", "5m"):
+        st = E._parse_expression_structure(f"sig = TS_MEAN($close, {token})")
+        win = st["window_params"].get("ts_mean", [])
+        cons = st["constants"]
+        assert win == cons, f"{token!r} 两条路径口径分叉: window={win} constants={cons}"
+
+
 # ── 3. 回落语义 ──
 
 

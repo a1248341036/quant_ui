@@ -113,11 +113,11 @@ Top3 集中度 = 100.0%            ← 被抬高，触发软引导注入
 
 ## 5. 验证
 
-- 新增 `tests/test_memory_operator_inventory.py`（25 用例）：冷门/套壳算子全覆盖、
+- 新增 `tests/test_memory_operator_inventory.py`（26 用例）：冷门/套壳算子全覆盖、
   **防漂移守卫**（注册表任何算子都必须被识别）、提取语义、`$` 消歧与**边界内起配**反例、
   `$xxx20` 尾部数字与 `@freq` 后缀数字的窗口泄漏反例、同名中间变量反例、
-  正负号/科学计数法字面量反例、扩展算子同源与两级降级语义、降级冷却与成功缓存语义、
-  降级告警档位文案、回落语义，以及**端到端症状回归**
+  正负号/科学计数法字面量反例、**两条数字路径边界同源**反例、扩展算子同源与两级降级语义、
+  降级冷却与成功缓存语义、降级告警档位文案、回落语义，以及**端到端症状回归**
   （引导块必须看见冷门算子且不再重复推荐已用算子）。
 - 记忆/挖掘/DSL 相关 26 个测试文件批量回归：除 `test_facet_focus_lock.py` /
   `test_facet_focus_scope.py` 的 **3 项在 `main` 基线即失败**（已用 stash 对照确认与本次改动无关）
@@ -162,6 +162,12 @@ Top3 集中度 = 100.0%            ← 被抬高，触发软引导注入
 |---|---|---|
 | medium | 数字字面量未对齐 DSL parser 语义（`dsl/core/parser.py` 的 `number_pattern` 支持正负号 + 科学计数法）：`TS_MEAN($close, 1e6)` 把 `1e6` 拆成 `1` 挂到算子（数值偏差 6 个数量级）、`-5` 丢负号；而 `_NUM_RE` 用 `\b…\b` 又把 `1e6` 整个跳过 → 两条提取路径口径不一致 | 抽出 `_NUM_LITERAL`（与 parser 同语法）供 `window_params` 与 `constants` 共用，两侧加 `(?<![\w.$@])`/`(?![\w.])` 防内部起配；数值转换改 `_num_literal()`（int 失败回落 float，兼容 `1e6`）；新增 `test_scientific_and_signed_literals_aligned_with_parser` |
 | low | 双重失败路径下告警文案与实际降级态不符：先失败于扩展时"退到仅内置"已占用每进程一次的告警额度，随后内置也失败时更准确的"退到静态白名单"被去重吞掉，日志宣称仅内置而实际只剩静态白名单 | 告警改为**在回落链落定后**按最终档位打一次（记录 `failure`/`builtin_only` 而非即时打点）；新增 `test_degraded_warning_reports_final_tier` / `test_degraded_warning_reports_builtin_tier` |
+
+**第 5 轮**（复验）：1 条发现（0 critical / 0 high / 0 medium / 1 low），采纳：
+
+| 严重度 | 发现 | 处置 |
+|---|---|---|
+| low | token 数字分支与 `_NUM_RE` 并未真正"同源"：token 分支缺右侧 `(?![\w.])`、lookbehind 少 `.`，遇 `1e6x` / `..5` / `5m` 这类形态会出现"一条路径收、另一条拒"的统计分叉（当前 DSL 合法形态下暂无实际泄漏，但注释声明的同源不成立） | 抽出 `_NUM_LEFT` / `_NUM_RIGHT` 两个边界常量，`_NUM_RE` 与 token 正则**共用同一对**；新增 `test_number_paths_share_identical_boundaries`（7 种边界形态断言两条路径取值一致） |
 
 四轮 medium 全属同一族"**边界/粒度与口径对齐**"问题（起配位置、alternation 作用域、
 分隔符集合、数字语法），共同后果都是**静默的统计口径漂移**；因此每轮都以回归断言锁定，

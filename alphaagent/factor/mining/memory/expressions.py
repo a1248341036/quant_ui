@@ -71,10 +71,15 @@ _VAR_RE = re.compile(r"\$?([a-zA-Z_][a-zA-Z0-9_]*)")
 # 数字字面量：与 DSL parser 同源（`dsl/core/parser.py` 的 `number_pattern` =
 # `[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?`，DSL 一等支持正负号与科学计数法）。
 # 记忆层不能直接复用 pyparsing 表达式，故此处维护同一语法；**改 DSL 数字语法需同步这里**。
-# 两侧 `(?<![\w.$@])` / `(?![\w.])` 防从标识符或 `@freq` 后缀内部起配
-# （`$adv20` 的 `20`、`$close@60m` 的 `60`）。
+# 两侧边界 `_NUM_LEFT` / `_NUM_RIGHT` 防从标识符或 `@freq` 后缀内部起配
+# （`$adv20` 的 `20`、`$close@60m` 的 `60`、`1e6x` 的 `1`）。
+# **两条消费路径（constants 的 `_NUM_RE` 与 window_params 的 token 正则）必须复用同一对
+# 边界常量** —— 各写一份会让"同源"名不副实，出现"一条路径收、另一条拒"的口径分叉
+# （OCR review 第五轮 low 的实锤点）。
 _NUM_LITERAL = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?"
-_NUM_RE = re.compile(rf"(?<![\w.$@])({_NUM_LITERAL})(?![\w.])")
+_NUM_LEFT = r"(?<![\w.$@])"
+_NUM_RIGHT = r"(?![\w.])"
+_NUM_RE = re.compile(rf"{_NUM_LEFT}({_NUM_LITERAL}){_NUM_RIGHT}")
 
 
 def _num_literal(raw: str) -> int | float:
@@ -364,7 +369,8 @@ def _parse_expression_structure(expression: str) -> dict[str, Any]:
     # 数字分支用 `_NUM_LITERAL`（含正负号/科学计数法），与 parser 对齐：
     # 只写 `\d+(\.\d+)?` 时 `1e6` 会被拆成 `1`（偏差 6 个数量级）、`-5` 会丢负号。
     tokens = re.findall(
-        rf"(?<![\w$@])(?:([a-zA-Z_][a-zA-Z0-9_]*)(?=\s*\()|({_NUM_LITERAL}))", text
+        rf"{_NUM_LEFT}(?:([a-zA-Z_][a-zA-Z0-9_]*)(?=\s*\()|({_NUM_LITERAL}){_NUM_RIGHT})",
+        text,
     )
     op_queue: list[str] = []
     for name_tok, num_tok in tokens:
