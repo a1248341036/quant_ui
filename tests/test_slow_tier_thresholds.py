@@ -261,13 +261,19 @@ def test_fundamental_freq_tier_thresholds_match_technical(funda_mode: str, tech_
 
 
 def test_fundamental_freq_tiers_keep_data_surface_semantics() -> None:
-    """数据面正交的边界条件：门槛无条件跟频率走，但数据面语义（载列/信号族）跟随 fundamental_*。"""
+    """数据面正交的边界条件：门槛无条件跟频率走，但数据面语义（载列/信号族）跟随 fundamental_*。
+
+    2026-10-19：族清单从 4 族扩为 6 族 —— ``facets.FACET_GROUPS`` 的"基本面组"本就包含
+    股东面/机构面/股东集中面，而本档此前只声明 fundamental_* 四族，导致勾这两个面时
+    无可挂之族（OCR 实锤）。族真源见 ``core.research_modes._FUNDAMENTAL_DATA_FACE_FAMILIES``。
+    """
     for mode in ("fundamental_daily", "fundamental_weekly"):
         spec = effective_research_spec(mode)
-        # 基本面数据面仍载 funda_* 列、开放 fundamental_* 信号族
+        # 基本面数据面仍载 funda_* 列、开放基本面组全部信号族
         assert _get(spec, "search_policy", "allowed_signal_families") == [
             "fundamental_quality", "fundamental_growth",
             "fundamental_value", "fundamental_revision",
+            "institutional", "shareholder_concentration",
         ]
         # label 跟随频率（daily→1d、weekly→5d），engine_gate 白名单收紧到单频率
         from alphaagent.factor.mining.research_spec import ensure_label_freq_consistency

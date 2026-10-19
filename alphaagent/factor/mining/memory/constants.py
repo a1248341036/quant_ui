@@ -13,6 +13,15 @@ from __future__ import annotations
 # v7：SSPM 编辑统计层重构——cells 按 9 大粗族与细化 motif 重聚合，提升每 cell 观测密度与信噪比
 DATA_VERSION = "7"
 
+# ── 记忆层算子清单（memory/expressions._operator_names）──
+# DSL 注册表不可用 / 扩展算子加载失败时的降级重试冷却（秒）。
+# 语义：降级结果**不写永久缓存**（否则一次瞬时失败会把进程钉死在失明态），但也不允许
+# 每条表达式都重试——持续性故障（扩展模块配置错、import 期报错）下
+# `registry.load_operator_module` 会逐次重新 exec_module，批量回放/大量解析时开销可观。
+# 取值 60s：足够让部署/导入竞态这类瞬时抖动自愈，又把持续故障的重试压到每分钟一次。
+# 调大 → 故障恢复更慢；调小 → 持续故障下重复加载更频繁。
+OPERATOR_NAMES_RETRY_COOLDOWN_S = 60.0
+
 # ── Verdict 分类 ──
 # near_miss（2026-09-05）：IC 达门槛 80%、ICIR/coverage 达标但未过线——
 # 弱负向（不算正向证据，不触发重复提交拦截；但比 weak 多一次二次机会提示）

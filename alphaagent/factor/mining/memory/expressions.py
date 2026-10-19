@@ -4,15 +4,25 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
+import time
 from typing import Any
 
+from .constants import OPERATOR_NAMES_RETRY_COOLDOWN_S
+
 # ── 正则与已知集合 ──
+
+log = logging.getLogger(__name__)
 
 _TOKEN_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9_]{2,}")
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]{2,}")
 _STOPWORDS = {"add", "subtract", "multiply", "divide", "ts", "cs", "mean", "std", "rank", "expr", "factor"}
 
+# 静态回落白名单：算子识别的**唯一真源是 DSL 注册表**（见 _operator_names），
+# 这份硬编码清单只在注册表导入失败时兜底。2026-10-18 前的版本只认它，导致清单外
+# 一切算子被静默丢弃（实测 _COLD_OPS 22/22 与 CS_BUCKET/CS_GROUP_RANK/NEG/SIGNAL_BLEND
+# 全部缺失）。不要再往这里加算子——加算子的真源是 dsl/core/operators.py。
 _KNOWN_OPERATORS = frozenset({
     # 时序算子
     "ts_mean", "ts_sum", "ts_std", "ts_var", "ts_median", "ts_max", "ts_min",
@@ -46,9 +56,132 @@ _KNOWN_VARIABLES = frozenset({
     "dt_big_order", "bt_block_trade",
 })
 
-_FUNC_CALL_RE = re.compile(r"([a-zA-Z_][a-zA-Z0-9_]*)\s*")
+# 算子名匹配：三重约束共同保证「只认真的算子调用」——
+# ① `(?<![\w$@])` 把匹配锚定在**标识符起点之外**：排除显式字段引用（`$chip_peak_loc`）、
+#    排除字段名**内部**起配（只写 `\$` 时 `$raw_rank` 会在下标 4 处匹配出算子 `rank`）、
+#    排除 `@freq` 后缀内部起配（`$close@60m` 的 `60`）。
+#    `$` 前缀是字段/算子同名（CHIP_PEAK_LOC 的 `chip_*` 面、CROWD_SHARE 的 `crowd_*` 面）
+#    的唯一消歧判据；`@` 是 DSL 混频后缀语法（`$field@5m/@1d/@1w`）。
+# ② `(?=\s*\()` 要求**调用形态**：DSL 里算子必然被调用，而 `delta`/`delay`/`scale`/`pow`/
+#    `exp`/`inv`/`cast`/`neg` 等注册表算子名同时是常见中间变量名，不要求 `(` 会把
+#    `delta = TS_MEAN(...)` 和随后的裸引用 `RANK(delta)` 都计成算子、并把它挤出 variables。
+# ③ 名字仍须落在 `_operator_names()` 内。
+_FUNC_CALL_RE = re.compile(r"(?<![\w$@])([a-zA-Z_][a-zA-Z0-9_]*)(?=\s*\()")
 _VAR_RE = re.compile(r"\$?([a-zA-Z_][a-zA-Z0-9_]*)")
-_NUM_RE = re.compile(r"\b(\d+(?:\.\d+)?)\b")
+# 数字字面量：与 DSL parser 同源（`dsl/core/parser.py` 的 `number_pattern` =
+# `[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?`，DSL 一等支持正负号与科学计数法）。
+# 记忆层不能直接复用 pyparsing 表达式，故此处维护同一语法；**改 DSL 数字语法需同步这里**。
+# 两侧边界 `_NUM_LEFT` / `_NUM_RIGHT` 防从标识符或 `@freq` 后缀内部起配
+# （`$adv20` 的 `20`、`$close@60m` 的 `60`、`1e6x` 的 `1`）。
+# **两条消费路径（constants 的 `_NUM_RE` 与 window_params 的 token 正则）必须复用同一对
+# 边界常量** —— 各写一份会让"同源"名不副实，出现"一条路径收、另一条拒"的口径分叉
+# （OCR review 第五轮 low 的实锤点）。
+_NUM_LITERAL = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?"
+_NUM_LEFT = r"(?<![\w.$@])"
+_NUM_RIGHT = r"(?![\w.])"
+_NUM_RE = re.compile(rf"{_NUM_LEFT}({_NUM_LITERAL}){_NUM_RIGHT}")
+
+
+def _num_literal(raw: str) -> int | float:
+    """数字字面量 → int（可整数化时）/ float（小数、科学计数法）。"""
+    try:
+        return int(raw)
+    except ValueError:
+        return float(raw)
+
+
+_OPERATOR_NAMES: frozenset[str] | None = None
+_OPERATOR_NAMES_DEGRADED_AT: float | None = None
+_DEGRADED_WARNED = False
+
+
+def _warn_degraded(msg: str, err: BaseException) -> None:
+    """降级告警：每进程只报一次（防刷屏）；降级结果按冷却窗口重试，不永久固化。"""
+    global _DEGRADED_WARNED
+    if not _DEGRADED_WARNED:
+        _DEGRADED_WARNED = True
+        log.warning("%s: %s", msg, err)
+
+
+def _operator_names() -> frozenset[str]:
+    """算子名全集（小写）= DSL 注册表 ∪ 静态回落白名单。
+
+    修复（2026-10-18）：此前算子识别只查 `_KNOWN_OPERATORS` 这份硬编码清单，
+    清单外的一切算子被静默丢弃 —— `_COLD_OPS` 22/22 与
+    `CS_BUCKET`/`CS_GROUP_RANK`/`NEG`/`SIGNAL_BLEND` 从未进入 `operator_list_json`
+    （实测 15463 条含冷门算子的表达式、0 条正确落库），且 `CHIP_PEAK_LOC` 之类
+    撞上 `chip_*`/`crowd_*` 变量前缀规则被误判成变量。后果是记忆层的算子统计
+    （算子分布软引导、按算子检索、算子×面台账）对冷门算子结构性失明，
+    而「冷门算子使用率 <2%」这个立项前提正是由这台失明仪器测出的。
+
+    真源与 `dsl/eval.py` 的求值命名空间对齐：内置算子（`build_operator_namespace`
+    按 `^[A-Z][A-Z0-9_]*$` + callable 自动收集，无需逐算子登记）+ 环境声明的扩展算子
+    （`ALPHAAGENT_DSL_EXTENSIONS` / auto_discover，经 `resolve_extension_modules()`）。
+    注：eval.py 还能接收 run 级 `operator_modules` 入参，记忆层无该上下文，故只覆盖
+    环境声明的扩展算子。
+
+    降级链（任何一步失败都不阻断解析）：① 内置 + 扩展 → ② 仅内置 → ③ 静态白名单
+    （= 旧行为）。缓存语义（两个约束互相拉扯，取冷却窗口中庸）：
+    · **不永久固化降级结果** —— 否则一次瞬时失败（扩展文件缺失/导入抖动）会把整个进程
+      钉死在降级态，症状从"静默失明"变成"一次 warning 后永久失明"；
+    · **但也不每条表达式都重试** —— 持续性故障（扩展模块配置错、import 期报错）下
+      `registry.load_operator_module` 会逐次重新 `exec_module`，批量回放时开销可观。
+    故：① 成功的集合永久缓存；降级集合缓存 `OPERATOR_NAMES_RETRY_COOLDOWN_S` 秒，
+    窗口内直接复用、过期后重试注册表。降级告警**在回落链落定后**按最终档位打一次
+    （每进程一次）—— 不这样做的话，先失败于扩展、再失败于内置时，日志会宣称"退到仅内置"
+    而实际只剩静态白名单，诊断时被误导。
+    """
+    global _OPERATOR_NAMES, _OPERATOR_NAMES_DEGRADED_AT
+    if _OPERATOR_NAMES is not None:
+        if _OPERATOR_NAMES_DEGRADED_AT is None:
+            return _OPERATOR_NAMES  # ① 成功结果：永久缓存
+        if time.monotonic() - _OPERATOR_NAMES_DEGRADED_AT < OPERATOR_NAMES_RETRY_COOLDOWN_S:
+            return _OPERATOR_NAMES  # 降级结果：冷却窗口内复用，避免高频重复加载扩展
+    names: set[str] = set()
+    resolved = False
+    builtin_only = False
+    failure: BaseException | None = None
+    try:
+        from alphaagent.dsl.registry import (
+            build_operator_namespace,
+            resolve_extension_modules,
+        )
+
+        try:
+            ns = build_operator_namespace(extension_modules=resolve_extension_modules())
+            names |= {str(n).lower() for n in ns}
+            resolved = True
+        except Exception as err:  # noqa: BLE001 — 扩展算子加载失败 → 试仅内置
+            failure = err
+
+        if not resolved:
+            try:
+                names |= {str(n).lower() for n in build_operator_namespace()}
+                builtin_only = True
+            except Exception as err:  # noqa: BLE001 — 注册表不可用 → 退到静态白名单
+                failure = err
+    except Exception as err:  # noqa: BLE001 — 注册表 import 期异常 → 退到静态白名单
+        failure = err
+
+    if failure is not None:
+        if builtin_only:
+            _warn_degraded("DSL 扩展算子加载失败，算子识别退到仅内置算子", failure)
+        else:
+            _warn_degraded(
+                "DSL 注册表不可用，算子识别退到静态白名单"
+                "（冷门/新增算子将无法识别，operator_list_json 会退化）",
+                failure,
+            )
+
+    result = frozenset(_KNOWN_OPERATORS | names)
+    if resolved:
+        _OPERATOR_NAMES = result
+        _OPERATOR_NAMES_DEGRADED_AT = None
+        _DEGRADED_WARNED = False
+    else:
+        _OPERATOR_NAMES = result
+        _OPERATOR_NAMES_DEGRADED_AT = time.monotonic()
+    return result
 
 # ── 编辑 motif 定义 ──
 
@@ -192,12 +325,13 @@ def _parse_expression_structure(expression: str) -> dict[str, Any]:
         return {"operators": [], "variables": [], "window_params": {}, "constants": [], "fingerprint": ""}
 
     text = str(expression).strip()
+    known_ops = _operator_names()
 
     # 提取算子（函数名）
     operators: list[str] = []
     for match in _FUNC_CALL_RE.finditer(text):
         name = match.group(1).lower()
-        if name in _KNOWN_OPERATORS:
+        if name in known_ops:
             operators.append(name)
 
     # 提取变量（$close → close）
@@ -205,8 +339,9 @@ def _parse_expression_structure(expression: str) -> dict[str, Any]:
     seen_vars: set[str] = set()
     for match in _VAR_RE.finditer(text):
         name = match.group(1).lower()
-        # 排除算子名和纯数字
-        if name in _KNOWN_OPERATORS:
+        # 显式字段引用（$chip_peak_loc）优先按字段处理：`chip_*`/`crowd_*` 既可能是
+        # 筹码/拥挤面字段，也可能与同名算子（CHIP_PEAK_LOC）撞名，靠 `$` 前缀消歧。
+        if not match.group(0).startswith("$") and name in known_ops:
             continue
         if name in {"true", "false", "null", "none", "nan", "inf"}:
             continue
@@ -218,23 +353,33 @@ def _parse_expression_structure(expression: str) -> dict[str, Any]:
                 variables.append(name)
                 seen_vars.add(name)
 
-    # 提取数字常量
+    # 提取数字常量（与 DSL parser 数字语法同源：正负号 + 科学计数法）
     constants: list[int | float] = []
     for match in _NUM_RE.finditer(text):
-        val = match.group(1)
-        constants.append(int(val) if "." not in val else float(val))
+        constants.append(_num_literal(match.group(1)))
 
     # 窗口参数：将算子与其后续常量关联
     window_params: dict[str, list[int | float]] = {}
-    tokens = re.findall(r"([a-zA-Z_][a-zA-Z0-9_]*)|(\d+(?:\.\d+)?)", text)
+    # 两个边界约束缺一不可（与 _FUNC_CALL_RE 同源）：
+    # ① lookbehind 必须罩住**整个 alternation**：只约束标识符分支时，数字分支仍会从
+    #    `$adv20` / `$industry_sw_l1` / `$close@60m` 内部起配，把字段名或 `@freq` 后缀里的
+    #    数字当成独立常量塞给最近算子（`TS_MEAN($adv20, 5)` → `{"ts_mean": [20, 5]}`）。
+    # ② 标识符分支要求调用形态 `(`，否则中间变量名（如 `delta`）会被推进 op_queue，
+    #    把后续常量挂到变量名下。
+    # 数字分支用 `_NUM_LITERAL`（含正负号/科学计数法），与 parser 对齐：
+    # 只写 `\d+(\.\d+)?` 时 `1e6` 会被拆成 `1`（偏差 6 个数量级）、`-5` 会丢负号。
+    tokens = re.findall(
+        rf"{_NUM_LEFT}(?:([a-zA-Z_][a-zA-Z0-9_]*)(?=\s*\()|({_NUM_LITERAL}){_NUM_RIGHT})",
+        text,
+    )
     op_queue: list[str] = []
     for name_tok, num_tok in tokens:
         if name_tok:
             lower = name_tok.lower()
-            if lower in _KNOWN_OPERATORS:
+            if lower in known_ops:
                 op_queue.append(lower)
         elif num_tok and op_queue:
-            val = int(num_tok) if "." not in num_tok else float(num_tok)
+            val = _num_literal(num_tok)
             # 最后出现的算子取这个常量
             last_op = op_queue[-1]
             window_params.setdefault(last_op, []).append(val)

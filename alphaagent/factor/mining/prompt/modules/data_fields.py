@@ -18,7 +18,15 @@ _FF_ADVICE_MD = (
     "**禁止直接使用原始值**。必须先做截面标准化：`RANK($ff_super_net)` 或 "
     "`CS_ZSCORE(CS_WINSORIZE($ff_super_net, 0.01, 0.99))`。经济直觉：超大单净流入为正而小单净流出 "
     "→ 机构吸筹散户出逃 → 正 alpha；反之亦然。可做**资金分歧因子**："
-    "`DIVERGENCE_RANK($ff_super_net, $ff_small_net)` 量化机构-散户方向分歧。"
+    "`DIVERGENCE_RANK($ff_super_net, $ff_small_net)` 量化机构-散户方向分歧。\n"
+    ">\n"
+    "> **⚠️ 实测警示（2026-10-19，全 A 月频 rank IC，label_20d）**：裸资金流强度"
+    "（`($ff_super_net+$ff_large_net)/$amount`）train IC +0.004 / val +0.003，"
+    "裸分歧（`($ff_super_net-$ff_small_net)/$amount`）train -0.002 / val -0.007 —— "
+    "**两者都接近 0，几乎无独立 alpha**。资金面不要单独当信号主体，"
+    "必须做成**条件腿**（如资金流 × 低换手、资金流 × 价格背离、资金流作为其他主信号的"
+    "门控状态），或用 `CROWD_*`/`CHIP_*` 结构算子改写资金流信息。别把评估预算花在"
+    "裸资金流排序上。"
 )
 
 FF_PANEL_COLUMNS = (
@@ -104,6 +112,12 @@ PIT 锚点（统计截止日 `count_date` 可能滞后公告数周，勿用）�
 
 > 使用建议：筹码集中因子 `RANK($holder_count_chg_pct)` 取反即"集中度改善"排序；
 > 与价量互动（集中 + 涨幅背离 = 出货陷阱）是经典方向。
+>
+> **实测锚点（2026-10-19，全 A 月频 rank IC，label_20d）**：`$holder_count_chg_pct`
+> 经 `TS_MEAN(...,20)` 平滑后 train(2020-22) IC -0.011 / ICIR -0.28，
+> val(2023-24) IC **-0.026 / ICIR -0.52** —— 是本组事件/资金面里**最强且样本外更稳**
+> 的信号（负值 = 户数下降 = 筹码集中 = 未来收益更高）。原始未平滑版 val IC -0.022。
+> 优先在这个面上做深度构造（平滑窗/行业中性/与换手率交互），而不是另找新字段。
 """
 
 # 龙虎榜 + 大宗交易（event_faces 插件，dt_* / bt_*）
@@ -129,6 +143,41 @@ _EVENT_FACES_SECTION_MD = """### 龙虎榜 / 大宗交易（日频稠密化，`d
 > 计数列使用（计数已含 0 语义）。
 """
 
+# 限售解禁（share_unlock 插件，unlock_*）——2026-10-19 新增：面板实有 5 列，
+# 此前提示词完全未提及（数据在、LLM 不知道），是"供给冲击日历"类机制唯一可观测字段。
+_UNLOCK_SECTION_MD = """### 限售解禁（`unlock_*`，供给冲击日历）
+
+解禁 = 可流通股本突然扩大的**已知未来事件**，是 A 股最干净的一类"可预见的抛压供给"。
+首次解禁之前不产出行（`$unlock_days_since` 为空），故覆盖率约 39%（不是数据错误）。
+
+| 字段 | 说明 |
+|------|------|
+| `$unlock_days_since` | 距最近一次**已发生**解禁的自然日天数 |
+| `$unlock_ratio_last` | 最近一次解禁占流通股比例（%） |
+| `$unlock_ratio_past180` | 过去 180 天内已解禁比例合计（%），无解禁填 **0** |
+| `$unlock_days_to_next` | 距下一次**计划**解禁的自然日天数 |
+| `$unlock_ratio_next` | 下一次计划解禁占流通股比例（%） |
+
+> **⚠️ PIT 分级（必须遵守）**：`$unlock_days_since` / `$unlock_ratio_last` /
+> `$unlock_ratio_past180` 三列**严格 PIT 安全**（只用已发生事实），可自由使用；
+> `$unlock_days_to_next` / `$unlock_ratio_next` 是**计划口径**，curated 源表无公告日、
+> 无法证明信息可知时点，**存在前视风险**——只可作为门控/状态变量做辅助，
+> 禁止单独作为信号主体，更禁止对它们做"越临近越好"的短期择时。
+>
+> 使用建议：
+> - **解禁压力已释放**：`$unlock_ratio_past180` 高 + 股价未跌 = 供给被消化 → 后续弹性；
+> - **解禁前折价**：临近大比例解禁时股价常被提前压低，事件后（`$unlock_days_since` 小
+>   且 `$unlock_ratio_last` 大）出现均值回复是经典事件驱动方向；
+> - 比例列先 `CS_WINSORIZE` 再 `RANK`；`$unlock_ratio_past180` 因填 0 而左截断，
+>   直接 `RANK` 会把"无解禁"和"解禁极小"混为一谈，宜配 `$unlock_days_since` 区分。
+>
+> **实测锚点（2026-10-19，全 A 月频 rank IC，label_20d）**：`$unlock_ratio_past180`
+> 经 `TS_MEAN(...,20)` 平滑后 train IC -0.017 / ICIR -0.25、val IC **-0.018 / ICIR -0.29**
+> （方向稳定、样本外不衰减）；再做市值交互 `MULTIPLY($unlock_ratio_past180, NEG($float_cap))`
+> 后 train IC +0.015 / val **+0.021（ICIR +0.35）** —— **供给冲击在小市值股上被放大**，
+> 单因子裸用 IC 只有 0.02 量级，必须靠"解禁 × 流动性/市值/换手"的条件化才够交付门槛。
+"""
+
 # 融资融券（margin 插件，mgn_*）
 _MARGIN_SECTION_MD = """### 融资融券（日频直给，`mgn_*`）
 
@@ -152,6 +201,8 @@ _INSTITUTIONAL_SECTION_MD = """### 机构持仓（季频 PIT 阶跃，`inst_*`�
 按定期报告**实际披露日**（披露日历对齐）PIT 展开：披露日次日起引用最近一期。
 未披露/无机构数据为 NaN（勿填 0——0 会被当"无机构持股"信号）。
 
+**合计口径**：
+
 | 字段 | 说明 |
 |------|------|
 | `$inst_count` | 机构家数（基金/QFII/社保/保险/券商/信托等合计） |
@@ -159,8 +210,32 @@ _INSTITUTIONAL_SECTION_MD = """### 机构持仓（季频 PIT 阶跃，`inst_*`�
 | `$inst_mv` | 机构持股市值合计（元） |
 | `$inst_days_since` | 距最近一期披露的自然日天数 |
 
-> 使用建议：机构加仓/抱团是慢变量，配 `DELTA(..., ~63)` 或跨期变化看方向；
-> `$inst_ratio` 抬升 + 股价滞涨 = 筹码沉淀，反之高比例 + 减持窗口警惕踩踏。
+**分机构类型口径**（2026-10-19 补齐：面板实有 22 列，此前提示词只暴露了合计口径的 4 个）：
+
+| 机构类型 | 家数 / 比例 / 市值 |
+|------|------|
+| 基金 | `$inst_fund_count` / `$inst_fund_ratio` / `$inst_fund_mv` |
+| QFII | `$inst_qfii_count` / `$inst_qfii_ratio` / `$inst_qfii_mv` |
+| 社保 | `$inst_social_security_count` / `$inst_social_security_ratio` / `$inst_social_security_mv` |
+| 保险 | `$inst_insurance_count` / `$inst_insurance_ratio` / `$inst_insurance_mv` |
+| 券商 | `$inst_broker_count` / `$inst_broker_ratio` / `$inst_broker_mv` |
+| 信托 | `$inst_trust_count` / `$inst_trust_ratio` / `$inst_trust_mv` |
+
+> 使用建议：机构加仓/抱团是慢变量，配 `DELTA(..., ~63)` 或跨期变化看方向。
+> **但方向不稳定（2026-10-19 实测，全 A 月频 rank IC）**：
+> `$inst_ratio` 水平值 train(2020-2022) IC +0.029 / val(2023-2024) 仅 +0.005（衰减 84%）；
+> `$inst_ratio` 的 63 日变化 train +0.001 / val **-0.017**（方向翻转）；
+> `SUBTRACT($inst_fund_ratio, $inst_qfii_ratio)` 风格分歧 train +0.022 / val **-0.042**（完全反转）。
+> 结论：**机构面别直接当方向性信号**，要么做分段/状态门控（regime），要么只用来做加权腿；
+> 单看"机构加仓 → 未来涨"在近年数据上不成立，务必在 train/val 两段分别验证方向再交付。
+>
+> **分类型才是信息富矿（合计口径会把结构差异抹平）**：
+> - **风格分歧**：`SUBTRACT($inst_fund_ratio, $inst_insurance_ratio)` —— 公募与险资的
+>   久期/风险偏好不同。⚠️ 该分歧本身方向会反转（见上），适合做**状态门控/条件腿**而非主信号；
+> - **聪明钱 vs 被动**：`DIVIDE($inst_qfii_ratio, $inst_fund_ratio)` 的**变化方向**比水平值有意义；
+> - **国家队信号**：`$inst_social_security_ratio`（社保）跨越式抬升是低频高信噪事件，
+>   宜做 `DELTA` 变化量门控而非连续动量；
+> - 各类比例是**存量占比**，做变化量请用 `DELTA(..., 63/126)` 而非 `TS_PCTCHANGE`（分母可接近 0）。
 """
 
 # 十大流通股东（top_holders 插件，th_*）
@@ -235,6 +310,11 @@ EVENT_FACE_PANEL_COLUMNS = (
     "dt_cnt_90d", "dt_net_buy_90d", "dt_days_since",
     "bt_cnt_90d", "bt_amt_90d", "bt_premium_last", "bt_days_since",
 )
+# 限售解禁：注入判定单独一组（列族存在 ≠ 事件面已载入，缺一列就不该教）。
+UNLOCK_PANEL_COLUMNS = (
+    "unlock_days_since", "unlock_ratio_last", "unlock_ratio_past180",
+    "unlock_days_to_next", "unlock_ratio_next",
+)
 FORECAST_PANEL_COLUMNS = (
     "pred_direction", "pred_change_mid", "pred_net_profit_mid", "pred_surprise", "pred_days_since",
 )
@@ -292,6 +372,12 @@ _RESEARCH_VIEWS_SECTION_MD = """### 研报视角：一致预期与卖方预测�
 | `$rc_eps_y` / `$rc_pe_y` / `$rc_roe_y` / `$rc_tp_wan` | 最近研报给出的 EPS / PE / ROE 预测 / 预测利润总额（万元） |
 | `$rc_rating` / `$rc_target_price` | 最近研报评级分值 / 目标价（元） |
 
+> **⚠️ 覆盖率实测（2026-10-19，2020-2026 全面板 781.9 万行）**：
+> `rc_*` 行级非空约 **27%**（有研报覆盖的标的才出现）；
+> `ac_*` 一致预期仅 **0.85%** —— 几乎等于不可用（curated 一致预期表基本是空的）。
+> **`ac_*` 不要作为主力信号源**：它会让 coverage 门槛直接失败、白烧评估预算；
+> 需要"预期"类信息时优先用 `$rc_*`、`$pred_surprise`（90.4%）、`$exp_netprofit_yoy`（50.4%）。
+>
 > 研报数据是**低频慢变量**：只与日频价量做门控或残差，不要直接当短周期信号；
 > `$rc_cnt_90d` 高 + 价格滞涨 = 拥挤无催化，预期上调配低换手更稳。
 """
@@ -444,6 +530,9 @@ def render(ctx) -> str:  # noqa: ANN001
         event_blocks.append(_HOLDER_SECTION_MD)
     if (cols is None or any(c in cols for c in EVENT_FACE_PANEL_COLUMNS)) and _want("事件面") and _family_allowed(("dt_", "bt_")):
         event_blocks.append(_EVENT_FACES_SECTION_MD)
+    # 限售解禁：与龙虎榜/大宗同属事件面，但列族独立（dt_/bt_ 消融时不应连带隐藏）。
+    if (cols is None or any(c in cols for c in UNLOCK_PANEL_COLUMNS)) and _want("事件面") and _family_allowed(("unlock_",)):
+        event_blocks.append(_UNLOCK_SECTION_MD)
     if (cols is None or any(c in cols for c in MARGIN_PANEL_COLUMNS)) and _want("两融面") and _family_allowed(("mgn_",)):
         event_blocks.append(_MARGIN_SECTION_MD)
     if (cols is None or any(c in cols for c in INST_PANEL_COLUMNS)) and _want("机构面") and _family_allowed(("inst_",)):

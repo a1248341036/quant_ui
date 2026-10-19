@@ -23,7 +23,8 @@ operators.py 实现（唯一必改）
 指纹/分类（熔断与记忆）
    ├─ ast.py SMOOTHING_OPS / NORMALIZE_OPS / _SIGNAL_OP_FAMILY
    ├─ _prefilter.py _SMOOTHING_OPS / _NORMALIZE_OPS / _BASIC_OPS
-   └─ retrieval.py _SHELL_OPS / _COLD_OPS
+   ├─ retrieval.py _SHELL_OPS / _COLD_OPS
+   └─ memory/expressions.py _operator_names（**自动跟随注册表，无需登记**）
    ▼
 数据面（facets.py，仅专属面算子需要）
    ▼
@@ -44,6 +45,20 @@ operators.py 实现（唯一必改）
 | 8 | `alphaagent/factor/mining/prompt/modules/behavior_rules.py` | rule 2 等 | 行为准则教学。**可选**：教模型新算子的使用场景与参数语义 | ✅ rule 2 信号积分 DSL 写法改为推荐 `SIGNAL_BLEND(signal, λ)` |
 | 9 | `alphaagent/factor/facets.py` | `FACET_DEFS`（19-34） | 数据面识别（按列/算子前缀匹配）。**仅专属面算子**需要登记 | ❌ 不改（通用） |
 | 10 | `tests/test_dsl_*.py` | 新建或追加 | 语义/边界/目录可见性测试 | ✅ 新建 `tests/test_dsl_signal_blend.py`（5 用例） |
+| 11 | `alphaagent/factor/mining/memory/expressions.py` | `_operator_names()` | **记忆层算子识别真源 = DSL 注册表 ∪ 静态回落白名单**（进程内缓存）。与 `dsl/eval.py` 同源（`build_operator_namespace(extension_modules=resolve_extension_modules())`，含内置 + 环境声明的扩展算子），**新算子无需登记**；`_KNOWN_OPERATORS` 仅作注册表不可用时的兜底，**不要再往里加算子** | ❌ 不改（注册表自动覆盖） |
+
+> **#11 为什么进清单（2026-10-18 事故）**：该文件曾只用硬编码 `_KNOWN_OPERATORS` 识别算子，
+> 清单外一切算子被静默丢弃 —— `_COLD_OPS` 22/22 与 `CS_BUCKET`/`CS_GROUP_RANK`/`NEG`/`SIGNAL_BLEND`
+> 从未进入 `operator_list_json`（实测 15463 条表达式文本含冷门算子名、**0 条**正确落库），
+> 且 `CHIP_PEAK_LOC` 撞 `chip_*` 变量前缀规则被误判成**变量**。后果是算子分布软引导
+> （`_operator_diversity_block`）、按算子检索记忆、算子×面台账对冷门算子**结构性失明** ——
+> 即便 100% 的尝试都用冷门算子，统计器读到的使用次数仍是 0，并把刚用过的算子当
+> 「从未用过」推荐回来。**算子识别有三重约束**：① `(?<![\w$@])` 锚在标识符起点之外
+> （只写 `(?<!\$)` 时 `$raw_rank` 会在**内部**匹配出算子 `rank`；只写 `[\w$]` 时
+> `$close@60m` 的 `60` 会被当窗口常量）；② `(?=\s*\()` 要求**调用形态**（否则与算子同名的
+> 中间变量 `delta`/`delay`/`scale` 会被计成算子、挤出 variables）；③ 名字须落在
+> `_operator_names()` 内。即 `$chip_peak_loc` 是字段、`CHIP_PEAK_LOC(...)` 才是算子。
+> 回归锁定：`tests/test_memory_operator_inventory.py`。
 
 ## 自动机制（无需登记）
 
@@ -51,6 +66,9 @@ operators.py 实现（唯一必改）
 - **监控**：`monitor.wrap_operator_namespace` 自动包计时代理（`dsl-monitor` API 可见）。
 - **守卫**：`guard.wrap_lookahead_guard` 自动包负整数拦截（`_NEG_INT_EXEMPT` 以外全部默认守卫）。
 - **目录**：`catalog.operator_catalog_markdown` 从命名空间自动渲染，签名由 `inspect.signature` 瘦身（`_slim_signature`）。
+- **算子识别（记忆层）**：`memory/expressions.py _operator_names()` 读同一个 `build_operator_namespace()`，
+  新算子自动进入算子识别与 `operator_list_json`（进而影响算子分布软引导/按算子检索/算子×面台账），
+  **无需登记**（触点 #11）。
 
 ## 决策点（新算子必答四问）
 

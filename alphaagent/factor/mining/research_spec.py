@@ -505,6 +505,11 @@ def default_research_spec(mode: str = "technical") -> dict[str, Any]:
     # 研报模式的流程开关（复现/发散阶段、复现门禁、锁定轮数）；其他模式为空 dict。
     if getattr(mode_spec, "report_policy_overrides", None):
         spec.setdefault("report_policy", {}).update(mode_spec.report_policy_overrides)
+    # 冷门赛道二轨评估覆盖（2026-10-19）：只有显式声明的档位（technical_event_monthly）
+    # 打开 cold_track.enabled；其余档位 cold_track_overrides 为空 dict，
+    # spec 保持 DEFAULT_RESEARCH_SPEC 的 enabled=False → 行为逐字节不变。
+    if getattr(mode_spec, "cold_track_overrides", None):
+        spec.setdefault("cold_track", {}).update(mode_spec.cold_track_overrides)
     return spec
 
 
