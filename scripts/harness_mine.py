@@ -87,14 +87,28 @@ def _flags(mode: str, row: dict) -> list[str]:
 def _extract(res: dict) -> dict:
     s = res.get("summary") if isinstance(res, dict) else None
     s = s if isinstance(s, dict) else {}
+    # 换手取顶层，回落嵌套 quantile_portfolio：eval/service.py 在 2026-10-19 修复前
+    # 只把换手写进嵌套层，而本函数读顶层 → turn=None → _flags 换手门永久 fail
+    # （2026-10-19 实测 15/15 因子全报 turnover>0.8）。两处都读，防单边回归。
+    qp = res.get("quantile_portfolio") if isinstance(res, dict) else None
+    qp = qp if isinstance(qp, dict) else {}
+
+    def _pick(key: str) -> Any:
+        for src in (res, qp):
+            if isinstance(src, dict):
+                v = src.get(key)
+                if v is not None:
+                    return v
+        return None
+
     return {
         "ic": s.get("ic"),
         "icir": s.get("icir"),
         "rank_ic": s.get("rank_ic"),
         "coverage": s.get("factor_coverage"),
         "cs_autocorr": s.get("cs_pearson_autocorr"),
-        "turnover_daily": res.get("avg_daily_side_turnover"),
-        "turnover_rebalance": res.get("avg_rebalance_side_turnover"),
+        "turnover_daily": _pick("avg_daily_side_turnover"),
+        "turnover_rebalance": _pick("avg_rebalance_side_turnover"),
         "n_days": s.get("n_days"),
         # Rotation P1 industry diagnostics (top-level passthrough, see eval/response.py)
         "industry_rotation": res.get("industry_rotation"),

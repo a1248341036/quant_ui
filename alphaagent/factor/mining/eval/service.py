@@ -109,10 +109,19 @@ def _engine_result_to_legacy(raw: dict[str, Any]) -> dict[str, Any]:
     #  导致 LLM 盲目提交高换手因子被 stage_one 反复拦截）
     if isinstance(qp, dict):
         _turnover_out = out.setdefault("quantile_portfolio", {})
-        if qp.get("avg_daily_side_turnover") is not None:
-            _turnover_out["avg_daily_side_turnover"] = qp.get("avg_daily_side_turnover")
-        if qp.get("avg_rebalance_side_turnover") is not None:
-            _turnover_out["avg_rebalance_side_turnover"] = qp.get("avg_rebalance_side_turnover")
+        # ⚠️ 换手必须**同时**写顶层与嵌套，两处消费口径保持一致：
+        # agentscope 链路的 response.py 写顶层；本函数此前只写嵌套
+        # ``quantile_portfolio`` 下，而 ``scripts/harness_mine._extract`` 与
+        # ``alphaagent/mcp_server/tools.py`` 都读**顶层** → 拿到 None →
+        # ``harness_mine._flags`` 的换手门（``turn is None → fail``）**结构性永不通过**，
+        # 即 harness/MCP 直驱的任何因子都无法判定 stage_one 过门
+        # （2026-10-19 实测：15/15 因子全部额外报 ``turnover>0.8`` 而 turn=None）。
+        # 顶层级供 harness/MCP/agentscope 统一读取，嵌套层保留向后兼容。
+        for _key in ("avg_daily_side_turnover", "avg_rebalance_side_turnover"):
+            _val = qp.get(_key)
+            if _val is not None:
+                _turnover_out[_key] = _val
+                out[_key] = _val
     if raw.get("by_month") is not None:
         out["by_month"] = raw["by_month"]
     if raw.get("by_symbol") is not None:
