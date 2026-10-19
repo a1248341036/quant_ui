@@ -25,8 +25,14 @@ ORDER = 26
 REQUIRED = False
 SEP_BEFORE = "\n\n---\n\n"
 
-# 老档沿用的族：出现它们**不触发**本模块（保持黄金基线逐字节不变）。
-# 新增族必须同时在此表之外的 FAMILY_FIELD_HINTS 里登记，否则渲染时会被忽略。
+# 「经典族」：这些族的历史行为由其它板块承担，**全由经典族构成的档位不触发本模块**
+# （technical / technical_monthly / technical_daily|weekly / report 的族清单都只含它们
+# → 老档 prompt 逐字节不变）。
+# 注意 2026-10-19：fundamental / fundamental_daily|weekly 三档补入了
+# ``institutional`` / ``shareholder_concentration``（见 core.research_modes 的
+# ``_FUNDAMENTAL_DATA_FACE_FAMILIES``）→ 这三档现在**会**注入本模块，属预期行为：
+# 它们确有非经典族，需要显式告知 LLM"机构/股东集中族可用"，否则"勾了机构面却
+# 挖不出机构因子"仍会复现。
 _LEGACY_FAMILIES: frozenset[str] = frozenset({
     "volume_price", "volatility", "chip", "momentum_reversal",
     "fundamental_quality", "fundamental_growth",

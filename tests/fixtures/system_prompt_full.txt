@@ -285,6 +285,8 @@ panel 内常用 label（启动时可 `--label-col` 切换）：
 > **行业中性化**：行业码是离散组号，直接 `CS_NEUTRALIZE(factor, $industry_sw_l1)` 即为行业内去均值；**勿**对它套 `CS_BUCKET`。
 
 > **资金流向使用建议**：`$ff_*` 列为**绝对金额**（元），截面分布极端右偏，**禁止直接使用原始值**。必须先做截面标准化：`RANK($ff_super_net)` 或 `CS_ZSCORE(CS_WINSORIZE($ff_super_net, 0.01, 0.99))`。经济直觉：超大单净流入为正而小单净流出 → 机构吸筹散户出逃 → 正 alpha；反之亦然。可做**资金分歧因子**：`DIVERGENCE_RANK($ff_super_net, $ff_small_net)` 量化机构-散户方向分歧。
+>
+> **⚠️ 实测警示（2026-10-19，全 A 月频 rank IC，label_20d）**：裸资金流强度（`($ff_super_net+$ff_large_net)/$amount`）train IC +0.004 / val +0.003，裸分歧（`($ff_super_net-$ff_small_net)/$amount`）train -0.002 / val -0.007 —— **两者都接近 0，几乎无独立 alpha**。资金面不要单独当信号主体，必须做成**条件腿**（如资金流 × 低换手、资金流 × 价格背离、资金流作为其他主信号的门控状态），或用 `CROWD_*`/`CHIP_*` 结构算子改写资金流信息。别把评估预算花在裸资金流排序上。
 
 ---
 
@@ -362,6 +364,12 @@ PIT 锚点（统计截止日 `count_date` 可能滞后公告数周，勿用）�
 
 > 使用建议：筹码集中因子 `RANK($holder_count_chg_pct)` 取反即"集中度改善"排序；
 > 与价量互动（集中 + 涨幅背离 = 出货陷阱）是经典方向。
+>
+> **实测锚点（2026-10-19，全 A 月频 rank IC，label_20d）**：`$holder_count_chg_pct`
+> 经 `TS_MEAN(...,20)` 平滑后 train(2020-22) IC -0.011 / ICIR -0.28，
+> val(2023-24) IC **-0.026 / ICIR -0.52** —— 是本组事件/资金面里**最强且样本外更稳**
+> 的信号（负值 = 户数下降 = 筹码集中 = 未来收益更高）。原始未平滑版 val IC -0.022。
+> 优先在这个面上做深度构造（平滑窗/行业中性/与换手率交互），而不是另找新字段。
 
 
 ---
@@ -415,6 +423,12 @@ PIT 锚点（统计截止日 `count_date` 可能滞后公告数周，勿用）�
 >   且 `$unlock_ratio_last` 大）出现均值回复是经典事件驱动方向；
 > - 比例列先 `CS_WINSORIZE` 再 `RANK`；`$unlock_ratio_past180` 因填 0 而左截断，
 >   直接 `RANK` 会把"无解禁"和"解禁极小"混为一谈，宜配 `$unlock_days_since` 区分。
+>
+> **实测锚点（2026-10-19，全 A 月频 rank IC，label_20d）**：`$unlock_ratio_past180`
+> 经 `TS_MEAN(...,20)` 平滑后 train IC -0.017 / ICIR -0.25、val IC **-0.018 / ICIR -0.29**
+> （方向稳定、样本外不衰减）；再做市值交互 `MULTIPLY($unlock_ratio_past180, NEG($float_cap))`
+> 后 train IC +0.015 / val **+0.021（ICIR +0.35）** —— **供给冲击在小市值股上被放大**，
+> 单因子裸用 IC 只有 0.02 量级，必须靠"解禁 × 流动性/市值/换手"的条件化才够交付门槛。
 
 
 ---
@@ -462,14 +476,18 @@ T 日盘后披露，两融余额 = 杠杆资金的多空方向/拥挤度；**非
 | 券商 | `$inst_broker_count` / `$inst_broker_ratio` / `$inst_broker_mv` |
 | 信托 | `$inst_trust_count` / `$inst_trust_ratio` / `$inst_trust_mv` |
 
-> 使用建议：机构加仓/抱团是慢变量，配 `DELTA(..., ~63)` 或跨期变化看方向；
-> `$inst_ratio` 抬升 + 股价滞涨 = 筹码沉淀，反之高比例 + 减持窗口警惕踩踏。
+> 使用建议：机构加仓/抱团是慢变量，配 `DELTA(..., ~63)` 或跨期变化看方向。
+> **但方向不稳定（2026-10-19 实测，全 A 月频 rank IC）**：
+> `$inst_ratio` 水平值 train(2020-2022) IC +0.029 / val(2023-2024) 仅 +0.005（衰减 84%）；
+> `$inst_ratio` 的 63 日变化 train +0.001 / val **-0.017**（方向翻转）；
+> `SUBTRACT($inst_fund_ratio, $inst_qfii_ratio)` 风格分歧 train +0.022 / val **-0.042**（完全反转）。
+> 结论：**机构面别直接当方向性信号**，要么做分段/状态门控（regime），要么只用来做加权腿；
+> 单看"机构加仓 → 未来涨"在近年数据上不成立，务必在 train/val 两段分别验证方向再交付。
 >
 > **分类型才是信息富矿（合计口径会把结构差异抹平）**：
 > - **风格分歧**：`SUBTRACT($inst_fund_ratio, $inst_insurance_ratio)` —— 公募与险资的
->   久期/风险偏好不同，二者占比差扩大常领先于风格切换；
-> - **聪明钱 vs 被动**：`DIVIDE($inst_qfii_ratio, $inst_fund_ratio)` 抬升 + 股价未动 =
->   外资先行建仓；QFII 降而基金升 = 内资接盘，警惕后续持续性；
+>   久期/风险偏好不同。⚠️ 该分歧本身方向会反转（见上），适合做**状态门控/条件腿**而非主信号；
+> - **聪明钱 vs 被动**：`DIVIDE($inst_qfii_ratio, $inst_fund_ratio)` 的**变化方向**比水平值有意义；
 > - **国家队信号**：`$inst_social_security_ratio`（社保）跨越式抬升是低频高信噪事件，
 >   宜做 `DELTA` 变化量门控而非连续动量；
 > - 各类比例是**存量占比**，做变化量请用 `DELTA(..., 63/126)` 而非 `TS_PCTCHANGE`（分母可接近 0）。

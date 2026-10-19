@@ -166,12 +166,25 @@ export const agentStore = reactive({
   // 数据面只决定信号族/载列；调仓频率决定 label 与门槛（门槛与数据面无关）。
   inferredMode: computed(() => {
     const slow = ['基本面', '股东面', '机构面', '股东集中面']
+    // 事件/资金面（2026-10-19）：与后端 core.research_modes._EVENT_FACETS 同口径。
+    // 这些面此前没有对应 signal_families，勾选后会被推断成 technical_monthly
+    // （族=价量三族）→ 「勾了资金面却挖不出资金面因子」。现落 technical_event_monthly。
+    // ⚠️ 本块必须与后端保持一致：startAgent 会显式提交 effectiveMode，
+    // 后端 start() 仅在 research_mode 为 None 时才走 infer_research_mode，
+    // 前后端口径一旦漂移，后端推断在这条路径上**完全不生效**（OCR 2026-10-19 实锤）。
+    const event = ['资金面', '两融面', '事件面', '业绩面', '披露面', '分红面']
+    const facets = agentStore.form.focus_facets || []
     const freq = agentStore.form.rebalance_freq
-    const isSlow = slow.some(f => (agentStore.form.focus_facets || []).includes(f))
+    const isSlow = slow.some(f => facets.includes(f))
     if (isSlow) {
       if (freq === 'daily') return 'fundamental_daily'
       if (freq === 'weekly') return 'fundamental_weekly'
       return 'fundamental'  // 自动/月频 → 基本面数据面 × monthly（label_20d）
+    }
+    // 事件/资金面只有 monthly 门槛标定：daily/weekly 回落对应对齐子档，
+    // 不得硬套 20d 门槛（否则"同 label 不同门槛"，见后端同处注释）。
+    if (freq !== 'daily' && freq !== 'weekly' && event.some(f => facets.includes(f))) {
+      return 'technical_event_monthly'
     }
     if (freq === 'daily') return 'technical_daily'
     if (freq === 'weekly') return 'technical_weekly'
@@ -186,6 +199,7 @@ export const agentStore = reactive({
     if (m === 'technical_daily') return '短周期档（label_1d · 日调仓）'
     if (m === 'technical_weekly') return '中周期档（label_5d · 周调仓）'
     if (m === 'technical_monthly') return '慢信号档（label_20d · 月调仓）'
+    if (m === 'technical_event_monthly') return '事件资金档（label_20d · 月调仓）'
     return '短周期档（label_1d · 日调仓）'
   }),
   // 研报档 pin：research_mode=report 是"先复现研报机制、再单维发散"的独立顶层档位

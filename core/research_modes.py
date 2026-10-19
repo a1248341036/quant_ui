@@ -128,6 +128,19 @@ _MONTHLY_20D_OVERRIDES: dict[str, dict] = {
     },
 }
 
+# 基本面数据面（``facets.FACET_GROUPS`` 的"基本面组"）覆盖的信号族：
+# 基本面四族 + 机构面 + 股东集中面。
+# 2026-10-19 补齐后两族：``infer_research_mode`` 的 ``_SLOW_FACETS`` 分支把
+# 「股东面/机构面/股东集中面」都路由到 fundamental 档，但该档 signal_families 里
+# 只有 fundamental_* 四族 → 勾了机构面/股东集中面却**没有对应族可挂**，
+# 因子层面表现为这两个数据面在库内 0 个因子。FACET_GROUPS 本就把它们归为基本面组，
+# 补进本档是让"族"与"数据面分组"对齐，不是新增数据面。
+_FUNDAMENTAL_DATA_FACE_FAMILIES: tuple[str, ...] = (
+    "fundamental_quality", "fundamental_growth",
+    "fundamental_value", "fundamental_revision",
+    "institutional", "shareholder_concentration",
+)
+
 # 5d（label_5d）门槛唯一来源（供 technical_weekly 与 fundamental_weekly 共用）。
 # 抽成常量的理由同 _MONTHLY_20D_OVERRIDES：数据面正交后，每个 label 档都会被两个
 # 数据面（价量/基本面）的模式引用，从结构上杜绝"同 label 不同门槛"漂移。
@@ -187,10 +200,7 @@ RESEARCH_MODES: dict[str, ResearchModeSpec] = {
         label="基本面",
         hint="funda_* 财务基本面因子（PIT），label_20d 收盘到收盘（基本面数据面·月频档）",
         recommended_label_col="label_20d_close_to_close",
-        signal_families=(
-            "fundamental_quality", "fundamental_growth",
-            "fundamental_value", "fundamental_revision",
-        ),
+        signal_families=_FUNDAMENTAL_DATA_FACE_FAMILIES,
         forbidden_families=("pure_size", "pure_price_momentum"),
         needs_fundamentals=True,
         candidate_dir="candidate_main",
@@ -218,10 +228,7 @@ RESEARCH_MODES: dict[str, ResearchModeSpec] = {
         label="基本面·日频",
         hint="基本面数据面（funda_* PIT）× daily 调仓：label_1d，门槛 1d 档",
         recommended_label_col="label_1d_open_to_open",
-        signal_families=(
-            "fundamental_quality", "fundamental_growth",
-            "fundamental_value", "fundamental_revision",
-        ),
+        signal_families=_FUNDAMENTAL_DATA_FACE_FAMILIES,
         forbidden_families=("pure_size", "pure_price_momentum"),
         needs_fundamentals=True,
         candidate_dir="candidate_main",
@@ -243,10 +250,7 @@ RESEARCH_MODES: dict[str, ResearchModeSpec] = {
         label="基本面·周频",
         hint="基本面数据面（funda_* PIT）× weekly 调仓：label_5d，门槛 5d 档",
         recommended_label_col="label_5d_close_to_close",
-        signal_families=(
-            "fundamental_quality", "fundamental_growth",
-            "fundamental_value", "fundamental_revision",
-        ),
+        signal_families=_FUNDAMENTAL_DATA_FACE_FAMILIES,
         forbidden_families=("pure_size", "pure_price_momentum"),
         needs_fundamentals=True,
         candidate_dir="candidate_main",

@@ -17,6 +17,9 @@ signal_families 只覆盖「价量/波动/筹码 + 基本面」，没有族能�
 """
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 from alphaagent.factor.facets import expr_facets
 from alphaagent.factor.mining.prompt.modules import signal_families as sf_mod
 from alphaagent.factor.mining.prompts import build_system_prompt
@@ -154,11 +157,21 @@ class TestInferResearchMode:
 
 class TestSignalFamiliesPromptModule:
     def test_disabled_without_new_families(self):
-        """老档（族全在 _LEGACY_FAMILIES）不得注入 → 黄金基线逐字节不变。"""
-        for mode in ("technical", "technical_monthly", "fundamental", "report"):
+        """纯经典族的档位不得注入 → 黄金基线逐字节不变。"""
+        for mode in ("technical", "technical_monthly", "report"):
             spec = default_research_spec(mode)
             assert sf_mod.enabled(_ctx(spec)) is False, mode
             assert "信号族白名单" not in _prompt(spec=spec, cols=_BASE_COLS + _EVENT_COLS), mode
+
+    def test_fundamental_mode_injects_institutional_families(self):
+        """fundamental 档含 institutional/shareholder_concentration（基本面组补齐）
+        → 会注入，且必须显式列出这两族（否则"勾机构面却不知道有机构族"仍可复现）。"""
+        spec = default_research_spec("fundamental")
+        assert sf_mod.enabled(_ctx(spec)) is True
+        text = _prompt(spec=spec, cols=_BASE_COLS + _EVENT_COLS, include_fundamentals=True)
+        assert "信号族白名单" in text
+        assert "`institutional`" in text
+        assert "`shareholder_concentration`" in text
 
     def test_injected_for_event_mode(self):
         spec = default_research_spec("technical_event_monthly")
@@ -234,3 +247,39 @@ class TestDataFieldsInjection:
         )
         assert "覆盖率实测" in text
         assert "0.85%" in text
+
+
+# ── 6. 前后端口径一致（防漂移）──────────────────────────────────────
+# 前端 static/src/store/alphaagent.js 的 inferredMode 是后端 infer_research_mode 的
+# **复制实现**；startAgent 会显式提交 effectiveMode，后端 start() 仅在 research_mode
+# 为 None 时才推断 —— 两者一旦漂移，后端改动在 UI 路径上完全不生效
+# （2026-10-19 OCR 实锤：本改动的第一版就踩了这个坑，新档在 UI 上永远选不中）。
+
+_STORE_JS = (
+    Path(__file__).resolve().parents[1] / "static" / "src" / "store" / "alphaagent.js"
+)
+
+
+def _js_facet_list(var_name: str) -> set[str]:
+    src = _STORE_JS.read_text(encoding="utf-8")
+    m = re.search(rf"const\s+{var_name}\s*=\s*\[([^\]]*)\]", src)
+    assert m, f"前端 {var_name} 面清单未找到（写法变更需同步本测试）"
+    return set(re.findall(r"'([^']+)'", m.group(1)))
+
+
+class TestFrontendBackendParity:
+    def test_event_facets_match(self):
+        from core.research_modes import _EVENT_FACETS
+
+        assert _js_facet_list("event") == set(_EVENT_FACETS)
+
+    def test_slow_facets_match(self):
+        from core.research_modes import _SLOW_FACETS
+
+        assert _js_facet_list("slow") == set(_SLOW_FACETS)
+
+    def test_event_mode_wired_in_frontend(self):
+        src = _STORE_JS.read_text(encoding="utf-8")
+        assert "technical_event_monthly" in src
+        # daily/weekly 不得落 event 档（无对应 label 标定）
+        assert "freq !== 'daily' && freq !== 'weekly'" in src

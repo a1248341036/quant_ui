@@ -142,10 +142,13 @@ def test_start_endpoint_fundamental_orthogonal_freq(monkeypatch):
     # 门槛跟随频率（5d 档），与数据面无关
     crit = captured["research_spec"]["delivery_policy"]["candidate"]
     assert crit["min_abs_ic"] == 0.030
-    # 数据面仍决定载列/信号族（fundamental_* 族）
+    # 数据面仍决定载列/信号族（基本面组 = fundamental_* 四族 + 机构/股东集中两族；
+    # 2026-10-19 补后两族：FACET_GROUPS 已把机构面/股东集中面归入基本面组，
+    # 此前档位族清单缺它们，导致勾这两个面时无可挂之族）
     assert captured["research_spec"]["search_policy"]["allowed_signal_families"] == [
         "fundamental_quality", "fundamental_growth",
         "fundamental_value", "fundamental_revision",
+        "institutional", "shareholder_concentration",
     ]
 
 
@@ -237,6 +240,7 @@ def test_report_mode_registered_and_exposed_to_frontend():
     internals = [o["value"] for o in ui_options() if o["internal"]]
     assert sorted(internals) == sorted([
         "technical_daily", "technical_weekly", "technical_monthly",
+        "technical_event_monthly",
         "fundamental_daily", "fundamental_weekly",
     ])
     # 子档元数据齐全（前端 switchResearchMode 需要 hint/default_user_message）
