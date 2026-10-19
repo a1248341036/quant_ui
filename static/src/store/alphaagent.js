@@ -223,6 +223,7 @@ export const agentStore = reactive({
       technical_daily: '日线技术·日频',
       technical_weekly: '日线技术·周频',
       technical_monthly: '日线技术·月频',
+      technical_event_monthly: '事件资金·月频',
     }
     return SUB_LABEL[mode] || mode
   }),
@@ -235,7 +236,7 @@ export const agentStore = reactive({
   }),
   effectiveModeHint: computed(() => (agentStore.reportPinned
     ? '已 pin 研报档：复现阶段喂机制卡、发散阶段用研报 RAG，需载入基本面列。再点页头「研报」取消，回到按数据面自动定档。'
-    : '档位由「数据面 × 调仓频率」正交推断（2026-10-08）：基本面/股东/机构/股东集中面 → 基本面档（载 funda_* 列、开放基本面信号族），价量面 → 行情档；调仓频率决定 label 与门槛（日 1d / 周 5d / 月 20d，门槛与数据面无关）。页头「研报」可 pin 研报档')),
+    : '档位由「数据面 × 调仓频率」正交推断（2026-10-08，2026-10-19 扩事件/资金面）：基本面/股东/机构/股东集中面 → 基本面档（载 funda_* 列、开放基本面组信号族），资金/两融/事件/业绩/披露/分红面 + 月频 → 事件资金档（开放事件资金族，走冷门赛道残差化），价量面 → 行情档；调仓频率决定 label 与门槛（日 1d / 周 5d / 月 20d，门槛与数据面无关）。页头「研报」可 pin 研报档')),
   researchSpecDirty: computed(() => {
     const mode = agentStore.form.research_mode
     const effective = agentStore.specDefaultsByMode[mode]
