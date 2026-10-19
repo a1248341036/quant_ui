@@ -60,11 +60,15 @@ _DEFAULT_WORKERS = 10
 # ─── Helpers ──────────────────────────────────────────────────────────
 
 
-def _get_pro(config: Config):
-    """Return a Tushare pro API client (reuses tushare_fetch helpers)."""
-    from cnequity.external.tushare_fetch import _get_pro
+def _get_pro(config: Config, *, fallback: bool = False):
+    """Return a Tushare pro API client (reuses tushare_fetch helpers).
 
-    return _get_pro(config)
+    ``fallback=True`` asks for the secondary endpoint used by datasets the
+    primary site's plan excludes (see tushare_fetch._get_pro).
+    """
+    from cnequity.external.tushare_fetch import _get_pro as _real_get_pro
+
+    return _real_get_pro(config, fallback=fallback)
 
 
 def _ts_date(d: date) -> str:
@@ -319,6 +323,8 @@ def _make_date_range_step(
     depends_on: list[str],
     group: str,
     fetch_range: Callable | None = None,
+    fallback_client: bool = False,
+    tolerate_failure: bool = False,
 ) -> Callable:
     """Fetch all rows in a date window via ``pro.api(start_date=..., end_date=...)``.
 
@@ -358,16 +364,45 @@ def _make_date_range_step(
             start = getattr(config, "_backfill_start", None) or start
             end = getattr(config, "_backfill_end", None) or end
 
+        if start > end:
+            # 同一交易日重复运行（水位已推进到 trade_date）时 start 会越到次日。
+            # datahubco 的 [local_validation] 会直接拒（旧中间件默默返回空），
+            # 于是"补跑即失败"循环——2026-10-19 端到端复跑实测。按幂等跳过。
+            # 注意**不写 watermark**：短路说明本来就没有新数据；若 watermark
+            # 已领先 trade_date（回补历史日期），写回 trade_date 会让水位倒退，
+            # 下次日更就会重跑已完成的交易日。
+            logger.info(
+                "%s: start %s > end %s (watermark already at/after trade_date), skip",
+                dataset, start.isoformat(), end.isoformat(),
+            )
+            return {"rows_read": 0, "rows_written": 0, "status": "success"}
+
         logger.info(
             "%s: fetching date-range %s..%s",
             dataset, start.isoformat(), end.isoformat(),
         )
 
-        pro = _get_pro(config)
+        # 只在确实需要备用端点时才传 fallback，保持 _get_pro(config) 的单参
+        # 契约（老测试与外部 monkeypatch 仍只接受 config）。
+        pro = _get_pro(config, fallback=True) if fallback_client else _get_pro(config)
         interval = config.external_tushare_wide_interval
-        raw = (fetch_range or _fetch_range_paged)(
-            pro, api, interval=interval, start=start, end=end
-        )
+        try:
+            raw = (fetch_range or _fetch_range_paged)(
+                pro, api, interval=interval, start=start, end=end
+            )
+        except Exception as exc:
+            if not tolerate_failure:
+                raise
+            # 低频事件数据（namechange）尽力而为：源端上游池耗尽时不把整个
+            # 波次打成红色，且**不推进 watermark**——下一轮 / 23:00 的
+            # stale-retry / 次日日更会再次尝试，数据不会静默丢失。
+            logger.warning(
+                "%s: fetch failed (%s); watermark left at %s so the next run retries",
+                dataset,
+                exc,
+                watermark,
+            )
+            return {"status": "warning", "dataset": dataset, "error": str(exc)}
 
         combined = raw if raw is not None else pl.DataFrame()
         if not combined.is_empty():
@@ -581,7 +616,19 @@ _make_ann_date_step("share_float_external", api="share_float",  depends_on=["ins
 _make_ann_date_step("stk_surv",            api="stk_surv",      depends_on=["instruments"], group="events")
 
 # L2 corporate events — full-market date-range batch
-_make_date_range_step("namechange", api="namechange", depends_on=["instruments"], group="events")
+# namechange 不在 datahubco 15000 积分套餐内（api_scope_denied，2026-10-19 实测），
+# 改走 [external_tushare_wide].tushare_fallback_url。两边都是 start_date/end_date
+# 全市场区间，调用形态不变。
+_make_date_range_step(
+    "namechange",
+    api="namechange",
+    depends_on=["instruments"],
+    group="events",
+    fallback_client=True,
+    # 低频事件数据：源端池耗尽时降级为 warning（不推进水位），
+    # 由后续 stale-retry / 次日日更补，不让整晚日更变红。
+    tolerate_failure=True,
+)
 
 # L0 风险警示板（ST/*ST）逐日全市场名单 —— 历史 ST 的 Tushare 源。
 # 与 trading_status 的分工：trading_status 是引擎/门禁在用的逐票状态（历史回填
