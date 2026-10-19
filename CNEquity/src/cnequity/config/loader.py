@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -67,6 +68,13 @@ class Config:
     external_tushare_wide_token: str = ""
     external_tushare_wide_url: str = ""
     external_tushare_wide_interval: float = 0.3
+    # Optional secondary Tushare endpoint for APIs the primary site's plan does
+    # not include (e.g. `namechange` returns api_scope_denied on a datahubco
+    # 15000-point plan). Empty means "no fallback": every API uses the primary
+    # credentials. Mirrors the TUSHARE_FALLBACK_TOKEN / TUSHARE_FALLBACK_URL
+    # env vars, so .env users do not have to duplicate them in the config.
+    external_tushare_wide_fallback_token: str = ""
+    external_tushare_wide_fallback_url: str = ""
     # Optional read-only bridge for pre-built Tushare parquet exports
     # (balance sheet, income, cashflow, dividend, forecast, etc.).
     external_pg_parquet_enabled: bool = False
@@ -396,6 +404,14 @@ def load_config(path: str | Path) -> Config:
         ),
         external_tushare_wide_token=str(external_tushare_wide.get("tushare_token", "")),
         external_tushare_wide_url=str(external_tushare_wide.get("tushare_url", "")),
+        external_tushare_wide_fallback_token=str(
+            external_tushare_wide.get("tushare_fallback_token", "")
+            or os.environ.get("TUSHARE_FALLBACK_TOKEN", "")
+        ),
+        external_tushare_wide_fallback_url=str(
+            external_tushare_wide.get("tushare_fallback_url", "")
+            or os.environ.get("TUSHARE_FALLBACK_URL", "")
+        ),
         external_tushare_wide_interval=float(
             external_tushare_wide.get("min_interval_seconds", 0.3)
         ),
