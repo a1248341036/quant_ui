@@ -119,6 +119,25 @@ class TestHarnessExtract:
         assert got["turnover_rebalance"] == 0.0
 
 
+class TestHarnessDefaultsToFullEval:
+    def test_lite_disabled_by_default(self, monkeypatch):
+        """harness 直驱必须默认单段全量：lite 两段式在规则不过时无 quantile_portfolio
+        → 换手不可得 → 换手门失败信号与"没测换手"混同。"""
+        import os
+
+        monkeypatch.delenv("ALPHA_EVAL_LITE", raising=False)
+        _load_harness_mine()
+        assert os.environ.get("ALPHA_EVAL_LITE") == "0"
+
+    def test_explicit_override_preserved(self, monkeypatch):
+        """显式设置不被 setdefault 覆盖（确实要省算力时可退回 lite）。"""
+        import os
+
+        monkeypatch.setenv("ALPHA_EVAL_LITE", "1")
+        _load_harness_mine()
+        assert os.environ.get("ALPHA_EVAL_LITE") == "1"
+
+
 class TestFlagsUseRealTurnover:
     def test_flags_pass_turnover_when_value_present(self):
         """换手有值且在门内 → 不再报 turnover 门。"""

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -28,6 +29,17 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+
+# 宿主直驱默认**单段全量评估**（`ALPHA_EVAL_LITE=0`）：
+# lite 两段式是给"海选大量候选"省算力的——lite 段只跑 cross_sectional_core，
+# 规则不过时直接返回、**不含 quantile_portfolio**，于是换手率不可得
+# （`avg_rebalance_side_turnover=None`），而 `_flags` 的换手门是
+# `turn is None or turn > limit: fail` → 结果行报 `turnover>0.8` 但 turn=None，
+# 把"换手 0.93 真超门"和"压根没测换手"混成同一个失败信号
+# （2026-10-19 实测：15/15 因子 turn=None）。
+# 宿主直驱是「少量因子精测、要真实全门判定」，省算力的两段式在这里没有收益、
+# 只有信息损失，故默认关 lite；确实要省算力时显式 `ALPHA_EVAL_LITE=1` 覆盖。
+os.environ.setdefault("ALPHA_EVAL_LITE", "0")
 
 from alphaagent.data.adapters.cnequity import CNE_SOURCE  # noqa: E402
 from alphaagent.factor.mining.delivery.delivery_criteria import DeliveryCriteria  # noqa: E402
