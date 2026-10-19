@@ -31,6 +31,7 @@ from . import (
     report_prior as _report_prior_mod,
     report_rag as _report_rag_mod,
     rotation_guide as _rotation_guide_mod,
+    signal_families as _signal_families_mod,
     strategy_tracks as _strategy_tracks_mod,
     tool_contracts as _tool_contracts_mod,
     tool_examples as _tool_examples_mod,
@@ -91,6 +92,7 @@ def _dynamic(module) -> PromptModule:  # noqa: ANN001
 DEFAULT_MODULES: list[PromptModule] = [
     _static(_core_identity_mod),
     _dynamic(_strategy_tracks_mod),
+    _dynamic(_signal_families_mod),
     _dynamic(_delivery_interface_mod),
     _dynamic(_data_calibration_mod),
     _dynamic(_turnover_budget_mod),

@@ -23,13 +23,21 @@ FACET_DEFS: list[tuple[str, tuple[str, ...]]] = [
     ("量能面", ("$volume", "$amount", "$turnover", "$turnover_rate")),
     ("筹码面", ("chip_",)),
     ("拥挤面", ("crowd_",)),
-    ("基本面", ("funda_", "$fsi_", "$pe_ttm", "$pb", "$ps_ttm", "$dv_ttm", "$tot_cap", "$float_cap")),
+    # 基本面面只认"财务/估值"键：``$float_cap`` / ``$tot_cap`` 是行情面板的规模中性列，
+    # 不属于任何数据面（见下方 FACET_GROUPS 注释与 cnequity._ALWAYS_KEEP_COLUMNS）。
+    # 2026-10-19 修复：二者曾留在本行，导致任何引用 `$float_cap` 的纯价量因子
+    # （实测 36/52 条）被误判为"触及基本面面"——既污染 facet 统计与族键，
+    # 也让聚焦基本面 run 的"必须触及聚焦面"校验被规模列蒙混过关。
+    ("基本面", ("funda_", "$fsi_", "$pe_ttm", "$pb", "$ps_ttm", "$dv_ttm")),
     ("股东面", ("holder_",)),
     ("机构面", ("$inst_",)),
     ("股东集中面", ("$th_",)),
     ("资金面", ("$ff_", "$inflow", "$outflow")),
     ("两融面", ("$mgn_",)),
-    ("事件面", ("$dt_", "$bt_")),
+    # 事件面含限售解禁：unlock_* 是"供给冲击日历"，语义与龙虎榜/大宗同属事件类。
+    # 2026-10-19 补：此前 unlock_* 不命中任何面 → 聚焦 run 的 `_needed_aux_columns`
+    # 与白名单都会把它整族裁掉（`not hit` 即跳过），导致"聚焦事件面却拿不到解禁数据"。
+    ("事件面", ("$dt_", "$bt_", "$unlock_")),
     ("业绩面", ("$pred", "$exp")),
     ("披露面", ("$ds_",)),
     ("分红面", ("$div_",)),

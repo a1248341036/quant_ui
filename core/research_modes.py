@@ -47,6 +47,10 @@ class ResearchModeSpec:
     # 研报模式专用：report_policy 覆盖（流程开关，如"复现阶段用机制卡、发散阶段用 RAG"）。
     # 非研报模式留空 → 行为与今天完全一致。
     report_policy_overrides: dict = field(default_factory=dict)
+    # 冷门赛道二轨评估覆盖（research_spec.cold_track）：默认空 → 沿用 DEFAULT_RESEARCH_SPEC
+    # 里 ``cold_track.enabled=False``，即所有现有档位行为逐字节不变。
+    # 只有显式声明 enabled=True 的档位（如 technical_event_monthly）才走残差化赛道。
+    cold_track_overrides: dict = field(default_factory=dict)
 
 
 # ── label 口径 vs 调仓频率：**强制一致**（2026-10-04 用户定调；推翻 2026-09-30 的"刻意解耦"）──
@@ -397,6 +401,49 @@ RESEARCH_MODES: dict[str, ResearchModeSpec] = {
         # deepcopy 展开防共享可变状态（理由同 fundamental 档）。
         **copy.deepcopy(_MONTHLY_20D_OVERRIDES),
     ),
+    # ── 事件/资金数据面 · 月频档（2026-10-19 新增）──────────────────────
+    # 立项依据（2026-10-19 体检）：面板 161 列里，资金面 99.9%、机构面 96.2%、
+    # 股东集中面 96.3%、股东户数 99.6%、业绩预告 90.4%、披露 96.6% 覆盖的字段
+    # 早已载入，但现有 11 个档位的 signal_families 全部只覆盖「价量/波动/波动/筹码 +
+    # 基本面」，没有一个族能挂这些字段 → 52 条库内因子里 12 个事件/资金族字段
+    # 合计仅被引用 15 次（价量字段被引用 100+ 次），事件面/两融面/机构面/股东集中面/
+    # 披露面/分红面 6 个面的在库因子数为 0。
+    #
+    # 与 technical_monthly 的关系：**同 label（20d）⇒ 同门槛**（沿用
+    # `_MONTHLY_20D_OVERRIDES`，符合 2026-10-08「门槛只由 label 唯一决定」定调）；
+    # 差别只在 signal_families（放开 7 个新族）与 ``cold_track.enabled=True``。
+    #
+    # needs_fundamentals=False 的理由：事件/资金/两融/股东/披露/分红列由辅助插件供给，
+    # **不依赖** include_fundamentals 开关（实证：include_fundamentals=false 的面板
+    # 仍含 ff_*/mgn_*/inst_*/dt_*/pred_*/rc_* 全列）。保持 False 可命中现有
+    # `panel_v11_*_all` 缓存（1.7GB parquet / 5GB arrow），避免一次全量重建；
+    # 若将来要在此档融合 $funda_*/$fsi_*，改成 True 并接受一次重建成本。
+    "technical_event_monthly": ResearchModeSpec(
+        mode_id="technical_event_monthly",
+        label="事件资金·月频",
+        hint="慢信号：资金流/两融/机构持仓/股东集中/限售解禁/业绩预告等事件与资金数据面，label_20d + monthly 调仓",
+        recommended_label_col="label_20d_close_to_close",
+        signal_families=(
+            # 行情四族（作为门控/交互腿仍然需要，不禁止）
+            "volume_price", "volatility", "chip", "momentum_reversal",
+            # 2026-10-19 新增七族：数据早已在面板，此前无族可挂
+            "capital_flow", "margin", "institutional", "shareholder_concentration",
+            "corporate_event", "expectation", "disclosure_dividend",
+        ),
+        forbidden_families=("pure_size",),
+        needs_fundamentals=False,
+        candidate_dir="candidate_main",
+        production_dir="production_main",
+        default_user_message=(
+            "请基于已载入的事件与资金数据面（主力资金流/融资融券/机构持仓分型/股东集中度/"
+            "限售解禁/业绩预告与快报/披露节奏/分红）挖掘 A 股日频因子，"
+            "monthly 调仓路径，先训练集评估，再验证集检验；只有通过验证和去重门槛的因子才提交。"
+        ),
+        **copy.deepcopy(_MONTHLY_20D_OVERRIDES),
+        # 冷门赛道（残差化 + val_resid_ic 主键判定）在本档打开：新数据面因子与既有
+        # 价量族载荷天然重叠部分需被剥离，才能证明独立信息。其它档位保持默认关闭。
+        cold_track_overrides={"enabled": True},
+    ),
 }
 
 
@@ -451,6 +498,14 @@ def ui_options() -> list[dict]:
 # freq 时由 label 派生，不一致直接拒启动。
 
 _SLOW_FACETS: frozenset[str] = frozenset({"基本面", "股东面", "机构面", "股东集中面"})
+# 事件/资金面（2026-10-19）：这些面此前**没有对应族**，勾选后会被推断成
+# technical_monthly（族=价量三族），于是"勾了资金面却挖不出资金面因子"。
+# 现单独落 technical_event_monthly（同 label_20d / 同门槛，仅族与冷门赛道不同）。
+# 注：与 _SLOW_FACETS 同时命中时仍优先 fundamentals 档（基本面为更强信号面），
+# 这是已知折中——两者都要时请显式指定 research_mode。
+_EVENT_FACETS: frozenset[str] = frozenset({
+    "资金面", "两融面", "事件面", "业绩面", "披露面", "分红面",
+})
 
 
 def infer_research_mode(
@@ -465,6 +520,8 @@ def infer_research_mode(
       价量数据面 → technical（label_1d + daily 门禁）。
     显式传 rebalance_freq（daily/weekly/monthly）时按频率落对齐子档：
       基本面数据面 → fundamental_{freq}（daily/weekly；monthly 回落到 fundamental）；
+      事件/资金数据面 → technical_event_monthly（仅 monthly/未指定；daily/weekly
+        暂无对应档位，回落 technical_{freq} 并保留原门槛口径）；
       价量数据面 → technical_{freq}（monthly 回落到 technical_monthly）。
     label 与调仓频率**强制一致**（2026-10-04 起，见本文件顶部区块）。
     """
@@ -473,6 +530,10 @@ def infer_research_mode(
         if rebalance_freq in ("daily", "weekly"):
             return f"fundamental_{rebalance_freq}"
         return "fundamental"
+    # 事件/资金面档：**只在 monthly/未指定频率**下启用。daily/weekly 没有对应的
+    # 20d 门槛以外标定，硬套会退回"同 label 不同门槛"的老问题（见文件顶部区块）。
+    if (facets & _EVENT_FACETS) and rebalance_freq not in ("daily", "weekly"):
+        return "technical_event_monthly"
     if rebalance_freq in ("daily", "weekly", "monthly"):
         return f"technical_{rebalance_freq}"
     return "technical"

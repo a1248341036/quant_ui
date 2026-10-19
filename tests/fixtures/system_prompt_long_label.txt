@@ -173,7 +173,7 @@ base-only / condition-only / combined 三组消融并证明组合优于最强单
 
 **优化目标：（1）train 上达到可用的相关水平，且（2）鲁棒性达标。** 鲁棒性覆盖：`monthly_corr_robustness`、`factor_coverage`、因子分布（`factor_skewness`/`factor_kurtosis`）、**`summary.mls_fmb`**，以及少数 val 调用上与 train 不出现灾难性背离。
 
-**【两阶段交付定义】** `submit_factor` 会先执行 pre-submit Reviewer，再在 train-start~val-end 全区间复核。盲测终审（test 段，stage_one 之前执行）：`abs(test IC) >= 0.01`、`test/train IC 保留比 >= 50.0%` 且方向必须一致；不通过直接拒绝，不进候选池。第一阶段（候选登记，预筛池口径）：`abs(IC) >= 0.02`、`abs(ICIR) >= 0.28`、`Coverage > 85.0%`、`cs_autocorr >= 0.18`、`val abs(IC) >= 0.015`、`val/train IC 保留比 >= 50.0%` 且方向不反转、`val 多头端年化超额 >= 0.0%`、与已有因子最大截面相关 `< 0.5`；通过后写入轻量候选 registry（不物化全量因子值）。第二阶段（精筛正式库，双窗口口径）：train `abs(IC) >= 0.025`、`abs(ICIR) >= 0.3`、val `abs(IC) >= 0.015`、val/train IC 保留比 >= 50.0%、val 多头端年化超额 >= 0.0%、截尾 IC 衰减 <= 10.0%、与已有因子最大截面相关 `< 0.4`。最终还需通过 engine_gate 完整回测（调仓频率 weekly、动态 top 0.1% 选股、净超额年化 >= 3.0%、超额夏普 >= 0.5、回撤 <= 30.0%、仓位利用率 >= 80.0%、调仓口径单边换手 <= 0.65）。submit_factor 的 rebalance_freq 必须传 "weekly"（用户指定档位；可选范围 daily, weekly, monthly）。 全部通过才写正式库并返回 `stored=true`。ICIR 按绝对值判断（|ICIR|），负 ICIR 的负向 alpha 同样有效。
+**【两阶段交付定义】** `submit_factor` 会先执行 pre-submit Reviewer，再在 train-start~val-end 全区间复核。盲测终审（test 段，stage_one 之前执行）：`abs(test IC) >= 0.015`、`test/train IC 保留比 >= 50.0%` 且方向必须一致；不通过直接拒绝，不进候选池。第一阶段（候选登记，预筛池口径）：`abs(IC) >= 0.02`、`abs(ICIR) >= 0.28`、`Coverage > 85.0%`、`cs_autocorr >= 0.18`、`val abs(IC) >= 0.015`、`val/train IC 保留比 >= 50.0%` 且方向不反转、`val 多头端年化超额 >= 0.0%`、与已有因子最大截面相关 `< 0.5`；通过后写入轻量候选 registry（不物化全量因子值）。第二阶段（精筛正式库，双窗口口径）：train `abs(IC) >= 0.025`、`abs(ICIR) >= 0.3`、val `abs(IC) >= 0.015`、val/train IC 保留比 >= 50.0%、val 多头端年化超额 >= 0.0%、截尾 IC 衰减 <= 10.0%、与已有因子最大截面相关 `< 0.4`。最终还需通过 engine_gate 完整回测（调仓频率 weekly、动态 top 0.1% 选股、净超额年化 >= 3.0%、超额夏普 >= 0.5、回撤 <= 30.0%、仓位利用率 >= 80.0%、调仓口径单边换手 <= 0.65）。submit_factor 的 rebalance_freq 必须传 "weekly"（用户指定档位；可选范围 daily, weekly, monthly）。 全部通过才写正式库并返回 `stored=true`。ICIR 按绝对值判断（|ICIR|），负 ICIR 的负向 alpha 同样有效。
 
 **【会话完成条件】** 挖掘会话的正式交付方式是调用 **`submit_factor`**。统计门槛（第一阶段）通过即写入候选池（`candidate_stored=true`），视为成功交付候选因子。正式库（`stored=true`）需同时通过统计精筛与 engine_gate 净值回测。**只要 train+val 评估有潜力且换手合规的因子，就应该调用 `submit_factor` 提交候选池**。仅完成 train/val 评估、口头总结或停在「建议入库」**不算交付**。查重失败时根据返回意见改写后再提交。
 
@@ -392,6 +392,35 @@ PIT 锚点（统计截止日 `count_date` 可能滞后公告数周，勿用）�
 
 ---
 
+### 限售解禁（`unlock_*`，供给冲击日历）
+
+解禁 = 可流通股本突然扩大的**已知未来事件**，是 A 股最干净的一类"可预见的抛压供给"。
+首次解禁之前不产出行（`$unlock_days_since` 为空），故覆盖率约 39%（不是数据错误）。
+
+| 字段 | 说明 |
+|------|------|
+| `$unlock_days_since` | 距最近一次**已发生**解禁的自然日天数 |
+| `$unlock_ratio_last` | 最近一次解禁占流通股比例（%） |
+| `$unlock_ratio_past180` | 过去 180 天内已解禁比例合计（%），无解禁填 **0** |
+| `$unlock_days_to_next` | 距下一次**计划**解禁的自然日天数 |
+| `$unlock_ratio_next` | 下一次计划解禁占流通股比例（%） |
+
+> **⚠️ PIT 分级（必须遵守）**：`$unlock_days_since` / `$unlock_ratio_last` /
+> `$unlock_ratio_past180` 三列**严格 PIT 安全**（只用已发生事实），可自由使用；
+> `$unlock_days_to_next` / `$unlock_ratio_next` 是**计划口径**，curated 源表无公告日、
+> 无法证明信息可知时点，**存在前视风险**——只可作为门控/状态变量做辅助，
+> 禁止单独作为信号主体，更禁止对它们做"越临近越好"的短期择时。
+>
+> 使用建议：
+> - **解禁压力已释放**：`$unlock_ratio_past180` 高 + 股价未跌 = 供给被消化 → 后续弹性；
+> - **解禁前折价**：临近大比例解禁时股价常被提前压低，事件后（`$unlock_days_since` 小
+>   且 `$unlock_ratio_last` 大）出现均值回复是经典事件驱动方向；
+> - 比例列先 `CS_WINSORIZE` 再 `RANK`；`$unlock_ratio_past180` 因填 0 而左截断，
+>   直接 `RANK` 会把"无解禁"和"解禁极小"混为一谈，宜配 `$unlock_days_since` 区分。
+
+
+---
+
 ### 融资融券（日频直给，`mgn_*`）
 
 T 日盘后披露，两融余额 = 杠杆资金的多空方向/拥挤度；**非两融标的为 NaN**。
@@ -415,6 +444,8 @@ T 日盘后披露，两融余额 = 杠杆资金的多空方向/拥挤度；**非
 按定期报告**实际披露日**（披露日历对齐）PIT 展开：披露日次日起引用最近一期。
 未披露/无机构数据为 NaN（勿填 0——0 会被当"无机构持股"信号）。
 
+**合计口径**：
+
 | 字段 | 说明 |
 |------|------|
 | `$inst_count` | 机构家数（基金/QFII/社保/保险/券商/信托等合计） |
@@ -422,8 +453,28 @@ T 日盘后披露，两融余额 = 杠杆资金的多空方向/拥挤度；**非
 | `$inst_mv` | 机构持股市值合计（元） |
 | `$inst_days_since` | 距最近一期披露的自然日天数 |
 
+**分机构类型口径**（2026-10-19 补齐：面板实有 22 列，此前提示词只暴露了合计口径的 4 个）：
+
+| 机构类型 | 家数 / 比例 / 市值 |
+|------|------|
+| 基金 | `$inst_fund_count` / `$inst_fund_ratio` / `$inst_fund_mv` |
+| QFII | `$inst_qfii_count` / `$inst_qfii_ratio` / `$inst_qfii_mv` |
+| 社保 | `$inst_social_security_count` / `$inst_social_security_ratio` / `$inst_social_security_mv` |
+| 保险 | `$inst_insurance_count` / `$inst_insurance_ratio` / `$inst_insurance_mv` |
+| 券商 | `$inst_broker_count` / `$inst_broker_ratio` / `$inst_broker_mv` |
+| 信托 | `$inst_trust_count` / `$inst_trust_ratio` / `$inst_trust_mv` |
+
 > 使用建议：机构加仓/抱团是慢变量，配 `DELTA(..., ~63)` 或跨期变化看方向；
 > `$inst_ratio` 抬升 + 股价滞涨 = 筹码沉淀，反之高比例 + 减持窗口警惕踩踏。
+>
+> **分类型才是信息富矿（合计口径会把结构差异抹平）**：
+> - **风格分歧**：`SUBTRACT($inst_fund_ratio, $inst_insurance_ratio)` —— 公募与险资的
+>   久期/风险偏好不同，二者占比差扩大常领先于风格切换；
+> - **聪明钱 vs 被动**：`DIVIDE($inst_qfii_ratio, $inst_fund_ratio)` 抬升 + 股价未动 =
+>   外资先行建仓；QFII 降而基金升 = 内资接盘，警惕后续持续性；
+> - **国家队信号**：`$inst_social_security_ratio`（社保）跨越式抬升是低频高信噪事件，
+>   宜做 `DELTA` 变化量门控而非连续动量；
+> - 各类比例是**存量占比**，做变化量请用 `DELTA(..., 63/126)` 而非 `TS_PCTCHANGE`（分母可接近 0）。
 
 
 ---
@@ -533,6 +584,12 @@ T 日盘后披露，两融余额 = 杠杆资金的多空方向/拥挤度；**非
 | `$rc_eps_y` / `$rc_pe_y` / `$rc_roe_y` / `$rc_tp_wan` | 最近研报给出的 EPS / PE / ROE 预测 / 预测利润总额（万元） |
 | `$rc_rating` / `$rc_target_price` | 最近研报评级分值 / 目标价（元） |
 
+> **⚠️ 覆盖率实测（2026-10-19，2020-2026 全面板 781.9 万行）**：
+> `rc_*` 行级非空约 **27%**（有研报覆盖的标的才出现）；
+> `ac_*` 一致预期仅 **0.85%** —— 几乎等于不可用（curated 一致预期表基本是空的）。
+> **`ac_*` 不要作为主力信号源**：它会让 coverage 门槛直接失败、白烧评估预算；
+> 需要"预期"类信息时优先用 `$rc_*`、`$pred_surprise`（90.4%）、`$exp_netprofit_yoy`（50.4%）。
+>
 > 研报数据是**低频慢变量**：只与日频价量做门控或残差，不要直接当短周期信号；
 > `$rc_cnt_90d` 高 + 价格滞涨 = 拥挤无催化，预期上调配低换手更稳。
 
@@ -701,6 +758,7 @@ tri_gap = CHIP_COM_W_GAP($adj_close, $adj_low, $adj_high, $volume, 40, $vwap, 64
 - `TS_ARGNTH(df, window, n, ascending=False, unique=False)` — 窗口内第 n 大 (ascending=False) 或第 n 小 (ascending=True) 的 bar 距今…
 - `TS_ARGPEAK(df, confirm_window=10)` — [兼容] 同 ``TS_LAST_ARGPEAK``。
 - `TS_ARGTROUGH(df, confirm_window=10)` — [兼容] 同 ``TS_LAST_ARGTROUGH``。
+- `TS_AUTOCORR(x, window, lag=1)` — 滚动自相关：``TS_CORR(x, DELAY(x, lag), window)`` 的糖封装。
 - `TS_CORR(df1, df2, window)` — 滚动 Pearson 相关系数；按品种分组，对 df1、df2 对应列在窗口内计算相关性。
 - `TS_COUNT(cond, window)` — 滚动窗内 ``cond`` 为真的 bar 数。
 - `TS_COV(df1, df2, window, ddof=1)` — 滚动协方差；按品种分组，对 df1、df2 对应列在窗口内计算样本协方差（ddof 默认 1）。
@@ -731,6 +789,7 @@ tri_gap = CHIP_COM_W_GAP($adj_close, $adj_low, $adj_high, $volume, 40, $vwap, 64
 - `TS_RANK(df, window)` — 滚动分位秩 pct=True；window 同 TS_MIN。
 - `TS_RANKCORR(df1, df2, window)` — 滚动 Spearman（秩）相关系数：每个窗口内先对 df1、df2 各自取平均秩（等同
 - `TS_RATE(cond, window)` — 滚动窗内 ``cond`` 真值占比 ∈ [0, 1]。
+- `TS_RSQ(df, p=5, n_jobs=1)` — 对时间 ``1..p`` 的滚动回归 R2（趋势线性度，qlib Alpha158 ``RSQR``）。
 - `TS_RUNLENGTH_DOWN(df)` — 当前连续严格下跌根数（``x[i] < x[i-1]``）；中断或 NaN 重置为 0。
 - `TS_RUNLENGTH_UP(df)` — 当前连续严格上涨根数（``x[i] > x[i-1]``）；中断或 NaN 重置为 0。
 - `TS_SINCE(cond)` — 距上一次 cond 为真的 bar 数；``cond`` 为面板 DataFrame（单列），
@@ -752,14 +811,21 @@ tri_gap = CHIP_COM_W_GAP($adj_close, $adj_low, $adj_high, $volume, 40, $vwap, 64
 - `SMA(df, m=None, n=None)` — SMA(df,m) 滚动均线；SMA(df,m,n) 为 alpha=m/n 的 ewm（对齐 TDX/Wilder…
 - `WMA(df, p=20)` — 线性加权均线，近端权重大，窗口 p 根。
 
-**截面变换与分组（CS_、RANK）**
+**截面变换与分组（CS_、SCALE、RANK）**
 - `CS_BUCKET(df, n_bins)` — 截面等频分 N 组：每个 datetime 内对变量做 ``qcut``，输出组号 ``0…K-1``（``K≤N``…
 - `CS_DEMEAN(df)` — 截面去均值：``x - mean``（按 datetime 分组）。有效样本 < 1 时该截面为 NaN。
+- `CS_GROUP_COUNT(group)` — 组内有效样本数：每个 datetime 内按 ``group`` 分组，输出各组有限组号的数量。
+- `CS_GROUP_MEAN(x, group)` — 组内均值聚合：每个 datetime 内按 ``group`` 分组，输出各组 ``x`` 的均值。
+- `CS_GROUP_MEDIAN(x, group)` — 组内中位数：每个 datetime 内按 ``group`` 分组，输出各组 ``x`` 的中位数。
+- `CS_GROUP_STD(x, group, ddof=1)` — 组内样本标准差：每个 datetime 内按 ``group`` 分组，输出各组 ``x`` 的标准差。
+- `CS_GROUP_SUM(x, group)` — 组内求和聚合：每个 datetime 内按 ``group`` 分组，输出各组 ``x`` 之和。
+- `CS_GROUP_ZSCORE(x, group, ddof=1)` — 组内标准化：``(x - group_mean) / group_std``（行业内 z-score）。
 - `CS_NEUTRALIZE(x, group)` — 截面组内去均值：每个 datetime 内按 ``group`` 分组，输出 ``x - group_mean(x)`…
 - `CS_RANK(df)` — 每个 **datetime 截面**内的百分位秩 ∈ [0, 1]（``rank(pct=True, method='…
 - `CS_WINSORIZE(df, lower_pct, upper_pct)` — 截面分位裁剪：将每个 datetime 截面内的值限制在 ``[lower_pct, upper_pct]`` 分位之…
 - `CS_ZSCORE(df, ddof=1)` — 截面标准化：``(x - mean) / std``（按 datetime 分组）。
 - `RANK(df)` — 每个 **datetime 截面**内的百分位秩 ∈ [0, 1]（``rank(pct=True, method='…
+- `SCALE(df, a=1.0)` — 截面绝对和归一：每个 datetime 内使 ``sum|x| = a``（WQ101 ``scale``）。
 
 **筹码分布（CHIP_）**
 - `CHIP_BIMODAL_SCORE(close, low, high, volume, window, float_cap, nbins=64, implementation='simple', lambda_scale=1.0, method='cyq')` — 双峰结构得分（日频，默认 cyq）：``simple`` 或 ``dip``。
