@@ -175,6 +175,7 @@ class StockEvalService:
             include_fundamentals=req.include_fundamentals,
             asset_type=req.asset_type,
             focus_facets=tuple(getattr(req, "focus_facets", ()) or ()),
+            columns=tuple(getattr(req, "columns", ()) or ()),
             engine_gate_policy=getattr(req, "engine_gate_policy", None),
             universe=getattr(req, "universe", "all") or "all",
         )

@@ -117,21 +117,40 @@ class SessionStore:
         # 数据源分支：cne:// 走 adapter 实时构建，否则读 parquet 文件
         from alphaagent.data.adapters.cnequity import is_cne_source, load_panel_from_cne
         excluded_funda = 0
+        # 按需取列（2026-10-19）：调用方（harness 直驱等）已知表达式引用哪些字段时，
+        # 只物化这些列——缓存仍读全量文件，但未选中列不构造 numpy 视图、不 fault 文件页。
+        # label 列必须显式留下：评估引擎按它算 IC，而调用方通常只列表达式里的 $字段。
+        keep_columns = tuple(getattr(ctx, "columns", ()) or ())
+        if keep_columns:
+            keep_columns = tuple(dict.fromkeys((*keep_columns, ctx.label_col)))
         if is_cne_source(ctx.panel_path):
             panel = load_panel_from_cne(
                 start=cov_start, end=cov_end, universe_mask=False,
                 include_fundamentals=ctx.include_fundamentals,
                 asset_type=ctx.asset_type,
                 focus_facets=getattr(ctx, "focus_facets", ()) or None,
+                keep_columns=keep_columns or None,
             )
         else:
             # include_fundamentals=False 时按需取列加载（排除 funda_*），替代
             # "整表加载再 drop" —— drop(columns=...) 会对数值块整块复制 ~6GB 私有拷贝
             # （pandas 未开 CoW 实测），是批量技术档内存 16-17GB 的另一大来源。
-            if ctx.include_fundamentals:
+            cols = panel_columns(ctx.panel_path) if not ctx.include_fundamentals else None
+            if keep_columns:
+                # 显式按需：与"排除 funda_*"取交集，保证不把 funda 带进来
+                base = set(cols) if cols else None
+                want = [
+                    c for c in keep_columns
+                    if (base is None or c in base)
+                    and (ctx.include_fundamentals or not str(c).startswith("funda_"))
+                ]
+                panel = load_panel(ctx.panel_path, columns=want or None)
+                excluded_funda = sum(
+                    1 for c in (cols or []) if str(c).startswith("funda_")
+                ) if not ctx.include_fundamentals else 0
+            elif ctx.include_fundamentals:
                 panel = load_panel(ctx.panel_path)
             else:
-                cols = panel_columns(ctx.panel_path)
                 if cols is None:
                     panel = load_panel(ctx.panel_path)
                 else:

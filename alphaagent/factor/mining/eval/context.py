@@ -48,6 +48,14 @@ class StockEvalContext:
     """资产类型：'stock'（默认）/ 'etf'。决定数据源、单位换算与评估 profile。"""
     focus_facets: tuple[str, ...] = ()
     """数据面聚焦（用户勾选）：非空时 panel 只加载/保留聚焦面列族（省内存）。"""
+    columns: tuple[str, ...] = ()
+    """按需取列（**空 = 全量**）：只物化这些面板列。
+
+    供"已知表达式引用哪些字段"的调用方（harness 直驱、批量重测）使用：缓存文件仍是
+    全量 arrow/parquet（**不触发重建**），但只对命中列构造 numpy 视图，未选中列
+    不 fault 文件页。系统必需列（掩码/复权/中性化/基本面哨兵/label）由 session 侧
+    自动并上，调用方不必自己罗列。
+    """
     engine_gate_policy: dict | None = None
     """engine_gate 交付策略（delivery_policy.production.engine_gate）。
     非空时 train 过线因子自动附 val 窗口引擎预演（engine_preview，可交易口径）。"""

@@ -122,6 +122,25 @@ def write_panel_arrow(arrow_path: Path, panel_flat: pd.DataFrame) -> bool:
         return False
 
 
+def arrow_column_names(arrow_path: Path) -> list[str] | None:
+    """只读 arrow 文件 schema 拿列名（**不物化任何数值列**）。
+
+    用于缓存命中判定：调用方需要知道"这份缓存有哪些列"（基本面哨兵检查、
+    开关一致性判断），但不需要数值。此前这类判断都建立在
+    ``read_panel_arrow_mmap`` 的返回值上——也就是先物化全列再判断，
+    按需取列（``columns=``）因此无法真正落地。本函数只读 schema 元数据，
+    开销与文件大小无关。
+    """
+    if not _ARROW_AVAILABLE or not arrow_path.is_file():
+        return None
+    try:
+        source = pa.memory_map(str(arrow_path), "r")
+        return [str(n) for n in ipc.open_file(source).schema.names]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("读取 arrow schema 失败: %s", exc)
+        return None
+
+
 def read_panel_arrow_mmap(
     arrow_path: Path,
     *,
