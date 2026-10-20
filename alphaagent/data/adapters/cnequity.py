@@ -316,11 +316,23 @@ def _read_cache_meta(cache_path: Path) -> dict[str, Any] | None:
         return None
 
 
+def _parquet_column_names(path: Path) -> list[str] | None:
+    """只读 parquet schema 拿列名（不读数据）。"""
+    try:
+        import pyarrow.parquet as pq
+
+        return [str(n) for n in pq.read_schema(path).names]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("读取 parquet schema 失败: %s", exc)
+        return None
+
+
 def _find_cached_panel(
     start: str | None,
     end: str | None,
     include_fundamentals: bool,
     focus_facets: Sequence[str] | None = None,
+    keep_columns: Sequence[str] | None = None,
 ) -> pd.DataFrame | None:
     """遍历缓存目录，返回覆盖请求区间且**数据面签名一致**的缓存面板。
 
@@ -330,6 +342,11 @@ def _find_cached_panel(
     签名一致性：聚焦 run 只认同聚焦面的缓存文件（列集合一致）。不再用"全量缓存
     服务聚焦请求"——那会让 mmap 把 4.4GB 全量 arrow 的所有列页都 fault 进来，
     在小内存机器上正是要避免的。
+
+    ``keep_columns``：只物化这些列（None = 全部）。命中判定改用**schema 列名**
+    （``arrow_column_names`` / ``_parquet_column_names``，不读数值），因此按需取列
+    不会破坏基本面哨兵/开关一致性判断——这是此前"底层支持 columns、但缓存读取
+    入口从不传它"的断点（2026-10-19）。
     """
     try:
         if not _CACHE_ROOT.is_dir():
@@ -354,14 +371,46 @@ def _find_cached_panel(
                 continue
             try:
                 # arrow mmap 快路径：与 parquet 同 key 的 .arrow 存在即优先
-                from alphaagent.data.adapters.panel_mmap import read_panel_arrow_mmap
+                from alphaagent.data.adapters.panel_mmap import (
+                    arrow_column_names,
+                    read_panel_arrow_mmap,
+                )
 
                 arrow_path = path.with_suffix(".arrow")
+                # ① 先只读 schema 拿列名做命中判定（不物化任何数值列）
+                names: list[str] | None = None
+                if arrow_path.is_file():
+                    names = arrow_column_names(arrow_path)
+                if names is None:
+                    names = _parquet_column_names(path)
+                if not names:
+                    continue
+                name_set = {str(n) for n in names}
+                has_funda = any(n.startswith("funda_") for n in name_set)
+                # 基本面开关一致性 + 哨兵检查（与旧逻辑等价，只是数据源从
+                # DataFrame.columns 换成 schema 列名，从而允许后续按列物化）
+                if include_fundamentals and expected_sentinels:
+                    missing_sentinels = expected_sentinels - name_set
+                    if missing_sentinels:
+                        logger.warning(
+                            "CNE panel 缓存 %s 缺哨兵列 %s，视为未命中（将重建）",
+                            path.name, sorted(missing_sentinels),
+                        )
+                        continue
+                elif not include_fundamentals and has_funda:
+                    continue  # 基本面开关不匹配，跳过
+                # ② 命中后按 keep_columns 物化（None = 全列，行为与旧版逐字节一致）
                 df = None
                 if arrow_path.is_file():
-                    df = read_panel_arrow_mmap(arrow_path)
+                    df = read_panel_arrow_mmap(arrow_path, columns=keep_columns)
                 if df is None:
-                    df = pd.read_parquet(path)
+                    pq_cols = None
+                    if keep_columns is not None:
+                        pq_cols = [
+                            str(c) for c in keep_columns
+                            if str(c) in name_set
+                        ] or None
+                    df = pd.read_parquet(path, columns=pq_cols)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("CNE panel 缓存读取失败，跳过 %s: %s", path.name, exc)
                 continue
@@ -381,17 +430,8 @@ def _find_cached_panel(
                     continue  # 请求起点早于缓存覆盖起点（且跨月，非同日历月容差）
             if req_end is not None and req_end > idx_max:
                 continue  # 请求终点晚于缓存覆盖终点
-            has_funda = any(str(c).startswith("funda_") for c in df.columns)
-            if include_fundamentals and expected_sentinels:
-                missing_sentinels = _missing_funda_sentinels(df, expected_sentinels)
-                if missing_sentinels:
-                    logger.warning(
-                        "CNE panel 缓存 %s 缺哨兵列 %s，视为未命中（将重建）",
-                        path.name, sorted(missing_sentinels),
-                    )
-                    continue
-            elif not include_fundamentals and has_funda:
-                continue  # 基本面开关不匹配，跳过
+            # （基本面开关 + 哨兵检查已上移到「物化之前」，基于 schema 列名判定——
+            #  按需取列后 df.columns 只是子集，在这里再判会把缺列误当未命中。）
             # 命中覆盖超集缓存时按请求区间裁剪：请求 [a, b] 可能命中覆盖到更晚
             # 日期的缓存，若不裁剪会把区间外数据（如 2025+ 盲测段）带进调用方，
             # 破坏 tuning 模式的物理时间隔离。起点侧同时收紧到请求起点。
@@ -544,6 +584,7 @@ def load_panel_from_cne(
     include_fundamentals: bool = True,
     asset_type: str = "stock",
     focus_facets: Sequence[str] | None = None,
+    keep_columns: Sequence[str] | None = None,
 ) -> pd.DataFrame:
     """从 CNE 数据湖实时构建 AlphaAgent panel（插件化）。
 
@@ -588,7 +629,19 @@ def load_panel_from_cne(
     end = pd.Timestamp(end).strftime("%Y-%m-%d") if end is not None else None
 
     if not universe_mask and asset_type == "stock":
-        cached = _find_cached_panel(start, end, include_fundamentals, focus)
+        # 按需取列：调用方给的表达式列 + 系统必需列。
+        # 必需列不能省——掩码（is_trade/not_st）供 _enrich_trade_flags、
+        # 复权（adjfactor）供派生、行业/风格列供中性化、index 列供 set_index、
+        # 基本面哨兵供缓存命中判定（缺一个就会把好缓存误判成未命中而触发重建）。
+        keep_eff: tuple[str, ...] | None = None
+        if keep_columns:
+            need = {str(c) for c in keep_columns}
+            need |= set(_ALWAYS_KEEP_COLUMNS)
+            need |= set(_CACHE_INDEX_COLS)
+            if include_fundamentals:
+                need |= set(_FUNDAMENTAL_SENTINEL_COLUMNS)
+            keep_eff = tuple(sorted(need))
+        cached = _find_cached_panel(start, end, include_fundamentals, focus, keep_eff)
         if cached is not None and not cached.empty:
             # 旧缓存面板带预建的全 NaN is_trade/not_st 列（历史 bug 产物）：命中时
             # 就地补齐，无需 +schema 版本强制重建数 GB 缓存（只改内存副本）。
@@ -608,6 +661,14 @@ def load_panel_from_cne(
                 len(registry.list_plugins()), start, end, include_fundamentals, asset_type, sig)
 
     # 确保 core 插件加载后补充 is_trade / not_st 标记列
+    if keep_columns:
+        # 重建路径**不**按需取列：缓存未命中时 panel 由插件逐列构建、随后整份写入
+        # 缓存（缓存必须是全列，否则下次别的请求会命中到残缺缓存）。因此首次构建
+        # 仍会占用全量内存，收起内存只发生在"命中缓存"这条主路径上。
+        logger.info(
+            "CNE adapter: 缓存未命中 → 全量构建（keep_columns 在重建路径不生效，"
+            "构建完成后写全列缓存；如需控峰值内存请先确保缓存已存在）"
+        )
     panel = registry.build_panel(
         start=start,
         end=end,

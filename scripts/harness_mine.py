@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -94,6 +95,23 @@ def _flags(mode: str, row: dict) -> list[str]:
     if turn is None or turn > c.turnover_gate_limit:
         fails.append(f"turnover>{c.turnover_gate_limit}")
     return fails
+
+
+def _expr_columns(factors: list[dict]) -> tuple[str, ...]:
+    """从全部因子的 DSL 里收集 ``$字段`` → 去重后的真实面板列名（含别名归一）。
+
+    只收集**表达式显式引用**的列；算子隐式消费的列（CHIP_* 要 OHLCV、中性化要
+    行业/市值、掩码要 is_trade/not_st、复权要 adjfactor）由
+    ``cnequity.load_panel_from_cne`` 的必需列兜底并上，不在本函数罗列。
+    """
+    from alphaagent.dsl.core.field_aliases import canonical_column
+
+    refs: set[str] = set()
+    for f in factors:
+        for m in re.finditer(r"\$([A-Za-z_][A-Za-z0-9_]*)(?:@[A-Za-z0-9_]+)?", f.get("expr") or ""):
+            refs.add(canonical_column(m.group(1)))
+    refs.discard("")
+    return tuple(sorted(refs))
 
 
 def _extract(res: dict) -> dict:
@@ -318,6 +336,8 @@ def main() -> int:
     ap.add_argument("--max-cs-corr", type=float, default=0.0,
                     help="正交门阈值；0 = 取 evaluation_policy.orthogonality_max_corr 默认值（与 agentscope 同源）")
     ap.add_argument("--fundamentals", action="store_true", help="会话载入 funda_* 列")
+    ap.add_argument("--full-cols", action="store_true",
+                    help="加载面板全列（默认按表达式引用列按需取列，内存可降数倍）")
     ap.add_argument("--universe", default="all",
                     help="股票池（评估口径，非因子属性）：all / top300cap / mid301_800cap / "
                          "szcomp / chinext（规则池可自填数字，如 top500cap）")
@@ -341,12 +361,22 @@ def main() -> int:
     svc = StockEvalService(max_parallel_eval=1,
                            profiles=resolve_profiles(effective_research_spec(args.mode)))
     t0 = time.perf_counter()
+    # 按需取列（2026-10-19）：只物化表达式实际引用的列 + 系统必需列。
+    # 缓存文件仍是全量（不触发数 GB 重建），但未选中列不构造 numpy 视图、
+    # 不 fault 文件页——全量 161 列 vs 实际用 30~50 列，内存差 3-5 倍。
+    # `--full-cols` 可退回全列（排查"某列没加载"类问题时用）。
+    need_cols: tuple[str, ...] = ()
+    if not args.full_cols:
+        need_cols = _expr_columns(factors)
+        print(f"[mine] 按需取列: 表达式引用 {len(need_cols)} 列"
+              f"（+系统必需列由 adapter 兜底）；--full-cols 可退回全量", flush=True)
     resp = svc.create_session(SessionCreateRequest(
         panel_path=str(args.panel), label_col=label, include_fundamentals=args.fundamentals,
-        universe=universe,
+        universe=universe, columns=need_cols,
     ))
     sid = resp.session_id
-    print(f"[mine] session={sid} rows={resp.panel_rows} load={time.perf_counter() - t0:.0f}s", flush=True)
+    print(f"[mine] session={sid} rows={resp.panel_rows} cols={len(resp.available_columns or ())} "
+          f"load={time.perf_counter() - t0:.0f}s", flush=True)
 
     rows: list[dict] = []
 

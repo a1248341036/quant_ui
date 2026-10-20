@@ -32,6 +32,13 @@ class SessionCreateRequest:
     """资产类型：'stock'（默认）/ 'etf'。决定数据源与评估口径。"""
     focus_facets: tuple[str, ...] = ()
     """数据面聚焦（用户勾选的面名）。非空时 panel 按面裁剪列族（省内存）。"""
+    columns: tuple[str, ...] = ()
+    """按需取列（空 = 全量）：只物化这些面板列，未选中列不 fault 文件页。
+
+    与 ``focus_facets`` 的区别：``focus_facets`` 换**缓存签名**（每个面组合各有一份
+    裁剪缓存，没有就重建）；``columns`` **不改签名**，只是读现有全量缓存时少物化
+    几列 —— 适合 harness 直驱这种"表达式已知、且不想触发数 GB 重建"的场景。
+    """
     engine_gate_policy: dict | None = None
     """engine_gate 交付策略：train 过线因子自动附 val 窗口引擎预演（可交易口径）。"""
     universe: str = "all"
