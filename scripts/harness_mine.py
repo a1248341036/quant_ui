@@ -338,6 +338,13 @@ def main() -> int:
     ap.add_argument("--fundamentals", action="store_true", help="会话载入 funda_* 列")
     ap.add_argument("--full-cols", action="store_true",
                     help="加载面板全列（默认按表达式引用列按需取列，内存可降数倍）")
+    ap.add_argument("--train-start", default=None,
+                    help="覆盖 train 起点（YYYY-MM-DD）。用于评估历史较短的新数据源"
+                         "——如 rc_* 研报表自 2024-01 才有值、ac_* 自 2026-09，用默认 "
+                         "2020 起的 train 段会得到 cov=0 的假阴性")
+    ap.add_argument("--train-end", default=None)
+    ap.add_argument("--val-start", default=None)
+    ap.add_argument("--val-end", default=None)
     ap.add_argument("--universe", default="all",
                     help="股票池（评估口径，非因子属性）：all / top300cap / mid301_800cap / "
                          "szcomp / chinext（规则池可自填数字，如 top500cap）")
@@ -370,9 +377,14 @@ def main() -> int:
         need_cols = _expr_columns(factors)
         print(f"[mine] 按需取列: 表达式引用 {len(need_cols)} 列"
               f"（+系统必需列由 adapter 兜底）；--full-cols 可退回全量", flush=True)
+    _win = {k: getattr(args, k)
+            for k in ("train_start", "train_end", "val_start", "val_end")
+            if getattr(args, k)}
+    if _win:
+        print(f"[mine] 窗口覆盖: {_win}", flush=True)
     resp = svc.create_session(SessionCreateRequest(
         panel_path=str(args.panel), label_col=label, include_fundamentals=args.fundamentals,
-        universe=universe, columns=need_cols,
+        universe=universe, columns=need_cols, **_win,
     ))
     sid = resp.session_id
     print(f"[mine] session={sid} rows={resp.panel_rows} cols={len(resp.available_columns or ())} "
