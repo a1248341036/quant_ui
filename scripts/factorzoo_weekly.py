@@ -58,14 +58,17 @@ def _ts(value) -> float | None:
 
 def pick_archivable(runs: list[dict], cutoff_ts: float,
                     statuses: set[str] = frozenset(TERMINAL_STATUSES)) -> list[str]:
-    """选出可归档 run：终态且时间戳（宽松取 ended/updated/finished/created）早于 cutoff。"""
+    """选出可归档 run：终态且**创建时间**早于 cutoff。
+
+    口径说明（OCR 2026-10-20 核实）：后端 /api/alphaagent/runs 快照只含
+    created_at，没有 ended_at/updated_at 字段——归档阈值按创建时间计。
+    已知取舍：久创建、晚结束的 run 会被提前归档；归档可找回，不删数据。
+    """
     out = []
     for r in runs:
         if r.get("status") not in statuses:
             continue
-        ts = next((t for t in (_ts(r.get(k)) for k in
-                               ("ended_at", "updated_at", "finished_at", "created_at"))
-                   if t is not None), None)
+        ts = _ts(r.get("created_at"))
         if ts is not None and ts < cutoff_ts:
             out.append(str(r.get("run_id")))
     return out
@@ -99,7 +102,10 @@ def rotate_logs(log_dir: Path, days: int, archive_name: str = "_old") -> int:
     moved = 0
     for f in log_dir.glob("*.log"):
         if f.stat().st_mtime < cutoff:
-            shutil.move(str(f), str(dst / f.name))
+            dst_file = dst / f.name
+            if dst_file.exists():  # 同名保留双方：旧归档不被覆盖，新文件追加时间戳
+                dst_file = dst / f"{f.stem}_{time.strftime('%Y%m%d%H%M%S')}{f.suffix}"
+            shutil.move(str(f), str(dst_file))
             moved += 1
     return moved
 
@@ -108,13 +114,17 @@ def run_dedup_dry() -> int:
     """候选去重干跑审计（子进程透传输出，退出码即结果）。"""
     cmd = [sys.executable, str(SCRIPTS / "dedup_candidate_factors.py"), "--dry-run"]
     print(f"$ {' '.join(cmd[1:])}", flush=True)
-    return subprocess.run(cmd).returncode
+    try:
+        return subprocess.run(cmd).returncode
+    except OSError as exc:  # 脚本被删/解释器不可用：不阻断后两项
+        print(f"dedup 干跑启动失败：{exc}", flush=True)
+        return 127
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="factorzoo 周维护（详见模块头注释）")
     ap.add_argument("--archive-days", type=int, default=14,
-                    help="终态 run 归档阈值（天，按 run 结束时间计，缺省 14）")
+                    help="终态 run 归档阈值（天，**按创建时间计**——后端快照只含 created_at；缺省 14）")
     ap.add_argument("--log-days", type=int, default=30,
                     help="监控日志归档阈值（天，按 mtime 计，缺省 30）")
     ap.add_argument("--log-dir", type=Path, default=DEFAULT_LOG_DIR)
@@ -128,7 +138,8 @@ def main() -> int:
     rc = run_dedup_dry()
     results["dedup_dry"] = "ok" if rc == 0 else f"rc={rc}"
 
-    # 2. 旧 run 归档（后端不可达 → 跳过，不算失败）
+    # 2. 旧 run 归档（后端不可达 → 跳过，不算失败；per-run 失败 → 计入退出码）
+    archive_failed = False
     try:
         with urllib.request.urlopen(f"{args.backend.rstrip('/')}/api/alphaagent/runs",
                                     timeout=15) as r:
@@ -138,6 +149,7 @@ def main() -> int:
         ids = pick_archivable(runs, cutoff)
         if ids:
             ok, failed = archive_runs(args.backend, ids)
+            archive_failed = bool(failed)
             results["archive"] = f"{ok}/{len(ids)} 归档" + (f"，失败 {failed}" if failed else "")
         else:
             results["archive"] = "无可归档 run"
@@ -157,9 +169,12 @@ def main() -> int:
             ops_notify.send("factorzoo 周维护完成",
                             "\n".join(f"{k}: {v}" for k, v in results.items()),
                             level="error" if rc != 0 else "info")
+        except ImportError:
+            print("通知跳过：ops_notify 不在当前分支（随 feat/overnight-finalize 合并后生效）")
         except Exception as exc:  # noqa: BLE001
             print(f"通知失败（忽略）: {exc}")
-    return 0 if rc == 0 else rc
+    # 退出码语义：dedup 失败优先；其次归档 per-run 失败（无人值守任务需要感知）
+    return rc if rc != 0 else (1 if archive_failed else 0)
 
 
 if __name__ == "__main__":

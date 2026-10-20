@@ -18,15 +18,16 @@ def _load_fw():
 
 
 def test_pick_archivable_terminal_and_old():
+    """归档按 created_at 口径（后端快照只含该字段，OCR 2026-10-20 核实）。"""
     fw = _load_fw()
     now = time.time()
     runs = [
-        {"run_id": "old-done", "status": "completed", "ended_at": now - 20 * 86400},
-        {"run_id": "recent-done", "status": "completed", "ended_at": now - 2 * 86400},
-        {"run_id": "old-running", "status": "running", "ended_at": now - 20 * 86400},
+        {"run_id": "old-done", "status": "completed", "created_at": now - 20 * 86400},
+        {"run_id": "recent-done", "status": "completed", "created_at": now - 2 * 86400},
+        {"run_id": "old-running", "status": "running", "created_at": now - 20 * 86400},
         {"run_id": "old-no-ts", "status": "failed"},               # 无时间戳 → 不敢归档
         {"run_id": "old-iso", "status": "stopped",
-         "updated_at": "2026-09-01T00:00:00"},                     # ISO 时间戳可解析
+         "created_at": "2026-09-01T00:00:00"},                     # ISO 时间戳可解析
     ]
     picked = fw.pick_archivable(runs, cutoff_ts=now - 14 * 86400)
     assert picked == ["old-done", "old-iso"]
@@ -45,3 +46,11 @@ def test_rotate_logs_moves_old_only(tmp_path: Path):
     assert new.is_file() and not (tmp_path / "_old" / new.name).exists()
     # 幂等：再跑一遍不移动任何东西
     assert fw.rotate_logs(tmp_path, days=30) == 0
+    # 同名再移动：旧归档不被覆盖，新文件带时间戳落在 _old/
+    again = tmp_path / "monitor_20260901.log"
+    again.write_text("again", encoding="utf-8")
+    past2 = time.time() - 35 * 86400
+    os.utime(again, (past2, past2))
+    assert fw.rotate_logs(tmp_path, days=30) == 1
+    archived = list((tmp_path / "_old").glob("monitor_20260901*.log"))
+    assert len(archived) == 2
