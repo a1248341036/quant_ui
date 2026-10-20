@@ -1,19 +1,23 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Tushare token 到期 QQ 提醒。
+"""Tushare token 到期提醒（统一通知体系版）。
 
-在 quant_ui/.env 配置 TUSHARE_EXPIRE_DATE=YYYY-MM-DD 后，配合 systemd timer
-每天检查一次，在到期前 7/3/1 天、到期当天、过期 3 天分别推送一次 QQ 私聊提醒。
+在 quant_ui/.env 配置 TUSHARE_EXPIRE_DATE=YYYY-MM-DD 后，由本机计划任务
+QuantUITushareExpiry（每日 09:00）检查，在到期前 7/3/1 天、到期当天、过期
+3 天分别推送一次提醒（每节点只推一次，state 去重）。
+
+推送统一走 ops_notify（qqbot 适配器 → QQ 官方机器人，凭据 ~/qqbot/.env；
+QQBOT_PUSH_OPENID 未配置时用 healthcheck 内置默认）。2026-10-20 起取代原
+botpy 异步直连实现：本机 venv 无 botpy、且与统一通知通道构成双轨冗余。
 
 用法:
-    python scripts/tushare_expiry_notify.py            # 检查并推送（timer 调用）
+    python scripts/tushare_expiry_notify.py            # 检查并推送（计划任务调用）
     python scripts/tushare_expiry_notify.py --dry-run  # 只打印不发送
     python scripts/tushare_expiry_notify.py --force    # 忽略去重状态强制发送
 """
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 import os
 import sys
@@ -24,7 +28,9 @@ from dotenv import load_dotenv
 
 
 QUANT_ROOT = Path(__file__).resolve().parent.parent
+SCRIPTS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(QUANT_ROOT))
+sys.path.insert(0, str(SCRIPTS_DIR))
 from core.store import QQBOT_DIR  # noqa: E402
 
 QQBOT_ROOT = QQBOT_DIR
@@ -102,28 +108,31 @@ def build_message(days_left: int, label: str) -> str:
     )
 
 
-async def send_qq(text: str) -> None:
-    from botpy.api import BotAPI
-    from botpy.http import BotHttp
-    from botpy.robot import Token
+def send_text(label: str, text: str) -> dict:
+    """统一通知出口：ops_notify 的 qqbot 适配器（凭据 ~/qqbot/.env）。
 
-    appid = os.getenv("QQ_APP_ID")
-    secret = os.getenv("QQ_APP_SECRET")
-    openid = os.getenv("QQBOT_PUSH_OPENID", "")
-    if not appid or not secret or not openid:
-        raise RuntimeError("缺少 QQ_APP_ID / QQ_APP_SECRET / QQBOT_PUSH_OPENID")
-    http = BotHttp(timeout=30, app_id=appid, secret=secret)
+    openid 未显式配置时用 healthcheck 内置默认（原 botpy 实现硬性要求三值
+    齐全，2026-10-20 起放宽）。推送失败/无可用通道抛 RuntimeError → main
+    记 FATAL 返回 1，计划任务可以看到失败。
+    """
     try:
-        await http.login(Token(app_id=appid, secret=secret))
-        api = BotAPI(http)
-        await api.post_c2c_message(openid=openid, msg_type=0, content=text)
-        print("PUSH_TEXT_OK")
-    finally:
-        await http.close()
+        import ops_notify
+    except ImportError as exc:
+        raise RuntimeError(
+            "ops_notify 不可用：通知体系在 main 分支（共享工作区切回 main 后生效）"
+        ) from exc
+    status = ops_notify.send(f"【Tushare】{label}", text, level="warn")
+    for ch in ("qqbot", "qqmail", "onebot"):
+        st = status.get(ch)
+        if st and str(st).startswith("error"):
+            raise RuntimeError(f"推送失败 [{ch}]: {st}")
+        if st:
+            return status
+    raise RuntimeError(f"推送通道均未配置: {status}")
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Tushare token 到期 QQ 提醒")
+    parser = argparse.ArgumentParser(description="Tushare token 到期提醒")
     parser.add_argument("--dry-run", action="store_true", help="只打印不发送")
     parser.add_argument("--force", action="store_true", help="忽略去重状态强制发送")
     args = parser.parse_args()
@@ -164,7 +173,7 @@ def main() -> int:
         return 0
 
     try:
-        asyncio.run(send_qq(msg))
+        send_text(label, msg)
     except Exception as e:
         print(f"FATAL: {type(e).__name__}: {e}", file=sys.stderr)
         return 1
