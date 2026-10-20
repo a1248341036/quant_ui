@@ -439,6 +439,31 @@ async def run_factor_mining_agentscope(
     )
     root = repo_root or _repo_root()
     ctx = config.eval
+    # 按需取列（2026-10-20）：Web run 过去恒载全量 158 列 —— 实测加载 5.80GB、
+    # 求值峰值 11.01GB，而同一份缓存只取 19 列时是 1.37GB / 2.28GB。列数是唯一
+    # 杠杆（评估引擎的 winsorize/中性化/分组临时量与面板同量级），所以按"用户
+    # 勾选的数据面"或"档位默认面集"把列传给 session。
+    # 与 focus_facets 的区别：focus_facets 换**缓存签名**（按面各建一份缓存）；
+    # columns 不改签名，只是读现有全量缓存时少构造列视图。这里**不**用默认面集
+    # 去改 focus_facets，避免顺手触发聚焦缓存重建。
+    _user_focus = tuple(getattr(config, "focus_facets", None) or ())
+    _keep_columns: tuple[str, ...] = ()
+    try:
+        _focus_for_columns = _user_focus
+        if not _focus_for_columns:
+            from core.research_modes import default_focus_facets
+
+            _focus_for_columns = default_focus_facets(
+                (config.research_spec or {}).get("research_mode", "technical")
+            )
+        if _focus_for_columns:
+            from alphaagent.data.adapters.cnequity import columns_for_facets, is_cne_source
+
+            if is_cne_source(ctx.panel_path):
+                _keep_columns = columns_for_facets(_focus_for_columns)
+    except Exception as exc:  # noqa: BLE001 — 裁列是优化，失败必须退回全量而不是中断 run
+        logger.warning("按需取列失败，退回全量加载: %s", exc)
+        _keep_columns = ()
     session_resp = service.create_session(
         SessionCreateRequest(
             panel_path=str(ctx.panel_path),
@@ -449,7 +474,8 @@ async def run_factor_mining_agentscope(
             label_col=ctx.label_col,
             include_fundamentals=ctx.include_fundamentals,
             asset_type=ctx.asset_type,
-            focus_facets=tuple(getattr(config, "focus_facets", None) or ()),
+            focus_facets=_user_focus,
+            columns=_keep_columns,
             engine_gate_policy=((config.research_spec or {}).get("delivery_policy") or {})
             .get("production", {})
             .get("engine_gate"),

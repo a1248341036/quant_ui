@@ -462,6 +462,34 @@ def mode_ids() -> list[str]:
     return list(RESEARCH_MODES.keys())
 
 
+def default_focus_facets(mode: str) -> tuple[str, ...]:
+    """Web run 未显式勾选数据面时的默认面集（按需取列的依据）。
+
+    背景（2026-10-20 实测）：Web run 过去恒载全量 158 列 → 加载 5.80GB、求值峰值
+    11.01GB。而列数是唯一杠杆：19 列时 1.37GB / 2.28GB。技术档的 LLM 本来就被
+    限制在量价类字段内，没必要为 100+ 个用不到的基本面/事件列付内存。
+
+    规则：
+    - 恒含 **行情组**（价量/量能/筹码/拥挤）——技术能力的底座；
+    - ``needs_fundamentals=True`` 的档位（fundamental*）再加 **基本面组**；
+    - 事件资金组默认**不含**：成交/覆盖度不足，且需要时用户勾选数据面即可恢复。
+
+    返回空 tuple 表示"不裁剪"（未知档位/研报模式），调用方应回退全量。
+    """
+    try:
+        spec = get_research_mode(mode)
+    except ValueError:
+        return ()
+    if spec.mode_id == "report":
+        return ()  # 研报复现要按研报给的字段来，不能预先裁面
+    from alphaagent.factor.facets import FACET_GROUPS
+
+    groups: list[tuple[str, ...]] = [FACET_GROUPS["行情组"]]
+    if getattr(spec, "needs_fundamentals", False):
+        groups.append(FACET_GROUPS["基本面组"])
+    return tuple(dict.fromkeys(f for g in groups for f in g))
+
+
 def ui_options() -> list[dict]:
     """前端研究模式按钮/因子库类别/保存下拉共享的选项（单一事实源）。
 

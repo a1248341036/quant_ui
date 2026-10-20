@@ -329,6 +329,61 @@ def _read_cache_meta(cache_path: Path) -> dict[str, Any] | None:
         return None
 
 
+def columns_for_facets(facets: Sequence[str]) -> tuple[str, ...]:
+    """返回这些数据面覆盖的面板列（**只读缓存 schema，不物化任何数值**）。
+
+    用途：调用方只知道"要研究哪些数据面"、不知道具体表达式时（Web run 的首个
+    session、批量批评估），按面裁剪列传给 ``keep_columns``，避免全量 158 列常驻。
+    实测（2026-10-20，同一份缓存）：全量 158 列加载 5.80GB / 求值峰值 11.01GB；
+    19 列 1.37GB / 2.28GB —— **列数是唯一杠杆**，加载与求值临时量一起降。
+
+    返回空 tuple 表示"无法判断"（缓存缺失 / 面名非法 / 无匹配列），调用方应回退
+    全量，**不要**当成"零列"处理。
+
+    系统必需列（掩码/复权/行业/规模）不在这里返回：它们不属于任何数据面，
+    由 ``load_panel_from_cne`` 用 ``_ALWAYS_KEEP_COLUMNS`` 兜底并上。
+    """
+    focus = tuple(str(f).strip() for f in facets if str(f).strip())
+    allowed = _facet_allowed(focus)
+    if not allowed or not _CACHE_ROOT.is_dir():
+        return ()
+
+    # 取最近更新的一份缓存读 schema（列集合与签名/universe 基本无关；
+    # 若这份恰好缺某列，keep_columns 的"不存在即忽略"语义会兜住）。
+    best: tuple[float, Path] | None = None
+    try:
+        for p in _CACHE_ROOT.iterdir():
+            if not p.is_file() or p.suffix not in (".arrow", ".parquet"):
+                continue
+            try:
+                mtime = p.stat().st_mtime
+            except OSError:
+                continue
+            if best is None or mtime > best[0]:
+                best = (mtime, p)
+    except OSError:
+        return ()
+    if best is None:
+        return ()
+
+    path = best[1]
+    if path.suffix == ".arrow":
+        from alphaagent.data.adapters.panel_mmap import arrow_column_names
+
+        names = arrow_column_names(path)
+    else:
+        names = _parquet_column_names(path)
+    if not names:
+        return ()
+
+    out: list[str] = []
+    for col in names:
+        col_facets = _column_facets(col)
+        if col_facets and col_facets <= allowed:
+            out.append(str(col))
+    return tuple(sorted(out))
+
+
 def _parquet_column_names(path: Path) -> list[str] | None:
     """只读 parquet schema 拿列名（不读数据）。"""
     try:
