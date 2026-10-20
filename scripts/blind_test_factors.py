@@ -49,6 +49,51 @@ from alphaagent.factor.zoo import DEFAULT_FACTORLIB_ROOT, FactorZoo
 ZOO_ROOT = Path(DEFAULT_FACTORLIB_ROOT).parent if DEFAULT_FACTORLIB_ROOT else ROOT / "artifacts/alphaagent/factorzoo"
 REGISTRY_NAME = "mining_candidate_registry.json"
 
+# 盲测消费台账：每次重测追加一行。盲测段是唯一诚实样本外，重复消费 = 多重检验烧样本；
+# 台账让"谁在什么时候烧了盲测段"可审计，并在重测前显式警告重叠。
+BLIND_LEDGER = ROOT / "artifacts" / "alphaagent" / "blind_test" / "ledger.jsonl"
+
+
+def _load_blind_ledger(path: Path = BLIND_LEDGER) -> list[dict]:
+    try:
+        raw = Path(path).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    out = []
+    for ln in raw:
+        ln = ln.strip()
+        if not ln:
+            continue
+        try:
+            out.append(json.loads(ln))
+        except json.JSONDecodeError:
+            continue
+    return out
+
+
+def _append_blind_ledger(entry: dict, path: Path = BLIND_LEDGER) -> None:
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def _warn_duplicate_consumption(factor_ids: list[str], path: Path = BLIND_LEDGER) -> int:
+    """盲测段重复消费守卫：返回与历史台账重叠的因子数；>0 时打显式警告。"""
+    prev: dict[str, str] = {}  # factor_id -> 最近一次消费时间戳
+    for e in _load_blind_ledger(path):
+        ts = str(e.get("generated_at") or e.get("ts") or "?")
+        for fid in e.get("factor_ids") or []:
+            prev[fid] = ts
+    overlap = [fid for fid in factor_ids if fid in prev]
+    if overlap:
+        tss = sorted(prev[f] for f in overlap)
+        sample = "  ".join(overlap[:5]) + ("…" if len(overlap) > 5 else "")
+        print(f"\n⚠ 盲测段重复消费警告: {len(overlap)}/{len(factor_ids)} 个因子已在"
+              f" {tss[0]} ~ {tss[-1]} 之间消费过盲测段")
+        print(f"  例: {sample}")
+        print("  重测会加剧多重检验（烧样本）；除非有明确理由（如评估口径修复），建议跳过。")
+    return len(overlap)
+
 
 def _iter_libraries(root: Path, libs: list[str]) -> list[tuple[str, str, Path]]:
     """返回 (library, kind, path)。kind: production 读 zoo catalog；candidate 读 registry。"""
@@ -147,6 +192,12 @@ def main() -> int:
         pd.Timestamp(args.test_start) - pd.Timedelta(days=400)
     ).date().isoformat()
 
+    # 盲测段重复消费守卫：在加载面板（贵）之前先给信号
+    _pre_ids: list[str] = []
+    for _lib, _kind, _path in _iter_libraries(ZOO_ROOT, args.libs):
+        _pre_ids.extend(f["factor_id"] for f in _collect_factors(_kind, _path))
+    _warn_duplicate_consumption(_pre_ids)
+
     print(f"盲测段: {args.test_start} ~ {args.test_end}（面板预热自 {panel_start}）")
     print("加载面板（含基本面/事件面列）…")
     t0 = time.perf_counter()
@@ -219,6 +270,23 @@ def main() -> int:
     (out_dir / "report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8"
     )
+    try:
+        _append_blind_ledger({
+            "ts": out_dir.name,
+            "generated_at": report["generated_at"],
+            "test_window": report["test_window"],
+            "label_col": args.label_col,
+            "libs": args.libs,
+            "n_factors": len(rows),
+            "factor_ids": [r["factor_id"] for r in rows],
+            "clean": bool(args.clean),
+            "dry_run": bool(args.dry_run),
+        })
+    except OSError as exc:
+        # 记账失败不能炸掉已完成的评估（炸了会诱发重跑=重复消费盲测段）；
+        # 但必须显式留痕：本次消费未入台账，重复消费守卫将看不到它
+        print(f"[warn] 盲测消费台账追加失败（本次消费未记账，重复消费守卫对其失效）: {exc}",
+              file=sys.stderr)
     ok = [r for r in rows if "error" not in r]
     decayed = [r for r in ok if (r.get("ic_retention_vs_ref") or 0) < args.retention_threshold]
     print(f"\n完成: {len(ok)}/{len(rows)} 评估成功；|IC| 保留比 < {args.retention_threshold} 的因子 {len(decayed)} 个")
