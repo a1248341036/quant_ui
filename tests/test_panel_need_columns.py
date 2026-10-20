@@ -126,3 +126,34 @@ class TestBackwardCompatibility:
         """必须保留退回全列的开关：排查"某列没加载"类问题时要能一键全量。"""
         src = (_ROOT / "scripts" / "harness_mine.py").read_text(encoding="utf-8")
         assert "--full-cols" in src
+
+
+class TestRequiredColumnsParity:
+    """两条加载路径（CNE / parquet）必须并入**同一份**系统必需列。
+
+    回归证据（OCR 2026-10-19 抓出）：parquet 分支起初只并了 label_col，
+    于是 `--panel <parquet> --universe top300cap` + 只引 OHLCV 的表达式会因
+    keep_columns 缺 `tot_cap` 让 `apply_universe` 抛 ValueError —— 而改动前
+    整列加载是正常的。
+    """
+
+    def test_alias_points_to_same_frozenset(self):
+        from alphaagent.data.adapters.cnequity import (
+            ALWAYS_KEEP_COLUMNS,
+            _ALWAYS_KEEP_COLUMNS,
+        )
+
+        assert ALWAYS_KEEP_COLUMNS is _ALWAYS_KEEP_COLUMNS
+
+    def test_required_columns_cover_universe_and_mask(self):
+        """universe（规模池）/ 掩码 / 复权 / 中性化 的隐式依赖列必须在必需列里。"""
+        from alphaagent.data.adapters.cnequity import ALWAYS_KEEP_COLUMNS
+
+        must = {"tot_cap", "float_cap", "is_trade", "not_st", "adjfactor"}
+        missing = must - set(ALWAYS_KEEP_COLUMNS)
+        assert not missing, f"必需列缺失会回归：{sorted(missing)}"
+
+    def test_parquet_branch_merges_required_columns(self):
+        """parquet 分支必须引用同一份必需列清单（防止有人把它删回去）。"""
+        src = (_ROOT / "alphaagent/factor/mining/eval/session.py").read_text(encoding="utf-8")
+        assert "ALWAYS_KEEP_COLUMNS" in src
