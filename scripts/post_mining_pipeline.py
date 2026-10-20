@@ -56,8 +56,11 @@ def build_stage_cmd(stage: str, args: argparse.Namespace) -> list[str]:
         return cmd
     if stage == "dedup":
         cmd = [py, str(SCRIPTS / "dedup_candidate_factors.py")]
-        # 删除类操作显式开门：缺省 dry-run 只输出冗余对，不删
-        cmd.append("--apply" if args.apply_dedup else "--dry-run")
+        # OCR 2026-10-20 核实：dedup_candidate_factors.py 没有 --apply 参数，
+        # **缺省行为就是真删**，只有 --dry-run 是只看不删。--apply-dedup=True
+        # 表示用户确认真删 → 不追加 --dry-run。
+        if not args.apply_dedup:
+            cmd.append("--dry-run")
         return cmd
     if stage == "blind_test":
         cmd = [py, str(SCRIPTS / "blind_test_factors.py")]
@@ -83,7 +86,11 @@ def confirm_promote(args: argparse.Namespace) -> bool:
 
 
 def _run_stage(cmd: list[str]) -> int:
-    return subprocess.run(cmd).returncode
+    try:
+        return subprocess.run(cmd).returncode
+    except OSError as exc:  # 子脚本缺失/无权限：转非零码，走失败即停+告警路径
+        print(f"阶段启动失败: {exc}", file=sys.stderr)
+        return 127
 
 
 def _latest_blind_report(blind_dir: Path = BLIND_DIR) -> dict | None:
@@ -127,6 +134,10 @@ def run_chain(stages: list[str], args: argparse.Namespace, notify: bool = True,
     runner = runner or _run_stage
     results: dict[str, int] = {}
     for st in stages:
+        # 直跳 promote_apply（--stage 断点续跑）视为已确认，但语义要显式留痕
+        if st == "promote_apply" and "promote_dry" not in stages and not args.yes:
+            print("[warn] 非交互直跳 promote_apply（--stage 续跑视为已确认；"
+                  "这是写操作，若非有意请中止）")
         # 确认门只在同一次调用里先跑过 dry-run 时出现；--stage promote_apply 直跳 = 已确认
         if st == "promote_apply" and "promote_dry" in stages and not confirm_promote(args):
             print("[abort] 已取消（晋升 apply 未执行）")

@@ -270,17 +270,23 @@ def main() -> int:
     (out_dir / "report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8"
     )
-    _append_blind_ledger({
-        "ts": out_dir.name,
-        "generated_at": report["generated_at"],
-        "test_window": report["test_window"],
-        "label_col": args.label_col,
-        "libs": args.libs,
-        "n_factors": len(rows),
-        "factor_ids": [r["factor_id"] for r in rows],
-        "clean": bool(args.clean),
-        "dry_run": bool(args.dry_run),
-    })
+    try:
+        _append_blind_ledger({
+            "ts": out_dir.name,
+            "generated_at": report["generated_at"],
+            "test_window": report["test_window"],
+            "label_col": args.label_col,
+            "libs": args.libs,
+            "n_factors": len(rows),
+            "factor_ids": [r["factor_id"] for r in rows],
+            "clean": bool(args.clean),
+            "dry_run": bool(args.dry_run),
+        })
+    except OSError as exc:
+        # 记账失败不能炸掉已完成的评估（炸了会诱发重跑=重复消费盲测段）；
+        # 但必须显式留痕：本次消费未入台账，重复消费守卫将看不到它
+        print(f"[warn] 盲测消费台账追加失败（本次消费未记账，重复消费守卫对其失效）: {exc}",
+              file=sys.stderr)
     ok = [r for r in rows if "error" not in r]
     decayed = [r for r in ok if (r.get("ic_retention_vs_ref") or 0) < args.retention_threshold]
     print(f"\n完成: {len(ok)}/{len(rows)} 评估成功；|IC| 保留比 < {args.retention_threshold} 的因子 {len(decayed)} 个")

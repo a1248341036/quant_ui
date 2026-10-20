@@ -36,9 +36,9 @@ def test_build_stage_cmd_defaults_and_gates():
         and "--mode" in dry and "technical" in dry
     apply_cmd = pmp.build_stage_cmd("promote_apply", _args())
     assert "--dry-run" not in apply_cmd
-    # dedup 缺省 dry-run，--apply-dedup 才真删（删除类操作显式开门）
+    # dedup 缺省 dry-run（该脚本没有 --apply 参数，缺省即真删——OCR 2026-10-20 核实）
     assert "--dry-run" in pmp.build_stage_cmd("dedup", _args())
-    assert "--apply" in pmp.build_stage_cmd("dedup", _args(apply_dedup=True))
+    assert "--dry-run" not in pmp.build_stage_cmd("dedup", _args(apply_dedup=True))
     # blind_test 缺省只出报告
     blind = pmp.build_stage_cmd("blind_test", _args(blind_clean=True, blind_args="--libs production_main"))
     assert "--clean" in blind and "--libs" in blind
