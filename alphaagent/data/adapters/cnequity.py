@@ -102,6 +102,15 @@ _CACHE_SCHEMA_VERSION = 10  # v10: 聚焦面板恒载行业列（industry_sw_l1/
 # 缓存文件数上限（全量面板 parquet+arrow ≈ 6GB，聚焦面板 ≈ 0.3-2.6GB）。
 # 小磁盘服务器可用 ALPHA_PANEL_CACHE_MAX_FILES 调小（代价：切换数据面组合时重建）。
 _CACHE_MAX_FILES = max(2, int(os.environ.get("ALPHA_PANEL_CACHE_MAX_FILES", "8") or 8))
+# 缓存「比请求旧几天仍可命中」的容忍天数（2026-10-20）。
+# 背景：日更数据每天让 `end` 前移一天，而命中判定要求「缓存终点 >= 请求终点」，
+# 于是**每个交易日都要重建整份面板**（实测 4.7GB / 463s），磁盘上 v9/v10/v11
+# 共 34 个文件 43.7GB 就是这么攒出来的。
+# 日频/周频/月频回测里最新 1~3 个自然日的缺失对 IC、换手、分组的影响远小于重建
+# 代价；设 0 = 退回旧的严格相等行为。
+# **方向安全性**：只容忍「缓存比请求旧」，绝不容忍「缓存比请求新」——后者会把请求
+# 区间之后的未来数据带进调用方，破坏 tuning 模式的物理时间隔离（盲测段污染）。
+_CACHE_MAX_STALE_DAYS = max(0, int(os.environ.get("ALPHA_PANEL_CACHE_STALE_DAYS", "3") or 3))
 _CACHE_INDEX_COLS = ["datetime", "instrument"]
 # 聚焦裁剪时**永远保留**的列（非面专属 + 评估/交付链路内部依赖）：
 # - 行情核心列由 OUTPUT_COLUMNS 保证（build_panel_from_hq 的输出契约）；
@@ -433,7 +442,16 @@ def _find_cached_panel(
                 if not (req_start.to_period("M") == pd.Timestamp(idx_min).to_period("M")):
                     continue  # 请求起点早于缓存覆盖起点（且跨月，非同日历月容差）
             if req_end is not None and req_end > idx_max:
-                continue  # 请求终点晚于缓存覆盖终点
+                # 缓存比请求旧：容忍少量天数（日更数据让 end 每天前移，严格要求精确
+                # 覆盖会让每个交易日都重建整份面板，见 _CACHE_MAX_STALE_DAYS 注释）。
+                # 只容忍"旧"，不接受"新"——后者会把未来数据带进调用方。
+                stale_days = (pd.Timestamp(req_end) - pd.Timestamp(idx_max)).days
+                if stale_days > _CACHE_MAX_STALE_DAYS:
+                    continue  # 超出容忍窗口，确实需要重建
+                logger.info(
+                    "CNE panel 缓存 %s 覆盖到 %s，比请求终点 %s 旧 %d 天（容忍上限 %d），按命中处理",
+                    path.name, idx_max, req_end, stale_days, _CACHE_MAX_STALE_DAYS,
+                )
             # （基本面开关 + 哨兵检查已上移到「物化之前」，基于 schema 列名判定——
             #  按需取列后 df.columns 只是子集，在这里再判会把缺列误当未命中。）
             # 命中覆盖超集缓存时按请求区间裁剪：请求 [a, b] 可能命中覆盖到更晚
