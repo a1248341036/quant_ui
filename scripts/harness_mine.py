@@ -77,6 +77,30 @@ MODE_LABEL = {
 }
 
 
+def _increment_flags(mode: str, row: dict) -> list[str]:
+    """增量轨（2026-10-20）：raw 门未过时，判断"对现有组合的增量"是否达标。
+
+    返回空列表 = 增量轨通过。三条同时满足（缺一不可）：
+    |raw_ic| >= floor（地板，防 increment 分母趋零爆表）/ |resid_ic| >= 门 / increment >= 门。
+    """
+    from alphaagent.factor.mining.delivery.delivery_criteria import DeliveryCriteria
+
+    cand = DeliveryCriteria.from_spec(effective_research_spec(mode)).candidate
+    if not getattr(cand, "enable_increment_track", True):
+        return ["increment_track_disabled"]
+    raw, resid, inc = row.get("raw_ic_audit"), row.get("resid_ic"), row.get("increment")
+    if raw is None or resid is None or inc is None:
+        return ["no_increment_metrics"]
+    fails: list[str] = []
+    if abs(raw) < cand.min_raw_ic_floor:
+        fails.append(f"raw<{cand.min_raw_ic_floor}")
+    if abs(resid) < cand.min_resid_ic:
+        fails.append(f"resid<{cand.min_resid_ic}")
+    if abs(inc) < cand.min_increment_ratio:
+        fails.append(f"inc<{cand.min_increment_ratio}")
+    return fails
+
+
 def _flags(mode: str, row: dict) -> list[str]:
     """按真源门槛逐门判定，返回未过门说明（空列表 = 全部通过）。"""
     c = DeliveryCriteria.from_spec(effective_research_spec(mode))
@@ -112,6 +136,91 @@ def _expr_columns(factors: list[dict]) -> tuple[str, ...]:
             refs.add(canonical_column(m.group(1)))
     refs.discard("")
     return tuple(sorted(refs))
+
+
+def _attach_increment(rows: list[dict], factors: list[dict], args) -> None:
+    """给评估结果补上「对现有因子库组合的增量」四个数（增量轨，2026-10-20）。
+
+    只在 train 段算（combo 也是 train 段合成的）——**绝不碰盲测段**（2025+），
+    否则拿盲测做因子筛选就是数据窥视。
+
+    成本：一次 panel 加载 + 每因子一次求值/截面回归（0.5-1s），不重训模型。
+    """
+    from alphaagent.data.adapters.cnequity import load_panel_from_cne
+    from alphaagent.dsl.eval import eval_multi_line_factor, referenced_column_names
+    from alphaagent.factor.mining.eval.combo_increment import (
+        cs_zscore, increment_metrics, load_combo,
+    )
+
+    combo = load_combo()
+    if combo.empty:
+        print("[mine] 增量轨跳过：combo 缓存缺失，先跑 "
+              "`python scripts/build_combo_score.py`", flush=True)
+        return
+
+    start = args.train_start or "2020-01-01"
+    end = args.train_end or "2024-12-31"
+    label = MODE_LABEL[args.mode]
+    need: set[str] = {label}
+    for f in factors:
+        try:
+            need |= set(referenced_column_names(f["expr"]))
+        except Exception:  # noqa: BLE001
+            pass
+    need = {c for c in need if not str(c).startswith(("funda_", "fsi_"))}
+
+    print(f"[mine] 增量轨：panel {start}~{end}（train 段，不碰盲测）", flush=True)
+    panel = load_panel_from_cne(start=start, end=end, include_fundamentals=False,
+                                keep_columns=tuple(sorted(need)))
+    if label not in panel.columns:
+        print(f"[mine] 增量轨跳过：面板缺 {label}", flush=True)
+        return
+    lab = panel[label].astype("float64")
+    combo = combo.reindex(panel.index)
+
+    by_name = {r.get("name"): r for r in rows}
+    for f in factors:
+        name = f.get("name")
+        row = by_name.get(name)
+        if row is None:
+            continue
+        try:
+            v = eval_multi_line_factor(f["expr"], panel)
+            if isinstance(v, pd.DataFrame):
+                v = v.iloc[:, 0] if v.shape[1] == 1 else v.mean(axis=1)
+            z = cs_zscore(pd.Series(v).astype("float64").reindex(panel.index))
+            m = increment_metrics(z, combo, lab)
+            row.update({"resid_ic": m["resid_ic"], "increment": m["increment"],
+                        "combo_corr": m["combo_corr"],
+                        "raw_ic_audit": m["raw_ic"],
+                        "increment_reason": m.get("reason")})
+            inc = m["increment"]
+            print(f"  [inc] {str(name)[:34]:34s} raw={m['raw_ic']:+.4f} "
+                  f"resid={(m['resid_ic'] if m['resid_ic'] is None else round(m['resid_ic'],4))} "
+                  f"inc={inc if inc is None else round(inc,3)}", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            row.update({"resid_ic": None, "increment": None,
+                        "increment_error": f"{type(exc).__name__}: {str(exc)[:120]}"})
+            print(f"  [inc] {str(name)[:34]:34s} ERR {type(exc).__name__}", flush=True)
+
+    # 结算：分「raw 门全过」与「增量轨通过」两类打印，便于一眼看出增量轨捞回了什么
+    inc_pass, raw_pass = [], []
+    for row in rows:
+        raw_fails = _flags(args.mode, row)
+        row["increment_fails"] = _increment_flags(args.mode, row)
+        row["pass_increment"] = bool(row["increment_fails"] == [] and row.get("resid_ic") is not None)
+        if not raw_fails:
+            raw_pass.append(row)
+        elif row["pass_increment"]:
+            inc_pass.append(row)
+    if inc_pass:
+        print(f"\n[mine] 增量轨捞回 {len(inc_pass)} 个（raw 门未过但对组合有增量）：", flush=True)
+        for r in inc_pass:
+            print(f"  ◆ {r['name'][:34]:34s} raw={r['raw_ic_audit']:+.4f} "
+                  f"resid={r['resid_ic']:+.4f} inc={r['increment']:.3f} "
+                  f"(raw_fails={','.join(_flags(args.mode, r))})", flush=True)
+    if args.increment and not inc_pass and not raw_pass:
+        print("[mine] 增量轨：本批没有满足 raw 门或增量门的因子", flush=True)
 
 
 def _extract(res: dict) -> dict:
@@ -345,6 +454,10 @@ def main() -> int:
     ap.add_argument("--train-end", default=None)
     ap.add_argument("--val-start", default=None)
     ap.add_argument("--val-end", default=None)
+    ap.add_argument("--increment", action="store_true",
+                    help="评估后追加「对现有因子库组合的增量」(resid_ic/increment/combo_corr)。"
+                         "需先跑 scripts/build_combo_score.py 生成 combo 缓存；只在 train 段算，"
+                         "不碰盲测段")
     ap.add_argument("--universe", default="all",
                     help="股票池（评估口径，非因子属性）：all / top300cap / mid301_800cap / "
                          "szcomp / chinext（规则池可自填数字，如 top500cap）")
@@ -479,6 +592,16 @@ def main() -> int:
             _flush()
     finally:
         svc.release_session(sid)
+
+    # 增量轨（2026-10-20）：评估完再统一算一次「对现有组合的增量」——
+    # 放在这里而不是每轮，是为了只加载一次 panel、且不干扰单因子评估耗时。
+    if getattr(args, "increment", False) and rows:
+        try:
+            _attach_increment(rows, factors, args)
+            _flush()
+        except Exception as exc:  # noqa: BLE001 — 增量是加分项，失败不能毁掉整批结果
+            print(f"[mine] 增量轨失败（不影响 raw 评估结果）: {type(exc).__name__}: {exc}",
+                  flush=True)
 
     n_stat_pass = sum(1 for r in rows if r.get("pass_stage_one_pre"))
     n_full_pass = sum(1 for r in rows if not r.get("fails"))

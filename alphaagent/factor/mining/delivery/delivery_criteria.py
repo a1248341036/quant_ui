@@ -66,6 +66,22 @@ class CandidateCriteria:
         "weekly": 0.65,
         "monthly": 0.80,
     })
+    # ── 增量轨（2026-10-20 新增，双轨判定而非替换 raw 门）────────────────────
+    # 背景：候选池的实际用途是 **ML 样本源**（见类 docstring），lgbm 要的是"组合解释
+    # 不掉的新信息"，不是"单因子能独立交易"。实测候选池 47 个因子的组合增量比中位数
+    # 只有 0.264（illiq/vwap 族几乎纯冗余，`illiqgrp5_sm40` raw IC 0.0516 / 残差
+    # -0.0027），而现口径与增量口径的名单重合度仅 1/3。
+    #
+    # 判定语义：raw 门（ic / icir / coverage）**未通过**时，若同时满足下面三条，仍允许
+    # 进候选池，并标记 `increment_track=True`。raw 门通过者不受影响（照旧放行）。
+    #
+    # ★ `min_raw_ic_floor` 不能省：increment 是比值，分母接近 0 时会爆表 ——
+    #   实测 `x_vol_pe`（raw_ic +0.0000 / resid_ic +0.0014）算出 increment 53.26。
+    #   没有这个地板，纯噪声因子会因为"残差占比高"而进池。
+    min_raw_ic_floor: float = 0.020  # 【唯一真源】inc 轨的原始 IC 地板（防分母趋零）
+    min_resid_ic: float = 0.010  # 【唯一真源】剥掉组合后的残差 IC 下限
+    min_increment_ratio: float = 0.30  # 【唯一真源】|resid_ic|/|raw_ic| 下限
+    enable_increment_track: bool = True  # 【唯一真源】总开关；False = 退回纯 raw 门
 
 
 @dataclass(frozen=True)

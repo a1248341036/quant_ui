@@ -81,7 +81,46 @@ class StageOneStats:
         if cov_v is None or cov_v <= self.c.min_coverage:
             reasons.append("coverage")
 
+        if not reasons:
+            return StageResult(passed=True)
+
+        # 增量轨（2026-10-20）：raw 门未过时，若该因子对现有因子库组合有明显增量，
+        # 仍允许进候选池 —— 候选池是 ML 样本源，强相关的"强因子"对组合零贡献，
+        # 而 rule 之外的弱正交因子才有价值。三条同时满足才放行（见 CandidateCriteria
+        # 里 min_raw_ic_floor 的注释：纯比值会被分母趋零污染）。
+        if getattr(self.c, "enable_increment_track", True):
+            inc_ok, inc_reasons, inc_extra = self._increment_track(metrics)
+            if inc_ok:
+                return StageResult(
+                    passed=True,
+                    extra={"increment_track": True, "raw_gate_failed": list(reasons), **inc_extra},
+                )
+            # 增量轨也没过：把它的失败原因附在后面，便于区分"raw 弱且冗余"
+            reasons = reasons + [f"increment:{r}" for r in inc_reasons]
+
         return StageResult(passed=len(reasons) == 0, fail_reasons=reasons)
+
+    def _increment_track(self, metrics: dict[str, Any]) -> tuple[bool, list[str], dict[str, Any]]:
+        """增量轨判定：返回 (是否通过, 失败原因, 附带证据)。"""
+        raw = _abs_ic(metrics.get("ic"))
+        resid = _abs_ic(metrics.get("resid_ic"))
+        try:
+            inc_v = abs(float(metrics.get("increment")))
+        except (TypeError, ValueError):
+            inc_v = None
+        extra = {"raw_ic": raw, "resid_ic": resid, "increment": inc_v}
+        if raw is None or resid is None or inc_v is None:
+            return False, ["missing_metrics"], extra
+        floor = float(getattr(self.c, "min_raw_ic_floor", 0.020))
+        if raw < floor:
+            return False, ["raw_below_floor"], extra
+        min_resid = float(getattr(self.c, "min_resid_ic", 0.010))
+        if resid < min_resid:
+            return False, ["resid_ic"], extra
+        min_inc = float(getattr(self.c, "min_increment_ratio", 0.30))
+        if inc_v < min_inc:
+            return False, ["increment_ratio"], extra
+        return True, [], extra
 
 
 class StageOneTurnover:
