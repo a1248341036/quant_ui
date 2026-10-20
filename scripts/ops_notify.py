@@ -36,7 +36,6 @@ import argparse
 import json
 import smtplib
 import sys
-import urllib.error
 import urllib.request
 from datetime import datetime
 from email.header import Header
@@ -57,10 +56,11 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
 
 
 def _load_config(config_path: Path | str | None = None) -> dict:
-    """读配置；文件缺失/损坏一律返回 {}（= 只走 console + 落盘）。"""
+    """读配置；文件缺失/损坏/类型不对（合法 JSON 但非 dict，如数组）一律返回 {}。"""
     p = Path(config_path) if config_path else CONFIG_PATH
     try:
-        return json.loads(p.read_text(encoding="utf-8")) or {}
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
     except Exception:
         return {}
 
@@ -72,14 +72,17 @@ def _fmt(title: str, body: str, level: str) -> str:
 
 def _send_qqmail(cfg: dict, subject: str, text: str) -> str:
     user = cfg["user"]
+    to = cfg.get("to") or [user]
+    if isinstance(to, str):  # 配置误写成单个字符串时归一化，避免 join 按字符拆分
+        to = [to]
     msg = MIMEText(text, "plain", "utf-8")
     msg["Subject"] = Header(subject, "utf-8")
     msg["From"] = user
-    msg["To"] = ", ".join(cfg.get("to") or [user])
+    msg["To"] = ", ".join(to)
     with smtplib.SMTP_SSL(cfg.get("host", "smtp.qq.com"),
                           int(cfg.get("port", 465)), timeout=20) as smtp:
         smtp.login(user, cfg["auth_code"])
-        smtp.sendmail(user, cfg.get("to") or [user], msg.as_string())
+        smtp.sendmail(user, to, msg.as_string())
     return "ok"
 
 
@@ -94,7 +97,16 @@ def _send_onebot(cfg: dict, text: str) -> str:
     req = urllib.request.Request(url + action, data=json.dumps(payload).encode("utf-8"),
                                  headers=headers, method="POST")
     with urllib.request.urlopen(req, timeout=15) as resp:
-        return f"http {resp.status}"
+        # OneBot 11 HTTP：业务失败（target 不存在/风控/限频）也返回 HTTP 200，
+        # 只有响应体 retcode != 0 才是失败——只看状态码会把失败误报为 ok
+        try:
+            data = json.loads(resp.read().decode("utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            return f"error: bad resp body: {exc}"
+        if int(data.get("retcode", -1)) != 0 or data.get("status") == "failed":
+            return (f"error: retcode={data.get('retcode')} "
+                    f"status={data.get('status')} {str(data.get('wording') or '')[:120]}").strip()
+        return "ok"
 
 
 def send(title: str, body: str = "", level: str = "info",
@@ -127,10 +139,16 @@ def send(title: str, body: str = "", level: str = "info",
             status["onebot"] = f"error: {type(exc).__name__}: {exc}"[:200]
     if cfg.get("qqbot"):
         try:
-            import healthcheck  # 复用 QQ 官方机器人推送（凭据 ~/qqbot/.env，零额外配置）
+            # 任意入口可用：不依赖调用方是否已把 scripts/ 插入 sys.path
+            _here = Path(__file__).resolve().parent
+            if str(_here) not in sys.path:
+                sys.path.insert(0, str(_here))
+            import healthcheck  # 复用 QQ 官方机器人推送（凭据 ~/qqbot/.env）
 
+            # send_qq_alert 内部失败只打印不抛出（fire-and-forget）——"ok" 表示
+            # 已调用成功，送达与否以 healthcheck 控制台输出为准
             healthcheck.send_qq_alert(text)
-            status["qqbot"] = "ok"
+            status["qqbot"] = "ok (fire-and-forget)"
         except Exception as exc:  # noqa: BLE001
             status["qqbot"] = f"error: {type(exc).__name__}: {exc}"[:200]
     if not (cfg.get("qqmail") or cfg.get("onebot") or cfg.get("qqbot")):

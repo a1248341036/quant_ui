@@ -43,3 +43,16 @@ def test_load_prev_baseline_rolls_across_nights(tmp_path: Path):
 def test_load_prev_baseline_empty_ledger(tmp_path: Path):
     nsr = _make_nsr(tmp_path)
     assert nsr.load_prev_baseline("A") is None
+
+
+def test_load_prev_baseline_ignores_rerun_reorder(tmp_path: Path):
+    """幂等重跑旧夜会把行重插文件尾；基线必须按 since 时间最近取，不能按文件序。"""
+    nsr = _make_nsr(tmp_path)
+    nsr.append_ledger({"since": "2026-10-01T00:00", "generated_at": "2026-10-02T06:00:00",
+                       "dual_gate_rate": 0.041})
+    nsr.append_ledger({"since": "2026-10-02T00:00", "generated_at": "2026-10-03T06:00:00",
+                       "dual_gate_rate": 0.060})
+    nsr.append_ledger({"since": "2026-10-01T00:00", "generated_at": "2026-10-02T08:00:00",
+                       "dual_gate_rate": 0.045})  # 幂等重跑 10-01 → 行移到文件尾
+    prev = nsr.load_prev_baseline("2026-10-03T00:00")
+    assert prev["since"] == "2026-10-02T00:00"  # 时间上真正的一夜，而非重插的旧行

@@ -42,6 +42,15 @@ def test_bad_config_json_same_as_missing(tmp_path: Path):
     assert "未配置推送通道" in status["push"]
 
 
+def test_non_dict_config_same_as_missing(tmp_path: Path):
+    """合法 JSON 但非 dict（如数组）→ 不得 AttributeError 击穿 send()。"""
+    mod = _make_mod(tmp_path)
+    bad = tmp_path / "notify.json"
+    bad.write_text("[1, 2, 3]", encoding="utf-8")
+    status = mod.send("t", config_path=bad)
+    assert "未配置推送通道" in status["push"]
+
+
 def test_channel_failure_swallowed_not_raised(tmp_path: Path):
     mod = _make_mod(tmp_path)
     cfg = tmp_path / "notify.json"
@@ -74,5 +83,5 @@ def test_qqbot_adapter_reuses_healthcheck(tmp_path: Path, monkeypatch):
     cfg = tmp_path / "notify.json"
     cfg.write_text(json.dumps({"qqbot": True}), encoding="utf-8")
     status = mod.send("标题t", "正文b", config_path=cfg)
-    assert status["qqbot"] == "ok"
+    assert status["qqbot"].startswith("ok")  # fire-and-forget：已调用即 ok
     assert calls and "标题t" in calls[0]

@@ -64,6 +64,23 @@ def test_select_runs_offline_idle_guard(tmp_path: Path):
     assert [p.name for p in picked] == ["stale"]
 
 
+def test_select_runs_explicit_only_bypasses_idle_guard(tmp_path: Path):
+    """--runs 显式指定 = 跳过 API/空闲判定（monitor 刚结束就调用的场景）。"""
+    fr = _load_finalize()
+    _make_run(tmp_path, "fresh", age_s=0)    # 静默不足 → 扫描模式会跳过
+    picked = fr.select_runs(tmp_path, tmp_path / "no_ledger.jsonl",
+                            statuses=None, idle_minutes=30, only="fresh")
+    assert [p.name for p in picked] == ["fresh"]
+
+
+def test_select_runs_only_missing_dir_skipped(tmp_path: Path):
+    """--runs 指向不存在目录 → 警告跳过，不炸整批。"""
+    fr = _load_finalize()
+    picked = fr.select_runs(tmp_path, tmp_path / "no_ledger.jsonl",
+                            statuses=None, only="ghost")
+    assert picked == []
+
+
 def test_finalize_one_record_from_patrol(tmp_path: Path):
     fr = _load_finalize()
     d = _make_run(tmp_path, "r1")

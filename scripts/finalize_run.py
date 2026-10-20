@@ -96,11 +96,25 @@ def fetch_statuses(backend: str) -> dict[str, str] | None:
 def select_runs(ui_root: Path = UI_ROOT, ledger_path: Path = LEDGER_PATH,
                 statuses: dict[str, str] | None = None, idle_minutes: int = 30,
                 only: str | None = None) -> list[Path]:
-    """选出待收尾的 run 目录（已收尾的永远跳过）。"""
+    """选出待收尾的 run 目录（已收尾的永远跳过）。
+
+    --runs 显式指定时**跳过 API/空闲判定**（与 CLI 帮助一致：monitor 在 run 刚
+    结束时调用，此时空闲判定必然不满足）；目录不存在或缺 steps.log 则警告跳过，
+    不炸整批。
+    """
     done = load_finalized(ledger_path)
     ui = Path(ui_root)
-    if only:
-        cands = [ui / r.strip() for r in only.split(",") if r.strip()]
+    if only is not None:
+        cands = []
+        for r in only.split(","):
+            r = r.strip()
+            if not r:
+                continue
+            d = ui / r
+            if d.is_dir() and (d / "steps.log").is_file():
+                cands.append(d)
+            else:
+                print(f"[warn] --runs 指定的 {r} 不存在或缺 steps.log，跳过")
     else:
         cands = ([d for d in ui.iterdir() if d.is_dir() and (d / "steps.log").is_file()]
                  if ui.is_dir() else [])
@@ -109,14 +123,15 @@ def select_runs(ui_root: Path = UI_ROOT, ledger_path: Path = LEDGER_PATH,
     for d in cands:
         if d.name in done:
             continue
-        if statuses is not None:
-            st = statuses.get(d.name)
-            if st is not None and st not in TERMINAL_STATUSES:
-                continue  # 还在跑
-            if st is None and now - (d / "steps.log").stat().st_mtime < idle_minutes * 60:
-                continue  # API 列表里没有且目录太新 → 保守跳过
-        elif now - (d / "steps.log").stat().st_mtime < idle_minutes * 60:
-            continue  # 离线模式：目录静默不足 idle_minutes → 视为可能还在跑
+        if only is None:  # 显式 --runs 跳过状态/空闲判定
+            if statuses is not None:
+                st = statuses.get(d.name)
+                if st is not None and st not in TERMINAL_STATUSES:
+                    continue  # 还在跑
+                if st is None and now - (d / "steps.log").stat().st_mtime < idle_minutes * 60:
+                    continue  # API 列表里没有且目录太新 → 保守跳过
+            elif now - (d / "steps.log").stat().st_mtime < idle_minutes * 60:
+                continue  # 离线模式：目录静默不足 idle_minutes → 视为可能还在跑
         out.append(d)
     return sorted(out, key=lambda p: p.name)
 
@@ -203,9 +218,15 @@ def write_summary_md(ledger_path: Path = LEDGER_PATH, out_path: Path | None = No
     """从台账重生成收尾日报（覆盖写；台账是唯一事实源）。"""
     if out_path is None:
         out_path = ROOT / "logs" / f"finalize_{datetime.now().strftime('%Y%m%d')}.md"
-    rows = read_ledger(ledger_path)[-max_rows:]
+    rows_all = read_ledger(ledger_path)
+    # 同 run_id 保留最后一条：monitor 钩子与早上手动兜底存在秒级并发窗口
+    # （check-then-act 竞态，OCR 2026-10-20），日报侧去重保证不重复计数
+    dedup: dict[str, dict] = {}
+    for r in rows_all:
+        dedup[r["run_id"]] = r
+    rows = list(dedup.values())[-max_rows:]
     rows.reverse()  # 新的在前
-    lines = [f"# Run 收尾日报（台账 {len(read_ledger(ledger_path))} 条，最新 {len(rows)} 条）", "",
+    lines = [f"# Run 收尾日报（台账 {len(rows_all)} 条，去重后展示最新 {len(rows)} 条）", "",
              f"生成时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}；数据源 `{ledger_path}`", "",
              "| run | 收尾时刻 | outcome | train | val | 候选 | 正式 | 判定/PASS | 保真 | 吞吐(eval/min) | 一阶段产出% | gate存活% | 预测印证% | 错误 |",
              "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]

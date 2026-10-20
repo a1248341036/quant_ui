@@ -44,9 +44,11 @@ def _ledger_rows() -> list[dict]:
         if not ln:
             continue
         try:
-            out.append(json.loads(ln))
+            parsed = json.loads(ln)
         except json.JSONDecodeError:
             continue
+        if isinstance(parsed, dict):  # 非 dict 行（null/数组/字符串）跳过，防下游 KeyError
+            out.append(parsed)
     return out
 
 
@@ -61,11 +63,16 @@ def append_ledger(entry: dict) -> None:
 
 
 def load_prev_baseline(since: str) -> dict | None:
-    """台账中最近一条不同 --since 的聚合（=上一夜基线）；无则 None → 回落硬编码 BASELINE。"""
-    for r in reversed(_ledger_rows()):
-        if r.get("since") != since:
-            return r
-    return None
+    """上一夜基线 = 台账中 **since 时间最近** 的一条不同 --since 的聚合。
+
+    按 since（ISO 字符串字典序=时间序）取最大而非文件序最近：幂等重跑旧夜会把
+    该行重插到文件尾（append_ledger 的替换语义），文件序最近 ≠ 时间最近。
+    无候选则 None → 回落硬编码 BASELINE。
+    """
+    cands = [r for r in _ledger_rows() if r.get("since") and r.get("since") != since]
+    if not cands:
+        return None
+    return max(cands, key=lambda r: str(r["since"]))
 
 
 def runs_since(ts: float) -> list[dict]:
@@ -203,11 +210,14 @@ def main() -> int:
     if args.ledger:
         append_ledger(entry)
     prev = load_prev_baseline(args.since)
-    base_rate = prev["dual_gate_rate"] if prev else BASELINE["dual_gate_rate"]
-    base_pass = (f"{prev['tot_pass']}/{prev['tot_judge']}"
+    # 台账是跨版本持久化文件，字段可能缺失（旧版本/手工编辑）→ 全部 .get 兜底
+    base_rate = (prev.get("dual_gate_rate")
+                 if prev and prev.get("dual_gate_rate") is not None
+                 else BASELINE["dual_gate_rate"])
+    base_pass = (f"{prev.get('tot_pass', 0)}/{prev['tot_judge']}"
                  if prev and prev.get("tot_judge") is not None else "—")
-    base_eval = prev["tot_eval"] if prev else "—"
-    base_src = (f"night_summary_ledger（since {prev['since']}）" if prev
+    base_eval = (prev.get("tot_eval") if prev and prev.get("tot_eval") is not None else "—")
+    base_src = (f"night_summary_ledger（since {prev.get('since', '?')}）" if prev
                 else "脚本内硬编码 2026-10-01（台账尚无历史）")
 
     lines = [f"# 整夜汇总（since {args.since}）", "",
