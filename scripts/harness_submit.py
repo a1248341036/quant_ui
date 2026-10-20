@@ -114,6 +114,14 @@ def main() -> int:
                     comment=c.get("comment", ""), evaluation_evidence=c.get("evidence"),
                     orthogonality_hook=_make_orthogonality_hook(svc, sid, c["expr"]),
                     rebalance_freq=freq,
+                    # 增量轨（2026-10-20）：挖掘阶段（harness_mine --increment）算好的
+                    # 「对现有组合的增量」随因子清单传进来，供 stage_one 的增量分支判定。
+                    # 缺失时传 None，checker 自动退回纯 raw 门。
+                    increment_metrics=(
+                        {"resid_ic": c["resid_ic"], "increment": c["increment"]}
+                        if c.get("resid_ic") is not None and c.get("increment") is not None
+                        else None
+                    ),
                 )
             except Exception as exc:  # noqa: BLE001
                 res = {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:400]}"}

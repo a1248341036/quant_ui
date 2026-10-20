@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import logging
 import re
 import time
 from pathlib import Path
@@ -12,6 +13,8 @@ from typing import Any, Callable
 
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 from alphaagent.factor.types import IngestPolicy
 from alphaagent.factor.ingest import (
@@ -487,6 +490,7 @@ class FactorSubmitService:
         orthogonality_hook: Callable[[], dict[str, Any]] | None = None,
         interaction: dict[str, Any] | None = None,
         rebalance_freq: str | None = None,
+        increment_metrics: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         expr = multi_line_expr.strip()
         if not expr:
@@ -607,6 +611,18 @@ class FactorSubmitService:
         metrics_train = _ingest_metrics_cached(
             dataclasses.replace(stage_one_policy, val_end=ctx.train_end)
         )
+        # 增量轨（2026-10-20）：把挖掘阶段算好的「对现有因子库组合的增量」并入
+        # train metrics，供 StageOneStats 的增量分支判定（raw 门未过时的"或"分支）。
+        # 只接受白名单键，其余一律忽略 —— 防止调用方误塞字段污染证据字典。
+        if increment_metrics:
+            for _k in ("resid_ic", "increment"):
+                _v = increment_metrics.get(_k)
+                if _v is not None:
+                    metrics_train[_k] = _v
+            logger.info(
+                "增量轨证据已并入 train metrics: resid_ic=%s increment=%s",
+                metrics_train.get("resid_ic"), metrics_train.get("increment"),
+            )
         train_ms = round((time.perf_counter() - t_train) * 1000)
         # 组合换手预检：quantile_portfolio 提前到门槛前算一次（全窗口径——
         # 换手是因子结构性属性，与窗口无关），供 stage_one 换手硬门与最终报告复用，
