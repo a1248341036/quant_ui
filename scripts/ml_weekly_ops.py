@@ -16,8 +16,12 @@ QuantUIPaperRun + scripts/paper_offline_run.py 兜底（core.paper 对同一 exe
   [4/4] 通知    : ops_notify；与台账上一条对比，任一风格 |Δ暴露| ≥ --drift-threshold
                   （缺省 0.05，量纲=截面相关系数差；调大更迟钝/调小更敏感）→ level=warn
 
+失败语义：训练 rc!=0、名单/归因/台账任一异常 → error 通知 + 非零退出
+（周五晚计划任务失败必须可感知）。不设训练 timeout——训练时长方差大，
+武断上限会误杀（OCR 2026-10-20 建议采纳部分）。
+
 用法：
-  python scripts/ml_weekly_ops.py                          # 全链（计划任务用 --no-notify 反例）
+  python scripts/ml_weekly_ops.py                          # 全链
   python scripts/ml_weekly_ops.py --skip-train             # 复跑名单/归因（不重训）
   python scripts/ml_weekly_ops.py --train-args "--model both --scheme ml"
 """
@@ -56,6 +60,21 @@ if str(SCRIPTS) not in sys.path:
 from alphaagent.data.adapters.cnequity import load_panel_from_cne  # noqa: E402
 
 
+def _notify(args: argparse.Namespace, title: str, body: str, level: str = "info") -> None:
+    """统一通知出口：未配置/未合并（ImportError）/发送失败一律不抛出。"""
+    if not getattr(args, "notify", True):
+        return
+    try:
+        import ops_notify
+
+        ops_notify.send(title, body, level=level)
+    except ImportError:
+        print(f"[notify-skip] ops_notify 不在当前分支（随 feat/overnight-finalize "
+              f"合并后生效）: {title}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"通知失败（忽略）: {exc}")
+
+
 def latest_stacking_run(stacking_dir: Path = STACKING_DIR) -> tuple[str, Path] | None:
     """扫 stacking 目录，返回最新一个带 scores.parquet 的 (run_id, 路径)。"""
     if not stacking_dir.is_dir():
@@ -64,6 +83,9 @@ def latest_stacking_run(stacking_dir: Path = STACKING_DIR) -> tuple[str, Path] |
         scores = d / "scores.parquet"
         if scores.is_file():
             return d.name, scores
+        # OCR 2026-10-20：无 scores 的目录（训练中断/--no-write-pred）要留痕，
+        # 否则会静默回退到更旧 run，名单/台账基于过期数据生成而无预警
+        print(f"[warn] stacking 目录 {d.name} 无 scores.parquet，跳过（可能训练中断）")
     return None
 
 
@@ -119,8 +141,17 @@ def exposure_snapshot(scores_path: Path, window: int = 20) -> dict:
     score_mask = np.isfinite(S).sum(axis=1) >= 50
     profile = amx.exposure_profile(S, X, dates, names, n_style, score_mask)
     coef = profile["coef"].mean()
+    # OCR 2026-10-20：NaN 不能进台账（json 会写出非法 NaN 字面量，且漂移比对
+    # 会静默失效）——非有限值剔除并留痕
+    exposure: dict[str, float] = {}
+    for n in names[:n_style]:
+        v = float(coef[n])
+        if np.isfinite(v):
+            exposure[n] = round(v, 4)
+        else:
+            print(f"[warn] 风格 {n} 暴露为 NaN（有效截面不足），已从台账剔除")
     return {
-        "style_exposure": {n: round(float(coef[n]), 4) for n in names[:n_style]},
+        "style_exposure": exposure,
         "r2_style": round(float(profile["r2_style"].mean()), 4),
         "n_days": int(profile["r2_style"].shape[0]),
     }
@@ -161,7 +192,11 @@ def run_train(args: argparse.Namespace) -> int:
     if args.train_args:
         cmd += shlex.split(args.train_args)
     print(f"$ {' '.join(cmd[1:])}", flush=True)
-    return subprocess.run(cmd).returncode
+    try:
+        return subprocess.run(cmd).returncode
+    except OSError as exc:  # 脚本缺失/解释器不可用 → 非零码走 error 通知路径
+        print(f"训练启动失败: {exc}")
+        return 127
 
 
 def main() -> int:
@@ -180,53 +215,50 @@ def main() -> int:
         rc = run_train(args)
         if rc != 0:
             print(f"[abort] 训练失败 rc={rc}")
-            if args.notify:
-                try:
-                    import ops_notify
-
-                    ops_notify.send("ML 周更失败", "训练阶段非零退出", level="error")
-                except Exception as exc:  # noqa: BLE001
-                    print(f"通知失败（忽略）: {exc}")
+            _notify(args, "ML 周更失败", f"训练阶段非零退出 rc={rc}", level="error")
             return rc
 
     run = latest_stacking_run()
     if run is None:
         print("[abort] artifacts/alphaagent/stacking 下没有带 scores.parquet 的 run")
+        _notify(args, "ML 周更失败", "stacking 下没有带 scores.parquet 的 run", level="error")
         return 1
     run_id, scores = run
     print(f"stacking run: {run_id}")
 
-    top, latest = build_list(scores, args.top_n)
-    md = write_list(top, latest, run_id)
-    print(f"名单: {md}（Top {len(top)}，截日 {latest}）")
+    try:
+        top, latest = build_list(scores, args.top_n)
+        md = write_list(top, latest, run_id)
+        print(f"名单: {md}（Top {len(top)}，截日 {latest}）")
 
-    snap = exposure_snapshot(scores, window=args.window)
-    prev_entries = [e for e in load_exposure_ledger() if e.get("run_id") != run_id]
-    prev = prev_entries[-1] if prev_entries else None
-    drift = compute_drift(snap["style_exposure"],
-                          (prev or {}).get("style_exposure"))
-    append_exposure_ledger({
-        "ts": pd.Timestamp.now().isoformat(timespec="seconds"),
-        "run_id": run_id, "latest_date": latest, "top_n": args.top_n,
-        "style_exposure": snap["style_exposure"],
-        "r2_style": snap["r2_style"], "n_days": snap["n_days"],
-    })
+        snap = exposure_snapshot(scores, window=args.window)
+        prev_entries = [e for e in load_exposure_ledger() if e.get("run_id") != run_id]
+        prev = prev_entries[-1] if prev_entries else None
+        drift = compute_drift(snap["style_exposure"],
+                              (prev or {}).get("style_exposure"))
+        append_exposure_ledger({
+            "ts": pd.Timestamp.now().isoformat(timespec="seconds"),
+            "run_id": run_id, "latest_date": latest, "top_n": args.top_n,
+            "style_exposure": snap["style_exposure"],
+            "r2_style": snap["r2_style"], "n_days": snap["n_days"],
+        })
+    except Exception as exc:  # noqa: BLE001
+        # 周五晚计划任务失败必须可感知（OCR 2026-10-20：裸 traceback 无通知）
+        print(f"[abort] 名单/归因/台账阶段失败: {type(exc).__name__}: {exc}")
+        _notify(args, "ML 周更失败",
+                f"名单/归因阶段异常: {type(exc).__name__}: {exc}"[:300], level="error")
+        return 1
+
     drifted = {k: v for k, v in drift.items() if abs(v) >= args.drift_threshold}
     print(f"风格暴露: {snap['style_exposure']}（R² style-only={snap['r2_style']}）")
     print(f"周间漂移: {drift or '首跑无对照'}"
           + (f" ⚠ 超阈值: {drifted}" if drifted else ""))
 
-    if args.notify:
-        try:
-            import ops_notify
-
-            top3 = " ".join(top["code"].astype(str).head(3))
-            body = (f"run={run_id} 名单 Top{len(top)}: {top3}…\n"
-                    f"风格暴露 {snap['style_exposure']}\n"
-                    f"漂移 {drifted or '无/首跑'}\n名单: {md}")
-            ops_notify.send("ML 周更完成", body, level="warn" if drifted else "info")
-        except Exception as exc:  # noqa: BLE001
-            print(f"通知失败（忽略）: {exc}")
+    top3 = " ".join(top["code"].astype(str).head(3))
+    body = (f"run={run_id} 名单 Top{len(top)}: {top3}…\n"
+            f"风格暴露 {snap['style_exposure']}\n"
+            f"漂移 {drifted or '无/首跑'}\n名单: {md}")
+    _notify(args, "ML 周更完成", body, level="warn" if drifted else "info")
     return 0
 
 
