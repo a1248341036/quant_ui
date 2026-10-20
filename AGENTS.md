@@ -48,10 +48,25 @@
 - **任何改动（代码/文档/配置/脚本）必须先从 `main` 新建分支再动手**（`feat/*`、`fix/*`、`chore/*`），**禁止直接在 `main` 上修改或提交**。
 - **文档与开发分支放在一起，不单独建分支**：spec / review / 方案设计等文档直接提交在对应特性的开发分支上，严禁单独拉 `docs/*` 分支，避免产生无代码的孤岛分支。
 - 会话开始时若发现当前在 `main`，先建分支再改动；一串相关改动共用一个主题分支，分支名体现内容。
-- **合并前 OCR review（强制，2026-10-09 起）**：任何功能/修复分支合并回 `main` 之前，必须先跑
-  `ocr review --audience agent --from main --to <branch> --background "<功能背景>" --output <file>`
-  （用 `open-code-review` skill），critical/high 发现必须修复，medium 择实锤处理，low 过滤误报；
-  修复与单测随分支提交。review 结果（发现数/修复情况/误报）在向用户请求合并时一并汇报。
+- **合并前 OCR review（强制，2026-10-09 起；2026-10-20 补实操细则）**：任何功能/修复分支合并回
+  `main` 之前必须先跑 review（用 `open-code-review` skill），critical/high 发现必须修复、medium 择
+  实锤处理、low 过滤误报；修复与单测随分支提交。review 结果（发现数/修复情况/误报）在请求合并时
+  一并汇报。**喂对粒度是硬前提**，完整实测见 `docs/ocr_review_pitfalls.md`：
+  - OCR 的 **plan 阶段**在「组内最大改动文件 ≥50 行」或「组内 2+ 文件改动合计 ≥100 行」时触发，
+    单次可吃掉 16–30 万 token；两个阈值**不可配**（`PLAN_MODE_LINE_THRESHOLD` 不是环境变量，
+    `ocr config` 无压缩相关键）。
+  - 可用渠道里没有"窗口 ≥30 万 + 支持 tool-call + 够快"的组合：easycli/0731 = 200k，爆窗报
+    **HTTP 500**；ark-glm 窗口够但 6–7 分钟/批且常预算耗尽；easycli/gemini 与 command-goat
+    渠道直接 **HTTP 400**（不支持 tool-call）。
+  - **成败取决于「单组体积」而非总 diff**：5 个小文件一组能跑通，改动 90+ 行的大文件单独成组
+    必爆；`--exclude` 只影响分组、不影响 plan 阶段的输入量。先把大文件 `--exclude` 摘出去跑小文件
+    组，大文件另跑或由宿主 agent 直接审。
+  - 统一参数：`--effort low --timeout 7 --max-tokens 60000`（`--effort low` 把 2 轮压到 1 轮，
+    这是滚雪球主因）；超 20 分钟仍无产出就停、转人工逐行评审，不反复重试。
+  - 送审前先 `ocr delegate preview --from <base> --to <branch>`（1 秒、零 token）看清会分成哪几组、
+    哪些文件被默认排除、哪些文件改动 ≥50 行。
+  - **大改动（>2 文件或 >150 行）以宿主 agent 自审为主**，OCR 只跑小文件部分作补充视角——它确有
+    独立价值（2026-10-20 抓到人工评审漏掉的 `apply_universe` 缺列回归），但必须喂到能消化的粒度。
 - 分支完成后交由用户决定合并时机；不主动 push / merge 到 main。
 - 多会话并行工作时注意：切分支前确认工作区干净；他人/其他会话的在途未提交改动不得卷入自己的提交（`git add` 精确到文件，禁用盲目 `git add -A`）。
 
