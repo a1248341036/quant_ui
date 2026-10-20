@@ -126,6 +126,10 @@ _ALWAYS_KEEP_COLUMNS = frozenset({
     # （CS_NEUTRALIZE(f, $industry_sw_l1)）是功能性中立能力，不属于任何数据面，
     # 聚焦裁剪必须保留——旧注释"行业列接入属 P2"已随插件落地失效。
 }) | _INDUSTRY_COLUMNS
+# 公开别名：跨模块（如 eval/session 的 parquet 分支）需要**同一份**"系统必需列"
+# 清单来兜底按需取列，避免两处各写一份后漂移。私有名保留以兼容既有引用，
+# 两者指向同一 frozenset。
+ALWAYS_KEEP_COLUMNS = _ALWAYS_KEEP_COLUMNS
 # 聚焦 run 恒载的中立辅助列（与 _ALWAYS_KEEP_COLUMNS 同源，由 _needed_aux_columns
 # 显式放行）。背景：聚焦裁剪按"列属面 ⊆ 允许范围"过滤辅助插件，行业列不属任何面
 # （_column_facets 为空）会被漏掉，而提示词/评估/交付一直声明 $industry_sw_l1 可用

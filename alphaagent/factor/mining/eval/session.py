@@ -137,10 +137,17 @@ class SessionStore:
             # （pandas 未开 CoW 实测），是批量技术档内存 16-17GB 的另一大来源。
             cols = panel_columns(ctx.panel_path) if not ctx.include_fundamentals else None
             if keep_columns:
-                # 显式按需：与"排除 funda_*"取交集，保证不把 funda 带进来
+                # 显式按需：并入与 CNE 路径**同一份**系统必需列（掩码/复权/规模/
+                # 行业），否则会回归 —— 例如 `--universe top300cap` 需要 tot_cap，
+                # apply_universe 在缺列时直接抛 ValueError；engine_gate 回测与
+                # 市值/行业中性化同样隐式依赖这些列。清单真源在
+                # cnequity.ALWAYS_KEEP_COLUMNS，两侧不各写一份（防漂移）。
+                from alphaagent.data.adapters.cnequity import ALWAYS_KEEP_COLUMNS
+
+                need = tuple(dict.fromkeys((*keep_columns, *ALWAYS_KEEP_COLUMNS)))
                 base = set(cols) if cols else None
                 want = [
-                    c for c in keep_columns
+                    c for c in need
                     if (base is None or c in base)
                     and (ctx.include_fundamentals or not str(c).startswith("funda_"))
                 ]
