@@ -428,6 +428,19 @@ function Execute-CnePipeline {
                         Record-Result $pre.Dataset "failed" 0 "--" "未执行: 波次中断未产生 batch 记录"
                     }
                 }
+
+                # 对账后回看：该 wave 若没有任何真实 failed（只有 success/warning/
+                # skip），就不是失败，只是"带警告完成"。把它从 soft 失败里撤掉，
+                # 避免看板把 fund_fees / namechange / sector_bars 这类预期 warning
+                # 报成"存在失败项"（2026-10-19 实测：roll 后仍被标 soft FAILED）。
+                if (-not $isGate) {
+                    $waveDatasets = @($Global:CnePredefinedSteps | Where-Object { $_.Wave -eq $wave } | ForEach-Object { $_.Dataset })
+                    $waveFailed = @($resultsList | Where-Object { $waveDatasets -contains $_.Dataset -and $_.Status -eq 'failed' })
+                    if ($waveFailed.Count -eq 0) {
+                        $failedSoft = @($failedSoft | Where-Object { $_ -ne $wave })
+                        Write-PipelineLog "wave $wave 无真实失败项（仅 warning），不计入 soft 失败"
+                    }
+                }
             }
         }
     }
@@ -450,7 +463,11 @@ function Execute-CnePipeline {
     # 阶段 8: stale 补抓与总结审计
     Notify-Phase "滞后补抓与健康检查" 8 8 90.0
     $staleStatus = "skipped"
-    if ($StaleRetry -and $failedGates.Count -eq 0) {
+    # 2026-10-19：原先 gate 失败就整段跳过补抓（`-and $failedGates.Count -eq 0`），
+    # 结果是"当晚失败 → 当晚没有任何自动重跑 → 只能次日人工补"，这正是用户
+    # 长期抱怨"每次都要手动补"的直接原因。gate 失败时同样要补：失败的 step
+    # 水位未推进，在 stale 判定里就是 stale，--stale-only 会把它捡回来。
+    if ($StaleRetry) {
         Write-PipelineLog "--- stale probe ---"
         $staleExit = Run-CneCommand @("status", "--datasets")
         if ($staleExit -eq 0) {

@@ -429,7 +429,10 @@ def step_derive_industry_index(
 ) -> dict:
     from cnequity.derive.industry_index import derive_industry_index
 
-    summary = derive_industry_index(config)
+    # 必须传 trade_date：默认 end=今天，凌晨补跑昨日/上一交易日时窗口会落空，
+    # 产生 "no priced bars" 的空 warning（2026-10-19 00:14 复跑实测）。
+    # 日更场景 trade_date=今天，与旧行为等价。
+    summary = derive_industry_index(config, end=trade_date)
     rows = int(summary.get("rows") or 0)
     out: dict = {"rows_read": rows, "rows_written": rows}
     note = str(summary.get("note") or "")

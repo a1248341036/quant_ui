@@ -175,22 +175,52 @@ def _ts_date(d: date) -> str:
     return d.strftime("%Y%m%d")
 
 
-def _get_pro(config):
+def _bypass_system_proxy(url: str) -> None:
+    """Make ``requests`` connect to this Tushare endpoint directly.
+
+    requests/urllib3 honour the Windows registry proxy (Clash sets
+    ``ProxyEnable=1`` / ``127.0.0.1:7897``). That egress breaks the TLS
+    handshake of the Tushare middleware sites, while a direct connection is
+    fine — measured 2026-10-19: every request failed with ``SSLEOFError``
+    through the proxy and succeeded once the host was in ``NO_PROXY``. Adding
+    only this host (not the whole world) keeps the proxy for other callers.
+    """
+    from urllib.parse import urlparse
+
+    host = urlparse(url).hostname if url else None
+    if not host:
+        return
+    current = os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or ""
+    parts = [p.strip() for p in current.split(",") if p.strip()]
+    if host not in parts:
+        parts.append(host)
+        os.environ["NO_PROXY"] = ",".join(parts)
+
+
+def _get_pro(config, *, fallback: bool = False):
     """Return a Tushare pro API client.
 
     Token and URL come from [external_tushare_wide] in the config. If the token
     is not set there, we fall back to the TUSHARE_TOKEN env var so existing
     ``.env`` files keep working without config duplication.
+
+    ``fallback=True`` selects the secondary endpoint for APIs the primary
+    site's plan excludes (see [external_tushare_wide].tushare_fallback_url).
+    With no fallback configured it degrades to the primary credentials.
     """
     import tushare as ts
 
     token = config.external_tushare_wide_token or os.environ.get("TUSHARE_TOKEN", "")
+    url = config.external_tushare_wide_url or os.environ.get("TUSHARE_URL", "")
+    if fallback:
+        token = getattr(config, "external_tushare_wide_fallback_token", "") or token
+        url = getattr(config, "external_tushare_wide_fallback_url", "") or url
     if not token:
         raise RuntimeError(
             "Tushare token not configured: set [external_tushare_wide].tushare_token "
             "or the TUSHARE_TOKEN environment variable"
         )
-    url = config.external_tushare_wide_url or os.environ.get("TUSHARE_URL", "")
+    _bypass_system_proxy(url)
     pro = ts.pro_api(token)
     if url:
         pro._DataApi__http_url = url
@@ -200,7 +230,14 @@ def _get_pro(config):
 def _fetch_with_retry(
     pro, api: str, retries: int = 4, interval: float = 0.3, **kwargs
 ) -> pl.DataFrame:
-    """Fetch a Tushare API with sleep, exponential backoff retry."""
+    """Fetch a Tushare API with sleep, exponential backoff retry.
+
+    ``[upstream_pool_exhausted]`` is the middleware's transient "upstream pool
+    empty" answer: it explicitly tells the caller to wait 30 s, and measured
+    2026-10-19 the identical request returns rows once that wait elapses. The
+    generic 1.5/3/6 s schedule can never cover it, so this error gets the
+    vendor-recommended 30 s instead.
+    """
     last_err: Exception | None = None
     for attempt in range(1, retries + 1):
         time.sleep(max(0.0, interval))
@@ -213,7 +250,10 @@ def _fetch_with_retry(
             last_err = exc
             if attempt == retries:
                 break
-            delay = min(30.0, 1.5 * (2 ** (attempt - 1)))
+            if "upstream_pool_exhausted" in str(exc):
+                delay = 30.0
+            else:
+                delay = min(30.0, 1.5 * (2 ** (attempt - 1)))
             logger.warning(
                 "%s failed (%s: %s), retry %d/%d in %.1fs",
                 api,
