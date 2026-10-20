@@ -144,7 +144,21 @@ class SessionStore:
                     if (base is None or c in base)
                     and (ctx.include_fundamentals or not str(c).startswith("funda_"))
                 ]
-                panel = load_panel(ctx.panel_path, columns=want or None)
+                if want:
+                    panel = load_panel(ctx.panel_path, columns=want)
+                else:
+                    # keep_columns 与面板列零交集（列名写错 / 别名未归一 / 数据源换列）：
+                    # 退回"排除 funda_*"口径。**不能传 None** —— None 表示全量加载，
+                    # 与本意（省内存）正好相反，且会静默吃掉 6-8GB。
+                    logger.warning(
+                        "按需取列与面板列零交集（请求 %d 列），退回排除 funda_* 口径；"
+                        "请确认列名/别名是否正确",
+                        len(keep_columns),
+                    )
+                    panel = load_panel(
+                        ctx.panel_path,
+                        columns=[c for c in (cols or []) if not str(c).startswith("funda_")] or None,
+                    )
                 excluded_funda = sum(
                     1 for c in (cols or []) if str(c).startswith("funda_")
                 ) if not ctx.include_fundamentals else 0

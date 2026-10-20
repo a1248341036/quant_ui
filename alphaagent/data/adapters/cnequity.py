@@ -661,6 +661,14 @@ def load_panel_from_cne(
                 len(registry.list_plugins()), start, end, include_fundamentals, asset_type, sig)
 
     # 确保 core 插件加载后补充 is_trade / not_st 标记列
+    if keep_columns:
+        # 重建路径**不**按需取列：缓存未命中时 panel 由插件逐列构建、随后整份写入
+        # 缓存（缓存必须是全列，否则下次别的请求会命中到残缺缓存）。因此首次构建
+        # 仍会占用全量内存，收起内存只发生在"命中缓存"这条主路径上。
+        logger.info(
+            "CNE adapter: 缓存未命中 → 全量构建（keep_columns 在重建路径不生效，"
+            "构建完成后写全列缓存；如需控峰值内存请先确保缓存已存在）"
+        )
     panel = registry.build_panel(
         start=start,
         end=end,
