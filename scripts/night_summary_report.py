@@ -28,6 +28,45 @@ BASELINE = {
     "reproduce_ic_median": 0.0042, "reproduce_icir_median": 0.079,
 }
 
+# 夜报聚合台账：每晚一行，"与上一夜对照"的基线从这里自动滚动取，
+# 取代旧硬编码 BASELINE（仅作台账为空时的兜底，见 load_prev_baseline）。
+LEDGER_PATH = UI.parent / "night_summary_ledger.jsonl"
+
+
+def _ledger_rows() -> list[dict]:
+    try:
+        raw = LEDGER_PATH.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    out = []
+    for ln in raw:
+        ln = ln.strip()
+        if not ln:
+            continue
+        try:
+            out.append(json.loads(ln))
+        except json.JSONDecodeError:
+            continue
+    return out
+
+
+def append_ledger(entry: dict) -> None:
+    """追加本夜聚合；同 --since 重复执行时替换旧行（幂等）。原子写（tmp+replace）。"""
+    rows = [r for r in _ledger_rows() if r.get("since") != entry.get("since")]
+    rows.append(entry)
+    tmp = LEDGER_PATH.with_suffix(".tmp")
+    tmp.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows),
+                   encoding="utf-8")
+    tmp.replace(LEDGER_PATH)
+
+
+def load_prev_baseline(since: str) -> dict | None:
+    """台账中最近一条不同 --since 的聚合（=上一夜基线）；无则 None → 回落硬编码 BASELINE。"""
+    for r in reversed(_ledger_rows()):
+        if r.get("since") != since:
+            return r
+    return None
+
 
 def runs_since(ts: float) -> list[dict]:
     try:
@@ -141,6 +180,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--since", default="2026-10-02T01:30")
     ap.add_argument("--out", default="night_summary.md")
+    ap.add_argument("--no-ledger", dest="ledger", action="store_false", default=True,
+                    help="不把本夜聚合追加进 night_summary_ledger.jsonl")
     args = ap.parse_args()
     ts = datetime.fromisoformat(args.since).timestamp()
     rs = runs_since(ts)
@@ -151,6 +192,24 @@ def main() -> int:
     tot_pass = sum(r["repro_pass"] for r in rows)
     anch = sum(r["structure_anchor_events"] for r in rows)
 
+    # 本夜聚合 → 台账（同 since 幂等替换）；对照基线优先取台账上一夜，无历史才回落硬编码
+    entry = {
+        "since": args.since, "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "n_runs": len(rows), "tot_eval": tot_eval, "tot_dual": tot_dual,
+        "tot_judge": tot_judge, "tot_pass": tot_pass, "anch": anch,
+        "dual_gate_rate": round(tot_dual / max(1, tot_eval), 4),
+        "pass_rate": round(tot_pass / max(1, tot_judge), 4) if tot_judge else None,
+    }
+    if args.ledger:
+        append_ledger(entry)
+    prev = load_prev_baseline(args.since)
+    base_rate = prev["dual_gate_rate"] if prev else BASELINE["dual_gate_rate"]
+    base_pass = (f"{prev['tot_pass']}/{prev['tot_judge']}"
+                 if prev and prev.get("tot_judge") is not None else "—")
+    base_eval = prev["tot_eval"] if prev else "—"
+    base_src = (f"night_summary_ledger（since {prev['since']}）" if prev
+                else "脚本内硬编码 2026-10-01（台账尚无历史）")
+
     lines = [f"# 整夜汇总（since {args.since}）", "",
              f"- 运行数 **{len(rows)}**；课题数 **{sum(r['topics'] for r in rows)}**",
              f"- 复现判定 **{tot_judge}** 次 / 过线 **{tot_pass}**"
@@ -158,12 +217,11 @@ def main() -> int:
              f"- 结构锚事件 **{anch}** 次",
              f"- 训练评估 **{tot_eval}** 次；达双门槛 **{tot_dual}**"
              f"（{tot_dual / max(1, tot_eval) * 100:.1f}%）", "",
-             "## 与上一夜（2026-10-01）对照", "",
+             f"## 与上一夜对照（基线来源：{base_src}）", "",
              "| 指标 | 上一夜 | 本夜 |", "|---|---|---|",
-             f"| 达双门槛率 | {BASELINE['dual_gate_rate'] * 100:.1f}% | "
-             f"{tot_dual / max(1, tot_eval) * 100:.1f}% |",
-             f"| 复现 |IC| 中位 | {BASELINE['reproduce_ic_median']} | —（见下）|",
-             f"| 复现 ICIR 中位 | {BASELINE['reproduce_icir_median']} | — |", "",
+             f"| 达双门槛率 | {base_rate * 100:.1f}% | {entry['dual_gate_rate'] * 100:.1f}% |",
+             f"| 复现过线 | {base_pass} | {tot_pass}/{tot_judge} |",
+             f"| 训练评估次数 | {base_eval} | {tot_eval} |", "",
              "## 逐 run", "",
              "| run | 相位 | 课题 | 复现判定/过线 | 保真度拦截(结构锚/字段锚) | 评估 | 达双门槛 | 独立父本 | 最大同根占比 | |IC|中位 | ICIR中位 | 错误 |",
              "|---|---|---|---|---|---|---|---|---|---|---|---|"]
