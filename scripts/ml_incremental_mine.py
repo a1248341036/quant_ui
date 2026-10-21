@@ -141,6 +141,9 @@ def main() -> int:
                     help="基线特征矩阵缓存 parquet 路径；命中则跳过基线求值（挖掘流水线高频复用，"
                          "入库后自动追加列=基线上移；基线名单或 start/judge_end 变化时自动重建）")
     ap.add_argument("--rebuild-cache", action="store_true", help="忽略并重建特征缓存")
+    ap.add_argument("--min-perm-drop", type=float, default=0.0005,
+                    help="全批直过时入库白名单的个体 permutation drop 下限"
+                         "（与 promote_ml_increment --min-contribution 同一口径）")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
@@ -267,22 +270,15 @@ def main() -> int:
     ic_full = _ic_seq(pd.concat([Xb, Xn], axis=1))
     rep_full, pass_full = _report("全批", ic_full)
 
-    chosen: list[str] = []
-    permutation_drop: dict = {}
-    rep = rep_full
-    passed = pass_full
-    if not pass_full:
-        # ④ 整批不过 → 在 train 内部子段做 permutation 挑 top-k（judge 段零污染）
-        print(f"[inc] 整批未过，转 permutation 挑选 top-{args.top_k}"
-              f"（筛选子段 ≤{args.screen_end}）", flush=True)
+    def _perm_screen() -> dict:
+        """train 内部子段 permutation（judge 段零污染），返回各新因子的 IC drop。"""
         scr_tr = dates <= pd.Timestamp(args.screen_end)
         scr_oo = (dates > pd.Timestamp(args.screen_end)) & (dates <= pd.Timestamp(args.train_end))
         d_s = dates[scr_oo].to_numpy()
         y_s = lab[scr_oo].to_numpy()
         m_s = _fit(pd.concat([Xb, Xn], axis=1), scr_tr)
         Xs = pd.concat([Xb, Xn], axis=1)[scr_oo].copy()
-        base_s = daily_rank_ic(d_s, m_s.predict(Xs), y_s)
-        base_s_mean = base_s.mean()
+        base_s_mean = daily_rank_ic(d_s, m_s.predict(Xs), y_s).mean()
         rng = np.random.default_rng(42)
         contrib = {}
         for i, feat in enumerate(Xn.columns, 1):
@@ -294,13 +290,34 @@ def main() -> int:
             Xs[feat] = orig
             contrib[feat] = float(np.mean(drops))
             if i % 20 == 0:
-                print(f"  [{i}/{Xn.shape[1]}]", flush=True)
-        chosen = [k for k, v in sorted(contrib.items(), key=lambda kv: -kv[1]) if v > 0][: args.top_k]
-        permutation_drop = dict(contrib)
+                print(f"  [perm {i}/{Xn.shape[1]}]", flush=True)
+        return contrib
+
+    chosen: list[str] = []
+    permutation_drop: dict = {}
+    rep = rep_full
+    passed = pass_full
+    if not pass_full:
+        # ④ 整批不过 → 在 train 内部子段做 permutation 挑 top-k（judge 段零污染）
+        print(f"[inc] 整批未过，转 permutation 挑选 top-{args.top_k}"
+              f"（筛选子段 ≤{args.screen_end}）", flush=True)
+        permutation_drop = _perm_screen()
+        chosen = [k for k, v in sorted(permutation_drop.items(), key=lambda kv: -kv[1]) if v > 0][: args.top_k]
         print(f"[inc] 挑出 {len(chosen)} 个: {chosen[:8]}{'...' if len(chosen) > 8 else ''}", flush=True)
         if chosen:
             ic_sel = _ic_seq(pd.concat([Xb, Xn[chosen]], axis=1))
             rep, passed = _report(f"top{len(chosen)}", ic_sel)
+    elif passed and args.apply:
+        # 全批直过 → 仍做 permutation（train 子段）产出个体贡献，入库只收
+        # 个体 drop ≥ --min-perm-drop 者：防同族搭便车因子整批入库。
+        # 判定口径不变（全批已过），本步只决定入库名单。
+        print("[inc] 全批直过 → permutation 个体贡献筛选（仅定入库白名单，不改判定）", flush=True)
+        permutation_drop = _perm_screen()
+        chosen = [k for k, v in sorted(permutation_drop.items(), key=lambda kv: -kv[1])
+                  if v >= args.min_perm_drop]
+        print(f"[inc] 入库白名单 {len(chosen)}/{Xn.shape[1]} 个（drop≥{args.min_perm_drop}）", flush=True)
+        if not chosen:
+            print(f"[inc] 警告：无个体 drop≥{args.min_perm_drop}，回退整批入库", flush=True)
 
     print(f"\n[inc] ===== 判定 =====")
     print(f"[inc] 基线 judge IC = {ic_a.mean():+.4f}")
@@ -352,6 +369,7 @@ def main() -> int:
             "n_base": int(Xb.shape[1]), "n_new": int(Xn.shape[1]),
             "ic_base": float(ic_a.mean()), "full": rep_full, "final": rep,
             "chosen": chosen, "passed": passed, "verdict": verdict,
+            "permutation_drop": permutation_drop,
             "train_end": args.train_end, "judge_end": args.judge_end,
         }, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
         print(f"[inc] 报告写入 {args.out}")
