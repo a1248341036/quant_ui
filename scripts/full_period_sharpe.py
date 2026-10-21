@@ -143,14 +143,17 @@ def main() -> int:
     X = pd.DataFrame(zs)
     print(f"[full] 可用因子 {X.shape[1]} 个", flush=True)
 
-    # ── Walk-forward 逐段预测 ────────────────────────────────────────
-    segments = [
-        ("2020-01-01", "2020-12-31", "2021-01-01", "2021-12-31"),
-        ("2020-01-01", "2021-12-31", "2022-01-01", "2022-12-31"),
-        ("2020-01-01", "2022-12-31", "2023-01-01", "2023-12-31"),
-        ("2020-01-01", "2023-12-31", "2024-01-01", "2024-12-31"),
-        ("2020-01-01", "2024-12-31", "2025-01-01", args.end),
-    ]
+    # ── Walk-forward 逐段预测（purged：训练段在预测段前留 20 交易日 embargo，
+    #    防 label_20d 的窗口跨越 train/test 边界——2026-10-20 前视审计发现）────
+    embargo = 20  # 交易日，与 label horizon 一致
+    all_days = np.array(sorted(X.index.get_level_values(0).unique()))
+    segments = []
+    for oo_s, oo_e in (("2021-01-01", "2021-12-31"), ("2022-01-01", "2022-12-31"),
+                       ("2023-01-01", "2023-12-31"), ("2024-01-01", "2024-12-31"),
+                       ("2025-01-01", args.end)):
+        oo_start_idx = int(np.searchsorted(all_days, pd.Timestamp(oo_s)))
+        train_end_day = all_days[max(0, oo_start_idx - embargo - 1)]
+        segments.append(("2020-01-01", str(pd.Timestamp(train_end_day).date()), oo_s, oo_e))
     preds = []
     for tr_s, tr_e, oo_s, oo_e in segments:
         tr = (dates >= pd.Timestamp(tr_s)) & (dates <= pd.Timestamp(tr_e))
