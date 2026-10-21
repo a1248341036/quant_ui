@@ -57,18 +57,23 @@ def _fit(X: pd.DataFrame, y: pd.Series, mask: pd.Series, args):
     return m
 
 
-def _metrics(nav: pd.Series) -> dict:
-    """nav: 日频净值（已按调仓日对齐的日收益复利）。"""
-    if len(nav) < 20:
+def _metrics(nav: pd.Series, ppy: float) -> dict:
+    """nav: 调仓期净值序列（每期 = rebalance 个交易日）。
+
+    年化必须按「每年期数 ppy」几何折算 —— 首版把期收益当**日**收益用 244 次
+    方年化，虚增约 12 倍（2026-10-20 实测年化虚报 2945%，累计其实只有 +98%）。
+    """
+    if len(nav) < 4:
         return {}
     ret = nav.pct_change().dropna()
-    ann = float((1 + ret.mean()) ** TRADING_DAYS - 1) if ret.mean() > -1 else float("nan")
-    vol = float(ret.std() * np.sqrt(TRADING_DAYS))
+    n_per = max(1, len(ret))
+    total = float(nav.iloc[-1] / nav.iloc[0] - 1)
+    ann = float((1 + total) ** (ppy / n_per) - 1) if total > -1 else float("nan")
+    vol = float(ret.std() * np.sqrt(ppy))
     sharpe = float(ann / vol) if vol > 0 else float("nan")
     cummax = nav.cummax()
     mdd = float(((nav - cummax) / cummax).min())
-    total = float(nav.iloc[-1] / nav.iloc[0] - 1)
-    return {"n_days": int(len(ret)), "total_return": total, "annual_return": ann,
+    return {"n_periods": int(n_per), "total_return": total, "annual_return": ann,
             "annual_vol": vol, "sharpe": sharpe, "max_drawdown": mdd,
             "start": str(nav.index[0].date()), "end": str(nav.index[-1].date())}
 
@@ -83,6 +88,8 @@ def main() -> int:
     ap.add_argument("--max-rounds", type=int, default=300)
     ap.add_argument("--n-jobs", type=int, default=8)
     ap.add_argument("--out", default=None)
+    ap.add_argument("--score-cache", default=None,
+                    help="把 walk-forward 分数写到此 parquet（供以后复用，避免重新训练）")
     args = ap.parse_args()
 
     from alphaagent.data.adapters.cnequity import load_panel_from_cne
@@ -164,6 +171,12 @@ def main() -> int:
         print("[full] 没有可用预测段")
         return 1
     score = pd.concat(preds).sort_index()
+    if args.score_cache:
+        sc_path = Path(args.score_cache)
+        sc_path.parent.mkdir(parents=True, exist_ok=True)
+        score.reset_index().rename(columns={"level_0": "date", "level_1": "instrument"})\
+            .to_parquet(sc_path, index=False)
+        print(f"[full] score 缓存写入 {sc_path}（下次可用 --reuse-score 复用）", flush=True)
     print(f"[full] 预测覆盖 {len(score)} 行 / {score.index.get_level_values(0).nunique()} 天", flush=True)
 
     # ── 组合回测（20 日调仓、top-N 等权、含成本）─────────────────────
@@ -207,8 +220,9 @@ def main() -> int:
             if prev_w is not None else 0.5
         net = gross - turn * 2 * cost
         prev_w = w
-        # 基准：同日全市场等权
-        bsel = p0.index
+        # 基准：同日全市场等权（同样过滤交易状态/停牌）
+        b_ok = ok_wide.loc[d0].reindex(p0.index).fillna(False).astype(bool)
+        bsel = p0.index[b_ok & p0.notna()]
         bret = (px_wide.loc[d1].reindex(bsel) / p0.reindex(bsel) - 1).fillna(0.0)
         nav_m.append(nav_m[-1] * (1 + net))
         nav_b.append(nav_b[-1] * (1 + float(bret.mean())))
@@ -218,7 +232,9 @@ def main() -> int:
 
     nav_m = pd.Series(nav_m, index=pd.to_datetime(nav_dates))
     nav_b = pd.Series(nav_b, index=pd.to_datetime(nav_dates))
-    mm, mb = _metrics(nav_m), _metrics(nav_b)
+    # 每年期数：一年 244 个交易日 / 每 rebalance 日调一次仓
+    ppy = TRADING_DAYS / args.rebalance
+    mm, mb = _metrics(nav_m, ppy), _metrics(nav_b, ppy)
     if not mm or not mb:
         print("[full] 回测期数不足")
         return 1
@@ -234,10 +250,9 @@ def main() -> int:
                          ("2024-01-01", "2024-12-31", "2024"),
                          ("2025-01-01", "2026-12-31", "2025-2026 盲测段")):
         sub = nav_m[(nav_m.index >= lo) & (nav_m.index <= hi)]
-        if len(sub) < 3:
+        if len(sub) < 4:
             continue
-        rel = sub / sub.iloc[0]
-        s = _metrics(rel)
+        s = _metrics(sub, ppy)
         if s:
             seg_rows.append({"seg": name, **{k: s[k] for k in
                             ("annual_return", "sharpe", "max_drawdown", "total_return")}})
