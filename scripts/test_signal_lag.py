@@ -132,6 +132,22 @@ def main() -> int:
         print(f"[lag] lag={lag}: 年化 {mm['annual_return']:+.2%}  夏普 {mm['sharpe']:.2f}  "
               f"回撤 {mm['max_drawdown']:.2%}  累计 {mm['total_return']:+.2%}  "
               f"超额年化 {mm['annual_return']-mb['annual_return']:+.2%}", flush=True)
+        # 逐年分段（组合 vs 基准）
+        for lo, hi, nm in (("2021-01-01", "2021-12-31", "2021"),
+                           ("2022-01-01", "2022-12-31", "2022"),
+                           ("2023-01-01", "2023-12-31", "2023"),
+                           ("2024-01-01", "2024-12-31", "2024"),
+                           ("2025-01-01", "2026-12-31", "2025-26盲测")):
+            sub = nav_m[(nav_m.index >= lo) & (nav_m.index <= hi)]
+            subb = nav_b[(nav_b.index >= lo) & (nav_b.index <= hi)]
+            if len(sub) < 3:
+                continue
+            ms, mbs = _metrics(sub, ppy), _metrics(subb, ppy)
+            if not ms or not mbs:
+                continue
+            print(f"[lag]   {nm:12s} 组合年化 {ms['annual_return']:+8.2%} 夏普 {ms['sharpe']:5.2f} "
+                  f"回撤 {ms['max_drawdown']:+7.2%} | 基准 {mbs['annual_return']:+7.2%} | "
+                  f"超额 {ms['annual_return']-mbs['annual_return']:+.2%}", flush=True)
 
     print("\n[lag] ===== 前视敏感度结论 =====")
     a0 = results.get("lag0", {}).get("excess_annual")
