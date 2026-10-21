@@ -28,6 +28,9 @@ A/B 共同的日间波动（两者因子高度重叠），标准误可降到 0.0
     python scripts/ml_incremental_mine.py --rows batch5_rows.jsonl
     # 判定通过则自动入库并更新基线
     python scripts/ml_incremental_mine.py --rows batch5_rows.jsonl --apply
+    # 挖掘流水线标准用法（基线缓存 → 判定 → 过门自动入库 → 缓存基线上移）
+    python scripts/ml_incremental_mine.py --rows <环路产出的 rows.jsonl> --apply \
+        --feature-cache artifacts/alphaagent/harness_runs/base_features_cache.parquet
 """
 from __future__ import annotations
 
@@ -133,7 +136,11 @@ def main() -> int:
     ap.add_argument("--top-k", type=int, default=15, help="整批不过时，permutation 挑前 k 个再试")
     ap.add_argument("--max-rounds", type=int, default=300)
     ap.add_argument("--n-jobs", type=int, default=8)
-    ap.add_argument("--apply", action="store_true", help="判定通过则自动入库")
+    ap.add_argument("--apply", action="store_true", help="判定通过则自动入库（自动构造 screen 并调 promote_ml_increment）")
+    ap.add_argument("--feature-cache", default="",
+                    help="基线特征矩阵缓存 parquet 路径；命中则跳过基线求值（挖掘流水线高频复用，"
+                         "入库后自动追加列=基线上移；基线名单或 start/judge_end 变化时自动重建）")
+    ap.add_argument("--rebuild-cache", action="store_true", help="忽略并重建特征缓存")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
@@ -180,8 +187,43 @@ def main() -> int:
                 continue
         return out
 
-    print("[inc] 求值基线...", flush=True)
-    Xb = pd.DataFrame(_eval(base))
+    cache_path = Path(args.feature_cache) if args.feature_cache else None
+    Xb = None
+    if cache_path and not args.rebuild_cache and cache_path.is_file():
+        meta_p = cache_path.with_suffix(".meta.json")
+        if meta_p.is_file():
+            try:
+                meta = json.loads(meta_p.read_text(encoding="utf-8"))
+                cur_names = sorted({b["name"] for b in base})
+                if (meta.get("start") == args.start and meta.get("judge_end") == args.judge_end
+                        and meta.get("base_names_all") == cur_names):
+                    df = pd.read_parquet(cache_path)
+                    idx = pd.MultiIndex.from_arrays(
+                        [pd.to_datetime(df["__date__"]), df["__code__"]])
+                    lab = df["__label__"].astype("float32")
+                    lab.index = idx
+                    Xb = df.drop(columns=["__date__", "__code__", "__label__"])
+                    Xb.index = idx
+                    print(f"[inc] 基线缓存命中 {Xb.shape[1]} 列（{cache_path.name}）", flush=True)
+                else:
+                    print("[inc] 缓存元数据不匹配（基线名单/日期段变化），重建", flush=True)
+            except Exception as e:  # noqa: BLE001
+                print(f"[inc] 缓存读取失败，重建: {type(e).__name__} {e}", flush=True)
+                Xb = None
+    if Xb is None:
+        print("[inc] 求值基线...", flush=True)
+        Xb = pd.DataFrame(_eval(base))
+        if cache_path:
+            buf = Xb.copy()
+            buf["__label__"] = lab
+            buf["__date__"] = panel.index.get_level_values(0)
+            buf["__code__"] = panel.index.get_level_values(1)
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            buf.reset_index(drop=True).to_parquet(cache_path)
+            cache_path.with_suffix(".meta.json").write_text(json.dumps({
+                "start": args.start, "judge_end": args.judge_end,
+                "base_names_all": sorted({b["name"] for b in base})}), encoding="utf-8")
+            print(f"[inc] 基线缓存已写 {cache_path.name}（{Xb.shape[1]} 列）", flush=True)
     print("[inc] 求值新因子...", flush=True)
     Xn = pd.DataFrame(_eval(new))
     if not Xn.shape[1]:
@@ -226,6 +268,7 @@ def main() -> int:
     rep_full, pass_full = _report("全批", ic_full)
 
     chosen: list[str] = []
+    permutation_drop: dict = {}
     rep = rep_full
     passed = pass_full
     if not pass_full:
@@ -253,6 +296,7 @@ def main() -> int:
             if i % 20 == 0:
                 print(f"  [{i}/{Xn.shape[1]}]", flush=True)
         chosen = [k for k, v in sorted(contrib.items(), key=lambda kv: -kv[1]) if v > 0][: args.top_k]
+        permutation_drop = dict(contrib)
         print(f"[inc] 挑出 {len(chosen)} 个: {chosen[:8]}{'...' if len(chosen) > 8 else ''}", flush=True)
         if chosen:
             ic_sel = _ic_seq(pd.concat([Xb, Xn[chosen]], axis=1))
@@ -266,14 +310,42 @@ def main() -> int:
     print(f"[inc] 结论：{verdict}", flush=True)
 
     if passed and args.apply:
-        promote = ([n for n in new if n["name"] in (chosen or [n["name"] for n in new])])
-        payload = [{"name": c["name"], "expr": c["expr"]} for c in promote]
-        tmp = Path(args.out or (ROOT / "artifacts" / "alphaagent" / "harness_runs" / "increment_pipeline")).with_suffix(".promote.json")
-        tmp.parent.mkdir(parents=True, exist_ok=True)
-        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
-        print(f"[inc] 待入库 {len(payload)} 个 → {tmp}", flush=True)
-        print(f"[inc] 下一步：python scripts/promote_ml_increment.py "
-              f"--screen <含 keep 的 json> --rows <本批 rows> --apply", flush=True)
+        keep_names = [n["name"] for n in new
+                      if n["name"] in (chosen or [x["name"] for x in new])]
+        run_dir = Path(args.out).parent if args.out else (
+            ROOT / "artifacts" / "alphaagent" / "harness_runs" / "increment_pipeline")
+        run_dir.mkdir(parents=True, exist_ok=True)
+        stem = Path(args.rows[0]).stem or "batch"
+        # per-factor 贡献：permutation 场景记各自 drop；全批直过场景统一记整批 ΔIC
+        screen_payload = {
+            "keep": keep_names,
+            "contributions": [{"name": n,
+                               "ml_contribution": float(permutation_drop.get(n, rep["mean_delta"]))}
+                              for n in keep_names],
+        }
+        screen_p = run_dir / f"{stem}.ml_screen.json"
+        screen_p.write_text(json.dumps(screen_payload, ensure_ascii=False, indent=1),
+                            encoding="utf-8")
+        import subprocess
+        cmd = [sys.executable, str(ROOT / "scripts" / "promote_ml_increment.py"),
+               "--screen", str(screen_p), "--rows", *args.rows, "--apply"]
+        print(f"[inc] 自动入库：{' '.join(str(c) for c in cmd)}", flush=True)
+        _pr = subprocess.run(cmd, check=False)
+        # 入库成功 → 缓存追加通过列（基线上移），下一批自动以新基线判定
+        if _pr.returncode == 0 and cache_path is not None and Xb is not None:
+            add = {n: Xn[n] for n in keep_names if n in Xn.columns}
+            if add:
+                buf = pd.concat([Xb, pd.DataFrame(add)], axis=1)
+                buf = buf.loc[:, ~buf.columns.duplicated()]
+                buf["__label__"] = lab
+                buf["__date__"] = panel.index.get_level_values(0)
+                buf["__code__"] = panel.index.get_level_values(1)
+                buf.reset_index(drop=True).to_parquet(cache_path)
+                cache_path.with_suffix(".meta.json").write_text(json.dumps({
+                    "start": args.start, "judge_end": args.judge_end,
+                    "base_names_all": sorted({b["name"] for b in base} | set(add))}),
+                    encoding="utf-8")
+                print(f"[inc] 缓存已追加 {len(add)} 列（基线上移至 {buf.shape[1]}）", flush=True)
 
     if args.out:
         Path(args.out).write_text(json.dumps({
