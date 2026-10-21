@@ -92,6 +92,7 @@ def collect_factor_entries(
     include_candidate: bool = True,
     include_production: bool = True,
     include_dropped: bool = False,
+    include_ml_increment: bool = False,
 ) -> list[FactorEntry]:
     """枚举因子库（candidate/production × modes）的全部因子。
 
@@ -177,6 +178,36 @@ def collect_factor_entries(
                             facets=tuple(str(f) for f in (item.get("facets") or ())),
                             label_col=(str(label_col) if label_col else None),
                         ))
+    # ML 增量库（2026-10-20）：`factorzoo/ml_increment_main/`，由 ML permutation
+    # importance 筛选入库（`scripts/ml_driven_screen.py` → `promote_ml_increment.py`）。
+    # 这些因子的入库标准是"对 lgbm OOS IC 的边际贡献"，**不走** stage_one/盲测交付链
+    # ——它们就是喂 ML 的料。与 candidate 库重复的表达式会被上面的 seen_exprs 去重。
+    if include_ml_increment:
+        inc_registry = production_dir("technical").parent / "ml_increment_main" / "mining_ml_increment_registry.json"
+        if inc_registry.is_file():
+            import json as _json
+
+            try:
+                inc_reg = _json.loads(inc_registry.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                inc_reg = {}
+            items = inc_reg.values() if isinstance(inc_reg, dict) else inc_reg
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or "")
+                expr = str(item.get("expr") or "")
+                if not name or not expr:
+                    continue
+                metrics = item.get("metrics") or {}
+                label_col = metrics.get("label_col")
+                _add(FactorEntry(
+                    factor_id=name, name=name, expr=expr.strip(),
+                    library="ml_increment",
+                    created_at=str(item.get("ingested_at")) if item.get("ingested_at") else None,
+                    facets=tuple(str(f) for f in (item.get("facets") or ())),
+                    label_col=(str(label_col) if label_col else None),
+                ))
     return entries
 
 

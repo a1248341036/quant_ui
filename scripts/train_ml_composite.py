@@ -83,6 +83,10 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--modes", nargs="+", default=["technical", "fundamental"],
                     choices=["technical", "fundamental"], help="纳入哪些因子库模式")
     ap.add_argument("--no-candidate", action="store_true", help="只用正式库因子")
+    ap.add_argument("--include-ml-increment", action="store_true",
+                    help="把 ML 增量库（factorzoo/ml_increment_main，ML permutation 筛选入库）"
+                         "的因子加入训练特征。这些因子不走盲测交付链，入库标准就是对 "
+                         "lgbm OOS IC 的边际贡献")
     ap.add_argument("--label-days", type=int, default=5, help="前向收益持有天数（对齐调仓频率）")
     ap.add_argument("--model", default="both", choices=["ridge", "lgbm", "both"],
                     help="仅 --scheme ml 生效：拟合的 ML 模型")
@@ -216,7 +220,8 @@ def main() -> None:
 
     # ① 因子枚举
     entries = collect_factor_entries(
-        modes=tuple(args.modes), include_candidate=not args.no_candidate, include_production=True
+        modes=tuple(args.modes), include_candidate=not args.no_candidate, include_production=True,
+        include_ml_increment=args.include_ml_increment,
     )
     if args.include_factors:
         wanted = {str(n).strip() for n in args.include_factors if str(n).strip()}
