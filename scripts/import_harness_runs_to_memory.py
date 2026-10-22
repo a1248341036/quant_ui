@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from alphaagent.factor.mining.research_memory import ResearchMemoryStore  # noqa: E402
+from alphaagent.factor.mining.memory.cold_track import COLD_TRACK_METRIC_KEYS  # noqa: E402
 
 
 def _mode_to_research_mode(mode: str) -> str:
@@ -33,6 +34,48 @@ def _mode_to_research_mode(mode: str) -> str:
     # harness_mine mode: technical / technical_weekly / technical_monthly / fundamental / report
     # research_memory research_mode: 同名（RESEARCH_MODES 已覆盖）
     return m or "technical"
+
+
+# 数值证据键与正式管线单一真源（cold_track.COLD_TRACK_METRIC_KEYS）对齐，
+# 字符串元数据（crowd_proxy_family）单独叠加；新增键自动同步，防第四处漂移（R23 OCR 实锤）。
+_COLD_FIELDS = tuple(sorted(COLD_TRACK_METRIC_KEYS)) + ("crowd_proxy_family",)
+
+
+def _build_cold_tool_row(entry: dict, split: str) -> dict | None:
+    """冷门赛道 JSONL 行 → record_tool_result 的 row（verdict=cold_dead/cold_approved）。"""
+    name = str(entry.get("name") or "").strip()
+    expr = str(entry.get("expr") or "").strip()
+    if split == "val":
+        return None  # 冷门赛道 val 主门槛已在 evaluate_cold_track 内披露，跳过重复 observation
+    if not name or not expr or entry.get("track") != "cold":
+        return None
+    mode = _mode_to_research_mode(entry.get("mode"))
+    metrics = {"research_mode": mode}
+    for k in _COLD_FIELDS:
+        v = entry.get(k)
+        if v is not None:
+            metrics[k] = v
+    if "coverage" in metrics:
+        metrics["factor_coverage"] = metrics["coverage"]
+    error_text = str(entry.get("err") or "")
+    result = {
+        "split": split,
+        "metrics": metrics,
+        "factor_name": name,
+        "error": error_text,
+        # 评估错误≠冷门否定：err 非空时剥离 cold_track 标记走 eval_error 分支，
+        # 避免 schema 冷门分支优先于 error 分支把瞬时错误落成 cold_dead(no_alpha) 永久负证据
+        "cold_track": not bool(error_text),
+        "cold_track_passed": bool(entry.get("cold_track_passed")) if not error_text else False,
+        "fail_detail": str(entry.get("fail_detail") or "no_alpha"),
+        "root_op": entry.get("root_op"),
+    }
+    args = {"multi_line_expr": expr, "factor_name": name}
+    return {
+        "name": "eval_on_train_set" if split == "train" else "eval_on_val_set",
+        "arguments_raw": json.dumps(args, ensure_ascii=False),
+        "result": result,
+    }
 
 
 def _build_tool_row(entry: dict, split: str) -> dict | None:
@@ -44,6 +87,10 @@ def _build_tool_row(entry: dict, split: str) -> dict | None:
     expr = str(entry.get("expr") or "").strip()
     if not name or not expr:
         return None
+
+    # 冷门赛道行：残差化指标 + cold_dead/cold_approved 判定（走 schema cold 分支）
+    if entry.get("track") == "cold":
+        return _build_cold_tool_row(entry, split)
 
     mode = _mode_to_research_mode(entry.get("mode"))
     # val 段的 error 取 val_err（harness_mine.py 第 391 行：eval_val 失败时写 val_err 不写 val）

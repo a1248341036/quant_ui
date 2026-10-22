@@ -162,6 +162,16 @@ class IngestionMixin:
             metrics = summary
         # 提取嵌套回测指标到扁平 metrics，供 _compact_metrics 捕获
         metrics = self._flatten_backtest_metrics(metrics, profile_metrics)
+        # 冷门赛道短路结果（_dispatch._cold_track_shortcut 直接返回 base，证据指标在
+        # result 顶层而非 metrics/summary）：并入 metrics 供 _compact_metrics 捕获。
+        # harness 导入路径（_build_cold_tool_row）已把字段放 result["metrics"]，
+        # setdefault 保证两路径幂等、不互相覆盖；字符串元数据被 _safe_float 过滤。
+        if result.get("cold_track"):
+            from .cold_track import COLD_TRACK_METRIC_KEYS  # noqa: PLC0415 - cold-track evidence keys single source
+            for _k in COLD_TRACK_METRIC_KEYS:
+                _v = result.get(_k)
+                if _v is not None:
+                    metrics.setdefault(_k, _v)
         # 分窗口 IC 限定（研究总结按阶段展示）：评估类的 summary.ic 即该 split
         # 的窗口 IC；submit 盲测失败 payload 的 test IC 在嵌套 test_holdout 里、
         # 其 metrics.ic 即 train 窗口 IC（stage_one 之后的 payload ic 是全窗口，

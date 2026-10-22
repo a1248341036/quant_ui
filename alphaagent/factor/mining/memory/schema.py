@@ -740,6 +740,7 @@ class SchemaMixin:
 
     @staticmethod
     def _compact_metrics(metrics: dict[str, Any]) -> dict[str, float]:
+        from .cold_track import COLD_TRACK_METRIC_KEYS  # noqa: PLC0415 - cold-track evidence keys single source
         keys = (
             "ic", "icir", "rank_ic", "factor_coverage", "coverage",
             "cs_pearson_autocorr",
@@ -751,7 +752,7 @@ class SchemaMixin:
             "train_ic", "train_icir", "train_rank_ic",
             "val_ic", "val_icir", "val_rank_ic", "val_ic_retention",
             "test_ic", "test_icir", "test_rank_ic", "test_ic_retention",
-        )
+        ) + tuple(COLD_TRACK_METRIC_KEYS)
         return {key: value for key in keys if (value := _safe_float(metrics.get(key))) is not None}
 
     @staticmethod

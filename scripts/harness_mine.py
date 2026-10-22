@@ -57,6 +57,20 @@ from alphaagent.factor.mining.service import StockEvalService  # noqa: E402
 from alphaagent.factor.mining.agent.agentscope_tools import (  # noqa: E402
     _sample_orthogonality_panel,
 )
+
+# 冷门赛道二轨评估依赖（spec: alphaagent_mining_anti_convergence_spec.md）。
+# 仅在 --cold-track 开启时使用；默认关闭时本组 import 不产生任何副作用（黄金基线零注入）。
+try:
+    from alphaagent.factor.mining.memory.cold_track import (  # noqa: E402
+        build_snapshot_for_run,
+        classify_track,
+        signal_root_op,
+    )
+    from alphaagent.factor.mining.eval.residualize import evaluate_cold_track  # noqa: E402
+except Exception:  # noqa: BLE001 - 冷门模块缺失时 --cold-track 应报错引导而非静默失效
+    build_snapshot_for_run = classify_track = signal_root_op = None
+    evaluate_cold_track = None  # type: ignore[assignment]
+
 from alphaagent.data.panel import slice_panel  # noqa: E402
 from alphaagent.dsl import eval_factor  # noqa: E402
 from alphaagent.factor.align import align_series_to_panel  # noqa: E402
@@ -429,12 +443,54 @@ def _orthogonality_check(
         }
 
 
+def _cold_track_eval(
+    session: Any,
+    expr: str,
+    name: str,
+    spec: dict,
+    skeletons: dict,
+    label: str,
+) -> dict[str, Any]:
+    """冷门赛道二轨评估：骨架控制矩阵物化 + evaluate_cold_track（残差化 + val 主门）。"""
+    panel = getattr(session, "panel", None)
+    ctx = getattr(session, "ctx", None)
+    if panel is None or ctx is None:
+        return {"ok": False, "passed": False, "reason": "session_missing_panel_or_ctx"}
+    ctrl_values: dict[str, Any] = {}
+    for fam, meta in (skeletons or {}).items():
+        sk_expr = (meta or {}).get("expr")
+        if not isinstance(sk_expr, str) or not sk_expr.strip():
+            continue
+        try:
+            out = eval_factor(sk_expr, panel)
+            ctrl_values[fam] = align_series_to_panel(out, panel)
+        except Exception:  # noqa: BLE001 - 某族骨架物化失败不影响其他族
+            ctrl_values[fam] = None
+    cand_out = eval_factor(expr, panel)
+    cand_values = align_series_to_panel(cand_out, panel)
+    policy = (spec.get("cold_track") or {}) if isinstance(spec, dict) else {}
+    return evaluate_cold_track(
+        cand_values,
+        panel,
+        ctrl_values,
+        ctx,
+        label_col=label,
+        policy=policy,
+        family_novelty=True,
+    )
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Harness 挖掘：批量评估自研因子")
     ap.add_argument("--mode", default="technical", choices=sorted(MODE_LABEL))
     ap.add_argument("--factors", required=True, help="JSON: [{name, expr, why?}, ...]")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--out", default="", help="逐行结果写出路径（JSONL）")
+    ap.add_argument("--cold-track", dest="cold_track", action="store_true",
+                    help="冷门赛道二轨评估：客观判为 cold 的候选走残差化评估（crowd 候选走原路径）。"
+                         "默认关闭=逐字节旧行为。")
+    ap.add_argument("--max-ctrl-families", type=int, default=0,
+                    help="(冷门赛道) 骨架控制族数上限；0 = 取 spec cold_track.max_ctrl_families")
     ap.add_argument("--val", action="store_true", help="对 train 全门通过者追加 val 评估")
     ap.add_argument("--check-orthogonality", dest="check_ortho", action="store_true",
                     default=True,
@@ -472,6 +528,15 @@ def main() -> int:
     if args.limit:
         factors = factors[: args.limit]
     c = DeliveryCriteria.from_spec(effective_research_spec(args.mode))
+    spec = effective_research_spec(args.mode)
+    if args.cold_track:
+        if build_snapshot_for_run is None or evaluate_cold_track is None:
+            raise SystemExit("[mine] 冷门赛道模块导入失败：请检查 alphaagent.factor.mining.memory.cold_track / eval.residualize（import 期异常被顶层 except 吞掉）")
+        spec = json.loads(json.dumps(spec, default=str))
+        spec.setdefault("cold_track", {})["enabled"] = True
+        print(f"[mine] 冷门赛道 ENABLED：min_val_resid_ic={spec['cold_track'].get('min_val_resid_ic')} "
+              f"max_crowd_proxy_corr={spec['cold_track'].get('max_crowd_proxy_corr')} "
+              f"max_ctrl_families={spec['cold_track'].get('max_ctrl_families')}", flush=True)
     print(f"[mine] mode={args.mode} label={label} 股票池={universe}（{describe_universe(universe)}）"
           f" 因子 {len(factors)} 个；门槛 "
           f"|IC|>={c.candidate.min_abs_ic} |ICIR|>={c.candidate.min_icir} cov>={c.candidate.min_coverage} "
@@ -505,6 +570,22 @@ def main() -> int:
 
     rows: list[dict] = []
 
+    skeletons: dict[str, Any] = {}
+    if args.cold_track:
+        photo = build_snapshot_for_run(
+            spec,
+            production_registry=factor_categories.production_registry_path(args.mode),
+            candidate_registry=factor_categories.candidate_registry_path(args.mode),
+            repo_root=ROOT,
+            max_ctrl_families=args.max_ctrl_families or None,
+        )
+        skeletons = (photo or {}).get("skeletons") or {}
+        print(f"[mine] 拥挤族骨架 {len(skeletons)} 个 signature="
+              f"{(photo or {}).get('signature', '(empty)')}", flush=True)
+        for _fam, _meta in skeletons.items():
+            print(f"  skeleton[{_fam}] {_meta.get('name')} ic={_meta.get('train_ic'):.4f}",
+                  flush=True)
+
     def _flush() -> None:
         if args.out:
             Path(args.out).write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows),
@@ -514,6 +595,50 @@ def main() -> int:
         for i, f in enumerate(factors, 1):
             name, expr = f["name"], f["expr"]
             t = time.perf_counter()
+            session = svc.sessions.get(sid)
+            if args.cold_track:
+                try:
+                    track, newf, coldroot = classify_track(expr, name)
+                except Exception:  # noqa: BLE001
+                    track, newf, coldroot = "crowd", False, False
+                if track == "cold":
+                    try:
+                        cr = _cold_track_eval(session, expr, name, spec, skeletons, label)
+                    except Exception as exc:  # noqa: BLE001
+                        cr = {"ok": False, "passed": False,
+                              "error": f"{type(exc).__name__}: {str(exc)[:200]}"}
+                    cr.update(track="cold", is_new_family=newf, has_cold_root=coldroot,
+                              root_op=signal_root_op(expr))
+                    got = {k: cr[k] for k in (
+                        "resid_ic", "train_resid_ic", "train_resid_icir", "val_resid_icir",
+                        "val_resid_rank_ic", "coverage", "crowd_proxy_corr",
+                        "crowd_proxy_family", "n_fit_days", "n_controls",
+                        "min_val_resid_ic", "max_crowd_proxy_corr", "fail_detail",
+                        "reason", "error", "track", "is_new_family", "has_cold_root",
+                        "root_op", "family_novelty", "train_n_days", "val_n_days",
+                    ) if cr.get(k) is not None}
+                    err = cr.get("error")
+                    _passed = bool(cr.get("passed", False))
+                    if err:
+                        fails = ["cold_eval_error"]
+                    elif _passed:
+                        fails = []
+                    else:
+                        fails = [f"cold_dead({cr.get('fail_detail', '')})"]
+                    rows.append({"mode": args.mode, "universe": universe, "name": name,
+                                 "why": f.get("why", ""), "expr": expr,
+                                 "ms": round((time.perf_counter() - t) * 1000),
+                                 "err": err, **got, "fails": fails,
+                                 "pass_stage_one_pre": _passed,
+                                 "cold_track_passed": _passed,
+                                 "orthogonality": None})
+                    print(f"  [{i:2d}/{len(factors)}] {name:34s} "
+                          f"{'PASS' if _passed else 'dead':4s} "
+                          f"resid_ic={got.get('resid_ic')} train={got.get('train_resid_ic')} "
+                          f"proxy={got.get('crowd_proxy_corr')} "
+                          f"fd={got.get('fail_detail')} {got.get('reason', '')}", flush=True)
+                    _flush()
+                    continue
             try:
                 got = _extract(svc.eval_train(EvalTrainRequest(
                     session_id=sid, multi_line_expr=expr, factor_name=name,
@@ -608,7 +733,11 @@ def main() -> int:
     print(f"\n[mine] 完成：{len(rows)} 次评估，stage_one 统计预检通过 {n_stat_pass} 个，"
           f"含正交门全通过 {n_full_pass} 个，用时 {time.perf_counter() - t0:.0f}s", flush=True)
     for r in rows:
-        if not r.get("fails"):
+        if r.get("cold_track_passed"):
+            print(f"  ★ [cold] {r['name']}: resid_ic={r.get('resid_ic')} "
+                  f"train={r.get('train_resid_ic')} proxy={r.get('crowd_proxy_corr')} "
+                  f"root={r.get('root_op')}", flush=True)
+        elif not r.get("fails"):
             print(f"  ★ {r['name']}: ic={r['ic']} icir={r['icir']} cov={r['coverage']} "
                   f"ac={r['cs_autocorr']} turn={r['turnover_rebalance']}", flush=True)
     return 0
