@@ -8,8 +8,9 @@
 
 | 脚本 | 调度 | 说明 |
 |---|---|---|
-| `run_cne_daily.ps1` | Windows 计划任务（容器内对应 `docker/run_cne_daily.sh`） | CNE 日更流水线 Windows 版 |
-| `run_cne_stale_retry.ps1` | Windows 计划任务 18:00 | 晚间 stale 补抓（macro_indicators 等日频序列晚间才出当日值） |
+| `run_cne_daily.ps1` | Windows 计划任务 `QuantUIDataSync` 每日 21:30（容器内对应 `docker/run_cne_daily.sh`） | CNE 日更流水线 Windows 版 |
+| `run_cne_stale_retry.ps1` | Windows 计划任务 `QuantUIDataStaleRetry` 每日 23:00 | 晚间 stale 补抓（排在 21:30 流水线之后 1.5h，补滞后/失败批次；全量对齐时 no-op） |
+| `run_paper_daily.ps1` | Windows 计划任务 `QuantUIPaperRun` 每日 21:50 | 模拟盘每日执行（21:30 数据同步之后；后端离线时走离线回放，同一交易日幂等跳过） |
 | `stacking_job.py` | 容器 supercronic 16:40（panel 重建之后） | ML 组合训练自门禁包装：跨入新月才真正训练，否则秒退 |
 
 ## stacking_job 门禁逻辑
