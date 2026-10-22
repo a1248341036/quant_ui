@@ -91,7 +91,7 @@ class TestResolveTestEnd:
         today = date.today().isoformat()
         with patch.object(wc, "_load_cne_config", return_value=None):
             result = wc.resolve_test_end()
-        assert result == today
+        assert result == min(today, wc.TEST_END_CAP)
 
     def test_today_fallback_all_none(self) -> None:
         """配置加载成功但所有数据源都 None → 兜底今天。"""
@@ -104,7 +104,7 @@ class TestResolveTestEnd:
             patch.object(wc, "_state_watermark", return_value=None),
         ):
             result = wc.resolve_test_end()
-        assert result == today
+        assert result == min(today, wc.TEST_END_CAP)
 
     def test_floor_to_test_start(self) -> None:
         """解析结果早于 TEST_START → 回退 TEST_START。"""
@@ -125,6 +125,53 @@ class TestResolveTestEnd:
         ):
             result = wc.resolve_test_end()
         assert result == "2025-01-01"
+
+
+# ── TEST_END_CAP 锁死上界 ───────────────────────────────────────────────────
+
+
+class TestTestEndCap:
+    def test_cap_truncates_when_source_ahead(self) -> None:
+        """数据源解析端晚于锁死端 → 截断到 TEST_END_CAP。"""
+        fake_cfg = object()
+        with (
+            patch.object(wc, "_load_cne_config", return_value=fake_cfg),
+            patch.object(wc, "_external_coverage_end", return_value="2026-10-13"),
+        ):
+            result = wc.resolve_test_end()
+        assert result == "2026-09-30"
+        assert wc.TEST_END_CAP == "2026-09-30"
+
+    def test_cap_not_intervene_at_exact(self) -> None:
+        """数据源恰好等于锁死端 → 原样返回。"""
+        fake_cfg = object()
+        with (
+            patch.object(wc, "_load_cne_config", return_value=fake_cfg),
+            patch.object(wc, "_external_coverage_end", return_value="2026-09-30"),
+        ):
+            result = wc.resolve_test_end()
+        assert result == "2026-09-30"
+
+    def test_cap_not_intervene_below(self) -> None:
+        """数据源早于锁死端 → 用数据源（不抬升）。"""
+        fake_cfg = object()
+        with (
+            patch.object(wc, "_load_cne_config", return_value=fake_cfg),
+            patch.object(wc, "_external_coverage_end", return_value="2026-08-28"),
+        ):
+            result = wc.resolve_test_end()
+        assert result == "2026-08-28"
+
+    def test_cap_none_unlocks_dynamic(self) -> None:
+        """TEST_END_CAP=None（解锁）→ 不做截断。"""
+        fake_cfg = object()
+        with (
+            patch.object(wc, "TEST_END_CAP", None),
+            patch.object(wc, "_load_cne_config", return_value=fake_cfg),
+            patch.object(wc, "_external_coverage_end", return_value="2026-10-13"),
+        ):
+            result = wc.resolve_test_end()
+        assert result == "2026-10-13"
 
 
 # ── lru_cache 行为 ──────────────────────────────────────────────────────────

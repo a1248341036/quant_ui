@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -429,6 +430,38 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
         # 行业诊断 metrics 是否挂到评估 profile（enabled=True 且此键=True 才挂载；
         # 单独 True 不生效，防止半配置状态）。仅影响评估输出，不设门槛。
         "report_industry_metrics": True,
+        # 状态维度白名单：允许 LLM 设计使用的状态维度。默认仅内置 canonical 两维
+        # （size/value_growth，与 core/rotation/style_regime.CANONICAL_DIMENSIONS 对应）。
+        # 开放 momentum/market_regime 即接受更多状态设计（枚举/换手风险随之上升）。
+        # 取值必须是 {"size","value_growth","momentum","market_regime"} 子集。
+        "dims": ["size", "value_growth"],
+        # 状态判定回看窗（交易日）：信号平滑 + 分位参考窗的默认窗长。默认 120
+        # ≈ 半年交易日；调大更稳但状态切换更慢，调小更敏感但易翻仓抖动。
+        "style_lookback_days": 120,
+        # 状态样本充足性下限（天）：某状态的连续 run 低于此值标 degraded，评估端
+        # 不单独汇报（防"20 天凑出一个状态"的伪结论）。回测端照常调制。
+        "min_state_days": 20,
+        # boost 上限（含）：boost ∈ [1/boost_cap, boost_cap]。默认 1.25 即
+        # [0.8, 1.25]，防换手爆炸（skill 红线与编译期最坏换手预门禁同源）。
+        "boost_cap": 1.25,
+        # boost 来源：prior（LLM 设计先验表，默认）/ stat（状态内统计估计，P2 候选）。
+        "boost_source": "prior",
+        # 组合单日换手上限（双边，硬门禁；Phase 2 组合层消费，编译器最坏换手预门禁
+        # 用同值）。默认 0.20，与引擎日频档 0.50 对齐偏保守。
+        "max_daily_turnover": 0.20,
+        # 策略库根目录（registry.json 与 <strategy_id>/ 落盘处）。默认与因子库平级。
+        "strategy_dir": "artifacts/alphaagent/rotation_strategies",
+        # test（盲测）段配额：--adjudicate 消费按 (mode, data_fp) 计数，用尽拒。
+        # 默认 2：允许一次首裁 + 一次故障重试；调大即放宽"盲测段多重检验"风险。
+        "max_test_submissions": 2,
+        # 每 run 策略提交预算：近重复与结构变体防刷库之外的硬上限。
+        "max_strategy_submissions": 10,
+        # 回测固定单边成本（bp）：策略是组合产物，Sharpe/回撤在含成本口径出。
+        # 默认 20bp，与引擎交易日成本假设对齐；调大偏保守会影响 pass 率。
+        "cost_bps": 20,
+        # 状态条件 IC（state_conditional_ic，按 canonical style_state 分组）是否挂到
+        # 评估 profile。仅报告、不设门槛（§4.2）。enabled=True 且此键=True 才挂。
+        "report_state_metrics": True,
     },
     # ── cold_track：冷门赛道双轨评估 P（默认全关，不改任何现有行为；仅实验模式）─
     # 客观判定为「新族」的候选若顶层信号算子命中冷门清单（_COLD_OPS），走冷门赛道：
@@ -545,6 +578,19 @@ def _string_list(value: Any, name: str) -> list[str]:
     if not isinstance(value, list) or not all(isinstance(item, str) and item.strip() for item in value):
         raise ValueError(f"research_spec.{name}_must_be_string_list")
     return [item.strip() for item in value]
+
+
+def _int_bounded_number(value: Any, name: str, lower: float, upper: float) -> int:
+    """整数语义键（天/次/bp）：小数先 fail-fast，避免 int() 静默截断漂移口径。"""
+    if (isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or float(value) != int(float(value))
+            or not lower <= float(value) <= upper):
+        raise ValueError(
+            f"research_spec.{name}_must_be_integer_between_{lower}_and_{upper}"
+        )
+    return int(value)
 
 
 def label_hold_days(label_col: Any) -> int:
@@ -1047,6 +1093,63 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
     rotation["report_industry_metrics"] = _require_bool(
         rotation.get("report_industry_metrics", True),
         "rotation_policy.report_industry_metrics",
+    )
+    # ── rotation_policy：状态层/裁决纪律键（Phase 1，默认全关不改既有行为）──
+    _ROTATION_DIM_WHITELIST = {"size", "value_growth", "momentum", "market_regime"}
+    rotation["dims"] = list(dict.fromkeys(_string_list(
+        rotation.get("dims", ["size", "value_growth"]), "rotation_policy.dims"
+    )))
+    if not rotation["dims"]:
+        raise ValueError("rotation_policy.dims 不能为空：至少需要一个 canonical 维度")
+    _unknown_dims = set(rotation["dims"]) - _ROTATION_DIM_WHITELIST
+    if _unknown_dims:
+        raise ValueError(
+            "rotation_policy.dims 含未知状态维度: "
+            f"{','.join(sorted(_unknown_dims))}; 合法: {sorted(_ROTATION_DIM_WHITELIST)}"
+        )
+    rotation["style_lookback_days"] = _int_bounded_number(
+        rotation.get("style_lookback_days", 120),
+        "rotation_policy.style_lookback_days", 20, 500,
+    )
+    rotation["min_state_days"] = _int_bounded_number(
+        rotation.get("min_state_days", 20),
+        "rotation_policy.min_state_days", 5, 500,
+    )
+    rotation["boost_cap"] = float(_bounded_number(
+        rotation.get("boost_cap", 1.25),
+        "rotation_policy.boost_cap", 1.0, 2.0,
+    ))
+    rotation["boost_source"] = str(
+        rotation.get("boost_source", "prior") or "prior"
+    )
+    if rotation["boost_source"] not in ("prior", "stat"):
+        raise ValueError(
+            "rotation_policy.boost_source 必须是 prior|stat，"
+            f"收到 {rotation['boost_source']!r}"
+        )
+    rotation["max_daily_turnover"] = float(_bounded_number(
+        rotation.get("max_daily_turnover", 0.20),
+        "rotation_policy.max_daily_turnover", 0.05, 0.5,
+    ))
+    rotation["strategy_dir"] = str(
+        rotation.get("strategy_dir", "artifacts/alphaagent/rotation_strategies")
+        or "artifacts/alphaagent/rotation_strategies"
+    )
+    rotation["max_test_submissions"] = _int_bounded_number(
+        rotation.get("max_test_submissions", 2),
+        "rotation_policy.max_test_submissions", 1, 10,
+    )
+    rotation["max_strategy_submissions"] = _int_bounded_number(
+        rotation.get("max_strategy_submissions", 10),
+        "rotation_policy.max_strategy_submissions", 1, 100,
+    )
+    rotation["cost_bps"] = _int_bounded_number(
+        rotation.get("cost_bps", 20),
+        "rotation_policy.cost_bps", 0, 500,
+    )
+    rotation["report_state_metrics"] = _require_bool(
+        rotation.get("report_state_metrics", True),
+        "rotation_policy.report_state_metrics",
     )
     spec["rotation_policy"] = rotation
 

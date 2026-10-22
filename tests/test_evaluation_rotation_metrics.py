@@ -11,6 +11,7 @@ from alphaagent.factor.evaluation.plugins import (
     industry_exposure_r2,
     industry_ic_dispersion,
     industry_within_rank_ic,
+    state_conditional_ic,
 )
 from alphaagent.factor.evaluation.profile import EvaluationProfile, resolve_profiles
 
@@ -41,9 +42,47 @@ def _synthetic_panel(n_days: int = 40, n_a: int = 20, n_b: int = 20, seed: int =
     return panel
 
 
+def _state_panel(n_days: int = 40, n_a: int = 20, n_b: int = 20, seed: int = 1) -> pd.DataFrame:
+    """两状态合成面板：STATE_A 内有干净 alpha、STATE_B 为噪声。
+
+    作用于 state_conditional_ic：STATE_A 状态内 Rank IC 显著为正、STATE_B 近 0，
+    验证「按 canonical style_state 分组、组内 Spearman、按样本加权」口径。
+    """
+    rng = np.random.default_rng(seed)
+    instruments = [f"S{i:03d}" for i in range(n_a + n_b)]
+    states = ["STATE_A"] * n_a + ["STATE_B"] * n_b
+    dates = pd.date_range("2024-01-01", periods=n_days, freq="B")
+    index = pd.MultiIndex.from_product([dates, instruments], names=["datetime", "instrument"])
+    panel = pd.DataFrame(index=index)
+    panel["style_state"] = np.tile(np.array(states), n_days)
+    a = np.tile(np.linspace(-1, 1, n_a), n_days).reshape(n_days, n_a)
+    b = np.tile(np.linspace(-1, 1, n_b), n_days).reshape(n_days, n_b)
+    panel["x"] = np.column_stack([a, b]).ravel()
+    y_a = 1.0 * a + rng.normal(0, 0.1, (n_days, n_a))
+    y_b = rng.normal(0, 0.1, (n_days, n_b))
+    panel["label"] = np.column_stack([y_a, y_b]).ravel()
+    return panel
+
+
 def _ctx(panel: pd.DataFrame, factor_col: str, label_col: str = "label") -> EvaluationContext:
     return EvaluationContext(
         panel=panel[[field for field in ("industry_sw_l1", label_col) if field in panel.columns]],
+        factor=pd.Series(
+            panel[factor_col].to_numpy(dtype=np.float64),
+            index=panel.index, name=factor_col,
+        ),
+        label=pd.Series(
+            panel[label_col].to_numpy(dtype=np.float64),
+            index=panel.index, name=label_col,
+        ),
+        profile=EvaluationProfile("test", "val"),
+        factor_name=factor_col,
+    )
+
+
+def _state_ctx(panel: pd.DataFrame, factor_col: str, label_col: str = "label") -> EvaluationContext:
+    return EvaluationContext(
+        panel=panel[[f for f in ("style_state", label_col) if f in panel.columns]],
         factor=pd.Series(
             panel[factor_col].to_numpy(dtype=np.float64),
             index=panel.index, name=factor_col,
@@ -107,6 +146,78 @@ def test_industry_ic_dispersion_reports_sector_spread() -> None:
     assert out["dispersion_std"] > 0.0
     assert set(out["top3"]) == {"IND_A", "IND_B"}
     assert set(out["bottom3"]) == {"IND_A", "IND_B"}
+
+
+class TestStateConditionalIc:
+    def test_state_conditional_ic_reports_state_alpha(self) -> None:
+        panel = _state_panel()
+        out = state_conditional_ic(
+            _state_ctx(panel, "x"),
+            {"field": "style_state", "min_cover": 15},
+        )
+        # STATE_A 干净正 alpha、STATE_B 噪声 => 状态内加权 IC 明显为正
+        assert out["state_conditional_ic"] > 0.3
+        assert out["market_rank_ic"] > 0.1
+        assert out["n_days"] == 40
+        assert out["n_states_used"] == 2
+        assert "STATE_A" in out["state_ic_series"]
+        assert out["state_ic_series"]["STATE_A"] > 0.5
+        # 只报告、不豁免：note 里点明不进门禁
+        assert "仅报告" in out["note"]
+
+    def test_missing_state_column_returns_nan_and_note(self) -> None:
+        panel = _state_panel().drop(columns=["style_state"])
+        out = state_conditional_ic(
+            _state_ctx(panel, "x"),
+            {"field": "style_state", "min_cover": 15},
+        )
+        assert np.isnan(out["state_conditional_ic"])
+        assert "缺少 canonical 状态列" in out["note"]
+        assert out["n_states_used"] == 0
+
+
+class TestStateConditionalIcProfileMount:
+    def test_enabled_and_report_state_metrics_mounts(self) -> None:
+        profiles = resolve_profiles({
+            "rotation_policy": {"enabled": True, "report_state_metrics": True},
+        })
+        for pid in ("train_screen", "validation", "production_delivery"):
+            plugins = [m["plugin"] for m in profiles[pid].metrics]
+            assert "state_conditional_ic" in plugins
+
+    def test_report_state_metrics_false_not_mounted(self) -> None:
+        profiles = resolve_profiles({
+            "rotation_policy": {"enabled": True, "report_state_metrics": False},
+        })
+        for pid in ("train_screen", "validation", "production_delivery"):
+            plugins = [m["plugin"] for m in profiles[pid].metrics]
+            assert "state_conditional_ic" not in plugins
+
+    def test_disabled_not_mounted(self) -> None:
+        profiles = resolve_profiles({"rotation_policy": {"enabled": False}})
+        for pid in ("train_screen", "validation", "production_delivery"):
+            plugins = [m["plugin"] for m in profiles[pid].metrics]
+            assert "state_conditional_ic" not in plugins
+
+    def test_lite_not_mounted(self) -> None:
+        profiles = resolve_profiles({
+            "rotation_policy": {"enabled": True, "report_state_metrics": True},
+        })
+        lite_plugins = [m["plugin"] for m in profiles["train_screen_lite"].metrics]
+        assert "state_conditional_ic" not in lite_plugins
+
+    def test_industry_and_state_metrics_coexist(self) -> None:
+        profiles = resolve_profiles({
+            "rotation_policy": {
+                "enabled": True,
+                "report_industry_metrics": True,
+                "report_state_metrics": True,
+            },
+        })
+        for pid in ("train_screen", "validation", "production_delivery"):
+            plugins = [m["plugin"] for m in profiles[pid].metrics]
+            assert "industry_within_rank_ic" in plugins
+            assert plugins[-1] == "state_conditional_ic"
 
 
 def test_missing_industry_column_returns_nan_and_note() -> None:

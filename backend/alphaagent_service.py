@@ -710,6 +710,12 @@ def _build_run_command(params: dict[str, Any], log_dir: Path, control_file: Path
         command.extend(["--max-parallel-eval", str(params["max_parallel_eval"])])
     if params.get("population_max") is not None:
         command.extend(["--population-max", str(int(params["population_max"]))])
+    # 测试段窗口：显式传值才覆盖 CLI 默认（test_end 缺省动态解析数据源最新
+    # 交易日，会超出 panel 缓存右端触发全量重建 —— 调度脚本显式对齐缓存）。
+    if params.get("test_start"):
+        command.extend(["--test-start", str(params["test_start"])])
+    if params.get("test_end"):
+        command.extend(["--test-end", str(params["test_end"])])
     # 思考强度：显式传值才覆盖 MiningConfig 默认（medium）；None 走 CLI/配置默认。
     if params.get("reasoning_effort"):
         command.extend(["--reasoning-effort", str(params["reasoning_effort"])])

@@ -45,6 +45,10 @@ class StartRequest(BaseModel):
     train_end: str = DEFAULT_TRAIN_END
     val_start: str = DEFAULT_VAL_START
     val_end: str = DEFAULT_VAL_END
+    test_start: str | None = None
+    """测试段起点；None = 数据源默认（DEFAULT_TEST_START）。"""
+    test_end: str | None = None
+    """测试段右端；None = 动态解析数据源最新交易日（resolve_test_end）。"""
     label_col: str = "label_1d_open_to_open"
     user_message: str = Field(
         default="请自主挖掘A股日频价量因子，先训练集评估，再验证集检验；只有通过验证和去重门槛的因子才提交。",

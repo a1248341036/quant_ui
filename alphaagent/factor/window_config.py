@@ -5,7 +5,7 @@ Alpha 全链路（因子挖掘 train/val/test 窗口、ML 组合训练时间边�
 
 - train（2020-01-01 ~ 2022-12-31）：统计门槛（IC/ICIR/coverage/autocorr）
 - val（2023-01-01 ~ 2024-12-31）：样本外保留率 + engine_gate 可交易性
-- test（2025-01-01 ~ 数据最新交易日）：留出测试段终审（只报告不拦截）
+- test（2025-01-01 ~ min(数据最新交易日, TEST_END_CAP)）：留出测试段终审（只报告不拦截）
 
 窗口重映射记录（2026-08-29）：
 - 旧窗口 train 2018-2022 / val 2023-2025 / test 2026-01 起（约 8 个月，walk-forward
@@ -48,6 +48,15 @@ DEFAULT_TEST_START = "2025-01-01"
 # 测试段右端：None = 动态解析数据源最新交易日（见 resolve_test_end）。
 # 不用固定日期作默认值——固定值会随数据演进失效并误导（暗示数据覆盖到）。
 DEFAULT_TEST_END: str | None = None
+
+# 测试段右端锁死上界（2026-10-14 起生效）：
+# 数据湖每日增量更新会把解析结果逐日推进（10-12→10-13→…），而缓存 key 含
+# end → 每个 run 的 test_end 每天漂移 → 面板缓存整段重建（现网 9 天积出 8 个
+# 全量变体、磁盘约 40GB；重建期内存峰值 ~17GB）。锁死上界后请求端 end 稳定在
+# 2026-09-30：命中既有覆盖缓存（建到 10-12）并按需裁剪，不再触发重建。
+# 解锁/推进：改此值为更新日期，或置 None 恢复 100% 动态；注意推进会触发一次
+# 符合新端点的整段重建（一次性、可接受）。此值必须 >= DEFAULT_TEST_START。
+TEST_END_CAP: str | None = "2026-09-30"
 
 # ── 回测/对比页默认起点（前端表单初始化）──────────────────────────────
 # 回测与因子对比默认从 train 起点开始，终点动态取数据源最新交易日；
@@ -166,6 +175,12 @@ def resolve_test_end(asset_type: str = "stock") -> str:
     else:
         end = date.today().isoformat()
         logger.warning("TEST_END 配置加载失败，兜底今天 %s", end)
+
+    # 锁死上界：解析端超过 TEST_END_CAP 时截断（见 TEST_END_CAP 注释）。
+    if TEST_END_CAP is not None and end > TEST_END_CAP:
+        logger.info("TEST_END 数据源 %s 超过锁死上界 %s，截断至锁死端",
+                    end, TEST_END_CAP)
+        end = TEST_END_CAP
 
     # 防御：解析结果不得早于测试段起点（异常数据回退起点）
     if end < DEFAULT_TEST_START:
