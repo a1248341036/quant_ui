@@ -130,7 +130,9 @@ memory_suggest / memory_form / memory_distill / run_end`），k=v 字段 + turn 
 4. **val 引擎回测预演**（候选入库前统一跑一次，`metrics["engine_gate"]` 随候选/正式记录落库，供三段表"引擎净值"行展示；裁决仍在第 6 步）
 5. 入候选池（registry_only）
 6. **stage_two 精筛**（双窗口口径）→ 不通过停在候选池
-7. **engine_gate 净值裁决**（复用第 4 步回测结果）→ 不通过停在候选池
+7. **engine_gate 引擎可行性裁决**（复用第 4 步回测结果；2026-10-22 起收益类判据
+   [超额年化/超额夏普/回撤] 只诊断不裁决，非收益硬约束 [执行/换手/重叠] 照常裁决）
+   → 不通过停在候选池
 8. **test 段引擎回测诊断**（仅晋升因子补算，供正式库三段表盲测列展示）→ 不卡准入
 9. 入正式库（canonical 对齐 + ingest）
 
@@ -139,13 +141,19 @@ memory_suggest / memory_form / memory_distill / run_end`），k=v 字段 + turn 
   候选池冗余由 `scripts/dedup_candidate_factors.py` 主动去重管理，而非让候选池因子
   互相挡死晋升（历史死锁：`gap_vwap_ens_wo3` 被候选池内相关 0.598 的 `vwap_close_dev_mom` 卡死）。
 - **Reviewer 的 revise 是建议不是门槛**：与系统提示词"Reviewer 意见仅供参考改进方向，
-  不阻断提交"一致；正式库准入的最终裁决是 stage_two 统计门槛 + engine_gate 净值回测。
-- **engine_gate 是实盘可交易性裁决**：weekly 调仓、净超额年化 ≥3%、超额夏普 ≥0.5、
-  回撤 ≤30%（2026-09-22 由 40% 收紧，绝对净值口径）、持仓重叠 ≥50%、仓位利用率 ≥80%、
-  日均执行换手 ≤ 分档值（2026-09-22 新增：diag avg_daily_turnover 超 candidate 分档
-  换手门即 fail_reasons=high_turnover；此前换手仅诊断不裁决 + slippage=0，引擎层对
-  换手零约束）。统计 IC 高的因子若换手高（如日换手 69%、
-  周重叠 5.6%），实盘净超额会转负 —— engine_gate 正确拦截"统计有效但实盘亏钱"的假因子。
+  不阻断提交"一致；正式库准入的最终裁决是 stage_two 统计门槛 + engine_gate 引擎
+  可行性裁决（2026-10-22 起收益类判据只诊断不裁决，见下）。
+- **engine_gate 是实盘可交易性裁决**：组合层硬约束照常阻断晋升——持仓重叠 ≥50%、
+  仓位利用率 ≥80%、日均执行换手 ≤ 分档值（2026-09-22 新增：diag avg_daily_turnover
+  超 candidate 分档换手门即 fail_reasons=high_turnover）。
+- **收益回测门槛不再裁决（2026-10-22 ML 终局定调，`enforce_nav_gates=False` 默认）**：
+  净超额年化 ≥3% / 超额夏普 ≥0.5 / 回撤 ≤30%（2026-09-22 由 40% 收紧，绝对净值口径）等
+  净值类判据改为**只诊断不裁决**——因子库最终消费者是 ML 组合（stacking），回撤/净值
+  评估上移 ML score 层（2026-10-20 定调：筛选判据改 permutation importance；单因子层
+  只做 IC/ICIR/去冗余/盲测）。engine_gate 回测照跑，metrics/thresholds 全量落库供
+  三段表与报告对照。逃生门：`enforce_nav_gates=True` 恢复旧净值裁决（无 ML 管线的
+  独立用法）。历史教训仍有效：统计 IC 高的因子若换手高（如日换手 69%、
+  周重叠 5.6%），实盘净超额会转负 —— 该拦截职责现由非收益硬约束（换手门/重叠门）承担。
 
 ### 6. 候选因子库管理
 

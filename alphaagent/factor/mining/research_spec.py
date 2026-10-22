@@ -826,6 +826,10 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
     production["engine_gate"] = eg
     if eg.get("enabled") is not None:
         eg["enabled"] = _require_bool(eg.get("enabled"), "engine_gate.enabled")
+    # 收益回测门槛裁决开关（2026-10-22 ML 终局）：False=回测照跑只诊断不裁决
+    # 收益类判据；True=恢复旧净值裁决。默认值真源在 EngineGateCriteria。
+    if eg.get("enforce_nav_gates") is not None:
+        eg["enforce_nav_gates"] = _require_bool(eg.get("enforce_nav_gates"), "engine_gate.enforce_nav_gates")
     eg["selection_mode"] = str(eg.get("selection_mode", "top_pct"))
     if eg["selection_mode"] not in {"top_pct", "top_n"}:
         raise ValueError("research_spec.engine_gate.selection_mode_invalid")

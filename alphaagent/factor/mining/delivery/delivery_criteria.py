@@ -147,6 +147,18 @@ class EngineGateCriteria:
     # 因子层门槛（stage_one/two）继续用原口径换手，两层分离。
     buffer_ratio: float = 0.5
     no_trade_band: float = 0.15
+    # ── 收益回测门槛裁决开关（2026-10-22 ML 终局定调）────────────────────────
+    # 背景：因子库最终消费者是 ML 组合（stacking），回撤/净值评估上移 ML score 层
+    # （2026-10-20 定调：筛选判据改为 permutation importance；业界共识：单因子层
+    #  只做 IC/ICIR/去冗余/盲测保留，净值回测在组合层做，见 2026-10-21 调研结论）。
+    # engine_gate 回测本身照跑——metrics/thresholds/diagnostics 全量输出供报告与
+    # 模拟盘对照，仅收益类判据（excess_annual/excess_sharpe/max_drawdown 及旧键
+    # annual_return/sharpe）不再产生 fail_reasons、不再阻断晋升。
+    # False = 不裁决收益类（默认，当前技术/研报主线全走 ML 合成）；
+    # True  = 恢复旧净值裁决（逃生门，供无 ML 管线的独立用法）。
+    # 执行可行性（min_invested_ratio）、执行换手（max_avg_daily_turnover）、
+    # 持仓重叠（min_daily_overlap）等非收益硬约束不受本开关影响，照常裁决。
+    enforce_nav_gates: bool = False
 
 
 @dataclass(frozen=True)

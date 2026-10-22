@@ -55,7 +55,7 @@ def run_engine_gate(
         EngineGateCriteria,
     )
     _eg_default = EngineGateCriteria()
-    for _f in ("buffer_ratio", "no_trade_band"):
+    for _f in ("buffer_ratio", "no_trade_band", "enforce_nav_gates"):
         if _f not in policy:
             policy[_f] = getattr(_eg_default, _f)
     # 执行换手硬门缺键回落默认分档值（2026-09-22：engine_gate 此前对换手
@@ -133,12 +133,19 @@ def run_engine_gate(
     reasons: list[str] = []
     thresholds: dict[str, Any] = {}
 
+    # 收益回测门槛裁决开关（2026-10-22 ML 终局定调）：enforce_nav_gates=False 时
+    # 收益类判据（excess_annual/excess_sharpe/max_drawdown 及旧键）仍记录 thresholds
+    # 供诊断（回测照跑、指标全量输出），但不再生成 fail_reasons → 不阻断晋升；
+    # 执行可行性/换手/持仓重叠等非收益硬约束不受影响，照常裁决。
+    # 默认值由上方回落注入（EngineGateCriteria.enforce_nav_gates，唯一真源）。
+    enforce_nav = bool(policy.get("enforce_nav_gates", False))
+
     # 净值超额年化（vs 全市场等权基准，扣全费）：alpha 的核心裁决项
     excess = m.get("超额年化")
     if "min_excess_annual" in policy:
         thr = float(policy["min_excess_annual"])
         thresholds["min_excess_annual"] = thr
-        if excess is None or not np.isfinite(float(excess)) or float(excess) < thr:
+        if enforce_nav and (excess is None or not np.isfinite(float(excess)) or float(excess) < thr):
             reasons.append("excess_annual")
 
     # 超额夏普（active NAV 口径）：替代旧的绝对夏普门——样本含熊市时
@@ -147,7 +154,7 @@ def run_engine_gate(
     if policy.get("min_excess_sharpe") is not None:
         thr = float(policy["min_excess_sharpe"])
         thresholds["min_excess_sharpe"] = thr
-        if exc_sharpe is None or not np.isfinite(float(exc_sharpe)) or float(exc_sharpe) < thr:
+        if enforce_nav and (exc_sharpe is None or not np.isfinite(float(exc_sharpe)) or float(exc_sharpe) < thr):
             reasons.append("excess_sharpe")
 
     # 兼容旧键：显式提供时仍按旧口径检查（默认 spec 已不含它们）
@@ -155,20 +162,20 @@ def run_engine_gate(
     if policy.get("min_annual_return") is not None:
         thr = float(policy["min_annual_return"])
         thresholds["min_annual_return"] = thr
-        if annual is None or not np.isfinite(float(annual)) or float(annual) < thr:
+        if enforce_nav and (annual is None or not np.isfinite(float(annual)) or float(annual) < thr):
             reasons.append("annual_return")
     sharpe = m.get("夏普")
     if policy.get("min_sharpe") is not None:
         thr = float(policy["min_sharpe"])
         thresholds["min_sharpe"] = thr
-        if sharpe is None or not np.isfinite(float(sharpe)) or float(sharpe) < thr:
+        if enforce_nav and (sharpe is None or not np.isfinite(float(sharpe)) or float(sharpe) < thr):
             reasons.append("sharpe")
 
     drawdown = m.get("最大回撤")
     if policy.get("max_drawdown") is not None:
         max_dd = float(policy["max_drawdown"])
         thresholds["max_drawdown"] = max_dd
-        if drawdown is None or not np.isfinite(float(drawdown)) or abs(float(drawdown)) > max_dd:
+        if enforce_nav and (drawdown is None or not np.isfinite(float(drawdown)) or abs(float(drawdown)) > max_dd):
             reasons.append("max_drawdown")
 
     from alphaagent.factor.metrics import topn_selection_overlap

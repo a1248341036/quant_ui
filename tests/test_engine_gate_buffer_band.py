@@ -127,6 +127,14 @@ def test_engine_gate_criteria_defaults():
     assert eg.no_trade_band == 0.15
     # 执行换手硬门：裸构造为 None（由 DeliveryCriteria 派生填充）
     assert eg.max_avg_daily_turnover is None
+    # 2026-10-22 ML 终局：收益回测门槛默认不裁决（回测照跑仅诊断，见字段注释）
+    assert eg.enforce_nav_gates is False
+    # 默认 spec 也物化该键（与判定回落同源）
+    from alphaagent.factor.mining.research_spec import default_research_spec
+    assert (
+        default_research_spec("technical")["delivery_policy"]["production"]
+        ["engine_gate"]["enforce_nav_gates"] is False
+    )
 
 
 def test_engine_gate_turnover_gate_derived():
@@ -392,3 +400,80 @@ def test_buffer_only_strictly_reduces_engine_turnover():
         f"buffer only should strictly reduce turnover: "
         f"buf={buf_turn} >= raw={raw_turn}"
     )
+
+
+# ── 收益回测门槛裁决开关（2026-10-22 ML 终局定调）──
+
+
+def _nav_gate_panel(panel):
+    """复用现有 run_engine_gate 测试的 panel → 引擎 frame 转换。"""
+    mi_panel = panel.copy()
+    mi_panel["datetime"] = pd.to_datetime(mi_panel["date"].values)
+    mi_panel["instrument"] = mi_panel["code"]
+    mi_panel = mi_panel.drop(columns=["date", "code"]).set_index(["datetime", "instrument"])
+    mi_panel["turnover_rate"] = mi_panel["turnover"] / 100.0
+    close = mi_panel["close"]
+    mom20 = close.groupby(level="instrument").transform(lambda s: s.pct_change(20))
+    return mi_panel, mom20.to_numpy(dtype=np.float64)
+
+
+_NAV_FAIL_POLICY = {
+    "enabled": True, "selection_mode": "top_n", "top_n": 2,
+    "freq": "monthly", "capital": 1_000_000,
+    # 收益门槛设为模拟数据必失败值：年化超额≥10 / 超额夏普≥10 / 回撤≤0
+    "min_excess_annual": 10.0, "min_excess_sharpe": 10.0, "max_drawdown": 0.0,
+    "min_daily_overlap": 0.0, "min_invested_ratio": 0.0,
+}
+_NAV_KEYS = ("excess_annual", "excess_sharpe", "max_drawdown")
+
+
+def test_engine_gate_nav_gates_off_by_default_diagnostic_only(panel):
+    """enforce_nav_gates=False（默认回落）：收益类判据只记 thresholds 供诊断，
+    不产生 fail_reasons、不阻断晋升；回测照跑、metrics 全量输出。"""
+    from alphaagent.factor.mining.delivery.engine_gate import run_engine_gate
+
+    mi_panel, factor_values = _nav_gate_panel(panel)
+    res = run_engine_gate(
+        mi_panel, factor_values, val_start=START, val_end=END, direction=1,
+        policy=dict(_NAV_FAIL_POLICY),  # 不传 enforce_nav_gates → 回落默认 False
+    )
+    # 回测照跑：metric 键存在（None 也保留，诊断可见）
+    assert "metrics" in res and res["metrics"].get("excess_annual") is not None
+    # 收益类判据不再裁决
+    assert res["passed"] is True, res["fail_reasons"]
+    for k in _NAV_KEYS:
+        assert k not in res["fail_reasons"], res["fail_reasons"]
+    # thresholds 仍记录（保留"若开裁决会卡在哪里"的诊断信息）
+    assert res["thresholds"]["min_excess_annual"] == 10.0
+    assert res["thresholds"]["min_excess_sharpe"] == 10.0
+    assert res["thresholds"]["max_drawdown"] == 0.0
+
+
+def test_engine_gate_nav_gates_on_restores_blocking(panel):
+    """enforce_nav_gates=True：恢复旧净值裁决——收益必失败值 → 阻断晋升。"""
+    from alphaagent.factor.mining.delivery.engine_gate import run_engine_gate
+
+    mi_panel, factor_values = _nav_gate_panel(panel)
+    res = run_engine_gate(
+        mi_panel, factor_values, val_start=START, val_end=END, direction=1,
+        policy={**_NAV_FAIL_POLICY, "enforce_nav_gates": True},
+    )
+    assert res["passed"] is False
+    for k in _NAV_KEYS:
+        assert k in res["fail_reasons"], (k, res["fail_reasons"])
+
+
+def test_engine_gate_nav_gates_off_keeps_non_nav_gates(panel):
+    """开关只豁免收益类：执行换手硬门（非收益约束）照常裁决，与 ML 调研结论一致。"""
+    from alphaagent.factor.mining.delivery.engine_gate import run_engine_gate
+
+    mi_panel, factor_values = _nav_gate_panel(panel)
+    res = run_engine_gate(
+        mi_panel, factor_values, val_start=START, val_end=END, direction=1,
+        policy={**_NAV_FAIL_POLICY, "enforce_nav_gates": False, "max_avg_daily_turnover": 0.0},
+    )
+    # 收益类被豁免、换手门照拦（0.0 门槛下任何执行换手必超）
+    assert "high_turnover" in res["fail_reasons"], res["fail_reasons"]
+    assert res["passed"] is False
+    for k in _NAV_KEYS:
+        assert k not in res["fail_reasons"], res["fail_reasons"]
