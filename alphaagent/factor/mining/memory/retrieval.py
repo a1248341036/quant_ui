@@ -57,6 +57,32 @@ _COLD_OPS = frozenset({
     "VOLUME_CLOCK_VPIN", "MUTUAL_INFO_LAG",
     "TS_PERMUTATION_ENTROPY", "TS_TREND_RANK",
     "CHIP_PEAK_LOC", "CHIP_MASS_ASYM", "CHIP_ENTROPY",
+    # ── 2026-10-19 cold-track 整夜战役 T1 增量（数据驱动，非门槛） ──────────
+    # 依据 _t1_operator_usage.py 枚举：这些注册表机制算子在研究记忆里从未当
+    # 冷门信号根测过（或用过但零冷根、或从没出现在任何表达式里）。加入冷门
+    # 候选集 → 第二轨残差评估（净拥挤代理）才会路由它们。纯增量、可逆、不
+    # 动任何数值门槛；扩容理由详见 campaign CAMPAIGN_LOG。剔除归一化/平滑
+    # 外壳（CS_ZSCORE/TS_MEAN/RANK/CS_NEUTRALIZE…），它们不该进冷门含意。
+    # 分布形态：尖峰厚尾/偏斜
+    "TS_KURT", "TS_SKEW",
+    # 时间结构：自相关(动量持续性)/回归拟合优度/趋势噪声效率比/日历月初
+    "TS_AUTOCORR", "TS_RSQ", "TS_EFFICIENCY_RATIO", "TS_MONTH_POS",
+    # 均线穿越（金叉/死叉）
+    "TS_CROSS_ABOVE", "TS_CROSS_BELOW",
+    # 峰谷结构：最近峰/谷/回调振幅/幅位/历史峰谷位置/缺口位置
+    "TS_LAST_PEAK", "TS_LAST_TROUGH",
+    "TS_AMPPEAK", "TS_AMPTROUGH", "TS_AMPARGPEAK", "TS_AMPARGTROUGH",
+    "TS_ARGPEAK", "TS_ARGTROUGH", "TS_ARGGAP",
+    # 相关系数结构：价量秩相关/普通相关/协方差
+    "TS_RANKCORR", "TS_CORR", "TS_COV",
+    # 筹码面未根：双峰/分布的Wasserstein距离
+    "CHIP_BIMODAL_SCORE", "CHIP_WASS_DIST",
+    # 活跃缺口上/下沿带
+    "PRICE_GAP_CEILING", "PRICE_GAP_FLOOR",
+    # 分组截面统计（行业内相对），含唯一 NEVER_USED 的 CS_GROUP_MEDIAN
+    "CS_GROUP_MEAN", "CS_GROUP_STD", "CS_GROUP_MEDIAN", "CS_GROUP_ZSCORE",
+    # 价/量发散排名
+    "DIVERGENCE_RANK",
 })
 
 # 盲测段指标键：**允许存储、禁止注入**。
