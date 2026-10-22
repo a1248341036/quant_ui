@@ -477,3 +477,16 @@ def test_engine_gate_nav_gates_off_keeps_non_nav_gates(panel):
     assert res["passed"] is False
     for k in _NAV_KEYS:
         assert k not in res["fail_reasons"], res["fail_reasons"]
+
+
+def test_engine_gate_nav_gates_invalid_type_rejected():
+    """三件套第 3 件：配置中心校验层拒绝越界值——非 bool 的 enforce_nav_gates
+    在 normalize_research_spec 时被 _require_bool 拒绝（防静默生效）。"""
+    from alphaagent.factor.mining.research_spec import default_research_spec, normalize_research_spec
+
+    spec = default_research_spec("technical")
+    eg = spec["delivery_policy"]["production"]["engine_gate"]
+    assert eg["enforce_nav_gates"] is False  # 默认物化（唯一真源）
+    eg["enforce_nav_gates"] = "yes"  # 字符串不是 bool → 必须被拒
+    with pytest.raises(ValueError, match="enforce_nav_gates_must_be_boolean"):
+        normalize_research_spec(spec)
