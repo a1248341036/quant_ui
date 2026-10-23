@@ -94,10 +94,11 @@ def _board_filter_flag() -> str:
     ])
 
 # 磁盘面板缓存：构建好的 panel 落盘 parquet，避免每次评估都重算 30-70s。
-# key = (start, end, include_fundamentals, schema_version)，不含数据湖 watermark：
-# 历史固定区间永远命中（不需要因 watermark 每天变化而重建累积文件）。
-# 命中条件 = 请求区间被缓存面板实际覆盖范围（文件内 datetime 列）包含。
-# 目录文件数上限 _CACHE_MAX_FILES，写入时淘汰最旧文件，锁死长期空间。
+# key = (start, include_fundamentals, 板块开关, schema_version, 数据面签名)，
+# **不含请求 end**（2026-10-23：end 参与 key 曾导致数据日更后 key 逐日漂移、
+# 每天整段重建 ~8.7GB）。
+# 命中条件 = 请求区间被缓存面板实际覆盖范围包含（含 _CACHE_MAX_STALE_DAYS 容忍）。
+# 目录占用由 _CACHE_MAX_GB（GB 配额）+ _CACHE_MAX_FILES（文件数兜底）双闸约束。
 _CACHE_ROOT = Path(__file__).resolve().parents[3] / "artifacts" / "panel" / "cache"
 _CNE_STATE_FILE = (
     Path(__file__).resolve().parents[4]
@@ -116,6 +117,21 @@ _CACHE_SCHEMA_VERSION = 11
 # 缓存文件数上限（全量面板 parquet+arrow ≈ 6GB，聚焦面板 ≈ 0.3-2.6GB）。
 # 小磁盘服务器可用 ALPHA_PANEL_CACHE_MAX_FILES 调小（代价：切换数据面组合时重建）。
 _CACHE_MAX_FILES = max(2, int(os.environ.get("ALPHA_PANEL_CACHE_MAX_FILES", "8") or 8))
+# 缓存磁盘配额（GB，2026-10-23）：parquet+arrow 总量超过即从最旧开始成对淘汰。
+# 背景：仅按文件数上限时，8 组全量缓存（parquet ~2GB + arrow ~6GB）理论可达
+# ~70GB，磁盘长期被缓存挤压；改为按字节配额后文件数自然受磁盘约束。
+# 调大代价：磁盘占用上升；调小代价：切换窗口/数据面组合时重建频率上升。
+_CACHE_MAX_GB = max(1.0, float(os.environ.get("ALPHA_PANEL_CACHE_MAX_GB", "25") or 25))
+# Arrow IPC（未压缩、可 mmap）副本写入开关（2026-10-23 起默认关）。
+# 背景：arrow 未压缩体积 ≈ parquet 的 3 倍（全量面板 6.4GB vs 2.2GB），
+# mmap 命中时 OS 会把全部页 fault 进 page cache——单进程场景反而比
+# parquet 解压后的 DataFrame（~3.9GB）更肥。其收益只在**多会话并发**
+# （多挖掘 run / MCP 多客户端各自加载同一 panel）时兑现：物理页跨进程
+# 共享，内存不按会话数叠加。默认只写 parquet；需要多会话并发共享时设
+# ALPHA_PANEL_ARROW=1。已有 .arrow 文件仍可被读取路径正常使用。
+_ARROW_MMAP_WRITE = os.environ.get("ALPHA_PANEL_ARROW", "0").strip().lower() in (
+    "1", "true", "yes", "on",
+)
 # 缓存「比请求旧几天仍可命中」的容忍天数（2026-10-20）。
 # 背景：日更数据每天让 `end` 前移一天，而命中判定要求「缓存终点 >= 请求终点」，
 # 于是**每个交易日都要重建整份面板**（实测 4.7GB / 463s），磁盘上 v9/v10/v11
@@ -316,12 +332,19 @@ def _cne_watermark() -> str:
 
 def _cache_path(
     start: str | None,
-    end: str | None,
     include_fundamentals: bool,
     sig: str = "all",
 ) -> Path:
-    """由参数 + schema 版本 + 数据面签名生成写入路径（同一组合稳定复用同一文件）。"""
-    mk = "-".join(str(x or "all") for x in (start, end))
+    """由参数 + schema 版本 + 数据面签名生成写入路径（同一组合稳定复用同一文件）。
+
+    **key 不含请求 ``end``**（2026-10-23）：请求窗口右端只影响命中判定
+    （``_find_cached_panel`` 按覆盖区间裁剪 + stale 容忍），不参与文件命名。
+    数据湖日更使 ``resolve_test_end`` 逐日前移时，重建会**原子覆盖同一文件**
+    而不是每天新增一份——此前 9 天积出 8 个全量变体（~40GB 磁盘、重建期
+    内存峰值 ~17GB）的根因即 end 参与了 key。TEST_END_CAP 锁死右端后 end
+    恒定，本改动进一步保证 cap 推进时同样只做一次性覆盖写。
+    """
+    mk = str(start or "all")
     # 板块过滤开关参与 key：开关切换后缓存自然失效，避免命中错误口径的面板
     board_flag = _board_filter_flag()
     key = hashlib.sha256(
@@ -560,10 +583,18 @@ def _panel_coverage(panel: pd.DataFrame) -> tuple[Any, Any]:
 
 
 def _purge_old_cache(keep: Path) -> None:
-    """缓存目录超过上限时删除最旧文件（保留刚写入的 keep）。
+    """缓存目录超过配额/上限时删除最旧文件（保留刚写入的 keep）。
 
-    parquet 与同 key 的 .arrow 成对淘汰；.arrow 若正被其他进程 mmap
-    （Windows unlink 会失败），单独跳过并警告——不影响主缓存淘汰。
+    双闸（2026-10-23）：
+    - **磁盘配额**：parquet+arrow 总量超过 ``_CACHE_MAX_GB`` 时从最旧开始淘汰——
+      仅按文件数上限时 8 组全量缓存（parquet ~2GB + arrow ~6GB/组）理论可达
+      ~70GB，磁盘长期被缓存挤压；
+    - **文件数**：``_CACHE_MAX_FILES`` 兜底（防碎片文件堆积）。
+
+    parquet 与同 key 的 .arrow、.meta.json 成对淘汰；.arrow 若正被其他进程
+    mmap（Windows unlink 会失败），单独跳过并警告——不影响主缓存淘汰。
+    淘汰时**同步删除 .meta.json**：此前漏删会留孤儿 meta（parquet 已不在
+    而.meta 残留），误导命中排查；本分支之前的孤儿靠人工清理。
     """
     try:
         if not _CACHE_ROOT.is_dir():
@@ -576,25 +607,52 @@ def _purge_old_cache(keep: Path) -> None:
             except OSError:
                 return float("inf")
 
+        def _remove_victim(victim: Path) -> None:
+            """成对删除 parquet + .arrow + .meta.json（单个失败不阻断其余）。"""
+            try:
+                size_mb = victim.stat().st_size / 1e6
+            except OSError:
+                size_mb = 0.0
+            try:
+                victim.unlink()
+                logger.info("CNE panel 缓存淘汰旧文件: %s (%.0fMB)",
+                            victim.name, size_mb)
+            except OSError as exc:
+                logger.warning("CNE panel 缓存淘汰失败: %s (%s)", victim.name, exc)
+            for suffix in (".arrow", ".meta.json"):
+                side = victim.with_suffix(suffix)
+                if side.is_file():
+                    try:
+                        side.unlink()
+                    except OSError as exc:
+                        logger.warning(
+                            "CNE panel 缓存附属文件淘汰失败（可能被其他进程 mmap 占用）: %s (%s)",
+                            side.name, exc,
+                        )
+
+        def _dir_bytes() -> int:
+            """缓存目录中 parquet+arrow 的总字节数（排除刚写入的 keep）。"""
+            total = 0
+            for p in _CACHE_ROOT.iterdir():
+                if not p.is_file() or p == keep:
+                    continue
+                if p.suffix in (".parquet", ".arrow"):
+                    try:
+                        total += p.stat().st_size
+                    except OSError:
+                        pass
+            return total
+
         files = sorted(
             (p for p in _CACHE_ROOT.glob("panel_*.parquet") if p != keep),
             key=_mtime,
         )
-        while len(files) + 1 > _CACHE_MAX_FILES:  # +1 为刚写入的文件
-            victim = files.pop(0)
-            try:
-                victim.unlink()
-                logger.info("CNE panel 缓存淘汰旧文件: %s (%.0fMB)",
-                            victim.name, victim.stat().st_size / 1e6)
-            except OSError as exc:
-                logger.warning("CNE panel 缓存淘汰失败: %s (%s)", victim.name, exc)
-            arrow_victim = victim.with_suffix(".arrow")
-            if arrow_victim.is_file():
-                try:
-                    arrow_victim.unlink()
-                except OSError as exc:
-                    logger.warning("CNE panel arrow 缓存淘汰失败（可能被其他进程 mmap 占用）: %s (%s)",
-                                   arrow_victim.name, exc)
+        # 闸 1：磁盘配额（parquet+arrow 字节总量，含 keep 自身以外的全部缓存）
+        while files and _dir_bytes() > _CACHE_MAX_GB * (1 << 30):
+            _remove_victim(files.pop(0))
+        # 闸 2：文件数兜底（+1 为刚写入的文件）
+        while files and len(files) + 1 > _CACHE_MAX_FILES:
+            _remove_victim(files.pop(0))
     except Exception as exc:  # noqa: BLE001
         logger.warning("CNE panel 缓存淘汰异常（忽略）: %s", exc)
 
@@ -648,13 +706,17 @@ def _save_cached_panel(
             except OSError:
                 pass
             raise
-        # 顺带生成 arrow mmap 副本（供后续会话零拷贝 attach；失败不影响主缓存）
-        try:
-            from alphaagent.data.adapters.panel_mmap import write_panel_arrow
+        # 顺带生成 arrow mmap 副本：默认关（_ARROW_MMAP_WRITE，2026-10-23——
+        # 未压缩 arrow 体积 ≈ parquet 的 3 倍，单进程 mmap 命中反而把全量页
+        # fault 进 page cache；收益只在多会话并发时兑现，需要时 ALPHA_PANEL_ARROW=1）。
+        # 失败不影响主缓存。
+        if _ARROW_MMAP_WRITE:
+            try:
+                from alphaagent.data.adapters.panel_mmap import write_panel_arrow
 
-            write_panel_arrow(path.with_suffix(".arrow"), flat)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("CNE panel arrow 副本生成异常（忽略）: %s", exc)
+                write_panel_arrow(path.with_suffix(".arrow"), flat)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("CNE panel arrow 副本生成异常（忽略）: %s", exc)
         # 旁注元数据（命中判定依据）；写失败时该缓存不会被命中（保守）
         try:
             payload = dict(meta or {})
@@ -709,20 +771,25 @@ def load_panel_from_cne(
         AlphaAgent panel（float32, MultiIndex(datetime, instrument)）。
         列数取决于已注册插件提供的列（聚焦时按面裁剪）。
 
-    首次构建后落盘缓存：key 按 (start, end, include_fundamentals, 数据面签名,
-    schema 版本) 生成，命中条件为「数据面签名一致 + 请求区间落在缓存覆盖范围内」。
-    因此历史固定区间不受数据湖 watermark 每日更新影响，长期稳定秒级命中；
-    目录文件数由 _CACHE_MAX_FILES 上限约束，不会无限累积。
+    首次构建后落盘缓存：key 按 (start, include_fundamentals, 板块开关, 数据面签名,
+    schema 版本) 生成，**不含 end**（见 _cache_path——end 参与 key 曾导致数据日更
+    后 key 逐日漂移、每天整段重建 ~8.7GB）。命中条件为「数据面签名一致 + 请求
+    区间落在缓存覆盖范围内（含 stale 容忍）」，窗口右端前移时覆盖命中或**原地
+    重建同一文件**；目录占用由 _CACHE_MAX_GB + _CACHE_MAX_FILES 双闸约束，
+    不会无限累积。
     """
     focus = [str(f) for f in (focus_facets or ()) if f]
     sig = _facet_signature(focus)
-    cache_path = _cache_path(start, end, include_fundamentals, sig)
 
     # 归一化日期参数为 YYYY-MM-DD 字符串：调用方（如 stacking 脚本）可能传
     # pd.Timestamp，核心行情插件能容忍，但 fundamental（date.fromisoformat）
     # 与 fund_flow（CNE reader 的日期比较）会静默失败 → 辅助插件整列丢失
     start = pd.Timestamp(start).strftime("%Y-%m-%d") if start is not None else None
     end = pd.Timestamp(end).strftime("%Y-%m-%d") if end is not None else None
+
+    # key 不含 end（见 _cache_path）；放在归一化之后，避免调用方传 Timestamp 时
+    # str() 形式（含 00:00:00）与归一化后的 key 漂移成两个文件
+    cache_path = _cache_path(start, include_fundamentals, sig)
 
     if not universe_mask and asset_type == "stock":
         # 按需取列：调用方给的表达式列 + 系统必需列。
