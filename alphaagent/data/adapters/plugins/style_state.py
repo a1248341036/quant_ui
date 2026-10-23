@@ -18,20 +18,26 @@
 
 实现说明：本插件是辅助插件（priority=70），只按 ``start/end`` 从
 ``stock_daily_wide``（行情/市值/估值）与 ``express``（业绩快报 ``exp_roe``
-作成长代理）重算市场级每日状态，并广播到每个标的。``style_state`` 不属任何
-数据面（``_column_facets`` 为空），由 cnequity 的恒载列机制保证聚焦 run 也加载。
+作成长代理）重算市场级每日状态，并广播到每个标的。重算时把起点锚定到
+``STYLE_STATE_ANCHOR``（与 canonical 基线 v10 面板/validation ``--start``
+同源，2020-01-01 起），输出裁回 ``[start, end]``；expanding 分位是原点依赖
+的，固定锚点才能保证跨 run 幂等、且短窗口 run 头部状态与全历史 canonical
+口径一致（动态"start 回退 N 天"会随 run 起点漂移，已实测非单调，弃用）。
+``style_state`` 不属任何数据面（``_column_facets`` 为空），由 cnequity 的
+恒载列机制保证聚焦 run 也加载。
 """
 
 from __future__ import annotations
 
-import gc
 import logging
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
+from alphaagent.data.adapters.cnequity import bse_excluded_prefixes
 from alphaagent.data.adapters.registry import DataSourcePlugin
+from core.risk_model import build_exposures, factor_returns
 from core.rotation.compiler import compile_design
 from core.rotation.style_regime import canonical_design, compute_states
 
@@ -39,6 +45,12 @@ logger = logging.getLogger(__name__)
 
 # 风格暴露的滚动窗口（天）：与 rotation_phase1_validation --style-window 缺省一致。
 STYLE_WINDOW_DAYS = 20
+# 状态判定起点锚点：canonical 权威（rotation_phase1_validation 默认
+# ``--start 2020-01-01``，v10 缓存面板 2020-01-02 起）从该起点做 expanding
+# 分位。插件必须从同一锚点重算才能与权威口径一致——expanding 分位值依赖
+# 原点，任何随 run 的 start 漂移的回退都会让同一交易日的状态跨 run 不一致
+# （实测：回退 200/400/600 日历天与长窗一致率 15.5%/94.8%/74.1%，非单调）。
+STYLE_STATE_ANCHOR = "2020-01-01"
 
 # 状态枚举 → Panel 数值码（float 编码，对齐 industry_sw_l1 的离散码风格；
 # UNKNOWN 不在表内 → map 后 NaN，评估端按 NaN 剔除暖机段，不参与状态条件 IC）。
@@ -48,6 +60,15 @@ _STATE_CODES: dict[str, float] = {
     "LARGE_VALUE": 3.0,
     "LARGE_GROWTH": 4.0,
 }
+
+# 进程内记忆最近一次 (anchor, end) 的“市场级状态重算 + 广播网格”（两列）：
+# 不同数据的聚焦 run（start 各异，facet 签名各自 miss 缓存）会以同一 anchor
+# 重算状态，只重做一次整段截面回归、按各自 [start, end] 广播。只保留最近一
+# 窗口，内存有界（网格降到 category，避免整段 swd 常驻）。
+_STATE_CACHE: dict[
+    tuple[str, str | None, str | None, str | None],
+    tuple[pd.Series, pd.DataFrame],
+] = {}
 
 PLUGIN = DataSourcePlugin(
     name="style_state",
@@ -97,8 +118,6 @@ def _state_from_wide(
     mom20 = close / close.shift(style_window) - 1.0
     vol20 = close.pct_change(fill_method=None).rolling(style_window, min_periods=minp).std()
 
-    from core.risk_model import build_exposures, factor_returns
-
     X, names = build_exposures(
         close.to_numpy(dtype=float),
         am20.to_numpy(dtype=float),
@@ -113,7 +132,6 @@ def _state_from_wide(
     rets = close.pct_change(fill_method=None).to_numpy(dtype=float)
     beta, _ = factor_returns(rets, X)
     del X, rets, am20, turn20, mom20, vol20
-    gc.collect()
     style_beta = pd.DataFrame(beta, index=close.index, columns=names)
 
     # size 维：float_cap 截面 log 中位数日变化率（绝对口径不影响日变化率）
@@ -145,48 +163,94 @@ def load(
     **kwargs: Any,
 ) -> pd.DataFrame:
     """重算 canonical 市场级风格状态并广播到每个 (trade_date, symbol)。"""
-    from .express import load as _exp_load
-    from .stock_daily_wide import load as _swd_load
-
-    swd = _swd_load("stock_daily_wide", start=start, end=end,
-                    cne_root=cne_root, cne_config=cne_config)
-    exp = _exp_load("express", start=start, end=end)
-    if swd is None or swd.empty:
-        raise ValueError(f"style_state: stock_daily_wide 空 (start={start}, end={end})")
-    if not {"trade_date", "ts_code", "close"} <= set(swd.columns):
-        raise ValueError(f"style_state: stock_daily_wide 缺列 {sorted({'trade_date','ts_code','close'} - set(swd.columns))}")
-
-    def _pivot(df: pd.DataFrame, col: str) -> pd.DataFrame:
-        sub = df[["trade_date", "ts_code", col]].drop_duplicates(
-            ["trade_date", "ts_code"], keep="first"
+    # 固定锚点：expanding 分位原点依赖，锚点随 run 的 start 漂移会导致同一
+    # 交易日状态跨 run 不一致。统一锚定到 canonical 权威起点（2020-01-01，
+    # 同 validation 默认 --start / v10 面板起）。用户 start 早于锚点时以
+    # 用户为准（更早数据自己滚动/分位，不会比锚点更早缺历史）。
+    anchor_ts = pd.Timestamp(STYLE_STATE_ANCHOR)
+    start_ts = pd.Timestamp(start) if start else None
+    eff_start = (start_ts if start_ts is not None and start_ts < anchor_ts
+                 else anchor_ts)
+    eff_start_str = eff_start.strftime("%Y-%m-%d")
+    key = (eff_start_str, end, cne_root, cne_config)
+    cached = _STATE_CACHE.get(key)
+    if cached is not None:
+        market_state, grid = cached
+        logger.info(
+            "style_state adapter: 命中进程内状态重算缓存 "
+            "(anchor=%s end=%s cne_root=%s cne_config=%s)",
+            eff_start_str, end, cne_root, cne_config,
         )
-        return sub.pivot(index="trade_date", columns="ts_code", values=col).sort_index()
+    else:
+        from .express import load as _exp_load
+        from .stock_daily_wide import load as _swd_load
 
-    close = _pivot(swd, "close")
-    amount = _pivot(swd, "amount")
-    turnover = _pivot(swd, "turnover_rate")
-    # 原始宽表 circ_mv 为万元口径；绝对值比例不影响 log 截面中位数的日变化率
-    float_cap = _pivot(swd, "circ_mv")
-    pb = _pivot(swd, "pb")
-    roe = _pivot(exp, "exp_roe")
+        swd = _swd_load("stock_daily_wide", start=eff_start_str, end=end,
+                        cne_root=cne_root, cne_config=cne_config)
+        exp = _exp_load("express", start=eff_start_str, end=end)
+        if swd is None or swd.empty:
+            raise ValueError(
+                f"style_state: stock_daily_wide 空 (start={eff_start_str}, end={end})"
+            )
+        if not {"trade_date", "ts_code", "close"} <= set(swd.columns):
+            raise ValueError(
+                "style_state: stock_daily_wide 缺列 "
+                f"{sorted({'trade_date', 'ts_code', 'close'} - set(swd.columns))}"
+            )
 
-    state = _state_from_wide(close, amount, turnover, float_cap, pb, roe)
+        # 与消费侧 panel 同 universe：按 QUANT_EXCLUDE_BSE 开关剔除北交所
+        # （前缀集合与开关均为 cnequity 单一真源），否则风格因子收益相对
+        # 权威 canonical（v10 面板剔除 BSE 后回归）漂移 → 状态序列不一致
+        # （已实测含 BSE 全量 vs 权威按月一致率 35%~100% 波动）。
+        _bse = bse_excluded_prefixes()
+        if _bse:
+            swd = swd[~swd["ts_code"].astype(str).str.startswith(_bse)]
+
+        def _pivot(df: pd.DataFrame, col: str) -> pd.DataFrame:
+            sub = df[["trade_date", "ts_code", col]].drop_duplicates(
+                ["trade_date", "ts_code"], keep="first"
+            )
+            return sub.pivot(index="trade_date", columns="ts_code", values=col).sort_index()
+
+        swd = swd.sort_values(["trade_date", "ts_code"], kind="mergesort")
+        close = _pivot(swd, "close")
+        amount = _pivot(swd, "amount")
+        turnover = _pivot(swd, "turnover_rate")
+        # 原始宽表 circ_mv 为万元口径；绝对值比例不影响 log 截面中位数的日变化率
+        float_cap = _pivot(swd, "circ_mv")
+        pb = _pivot(swd, "pb")
+        roe = _pivot(exp, "exp_roe")
+
+        market_state = _state_from_wide(
+            close, amount, turnover, float_cap, pb, roe
+        )
+        # swd 是外部原始宽表，reader 不做 PK 去重：剔重后再做广播网格，
+        # 否则重复 (trade_date, ts_code) 会把下游 panel 行数成倍放大。
+        grid = swd[["trade_date", "ts_code"]].drop_duplicates(
+            ["trade_date", "ts_code"], keep="first"
+        ).astype({"ts_code": "category"}).copy()
+        _STATE_CACHE.clear()
+        _STATE_CACHE[key] = (market_state, grid)
+
+    state = market_state
+    if start_ts is not None:
+        state = state[state.index >= start_ts]
 
     # 广播：市场级状态对当日所有标的取同值（含当日停牌/无收盘价的标的一并覆盖）。
     # 两侧统一归一化到 datetime64[ns]，避免 parquet 的 [s]/[ms] 精度差异导致
     # Index.map 键不匹配而静默全 NaN。
     if int(state.notna().sum()) == 0:
         logger.warning("style_state adapter: 状态序列全为 UNKNOWN/NaN（检查 exp_roe 供给）")
-    grid = swd[["trade_date", "ts_code"]].drop_duplicates(
-        ["trade_date", "ts_code"], keep="first"
-    ).copy()
+    grid = grid[grid["trade_date"] >= eff_start].copy()
     state.index = pd.DatetimeIndex(pd.to_datetime(state.index).normalize())
     dates = pd.DatetimeIndex(pd.to_datetime(grid["trade_date"]).dt.normalize())
     grid["symbol"] = grid["ts_code"].astype(str)
     grid["style_state"] = dates.map(state).astype(np.float64)
+    if start:
+        grid = grid[grid["trade_date"] >= pd.Timestamp(start)]
     out = grid[["trade_date", "symbol", "style_state"]]
     logger.info(
-        "style_state adapter: %d rows × %d cols, %d 个状态日 (start=%s end=%s)",
-        *out.shape, int(state.notna().sum()), start, end,
+        "style_state adapter: %d rows × %d cols, %d 个状态日 (anchor=%s start=%s end=%s)",
+        *out.shape, int(state.notna().sum()), eff_start_str, start, end,
     )
     return out

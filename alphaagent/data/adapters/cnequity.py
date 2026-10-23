@@ -56,6 +56,12 @@ CNE_SOURCE = "cne://"
 # 板块过滤开关（与 core.data.panel 同口径）：
 # - QUANT_EXCLUDE_BSE 默认开启（北交所 50 万 + 24 个月准入）
 # - QUANT_EXCLUDE_KECHUANG / QUANT_EXCLUDE_CHINEXT 默认关闭
+
+# 板块代码段前缀单一真源：主面板（本模块）与 style_state 插件共用，
+# 两侧必须引用同一集合，避免任一侧增改前缀后静默漂移。
+BSE_PREFIXES = ("92", "83", "87", "43")
+
+
 def _env_flag(name: str, default: str) -> bool:
     return os.environ.get(name, default).strip().lower() not in (
         "0", "false", "no", "off"
@@ -64,6 +70,11 @@ def _env_flag(name: str, default: str) -> bool:
 
 def _exclude_bse_enabled() -> bool:
     return _env_flag("QUANT_EXCLUDE_BSE", "1")
+
+
+def bse_excluded_prefixes() -> tuple[str, ...]:
+    """当前生效的北交所排除前缀（QUANT_EXCLUDE_BSE=0 时返回空，供插件同口径）。"""
+    return BSE_PREFIXES if _exclude_bse_enabled() else ()
 
 
 def _exclude_kechuang_enabled() -> bool:
@@ -773,7 +784,7 @@ def load_panel_from_cne(
         inst = panel.index.get_level_values("instrument").astype(str)
         excluded: list[str] = []
         if _exclude_bse_enabled():
-            excluded += ["92", "83", "87", "43"]
+            excluded += list(BSE_PREFIXES)
         if _exclude_kechuang_enabled():
             excluded += ["688", "689"]
         if _exclude_chinext_enabled():
