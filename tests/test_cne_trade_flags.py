@@ -161,7 +161,7 @@ def test_cached_panel_hit_heals_nan_flags(tmp_path, monkeypatch, st_dataset) -> 
     )
     monkeypatch.setattr(cne, "_CACHE_ROOT", tmp_path)
     start, end, inc = "2024-01-01", "2024-01-05", False
-    path = cne._cache_path(start, end, inc, "all")
+    path = cne._cache_path(start, inc, "all")
     cached_panel.reset_index().to_parquet(path, index=False)
     cne._meta_path(path).write_text(
         json.dumps({"schema": cne._CACHE_SCHEMA_VERSION, "signature": "all",
