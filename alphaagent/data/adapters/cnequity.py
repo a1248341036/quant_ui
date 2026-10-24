@@ -122,14 +122,19 @@ _CACHE_MAX_FILES = max(2, int(os.environ.get("ALPHA_PANEL_CACHE_MAX_FILES", "8")
 # ~70GB，磁盘长期被缓存挤压；改为按字节配额后文件数自然受磁盘约束。
 # 调大代价：磁盘占用上升；调小代价：切换窗口/数据面组合时重建频率上升。
 _CACHE_MAX_GB = max(1.0, float(os.environ.get("ALPHA_PANEL_CACHE_MAX_GB", "25") or 25))
-# Arrow IPC（未压缩、可 mmap）副本写入开关（2026-10-23 起默认关）。
-# 背景：arrow 未压缩体积 ≈ parquet 的 3 倍（全量面板 6.4GB vs 2.2GB），
-# mmap 命中时 OS 会把全部页 fault 进 page cache——单进程场景反而比
-# parquet 解压后的 DataFrame（~3.9GB）更肥。其收益只在**多会话并发**
-# （多挖掘 run / MCP 多客户端各自加载同一 panel）时兑现：物理页跨进程
-# 共享，内存不按会话数叠加。默认只写 parquet；需要多会话并发共享时设
-# ALPHA_PANEL_ARROW=1。已有 .arrow 文件仍可被读取路径正常使用。
-_ARROW_MMAP_WRITE = os.environ.get("ALPHA_PANEL_ARROW", "0").strip().lower() in (
+# Arrow IPC（未压缩、可 mmap）副本写入开关（**2026-10-24 回归修复：默认重新改为开**）。
+# 为何必须开：多进程场景（harness_mine / 后端 ComputeWorker / 多挖掘 run）下，
+# WorkerPanelStore 走 panel_mmap 的 arrow 路径才能让**数值列跨进程共享同一份物理页**；
+# 一旦没有 .arrow，每个 worker 各自 pd.read_parquet 私有解压一份全量 panel
+# （实测 4.00GB/进程，6 路并发 ≈ 24GB）——这正是「跑的时候内存大」的真凶。
+# 收益对比（同一份 211 列全量 panel）：
+#   · 有 arrow：数值列共享 page cache（~6.4GB 只一份）+ 每进程仅 instrument/datetime
+#     索引私有（~0.4GB）→ 6 进程 ≈ 2.4GB 私有；
+#   · 无 arrow：每进程私有解压 ~4GB → 6 进程 ≈ 24GB 私有。
+# 磁盘代价已由 _CACHE_MAX_GB（默认 25GB）配额兜住，不会无限膨胀。
+# 单进程场景 arrow 会多驻留 ~6.4GB standby page cache（可回收，不占真正可用内存）。
+# 确实需要纯 parquet（如磁盘吃紧）时设 ALPHA_PANEL_ARROW=0。
+_ARROW_MMAP_WRITE = os.environ.get("ALPHA_PANEL_ARROW", "1").strip().lower() in (
     "1", "true", "yes", "on",
 )
 # 缓存「比请求旧几天仍可命中」的容忍天数（2026-10-20）。
@@ -509,6 +514,25 @@ def _find_cached_panel(
                         continue
                 elif not include_fundamentals and has_funda:
                     continue  # 基本面开关不匹配，跳过
+                # ③ 请求列一致性：keep_columns 中有列不在缓存列集 → 视为未命中。
+                # 背景（2026-10-23）：新接入的低频事件数据面插件（block_trades /
+                # regulatory_events / share_structure）合入 main 后，旧缓存（生成于
+                # 插件合入前）不含 bt_*/reg_*/ss_* 列；此前命中判定只查哨兵列，
+                # pq_cols 会把请求列里缓存没有的列**静默滤掉**，导致评估层
+                # 看到 ic=None / cov=None 假阴性（列根本没载入，不是数据稀疏）。
+                # 缺列即 miss → 重建含新列的缓存；重建路径 keep_columns 不生效
+                # （缓存必须全列），首次请求新面会触发一次全量重建，此后命中。
+                if keep_columns:
+                    missing_req = {
+                        str(c) for c in keep_columns
+                        if str(c) not in _CACHE_INDEX_COLS and str(c) not in name_set
+                    }
+                    if missing_req:
+                        logger.info(
+                            "CNE panel 缓存 %s 缺请求列 %s（前 8 个），视为未命中（将重建）",
+                            path.name, sorted(missing_req)[:8],
+                        )
+                        continue
                 # ② 命中后按 keep_columns 物化（None = 全列，行为与旧版逐字节一致）
                 df = None
                 if arrow_path.is_file():
