@@ -99,3 +99,20 @@ def test_non_daily_cadence_is_not_judged(lake):
     """Quarterly disclosures are not on a daily cadence; day-based holes are n/a."""
     _seed(lake, "balancesheet", BEHIND, partition_col="end_date")
     assert "balancesheet" not in missed_day_datasets(lake, ANCHOR)
+
+
+def test_watermark_ahead_of_the_lake_still_counts_as_missed(lake):
+    """A run advances the watermark before compact lands the partition."""
+    from cnequity.storage.state import StateStore
+
+    StateStore(lake.meta_root).set_date("etf_bars", ANCHOR)  # 水位虚高，curated 仍停在 10-22
+    assert "etf_bars" in missed_day_datasets(lake, ANCHOR)
+
+
+def test_partition_on_disk_outranks_a_lagging_watermark(lake):
+    """Queries read the partition; a stale watermark on it is cosmetic."""
+    _seed(lake, "etf_bars", ANCHOR)
+    from cnequity.storage.state import StateStore
+
+    StateStore(lake.meta_root).set_date("etf_bars", BEHIND)
+    assert "etf_bars" not in missed_day_datasets(lake, ANCHOR)

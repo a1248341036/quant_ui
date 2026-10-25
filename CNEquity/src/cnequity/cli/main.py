@@ -411,6 +411,28 @@ def run():
     """Run scheduled jobs."""
 
 
+def _partition_present(cfg, dataset: str, day: date) -> bool | None:
+    """Whether the lake holds *dataset*'s partition covering *day*.
+
+    ``None`` means the layout cannot answer: merge-style datasets have no
+    partition column, and external adapters (tushare_wide, pg_parquet …) serve
+    their own roots and report coverage through the registry — a hive directory
+    under ``curated_root`` would be the wrong answer for them. The caller then
+    falls back to the manifest signal.
+    """
+    from cnequity.domain.datasets import DATASETS
+    from cnequity.query.reader import EXTERNAL_DATASETS, _dataset_root
+
+    spec = DATASETS.get(dataset)
+    if dataset in EXTERNAL_DATASETS or spec is None or spec.partition_col is None:
+        return None
+    name = f"{spec.partition_col}={spec.partition_for(day)}"
+    part = _dataset_root(cfg, dataset) / name
+    if not part.is_dir():
+        return False
+    return any(part.glob("*.parquet")) or any(part.glob("*/*.parquet"))
+
+
 def missed_day_datasets(cfg, anchor: date, *, landed: set[str] | None = None) -> list[str]:
     """Daily datasets still behind *anchor* because no run covered that session.
 
@@ -445,9 +467,24 @@ def missed_day_datasets(cfg, anchor: date, *, landed: set[str] | None = None) ->
         if not row["has_data"] or not row["watermarked"]:
             continue
         mark = row["watermark"] or row["coverage_end"]
-        if mark is None or mark >= anchor:
+        present = _partition_present(cfg, name, anchor)
+        if present is True:
+            # The partition is on disk: whatever the watermark claims, the
+            # session is covered.
+            continue
+        claimed = mark is not None and mark >= anchor
+        if claimed:
+            if present is False:
+                # The watermark says the session landed, yet curated has no
+                # partition for it: a run advanced the watermark and compact
+                # never landed the staging file (2026-10-25: daily_bars
+                # watermark 10-23, curated still 10-22). That is a hole, not
+                # freshness.
+                missed.append(name)
             continue
         if name in landed:
+            # The session ran and produced a batch; the vendor simply publishes
+            # this one late (margin trading is T+1). Publication lag is not a hole.
             continue
         missed.append(name)
     return missed
