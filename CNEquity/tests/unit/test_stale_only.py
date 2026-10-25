@@ -41,6 +41,17 @@ def _watermark(config, dataset: str, day: date) -> None:
     StateStore(config.meta_root).set_date(dataset, day)
 
 
+def _record_run(config, dataset: str, trade_date: date) -> None:
+    """A successful batch for *trade_date*: the vendor is late, not missing."""
+    from cnequity.orchestrator.manifest import Manifest
+
+    manifest = Manifest(config.manifest_path)
+    run_id = manifest.start_run("daily:capital", {"trade_date": trade_date.isoformat()})
+    manifest.start_batch(run_id, "b1", "task-1", dataset)
+    manifest.finish_batch(run_id, "b1", "success", rows_read=10, rows_written=10)
+    manifest.finish_run(run_id, "success")
+
+
 @pytest.fixture
 def lake(config):
     _write(config, "daily_bars", ANCHOR)
@@ -69,10 +80,18 @@ def test_datasets_with_no_data_are_not_called_stale(lake):
 
 
 def test_per_dataset_tolerance_is_respected(lake):
-    """margin_trading is T+1 tolerant; a one-day lag is not stale."""
+    """margin_trading is T+1 tolerant: a session that ran, one day behind, is fine."""
     _write(lake, "margin_trading", date(2026, 7, 30))
     _watermark(lake, "margin_trading", date(2026, 7, 30))
+    _record_run(lake, "margin_trading", ANCHOR)
     assert "margin_trading" not in stale_fetch_steps(lake, ANCHOR)
+
+
+def test_tolerance_does_not_hide_a_missing_session(lake):
+    """T+1 tolerance must not swallow a night nobody ran (2026-10-23)."""
+    _write(lake, "margin_trading", date(2026, 7, 30))
+    _watermark(lake, "margin_trading", date(2026, 7, 30))
+    assert "margin_trading" in stale_fetch_steps(lake, ANCHOR)
 
 
 def test_nothing_stale_is_a_clean_no_op(config, monkeypatch):
