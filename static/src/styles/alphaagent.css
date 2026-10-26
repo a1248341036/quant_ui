@@ -101,6 +101,12 @@
 .memv-rejected, .memv-revise_required { color:#ef8b92; background:rgb(239 139 146 / .1); }
 .memv-weak { color:#b58a92; background:rgb(181 138 146 / .12); }
 .memv-eval_error { color:#8ba7c7; background:rgb(139 167 199 / .12); }
+.memv-cold_approved { color:#e2c04a; background:rgb(226 192 74 / .1); }
+.memv-cold_dead { color:#7a8ba0; background:rgb(122 139 160 / .12); }
+.memv-blocked_ortho, .memv-blocked_no_escape, .memv-blocked_coupled, .memv-blocked_structural_wall { color:#e0975e; background:rgb(224 151 94 / .12); }
+.memv-verified_mechanism { color:#7fc9c0; background:rgb(127 201 192 / .12); }
+.memv-verified_no_signal { color:#a89ee0; background:rgb(168 158 224 / .12); }
+.memv-converged, .memv-clarified, .memv-archive, .memv-dead_end_archive { color:#8ba7c7; background:rgb(139 167 199 / .12); }
 .memory-entry-main small { margin-left:auto; flex:none; color:var(--muted); font-size:10px; }
 .memory-del-btn { flex:none; width:20px; height:20px; margin-left:8px; padding:0; border:0; border-radius:5px; background:transparent; color:var(--muted); font-size:13px; cursor:pointer; }
 .memory-del-btn:hover { color:#ef8b92; background:rgb(239 139 146 / .12); }
@@ -140,6 +146,12 @@
 .summary-verdict-dot.memv-rejected, .summary-verdict-dot.memv-revise_required { background:#ef8b92; }
 .summary-verdict-dot.memv-weak { background:#b58a92; }
 .summary-verdict-dot.memv-eval_error { background:#8ba7c7; }
+.summary-verdict-dot.memv-cold_approved { background:#e2c04a; }
+.summary-verdict-dot.memv-cold_dead { background:#7a8ba0; }
+.summary-verdict-dot.memv-blocked_ortho, .summary-verdict-dot.memv-blocked_no_escape, .summary-verdict-dot.memv-blocked_coupled, .summary-verdict-dot.memv-blocked_structural_wall { background:#e0975e; }
+.summary-verdict-dot.memv-verified_mechanism { background:#7fc9c0; }
+.summary-verdict-dot.memv-verified_no_signal { background:#a89ee0; }
+.summary-verdict-dot.memv-converged, .summary-verdict-dot.memv-clarified, .summary-verdict-dot.memv-archive, .summary-verdict-dot.memv-dead_end_archive { background:#8ba7c7; }
 /* ── verdict 筛选按钮组 ── */
 .summary-filter-bar { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:14px; padding:10px 14px; border:1px solid var(--line); border-radius:9px; background:var(--bg-soft); }
 .verdict-filter-btn { display:inline-flex; align-items:center; gap:5px; padding:4px 10px; border:1px solid var(--line); border-radius:6px; background:transparent; color:var(--muted); font-size:11px; cursor:pointer; transition:all .12s; white-space:nowrap; }
@@ -153,6 +165,12 @@
 .verdict-filter-btn.active.memv-rejected, .verdict-filter-btn.active.memv-revise_required { border-color:#ef8b92; background:rgb(239 139 146 / .15); }
 .verdict-filter-btn.active.memv-weak { border-color:#b58a92; background:rgb(181 138 146 / .15); }
 .verdict-filter-btn.active.memv-eval_error { border-color:#8ba7c7; background:rgb(139 167 199 / .15); }
+.verdict-filter-btn.active.memv-cold_approved { border-color:#e2c04a; background:rgb(226 192 74 / .15); }
+.verdict-filter-btn.active.memv-cold_dead { border-color:#7a8ba0; background:rgb(122 139 160 / .15); }
+.verdict-filter-btn.active.memv-blocked_ortho, .verdict-filter-btn.active.memv-blocked_no_escape, .verdict-filter-btn.active.memv-blocked_coupled, .verdict-filter-btn.active.memv-blocked_structural_wall { border-color:#e0975e; background:rgb(224 151 94 / .15); }
+.verdict-filter-btn.active.memv-verified_mechanism { border-color:#7fc9c0; background:rgb(127 201 192 / .15); }
+.verdict-filter-btn.active.memv-verified_no_signal { border-color:#a89ee0; background:rgb(168 158 224 / .15); }
+.verdict-filter-btn.active.memv-converged, .verdict-filter-btn.active.memv-clarified, .verdict-filter-btn.active.memv-archive, .verdict-filter-btn.active.memv-dead_end_archive { border-color:#8ba7c7; background:rgb(139 167 199 / .15); }
 .summary-table tbody tr { border-bottom:1px solid var(--line); cursor:pointer; transition:background .1s; }
 .summary-table tbody tr:hover { background:rgb(79 140 255 / .06); }
 .summary-table td { padding:7px 8px; white-space:nowrap; }
