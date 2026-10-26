@@ -154,6 +154,17 @@ memory_suggest / memory_form / memory_distill / run_end`），k=v 字段 + turn 
   三段表与报告对照。逃生门：`enforce_nav_gates=True` 恢复旧净值裁决（无 ML 管线的
   独立用法）。历史教训仍有效：统计 IC 高的因子若换手高（如日换手 69%、
   周重叠 5.6%），实盘净超额会转负 —— 该拦截职责现由非收益硬约束（换手门/重叠门）承担。
+- **单因子换手门整体取消（2026-10-26 ML 终局定调，`enforce_turnover_gate=False` 默认）**：
+  三处换手拦截全部失效——①stage_one 组合换手预检（`max_avg_daily_side_turnover=0.5`
+  + 分档 `turnover_thresholds_by_freq` daily 0.50/weekly 0.65/monthly 0.80）、
+  ②`turnover_gate_limit` 派生门（评估服务短路 / MCP 预检，禁用时返回 inf）、
+  ③engine_gate 执行换手硬门（`EngineGateCriteria.enforce_turnover_gate`，avg_daily_turnover
+  仅记 thresholds 诊断）。依据：候选池定位 = ML 样本源，实盘是 ML 后策略，单因子换手
+  由组合层消化；2026-10-25 战役实证技术面 alpha 已被 99 个基线因子表达完，近门者
+  （ic/icir 双过）全部死在换手/正交墙，保留换手门只会继续 0 交付。IC/ICIR/覆盖率/
+  自相关等统计门照常。逃生门：两处 `enforce_turnover_gate=True` 恢复（candidate 管
+  预检/分档门，engine_gate 管引擎硬门）；prompt 注入（turnover_budget/behavior_rules/
+  data_calibration）与 MCP 展示同步按开关条件渲染，不给模型幻影门槛。
 
 ### 6. 候选因子库管理
 

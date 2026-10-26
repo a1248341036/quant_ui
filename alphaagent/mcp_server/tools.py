@@ -262,7 +262,14 @@ def get_thresholds(ctx: ServerContext, mode: str = "technical") -> dict:
             "min_coverage": cand.min_coverage, "min_cs_autocorr": cand.min_cs_autocorr,
             "min_val_abs_ic": cand.min_val_abs_ic, "min_val_ic_retention": cand.min_val_ic_retention,
             "max_abs_corr": cand.max_abs_corr,
-            "turnover_gate": c.turnover_gate_limit,
+            # 2026-10-26 ML 终局：禁用时 turnover_gate_limit=inf，展示为 None
+            #（禁用语义），避免 JSON 序列化出 Infinity。
+            "turnover_gate": (
+                None
+                if c.turnover_gate_limit == float("inf")
+                else c.turnover_gate_limit
+            ),
+            "turnover_gate_enforced": cand.enforce_turnover_gate,
             "turnover_thresholds_by_freq": dict(cand.turnover_thresholds_by_freq or {}),
         },
         "production": {
@@ -277,7 +284,8 @@ def get_thresholds(ctx: ServerContext, mode: str = "technical") -> dict:
             "max_avg_daily_turnover": getattr(gate, "max_avg_daily_turnover", None),
         },
         "note": "turnover_gate 是当前 freq 档的换手硬门（与 delivery_checker 同源）；"
-                "换手指标按交付调仓频率重算，勿跨档比较。",
+                "换手指标按交付调仓频率重算，勿跨档比较。2026-10-26 起 "
+                "turnover_gate=None 表示换手门已禁用（ML 终局口径，组合层消化）。",
     }
 
 
@@ -534,6 +542,8 @@ def _evaluate(svc: Any, sid: str, expr: str, name: str, split: str, quantile_n: 
 
 
 def _gate_fails(mode: str, metrics: dict) -> list[str]:
+    from alphaagent.factor.mining.delivery.delivery_criteria import format_turnover_gate
+
     c = _crit(mode)
     cand = c.candidate
     ic, icir, cov = metrics.get("ic"), metrics.get("icir"), metrics.get("coverage")
@@ -547,8 +557,8 @@ def _gate_fails(mode: str, metrics: dict) -> list[str]:
         fails.append(f"coverage<={cand.min_coverage}")
     if ac is None or ac < cand.min_cs_autocorr:
         fails.append(f"cs_autocorr<{cand.min_cs_autocorr}")
-    if turn is None or turn > c.turnover_gate_limit:
-        fails.append(f"turnover>{c.turnover_gate_limit}")
+    if c.candidate.enforce_turnover_gate and (turn is None or turn > c.turnover_gate_limit):
+        fails.append(f"turnover>{format_turnover_gate(c.turnover_gate_limit)}")
     return fails
 
 

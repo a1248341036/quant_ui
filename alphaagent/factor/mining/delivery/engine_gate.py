@@ -55,15 +55,18 @@ def run_engine_gate(
         EngineGateCriteria,
     )
     _eg_default = EngineGateCriteria()
-    for _f in ("buffer_ratio", "no_trade_band", "enforce_nav_gates"):
+    for _f in ("buffer_ratio", "no_trade_band", "enforce_nav_gates", "enforce_turnover_gate"):
         if _f not in policy:
             policy[_f] = getattr(_eg_default, _f)
     # 执行换手硬门缺键回落默认分档值（2026-09-22：engine_gate 此前对换手
     # 零约束——诊断仅记录不裁决；显式未配置也必须有约束，否则旧 spec 绕过）。
     # 注意回落走 turnover_gate_limit 而非 engine_gate.max_avg_daily_turnover：
     # 后者在未派生的 defaults() 里是 None（spec 层不物化，见 defaults() 注释）。
+    # 2026-10-26 ML 终局口径：enforce_turnover_gate=False（默认）时不物化门值，
+    # 下游换手判定整段跳过（避免 thresholds JSON 出现 Infinity）。
     if policy.get("max_avg_daily_turnover") is None:
-        policy["max_avg_daily_turnover"] = DeliveryCriteria.defaults().turnover_gate_limit
+        if _eg_default.enforce_turnover_gate:
+            policy["max_avg_daily_turnover"] = DeliveryCriteria.defaults().turnover_gate_limit
     from core.assets import get_execution_profile
     from core.engine import run_backtest
 
@@ -252,12 +255,15 @@ def run_engine_gate(
     # 执行换手硬门（2026-09-22）：回测 trades 日均执行换手上限。此前换手
     # 仅诊断记录不裁决（slippage=0 成本惩罚也≈0），engine_gate 对换手零约束。
     # 数据缺失（无 trades/diag 异常）不拦，仅在值可得且超标时裁决。
-    max_avg_to = policy.get("max_avg_daily_turnover")
-    if max_avg_to is not None:
-        thresholds["max_avg_daily_turnover"] = float(max_avg_to)
-        avg_to = diag.get("avg_daily_turnover")
-        if avg_to is not None and np.isfinite(float(avg_to)) and float(avg_to) > float(max_avg_to):
-            reasons.append("high_turnover")
+    # 2026-10-26 ML 终局口径：enforce_turnover_gate=False（默认）时整段跳过——
+    # 单因子换手交给 ML 组合层消化，不再阻断晋升；回测照跑仅诊断。
+    if policy.get("enforce_turnover_gate", _eg_default.enforce_turnover_gate):
+        max_avg_to = policy.get("max_avg_daily_turnover")
+        if max_avg_to is not None:
+            thresholds["max_avg_daily_turnover"] = float(max_avg_to)
+            avg_to = diag.get("avg_daily_turnover")
+            if avg_to is not None and np.isfinite(float(avg_to)) and float(avg_to) > float(max_avg_to):
+                reasons.append("high_turnover")
 
     return {
         "enabled": True,
