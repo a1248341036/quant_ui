@@ -432,7 +432,8 @@ class AdvisoryMixin:
 
     def recent(self, *, limit: int = 50, offset: int = 0,
                order: str = "recent", verdict: str = "",
-               sort: str = "", dir: int = 0) -> tuple[list[dict[str, Any]], int]:
+               sort: str = "", dir: int = 0,
+               stage_not: str = "") -> tuple[list[dict[str, Any]], int]:
         """分页返回条目，支持服务端 verdict 过滤与按列排序（分页 UI 口径）。
 
         order="recent"（默认）: updated_at DESC, rowid DESC —— 最新评估在前；
@@ -443,6 +444,8 @@ class AdvisoryMixin:
         字段，verdict 列按 VERDICT_ORDER 排名），dir=1 升序 / -1 降序；
         NULL 值恒排最后。未知名回落 updated_at。
         verdict 非空（须为合法 verdict）时只返回该档条目，total 为过滤后总数。
+        stage_not 非空时排除该 stage（如夜段归档 night_summary 非评估窗口，
+        不进研究总结评估台账；不传不过滤，研究记忆库等全景视图不受影响）。
 
         返回 (entries, total)。
         """
@@ -454,9 +457,14 @@ class AdvisoryMixin:
         sort_expr = _RECENT_SORT_EXPRS.get(sort) if sort else None
         if sort == "verdict":
             sort_expr = f"CASE verdict {case_parts} ELSE 99 END"
-        where_sql, where_args = "", []
+        conditions, where_args = [], []
         if verdict and verdict in VERDICT_ORDER:
-            where_sql, where_args = "WHERE verdict = ?", [verdict]
+            conditions.append("verdict = ?")
+            where_args.append(verdict)
+        if stage_not:
+            conditions.append("stage != ?")
+            where_args.append(stage_not)
+        where_sql = ("WHERE " + " AND ".join(conditions)) if conditions else ""
         if sort_expr is not None:
             direction = "DESC" if dir == -1 else "ASC"
             order_sql = (f"({sort_expr} IS NULL), {sort_expr} {direction}, "
@@ -529,16 +537,25 @@ class AdvisoryMixin:
                 for row in rows
             ]
 
-    def statistics(self) -> dict[str, Any]:
+    def statistics(self, *, stage_not: str = "") -> dict[str, Any]:
+        """研究记忆统计。stage_not 非空时 entries 与 verdict_counts 同步排除该
+        stage（与研究总结评估台账口径一致；不传为全量口径）。"""
         with self._open() as conn:
-            entry_count = int(conn.execute("SELECT COUNT(*) FROM memory_entries").fetchone()[0])
+            stage_args = (stage_not,) if stage_not else ()
+            stage_where_entries = "WHERE stage != ?" if stage_not else ""
+            entry_count = int(conn.execute(
+                f"SELECT COUNT(*) FROM memory_entries {stage_where_entries}",
+                stage_args,
+            ).fetchone()[0])
             obs_rows = conn.execute(
-                """
+                f"""
                 SELECT e.verdict AS verdict, COUNT(*) AS n
                 FROM memory_observations o
                 JOIN memory_entries e ON e.id = o.entry_id
+                {"WHERE e.stage != ?" if stage_not else ""}
                 GROUP BY e.verdict
-                """
+                """,
+                stage_args,
             ).fetchall()
             cells = int(conn.execute("SELECT COUNT(*) FROM memory_cells").fetchone()[0])
             experience = int(conn.execute("SELECT COUNT(*) FROM memory_experience").fetchone()[0])
