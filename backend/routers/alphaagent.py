@@ -185,17 +185,19 @@ def runs(include_archived: bool = False, archived_only: bool = False) -> list[di
 @router.get("/research-memory")
 def research_memory(limit: int = 50, offset: int = 0, order: str = "recent",
                     verdict: str = "", sort: str = "", dir: int = 0,
-                    stage_not: str = "") -> dict[str, Any]:
+                    stage_not: str = "", verdict_not: str = "") -> dict[str, Any]:
     """分页查询研究记忆。sort/dir 为研究总结页按列排序（白名单见 memory.advisory），
     verdict 为该档过滤（total 为过滤后总数）；不传 sort 时按 order 口径。
     stage_not 非空时同步排除该 stage 的列表与统计（研究总结页传
-    stage_not=night_summary：夜段归档非评估窗口，不进评估台账）。"""
+    stage_not=night_summary：夜段归档非评估窗口，不进评估台账）；
+    verdict_not 非空时按逗号分隔清单排除 verdict（2026-10-26：冷轨档位
+    cold_approved/cold_dead 是评估赛道/模式的档位，不进评估台账）。"""
     store = ResearchMemoryStore(service.RESEARCH_MEMORY_FILE)
     entries, total = store.recent(
         limit=max(1, min(limit, 500)), offset=max(0, int(offset)),
         order="verdict" if order == "verdict" else "recent",
         verdict=verdict or "", sort=sort or "", dir=int(dir),
-        stage_not=stage_not or "",
+        stage_not=stage_not or "", verdict_not=verdict_not or "",
     )
     # 调仓频率/研究档位溯源，优先级：条目自带（run spec 随评估落库）> registry 关联 > 缺省
     freq_map = service.factor_freq_map()
@@ -213,7 +215,7 @@ def research_memory(limit: int = 50, offset: int = 0, order: str = "recent",
             entry["rebalance_freq"] = hit["rebalance_freq"]
             entry["research_mode"] = hit["research_mode"]
             entry["freq_source"] = hit["freq_source"]
-    return {"path": str(service.RESEARCH_MEMORY_FILE), "statistics": store.statistics(stage_not=stage_not or ""), "entries": entries, "total": total}
+    return {"path": str(service.RESEARCH_MEMORY_FILE), "statistics": store.statistics(stage_not=stage_not or "", verdict_not=verdict_not or ""), "entries": entries, "total": total}
 
 
 @router.delete("/research-memory/{entry_id}")

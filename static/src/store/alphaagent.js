@@ -776,8 +776,10 @@ export const agentStore = reactive({
         offset: String(offset),
         sort: this.summarySortKey,
         dir: String(this.summarySortOrder),
-        // 夜段归档（night_summary）非评估窗口条目，不进研究总结评估台账
+        // 夜段归档（night_summary）非评估窗口条目，不进研究总结评估台账；
+        // 冷轨档位（cold_approved/cold_dead）是评估赛道/模式的档位，同样不进台账
         stage_not: 'night_summary',
+        verdict_not: 'cold_approved,cold_dead',
         t: String(Date.now()),
       })
       if (this.summaryVerdictFilter) params.set('verdict', this.summaryVerdictFilter)
