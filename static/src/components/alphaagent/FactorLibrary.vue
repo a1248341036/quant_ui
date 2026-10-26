@@ -78,7 +78,10 @@
       </thead>
       <tbody>
         <tr v-for="f in libFactorsSorted" :key="f.factor_id">
-          <td class="lib-fid" @click="showFactorDetail(f)" :title="f.factor_id">{{ f.name }}</td>
+          <td class="lib-fid" @click="showFactorDetail(f)" :title="f.factor_id">{{ f.name }}
+            <span v-if="f.gate_scope === 'ic_icir_only'" class="lib-gate-tag"
+                  title="该因子在统计门槛全关（仅按 IC/ICIR 判定）的口径下入库">仅IC/ICIR</span>
+          </td>
           <td class="lib-facets" :title="(f.facets || []).join(' + ')">
             <span v-if="f.is_fusion" class="lib-facet-tag fusion" :title="'跨面融合：' + (f.facets || []).join(' + ')">融</span>
             <span class="lib-facet-text">{{ f.facets_label || '—' }}</span>

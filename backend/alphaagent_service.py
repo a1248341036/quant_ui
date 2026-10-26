@@ -1779,6 +1779,9 @@ def _candidate_factor_view(factor_id: str, entry: dict[str, Any], *, category: s
         "research_mode": _fq["research_mode"],
         "freq_source": _fq["freq_source"],
         "finite_count": finite_count or 0,
+        # 入库门槛口径（2026-10-26）：standard=完整统计门；ic_icir_only=
+        # 统计门全关（cov/autocorr/retention/blind）仅按 IC/ICIR 判定入库。
+        "gate_scope": str(entry.get("gate_scope") or "standard"),
         "created_at": str(entry.get("ingested_at") or ""),
         "comment_preview": comment_preview,
         "comment_full": comment_full,
@@ -1924,6 +1927,7 @@ def list_factors(*, library: str = "production", category: str = "technical", fa
             "ingested_at": entry.get("ingested_at"),
             "metrics": metrics,
             "status": entry.get("ingest_status") or item.get("status"),
+            "gate_scope": str(entry.get("gate_scope") or "standard"),
         }
         # 三段指标 + 组合指标 + 数据面 + 调仓溯源：全部走单一事实源
         _ee = entry.get("evaluation_evidence") if isinstance(entry.get("evaluation_evidence"), dict) else {}
