@@ -66,6 +66,18 @@ class CandidateCriteria:
         "weekly": 0.65,
         "monthly": 0.80,
     })
+    # ── 单因子换手门总开关（2026-10-26 ML 终局定调）────────────────────────
+    # 背景：候选池定位 = ML 样本源，实盘是 ML 后策略，单因子可交易性（换手）
+    # 由组合层消化；2026-10-25 战役实证：技术面 alpha 已被 99 个基线因子表达完，
+    # 近门者（ic/icir 双过）全部死在换手/正交墙——保留换手门只会继续 0 交付。
+    # False = 换手类门全链路不拦截：stage_one 预检（max_avg_daily_side_turnover）、
+    #   分档门（turnover_thresholds_by_freq）、turnover_gate_limit 派生门（评估服务
+    #   短路 / MCP 预检）全部失效，turnover_gate_limit 返回 inf；
+    # IC/ICIR/覆盖率/自相关等统计门照常。
+    # True = 恢复旧单因子可交易性硬门（逃生门，无 ML 管线的独立用法）。
+    # 影响模式：全部模式（交付链共用 DeliveryCriteria）。调 True/False = 改口径，
+    # 必须同步单测与 docs 并在提交信息写明理由。
+    enforce_turnover_gate: bool = False
     # ── 增量轨（2026-10-20 新增，双轨判定而非替换 raw 门）────────────────────
     # 背景：候选池的实际用途是 **ML 样本源**（见类 docstring），lgbm 要的是"组合解释
     # 不掉的新信息"，不是"单因子能独立交易"。实测候选池 47 个因子的组合增量比中位数
@@ -156,9 +168,16 @@ class EngineGateCriteria:
     # annual_return/sharpe）不再产生 fail_reasons、不再阻断晋升。
     # False = 不裁决收益类（默认，当前技术/研报主线全走 ML 合成）；
     # True  = 恢复旧净值裁决（逃生门，供无 ML 管线的独立用法）。
-    # 执行可行性（min_invested_ratio）、执行换手（max_avg_daily_turnover）、
-    # 持仓重叠（min_daily_overlap）等非收益硬约束不受本开关影响，照常裁决。
+    # 执行可行性（min_invested_ratio）、持仓重叠（min_daily_overlap）等非收益
+    # 硬约束不受本开关影响，照常裁决；执行换手（max_avg_daily_turnover）自
+    # 2026-10-26 起由下方 enforce_turnover_gate 单独控制（同为 ML 终局口径：
+    # 单因子换手交给 ML 组合层消化，不再阻断晋升）。
     enforce_nav_gates: bool = False
+    # 引擎执行换手硬门开关（2026-10-26 ML 终局定调）：False = 回测照跑、
+    # avg_daily_turnover 仅记 thresholds 诊断，不产生 high_turnover fail_reasons；
+    # True = 恢复 2026-09-22 硬门。与 candidate.enforce_turnover_gate 同理由同日，
+    # 各管各层的换手门（本字段只管引擎回测层）。
+    enforce_turnover_gate: bool = False
 
 
 @dataclass(frozen=True)
@@ -358,7 +377,14 @@ class DeliveryCriteria:
         否则固定 ``max_avg_daily_side_turnover`` 会让分档改动对模型不可见，
         模型按更严值自我审查（2026-09-22 run ac54807ac194 实测：weekly 档
         0.65 未进 prompt，模型按 0.5 算账放弃候选）。
+
+        2026-10-26 ML 终局口径：``candidate.enforce_turnover_gate=False``（默认）
+        时返回 ``float("inf")``——所有 ``> gate`` 比较自然放行（评估服务短路、
+        MCP 预检、prompt 显示统一走本值），展示层用 ``format_turnover_gate``
+        把 inf 渲染为「已禁用」。
         """
+        if not self.candidate.enforce_turnover_gate:
+            return float("inf")
         return (self.candidate.turnover_thresholds_by_freq or {}).get(
             self.engine_gate.freq, self.candidate.max_avg_daily_side_turnover
         )
@@ -422,12 +448,24 @@ class DeliveryCriteria:
             if eg.max_avg_daily_turnover is not None
             else self.turnover_gate_limit
         )
+        # 换手与收益段按各自开关条件渲染（数值全部同源，禁用时不给模型留
+        # 已失效的门槛数字，避免模型按幻影门槛自我审查）。
+        if self.candidate.enforce_turnover_gate:
+            turnover_txt = f"调仓口径单边换手 <= {gate_max_to}、"
+        else:
+            turnover_txt = "单因子换手不设门（ML 终局口径，组合层消化）、"
+        if eg.enforce_nav_gates:
+            nav_txt = (
+                f"净超额年化 >= {_pct(eg.min_excess_annual)}、超额夏普 >= {eg.min_excess_sharpe}、"
+                f"回撤 <= {_pct(eg.max_drawdown)}、"
+            )
+        else:
+            nav_txt = "收益/回撤类净值门不裁决（ML 终局口径）、"
         engine = (
             f"最终还需通过 engine_gate 完整回测（调仓频率 {eg.freq}、"
-            f"动态 top {_pct(eg.selection_pct)} 选股、净超额年化 >= "
-            f"{_pct(eg.min_excess_annual)}、超额夏普 >= {eg.min_excess_sharpe}、"
-            f"回撤 <= {_pct(eg.max_drawdown)}、仓位利用率 >= {_pct(eg.min_invested_ratio)}、"
-            f"调仓口径单边换手 <= {gate_max_to}）。"
+            f"动态 top {_pct(eg.selection_pct)} 选股、{nav_txt}"
+            f"仓位利用率 >= {_pct(eg.min_invested_ratio)}、"
+            f"{turnover_txt}）"
             f"submit_factor 的 rebalance_freq 必须传 \"{eg.freq}\""
             f"（用户指定档位；可选范围 {', '.join(eg.allowed_freqs)}）。"
         )
@@ -437,3 +475,14 @@ class DeliveryCriteria:
             + " 全部通过才写正式库并返回 `stored=true`。"
             "ICIR 按绝对值判断（|ICIR|），负 ICIR 的负向 alpha 同样有效。"
         )
+
+
+def format_turnover_gate(limit: float | None) -> str:
+    """turnover_gate_limit 的展示格式（prompt 模块 / MCP 展示共用）。
+
+    inf = 换手门已禁用（2026-10-26 ML 终局口径），渲染为说明文字而非数字，
+    避免给模型/前端展示 ``inf`` 这类魔法值。
+    """
+    if limit is None or limit == float("inf"):
+        return "不限（2026-10-26 ML 终局：单因子换手门已禁用，组合层消化）"
+    return str(limit)

@@ -83,8 +83,11 @@ def render(ctx) -> str:  # noqa: ANN001
 
     crit = DeliveryCriteria.from_spec(getattr(ctx, "research_spec", None))
     min_cs_autocorr = crit.candidate.min_cs_autocorr
-    # 换手硬门按调仓频率分档，与 delivery_checker 同口径（真源见 behavior_rules 同款注释）
-    max_turnover = crit.turnover_gate_limit
+    # 换手硬门按调仓频率分档，与 delivery_checker 同口径（真源见 behavior_rules 同款注释）；
+    # 2026-10-26 ML 终局：禁用时渲染为「不限」说明文字（inf 不直接进 prompt）。
+    from alphaagent.factor.mining.delivery.delivery_criteria import format_turnover_gate
+
+    max_turnover = format_turnover_gate(crit.turnover_gate_limit)
 
     mls_block = mls_fmb_thresholds_markdown(label_col=ctx.label_col)
     label_block = _label_section_markdown(

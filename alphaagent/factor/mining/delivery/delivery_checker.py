@@ -388,15 +388,18 @@ class DeliveryChecker:
             if turnover is None:
                 turnover = qp.get("avg_daily_side_turnover")
                 turnover_metric = "avg_daily_side_turnover"
-        # 按 freq 分档取门槛；未匹配时回落到 max_avg_daily_side_turnover
-        thresholds = self.criteria.candidate.turnover_thresholds_by_freq or {}
-        max_t = thresholds.get(rebalance_freq, self.criteria.candidate.max_avg_daily_side_turnover)
-        if turnover is not None and np.isfinite(float(turnover)) and float(turnover) > max_t:
-            reasons.append(
-                f"{turnover_metric}={float(turnover):.2f} > {max_t:.2f} "
-                f"(rebalance_freq={rebalance_freq}；该指标=按声明频率调仓的单边换手，"
-                f"label 与调仓频率已强制一致，组合换手过高，实盘不可交付)"
-            )
+        # 按 freq 分档取门槛；未匹配时回落到 max_avg_daily_side_turnover。
+        # 2026-10-26 ML 终局口径：enforce_turnover_gate=False（默认）时整段跳过——
+        # 候选池是 ML 样本源，单因子换手由组合层消化，不再阻断交付。
+        if self.criteria.candidate.enforce_turnover_gate:
+            thresholds = self.criteria.candidate.turnover_thresholds_by_freq or {}
+            max_t = thresholds.get(rebalance_freq, self.criteria.candidate.max_avg_daily_side_turnover)
+            if turnover is not None and np.isfinite(float(turnover)) and float(turnover) > max_t:
+                reasons.append(
+                    f"{turnover_metric}={float(turnover):.2f} > {max_t:.2f} "
+                    f"(rebalance_freq={rebalance_freq}；该指标=按声明频率调仓的单边换手，"
+                    f"label 与调仓频率已强制一致，组合换手过高，实盘不可交付)"
+                )
 
         # 分箱塌缩防御（2026-09-15，decile_collapse_spec）：
         # 拦截因门控/稀疏填0常数簇导致的等频分箱塌缩（有效组数不足或塌缩天数过高）

@@ -96,13 +96,25 @@ SEP_BEFORE = "\n\n---\n\n"
 def render(ctx) -> str:  # noqa: ANN001
     crit = DeliveryCriteria.from_spec(getattr(ctx, "research_spec", None))
     # 换手硬门按调仓频率分档（唯一真源见 DeliveryCriteria.turnover_gate_limit），
-    # 与 delivery_checker 同口径——固定 0.5 会让 weekly 档 0.65 对模型不可见
-    max_turnover = crit.turnover_gate_limit
+    # 与 delivery_checker 同口径——固定 0.5 会让 weekly 档 0.65 对模型不可见；
+    # 2026-10-26 ML 终局：禁用时渲染为「不限」说明文字（inf 不直接给模型）。
+    from alphaagent.factor.mining.delivery.delivery_criteria import format_turnover_gate
+
+    max_turnover = format_turnover_gate(crit.turnover_gate_limit)
     # diagnostics 诊断预警线（非交付硬门），与 diagnostics.TurnoverDiagnostic._REDLINE 同源
     from alphaagent.factor.mining.diagnostics import TurnoverDiagnostic
 
     diag_turnover = str(TurnoverDiagnostic._REDLINE)
-    text = RAW.replace("{max_turnover}", str(max_turnover))
+    # 2026-10-26 ML 终局：换手门禁用时 rule 2 主体改写为提示性文案（避免
+    # 「必定被拒/请勿直接提交」这类幻影硬约束误导模型）；启用时原样渲染。
+    if crit.candidate.enforce_turnover_gate:
+        text = RAW.replace("{max_turnover}", str(max_turnover))
+    else:
+        text = RAW.replace(
+            "2. **换手红线（硬约束）与设计期自检清单**：系统交付硬门槛为 `avg_rebalance_side_turnover <= {max_turnover}`（按 label 持有期 = 调仓周期口径；daily↔1d 时等于 `avg_daily_side_turnover`。`{diag_turnover}` 为 diagnostics 诊断预警线，非交付硬门：超过即应主动降换手；`> {max_turnover}` 必定被拒，请勿直接调用 `submit_factor`）——消融实验与历史数据证明绝大多数候选均因此止步 stage_one/engine_gate，纯浪费算力。",
+            "2. **换手提示（2026-10-26 ML 终局：单因子换手门已禁用，不再拦截交付）**：换手由 ML 组合层消化，超门不拒——但高换手信号喂 ML 时信噪比更差、组合成本更高，同等 IC/ICIR 下优先低换手结构。`{diag_turnover}` 仍为 diagnostics 诊断预警线（超过即建议主动降换手）。下列降换手流程与自检清单保留为**设计期参考**（降低 ML 特征噪声）。",
+        ).replace("{max_turnover}", str(max_turnover))
+        text = text.replace("否则必被换手门拦截", "否则换手偏高（门已禁用不拦截，但 ML 信噪比更差）")
     text = text.replace("{diag_turnover}", str(diag_turnover))
     # IC 门槛同源 CandidateCriteria.min_abs_ic（【唯一真源】），避免 prompt 硬编码漂移
     from alphaagent.factor.mining.delivery.delivery_criteria import CandidateCriteria

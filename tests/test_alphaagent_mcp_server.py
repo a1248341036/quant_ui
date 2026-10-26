@@ -137,7 +137,12 @@ def test_get_thresholds_matches_delivery_criteria(ctx: ServerContext, mode: str)
     assert cand["min_coverage"] == crit.candidate.min_coverage
     assert cand["min_cs_autocorr"] == crit.candidate.min_cs_autocorr
     assert cand["max_abs_corr"] == crit.candidate.max_abs_corr
-    assert cand["turnover_gate"] == crit.turnover_gate_limit
+    # 2026-10-26 ML 终局：换手门默认禁用 → 展示为 None（禁用语义，非 inf）
+    if crit.candidate.enforce_turnover_gate:
+        assert cand["turnover_gate"] == crit.turnover_gate_limit
+    else:
+        assert cand["turnover_gate"] is None
+        assert cand["turnover_gate_enforced"] is False
     assert out["engine_gate"]["freq"] == crit.engine_gate.freq
     assert out["label_col"].startswith("label_")
 

@@ -60,10 +60,26 @@ def render(ctx) -> str:  # noqa: ANN001
     hold = _label_hold_days(str(getattr(ctx, "label_col", "")))
     verdict, note = _match_verdict(hold, freq)
 
+    # 2026-10-26 ML 终局：换手门禁用时顶部改为说明文案，红线段同步软化
+    gate_line = (
+        f"- 本 run 调仓频率：**{freq}**；换手硬门：`avg_rebalance_side_turnover <= {gate}`"
+        "（按频率分档，与交付门槛同源；daily↔1d 时该值 = `avg_daily_side_turnover`）。"
+        if gate != float("inf")
+        else "- 本 run 调仓频率：**{freq}**；**换手硬门已禁用**（2026-10-26 ML 终局口径："
+             "实盘是 ML 后策略，单因子换手由组合层消化，不再阻断交付）。换手仍影响组合成本，"
+             "同等 IC/ICIR 下优先低换手结构。".replace("{freq}", freq)
+    )
+    redline = (
+        "**红线**：1d label 配 weekly/monthly 调仓且不叠慢结构 → 换手必超门，"
+        "不要在超门后靠微调参数救（同质化熔断也会拦）。"
+        if gate != float("inf")
+        else "**提示**：换手门已禁用，超门不再拦截——但高换手信号喂 ML 时信噪比更差，"
+             "label 与调仓频率仍须匹配（daily↔1d / weekly↔5d / monthly↔20d）。"
+    )
+
     lines = [
         "### 换手预算与调仓频率匹配",
-        f"- 本 run 调仓频率：**{freq}**；换手硬门：`avg_rebalance_side_turnover <= {gate}`"
-        "（按频率分档，与交付门槛同源；daily↔1d 时该值 = `avg_daily_side_turnover`）。",
+        gate_line,
         "- **label 与调仓频率已强制一致**（2026-10-04 起）：label 持有期必须等于调仓持有期"
         "（daily↔1d、weekly↔5d、monthly↔20d）——所以「1d label 配 weekly 调仓」这种组合"
         "在本 run 里不存在，快信号不会被低频调仓的折算放行。",
@@ -82,7 +98,6 @@ def render(ctx) -> str:  # noqa: ANN001
         "- 慢信息源：资金/筹码/股东/事件类列天然低换手，做截面排序后再配门控；",
         "- 结构选择：背离、筹码峰距离、资金积累等「慢变量」比价格动量换手低一个量级。",
         "",
-        "**红线**：1d label 配 weekly/monthly 调仓且不叠慢结构 → 换手必超门，"
-        "不要在超门后靠微调参数救（同质化熔断也会拦堆平滑）。",
+        redline,
     ]
     return "\n".join(lines)

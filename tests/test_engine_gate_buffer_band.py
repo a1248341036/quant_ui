@@ -164,16 +164,16 @@ def test_engine_gate_turnover_gate_derived():
     spec2["delivery_policy"]["production"]["engine_gate"]["max_avg_daily_turnover"] = 0.42
     assert DeliveryCriteria.from_spec(spec2).engine_gate.max_avg_daily_turnover == 0.42
     # 消费点 fallback：prompt 渲染按 freq 分档；2026-10-04 起 technical 已对齐为
-    # label_1d + daily（换手硬门 daily 档 0.50），文案也改为"调仓口径单边换手"。
+    # label_1d + daily（换手硬门 daily 档 0.50）。2026-10-26 ML 终局：换手门默认
+    # 禁用，prompt 渲染为「不设门」文案；enforce=True 时恢复数字门槛。
     dc = DeliveryCriteria.from_spec(default_research_spec("technical"))
     text = dc.to_prompt_text()
     assert dc.engine_gate.freq == "daily"
-    assert "调仓口径单边换手 <= 0.5" in text
-    # weekly 档仍按 0.65（在 label_5d 的对齐档位上）
-    sp_w = default_research_spec("technical_weekly")
-    dc_w = DeliveryCriteria.from_spec(sp_w)
-    assert dc_w.engine_gate.freq == "weekly"
-    assert "调仓口径单边换手 <= 0.65" in dc_w.to_prompt_text()
+    assert "单因子换手不设门（ML 终局口径，组合层消化）" in text
+    dc_on = DeliveryCriteria.from_spec({
+        "candidate": {"enforce_turnover_gate": True, "turnover_thresholds_by_freq": {"daily": 0.5}}
+    })
+    assert "调仓口径单边换手 <= 0.5" in dc_on.to_prompt_text()
 
 
 def test_engine_gate_criteria_dict_includes_new_fields():
@@ -261,7 +261,7 @@ def test_run_engine_gate_does_not_mutate_policy(panel):
 
 
 def test_run_engine_gate_high_turnover_gate(panel):
-    """执行换手硬门（2026-09-22）：diag avg_daily_turnover > 门槛 → high_turnover。"""
+    """执行换手硬门（2026-09-22；2026-10-26 起默认禁用，enforce=True 才裁决）。"""
     from alphaagent.factor.mining.delivery.engine_gate import run_engine_gate
 
     mi_panel = panel.copy()
@@ -278,6 +278,7 @@ def test_run_engine_gate_high_turnover_gate(panel):
         "freq": "monthly", "capital": 1_000_000,
         "min_excess_annual": -1.0, "min_excess_sharpe": -1.0,
         "max_drawdown": 1.0, "min_daily_overlap": 0.0, "min_invested_ratio": 0.0,
+        "enforce_turnover_gate": True,  # 2026-10-26 起默认禁用，本测试显式开启
     }
 
     # 门槛 0.0：只要有可得的执行换手就必超 → high_turnover
@@ -295,12 +296,12 @@ def test_run_engine_gate_high_turnover_gate(panel):
     )
     assert "high_turnover" not in res_pass["fail_reasons"], res_pass["fail_reasons"]
 
-    # 缺键：回落 defaults 分档（weekly → 0.65），thresholds 记录
+    # 缺键（开关开启）：回落 defaults 分档（monthly → 0.80），thresholds 记录
     res_default = run_engine_gate(
         mi_panel, factor_values, val_start=START, val_end=END, direction=1,
         policy=dict(base_policy),
     )
-    assert res_default["thresholds"]["max_avg_daily_turnover"] == 0.65
+    assert res_default["thresholds"]["max_avg_daily_turnover"] == 0.80
 
 
 # ── buffer zone 严格降换手（review 2026-09-19：原 test_buffer_band_reduces_turnover
@@ -463,8 +464,9 @@ def test_engine_gate_nav_gates_on_restores_blocking(panel):
         assert k in res["fail_reasons"], (k, res["fail_reasons"])
 
 
-def test_engine_gate_nav_gates_off_keeps_non_nav_gates(panel):
-    """开关只豁免收益类：执行换手硬门（非收益约束）照常裁决，与 ML 调研结论一致。"""
+def test_engine_gate_nav_gates_off_and_turnover_default_disabled(panel):
+    """nav 开关只豁免收益类；2026-10-26 起换手门由独立开关控制且默认禁用
+    （enforce_turnover_gate 回落 False）——max_avg_daily_turnover=0.0 也不再拦。"""
     from alphaagent.factor.mining.delivery.engine_gate import run_engine_gate
 
     mi_panel, factor_values = _nav_gate_panel(panel)
@@ -472,11 +474,82 @@ def test_engine_gate_nav_gates_off_keeps_non_nav_gates(panel):
         mi_panel, factor_values, val_start=START, val_end=END, direction=1,
         policy={**_NAV_FAIL_POLICY, "enforce_nav_gates": False, "max_avg_daily_turnover": 0.0},
     )
-    # 收益类被豁免、换手门照拦（0.0 门槛下任何执行换手必超）
-    assert "high_turnover" in res["fail_reasons"], res["fail_reasons"]
-    assert res["passed"] is False
+    # 收益类与换手类（默认禁用）均不裁决
+    assert res["passed"] is True, res["fail_reasons"]
     for k in _NAV_KEYS:
         assert k not in res["fail_reasons"], res["fail_reasons"]
+    assert "high_turnover" not in res["fail_reasons"], res["fail_reasons"]
+
+
+def test_engine_gate_turnover_on_restores_blocking(panel):
+    """enforce_turnover_gate=True：恢复 2026-09-22 引擎换手硬门——0.0 门槛必拦。"""
+    from alphaagent.factor.mining.delivery.engine_gate import run_engine_gate
+
+    mi_panel, factor_values = _nav_gate_panel(panel)
+    res = run_engine_gate(
+        mi_panel, factor_values, val_start=START, val_end=END, direction=1,
+        policy={**_NAV_FAIL_POLICY, "enforce_turnover_gate": True, "max_avg_daily_turnover": 0.0},
+    )
+    assert "high_turnover" in res["fail_reasons"], res["fail_reasons"]
+    assert res["passed"] is False
+
+
+def test_turnover_gate_default_disabled_and_property_inf():
+    """2026-10-26 ML 终局口径：candidate.enforce_turnover_gate=False（默认）——
+    turnover_gate_limit 返回 inf（所有 > gate 比较自然放行），True 恢复分档值。"""
+    import math
+
+    from alphaagent.factor.mining.delivery.delivery_criteria import DeliveryCriteria
+
+    dc = DeliveryCriteria.defaults()
+    assert dc.candidate.enforce_turnover_gate is False
+    assert dc.engine_gate.enforce_turnover_gate is False
+    assert dc.turnover_gate_limit == float("inf")
+    assert math.isinf(dc.turnover_gate_limit)
+    enabled = DeliveryCriteria.from_spec({"candidate": {"enforce_turnover_gate": True}})
+    assert enabled.candidate.enforce_turnover_gate is True
+    assert enabled.turnover_gate_limit == 0.50  # 恢复 daily 分档值
+
+
+def test_delivery_checker_turnover_gate_default_disabled():
+    """stage_one 组合换手预检默认禁用：turn 1.5 不产生 fail；enforce=True 恢复拦截。"""
+    from alphaagent.factor.mining.delivery.delivery_checker import DeliveryChecker
+    from alphaagent.factor.mining.delivery_criteria import DeliveryCriteria
+
+    metrics = {
+        "ic": 0.05, "icir": 0.5, "coverage": 0.95, "cs_pearson_autocorr": 0.9,
+        "quantile_portfolio": {"avg_rebalance_side_turnover": 1.5},
+    }
+    checker = DeliveryChecker(DeliveryCriteria.defaults())
+    res = checker.stage_one_stats(metrics, rebalance_freq="daily")
+    assert res.passed is True, res.fail_reasons
+    assert not any("turnover" in r for r in res.fail_reasons), res.fail_reasons
+
+    enabled = DeliveryCriteria.from_spec({
+        "candidate": {"enforce_turnover_gate": True, "turnover_thresholds_by_freq": {"daily": 0.5}}
+    })
+    res2 = DeliveryChecker(enabled).stage_one_stats(metrics, rebalance_freq="daily")
+    assert res2.passed is False
+    assert any("turnover" in r for r in res2.fail_reasons), res2.fail_reasons
+
+
+def test_turnover_gate_spec_roundtrip_and_validation():
+    """三件套：to_spec_dict 物化默认 False、from_spec 回读、非 bool 被校验层拒绝。"""
+    from alphaagent.factor.mining.delivery_criteria import DeliveryCriteria
+    from alphaagent.factor.mining.research_spec import default_research_spec, normalize_research_spec
+
+    spec = DeliveryCriteria.defaults().to_spec_dict()
+    assert spec["candidate"]["enforce_turnover_gate"] is False
+    assert spec["production"]["engine_gate"]["enforce_turnover_gate"] is False
+    r = DeliveryCriteria.from_spec(spec)
+    assert r.candidate.enforce_turnover_gate is False
+    assert r.engine_gate.enforce_turnover_gate is False
+
+    tspec = default_research_spec("technical")
+    assert tspec["delivery_policy"]["candidate"]["enforce_turnover_gate"] is False
+    tspec["delivery_policy"]["candidate"]["enforce_turnover_gate"] = "yes"
+    with pytest.raises(ValueError, match="enforce_turnover_gate_must_be_boolean"):
+        normalize_research_spec(tspec)
 
 
 def test_engine_gate_nav_gates_invalid_type_rejected():

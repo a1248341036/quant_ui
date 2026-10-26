@@ -864,6 +864,11 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
     candidate["min_val_ic_retention"] = _bounded_number(candidate.get("min_val_ic_retention"), "delivery_policy.candidate.min_val_ic_retention", 0, 1)
     # val 端 IC 绝对下限（2026-09-11 预筛池口径新增：保留比只卡相对衰减）
     candidate["min_val_abs_ic"] = _bounded_number(candidate.get("min_val_abs_ic"), "delivery_policy.candidate.min_val_abs_ic", 0, 1)
+    # 单因子换手门总开关（2026-10-26 ML 终局）：False=全链路不拦截换手（默认），
+    # True=恢复单因子可交易性硬门。默认值真源在 CandidateCriteria。
+    candidate["enforce_turnover_gate"] = _require_bool(
+        candidate.get("enforce_turnover_gate"), "delivery_policy.candidate.enforce_turnover_gate"
+    )
     production = _require_dict(delivery.get("production"), "delivery_policy.production")
     # 双窗口统计门槛（2026-08 重构：混合窗口稀释 val 衰减，已弃用单口径 min_abs_ic/min_icir）
     for key in ("min_train_abs_ic", "min_val_abs_ic", "max_winsorized_abs_ic_decay", "max_abs_corr"):
@@ -891,6 +896,10 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
     # 收益类判据；True=恢复旧净值裁决。默认值真源在 EngineGateCriteria。
     if eg.get("enforce_nav_gates") is not None:
         eg["enforce_nav_gates"] = _require_bool(eg.get("enforce_nav_gates"), "engine_gate.enforce_nav_gates")
+    # 引擎执行换手硬门开关（2026-10-26 ML 终局）：False=回测照跑仅诊断（默认），
+    # True=恢复 2026-09-22 硬门。默认值真源在 EngineGateCriteria。
+    if eg.get("enforce_turnover_gate") is not None:
+        eg["enforce_turnover_gate"] = _require_bool(eg.get("enforce_turnover_gate"), "engine_gate.enforce_turnover_gate")
     eg["selection_mode"] = str(eg.get("selection_mode", "top_pct"))
     if eg["selection_mode"] not in {"top_pct", "top_n"}:
         raise ValueError("research_spec.engine_gate.selection_mode_invalid")
