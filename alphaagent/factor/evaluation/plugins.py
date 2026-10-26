@@ -182,6 +182,13 @@ def cross_sectional_core(context: EvaluationContext, params: dict[str, Any]) -> 
         "icir": summary["icir"],
         "rank_ic": summary["rank_ic"],
         "n_days": summary["n_days"],
+        # B-02（2026-10-26）三口径并列：icir=去重叠主口径；icir_overlap=名义
+        # 重叠日频（诊断）；ic_t_nw/ic_n_eff=Newey-West 有效检验与有效样本数；
+        # icir_caliber 显式标注口径，杜绝下游再产出无口径数字。
+        "icir_overlap": summary["icir_overlap"],
+        "ic_t_nw": summary["ic_t_nw"],
+        "ic_n_eff": summary["ic_n_eff"],
+        "icir_caliber": summary["icir_caliber"],
         "n_instruments": n_instruments,
         "factor_coverage": coverage(values),
         "factor_skewness": skew,

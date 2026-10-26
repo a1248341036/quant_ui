@@ -15,6 +15,7 @@ from alphaagent.factor.types import DEFAULT_LABEL_COL
 
 from ._core import coverage, pearson_ic, spearman_ic
 from .decile import decile_mean_label, _compute_daily_decile_mean_labels
+from .mls import newey_west_mean_tstat
 
 
 def cross_sectional_ic(
@@ -163,8 +164,8 @@ def cs_ic_summary(
     daily_rank_ic: pd.Series | None = None,
     *,
     holding_days: int = 1,
-) -> dict[str, float | int]:
-    """由 IC / RANKIC 汇总 IC、ICIR、RANKIC。
+) -> dict[str, Any]:
+    """由 IC / RANKIC 汇总 IC、ICIR、RANKIC（含三口径并列与口径标注）.
 
     持有期 >1（如 label_20d → 20）时逐日 IC 来自重叠收益，std 被低估导致
     ICIR 虚高。此处按持有期节奏重采样去重叠（每 hold 个交易日取一点），与
@@ -175,18 +176,60 @@ def cs_ic_summary(
     freq 刻意解耦，详见 core/research_modes.py 顶部"label 口径 vs 调仓频率"。
     """
     hold = max(1, int(holding_days))
+    ic_full = daily_ic
     if hold > 1 and len(daily_ic) > hold:
         daily_ic = daily_ic.iloc[::hold]
         if daily_rank_ic is not None:
             daily_rank_ic = daily_rank_ic.iloc[::hold]
     ic_vals = daily_ic[np.isfinite(daily_ic.to_numpy(dtype=float, copy=False))]
     n_days = int(len(ic_vals))
+    caliber = "deoverlap_by_holding_days" if hold > 1 else "daily"
     if n_days == 0:
-        return {"ic": float("nan"), "icir": float("nan"), "rank_ic": float("nan"), "n_days": 0}
+        return {
+            "ic": float("nan"),
+            "icir": float("nan"),
+            "rank_ic": float("nan"),
+            "n_days": 0,
+            "icir_overlap": float("nan"),
+            "ic_t_nw": float("nan"),
+            "ic_n_eff": float("nan"),
+            "icir_caliber": caliber,
+        }
 
     ic_mean = float(ic_vals.mean())
     ic_std = float(ic_vals.std(ddof=1)) if n_days > 1 else float("nan")
     icir = ic_mean / ic_std if ic_std and np.isfinite(ic_std) and ic_std > 0 else float("nan")
+
+    # B-02（2026-10-26）三口径并列：主口径 ``icir`` 已按持有期节奏去重叠；
+    # 补名义重叠 ICIR（``icir_overlap``，诊断用——20d 重叠自相关下 std 低估、
+    # ICIR 虚高 38x，见 docs/specs/alphaagent_known_bugs_spec.md B-02）与
+    # Newey-West t / 有效样本数（对原始重叠序列，Bartlett 核 lags=hold-1，
+    # 检验功效充分——去重叠采样只留 1/hold 样本，t≈2.9 功效不足的反例）。
+    icir_overlap = float("nan")
+    ic_t_nw = float("nan")
+    ic_n_eff = float("nan")
+    if hold == 1:
+        if np.isfinite(icir):
+            icir_overlap = float(icir)
+    else:
+        full_vals = ic_full[np.isfinite(ic_full.to_numpy(dtype=float, copy=False))]
+        if len(full_vals) > 2:
+            sd_full = float(full_vals.std(ddof=1))
+            if sd_full > 1e-12:
+                icir_overlap = float(full_vals.mean() / sd_full)
+            nw = newey_west_mean_tstat(full_vals, lags=max(1, hold - 1))
+            se_nw = float(nw.get("se_nw", float("nan")))
+            t_nw = float(nw.get("t_nw", float("nan")))
+            if np.isfinite(t_nw):
+                ic_t_nw = t_nw
+            if (
+                np.isfinite(se_nw)
+                and se_nw > 0
+                and np.isfinite(sd_full)
+                and sd_full > 0
+            ):
+                se_nominal = sd_full / np.sqrt(len(full_vals))
+                ic_n_eff = float((se_nominal / se_nw) ** 2)
 
     rank_ic_mean = float("nan")
     if daily_rank_ic is not None:
@@ -198,6 +241,10 @@ def cs_ic_summary(
         "icir": icir,
         "rank_ic": rank_ic_mean,
         "n_days": n_days,
+        "icir_overlap": icir_overlap,
+        "ic_t_nw": ic_t_nw,
+        "ic_n_eff": ic_n_eff,
+        "icir_caliber": caliber,
     }
 
 
@@ -235,6 +282,10 @@ def evaluate_cs_on_panel(
         "icir": cs["icir"],
         "rank_ic": cs["rank_ic"],
         "n_days": cs["n_days"],
+        "icir_overlap": cs["icir_overlap"],
+        "ic_t_nw": cs["ic_t_nw"],
+        "ic_n_eff": cs["ic_n_eff"],
+        "icir_caliber": cs["icir_caliber"],
         "cs_pearson_autocorr": cross_sectional_lag1_pearson_autocorr(
             factor_series,
             min_pairs=cs_autocorr_min_pairs,

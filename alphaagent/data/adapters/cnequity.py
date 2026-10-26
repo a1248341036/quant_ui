@@ -672,6 +672,57 @@ def _save_cached_panel(
         logger.warning("CNE panel 缓存写入失败（不影响使用）: %s", exc)
 
 
+def _warn_panel_rebuild_cost(
+    *,
+    start: str | None,
+    include_fundamentals: bool,
+    focus: list[str],
+) -> None:
+    """缓存未命中、即将全量重建前的内存成本护栏（B-01，2026-10-26）。
+
+    纯日志零行为：不阻塞自动化路径（CLI/无人值守重建照常进行），只把
+    「这次重建预计吃多少内存」从静默变为可感知。规模参考取缓存目录中
+    行×列乘积最大的已知缓存 meta（rows×cols×8B float64 估算，未含索引
+    与 object 列开销，属下限估计）。
+    """
+    try:
+        est_rows = est_cols = 0
+        if _CACHE_ROOT.is_dir():
+            for path in _CACHE_ROOT.glob(f"panel_v{_CACHE_SCHEMA_VERSION}_*.parquet"):
+                meta = _read_cache_meta(path)
+                if not meta:
+                    continue
+                rows = int(meta.get("rows") or 0)
+                cols = int(meta.get("columns") or 0)
+                if rows * cols > est_rows * est_cols:
+                    est_rows, est_cols = rows, cols
+        if est_rows > 0 and est_cols > 0:
+            est_gb = est_rows * est_cols * 8 / 2**30
+            logger.warning(
+                "B-01: CNE panel 缓存未命中 → 全量重建（start=%s include_fundamentals=%s "
+                "focus=%s）。参考现有缓存规模 %d 行 × %d 列，内存峰值预计 ≥ %.1f GB"
+                "（float64 估算下限）。如无需 funda_* 列请改传 include_fundamentals=False；"
+                "已知表达式列请传 keep_columns 走按需物化路径。",
+                start,
+                include_fundamentals,
+                focus or "全量",
+                est_rows,
+                est_cols,
+                est_gb,
+            )
+        else:
+            logger.warning(
+                "B-01: CNE panel 缓存未命中 → 首次全量重建（start=%s "
+                "include_fundamentals=%s focus=%s）。无历史规模可参考，全量面板"
+                "内存峰值可能达数 GB。",
+                start,
+                include_fundamentals,
+                focus or "全量",
+            )
+    except Exception as exc:  # noqa: BLE001 — 护栏绝不阻塞主路径
+        logger.debug("重建成本预估失败（忽略）: %s", exc)
+
+
 def load_panel_from_cne(
     *,
     start: str | None = None,
@@ -744,6 +795,11 @@ def load_panel_from_cne(
             _enrich_trade_flags(cached)
             return cached
 
+    # B-01 护栏（2026-10-26）：重建是全量内存动作（历史实测 4.7GB+ / 463s+），
+    # 静默发生时用户只看到「电脑卡死」。此处按历史缓存规模打内存预估 WARNING，
+    # 不阻塞自动化路径。仅 stock 全量口径打点——ETF 面板极小，无此内存风险。
+    if asset_type == "stock" and not universe_mask:
+        _warn_panel_rebuild_cost(start=start, include_fundamentals=include_fundamentals, focus=focus)
     registry = get_registry()
     allowed = _facet_allowed(focus)
     wanted_aux: set[str] | None = None

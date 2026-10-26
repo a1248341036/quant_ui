@@ -123,10 +123,28 @@ class SessionStore:
         keep_columns = tuple(getattr(ctx, "columns", ()) or ())
         if keep_columns:
             keep_columns = tuple(dict.fromkeys((*keep_columns, ctx.label_col)))
+        # B-01 修复（2026-10-26）：请求列可见且均不含 funda_* 时，即使
+        # include_fundamentals=True 也按 False 加载——否则缓存层按 meta 版本标签
+        # 失配拒绝命中仅有的 false 版缓存，触发 8GB 全量重建（2026-10-20 内存事故
+        # 根因）。降级语义与请求等价：不会读取任何 funda_* 列。
+        include_fundamentals_eff = bool(ctx.include_fundamentals)
+        fundamentals_demoted = False
+        if (
+            ctx.include_fundamentals
+            and keep_columns
+            and not any(str(c).startswith("funda_") for c in keep_columns)
+        ):
+            include_fundamentals_eff = False
+            fundamentals_demoted = True
+            logger.info(
+                "B-01: include_fundamentals=True 但请求列 %d 个均不含 funda_* → "
+                "降级为 include_fundamentals=False 加载（可命中 false 版缓存，避免全量重建）",
+                len(keep_columns),
+            )
         if is_cne_source(ctx.panel_path):
             panel = load_panel_from_cne(
                 start=cov_start, end=cov_end, universe_mask=False,
-                include_fundamentals=ctx.include_fundamentals,
+                include_fundamentals=include_fundamentals_eff,
                 asset_type=ctx.asset_type,
                 focus_facets=getattr(ctx, "focus_facets", ()) or None,
                 keep_columns=keep_columns or None,
@@ -217,6 +235,9 @@ class SessionStore:
                 "coverage_start": cov_start,
                 "coverage_end": cov_end,
                 "include_fundamentals": ctx.include_fundamentals,
+                # B-01：实际加载口径可能因「请求列无 funda_*」降级为 False（见上），
+                # 此处保留请求原值 + demoted 标志，审计两侧都可见。
+                "fundamentals_demoted": fundamentals_demoted,
                 "asset_type": ctx.asset_type,
                 "dropped_fundamental_cols": dropped_funda,
                 "universe": universe_name,
