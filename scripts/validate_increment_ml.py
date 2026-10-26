@@ -35,7 +35,12 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-LABEL = "label_20d_close_to_close"
+try:
+    from alphaagent.factor.mining.research_spec import DEFAULT_RESEARCH_SPEC
+    LABEL = str((DEFAULT_RESEARCH_SPEC.get("ml_increment_policy") or {}).get("label")
+                or "label_20d_close_to_close")
+except Exception:  # 脚本独立运行 / 包不可导入时回落字面量（2026-10-26 收口）
+    LABEL = "label_20d_close_to_close"
 INC_DIR = ROOT / "artifacts" / "alphaagent" / "harness_runs" / "2026-10-20_increment"
 
 

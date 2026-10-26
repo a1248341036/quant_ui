@@ -97,6 +97,16 @@ SATURATION_FAMILY_SKIP = 0.4
 EDIT_PRIOR_RECOMMEND_CONF_DEFAULT = 0.4
 EDIT_PRIOR_VETO_CONF_DEFAULT = 0.3
 
+# ── 检索排序与观测判定阈值（2026-10-26 收口：原裸数字散落 retrieval/ingestion）──
+# 换手软惩罚线：介于 prompt 建议红线（0.4）与 stage_one 硬门槛（0.5）之间；
+# 检索排序对超标候选降权排后，不一刀切排除。
+RETRIEVAL_TURNOVER_SOFT_PENALTY = 0.45
+# MULTIPLY 结构拒绝比：历史 n_MULTIPLY 次中拒绝占比 ≥ 该值 → 注入「禁用乘法结构」提示
+MULTIPLY_REJECT_RATIO = 0.4
+# 编辑增量观测（parent→child）success/failure 判定门槛：|ΔIC| 超过该值才算
+# 方向性证据，否则记 neutral（原 ingestion.py 函数内局部常量）。
+EDIT_DELTA_IC_SUCCESS_THRESHOLD = 0.003
+
 # ── near_miss 判定阈值（单一真源）──
 # schema._classify 与 tools/_dispatch._near_miss_verdict 共用，避免两处硬编码漂移。
 # IC 达门槛的 80%、ICIR/coverage 达标但未过线 → near_miss（2026-09-05 记忆分析：
