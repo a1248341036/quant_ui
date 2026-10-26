@@ -384,7 +384,17 @@ export default {
     },
     stageLabel(stage) {
       // 指标来自挖掘循环内的评估段；盲测段（真正的 OOS）刻意不回流记忆，防止多重检验污染
-      return { train: '训练段', val: '验证段', test: '盲测段' }[stage] || stage || '—'
+      // evaluate_factor=独立评估工具调用；submit_factor=提交链路；full=全窗口评估；
+      // night_summary=夜间 harness 直驱会话的研究结论归档（conclusion/metrics 是夜段汇总，非逐因子 IC）
+      return {
+        train: '训练段',
+        val: '验证段',
+        test: '盲测段',
+        evaluate_factor: 'Profile 评估',
+        submit_factor: '提交链路',
+        full: '全窗口',
+        night_summary: '夜段归档',
+      }[stage] || stage || '—'
     },
     async refresh() {
       this.loading = true
