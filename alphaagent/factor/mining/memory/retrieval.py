@@ -15,6 +15,11 @@ from typing import Any
 from .calibration import _apv_gate, _eq7_confidence
 from .constants import (
     SATURATION_FAMILY_SKIP,
+    RETRIEVAL_TURNOVER_SOFT_PENALTY,
+    MULTIPLY_REJECT_RATIO,
+    EDIT_PRIOR_HARD_CONF_DEFAULT,
+    EDIT_PRIOR_RECOMMEND_CONF_DEFAULT,
+    EDIT_PRIOR_VETO_CONF_DEFAULT,
     NEGATIVE_VERDICTS,
     POSITIVE_VERDICTS_READ,
     VERDICT_TRAIN_PASS,
@@ -345,9 +350,9 @@ class RetrievalMixin:
             abs_ic = abs(float(ic)) if isinstance(ic, (int, float)) else 0.0
             turnover = m.get("avg_daily_side_turnover") if m else None
             try:
-                # 换手率软惩罚阈值（0.45）：介于 prompt 建议红线 (0.4) 与 stage_one 硬门槛 (0.5) 之间；
+                # 换手率软惩罚阈值：介于 prompt 建议红线 (0.4) 与 stage_one 硬门槛 (0.5) 之间；
                 # 检索排序时对换手超标候选作降权排后，既不一刀切排除，又优先向 LLM 注入高可交易性父本。
-                high_turnover_penalty = 1 if turnover is not None and float(turnover) > 0.45 else 0
+                high_turnover_penalty = 1 if turnover is not None and float(turnover) > RETRIEVAL_TURNOVER_SOFT_PENALTY else 0
             except (TypeError, ValueError):
                 high_turnover_penalty = 0
             fam = str(e.get("family") or "other")
@@ -918,9 +923,9 @@ class RetrievalMixin:
             return ""
         if not rows:
             return ""
-        hard_conf = getattr(self, "edit_prior_hard_conf", 0.7)
-        recommend_conf = getattr(self, "edit_prior_recommend_conf", 0.4)
-        veto_conf = getattr(self, "edit_prior_veto_conf", 0.3)
+        hard_conf = getattr(self, "edit_prior_hard_conf", EDIT_PRIOR_HARD_CONF_DEFAULT)
+        recommend_conf = getattr(self, "edit_prior_recommend_conf", EDIT_PRIOR_RECOMMEND_CONF_DEFAULT)
+        veto_conf = getattr(self, "edit_prior_veto_conf", EDIT_PRIOR_VETO_CONF_DEFAULT)
 
         bucket_text = {
             "low": "弱父本",
@@ -985,7 +990,7 @@ class RetrievalMixin:
 
             # D1 核心对齐：拥挤饱和族抑制正向推荐，防止与饱和度警告同框对冲
             fam_sat = saturation.get(family, {}).get("saturation_score", 0.0)
-            if fam_sat > 0.4 and "recommend" in tier:
+            if fam_sat > SATURATION_FAMILY_SKIP and "recommend" in tier:
                 if tier == "soft_recommend":
                     continue
                 tier_is_crowded = True
@@ -1128,7 +1133,7 @@ class RetrievalMixin:
         saturation = self.compute_saturation()
         crowded = {
             f: d for f, d in saturation.items()
-            if d.get("saturation_score", 0) > 0.4
+            if d.get("saturation_score", 0) > SATURATION_FAMILY_SKIP
         }
         if not crowded:
             return ""
@@ -1291,7 +1296,7 @@ class RetrievalMixin:
         ]
         n_mult = int(row["n_MULTIPLY"] or 0)
         rej_mult = int(row["rej_MULTIPLY"] or 0)
-        if n_mult >= min_attempts and rej_mult / n_mult >= 0.4:
+        if n_mult >= min_attempts and rej_mult / n_mult >= MULTIPLY_REJECT_RATIO:
             lines.append(
                 f"- ⚠ 乘法(MULTIPLY) 过线率垫底且 {rej_mult / n_mult:.0%} 被"
                 "正交/审查拒绝，默认 spec 已禁用（含契约形式）——不要提交乘法结构。"

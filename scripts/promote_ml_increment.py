@@ -31,7 +31,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 LIB_DIR = ROOT / "artifacts" / "alphaagent" / "factorzoo" / "ml_increment_main"
 REGISTRY = LIB_DIR / "mining_ml_increment_registry.json"
-LABEL = "label_20d_close_to_close"
+try:
+    from alphaagent.factor.mining.research_spec import DEFAULT_RESEARCH_SPEC
+    LABEL = str((DEFAULT_RESEARCH_SPEC.get("ml_increment_policy") or {}).get("label")
+                or "label_20d_close_to_close")
+except Exception:  # 脚本独立运行 / 包不可导入时回落字面量（2026-10-26 收口）
+    LABEL = "label_20d_close_to_close"
 
 
 def main() -> int:

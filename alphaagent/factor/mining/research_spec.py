@@ -163,6 +163,21 @@ DEFAULT_RESEARCH_SPEC: dict[str, Any] = {
     # 依据：2026-10-02 整夜实测两段 run 分别有 32 / 30 个训练过线因子未提交（均因 max_turns），
     #   此前只有 `unsubmitted_promising` 审计日志、**无任何补交通路**（全仓无 auto_submit 实现）。
     "auto_submit_unsubmitted_top": 3,
+    # ── ML 增量通道（2026-10-20/21 定调：ML 合成路径下单因子层只判增量贡献，
+    #    绕开 stage_one 旧门；判定阈值原散落 scripts/ml_incremental_mine.py 的
+    #    argparse 默认值，2026-10-26 收口至此——统一配置中心纪律三件套）──
+    # enabled：挖掘产物是否路由到 ML 增量判定（关闭 = 只走标准 stage_one 链）。
+    # t_threshold：paired t 单侧阈值（1.28≈90% 置信）；调大 → 判定更严。
+    # min_delta_ic：ΔIC 均值下限（t 显著但幅度过小也不收）；批1 实测 ΔIC 0.0058 过此门。
+    # label：增量判定用的预测标签（与增量挖掘的目标一致，改 label = 改口径）。
+    # target_library：PASS 后入库去向（因子中台库目录名）。
+    "ml_increment_policy": {
+        "enabled": True,
+        "t_threshold": 1.28,
+        "min_delta_ic": 0.001,
+        "label": "label_20d_close_to_close",
+        "target_library": "ml_increment_main",
+    },
     "search_policy": {
         "allowed_signal_families": ["volume_price", "volatility", "chip", "momentum_reversal"],
         "forbidden_signal_families": ["pure_size"],
@@ -1183,6 +1198,25 @@ def normalize_research_spec(value: dict[str, Any] | None) -> dict[str, Any]:
         "cold_track.op_cool_skips", 0, 50,
     ))
     spec["cold_track"] = cold
+
+    # ── ml_increment_policy：ML 增量通道（2026-10-26 收口，三件套）──
+    mli = spec.get("ml_increment_policy")
+    if not isinstance(mli, dict):
+        mli = {}
+    mli["enabled"] = _require_bool(mli.get("enabled", True), "ml_increment_policy.enabled")
+    mli["t_threshold"] = float(_bounded_number(
+        mli.get("t_threshold", 1.28),
+        "ml_increment_policy.t_threshold", 0.5, 5.0,
+    ))
+    mli["min_delta_ic"] = float(_bounded_number(
+        mli.get("min_delta_ic", 0.001),
+        "ml_increment_policy.min_delta_ic", 0.0, 0.053,
+    ))
+    mli["label"] = str(mli.get("label", "label_20d_close_to_close") or "label_20d_close_to_close")
+    mli["target_library"] = str(
+        mli.get("target_library", "ml_increment_main") or "ml_increment_main"
+    )
+    spec["ml_increment_policy"] = mli
 
     profiles = resolve_profiles(spec)
     spec["evaluation_profiles"] = {profile_id: profile.as_dict() for profile_id, profile in profiles.items()}

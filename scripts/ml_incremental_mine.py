@@ -121,6 +121,13 @@ def load_new_factors(paths: list[str]) -> list[dict]:
 
 
 def main() -> int:
+    # 判定阈值默认值收口（2026-10-26）：唯一真源 research_spec.ml_increment_policy；
+    # CLI 参数仅作单次覆盖（不传即用 spec 默认），调阈值改 spec 不再改代码。
+    try:
+        from alphaagent.factor.mining.research_spec import DEFAULT_RESEARCH_SPEC
+        _pol = DEFAULT_RESEARCH_SPEC.get("ml_increment_policy") or {}
+    except Exception:
+        _pol = {}
     ap = argparse.ArgumentParser()
     ap.add_argument("--rows", nargs="+", required=True, help="本批新因子的 rows.jsonl")
     ap.add_argument("--start", default="2020-01-01")
@@ -129,9 +136,11 @@ def main() -> int:
                     help="judge 段终点。**固定为 2024，不许为好看而改**；2025+ 盲测永不触碰")
     ap.add_argument("--screen-end", default="2022-12-31",
                     help="permutation 筛选子段终点（须 < train_end，避免污染 judge）")
-    ap.add_argument("--t-threshold", type=float, default=1.28,
-                    help="paired t 单侧阈值（1.28≈90%% 置信）")
-    ap.add_argument("--min-delta", type=float, default=0.001,
+    ap.add_argument("--t-threshold", type=float,
+                    default=float(_pol.get("t_threshold", 1.28)),
+                    help="paired t 单侧阈值（默认取 spec.ml_increment_policy，1.28≈90%% 置信）")
+    ap.add_argument("--min-delta", type=float,
+                    default=float(_pol.get("min_delta_ic", 0.001)),
                     help="ΔIC 均值下限（t 显著但幅度过小也不收）")
     ap.add_argument("--top-k", type=int, default=15, help="整批不过时，permutation 挑前 k 个再试")
     ap.add_argument("--max-rounds", type=int, default=300)

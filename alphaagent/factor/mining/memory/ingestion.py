@@ -537,7 +537,7 @@ class IngestionMixin:
         child_icir = _safe_float(child_metrics.get("icir"))
         delta_ic = child_ic - parent_ic if (parent_ic is not None and child_ic is not None) else None
         delta_icir = child_icir - parent_icir if (parent_icir is not None and child_icir is not None) else None
-        IC_SUCCESS_THRESHOLD = 0.003
+        from .constants import EDIT_DELTA_IC_SUCCESS_THRESHOLD as IC_SUCCESS_THRESHOLD
         if delta_ic is not None:
             verdict = "success" if delta_ic > IC_SUCCESS_THRESHOLD else ("failure" if delta_ic < -IC_SUCCESS_THRESHOLD else "neutral")
         else:
