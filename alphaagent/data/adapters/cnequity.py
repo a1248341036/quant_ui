@@ -797,8 +797,9 @@ def load_panel_from_cne(
 
     # B-01 护栏（2026-10-26）：重建是全量内存动作（历史实测 4.7GB+ / 463s+），
     # 静默发生时用户只看到「电脑卡死」。此处按历史缓存规模打内存预估 WARNING，
-    # 不阻塞自动化路径。
-    _warn_panel_rebuild_cost(start=start, include_fundamentals=include_fundamentals, focus=focus)
+    # 不阻塞自动化路径。仅 stock 全量口径打点——ETF 面板极小，无此内存风险。
+    if asset_type == "stock" and not universe_mask:
+        _warn_panel_rebuild_cost(start=start, include_fundamentals=include_fundamentals, focus=focus)
     registry = get_registry()
     allowed = _facet_allowed(focus)
     wanted_aux: set[str] | None = None

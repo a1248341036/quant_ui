@@ -164,8 +164,8 @@ def cs_ic_summary(
     daily_rank_ic: pd.Series | None = None,
     *,
     holding_days: int = 1,
-) -> dict[str, float | int]:
-    """由 IC / RANKIC 汇总 IC、ICIR、RANKIC。
+) -> dict[str, Any]:
+    """由 IC / RANKIC 汇总 IC、ICIR、RANKIC（含三口径并列与口径标注）.
 
     持有期 >1（如 label_20d → 20）时逐日 IC 来自重叠收益，std 被低估导致
     ICIR 虚高。此处按持有期节奏重采样去重叠（每 hold 个交易日取一点），与
