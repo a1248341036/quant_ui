@@ -260,6 +260,9 @@ def test_status_datasets_all_fresh(cfg_path, monkeypatch):
         ),
     )
     monkeypatch.setattr("cnequity.domain.datasets.is_stale", lambda *a, **k: False)
+    # The freshness row is mocked, so there is no partition on disk for the
+    # anchor; without this the missed-day check would (correctly) flag it.
+    monkeypatch.setattr("cnequity.cli.main._partition_present", lambda cfg, name, day: True)
     result = CliRunner().invoke(cli, ["status", "--datasets", "--config", cfg_path])
     assert result.exit_code == 0, result.output
     assert "last trading day: 2024-06-28" in result.output

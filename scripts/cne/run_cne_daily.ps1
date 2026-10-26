@@ -41,7 +41,8 @@ param(
     [switch]$NoBackup,
     [switch]$Quiet,
     [switch]$SkipClean,
-    [switch]$SkipEtfFund
+    [switch]$SkipEtfFund,
+    [switch]$SkipHealth
 )
 
 $ErrorActionPreference = "Stop"
@@ -221,10 +222,16 @@ function Execute-CnePipeline {
         $lines = [System.Collections.Generic.List[string]]::new()
         $script:LastCmdErrors = [System.Collections.Generic.List[string]]::new()
         $script:LastRunId = ""
+        $script:LastAnchor = ""
         & $Cne @fullArgs 2>&1 | ForEach-Object {
             $line = $_.ToString()
             Write-Host $line
             $lines.Add($line)
+
+            # `status --datasets` 首行给出上一个交易日，供漏跑兜底定位 catchup 目标
+            if ($line -match 'last trading day:\s*(\d{4}-\d{2}-\d{2})') {
+                $script:LastAnchor = $matches[1]
+            }
 
             # 捕获 cne run daily 结尾的 {"run_id": ...} JSON，供失败波次回查 manifest 真实批次
             if ($line -match '"run_id"\s*:\s*"([^"]+)"') {
@@ -460,7 +467,7 @@ function Execute-CnePipeline {
         }
     }
 
-    # 阶段 8: stale 补抓与总结审计
+    # 阶段 8: 漏跑兜底 + stale 补抓
     Notify-Phase "滞后补抓与健康检查" 8 8 90.0
     $staleStatus = "skipped"
     # 2026-10-19：原先 gate 失败就整段跳过补抓（`-and $failedGates.Count -eq 0`），
@@ -469,7 +476,21 @@ function Execute-CnePipeline {
     # 水位未推进，在 stale 判定里就是 stale，--stale-only 会把它捡回来。
     if ($StaleRetry) {
         Write-PipelineLog "--- stale probe ---"
+        $script:LastAnchor = ""
         $staleExit = Run-CneCommand @("status", "--datasets")
+        $anchor = $script:LastAnchor
+        $today  = Get-Date -Format "yyyy-MM-dd"
+        # 2026-10-25 补：漏跑兜底。任务未触发（关机/休眠）时下一个触发点可能是周末，
+        # 非交易日直接 skip；而 --stale-only 用"今天"做 trade_date 同样会被判非交易日
+        # 跳过，于是整个交易日静默丢失（2026-10-23 就是这样丢的）。此时先把 core 波
+        # catchup 到 anchor，再补滞后项。
+        if ($staleExit -ne 0 -and $anchor -and $anchor -lt $today) {
+            Write-PipelineLog "missed session $anchor (today $today) — catchup core before stale retry"
+            Notify-Step "检测到 $anchor 整晚未跑，先补齐该交易日..."
+            $catchExit = Run-CneCommand @("run", "catchup", "--trade-date", $anchor)
+            Write-PipelineLog "catchup exit=$catchExit"
+            $staleExit = Run-CneCommand @("status", "--datasets")
+        }
         if ($staleExit -eq 0) {
             Write-PipelineLog "nothing stale — no retry needed"
             $staleStatus = "not needed"
@@ -488,7 +509,12 @@ function Execute-CnePipeline {
                     $rem -= $sleepStep
                 }
             }
-            $retryExit = Run-CneCommand (@("run", "daily", "--stale-only") + $dateArg)
+            # 漏跑场景把 trade_date 钉在 anchor 上，否则 --stale-only 今天跑会被 skip
+            $staleDateArg = $dateArg
+            if (-not $TradeDate -and $anchor -and $anchor -lt $today) {
+                $staleDateArg = @("--trade-date", $anchor)
+            }
+            $retryExit = Run-CneCommand (@("run", "daily", "--stale-only") + $staleDateArg)
             if ($retryExit -eq 0) {
                 Write-PipelineLog "stale retry OK"
                 $staleStatus = "OK"
@@ -504,6 +530,26 @@ function Execute-CnePipeline {
                 Record-Result "stale_retry" "failed" 0 "--" $note
             }
         }
+    }
+
+    # 阶段 8.5: 全湖体检与统计。此前 health-latest 停在 2026-09-27、stats 停在
+    # 2026-10-12 —— 两步都不在每日链路里，所以 3 天停摆没有任何自动检查发现。
+    if (-not $SkipHealth) {
+        Write-PipelineLog "--- health snapshot & stats ---"
+        Notify-Step "正在生成全湖体检快照..."
+        $hExit = Run-CneCommand @("audit", "--full")
+        if ($hExit -eq 0) {
+            Record-Result "lake_health" "success" 0 "--" "全湖体检通过"
+        } else {
+            Write-PipelineLog "audit --full exit=$hExit — findings in meta/quality/health-latest.json"
+            Record-Result "lake_health" "warning" 0 "--" "体检有发现项"
+        }
+        $sExit = Run-CneCommand @("stats", "refresh")
+        if ($sExit -ne 0) { Write-PipelineLog "stats refresh exit=$sExit" }
+        # 源健康探测：每源一次请求，结果落 meta/source_health。有了这条历史，
+        # 才能把"源挂了"和"我们没跑"区分开（10-19/21 两晚就是靠它才看清）。
+        $srcExit = Run-CneCommand @("sources")
+        if ($srcExit -ne 0) { Write-PipelineLog "sources probe exit=$srcExit" }
     }
 
     # Meta 备份与清理

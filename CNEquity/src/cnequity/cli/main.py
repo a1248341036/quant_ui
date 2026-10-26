@@ -411,6 +411,85 @@ def run():
     """Run scheduled jobs."""
 
 
+def _partition_present(cfg, dataset: str, day: date) -> bool | None:
+    """Whether the lake holds *dataset*'s partition covering *day*.
+
+    ``None`` means the layout cannot answer: merge-style datasets have no
+    partition column, and external adapters (tushare_wide, pg_parquet …) serve
+    their own roots and report coverage through the registry — a hive directory
+    under ``curated_root`` would be the wrong answer for them. The caller then
+    falls back to the manifest signal.
+    """
+    from cnequity.domain.datasets import DATASETS
+    from cnequity.query.reader import EXTERNAL_DATASETS, _dataset_root
+
+    spec = DATASETS.get(dataset)
+    if dataset in EXTERNAL_DATASETS or spec is None or spec.partition_col is None:
+        return None
+    name = f"{spec.partition_col}={spec.partition_for(day)}"
+    part = _dataset_root(cfg, dataset) / name
+    if not part.is_dir():
+        return False
+    return any(part.glob("*.parquet")) or any(part.glob("*/*.parquet"))
+
+
+def missed_day_datasets(cfg, anchor: date, *, landed: set[str] | None = None) -> list[str]:
+    """Daily datasets still behind *anchor* because no run covered that session.
+
+    ``is_stale`` applies a per-dataset publication tolerance (margin trading is
+    T+1, disclosure datasets are quarterly). That tolerance is right for a lag
+    the vendor *imposes* — and blind to a night that never ran: the lake then
+    sits exactly one trading day behind and every freshness check calls it
+    fresh. 2026-10-23 was lost this way: the 21:30 job never fired, the 10-24/25
+    weekend runs skipped the session, and the 23:00 guard printed "nothing stale
+    as of 2026-10-23" because a one-day gap was inside the tolerance.
+
+    A dataset counts as missed when its watermark is behind ``anchor`` **and**
+    no successful batch for it was recorded against that session. That separates
+    "the vendor publishes late" (a batch exists, the watermark is simply older)
+    from "nobody fetched it" or "the fetch failed".
+    """
+    from cnequity.domain.datasets import DATASETS, is_dataset_enabled
+    from cnequity.orchestrator.manifest import Manifest
+    from cnequity.query.reader import list_datasets
+
+    if landed is None:
+        landed = Manifest(cfg.manifest_path).datasets_landed_on(anchor)
+    missed: list[str] = []
+    for row in list_datasets(config=cfg).iter_rows(named=True):
+        name = row["dataset"]
+        spec = DATASETS.get(name)
+        if spec is None or spec.cadence != "daily":
+            continue
+        # Derived datasets are recomputed from curated inputs, not fetched.
+        if spec.layer == "derived" or not is_dataset_enabled(name, cfg):
+            continue
+        if not row["has_data"] or not row["watermarked"]:
+            continue
+        mark = row["watermark"] or row["coverage_end"]
+        present = _partition_present(cfg, name, anchor)
+        if present is True:
+            # The partition is on disk: whatever the watermark claims, the
+            # session is covered.
+            continue
+        claimed = mark is not None and mark >= anchor
+        if claimed:
+            if present is False:
+                # The watermark says the session landed, yet curated has no
+                # partition for it: a run advanced the watermark and compact
+                # never landed the staging file (2026-10-25: daily_bars
+                # watermark 10-23, curated still 10-22). That is a hole, not
+                # freshness.
+                missed.append(name)
+            continue
+        if name in landed:
+            # The session ran and produced a batch; the vendor simply publishes
+            # this one late (margin trading is T+1). Publication lag is not a hole.
+            continue
+        missed.append(name)
+    return missed
+
+
 def stale_fetch_steps(cfg, anchor: date) -> list[str]:
     """Registered fetch steps whose dataset is still behind *anchor*.
 
@@ -427,6 +506,8 @@ def stale_fetch_steps(cfg, anchor: date) -> list[str]:
     from cnequity.query.reader import list_datasets
 
     out: list[str] = []
+    landed = Manifest(cfg.manifest_path).datasets_landed_on(anchor)
+    missed = set(missed_day_datasets(cfg, anchor, landed=landed))
     for row in list_datasets(config=cfg).iter_rows(named=True):
         name = row["dataset"]
         spec = DATASETS[name]
@@ -437,7 +518,7 @@ def stale_fetch_steps(cfg, anchor: date) -> list[str]:
         if not row["has_data"] or not row["watermarked"]:
             continue
         mark = row["watermark"] or row["coverage_end"]
-        if is_stale(name, mark, anchor):
+        if is_stale(name, mark, anchor) or name in missed:
             out.append(name)
     return out
 
@@ -1748,6 +1829,8 @@ def status(config_path: str, show_datasets: bool, run_id: str | None):
 
         anchor = _last_trading_day(cfg, shanghai_today())
         df = list_datasets(config=cfg)
+        landed = Manifest(cfg.manifest_path).datasets_landed_on(anchor)
+        missed = set(missed_day_datasets(cfg, anchor, landed=landed))
 
         def _freshness(row: dict) -> str:
             if not row["has_data"]:
@@ -1759,6 +1842,10 @@ def status(config_path: str, show_datasets: bool, run_id: str | None):
             if not row["watermarked"]:
                 return "n/a"
             mark = row["watermark"] or row["coverage_end"]
+            if row["dataset"] in missed:
+                # Behind a session no run ever covered: a coverage hole, not the
+                # vendor's publication lag (see missed_day_datasets).
+                return "STALE(missed)"
             # Per-dataset tolerance (T+1, quarterly …) — inherent lag is not STALE.
             return "STALE" if is_stale(row["dataset"], mark, anchor) else "fresh"
 
@@ -1768,9 +1855,11 @@ def status(config_path: str, show_datasets: bool, run_id: str | None):
         click.echo(f"last trading day: {anchor.isoformat()}")
         with pl_mod.Config(tbl_rows=-1, tbl_cols=-1, fmt_str_lengths=32):
             click.echo(df)
-        stale = df.filter(pl_mod.col("freshness") == "STALE").height
+        stale = df.filter(pl_mod.col("freshness").str.starts_with("STALE")).height
         if stale:
-            click.echo(f"\n{stale} dataset(s) STALE — check runs with `cne status` / `cne retry`.")
+            click.echo(
+                f"\n{stale} dataset(s) STALE — check runs with `cne status` / `cne retry`."
+            )
             raise SystemExit(1)
         return
 

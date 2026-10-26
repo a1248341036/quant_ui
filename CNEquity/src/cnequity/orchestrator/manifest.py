@@ -4,7 +4,7 @@ import json
 import sqlite3
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -586,6 +586,36 @@ class Manifest:
                 (reason, run_id),
             )
             return cur.rowcount
+
+    def datasets_landed_on(
+        self, trade_date: date | str, *, job_prefix: str = "daily"
+    ) -> set[str]:
+        """Datasets that landed at least one successful batch for *trade_date*.
+
+        The run's ``metadata_json.trade_date`` is the authoritative as-of date:
+        batch timestamps are UTC wall-clock, so a 21:30 Asia/Shanghai run lands
+        on the previous UTC day and cannot be grouped by date. Only ``success``
+        and ``warning`` batches count — a failed or still-running batch means
+        the data is not in the lake, so the session is not covered for that
+        dataset. An empty set therefore means no daily run covered the session
+        at all: the signal that lets a freshness check tell a *publication lag*
+        from *nobody ran*.
+        """
+        anchor = trade_date.isoformat() if hasattr(trade_date, "isoformat") else str(trade_date)
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT b.dataset
+                  FROM ingestion_batches b
+                  JOIN ingestion_runs r ON r.run_id = b.run_id
+                 WHERE r.job_name LIKE ?
+                   AND json_extract(r.metadata_json, '$.trade_date') = ?
+                   AND b.dataset IS NOT NULL
+                   AND b.status IN ('success', 'warning')
+                """,
+                (f"{job_prefix}%", anchor),
+            ).fetchall()
+        return {row[0] for row in rows}
 
     def get_batches_for_run(self, run_id: str) -> list[sqlite3.Row]:
         with self._connect() as conn:
