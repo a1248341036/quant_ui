@@ -56,6 +56,9 @@
               <th @click="agent.setSummarySort('stage')" :class="{ sortable: true, 'sort-active': agent.summarySortKey === 'stage' }">
                 阶段 <span class="sort-ind" v-if="agent.summarySortKey === 'stage'">{{ agent.summarySortOrder === 1 ? '▲' : '▼' }}</span>
               </th>
+              <th title="研究模式（technical=技术 / fundamental=基本面 / report=研报；随 run spec 落库）。旧条目未记录该字段，显示 —，不做回扫">
+                研究模式
+              </th>
               <th @click="agent.setSummarySort('train_ic')" :class="{ sortable: true, 'sort-active': agent.summarySortKey === 'train_ic' }"
                   title="train 窗口 IC（海选/门槛判定口径）；老条目无分窗口记录时回退显示原 IC">
                 训练IC <span class="sort-ind" v-if="agent.summarySortKey === 'train_ic'">{{ agent.summarySortOrder === 1 ? '▲' : '▼' }}</span>
@@ -122,6 +125,7 @@
               <td class="summary-name" :title="entry.factor_name">{{ entry.factor_name || 'unnamed' }}</td>
               <td><span class="summary-verdict-tag" :class="'memv-' + entry.verdict">{{ memoryVerdictLabel(entry.verdict) }}</span></td>
               <td class="summary-stage" :title="'指标来自该评估阶段（单因子无 OOS：盲测段对挖掘循环锁死，防多重检验污染）'">{{ stageLabel(entry.stage) }}</td>
+              <td class="summary-stage" :title="entry.research_mode ? '研究模式（随 run spec 落库）' : '旧条目未记录研究模式'">{{ researchModeLabel(entry.research_mode) }}</td>
               <td :class="icClass(trainIc(entry))" :title="icWindowHint(entry, 'train')">{{ formatMetricValue(trainIc(entry) ?? '—') }}</td>
               <td :class="icClass(valIc(entry))" :title="icWindowHint(entry, 'val')">{{ formatMetricValue(valIc(entry) ?? '—') }}</td>
               <td :class="icClass(entry.metrics?.test_ic)" :title="blindIcHint(entry)">{{ formatMetricValue(entry.metrics?.test_ic ?? '—') }}</td>
@@ -385,6 +389,20 @@ export default {
         full: '全窗口',
         night_summary: '夜段归档',
       }[stage] || stage || '—'
+    },
+    researchModeLabel(mode) {
+      // 研究模式显示名（随 run spec 落库进 metrics_json，API 已暴露 research_mode）；
+      // 旧条目无该字段 → '—'（不回扫，2026-10-26 用户定调）
+      return ({
+        technical: '技术',
+        technical_daily: '技术·日',
+        technical_weekly: '技术·周',
+        technical_monthly: '技术·月',
+        fundamental: '基本面',
+        fundamental_daily: '基本面·日',
+        fundamental_weekly: '基本面·周',
+        report: '研报',
+      }[mode] || mode || '—')
     },
     async refresh() {
       this.loading = true
