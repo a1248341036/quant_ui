@@ -56,8 +56,8 @@
               <th @click="agent.setSummarySort('stage')" :class="{ sortable: true, 'sort-active': agent.summarySortKey === 'stage' }">
                 阶段 <span class="sort-ind" v-if="agent.summarySortKey === 'stage'">{{ agent.summarySortOrder === 1 ? '▲' : '▼' }}</span>
               </th>
-              <th title="研究模式（technical=技术 / fundamental=基本面 / report=研报；随 run spec 落库）。旧条目未记录该字段，显示 —，不做回扫">
-                研究模式
+              <th title="产出通道：harness冷门 / harness挖掘 / harness研报 / agentscope挖掘 / agentscope研报（按 verdict / last_run_id 批次名 / 研究模式推导，纯展示，不回扫）">
+                产出通道
               </th>
               <th @click="agent.setSummarySort('train_ic')" :class="{ sortable: true, 'sort-active': agent.summarySortKey === 'train_ic' }"
                   title="train 窗口 IC（海选/门槛判定口径）；老条目无分窗口记录时回退显示原 IC">
@@ -125,7 +125,7 @@
               <td class="summary-name" :title="entry.factor_name">{{ entry.factor_name || 'unnamed' }}</td>
               <td><span class="summary-verdict-tag" :class="'memv-' + entry.verdict">{{ memoryVerdictLabel(entry.verdict) }}</span></td>
               <td class="summary-stage" :title="'指标来自该评估阶段（单因子无 OOS：盲测段对挖掘循环锁死，防多重检验污染）'">{{ stageLabel(entry.stage) }}</td>
-              <td class="summary-stage" :title="entry.research_mode ? '研究模式（随 run spec 落库）' : '旧条目未记录研究模式'">{{ researchModeLabel(entry.research_mode) }}</td>
+              <td class="summary-stage" title="产出通道（按 verdict / last_run_id 批次名 / 研究模式推导）">{{ sourceLabel(entry) }}</td>
               <td :class="icClass(trainIc(entry))" :title="icWindowHint(entry, 'train')">{{ formatMetricValue(trainIc(entry) ?? '—') }}</td>
               <td :class="icClass(valIc(entry))" :title="icWindowHint(entry, 'val')">{{ formatMetricValue(valIc(entry) ?? '—') }}</td>
               <td :class="icClass(entry.metrics?.test_ic)" :title="blindIcHint(entry)">{{ formatMetricValue(entry.metrics?.test_ic ?? '—') }}</td>
@@ -390,19 +390,21 @@ export default {
         night_summary: '夜段归档',
       }[stage] || stage || '—'
     },
-    researchModeLabel(mode) {
-      // 研究模式显示名（随 run spec 落库进 metrics_json，API 已暴露 research_mode）；
-      // 旧条目无该字段 → '—'（不回扫，2026-10-26 用户定调）
-      return ({
-        technical: '技术',
-        technical_daily: '技术·日',
-        technical_weekly: '技术·周',
-        technical_monthly: '技术·月',
-        fundamental: '基本面',
-        fundamental_daily: '基本面·日',
-        fundamental_weekly: '基本面·周',
-        report: '研报',
-      }[mode] || mode || '—')
+    sourceLabel(entry) {
+      // 产出通道推导（2026-10-26 用户定调）：harness冷门 / harness挖掘 / harness研报 /
+      // agentscope挖掘 / agentscope研报 / harness·夜段归档。纯展示派生，不回扫、不改数据。
+      // 区分信号：verdict=cold_*（冷轨铁证）、stage=night_summary、last_run_id 批次名
+      //（harness 导入批次含 'harness' 或 night20 前缀；agentscope 为 12hex/overnight_*）。
+      const v = entry.verdict
+      if (v === 'cold_approved' || v === 'cold_dead') return 'harness·冷门'
+      if (entry.stage === 'night_summary') return 'harness·夜段归档'
+      const mode = entry.research_mode || ''
+      const isReport = mode.startsWith('report')
+      const rid = entry.last_run_id || ''
+      const isHarness = rid.includes('harness') || /^night20/.test(rid)
+      if (isHarness) return isReport ? 'harness·研报' : 'harness·挖掘'
+      if (rid) return isReport ? 'agentscope·研报' : 'agentscope·挖掘'
+      return '—'
     },
     async refresh() {
       this.loading = true
