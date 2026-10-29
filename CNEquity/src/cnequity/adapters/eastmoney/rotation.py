@@ -197,43 +197,61 @@ def _fetch_sector_fund_flow_tushare(
     ``content_type`` distinguishes 概念/行业/地域; only the first two map to
     the dataset's concept/industry board types. Tushare has no board turnover
     field, so ``turnover_pct`` is left null on this path.
+
+    The primary endpoint (datahubco) has been rejecting this API with
+    ``[upstream_upstream] 您的token不对`` since 2026-10-26 while other APIs on
+    the same token succeed — an API-level scope/whitelist issue, not a token
+    problem. The fallback endpoint (kaixin8) accepts the same token and serves
+    the API (verified 2026-10-29), so on primary failure we retry through the
+    configured fallback endpoint before giving up.
     """
-    pro = _get_pro(config)
-    raw = _fetch_with_retry(
-        pro,
-        "moneyflow_ind_dc",
-        interval=config.external_tushare_wide_interval,
-        trade_date=trade_date.strftime("%Y%m%d"),
-    )
-    if raw.is_empty():
-        return pl.DataFrame()
-    type_map = {"概念": "concept", "行业": "industry"}
-    rows: list[dict] = []
-    for row in raw.iter_rows(named=True):
-        btype = type_map.get(str(row.get("content_type") or "").strip())
-        if btype is None:
-            continue
-        ts_code = str(row.get("ts_code") or "").strip()
-        name = str(row.get("name") or "").strip()
-        if not ts_code or not name:
-            continue
-        # "BK0420.DC" -> "BK0420" (drop the .DC suffix to match primary f12).
-        sector_code = ts_code.split(".")[0]
-        rows.append(
-            {
-                "sector_code": sector_code,
-                "sector_name": name,
-                "board_type": btype,
-                "trade_date": trade_date,
-                "main_net_inflow": _to_float(row.get("net_amount")),
-                "change_pct": _to_float(row.get("pct_change")),
-                "turnover_pct": None,
-                "source": "tushare",
-            }
+
+    def _pull(pro) -> pl.DataFrame:
+        raw = _fetch_with_retry(
+            pro,
+            "moneyflow_ind_dc",
+            interval=config.external_tushare_wide_interval,
+            trade_date=trade_date.strftime("%Y%m%d"),
         )
-    if not rows:
-        return pl.DataFrame()
-    return pl.DataFrame(rows).unique(subset=["sector_code", "trade_date"], keep="last")
+        if raw.is_empty():
+            return pl.DataFrame()
+        type_map = {"概念": "concept", "行业": "industry"}
+        rows: list[dict] = []
+        for row in raw.iter_rows(named=True):
+            btype = type_map.get(str(row.get("content_type") or "").strip())
+            if btype is None:
+                continue
+            ts_code = str(row.get("ts_code") or "").strip()
+            name = str(row.get("name") or "").strip()
+            if not ts_code or not name:
+                continue
+            # "BK0420.DC" -> "BK0420" (drop the .DC suffix to match primary f12).
+            sector_code = ts_code.split(".")[0]
+            rows.append(
+                {
+                    "sector_code": sector_code,
+                    "sector_name": name,
+                    "board_type": btype,
+                    "trade_date": trade_date,
+                    "main_net_inflow": _to_float(row.get("net_amount")),
+                    "change_pct": _to_float(row.get("pct_change")),
+                    "turnover_pct": None,
+                    "source": "tushare",
+                }
+            )
+        if not rows:
+            return pl.DataFrame()
+        return pl.DataFrame(rows).unique(subset=["sector_code", "trade_date"], keep="last")
+
+    try:
+        return _pull(_get_pro(config))
+    except Exception as primary_exc:  # noqa: BLE001 — primary endpoint API-level rejection
+        logger.warning(
+            "sector_fund_flow: tushare primary endpoint moneyflow_ind_dc failed (%s); "
+            "retrying via fallback endpoint",
+            primary_exc,
+        )
+        return _pull(_get_pro(config, fallback=True))
 
 
 def fetch_sector_fund_flow(trade_date: date, *, config=None) -> pl.DataFrame:
