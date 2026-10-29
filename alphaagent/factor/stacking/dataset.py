@@ -423,7 +423,8 @@ def _spearman_daily_nb(
         for r in range(st, en):
             if np.isfinite(p[r]) and np.isfinite(y[r]):
                 nk += 1
-        if nk < 3:
+        if nk < 2:
+            # n<2：pandas 版 std(ddof=1)/cov 为 NaN/inf → dropna 剔除，等价丢弃
             continue
         pv = np.empty(nk, dtype=np.float64)
         yv = np.empty(nk, dtype=np.float64)
@@ -734,11 +735,10 @@ def _day_row_slices(panel: pd.DataFrame) -> np.ndarray | None:
     """
     dts = panel.index.get_level_values("datetime")
     try:
-        day_codes, day_first = pd.factorize(dts, sort=True)
+        day_codes, _ = pd.factorize(dts, sort=True)
         n_days = day_codes.max() + 1 if len(day_codes) else 0
         if n_days == 0:
             return None
-        order = np.argsort(day_first, kind="stable")
         # 面板行按 datetime 严格排序 ⇔ day_codes 单调不减
         if np.any(np.diff(day_codes) < 0):
             return None
@@ -772,12 +772,12 @@ def _day_pairs_from_bounds(
 def _sampled_corr(a: np.ndarray, b: np.ndarray, panel: pd.DataFrame, stride: int = 5) -> float | None:
     """按日抽样的截面 Pearson 均值（两因子间；全 NaN 或样本不足返回 None）。"""
     dts = panel.index.get_level_values("datetime")
-    unique_days = dts.unique()
     pairs_a, pairs_b = [], []
     bounds = _day_row_slices(panel)
     if bounds is not None:
         pairs_a, pairs_b = _day_pairs_from_bounds(a, b, bounds, stride)
     else:
+        unique_days = dts.unique()
         for day in unique_days[::stride]:
             mask = dts == day
             xa, xb = a[mask], b[mask]
