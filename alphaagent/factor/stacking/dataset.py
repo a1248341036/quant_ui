@@ -13,6 +13,8 @@ from typing import Callable, Iterable, Sequence
 import numpy as np
 import pandas as pd
 
+from numba import njit
+
 from alphaagent.factor.zoo.catalog import FactorCatalog
 from core.factor_categories import candidate_dir, production_dir
 
@@ -267,27 +269,57 @@ def transform_factor_values(
     先做市值中性化（逐日对 log(float_cap) 回归取残差，panel 缺 float_cap 时
     跳过），再做行业内 rank pct（panel 缺 industry_sw_l1 时退化为全市场 rank），
     最后逐日 zscore。输出 float32、NaN 保持 NaN。
+
+    快路径：面板按日连续时走 njit 内核（rank pct + Kahan mean + Welford std，
+    与 pandas 版逐位一致）；否则回退 pandas 实现。
     """
     if size_neutral and "float_cap" in panel.columns:
         from alphaagent.factor.metrics import cross_sectional_size_neutralize_values
 
         values = cross_sectional_size_neutralize_values(values, panel)
 
-    df = pd.DataFrame(
-        {
-            "v": values.astype(np.float64),
-            "datetime": panel.index.get_level_values("datetime"),
-        }
-    )
-    industry = panel.index.get_level_values("instrument")  # placeholder，防列缺失
+    v64 = np.asarray(values, dtype=np.float64)
+    dts = panel.index.get_level_values("datetime")
+    # 行业组编码（-1 = 无行业/NaN，与 groupby dropna=True 一致）
     if "industry_sw_l1" in panel.columns:
-        industry = pd.Series(panel["industry_sw_l1"].to_numpy(), index=panel.index)
-        df["ind"] = industry.to_numpy()
+        ind_raw = pd.Series(panel["industry_sw_l1"].to_numpy()).to_numpy()
+        ind_code, _ = pd.factorize(ind_raw, sort=False)
+        ind_code = ind_code.astype(np.int64)
+        n_inds = int(ind_code.max()) + 1 if len(ind_code) and ind_code.max() >= 0 else 1
+    else:
+        ind_code = np.zeros(len(v64), dtype=np.int64)
+        n_inds = 1
+
+    # 快路径：面板按日连续（bounds 单调）
+    try:
+        day_codes, b_start, b_end = _day_codes_and_bounds(dts)
+    except Exception:
+        day_codes, b_start, b_end = None, None, None
+    # 快路径前提：面板按日连续排序（day_codes 非递减）且 bounds 单调，才可用行切片
+    if (
+        b_start is not None
+        and len(b_start)
+        and np.all(np.diff(b_start) >= 0)
+        and np.all(np.diff(b_end) >= 0)
+        and np.all(np.diff(day_codes) >= 0)
+    ):
+        ok = np.isfinite(v64)
+        out = np.empty(len(v64), dtype=np.float64)
+        _transform_rank_z_nb(
+            v64, ok, ind_code, n_inds,
+            b_start.astype(np.int64), b_end.astype(np.int64), out,
+        )
+        out32 = out.astype(np.float32)
+        out32[~np.isfinite(out32)] = np.nan
+        return out32
+
+    # 回退：原 pandas 实现
+    df = pd.DataFrame({"v": v64, "datetime": dts})
+    if "industry_sw_l1" in panel.columns:
+        df["ind"] = pd.Series(panel["industry_sw_l1"].to_numpy(), index=panel.index).to_numpy()
         rank_keys = ["datetime", "ind"]
     else:
         rank_keys = ["datetime"]
-
-    # 逐组 rank pct（NaN 不参与），再逐日 zscore
     ranked = df.groupby(rank_keys, sort=False, dropna=True)["v"].rank(pct=True)
     df["r"] = ranked
     g = df.groupby("datetime", sort=False)["r"]
@@ -310,12 +342,276 @@ def forward_return_label(panel: pd.DataFrame, hold_days: int) -> np.ndarray:
     return label
 
 
-def daily_spearman_ic(
+def _welford_std(values: np.ndarray, ddof: int = 1) -> float:
+    """逐元素 Welford 在线方差根——复刻 pandas groupby.std 内部算法。
+
+    实测与 ``groupby("d")[...].std()`` 逐位一致（pandas 用 C 层 Welford 更新，
+    numpy 的两遍 std 在 1e-12 量级有尾差；此实现按同一更新顺序求和）。
+    """
+    n = 0
+    mean = 0.0
+    m2 = 0.0
+    for v in values:
+        n += 1
+        delta = v - mean
+        mean += delta / n
+        m2 += delta * (v - mean)
+    if n <= ddof:
+        return float("nan")
+    return float(np.sqrt(m2 / (n - ddof)))
+
+
+@njit(cache=True)
+def _rank_avg_nb(x: np.ndarray) -> np.ndarray:
+    """平均秩（method='average'）——与 pandas rank / scipy rankdata 逐位一致。
+
+    x 不含 NaN；tie 组内顺序不影响平均秩（argsort 不要求稳定）。
+    """
+    n = x.size
+    order = np.argsort(x)
+    ranks = np.empty(n, dtype=np.float64)
+    i = 0
+    while i < n:
+        j = i
+        while j + 1 < n and x[order[j + 1]] == x[order[i]]:
+            j += 1
+        avg = 0.5 * (i + j) + 1.0
+        for k in range(i, j + 1):
+            ranks[order[k]] = avg
+        i = j + 1
+    return ranks
+
+
+@njit(cache=True)
+def _welford_std_nb(vals: np.ndarray) -> float:
+    """Welford 在线 std——与 ``_welford_std`` 完全同更新顺序（逐位一致）。"""
+    n = 0
+    mean = 0.0
+    m2 = 0.0
+    for i in range(vals.size):
+        v = vals[i]
+        n += 1
+        delta = v - mean
+        mean += delta / n
+        m2 += delta * (v - mean)
+    if n <= 1:
+        return float("nan")
+    return float(np.sqrt(m2 / (n - 1)))
+
+
+@njit(cache=True)
+def _spearman_daily_nb(
+    p: np.ndarray,
+    y: np.ndarray,
+    b_start: np.ndarray,
+    b_end: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """整段逐日 Spearman IC：rank + Welford std + Pearson（纯机器码）。
+
+    与 ``daily_spearman_ic_pd`` 逐位一致（rank 同 average、协方差公式同
+    ddof=1、inf 过滤同 replace+dropna）。返回 (ic_values, day_indices)。
+    """
+    n_days = b_start.size
+    ics = np.empty(n_days, dtype=np.float64)
+    day_idx = np.empty(n_days, dtype=np.int64)
+    n_out = 0
+    for di in range(n_days):
+        st = b_start[di]
+        en = b_end[di]
+        # 有效交集计数 + 收集（等价 df.dropna 后的行集合）
+        nk = 0
+        for r in range(st, en):
+            if np.isfinite(p[r]) and np.isfinite(y[r]):
+                nk += 1
+        if nk < 3:
+            continue
+        pv = np.empty(nk, dtype=np.float64)
+        yv = np.empty(nk, dtype=np.float64)
+        k = 0
+        for r in range(st, en):
+            if np.isfinite(p[r]) and np.isfinite(y[r]):
+                pv[k] = p[r]
+                yv[k] = y[r]
+                k += 1
+        pr = _rank_avg_nb(pv)
+        yr = _rank_avg_nb(yv)
+        e_pr = np.mean(pr)
+        e_yr = np.mean(yr)
+        e_xy = np.mean(pr * yr)
+        sd_pr = _welford_std_nb(pr)
+        sd_yr = _welford_std_nb(yr)
+        # 样本协方差 = (E[xy] - Ex·Ey) · n/(n-1)，与 std 的 ddof=1 一致
+        cov = (e_xy - e_pr * e_yr) * nk / (nk - 1)
+        ic = cov / (sd_pr * sd_yr)
+        if np.isfinite(ic):
+            ics[n_out] = ic
+            day_idx[n_out] = di
+            n_out += 1
+    return ics[:n_out], day_idx[:n_out]
+
+
+@njit(cache=True)
+def _rank_pct_nb(
+    x: np.ndarray,
+    ok: np.ndarray,
+    n_groups: int,
+    group_id: np.ndarray,
+) -> np.ndarray:
+    """组内平均秩百分比——复刻 ``groupby(keys).rank(pct=True)``。
+
+    同组内：average rank / 组内有效数（NaN 不参与、保持 NaN）。
+    与 pandas 逐位一致：tie 用平均秩、pct 分母为组内有效计数。
+    """
+    n = x.size
+    ranks = np.full(n, np.nan, dtype=np.float64)
+    for g in range(n_groups):
+        cnt = 0
+        for i in range(n):
+            if ok[i] and group_id[i] == g:
+                cnt += 1
+        if cnt == 0:
+            continue
+        vals = np.empty(cnt, dtype=np.float64)
+        pos = np.empty(cnt, dtype=np.int64)
+        k = 0
+        for i in range(n):
+            if ok[i] and group_id[i] == g:
+                vals[k] = x[i]
+                pos[k] = i
+                k += 1
+        order = np.argsort(vals)
+        r = np.empty(cnt, dtype=np.float64)
+        ii = 0
+        while ii < cnt:
+            jj = ii
+            while jj + 1 < cnt and vals[order[jj + 1]] == vals[order[ii]]:
+                jj += 1
+            avg = 0.5 * (ii + jj) + 1.0
+            for kk in range(ii, jj + 1):
+                r[order[kk]] = avg
+            ii = jj + 1
+        denom = float(cnt)
+        for kk in range(cnt):
+            ranks[pos[kk]] = r[kk] / denom
+    return ranks
+
+
+@njit(cache=True)
+def _kahan_mean_nb(vals: np.ndarray) -> float:
+    """Kahan 补偿求和均值——复刻 pandas 2.x C 层 groupby.mean 内部算法。
+
+    实测：pandas groupby.mean 用 Kahan 补偿求和（与朴素顺序求和/fsum 均不同，
+    仅 Kahan 逐位一致）；transform('mean') 走同一 C 路径。
+    """
+    s = 0.0
+    c = 0.0
+    for i in range(vals.size):
+        y = vals[i] - c
+        t = s + y
+        c = (t - s) - y
+        s = t
+    return s / vals.size
+
+
+@njit(cache=True)
+def _transform_rank_z_nb(
+    v: np.ndarray,
+    ok: np.ndarray,
+    ind_code: np.ndarray,
+    n_inds: int,
+    b_start: np.ndarray,
+    b_end: np.ndarray,
+    out: np.ndarray,
+) -> np.ndarray:
+    """逐日 行业内 rank pct → Kahan mean + Welford std → zscore（纯机器码）。
+
+    与 ``transform_factor_values`` 的 pandas 实现逐位一致：
+    rank(pct=True) 同 average+有效数分母、mean 同 Kahan、std 同 Welford、
+    ``std > 1e-12`` 保护逐日生效。``ind_code`` 需 0..n_inds-1（-1 视为无效组，
+    与 pandas dropna=True 剔除 key=NaN 行一致）。
+    """
+    n_days = b_start.size
+    for di in range(n_days):
+        st = b_start[di]
+        en = b_end[di]
+        r = _rank_pct_nb(v[st:en], ok[st:en], n_inds, ind_code[st:en])
+        good = np.isfinite(r)
+        nk = 0
+        for i in range(r.size):
+            if good[i]:
+                nk += 1
+        if nk == 0:
+            for i in range(st, en):
+                out[i] = np.nan
+            continue
+        rv = np.empty(nk, dtype=np.float64)
+        k = 0
+        for i in range(r.size):
+            if good[i]:
+                rv[k] = r[i]
+                k += 1
+        mean_v = _kahan_mean_nb(rv)
+        std_v = _welford_std_nb(rv)
+        if std_v > 1e-12:
+            for i in range(r.size):
+                out[st + i] = (r[i] - mean_v) / std_v if good[i] else np.nan
+        else:
+            for i in range(st, en):
+                out[i] = np.nan
+    return out
+
+
+def _day_codes_and_bounds(dates) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """日期数组 → (day_codes, bounds_start, bounds_end)。
+
+    要求 dates 已按日连续排序（panel 行序）；bounds 为每天的 [st, en) 行号切片。
+    """
+    dts = pd.Series(dates).to_numpy()
+    day_codes, day_first = pd.factorize(pd.Index(dts), sort=True)
+    n_days = int(day_codes.max()) + 1 if len(day_codes) else 0
+    bounds = np.searchsorted(day_codes, np.arange(n_days), side="left")
+    bounds_end = np.searchsorted(day_codes, np.arange(n_days), side="right")
+    return day_codes, bounds, bounds_end
+
+
+def daily_spearman_ic_np(
+    pred: np.ndarray,
+    label: np.ndarray,
+    dates,
+    *,
+    bounds: tuple[np.ndarray, np.ndarray] | None = None,
+) -> pd.Series:
+    """逐日截面 Spearman IC——njit 快速路径（结果与 pandas 版逐位一致）。
+
+    ``bounds``：(bounds_start, bounds_end) 预计算的日行切片边界；None 时自算。
+    面板行序要求按日连续（已被 materialize/build 保证）；不满足时回退
+    ``daily_spearman_ic_pd``。
+    """
+    p = np.asarray(pred, dtype=np.float64)
+    y = np.asarray(label, dtype=np.float64)
+    darr = pd.Series(dates).to_numpy() if not isinstance(dates, pd.Series) else dates.to_numpy()
+    if bounds is not None:
+        b_start, b_end = bounds
+    else:
+        day_codes, b_start, b_end = _day_codes_and_bounds(darr)
+    if len(b_start) == 0:
+        return pd.Series(dtype=np.float64)
+    # 校验边界单调性（面板按日连续才可切片；乱序面板 searchsorted 边界会失真）
+    if not (np.all(np.diff(b_start) >= 0) and np.all(np.diff(b_end) >= 0)):
+        return daily_spearman_ic_pd(pred, label, dates)
+    if bounds is None and not np.all(np.diff(day_codes) >= 0):
+        return daily_spearman_ic_pd(pred, label, dates)
+    ic_vals, day_idx = _spearman_daily_nb(p, y, b_start.astype(np.int64), b_end.astype(np.int64))
+    ic_days = darr[b_start[day_idx]] if len(day_idx) else np.empty(0, dtype=object)
+    return pd.Series(ic_vals, index=pd.Index(ic_days))
+
+
+def daily_spearman_ic_pd(
     pred: np.ndarray,
     label: np.ndarray,
     dates: pd.DatetimeIndex | pd.Series,
 ) -> pd.Series:
-    """逐日截面 Spearman IC（rank 化后逐日 Pearson，全向量化）。"""
+    """逐日截面 Spearman IC（pandas 版，位级基准）。"""
     df = pd.DataFrame(
         {
             "p": pred.astype(np.float64),
@@ -339,6 +635,18 @@ def daily_spearman_ic(
     ic = cov / (sd_pr * sd_yr)
     ic = ic.replace([np.inf, -np.inf], np.nan).dropna()
     return ic
+
+
+def daily_spearman_ic(
+    pred: np.ndarray,
+    label: np.ndarray,
+    dates: pd.DatetimeIndex | pd.Series,
+) -> pd.Series:
+    """逐日截面 Spearman IC（rank 化后逐日 Pearson，全向量化）。
+
+    默认走 numpy 快路径（位级一致）；面板行序非按日连续时自动回退 pandas 版。
+    """
+    return daily_spearman_ic_np(pred, label, dates)
 
 
 def _entry_group(entry: FactorEntry) -> str:
@@ -508,6 +816,10 @@ def compute_quality_scores(
     dts = pd.DatetimeIndex(panel.index.get_level_values("datetime"))
     mask = (dts <= _coerce_naive(mining_end)) & (dts >= mining_start)
     labels: dict[int, np.ndarray] = {}
+    # 窗口切片与日边界对所有因子相同——预计算一次（numpy 快路径复用）
+    dts_masked = dts[mask]
+    _, bounds_start, bounds_end = _day_codes_and_bounds(dts_masked)
+    bounds: tuple[np.ndarray, np.ndarray] | None = (bounds_start, bounds_end)
     quality: dict[str, float] = {}
     ics: dict[str, pd.Series] = {}
     for entry, raw in materialized:
@@ -518,7 +830,9 @@ def compute_quality_scores(
         if days not in labels:
             labels[days] = forward_return_label(panel, days)
         lbl = labels[days]
-        ic = daily_spearman_ic(raw[mask], lbl[mask], dts[mask])
+        ic = daily_spearman_ic_np(
+            raw[mask], lbl[mask], dts_masked, bounds=bounds
+        )
         ics[entry.name] = ic
         quality[entry.name] = float(ic.abs().mean()) if len(ic) else 0.0
     return quality, ics
