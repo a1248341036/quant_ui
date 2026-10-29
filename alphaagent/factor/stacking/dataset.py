@@ -443,7 +443,13 @@ def _spearman_daily_nb(
         sd_yr = _welford_std_nb(yr)
         # 样本协方差 = (E[xy] - Ex·Ey) · n/(n-1)，与 std 的 ddof=1 一致
         cov = (e_xy - e_pr * e_yr) * nk / (nk - 1)
-        ic = cov / (sd_pr * sd_yr)
+        denom = sd_pr * sd_yr
+        if denom == 0.0:
+            # pandas 版数组除法：sd 为 0（该日 rank 全相等）时 0/0→NaN、
+            # 非零/0→inf，随后 replace+dropna 全部剔除该日——此处等价丢弃。
+            # （numba 标量除法会直接抛 ZeroDivisionError，故显式判 0。）
+            continue
+        ic = cov / denom
         if np.isfinite(ic):
             ics[n_out] = ic
             day_idx[n_out] = di

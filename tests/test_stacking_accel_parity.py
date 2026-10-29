@@ -77,6 +77,25 @@ def test_daily_ic_np_two_sample_day_boundary() -> None:
     assert np.all(np.isclose(np.abs(ic_np.to_numpy()), 1.0))  # ±1（浮点尾差）
 
 
+def test_daily_ic_np_degenerate_zero_sd_day() -> None:
+    """某日 pred 全相等（rank 全同 → sd=0）：pandas 数组除法 0/0→NaN 被 dropna
+    剔除，np 版必须同样剔除而非抛 ZeroDivisionError（numba 标量除法 0/0 会抛）。"""
+    days = pd.date_range("2024-01-01", periods=3)
+    rows = [
+        (days[0], 1.0, 0.5), (days[0], 2.0, 1.5),          # 正常 n=2
+        (days[1], 7.0, 0.2), (days[1], 7.0, 0.4), (days[1], 7.0, 0.6),  # pred 全等 → 剔除
+        (days[2], 3.0, 3.0), (days[2], 4.0, 4.0),           # 正常 n=2
+    ]
+    dts = pd.DatetimeIndex([r[0] for r in rows])
+    p = np.array([r[1] for r in rows], dtype=np.float64)
+    y = np.array([r[2] for r in rows], dtype=np.float64)
+    ic_np = daily_spearman_ic_np(p, y, dts)
+    ic_pd = daily_spearman_ic_pd(p, y, dts)
+    assert days[1] not in ic_pd.index  # pandas 剔除该天
+    assert ic_np.equals(ic_pd)
+    assert len(ic_np) == 2
+
+
 def test_compute_quality_bounds_guard_loose_panel() -> None:
     """乱序（instrument-major）面板：day_codes 非递减守卫 → bounds=None →
     np 版回退 pandas，逐位一致（此前实测静默算错：20 天只出 2 天）。"""
