@@ -584,7 +584,8 @@ def daily_spearman_ic_np(
     """逐日截面 Spearman IC——njit 快速路径（结果与 pandas 版逐位一致）。
 
     ``bounds``：(bounds_start, bounds_end) 预计算的日行切片边界；None 时自算。
-    面板行序要求按日连续（已被 materialize/build 保证）；不满足时回退
+    面板行序要求按日连续（已被 materialize/build 保证；乱序时调用方应回退，
+    见 compute_quality_scores 的 day_codes 守卫）；不满足时回退
     ``daily_spearman_ic_pd``。
     """
     p = np.asarray(pred, dtype=np.float64)
@@ -818,8 +819,13 @@ def compute_quality_scores(
     labels: dict[int, np.ndarray] = {}
     # 窗口切片与日边界对所有因子相同——预计算一次（numpy 快路径复用）
     dts_masked = dts[mask]
-    _, bounds_start, bounds_end = _day_codes_and_bounds(dts_masked)
-    bounds: tuple[np.ndarray, np.ndarray] | None = (bounds_start, bounds_end)
+    day_codes, bounds_start, bounds_end = _day_codes_and_bounds(dts_masked)
+    # 面板须按日非递减连续才可用行切片边界；乱序时传 None 让 np 路径回退 pandas
+    bounds: tuple[np.ndarray, np.ndarray] | None = (
+        (bounds_start, bounds_end)
+        if len(bounds_start) and np.all(np.diff(day_codes) >= 0)
+        else None
+    )
     quality: dict[str, float] = {}
     ics: dict[str, pd.Series] = {}
     for entry, raw in materialized:
