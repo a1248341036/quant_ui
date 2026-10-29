@@ -417,19 +417,66 @@ def build_dataset_from_values(
     )
 
 
+def _day_row_slices(panel: pd.DataFrame) -> np.ndarray | None:
+    """预计算每天的 [st, en) 行号边界（面板按 datetime 全局排序时可用）。
+
+    返回 int64 数组 [day0_st, day0_en, day1_st, day1_en, ...]；若面板不是
+    按 datetime 连续分块（有乱序或日期交错），返回 None 让调用方回退。
+    """
+    dts = panel.index.get_level_values("datetime")
+    try:
+        day_codes, day_first = pd.factorize(dts, sort=True)
+        n_days = day_codes.max() + 1 if len(day_codes) else 0
+        if n_days == 0:
+            return None
+        order = np.argsort(day_first, kind="stable")
+        # 面板行按 datetime 严格排序 ⇔ day_codes 单调不减
+        if np.any(np.diff(day_codes) < 0):
+            return None
+        pos = np.searchsorted(day_codes, np.arange(n_days), side="left")
+        nxt = np.searchsorted(day_codes, np.arange(n_days), side="right")
+        bounds = np.empty(2 * n_days, dtype=np.int64)
+        bounds[0::2] = pos
+        bounds[1::2] = nxt
+        return bounds
+    except Exception:
+        return None
+
+
+def _day_pairs_from_bounds(
+    a: np.ndarray, b: np.ndarray, bounds: np.ndarray, stride: int
+) -> tuple[list[np.ndarray], list[np.ndarray]]:
+    """按日抽样拼接两因子序列（行切片版；与 _sampled_corr 原掩码路径同取数规则）。"""
+    pairs_a, pairs_b = [], []
+    n_days = len(bounds) // 2
+    for day in range(0, n_days, stride):
+        st, en = int(bounds[2 * day]), int(bounds[2 * day + 1])
+        xa, xb = a[st:en], b[st:en]
+        ok = np.isfinite(xa) & np.isfinite(xb)
+        if int(ok.sum()) < 5:
+            continue
+        pairs_a.append(xa[ok])
+        pairs_b.append(xb[ok])
+    return pairs_a, pairs_b
+
+
 def _sampled_corr(a: np.ndarray, b: np.ndarray, panel: pd.DataFrame, stride: int = 5) -> float | None:
     """按日抽样的截面 Pearson 均值（两因子间；全 NaN 或样本不足返回 None）。"""
     dts = panel.index.get_level_values("datetime")
     unique_days = dts.unique()
     pairs_a, pairs_b = [], []
-    for day in unique_days[::stride]:
-        mask = dts == day
-        xa, xb = a[mask], b[mask]
-        ok = np.isfinite(xa) & np.isfinite(xb)
-        if ok.sum() < 5:
-            continue
-        pairs_a.append(xa[ok])
-        pairs_b.append(xb[ok])
+    bounds = _day_row_slices(panel)
+    if bounds is not None:
+        pairs_a, pairs_b = _day_pairs_from_bounds(a, b, bounds, stride)
+    else:
+        for day in unique_days[::stride]:
+            mask = dts == day
+            xa, xb = a[mask], b[mask]
+            ok = np.isfinite(xa) & np.isfinite(xb)
+            if ok.sum() < 5:
+                continue
+            pairs_a.append(xa[ok])
+            pairs_b.append(xb[ok])
     if len(pairs_a) < 3:
         return None
     a_all = np.concatenate(pairs_a)
