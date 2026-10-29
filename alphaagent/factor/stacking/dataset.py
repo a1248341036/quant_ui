@@ -568,7 +568,7 @@ def _day_codes_and_bounds(dates) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     要求 dates 已按日连续排序（panel 行序）；bounds 为每天的 [st, en) 行号切片。
     """
     dts = pd.Series(dates).to_numpy()
-    day_codes, day_first = pd.factorize(pd.Index(dts), sort=True)
+    day_codes, _ = pd.factorize(pd.Index(dts), sort=True)
     n_days = int(day_codes.max()) + 1 if len(day_codes) else 0
     bounds = np.searchsorted(day_codes, np.arange(n_days), side="left")
     bounds_end = np.searchsorted(day_codes, np.arange(n_days), side="right")
