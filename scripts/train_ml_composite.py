@@ -50,7 +50,7 @@ from alphaagent.factor.stacking import (  # noqa: E402
     walk_forward_splits,
 )
 from alphaagent.factor.mining.research_spec import default_research_spec  # noqa: E402
-from alphaagent.factor.stacking.dataset import _to_utc_naive  # noqa: E402
+from alphaagent.factor.stacking.dataset import _to_utc_naive, forward_return_label  # noqa: E402
 from core import trading_config  # noqa: E402
 
 SCHEME_LABELS = {
@@ -90,6 +90,16 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--label-days", type=int, default=5, help="前向收益持有天数（对齐调仓频率）")
     ap.add_argument("--model", default="both", choices=["ridge", "lgbm", "both"],
                     help="仅 --scheme ml 生效：拟合的 ML 模型")
+    ap.add_argument("--split-models", action="store_true",
+                    help="分频多模型融合（方案 B 派二，见 artifacts/alphaagent/mine_campaigns/"
+                         "20261029_night/mixed_freq_ml_research_20261030.md）：按因子 label 周期"
+                         "分组（1d/5d/20d…），每组独立建模（组内 label=组周期），预测分数在"
+                         "组合层融合。默认关闭=旧行为（全因子拉平统一日频面板 + 统一 label 混训），"
+                         "便于对照实验")
+    ap.add_argument("--blend-weight", default="icir", choices=["equal", "icir"],
+                    help="仅 --split-models 生效：频段融合权重方案。equal=等权 1/N；"
+                         "icir=按各组历史 OOS 滚动 ICIR 加权（首折回退等权，时序诚实；"
+                         "慢周期组重叠标签 ICIR 偏高是已知偏置，report.per_frequency 输出各组 ICIR 供判读）")
     ap.add_argument("--scheme", default="ml", choices=["ml", "equal", "icir", "hrp"],
                     help="组合方法：ml=学习加权（Ridge/LGBM，默认）；equal=等权 1/N；"
                          "icir=ICIR 加权；hrp=HRP 加权。后三者不拟合任何模型，"
@@ -194,6 +204,29 @@ def main() -> None:
         print("[safety-violation] 安全拦截：--eval-mode blind_test 下绝对禁止开启 --llm-assist！"
               "盲测数据必须作为诚实样本外严格保留，禁止 LLM 窥探或回流调优。")
         sys.exit(1)
+
+    # ── 分频多模型融合（--split-models）与依赖统一特征矩阵的辅助链路不兼容：──
+    # mRMR 推荐/screen 筛选/累积子集曲线/多路径对照都消费统一 dataset.feature_matrix，
+    # 而 split 模式下每组独立成集，语义不成立——宁可显式报错，不静默降级。
+    if args.split_models:
+        incompatible = []
+        if args.recommend_k > 0:
+            incompatible.append("--recommend-k（统一特征矩阵上做 mRMR，分频模式下无意义）")
+        if args.screen or args.screen_only:
+            incompatible.append("--screen/--screen-only（统一特征矩阵上做 Null Importance）")
+        if args.screening_report:
+            incompatible.append("--screening-report（消费统一筛选报告）")
+        if args.multi_path_shifts:
+            incompatible.append("--multi-path-shifts（多路径对照按主链路折结构设计）")
+        if args.subset_curve:
+            incompatible.append("--subset-curve（统一特征矩阵上做 Top-k 累积子集曲线）")
+        if args.scheme != "ml":
+            incompatible.append("--scheme（分频模式每组独立建模，简单投票方案不适用）")
+        if incompatible:
+            print("[usage-error] --split-models 与以下参数不兼容：")
+            for item in incompatible:
+                print(f"  - {item}")
+            sys.exit(1)
 
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_dir = Path(args.out_dir) if args.out_dir else ROOT / "artifacts" / "alphaagent" / "stacking" / run_id
@@ -467,29 +500,84 @@ def main() -> None:
         title="物化因子矩阵与去重",
         message=f"正在物化因子值，并执行 max_corr={args.max_corr} 跨库冗余过滤...",
     )
-    dataset = build_stacking_dataset(
-        panel,
-        entries,
-        label_days=args.label_days,
-        mining_end=mining_end,
-        size_neutral=args.size_neutral,
-        max_corr=args.max_corr,
-        cache=cache,
-        decay_months=args.decay_months,
-        progress=lambda msg: print(" ", msg, flush=True),
-    )
-    print(f"有效特征 {len(dataset.feature_names)} 个；剔除 {len(dataset.dropped)} 个")
-    for d in dataset.dropped:
-        print(f"  - drop {d['name']} ({d['library']}): {d['reason']}")
-    _emit_event(
-        out_dir,
-        "ml_features_filtered",
-        title="特征筛选完成",
-        feature_names=dataset.feature_names,
-        n_features=len(dataset.feature_names),
-        n_dropped=len(dataset.dropped),
-        dropped=dataset.dropped,
-    )
+    split_state: dict | None = None  # 分频模式的中间产物容器（非 split 模式恒为 None）
+    if args.split_models:
+        from alphaagent.factor.stacking.split_fusion import (
+            build_group_datasets,
+            split_factor_groups,
+        )
+
+        groups, split_diag = split_factor_groups(entries, blend_label_days=args.label_days)
+        print("分频分组（方案 B 派二：每组独立建模、组合层融合）：")
+        unparsed_note = (
+            f"（含 {len(split_diag['unparsed'])} 个 label_col 未解析 → 归入目标节拍组）"
+            if split_diag["unparsed"] else ""
+        )
+        for key, n in split_diag["group_sizes"].items():
+            note = unparsed_note if key == f"{args.label_days}d" else ""
+            print(f"  {key}: {n} 个因子{note}")
+        if split_diag["unparsed"]:
+            print(f"  label_col 未解析名单：{split_diag['unparsed']}")
+        _emit_event(
+            out_dir,
+            "ml_stage",
+            stage="frequency_grouping",
+            title="分频分组完成",
+            message="按因子 label 周期分组，每组独立建模、预测分数在组合层融合",
+            group_sizes=split_diag["group_sizes"],
+            unparsed=split_diag["unparsed"],
+        )
+        group_datasets = build_group_datasets(
+            panel,
+            groups,
+            mining_end=mining_end,
+            size_neutral=args.size_neutral,
+            max_corr=args.max_corr,
+            cache=cache,
+            decay_months=args.decay_months,
+            progress=lambda msg: print(" ", msg, flush=True),
+        )
+        for key, ds in group_datasets.items():
+            print(f"  组 {key}: 入模 {len(ds.feature_names)} 个；剔除 {len(ds.dropped)} 个")
+            for d in ds.dropped:
+                print(f"    - drop {d['name']} ({d['library']}): {d['reason']}")
+        split_state = {
+            "groups": groups,
+            "group_datasets": group_datasets,
+            "split_diag": split_diag,
+        }
+        _emit_event(
+            out_dir,
+            "ml_features_filtered",
+            title="分频特征筛选完成",
+            feature_names={k: ds.feature_names for k, ds in group_datasets.items()},
+            n_features={k: len(ds.feature_names) for k, ds in group_datasets.items()},
+            n_dropped={k: len(ds.dropped) for k, ds in group_datasets.items()},
+        )
+    else:
+        dataset = build_stacking_dataset(
+            panel,
+            entries,
+            label_days=args.label_days,
+            mining_end=mining_end,
+            size_neutral=args.size_neutral,
+            max_corr=args.max_corr,
+            cache=cache,
+            decay_months=args.decay_months,
+            progress=lambda msg: print(" ", msg, flush=True),
+        )
+        print(f"有效特征 {len(dataset.feature_names)} 个；剔除 {len(dataset.dropped)} 个")
+        for d in dataset.dropped:
+            print(f"  - drop {d['name']} ({d['library']}): {d['reason']}")
+        _emit_event(
+            out_dir,
+            "ml_features_filtered",
+            title="特征筛选完成",
+            feature_names=dataset.feature_names,
+            n_features=len(dataset.feature_names),
+            n_dropped=len(dataset.dropped),
+            dropped=dataset.dropped,
+        )
 
     # ④b mRMR 推荐模式（B 族）：不训练，只输出"强+互补"推荐清单供前端一键勾选
     if args.recommend_k > 0:
@@ -610,7 +698,30 @@ def main() -> None:
     holdout_mode = args.isolation == "holdout"
     wf_train_start = panel_start if holdout_mode else mining_end
     base_months = max(3, int((mining_end - panel_start).days / 30.44))
-    if holdout_mode:
+    if args.split_models:
+        from alphaagent.factor.stacking.split_fusion import build_frequency_folds
+
+        assert split_state is not None
+        group_label_days = [int(k[:-1]) for k in split_state["group_datasets"]]
+        max_purge = max(args.purge_days, *group_label_days)
+        folds = build_frequency_folds(
+            dts,
+            isolation=args.isolation,
+            panel_start=panel_start,
+            mining_end=mining_end,
+            group_label_days=group_label_days,
+            train_months=args.train_months,
+            step_months=args.step_months,
+            purge_days=args.purge_days,
+        )
+        if folds:
+            # 分频模式单向 purge：统一放宽覆盖最慢组标签期，消除慢周期前向
+            # 标签跨折泄漏，并保证各组 OOS 行集一致（融合可逐行对齐）
+            print(
+                f"分频模式折（purge=max({args.purge_days}, 最慢组 {max_purge})={max_purge} 个交易日，"
+                f"覆盖最慢组前向标签）：共 {len(folds)} 折"
+            )
+    elif holdout_mode:
         # 渐进加窗：第一折的 OOS 必须完全落在 mining_end 之后的干净段
         #（月度算术 + purge 会让边界回退，最多多给 3 个月窗口）
         folds = []
@@ -697,65 +808,134 @@ def main() -> None:
         message=f"共 {len(folds)} 折滚动区间，隔离模式：{args.isolation}",
     )
 
-    for kind in kinds:
-        print(f"训练 {kind} …")
-        pred, report, feat_w, feat_c = fit_predict_walkforward(
-            dataset.feature_matrix, dataset.label, date_series, folds, kind=kind,
-            feature_names=dataset.feature_names, label_horizon=args.label_days,
-        )
-        model_outputs[kind] = pred
-        fold_reports[kind] = report
-        if feat_w:
-            feature_weights[kind] = feat_w
-            top = "、".join(f"{x['name']}({x['weight']:.1%})" for x in feat_w[:5])
-            print(f"  权重 Top5: {top}")
-        if feat_c:
-            feature_contribution[kind] = feat_c
-            top_c = "、".join(f"{x['name']}({x['ic_drop']:+.4f})" for x in feat_c[:5])
-            print(f"  置换贡献 Top5: {top_c}")
-            dd_drags = [x for x in feat_c if x.get("dd_impact") is not None]
-            if dd_drags:
-                worst = min(dd_drags, key=lambda x: x["dd_impact"])
-                if worst["dd_impact"] < 0:
-                    print(f"  回撤拖累最重: {worst['name']}（打乱后回撤收窄 "
-                          f"{abs(worst['dd_impact']) * 100:.1f}%，剔除候选）")
-        for r in report:
-            ic = r.get("ic_mean")
-            print(f"  OOS {r['oos_start']}~{r['oos_end']}: n_train={r['n_train']} "
-                  f"IC={ic if ic is None else round(ic, 4)} "
-                  f"{'SKIP' if r.get('skipped') else ''}")
-
-        _emit_event(
-            out_dir,
-            "ml_fold_progress",
-            title=f"{kind.upper()} 拟合完成",
-            kind=kind,
-            fold_reports=report,
-            feature_weights=(feat_w or [])[:15],
-            feature_contribution=(feat_c or [])[:15],
+    # ── ⑤a 分频多模型融合（--split-models，方案 B 派二）──────────────────
+    # 每组独立 walk-forward 建模（组内 label=组周期），预测分数在组合层融合。
+    # 融合权重（--blend-weight）：equal=等权 1/N；icir=按已产出历史 OOS 滚动
+    # 估计（首折回退等权，时序诚实）；融合行缺失部分组时按在场组权重重归一。
+    if args.split_models:
+        from alphaagent.factor.stacking.split_fusion import (
+            blend_group_scores,
+            per_frequency_payload,
+            train_frequency_model,
         )
 
-    # 组合分数：多模型 OOS 预测取平均（折内无 in-sample 污染）
-    if not is_simple_scheme:
-        usable = [model_outputs[k] for k in kinds if np.isfinite(model_outputs[k]).any()]
-        if not usable:
-            print("所有模型折均被跳过（样本不足），无组合分数可产出。")
-            sys.exit(1)
-        stacked = np.nanmean(np.column_stack(usable), axis=1).astype(np.float32)
-    else:
-        # 简单加权组合：不拟合模型。三种方案的符号/权重由各折 train 段按规则
-        # 滚动估计（fit_scheme_compare_scores），此处直接取用户选定的方案分数。
-        from alphaagent.factor.stacking.model import fit_scheme_compare_scores
-
-        print(f"简单加权组合（{SCHEME_LABELS[args.scheme]}）："
-              f"权重由各折 train 段滚动估计，无模型拟合 …")
-        _scheme_all = fit_scheme_compare_scores(
-            dataset.feature_matrix, dataset.label, date_series, folds
+        assert split_state is not None
+        group_results = []
+        for key, ds in split_state["group_datasets"].items():
+            gr = train_frequency_model(
+                ds, date_series, folds, kinds=kinds,
+                first_oos=first_oos,
+                group_members=split_state["groups"][key],
+            )
+            group_results.append(gr)
+            print(f"频段组 {key}（label={gr.label_days}d，入模 {len(ds.feature_names)} 个）：")
+            for sub_kind, rep in gr.fold_metrics.items():
+                for r in rep:
+                    ic = r.get("ic_mean")
+                    print(f"  [{sub_kind}] OOS {r['oos_start']}~{r['oos_end']}: "
+                          f"n_train={r['n_train']} IC={ic if ic is None else round(ic, 4)} "
+                          f"{'SKIP' if r.get('skipped') else ''}")
+            for sub_kind, fw in gr.feature_weights.items():
+                top = "、".join(f"{x['name']}({x['weight']:.1%})" for x in fw[:3])
+                print(f"  [{sub_kind}] 权重 Top3: {top}")
+            ooc = gr.oos_ic
+            print(f"  组 OOS（对 {gr.label_days}d label）："
+                  f"IC={_fmt(ooc['ic_mean']) if ooc else 'None'} "
+                  f"ICIR={_fmt(ooc['ic_ir']) if ooc else 'None'}")
+            _emit_event(
+                out_dir,
+                "ml_frequency_group_done",
+                title=f"频段组 {key} 拟合完成",
+                group=key,
+                label_days=gr.label_days,
+                n_features=len(ds.feature_names),
+                oos_ic=ooc,
+            )
+        stacked, blend_diag = blend_group_scores(
+            group_results, folds, date_series, first_oos=first_oos,
+            blend_weight=args.blend_weight, blend_label_days=args.label_days,
         )
-        stacked = _scheme_all[args.scheme].copy()
-        fold_reports = {}
+        fused_label = forward_return_label(panel, args.label_days)
+        fused_ic = _blended_oos_ic(stacked, fused_label, dts, first_oos)
+        if fused_ic:
+            print(f"融合后统一节拍（{args.label_days}d）OOS（未平滑预览，平滑后以 report.oos_ic_blended 为准）："
+                  f"IC={_fmt(fused_ic['ic_mean'])} ICIR={_fmt(fused_ic['ic_ir'])} "
+                  f"n_days={fused_ic['n_days']}")
+        for fw_row in blend_diag["fold_weights"]:
+            ws = "、".join(f"{k}={v:.3f}" for k, v in fw_row["weights"].items())
+            fb = f"（{fw_row['fallback']}）" if fw_row["fallback"] else ""
+            print(f"  融合权重 {fw_row['oos_start']}~{fw_row['oos_end']}: {ws}{fb}")
+        split_state.update({
+            "group_results": group_results,
+            "blend_diag": blend_diag,
+            "per_frequency": per_frequency_payload(
+                group_results, blend_diag,
+                blend_label_days=args.label_days, blend_weight=args.blend_weight,
+            ),
+        })
+        fold_reports = {}  # 顶层留空；逐组折指标在 report.per_frequency.groups.<k>
         feature_weights = {}
         feature_contribution = {}
+    else:
+        for kind in kinds:
+            print(f"训练 {kind} …")
+            pred, report, feat_w, feat_c = fit_predict_walkforward(
+                dataset.feature_matrix, dataset.label, date_series, folds, kind=kind,
+                feature_names=dataset.feature_names, label_horizon=args.label_days,
+            )
+            model_outputs[kind] = pred
+            fold_reports[kind] = report
+            if feat_w:
+                feature_weights[kind] = feat_w
+                top = "、".join(f"{x['name']}({x['weight']:.1%})" for x in feat_w[:5])
+                print(f"  权重 Top5: {top}")
+            if feat_c:
+                feature_contribution[kind] = feat_c
+                top_c = "、".join(f"{x['name']}({x['ic_drop']:+.4f})" for x in feat_c[:5])
+                print(f"  置换贡献 Top5: {top_c}")
+                dd_drags = [x for x in feat_c if x.get("dd_impact") is not None]
+                if dd_drags:
+                    worst = min(dd_drags, key=lambda x: x["dd_impact"])
+                    if worst["dd_impact"] < 0:
+                        print(f"  回撤拖累最重: {worst['name']}（打乱后回撤收窄 "
+                              f"{abs(worst['dd_impact']) * 100:.1f}%，剔除候选）")
+            for r in report:
+                ic = r.get("ic_mean")
+                print(f"  OOS {r['oos_start']}~{r['oos_end']}: n_train={r['n_train']} "
+                      f"IC={ic if ic is None else round(ic, 4)} "
+                      f"{'SKIP' if r.get('skipped') else ''}")
+
+            _emit_event(
+                out_dir,
+                "ml_fold_progress",
+                title=f"{kind.upper()} 拟合完成",
+                kind=kind,
+                fold_reports=report,
+                feature_weights=(feat_w or [])[:15],
+                feature_contribution=(feat_c or [])[:15],
+            )
+
+        # 组合分数：多模型 OOS 预测取平均（折内无 in-sample 污染）
+        if not is_simple_scheme:
+            usable = [model_outputs[k] for k in kinds if np.isfinite(model_outputs[k]).any()]
+            if not usable:
+                print("所有模型折均被跳过（样本不足），无组合分数可产出。")
+                sys.exit(1)
+            stacked = np.nanmean(np.column_stack(usable), axis=1).astype(np.float32)
+        else:
+            # 简单加权组合：不拟合模型。三种方案的符号/权重由各折 train 段按规则
+            # 滚动估计（fit_scheme_compare_scores），此处直接取用户选定的方案分数。
+            from alphaagent.factor.stacking.model import fit_scheme_compare_scores
+
+            print(f"简单加权组合（{SCHEME_LABELS[args.scheme]}）："
+                  f"权重由各折 train 段滚动估计，无模型拟合 …")
+            _scheme_all = fit_scheme_compare_scores(
+                dataset.feature_matrix, dataset.label, date_series, folds
+            )
+            stacked = _scheme_all[args.scheme].copy()
+            fold_reports = {}
+            feature_weights = {}
+            feature_contribution = {}
 
     # ⑤b 组合分数平滑：尾随 WMA（gate/报告/pred 全部消费平滑后分数）
     smooth_n = args.score_smooth if args.score_smooth > 0 else args.label_days
@@ -766,11 +946,12 @@ def main() -> None:
         print("组合分数平滑：关闭（--score-smooth 1）")
     score_smooth_used = smooth_n
 
-    # ⑤c 不挑全上对照（D 族，仅 ML 模式）：等权/ICIR/HRP 简单投票 vs 学习加权
+    # ⑤c 不挑全上对照（D 族，仅 ML 模式且非分频）：等权/ICIR/HRP 简单投票 vs 学习加权
     #     权重只由各折 train 段估计（与模型拟合同等信息量）；方案分数同样平滑
-    #     后在同一 OOS 行集上与 stacked 对照。
+    #     后在同一 OOS 行集上与 stacked 对照。分频模式各组独立成集，无统一
+    #     特征矩阵可对照，跳过。
     scheme_compare = None
-    if not is_simple_scheme:
+    if not is_simple_scheme and not args.split_models:
         from alphaagent.factor.stacking.model import fit_scheme_compare_scores, scheme_compare_report
 
         print("不挑全上对照（等权 / ICIR / HRP 简单投票）…")
@@ -794,22 +975,46 @@ def main() -> None:
 
     # ⑥ 衰减对照表（幸存者偏差量化）
     print("衰减对照表（mining 窗口 IC vs OOS IC）…")
-    materialized_for_decay = []
     from alphaagent.factor.ingest import materialize_factor
 
-    for entry in dataset.entries:
-        try:
-            values = np.asarray(materialize_factor(entry.expr, panel, cache=cache).values, dtype=np.float32)
-            materialized_for_decay.append((entry, values))
-        except Exception:
-            continue
-    decay = decay_table(
-        materialized_for_decay, panel, dataset.label,
-        mining_end=mining_end, decay_months=args.decay_months,
-    )
-    for row in decay:
-        print(f"  {row['name']:32s} mining={_fmt(row['ic_mining'])} oos={_fmt(row['ic_oos'])} "
-              f"保留比={_fmt(row['decay_ratio'])}")
+    if args.split_models:
+        assert split_state is not None
+        decay = []
+        for key, ds in split_state["group_datasets"].items():
+            group_rows = []
+            for entry in ds.entries:
+                try:
+                    values = np.asarray(
+                        materialize_factor(entry.expr, panel, cache=cache).values, dtype=np.float32
+                    )
+                    group_rows.append((entry, values))
+                except Exception:
+                    continue
+            for row in decay_table(
+                group_rows, panel, ds.label,
+                mining_end=mining_end, decay_months=args.decay_months,
+            ):
+                row["frequency"] = key  # 该因子的衰减对照按本组 label horizon 计
+                decay.append(row)
+        for row in decay:
+            print(f"  [{row['frequency']}] {row['name']:28s} "
+                  f"mining={_fmt(row['ic_mining'])} oos={_fmt(row['ic_oos'])} "
+                  f"保留比={_fmt(row['decay_ratio'])}")
+    else:
+        materialized_for_decay = []
+        for entry in dataset.entries:
+            try:
+                values = np.asarray(materialize_factor(entry.expr, panel, cache=cache).values, dtype=np.float32)
+                materialized_for_decay.append((entry, values))
+            except Exception:
+                continue
+        decay = decay_table(
+            materialized_for_decay, panel, dataset.label,
+            mining_end=mining_end, decay_months=args.decay_months,
+        )
+        for row in decay:
+            print(f"  {row['name']:32s} mining={_fmt(row['ic_mining'])} oos={_fmt(row['ic_oos'])} "
+                  f"保留比={_fmt(row['decay_ratio'])}")
 
     # ⑦ engine_gate 裁决（OOS 段，周调仓口径）
     gate_result = None
@@ -1008,51 +1213,102 @@ def main() -> None:
     # ⑧ 落盘：report + model + pred 通道
     import joblib
 
-    report = {
-        "run_id": run_id,
-        "eval_mode": args.eval_mode,
-        "blind_test_isolated": args.eval_mode == "tuning",
-        "mining_end": str(mining_end.date()),
-        "time_isolation": time_isolation,
-        "panel_start": str(panel_start.date()),
-        "panel_end": str(end.date()),
-        "label_days": args.label_days,
-        "score_smooth": int(score_smooth_used),
-        "include_factors": list(args.include_factors) if args.include_factors else None,
-        "folds": len(folds),
-        "scheme": args.scheme,
-        "scheme_label": SCHEME_LABELS[args.scheme],
-        "feature_names": dataset.feature_names,
-        "dropped": dataset.dropped,
-        "fold_metrics": fold_reports,
-        "feature_weights": feature_weights,
-        "feature_contribution": feature_contribution,
-        "subset_curve": subset_curve,
-        "decay_table": decay,
-        "gate": gate_result,
-        "oos_ic_blended": _blended_oos_ic(stacked, dataset.label, dts, first_oos),
-        "scheme_compare": scheme_compare,
-        "multi_path": multi_path,
-        "screening": screening_summary,
-    }
+    if args.split_models:
+        assert split_state is not None
+        split_feature_names = sorted({
+            n for ds in split_state["group_datasets"].values() for n in ds.feature_names
+        })
+        split_dropped = [
+            {**d, "frequency": key}
+            for key, ds in split_state["group_datasets"].items() for d in ds.dropped
+        ]
+        blended_label = forward_return_label(panel, args.label_days)
+        report = {
+            "run_id": run_id,
+            "eval_mode": args.eval_mode,
+            "blind_test_isolated": args.eval_mode == "tuning",
+            "mining_end": str(mining_end.date()),
+            "time_isolation": time_isolation,
+            "panel_start": str(panel_start.date()),
+            "panel_end": str(end.date()),
+            "label_days": args.label_days,
+            "score_smooth": int(score_smooth_used),
+            "include_factors": list(args.include_factors) if args.include_factors else None,
+            "folds": len(folds),
+            "scheme": args.scheme,
+            "scheme_label": SCHEME_LABELS[args.scheme],
+            "split_models": True,
+            "blend_weight": args.blend_weight,
+            "per_frequency": split_state["per_frequency"],
+            "feature_names": split_feature_names,
+            "dropped": split_dropped,
+            "fold_metrics": None,  # 逐组折指标在 report.per_frequency.groups.<k>.fold_metrics
+            "feature_weights": None,
+            "feature_contribution": None,
+            "subset_curve": None,
+            "decay_table": decay,
+            "gate": gate_result,
+            "oos_ic_blended": _blended_oos_ic(stacked, blended_label, dts, first_oos),
+            "scheme_compare": None,
+            "multi_path": None,
+            "screening": screening_summary,
+        }
+    else:
+        report = {
+            "run_id": run_id,
+            "eval_mode": args.eval_mode,
+            "blind_test_isolated": args.eval_mode == "tuning",
+            "mining_end": str(mining_end.date()),
+            "time_isolation": time_isolation,
+            "panel_start": str(panel_start.date()),
+            "panel_end": str(end.date()),
+            "label_days": args.label_days,
+            "score_smooth": int(score_smooth_used),
+            "include_factors": list(args.include_factors) if args.include_factors else None,
+            "folds": len(folds),
+            "scheme": args.scheme,
+            "scheme_label": SCHEME_LABELS[args.scheme],
+            "feature_names": dataset.feature_names,
+            "dropped": dataset.dropped,
+            "fold_metrics": fold_reports,
+            "feature_weights": feature_weights,
+            "feature_contribution": feature_contribution,
+            "subset_curve": subset_curve,
+            "decay_table": decay,
+            "gate": gate_result,
+            "oos_ic_blended": _blended_oos_ic(stacked, dataset.label, dts, first_oos),
+            "scheme_compare": scheme_compare,
+            "multi_path": multi_path,
+            "screening": screening_summary,
+        }
     if args.llm_assist:
         report["llm_recommendation"] = llm_recommendation_meta  # None=回退全量；否则含名单摘要/指纹/是否复用
     (out_dir / "report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=1, default=str), encoding="utf-8"
     )
-    joblib.dump(
-        {
-            "kind": kinds,
-            "entries": [e.__dict__ for e in dataset.entries],
-            "feature_names": dataset.feature_names,
-            "label_days": args.label_days,
-            "size_neutral": args.size_neutral,
-            "mining_end": str(mining_end.date()),
-            "folds": [(str(f.train_dates.min().date()), str(f.train_dates.max().date()),
-                       str(f.oos_dates.min().date()), str(f.oos_dates.max().date())) for f in folds],
-        },
-        out_dir / "model.joblib",
-    )
+    if args.split_models:
+        assert split_state is not None
+        model_entries = [e for ds in split_state["group_datasets"].values() for e in ds.entries]
+        model_feature_names = split_feature_names
+    else:
+        model_entries = dataset.entries
+        model_feature_names = dataset.feature_names
+    joblib_payload = {
+        "kind": kinds,
+        "entries": [e.__dict__ for e in model_entries],
+        "feature_names": model_feature_names,
+        "label_days": args.label_days,
+        "size_neutral": args.size_neutral,
+        "mining_end": str(mining_end.date()),
+        "folds": [(str(f.train_dates.min().date()), str(f.train_dates.max().date()),
+                   str(f.oos_dates.min().date()), str(f.oos_dates.max().date())) for f in folds],
+    }
+    if args.split_models:
+        assert split_state is not None
+        joblib_payload["split_label_days"] = {
+            k: int(k[:-1]) for k in split_state["group_datasets"]
+        }
+    joblib.dump(joblib_payload, out_dir / "model.joblib")
     print(f"报告与模型已写入 {out_dir}")
 
     # ⑧b LLM 组合说明书（C 族，--llm-assist 开启时）：report.json 已完整落盘
