@@ -4,12 +4,14 @@
 （宿主将串行跑三组对比，panel 缓存共享会冲突，本脚本绝不触碰缓存）。
 
 验证点：
-1) 行数比例：对齐采样行数 ≈ 日频行数 ÷ step（300 交易日 × 40 股 = 12000 → ÷5 = 2400）；
+1) 行数结构：全量日频行保持（12000 行不切片），采样只表现为 sampled_day_mask
+   （训练样本 = 每 step 交易日一整截面 = 12000 ÷ 5 = 2400 行）；
 2) 截面完整性：同一截面日全部股票同时进样本，采样日 == 全量日频 [::5]；
 3) 慢频因子（基本面 60 交易日才更新一次 + 发布期 NaN 缺口）在相邻截面日保持
    同一值（不再每日重复），且截面日落在 NaN 缺口时取'截面日前最近值'（ffill）；
 4) 快频因子（日频动量秩）在相邻截面日取值不同（未把快因子错误降频）；
-5) label 切片正确：截面日 label == 全量前向收益在当天取值；尾部无未来数据仍 NaN；
+5) label 保持全量日频（不切片），采样行 label == 全量前向收益在当天取值；
+   尾部无未来数据仍 NaN；
 6) 默认关闭（sample_step_days=0）保持旧行为：行数 == 日频全量；
 7) _ffill_along_time / _sampled_day_mask 单元语义；
 8) 候选库 label 分布（只读 artifacts，印证 109 因子混合频率动机）。
@@ -124,31 +126,33 @@ def main() -> None:
     assert set(ds0.feature_names) == {"f_fast", "f_slow"}
     print(f"[2] 默认关闭：行数 == 日频全量 {len(ds0.panel):,} ✔（特征 {ds0.feature_names}）")
 
-    # ── 对齐采样启用 ──
+    # ── 对齐采样启用：全量行结构保持，采样只体现在 sampled_day_mask ──
     ds5 = build_stacking_dataset(
         panel, entries(), label_days=STEP, mining_end=mining_end,
         size_neutral=False, max_corr=0.99, sample_step_days=STEP,
     )
-    samp_days = pd.DatetimeIndex(ds5.panel.index.get_level_values("datetime")).unique()
-    n_samp_day = len(samp_days)
-    print(f"[3] 对齐采样：日频 {full_rows:,} 行 → 截面日 {len(ds5.panel):,} 行（{n_samp_day} 个截面日）")
-    assert len(ds5.panel) == full_rows // STEP == N_DAYS * N_INST // STEP
-    assert n_samp_day == N_DAYS // STEP == 60
-    assert len(ds5.feature_matrix) == len(ds5.label) == len(ds5.panel)
+    assert len(ds5.panel) == full_rows == len(ds5.feature_matrix) == len(ds5.label)
     assert ds5.sample_step_days == STEP
-    # 采样日 == 全量日频 [::5]（同一截面日全部股票同时进样本）
-    assert (samp_days.to_numpy() == full_days[::STEP].to_numpy()).all()
-    print(f"[3] 行数比例 = {full_rows}/{len(ds5.panel)} = {full_rows / len(ds5.panel):.0f}（≈ ÷{STEP}）✔ "
-          f"采样日 == 全量[::{STEP}] ✔ 截面完整性 ✔")
+    assert ds5.sampled_day_mask is not None and ds5.sampled_day_mask.shape == (full_rows,)
+    n_samp = int(ds5.sampled_day_mask.sum())
+    print(f"[3] 对齐采样：全量 {full_rows:,} 行结构保持；采样训练样本 {n_samp:,} 行（{n_samp // N_INST} 个截面日）")
+    assert n_samp == full_rows // STEP == N_DAYS // STEP * N_INST == 2400
+    # 采样日 == 全量日频 [::5]（同一截面日全部股票同时在样本内）
+    samp_days = full_days[::STEP]
+    mask = ds5.sampled_day_mask.reshape(n_samp_day_full := (full_rows // N_INST), N_INST)[:, 0]
+    got_days = full_days[mask]
+    assert (got_days.to_numpy() == samp_days.to_numpy()).all()
+    print(f"[3] 采样日 == 全量[::{STEP}]（{len(samp_days)} 个截面日）✔ 截面完整性 ✔ 行数比例 ÷{STEP} ✔")
 
-    # ── 慢频因子：相邻截面日保持同一值；缺口日取截面日前最近值 ──
+    # ── 慢频因子：采样行上相邻截面日保持同一值；缺口日取截面日前最近值 ──
     slow_idx = ds5.feature_names.index("f_slow")
     fast_idx = ds5.feature_names.index("f_fast")
-    slow = ds5.feature_matrix[:, slow_idx].reshape(n_samp_day, N_INST)  # 每截面日 × 股票
-    fast = ds5.feature_matrix[:, fast_idx].reshape(n_samp_day, N_INST)
+    sel = ds5.sampled_day_mask
+    slow = ds5.feature_matrix[sel, slow_idx].reshape(n_samp_day_full // STEP, N_INST)  # 每截面日 × 股票
+    fast = ds5.feature_matrix[sel, fast_idx].reshape(n_samp_day_full // STEP, N_INST)
     # 每个 60 交易日块 = 12 个截面日；块内相邻截面日值必须相同（不再每日重复）
     block_changes = 0
-    for b in range(n_samp_day - 1):
+    for b in range(n_samp_day_full // STEP - 1):
         col_diff = np.isfinite(slow[b + 1]) & np.isfinite(slow[b])
         if not np.allclose(slow[b + 1][col_diff], slow[b][col_diff]):
             block_changes += 1
@@ -160,21 +164,23 @@ def main() -> None:
     assert np.allclose(slow[12], slow[11]), "截面日在 NaN 缺口应取'截面日前最近值'（ffill）"
     # 快频因子：相邻截面日取值必须不同（快因子未被错误降频）
     fast_changes = sum(
-        1 for b in range(n_samp_day - 1)
+        1 for b in range(n_samp_day_full // STEP - 1)
         if np.isfinite(fast[b + 1]).any() and not np.allclose(fast[b + 1], fast[b], equal_nan=True)
     )
-    assert fast_changes > n_samp_day * 0.5
-    print(f"[4] 快频因子相邻截面日变化 {fast_changes}/{n_samp_day - 1}（>50% 变化 ✔ 未误降频）")
+    assert fast_changes > (n_samp_day_full // STEP) * 0.5
+    print(f"[4] 快频因子相邻截面日变化 {fast_changes}/{n_samp_day_full // STEP - 1}（>50% 变化 ✔ 未误降频）")
 
-    # ── label：全量日频前向收益在截面日切片 ──
+    # ── label：全量日频前向收益保持原样（不切片）；采样行 label = 全量 label[采样掩码] ──
     full_label = forward_return_label(panel, STEP)
+    assert np.array_equal(ds5.label, full_label, equal_nan=True), "新语义：label 保持全量日频（不切片）"
     mask = _sampled_day_mask(panel, STEP)
-    assert np.array_equal(ds5.label, full_label[mask], equal_nan=True)
-    # 尾部无未来数据：最后一个截面日（day 295）位于最后 6 个交易日 → label 全 NaN
-    tail_rows = ds5.label.reshape(n_samp_day, N_INST)
+    sel_label = ds5.label[mask]
+    assert np.array_equal(sel_label, full_label[mask], equal_nan=True)
+    # 尾部无未来数据：最后一个采样日 label 必须全 NaN（无未来数据不伪造）
+    tail_rows = sel_label.reshape(n_samp_day_full // STEP, N_INST)
     assert np.isnan(tail_rows[-1]).all()
     assert not np.isnan(tail_rows[-7]).all()
-    print("[5] label：截面日 label == 全量前向收益切片 ✔；尾部无未来数据保持 NaN ✔")
+    print("[5] label：全量日频保持 ✔；采样行 label == 全量[采样式] ✔；尾部无未来数据保持 NaN ✔")
 
     # ── _ffill_along_time 单元语义 ──
     fday = pd.bdate_range("2024-01-01", periods=6)

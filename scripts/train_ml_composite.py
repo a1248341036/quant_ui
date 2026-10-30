@@ -709,6 +709,7 @@ def main() -> None:
         pred, report, feat_w, feat_c = fit_predict_walkforward(
             dataset.feature_matrix, dataset.label, date_series, folds, kind=kind,
             feature_names=dataset.feature_names, label_horizon=args.label_days,
+            train_day_mask=dataset.sampled_day_mask,
         )
         model_outputs[kind] = pred
         fold_reports[kind] = report
@@ -887,6 +888,7 @@ def main() -> None:
                 dataset.feature_matrix, dataset.label, date_series, folds,
                 ranked_names=ranked_names, feature_names=dataset.feature_names,
                 kinds=kinds, first_oos=first_oos, label_horizon=args.label_days,
+                train_day_mask=dataset.sampled_day_mask,
                 progress=lambda msg: print(" ", msg, flush=True),
             )
             valid = [r for r in subset_curve if r.get("blended") is not None]
@@ -959,6 +961,7 @@ def main() -> None:
                 p, _rep, _w, _c = fit_predict_walkforward(
                     dataset.feature_matrix, dataset.label, date_series, pfolds, kind=kind,
                     feature_names=dataset.feature_names, label_horizon=args.label_days,
+                    train_day_mask=dataset.sampled_day_mask,
                 )
                 p_outs[kind] = p
             usable = [p_outs[k] for k in kinds if np.isfinite(p_outs[k]).any()]

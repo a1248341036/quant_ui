@@ -86,6 +86,7 @@ class StackingDataset:
     mining_end: pd.Timestamp  # 时间隔离边界：仅此日期之后的行可进入训练/OOS
     label_days: int
     sample_step_days: int = 0  # 调仓节拍对齐采样：每 N 交易日取一个截面日做训练样本（0=日频全量）
+    sampled_day_mask: np.ndarray | None = None  # 全量行长的 bool 采样掩膜（sample_step_days>1 时为每 step 日一截面；None=全量日频）
     dropped: list[dict] = field(default_factory=list)  # 被剔除因子及原因
 
 
@@ -760,13 +761,17 @@ def build_dataset_from_values(
         np.column_stack([t for _, _, t in kept]).astype(np.float32) if kept else np.empty((len(panel), 0), dtype=np.float32)
     )
     label = forward_return_label(panel, label_days)
+    sampled_day_mask: np.ndarray | None = None
     if sample_step_days > 1:
-        # 对齐采样：先按股票 ffill（慢频因子缺口取'截面日前最近值'），再按
-        # 采样日切片；label 为全量前向收益在采样日取值（尾部无未来数据仍 NaN）。
-        keep = _sampled_day_mask(panel, sample_step_days)
-        feature_matrix = _ffill_along_time(feature_matrix, panel)[keep]
-        label = label[keep]
-        panel = panel.iloc[np.flatnonzero(keep)]
+        # 调仓节拍对齐采样：保持全量行结构（feature/label/panel 均不切片，
+        # 下游日频契约——OOS 评估、gate 回测、scores/pred 写出——不变），
+        # 采样只通过 sampled_day_mask 过滤"哪些行可作训练样本"：
+        # 每 step 个交易日取一个截面日的全部行，训练样本不再 5 日重叠；
+        # 慢频因子先按股票 ffill（缺口取'截面日前最近值'），采样日的
+        # 特征值即截面日前最近可得值。OOS/评估仍为全量日频，与日频
+        # baseline 完全同口径可比。
+        sampled_day_mask = _sampled_day_mask(panel, sample_step_days)
+        feature_matrix = _ffill_along_time(feature_matrix, panel)
     return StackingDataset(
         panel=panel,
         feature_matrix=feature_matrix,
@@ -776,6 +781,7 @@ def build_dataset_from_values(
         mining_end=_coerce_naive(mining_end),
         label_days=label_days,
         sample_step_days=sample_step_days,
+        sampled_day_mask=sampled_day_mask,
         dropped=dropped,
     )
 
