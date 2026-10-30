@@ -38,6 +38,15 @@ from .model import (
     fit_predict_walkforward,
     walk_forward_splits,
 )
+from .split_fusion import (
+    FrequencyGroupResult,
+    blend_group_scores,
+    build_frequency_folds,
+    build_group_datasets,
+    per_frequency_payload,
+    split_factor_groups,
+    train_frequency_model,
+)
 
 __all__ = [
     "FactorEntry",
@@ -65,4 +74,11 @@ __all__ = [
     "make_model",
     "fit_predict_walkforward",
     "walk_forward_splits",
+    "FrequencyGroupResult",
+    "blend_group_scores",
+    "build_frequency_folds",
+    "build_group_datasets",
+    "per_frequency_payload",
+    "split_factor_groups",
+    "train_frequency_model",
 ]
