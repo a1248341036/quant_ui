@@ -85,6 +85,7 @@ class StackingDataset:
     label: np.ndarray  # [n_rows] 前向收益
     mining_end: pd.Timestamp  # 时间隔离边界：仅此日期之后的行可进入训练/OOS
     label_days: int
+    sample_step_days: int = 0  # 调仓节拍对齐采样：每 N 交易日取一个截面日做训练样本（0=日频全量）
     dropped: list[dict] = field(default_factory=list)  # 被剔除因子及原因
 
 
@@ -340,6 +341,38 @@ def forward_return_label(panel: pd.DataFrame, hold_days: int) -> np.ndarray:
     exit_ = close.groupby(level="instrument", sort=False).shift(-(hold_days + 1))
     label = (exit_ / entry - 1.0).to_numpy(dtype=np.float32)
     return label
+
+
+def _sampled_day_mask(panel: pd.DataFrame, step: int) -> np.ndarray:
+    """调仓节拍对齐采样掩码：每 step 个交易日取一个截面日的全部行。
+
+    step <= 1 时全 True（日频全量，旧行为）。采样日 == 全量日频 ``[::step]``
+    （day 0, step, 2*step, ...），同一截面日全部股票同时进样本。面板按
+    (datetime, instrument) 行序；返回值与 panel 行等长。
+    """
+    step = int(step)
+    if step <= 1:
+        return np.ones(len(panel), dtype=bool)
+    dts = panel.index.get_level_values("datetime")
+    day_codes, _ = pd.factorize(dts, sort=True)
+    return (day_codes % step) == 0
+
+
+def _ffill_along_time(values: np.ndarray, panel: pd.DataFrame) -> np.ndarray:
+    """按股票沿时间前向填充（面板行序 = datetime, instrument）。
+
+    慢频因子（基本面 60 交易日才更新一次 + 发布期 NaN 缺口）在相邻截面日
+    保持同一值、缺口日取'截面日前最近值'的语义由本函数实现；前导缺失不回填
+    （无前视）。支持 1D 或 2D（列数=因子数）输入，输出 float32、与输入同序。
+    """
+    arr = np.asarray(values, dtype=np.float64)
+    inst = panel.index.get_level_values("instrument")
+    if arr.ndim == 1:
+        ff = pd.Series(arr).groupby(inst, sort=False).ffill().to_numpy(dtype=np.float32)
+    else:
+        df = pd.DataFrame(arr, index=panel.index)
+        ff = df.groupby(level="instrument", sort=False).ffill().to_numpy(dtype=np.float32)
+    return ff
 
 
 def _welford_std(values: np.ndarray, ddof: int = 1) -> float:
@@ -669,6 +702,7 @@ def build_dataset_from_values(
     mining_end: pd.Timestamp,
     size_neutral: bool = True,
     max_corr: float = 0.6,
+    sample_step_days: int = 0,
     ics_for_quality: dict[str, float] | None = None,
 ) -> StackingDataset:
     """从已物化的因子值数组组装数据集（含冗余过滤；供脚本与测试共用）。
@@ -678,6 +712,11 @@ def build_dataset_from_values(
     相关性只在**同组**（数据源组，``_entry_group``）内比较——跨组高相关因子
     双双保留：跨面低相关/异源信息正是组合分散化的来源，跨组互剔会让数量占优
     的价量因子系统性挤掉慢周期因子。
+
+    ``sample_step_days``：调仓节拍对齐采样（每 N 交易日取一个截面日做样本）。
+    启用后，因子值先按股票沿时间 ffill（慢频因子在相邻截面日保持同一值、
+    缺口日取截面日前最近值），再按采样日切片——label 同样在全量前向收益上
+    切片，保持无前视尾部 NaN 语义。0/1 = 日频全量（旧行为）。
     """
     quality = ics_for_quality or {}
 
@@ -713,6 +752,13 @@ def build_dataset_from_values(
         np.column_stack([t for _, _, t in kept]).astype(np.float32) if kept else np.empty((len(panel), 0), dtype=np.float32)
     )
     label = forward_return_label(panel, label_days)
+    if sample_step_days > 1:
+        # 对齐采样：先按股票 ffill（慢频因子缺口取'截面日前最近值'），再按
+        # 采样日切片；label 为全量前向收益在采样日取值（尾部无未来数据仍 NaN）。
+        keep = _sampled_day_mask(panel, sample_step_days)
+        feature_matrix = _ffill_along_time(feature_matrix, panel)[keep]
+        label = label[keep]
+        panel = panel.iloc[np.flatnonzero(keep)]
     return StackingDataset(
         panel=panel,
         feature_matrix=feature_matrix,
@@ -721,6 +767,7 @@ def build_dataset_from_values(
         label=label,
         mining_end=_coerce_naive(mining_end),
         label_days=label_days,
+        sample_step_days=sample_step_days,
         dropped=dropped,
     )
 
@@ -846,6 +893,7 @@ def build_stacking_dataset(
     mining_end: pd.Timestamp,
     size_neutral: bool = True,
     max_corr: float = 0.6,
+    sample_step_days: int = 0,
     cache=None,
     decay_months: int = 12,
     min_finite_ratio: float = 0.05,
@@ -855,6 +903,10 @@ def build_stacking_dataset(
 
     质量分按各因子自己的 label horizon 计（见 compute_quality_scores）；
     训练标签统一 label_days（对齐目标调仓频率）。
+    ``sample_step_days``：调仓节拍对齐采样（见 build_dataset_from_values），
+    0 = 日频全量（默认，旧行为）。用 label_days 对齐时建议同步传
+    sample_step_days=label_days，让训练样本粒度与调仓节拍一致（慢频因子
+    不必在每个交易日重复、截面信息不稀释），同时压缩训练规模 label_days 倍。
     """
     materialized, dropped_eval = materialize_entries(
         panel, entries, cache=cache, min_finite_ratio=min_finite_ratio, progress=progress
@@ -876,6 +928,7 @@ def build_stacking_dataset(
         mining_end=mining_end,
         size_neutral=size_neutral,
         max_corr=max_corr,
+        sample_step_days=sample_step_days,
         ics_for_quality=quality,
     )
     dataset.dropped = dropped + dataset.dropped
