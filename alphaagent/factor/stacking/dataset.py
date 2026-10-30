@@ -440,6 +440,11 @@ def _spearman_daily_nb(
         e_xy = np.mean(pr * yr)
         sd_pr = _welford_std_nb(pr)
         sd_yr = _welford_std_nb(yr)
+        # 截面秩零方差（如当日全部预测/标签同值）→ IC 无定义。pandas 版
+        # cov/(sd_pr·sd_yr) 得到 inf/nan 后 replace+dropna 剔除该日——这里
+        # 显式跳过，等价于 dropna，避免 0/0 直接除零崩溃（34d4eab njit 回归）。
+        if sd_pr < 1e-12 or sd_yr < 1e-12:
+            continue
         # 样本协方差 = (E[xy] - Ex·Ey) · n/(n-1)，与 std 的 ddof=1 一致
         cov = (e_xy - e_pr * e_yr) * nk / (nk - 1)
         ic = cov / (sd_pr * sd_yr)
