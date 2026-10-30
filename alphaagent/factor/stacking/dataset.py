@@ -473,9 +473,17 @@ def _spearman_daily_nb(
         e_xy = np.mean(pr * yr)
         sd_pr = _welford_std_nb(pr)
         sd_yr = _welford_std_nb(yr)
+        # guard：退化分母防御（与 pandas 版 replace(inf/nan)+dropna 语义一致）。
+        # 常数截面（该日有效样本 rank 全同 → std=0）或非有限均值（浮点尾差）时，
+        # cov/(sd_pr·sd_yr) 会 0/0、x/0 或产生 inf——njit 下即除零崩溃；此处该日
+        # IC 直接按缺失跳过，绝不把 NaN/inf/0 分母送进相除。
+        denom = sd_pr * sd_yr
+        if not (np.isfinite(denom) and np.isfinite(e_pr) and np.isfinite(e_yr)
+                and np.isfinite(e_xy)) or abs(denom) <= 1e-12:
+            continue
         # 样本协方差 = (E[xy] - Ex·Ey) · n/(n-1)，与 std 的 ddof=1 一致
         cov = (e_xy - e_pr * e_yr) * nk / (nk - 1)
-        ic = cov / (sd_pr * sd_yr)
+        ic = cov / denom
         if np.isfinite(ic):
             ics[n_out] = ic
             day_idx[n_out] = di
