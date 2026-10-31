@@ -123,6 +123,8 @@ def load_new_factors(paths: list[str]) -> list[dict]:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--rows", nargs="+", required=True, help="本批新因子的 rows.jsonl")
+    ap.add_argument("--fundamentals", action="store_true",
+                    help="增量轨载入 funda_* 列（新数据面解锁，2026-10-31；默认技术面旧行为）")
     ap.add_argument("--start", default="2020-01-01")
     ap.add_argument("--train-end", default="2023-12-31", help="训练终点（judge 段起点）")
     ap.add_argument("--judge-end", default="2024-12-31",
@@ -167,11 +169,14 @@ def main() -> int:
             need |= set(referenced_column_names(c["expr"]))
         except Exception:  # noqa: BLE001
             pass
-    need = {c for c in need if not str(c).startswith(("funda_", "fsi_"))}
+    # 新数据面解锁（2026-10-31）：--fundamentals 时放行 funda_/fsi_ 列，否则维持旧过滤。
+    if not args.fundamentals:
+        need = {c for c in need if not str(c).startswith(("funda_", "fsi_"))}
 
     t0 = time.perf_counter()
     panel = load_panel_from_cne(start=args.start, end=args.judge_end,
-                                include_fundamentals=False, keep_columns=tuple(sorted(need)))
+                                include_fundamentals=args.fundamentals,
+                                keep_columns=tuple(sorted(need)))
     print(f"[inc] panel {panel.shape} load={time.perf_counter()-t0:.0f}s", flush=True)
     lab = panel[LABEL].astype("float32")
     dates = pd.Series(panel.index.get_level_values(0), index=panel.index)

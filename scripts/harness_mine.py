@@ -181,10 +181,13 @@ def _attach_increment(rows: list[dict], factors: list[dict], args) -> None:
             need |= set(referenced_column_names(f["expr"]))
         except Exception:  # noqa: BLE001
             pass
-    need = {c for c in need if not str(c).startswith(("funda_", "fsi_"))}
+    # 新数据面解锁（2026-10-31）：--fundamentals 时放行 funda_/fsi_ 列进增量轨，
+    # 否则维持旧过滤（技术面增量轨不加载 PIT 基本面列，省最重的 join_asof 展开）。
+    if not args.fundamentals:
+        need = {c for c in need if not str(c).startswith(("funda_", "fsi_"))}
 
     print(f"[mine] 增量轨：panel {start}~{end}（train 段，不碰盲测）", flush=True)
-    panel = load_panel_from_cne(start=start, end=end, include_fundamentals=False,
+    panel = load_panel_from_cne(start=start, end=end, include_fundamentals=args.fundamentals,
                                 keep_columns=tuple(sorted(need)))
     if label not in panel.columns:
         print(f"[mine] 增量轨跳过：面板缺 {label}", flush=True)
