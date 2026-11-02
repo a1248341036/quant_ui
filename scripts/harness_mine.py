@@ -6,11 +6,12 @@
 同一 `DeliveryCriteria`（门槛数值零硬编码），因此评估结果与真实 run 内的评估一致。
 
 输出：每因子的 train 指标（ic/icir/coverage/cs_autocorr/换手）+ **逐门 PASS/FAIL**；
-`--val` 可对过门者追加样本外（val 段）评估；结果落 JSONL 供下一轮迭代。
+`--val`（**默认开**，`--no-val` 显式关）对「raw 全门通过 ∪ 增量轨捞回」幸存者送
+val 段(2023-2024)样本外评估——OOS 流程内出，禁止事后补跑；结果落 JSONL 供下一轮迭代。
 
 用法：
     .venv\\Scripts\\python.exe scripts\\harness_mine.py --mode technical --factors mine.json --out rows.jsonl
-    .venv\\Scripts\\python.exe scripts\\harness_mine.py --mode technical_monthly --factors mine.json --val
+    .venv\\Scripts\\python.exe scripts\\harness_mine.py --mode technical --factors mine.json --no-val  # 关闭 OOS（不推荐）
 
 factors JSON 格式：[{"name": "...", "expr": "多行 DSL（末行输出）", "why": "机制/经济直觉"}, ...]
 """
@@ -183,7 +184,7 @@ def _attach_increment(rows: list[dict], factors: list[dict], args) -> None:
     if end > DEFAULT_VAL_START:
         print(f"[mine] ⚠ 增量轨窗口覆盖至 {end}（> val 起点 {DEFAULT_VAL_START}），"
               f"val 段(2023-2024)已被并入 train；此类覆盖仅限新数据源(rc_*/ac_*)专项，"
-              f"增量捞回因子的 OOS 必须依赖 --val 或另行安排", flush=True)
+              f"增量捞回因子的 OOS 由 --val（默认开）在流程内给出；若显式 --no-val 则须另行安排", flush=True)
     label = MODE_LABEL[args.mode]
     need: set[str] = {label}
     for f in factors:
@@ -507,9 +508,13 @@ def main() -> int:
                          "默认关闭=逐字节旧行为。")
     ap.add_argument("--max-ctrl-families", type=int, default=0,
                     help="(冷门赛道) 骨架控制族数上限；0 = 取 spec cold_track.max_ctrl_families")
-    ap.add_argument("--val", action="store_true",
-                    help="对「raw 全门通过」与「增量轨捞回(pass_increment)」两类幸存者追加 "
-                         "val 段(2023-2024)样本外评估；不送 val 的增量捞回因子本工具会给出警告")
+    ap.add_argument("--val", action="store_true", default=True,
+                    help="对「raw 全门通过」与「增量轨捞回(pass_increment)」两类幸存者送 "
+                         "val 段(2023-2024)样本外评估（默认开：OOS 流程内出，禁止事后补跑；"
+                         "显式 --no-val 关闭）")
+    ap.add_argument("--no-val", dest="val", action="store_false",
+                    help="关闭流程内 val 段 OOS（不推荐：增量轨捞回者将收到守卫警告，"
+                         "且样本外缺失会诱发事后补跑）")
     ap.add_argument("--check-orthogonality", dest="check_ortho", action="store_true",
                     default=True,
                     help="stage_one 预筛通过后立即查与库内/候选池因子的截面 Spearman 相关（默认开，"
