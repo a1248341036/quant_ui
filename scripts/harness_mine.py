@@ -172,8 +172,18 @@ def _attach_increment(rows: list[dict], factors: list[dict], args) -> None:
               "`python scripts/build_combo_score.py`", flush=True)
         return
 
-    start = args.train_start or "2020-01-01"
-    end = args.train_end or "2024-12-31"
+    from alphaagent.factor.window_config import (
+        DEFAULT_TRAIN_START, DEFAULT_TRAIN_END, DEFAULT_VAL_START,
+    )
+    # 增量轨默认窗口与 window_config 校准（train 2020-01-01 ~ 2022-12-31）。
+    # 历史版本硬编码 end=2024-12-31（L176），默认就把系统设计的 val 段(2023-2024)
+    # 并入 train，导致增量捞回因子的样本外只能事后补跑（2026-11-01 修复）。
+    start = args.train_start or DEFAULT_TRAIN_START
+    end = args.train_end or DEFAULT_TRAIN_END
+    if end > DEFAULT_VAL_START:
+        print(f"[mine] ⚠ 增量轨窗口覆盖至 {end}（> val 起点 {DEFAULT_VAL_START}），"
+              f"val 段(2023-2024)已被并入 train；此类覆盖仅限新数据源(rc_*/ac_*)专项，"
+              f"增量捞回因子的 OOS 必须依赖 --val 或另行安排", flush=True)
     label = MODE_LABEL[args.mode]
     need: set[str] = {label}
     for f in factors:
@@ -236,6 +246,9 @@ def _attach_increment(rows: list[dict], factors: list[dict], args) -> None:
             print(f"  ◆ {r['name'][:34]:34s} raw={r['raw_ic_audit']:+.4f} "
                   f"resid={r['resid_ic']:+.4f} inc={r['increment']:.3f} "
                   f"(raw_fails={','.join(_flags(args.mode, r))})", flush=True)
+        if not args.val:
+            print(f"[mine] ⚠ 增量轨捞回 {len(inc_pass)} 个但未开 --val：这些因子没有流程内"
+                  f"样本外(OOS)验证，请加 --val 重跑或另行安排 OOS（禁止事后补跑）", flush=True)
     if args.increment and not inc_pass and not raw_pass:
         print("[mine] 增量轨：本批没有满足 raw 门或增量门的因子", flush=True)
 
@@ -494,7 +507,9 @@ def main() -> int:
                          "默认关闭=逐字节旧行为。")
     ap.add_argument("--max-ctrl-families", type=int, default=0,
                     help="(冷门赛道) 骨架控制族数上限；0 = 取 spec cold_track.max_ctrl_families")
-    ap.add_argument("--val", action="store_true", help="对 train 全门通过者追加 val 评估")
+    ap.add_argument("--val", action="store_true",
+                    help="对「raw 全门通过」与「增量轨捞回(pass_increment)」两类幸存者追加 "
+                         "val 段(2023-2024)样本外评估；不送 val 的增量捞回因子本工具会给出警告")
     ap.add_argument("--check-orthogonality", dest="check_ortho", action="store_true",
                     default=True,
                     help="stage_one 预筛通过后立即查与库内/候选池因子的截面 Spearman 相关（默认开，"
