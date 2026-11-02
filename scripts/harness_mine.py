@@ -700,8 +700,10 @@ def main() -> int:
             _flush()
 
         if args.val:
-            # 送 val 按全门（含正交）：统计预筛 + 正交都过的才送 val
-            survivors = [r for r in rows if not r.get("fails")]
+            # 送 val 分两类幸存者：① raw 全门通过（含正交）；② 增量轨捞回（pass_increment）
+            # 增量捞回者同样送 val：其 OOS 必须在流程内当场验证，不得留到事后补跑
+            survivors = [r for r in rows
+                         if (not r.get("fails")) or r.get("pass_increment")]
             print(f"\n[mine] 送 val 的因子 {len(survivors)} 个", flush=True)
             for r in survivors:
                 try:
