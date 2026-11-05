@@ -309,7 +309,7 @@ bars_15m = (
 | flash_news_wire | publish_date | wire_id, wire_source | snapshot | ✓ | eastmoney | 7×24 快讯线 |
 | economic_calendar | event_date（按年） | event_id | snapshot | ✓ | —（源已下线） | EM `RPT_ECONOMICCALENDAR` 已退役（code 9501），保留 schema 等替代源；`required=false`，空表不判 UNHEALTHY |
 | stk_surv | surv_date（按年） | adapter contract | by_date | — | pg_parquet | 只读舆情/生存研究宽表 |
-| sentiment_articles | publish_date | article_id | snapshot | ✓ | eastmoney | 舆情文章（东财个股新闻+情感打分） |
+| sentiment_articles | publish_date | article_id | snapshot | ✓ | eastmoney | 舆情文章（东财个股新闻+情感打分）；每日抓取上限由 `[sentiment].articles_max_symbols` 控制（默认 1800 = 吃满 universe.csv，0 = 不限制；snapshot 口径，改大只影响此后增量） |
 
 `sector_bars` 日更只有当日 OHLC；历史由 `cne backfill sector_bars` 一次性写入（国内网络或代理）。
 海外一键脚本见引擎 `scripts/china_egress_backfill.sh`（含 `trading_status` ST 回填）。

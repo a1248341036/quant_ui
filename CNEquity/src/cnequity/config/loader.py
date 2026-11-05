@@ -131,6 +131,12 @@ class Config:
     adj_factors_types: list[str] = field(default_factory=lambda: ["hfq"])
     sentiment_use_snownlp: bool = False
     sentiment_news_symbol_limit: int = 50
+    # ``sentiment_articles`` 每天最多抓多少只票（0 = 不限制，吃满 universe.csv）。
+    # 背景：该 step 原先硬编码 300 只，导致每天只有成交额前 300 名有舆情覆盖；
+    # 实测单只票 ~0.27s（3 页 × 10 条），1800 只约 8 分钟，故默认吃满当前 1800
+    # 只的池子。调大代价是采集时长线性上升；调小会让长尾板块失去覆盖。
+    # 该数据集是 snapshot（只抓运行当天），改大只影响此后每日增量，历史不可回补。
+    sentiment_articles_max_symbols: int = 1800
     # Intraday capture is off by default and scoped when on. Full market 1m is
     # ~1.3M rows and ~30MB a day (6-8GB a year, several times the whole daily
     # lake), so the default scope is an index rather than every symbol.
@@ -469,6 +475,9 @@ def load_config(path: str | Path) -> Config:
         adj_factors_types=list(adj_raw.get("adjust_types", ["hfq"])),
         sentiment_use_snownlp=bool(sentiment_raw.get("use_snownlp", False)),
         sentiment_news_symbol_limit=int(sentiment_raw.get("news_symbol_limit", 50)),
+        sentiment_articles_max_symbols=int(
+            sentiment_raw.get("articles_max_symbols", 1800)
+        ),
         minute_bars_enabled=bool(minute_raw.get("enabled", False)),
         minute_bars_scope=str(minute_raw.get("scope", "index:000300.SH")),
         minute_bars_symbols=list(minute_raw.get("symbols", [])),
@@ -518,6 +527,15 @@ def validate_config(cfg: Config) -> list[str]:
         errors.append("[tdx_protocol].lock_timeout_sec must be > 0")
     if not cfg.daily_waves:
         errors.append("job.daily.waves must define at least one wave")
+
+    # 舆情文章采集上限：0 = 不限制（吃满 universe.csv）；负值无意义，上限防误配。
+    if cfg.sentiment_articles_max_symbols < 0:
+        errors.append("[sentiment].articles_max_symbols must be >= 0 (0 = no limit)")
+    if cfg.sentiment_articles_max_symbols > 6000:
+        errors.append(
+            "[sentiment].articles_max_symbols must be <= 6000 "
+            "(A-share universe is ~5500; larger values only slow the step)"
+        )
 
     # Each frequency must have a dataset to land in, or its rows would have
     # nowhere to go and its horizon nowhere to be declared.

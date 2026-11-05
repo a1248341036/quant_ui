@@ -142,6 +142,10 @@ adjust_types = ["hfq"]
 use_snownlp = false
 # HTTP stock_news fallback cap (primary news channel is curated news_headlines).
 news_symbol_limit = 50
+# sentiment_articles 每天最多抓多少只票（0 = 不限制，吃满 universe.csv）。
+# 该 step 是 snapshot：只抓运行当天，调大只影响此后每日增量，历史不可回补。
+# 实测单只票 ~0.27s（3 页 × 10 条）；1800 只约 8 分钟，5500 只约 25 分钟。
+articles_max_symbols = 1800
 
 [minute_bars]
 # Intraday bars. Off by default and NOT on the daily waves: full-market 1m is

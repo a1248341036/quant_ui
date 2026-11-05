@@ -56,6 +56,7 @@ enabled = true
 # what a multi-year backfill runs at. Raise it if EastMoney starts 429ing.
 # (sector_bars is *not* paced here — it is a 同花顺 dataset; see [sources.ths].)
 min_interval_seconds = 0.5
+
 # Per-request timeout (seconds). Connect/timeout/protocol errors do not retry.
 timeout_sec = 30
 # No batch_size / batch_rest_seconds here: EastMoney sweeps pace on
@@ -141,6 +142,10 @@ adjust_types = ["hfq"]
 use_snownlp = false
 # HTTP stock_news fallback cap (primary news channel is curated news_headlines).
 news_symbol_limit = 50
+# sentiment_articles 每天最多抓多少只票（0 = 不限制，吃满 universe.csv）。
+# 该 step 是 snapshot：只抓运行当天，调大只影响此后每日增量，历史不可回补。
+# 实测单只票 ~0.27s（3 页 × 10 条）；1800 只约 8 分钟，5500 只约 25 分钟。
+articles_max_symbols = 1800
 
 [minute_bars]
 # Intraday bars. Off by default and NOT on the daily waves: full-market 1m is
@@ -206,6 +211,24 @@ max_symbols = 200
 # latency. Measured serial: 1.70 req/s.
 fetch_workers = 4
 
+[auction_series]
+# 集合竞价过程快照 (0x056A) — the opening (09:15-09:25) and closing
+# (14:57-15:00) auction process, second-level virtual-match snapshots. Off by
+# default and NOT on the daily waves, like [minute_bars]: one request per
+# symbol per day, and the source serves it from the money-flow host group
+# (standard pool first, dedicated hosts as fallback).
+#
+# HISTORY. The wire accepts a date, but how far back a host keeps auction
+# snapshots varies by host — treat it as a same-day capture, not a backfill
+# target. `cne run daily --group intraday` fetches the current trading day.
+enabled = false
+# "watchlist" — exactly the symbols listed below (the default: indices have no
+#   auction process, so an index default would fail empty).
+# "index:<symbol>" — that index's latest constituents.
+# "all" — the whole universe; opt in knowingly.
+scope = "watchlist"
+symbols = []
+
 [failover]
 enabled = true
 
@@ -265,8 +288,8 @@ steps = ["compact", "derive_adj_factors", "derive_industry_index", "audit"]
 [job.daily.groups.core]
 at = "16:00"
 steps = [
-  "instruments", "trading_calendar", "trading_status",
-  "corporate_actions", "daily_bars", "index_bars",
+  "instruments", "trading_calendar", "trading_status", "stock_st", "trading_status_st",
+  "corporate_actions", "daily_bars", "index_bars", "fund_bars",
   "compact", "derive_adj_factors", "derive_industry_index",
 ]
 
@@ -280,13 +303,20 @@ steps = [
 
 [job.daily.groups.signals]
 at = "17:20"
-steps = ["dragon_tiger", "block_trades", "compact"]
+steps = [
+  "dragon_tiger", "block_trades",
+  "dividend", "namechange", "share_float_external", "stk_surv",
+  "compact",
+]
 
 [job.daily.groups.fundamentals]
 at = "17:35"
 # share_structure / shareholder_counts are quarterly data, but filings trickle in
 # over the weeks after each period end, so a daily re-sweep of the two most
 # recent periods is how newly-disclosed ones get picked up. Each is ~11 pages.
+#
+# balancesheet / income / cashflow / fina_indicator / report_rc 均带季度 cadence
+# 守卫（should_fetch），同季内自动跳过零开销，跨季自动触发增量增补。
 #
 # top_holders is deliberately NOT here: two reports × ~110 pages × two periods is
 # ~440 pages, 40× these two, and on a slow link it would overrun the gap to
@@ -295,7 +325,9 @@ at = "17:35"
 steps = [
   "financial_statement_items", "earnings_disclosure_schedule",
   "index_constituents", "industry_members",
-  "share_structure", "shareholder_counts", "compact",
+  "share_structure", "shareholder_counts",
+  "balancesheet", "income", "cashflow", "fina_indicator", "report_rc",
+  "compact",
 ]
 
 [job.daily.groups.macro_risk]
@@ -311,9 +343,11 @@ steps = ["institutional_holdings", "analyst_consensus",
 
 # Not scheduled by anything: `cne run daily --group intraday` only. Enable
 # [minute_bars] first, and read the horizon note there before expecting history.
+# [auction_series] rides the same group but has its own switch — enabling one
+# must not quietly enable the other.
 [job.daily.groups.intraday]
 at = "18:45"
-steps = ["minute_bars", "minute_bars_5m", "compact"]
+steps = ["minute_bars", "minute_bars_5m", "auction_series", "compact"]
 
 # Also unscheduled: `cne run daily --group ticks`. Its own group rather than a
 # fourth entry in `intraday` above, so that turning on minute bars cannot drag
