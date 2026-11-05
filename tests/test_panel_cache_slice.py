@@ -38,7 +38,7 @@ def test_wide_cache_hit_is_sliced_to_requested_range(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(cnequity, "_CACHE_ROOT", tmp_path)
     req_start, req_end = "2024-01-01", "2024-01-15"
-    path = cnequity._cache_path(req_start, req_end, False, cnequity._facet_signature(None))
+    path = cnequity._cache_path(req_start, False, cnequity._facet_signature(None))
     wide.to_parquet(path)
     meta = {
         "signature": cnequity._facet_signature(None),

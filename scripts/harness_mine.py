@@ -6,11 +6,12 @@
 同一 `DeliveryCriteria`（门槛数值零硬编码），因此评估结果与真实 run 内的评估一致。
 
 输出：每因子的 train 指标（ic/icir/coverage/cs_autocorr/换手）+ **逐门 PASS/FAIL**；
-`--val` 可对过门者追加样本外（val 段）评估；结果落 JSONL 供下一轮迭代。
+`--val`（**默认开**，`--no-val` 显式关）对「raw 全门通过 ∪ 增量轨捞回」幸存者送
+val 段(2023-2024)样本外评估——OOS 流程内出，禁止事后补跑；结果落 JSONL 供下一轮迭代。
 
 用法：
     .venv\\Scripts\\python.exe scripts\\harness_mine.py --mode technical --factors mine.json --out rows.jsonl
-    .venv\\Scripts\\python.exe scripts\\harness_mine.py --mode technical_monthly --factors mine.json --val
+    .venv\\Scripts\\python.exe scripts\\harness_mine.py --mode technical --factors mine.json --no-val  # 关闭 OOS（不推荐）
 
 factors JSON 格式：[{"name": "...", "expr": "多行 DSL（末行输出）", "why": "机制/经济直觉"}, ...]
 """
@@ -172,8 +173,18 @@ def _attach_increment(rows: list[dict], factors: list[dict], args) -> None:
               "`python scripts/build_combo_score.py`", flush=True)
         return
 
-    start = args.train_start or "2020-01-01"
-    end = args.train_end or "2024-12-31"
+    from alphaagent.factor.window_config import (
+        DEFAULT_TRAIN_START, DEFAULT_TRAIN_END, DEFAULT_VAL_START,
+    )
+    # 增量轨默认窗口与 window_config 校准（train 2020-01-01 ~ 2022-12-31）。
+    # 历史版本硬编码 end=2024-12-31（L176），默认就把系统设计的 val 段(2023-2024)
+    # 并入 train，导致增量捞回因子的样本外只能事后补跑（2026-11-01 修复）。
+    start = args.train_start or DEFAULT_TRAIN_START
+    end = args.train_end or DEFAULT_TRAIN_END
+    if end > DEFAULT_VAL_START:
+        print(f"[mine] ⚠ 增量轨窗口覆盖至 {end}（> val 起点 {DEFAULT_VAL_START}），"
+              f"val 段(2023-2024)已被并入 train；此类覆盖仅限新数据源(rc_*/ac_*)专项，"
+              f"增量捞回因子的 OOS 由 --val（默认开）在流程内给出；若显式 --no-val 则须另行安排", flush=True)
     label = MODE_LABEL[args.mode]
     need: set[str] = {label}
     for f in factors:
@@ -181,10 +192,13 @@ def _attach_increment(rows: list[dict], factors: list[dict], args) -> None:
             need |= set(referenced_column_names(f["expr"]))
         except Exception:  # noqa: BLE001
             pass
-    need = {c for c in need if not str(c).startswith(("funda_", "fsi_"))}
+    # 新数据面解锁（2026-10-31）：--fundamentals 时放行 funda_/fsi_ 列进增量轨，
+    # 否则维持旧过滤（技术面增量轨不加载 PIT 基本面列，省最重的 join_asof 展开）。
+    if not args.fundamentals:
+        need = {c for c in need if not str(c).startswith(("funda_", "fsi_"))}
 
     print(f"[mine] 增量轨：panel {start}~{end}（train 段，不碰盲测）", flush=True)
-    panel = load_panel_from_cne(start=start, end=end, include_fundamentals=False,
+    panel = load_panel_from_cne(start=start, end=end, include_fundamentals=args.fundamentals,
                                 keep_columns=tuple(sorted(need)))
     if label not in panel.columns:
         print(f"[mine] 增量轨跳过：面板缺 {label}", flush=True)
@@ -233,6 +247,9 @@ def _attach_increment(rows: list[dict], factors: list[dict], args) -> None:
             print(f"  ◆ {r['name'][:34]:34s} raw={r['raw_ic_audit']:+.4f} "
                   f"resid={r['resid_ic']:+.4f} inc={r['increment']:.3f} "
                   f"(raw_fails={','.join(_flags(args.mode, r))})", flush=True)
+        if not args.val:
+            print(f"[mine] ⚠ 增量轨捞回 {len(inc_pass)} 个但未开 --val：这些因子没有流程内"
+                  f"样本外(OOS)验证，请加 --val 重跑或另行安排 OOS（禁止事后补跑）", flush=True)
     if args.increment and not inc_pass and not raw_pass:
         print("[mine] 增量轨：本批没有满足 raw 门或增量门的因子", flush=True)
 
@@ -491,7 +508,13 @@ def main() -> int:
                          "默认关闭=逐字节旧行为。")
     ap.add_argument("--max-ctrl-families", type=int, default=0,
                     help="(冷门赛道) 骨架控制族数上限；0 = 取 spec cold_track.max_ctrl_families")
-    ap.add_argument("--val", action="store_true", help="对 train 全门通过者追加 val 评估")
+    ap.add_argument("--val", action="store_true", default=True,
+                    help="对「raw 全门通过」与「增量轨捞回(pass_increment)」两类幸存者送 "
+                         "val 段(2023-2024)样本外评估（默认开：OOS 流程内出，禁止事后补跑；"
+                         "显式 --no-val 关闭）")
+    ap.add_argument("--no-val", dest="val", action="store_false",
+                    help="关闭流程内 val 段 OOS（不推荐：增量轨捞回者将收到守卫警告，"
+                         "且样本外缺失会诱发事后补跑）")
     ap.add_argument("--check-orthogonality", dest="check_ortho", action="store_true",
                     default=True,
                     help="stage_one 预筛通过后立即查与库内/候选池因子的截面 Spearman 相关（默认开，"
@@ -697,8 +720,10 @@ def main() -> int:
             _flush()
 
         if args.val:
-            # 送 val 按全门（含正交）：统计预筛 + 正交都过的才送 val
-            survivors = [r for r in rows if not r.get("fails")]
+            # 送 val 分两类幸存者：① raw 全门通过（含正交）；② 增量轨捞回（pass_increment）
+            # 增量捞回者同样送 val：其 OOS 必须在流程内当场验证，不得留到事后补跑
+            survivors = [r for r in rows
+                         if (not r.get("fails")) or r.get("pass_increment")]
             print(f"\n[mine] 送 val 的因子 {len(survivors)} 个", flush=True)
             for r in survivors:
                 try:

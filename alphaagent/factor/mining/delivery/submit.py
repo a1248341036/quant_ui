@@ -428,6 +428,19 @@ class FactorSubmitService:
         # 缺失键回落 canonical 默认（与 DEFAULT_RESEARCH_SPEC 一致）。
         # 下游判定与 prompt 渲染统一读 self.criteria，不再散落硬编码默认值。
         self.criteria = DeliveryCriteria.from_spec(self.delivery_policy)
+        # 入库口径标记（2026-10-26）：统计门（coverage/自相关/保留比/盲测）全关、
+        # 仅按 IC/ICIR 判定时标记 "ic_icir_only"，否则 "standard"。
+        # 写入测试候选/正式两路 registry，前端据此在因子库打徽标。
+        self.gate_scope = (
+            "ic_icir_only"
+            if (
+                float(self.criteria.candidate.min_coverage or 0) <= 0
+                and float(self.criteria.candidate.min_cs_autocorr or 0) <= 0
+                and float(self.criteria.candidate.min_val_ic_retention or 0) <= 0
+                and not self.criteria.blind_test.enabled
+            )
+            else "standard"
+        )
         self.checker = DeliveryChecker(self.criteria)
         self.similar_top_k = similar_top_k
         self.overwrite = overwrite
@@ -1159,6 +1172,7 @@ class FactorSubmitService:
             eval_label=str(ctx.label_col),
             rebalance_freq=chosen_freq,
             research_mode=self.research_mode,
+            gate_scope=self.gate_scope,
             data_fingerprint={
                 "panel_path": str(ctx.panel_path),
                 "index_hash": zoo.manifest.index_hash,
@@ -1327,6 +1341,7 @@ class FactorSubmitService:
             eval_label=str(ctx.label_col),
             rebalance_freq=chosen_freq,
             research_mode=self.research_mode,
+            gate_scope=self.gate_scope,
         )
         set_candidate_promotion(
             self.candidate_registry_path,

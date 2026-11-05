@@ -109,6 +109,7 @@ def upsert_mining_registry(
     eval_label: str | None = None,
     rebalance_freq: str | None = None,
     research_mode: str | None = None,
+    gate_scope: str | None = None,
 ) -> tuple[str, str]:
     """写入或合并一条 registry 记录；返回 (registry_path, dsl_path)。"""
     registry_path = Path(registry_path).expanduser().resolve()
@@ -155,6 +156,10 @@ def upsert_mining_registry(
     #（用户覆盖 > 档位默认）；zoo_sync/lab 等未传路径沿用旧值或留空由视图层推导。
     entry["rebalance_freq"] = rebalance_freq or prev.get("rebalance_freq")
     entry["research_mode"] = research_mode or prev.get("research_mode")
+    # 入库口径标记（2026-10-26）：记录该因子是在什么门槛口径下写入的。
+    # 候选池/正式库同字段；启用宽松统计门（cov/autocorr/retention/blind 全关，
+    # 仅按 IC/ICIR 判定）的模式下由 submit 传 "ic_icir_only"，前端据此打标。
+    entry["gate_scope"] = gate_scope or prev.get("gate_scope") or "standard"
     sim = _trim_similarity(similarity)
     if sim:
         entry["similarity"] = sim
@@ -211,6 +216,7 @@ def write_candidate_registry(
     eval_label: str | None = None,
     rebalance_freq: str | None = None,
     research_mode: str | None = None,
+    gate_scope: str | None = None,
 ) -> tuple[str, str]:
     """Registry-only candidate storage: evidence and DSL, never dense values."""
     registry_path = Path(registry_path).expanduser().resolve()
@@ -253,6 +259,8 @@ def write_candidate_registry(
         "eval_label": eval_label or prev.get("eval_label"),
         "rebalance_freq": rebalance_freq or prev.get("rebalance_freq"),
         "research_mode": research_mode or prev.get("research_mode"),
+        # 入库口径标记（2026-10-26）：与 upsert_mining_registry 同语义。
+        "gate_scope": gate_scope or prev.get("gate_scope") or "standard",
     }
     for key in ("source_runs", "mining_metrics", "review", "reviewed_at"):
         if key in prev:
