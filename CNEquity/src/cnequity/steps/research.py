@@ -27,11 +27,36 @@ _MIN_INSTITUTIONAL_HOLDING_ROWS_PER_PERIOD = 100
 
 # How many EM stock news headlines to fetch per symbol per day.
 _NEWS_PER_SYMBOL = 20
-# Cap symbols per run to keep the step within a reasonable time budget.
-# The full A-share universe is ~5500; fetching 20 headlines each is ~110k
-# HTTP requests which takes hours. For daily sentiment we sample the top
-# symbols by liquidity — the universe_csv from sentiment-mvp has ~230.
-_MAX_SYMBOLS_PER_RUN = 300
+# 上限已迁到配置 [sentiment].articles_max_symbols（默认 1800 = 吃满 universe.csv，
+# 0 = 不限制）。实测单只票 ~0.27s，1800 只约 8 分钟；原硬编码 300 只只覆盖成交额
+# 前 300 名，长尾板块整段无舆情。这里只保留兜底默认，避免 config 缺失时静默放开。
+_MAX_SYMBOLS_FALLBACK = 1800
+
+
+def _apply_symbol_limit(codes: list[str], config: Config) -> list[str]:
+    """按 ``[sentiment].articles_max_symbols`` 截断舆情采集池（0 = 不限制）。
+
+    - 配置缺失/非数值/负数 → 回落 ``_MAX_SYMBOLS_FALLBACK``，避免静默放开到全池；
+    - 0 → 不限制（吃满 universe.csv）；
+    - 注意不能写 ``config.x or fallback``：0 是合法值，``or`` 会把它短路成默认。
+    """
+    raw_limit = getattr(config, "sentiment_articles_max_symbols", _MAX_SYMBOLS_FALLBACK)
+    try:
+        max_symbols = int(raw_limit)
+    except (TypeError, ValueError):
+        max_symbols = _MAX_SYMBOLS_FALLBACK
+    if max_symbols < 0:
+        max_symbols = _MAX_SYMBOLS_FALLBACK
+    if max_symbols and len(codes) > max_symbols:
+        logger.info(
+            "sentiment_articles: truncating universe from %d to %d codes "
+            "([sentiment].articles_max_symbols=%d)",
+            len(codes),
+            max_symbols,
+            max_symbols,
+        )
+        return codes[:max_symbols]
+    return codes
 
 
 def _quarter_labels(config: Config, trade_date: date) -> set[str]:
@@ -226,13 +251,7 @@ def _fetch_sentiment_articles(trade_date: date, *, config: Config) -> pl.DataFra
         return pl.DataFrame()
 
     # Limit the universe to keep the step within a reasonable time budget.
-    if len(codes) > _MAX_SYMBOLS_PER_RUN:
-        logger.info(
-            "sentiment_articles: truncating universe from %d to %d codes",
-            len(codes),
-            _MAX_SYMBOLS_PER_RUN,
-        )
-        codes = codes[:_MAX_SYMBOLS_PER_RUN]
+    codes = _apply_symbol_limit(codes, config)
 
     target_str = trade_date.isoformat()
     all_arts: list[dict] = []
