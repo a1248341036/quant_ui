@@ -107,6 +107,11 @@ class PortfolioBuilder:
     close_history: pd.DataFrame | None = None
     signal_dates: list | None = None
     _vol_cursor: int = field(default=0, init=False, repr=False, compare=False)
+    # 最近一次 build_targets 的**完整候选全序**（门控后按分数降序的 code_idx 列表）。
+    # 供撮合层在「买不起一手」时顺延补位（reject_fallback 开关）；关闭时不读取。
+    # 这是执行期旁路信息，不参与选股决策，故不改 build_targets 返回值签名
+    # （避免破坏既有调用方与测试）。
+    last_ordered: list[int] = field(default_factory=list, init=False, repr=False, compare=False)
 
     def rank_select(
         self,
@@ -205,6 +210,7 @@ class PortfolioBuilder:
         sc = np.asarray(scores, dtype=float)
         gated = policy.gate(cand, sc)
         if len(gated) == 0:
+            self.last_ordered = []
             return [], {}
         g_scores = sc[np.isin(cand, gated)]
         chosen = self.rank_select(
@@ -212,16 +218,17 @@ class PortfolioBuilder:
             policy.top_n, policy.count_mode, policy.pct,
             policy.min_positions, policy.max_positions,
         )
+        # 完整候选全序（与 rank_select 同序：argsort + ascending），供执行层补位。
+        order = np.argsort(g_scores, kind="mergesort")
+        if not policy.ascending:
+            order = order[::-1]
+        ordered_all = [int(gated[o]) for o in order]
+        self.last_ordered = ordered_all
         # ── P1-1 Buffer Zone：老持仓在 top-(N+M) 内则保留 ──
         if buffer_keep and buffer_ratio > 0.0 and chosen:
             long_n = len(chosen)
             m_buf = int(round(long_n * float(buffer_ratio)))
             if m_buf > 0:
-                # 重算 top-(N+M) 全序（与 rank_select 同序：argsort + ascending）
-                order = np.argsort(g_scores, kind="mergesort")
-                if not policy.ascending:
-                    order = order[::-1]
-                ordered_all = [int(gated[o]) for o in order]
                 buf_zone = set(ordered_all[:long_n + m_buf])
                 # 老持仓在 top-(N+M) 内的都保留（按全序排序，高分优先）。
                 # 注意：必须遍历 ordered_all 而非 chosen——chosen 是 top-N，

@@ -69,6 +69,10 @@ class BacktestConfig:
     # 默认 0.0 = 总是调。等权组合下权重偏离 ≈ 成员变化比例。
     buffer_ratio: float = 0.0
     no_trade_band: float = 0.0
+    # reject_fallback：拒单顺延补位开关。True 时某只标的因「买不起一手」
+    # （预算/现金不足）被拒，改为按候选全序顺延尝试下一只，直到买满目标只数。
+    # 默认 False —— 保持与历史回测逐位可比（开启会改变成交结构与换手）。
+    reject_fallback: bool = False
     execution_profile: AssetExecutionProfile | None = None
     share_classes: dict[str, str] | None = None
     spread_bps: float | None = None
@@ -180,6 +184,7 @@ def run_backtest(
     screener_factors: list[str] | None = None,
     buffer_ratio: float = 0.0,
     no_trade_band: float = 0.0,
+    reject_fallback: bool = False,
     vol_target_annual: float | None = None,
     vol_target_lo: float = 0.3,
     vol_target_hi: float = 1.5,
@@ -258,6 +263,7 @@ def run_backtest(
         screener_factors=screener_factors,
         buffer_ratio=buffer_ratio,
         no_trade_band=no_trade_band,
+        reject_fallback=bool(reject_fallback),
         vol_target_annual=vol_target_annual,
         vol_target_lo=vol_target_lo,
         vol_target_hi=vol_target_hi,

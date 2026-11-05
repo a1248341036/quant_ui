@@ -142,6 +142,8 @@ class StockExecutionAdapter(_CashExecutionAdapter):
         max_weight: float | None = None,
         sell_down_to_target: bool = False,
         weight_band: float = 0.15,
+        fallback_list: list[int] | None = None,
+        reject_fallback: bool = False,
     ) -> ExecutionResult:
         """按目标权重在执行日开盘成交，返回新现金、持仓和明细。
 
@@ -150,6 +152,11 @@ class StockExecutionAdapter(_CashExecutionAdapter):
         status="rebalanced" 区别于清仓）；同时买入段对已持仓改为按
         “目标市值−当前市值”增量补足，避免卖出释放的现金当天被整额买回。
         False（默认）时两参数不生效，行为与旧版逐位一致。
+
+        reject_fallback=True 时启用「拒单顺延补位」：某只标的因买不起一手
+        （现金/预算不足）被拒后不记拒单，改为从 fallback_list（候选全序）
+        依次尝试下一只，直到买满 len(targets) 只或用尽候选。关闭（默认）时
+        行为与旧版逐位一致。fallback 标的按等权 1/len(targets) 分配预算。
         """
         result = ExecutionResult(float(cash), positions)
         signal_date = self.dates[signal_idx].date().isoformat()
@@ -252,7 +259,18 @@ class StockExecutionAdapter(_CashExecutionAdapter):
                 })
 
         # 后买入：预算、现金、整手和流动性依次限制成交量。
-        for k in chosen_list:
+        # reject_fallback 开启时额外把候选全序接到 chosen_list 之后做顺延补位，
+        # 目标仍是买满 len(targets) 只；关闭时 queue 恒等于 chosen_list。
+        target_n = len(targets)
+        fallback_eq_pct = (1.0 / target_n) if target_n > 0 else 0.0
+        queue = list(chosen_list)
+        if reject_fallback and fallback_list:
+            seen = set(chosen_list)
+            queue += [k for k in fallback_list if k not in seen and k not in targets]
+        bought_n = 0
+        for k in queue:
+            if reject_fallback and bought_n >= target_n:
+                break
             if not self.valid_open[exec_idx, k]:
                 result.rejections.append({
                     "date": exec_date, "signal_date": signal_date,
@@ -284,7 +302,9 @@ class StockExecutionAdapter(_CashExecutionAdapter):
                     "status": "rejected", "reason": "无成交量",
                 })
                 continue
-            pct = targets[k]
+            pct = targets.get(k, fallback_eq_pct)
+            if pct <= 0:
+                continue
             if max_weight:
                 pct = min(pct, float(max_weight))
             budget = portfolio_value * pct
@@ -311,6 +331,10 @@ class StockExecutionAdapter(_CashExecutionAdapter):
                 liq_lots = int((am20v * self.max_participation) / gross) // self.lot_size
                 lots = min(lots, liq_lots)
             if lots <= 0:
+                if reject_fallback:
+                    # 顺延补位：静默跳过，改试候选队列的下一只（不记拒单，
+                    # 否则拒单数会被"尝试过的每一只"灌水）。
+                    continue
                 result.rejections.append({
                     "date": exec_date, "signal_date": signal_date,
                     "code": self.codes[k], "side": "buy",
@@ -324,6 +348,7 @@ class StockExecutionAdapter(_CashExecutionAdapter):
             result.buy_amount += amount
             result.positions[k] = result.positions.get(k, 0.0) + shares
             result.bought_codes.append(self.codes[k])
+            bought_n += 1
             result.trades_detail.append({
                 "date": self.dates[exec_idx], "signal_date": self.dates[signal_idx],
                 "code": self.codes[k], "side": "buy", "shares": float(shares),
