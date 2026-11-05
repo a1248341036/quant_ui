@@ -1000,3 +1000,83 @@ def test_catchup_already_fresh_core_only(cfg_path, monkeypatch):
     )
     assert result.exit_code == 0, result.output
     assert "skipped_already_fresh" in result.output
+
+
+# ── run daily 默认交易日：早间补跑必须回退到上一个已结算交易日 ────────────
+#
+# Task Scheduler 的 StartWhenAvailable 会在机器唤醒后立刻补跑错过的 21:30 任务。
+# 修复前补跑不带 --trade-date，engine 取 *今天* —— 而今天尚未收盘，于是
+# fund_bars / index_bars / sector_bars 一律以 "not final until 15:05" 失败，
+# 补跑除了刷红毫无作用，真正漏掉的那一天依然缺失。
+
+
+@pytest.fixture
+def _sent_trade_dates(monkeypatch):
+    """记录 run_job 收到的 trade_date。"""
+    calls: list[date | None] = []
+
+    def fake_run_job(self, job_name, *args, **kwargs):
+        calls.append(kwargs.get("trade_date"))
+        return {"run_id": "r-capture", "status": "success", "results": []}
+
+    monkeypatch.setattr(JobEngine, "run_job", fake_run_job)
+    return calls
+
+
+def _freeze_clock(monkeypatch, *, today: date, settled: bool, trading: bool) -> None:
+    monkeypatch.setattr("cnequity.cli.main.shanghai_today", lambda: today)
+    monkeypatch.setattr("cnequity.cli.main.is_session_final", lambda as_of: settled)
+    monkeypatch.setattr("cnequity.steps.common.is_trading_day", lambda cfg, day: trading)
+
+
+def test_run_daily_morning_replay_targets_previous_settled_session(
+    cfg_path, monkeypatch, _sent_trade_dates
+):
+    """08:55 补跑：今天还在形成中，回退到上一个交易日。"""
+    _freeze_clock(monkeypatch, today=date(2026, 11, 4), settled=False, trading=True)
+    monkeypatch.setattr(
+        "cnequity.cli.main._last_trading_day", lambda cfg, today: date(2026, 11, 3)
+    )
+
+    result = CliRunner().invoke(cli, ["run", "daily", "--config", cfg_path])
+
+    assert result.exit_code == 0, result.output
+    assert _sent_trade_dates == [date(2026, 11, 3)]
+
+
+def test_run_daily_evening_run_still_targets_today(
+    cfg_path, monkeypatch, _sent_trade_dates
+):
+    """21:30 正常跑：已结算，默认行为不变（td=None 交给引擎取今天）。"""
+    _freeze_clock(monkeypatch, today=date(2026, 11, 5), settled=True, trading=True)
+
+    result = CliRunner().invoke(cli, ["run", "daily", "--config", cfg_path])
+
+    assert result.exit_code == 0, result.output
+    assert _sent_trade_dates == [None]
+
+
+def test_run_daily_non_trading_day_keeps_engine_skip_path(
+    cfg_path, monkeypatch, _sent_trade_dates
+):
+    """周末仍走引擎的 skipped_non_trading_day，不被回退逻辑改写。"""
+    _freeze_clock(monkeypatch, today=date(2026, 11, 7), settled=False, trading=False)
+
+    result = CliRunner().invoke(cli, ["run", "daily", "--config", cfg_path])
+
+    assert result.exit_code == 0, result.output
+    assert _sent_trade_dates == [None]
+
+
+def test_run_daily_explicit_trade_date_is_never_rewritten(
+    cfg_path, monkeypatch, _sent_trade_dates
+):
+    """显式 --trade-date 优先于回退推断。"""
+    _freeze_clock(monkeypatch, today=date(2026, 11, 4), settled=False, trading=True)
+
+    result = CliRunner().invoke(
+        cli, ["run", "daily", "--config", cfg_path, "--trade-date", "2026-10-23"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _sent_trade_dates == [date(2026, 10, 23)]
