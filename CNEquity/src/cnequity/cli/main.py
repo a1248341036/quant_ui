@@ -564,7 +564,11 @@ def _run_stale_only(cfg, engine, trade_date: date | None, *, backfill: bool) -> 
     "--trade-date",
     "trade_date_str",
     default=None,
-    help="As-of trade date YYYY-MM-DD (default: today). Use to catch up on weekends/holidays.",
+    help=(
+        "As-of trade date YYYY-MM-DD. Default: the last settled session — today "
+        "once 15:05 Asia/Shanghai has passed, otherwise the previous trading day "
+        "(a morning replay must not target a session that has not closed)."
+    ),
 )
 @click.option("--backfill", is_flag=True)
 @click.option("--quiet", is_flag=True, help="Only warnings and errors; no per-step progress.")
@@ -587,7 +591,25 @@ def run_daily(
     _progress_logging(quiet)
     cfg = _cfg(config_path)
     engine = JobEngine(cfg)
-    td = date.fromisoformat(trade_date_str) if trade_date_str else None
+    if trade_date_str:
+        td = date.fromisoformat(trade_date_str)
+    else:
+        # A missed 21:30 run is replayed by Task Scheduler's StartWhenAvailable
+        # the next morning. With no explicit date the engine targets *today*,
+        # whose session has not settled yet, so every end-of-session dataset
+        # (fund_bars / index_bars / sector_bars) refuses with "session not
+        # final until 15:05" and the replay accomplishes nothing but red
+        # status — every single morning. Target the last *settled* session
+        # instead. On the normal evening run this resolves to today, so the
+        # common path is unchanged, and non-trading days still fall through to
+        # the engine's skip logic.
+        from cnequity.steps.common import is_trading_day
+
+        today = shanghai_today()
+        if is_trading_day(cfg, today) and not is_session_final(today):
+            td = _last_trading_day(cfg, today)
+        else:
+            td = None
     if stale_only:
         if group_name:
             raise click.ClickException("--stale-only picks its own steps; drop --group.")
