@@ -208,10 +208,15 @@ def _simulate(cfg, prep: dict, fctx: dict) -> dict:
                     # sell-down-to-target 开关透传（getattr 兜底：旧 cfg 对象安全默认关）
                     sell_down_on = bool(getattr(cfg, "sell_down_to_target", False))
                     sell_band = float(getattr(cfg, "weight_band", 0.15) or 0.0)
+                    # 拒单顺延补位：候选全序由 builder 旁路提供（关闭时不读取）
+                    rf_on = bool(getattr(cfg, "reject_fallback", False))
+                    rf_fallback = (list(portfolio_builder.last_ordered)
+                                   if rf_on else None)
                     executed = execution_adapter.execute_targets(
                         cash, positions, targets, chosen_list, pv, am_thr, sig, t,
                         max_weight=max_weight,
                         sell_down_to_target=sell_down_on, weight_band=sell_band,
+                        fallback_list=rf_fallback, reject_fallback=rf_on,
                     )
                     cash, positions = executed.cash, executed.positions
                     buy_amt, sell_amt = executed.buy_amount, executed.sell_amount

@@ -582,6 +582,7 @@ def _run_one_factor(
                                if risk.get("vol_target_window") is not None
                                else 60),
             sell_down_to_target=bool(risk.get("sell_down_to_target", False)),
+            reject_fallback=bool(risk.get("reject_fallback", False)),
             weight_band=(float(risk["weight_band"])
                          if risk.get("weight_band") is not None else 0.15),
             execution_profile=ETF_PROFILE if is_etf else STOCK_PROFILE,
