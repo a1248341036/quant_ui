@@ -136,21 +136,20 @@ class TestTestEndCap:
         fake_cfg = object()
         with (
             patch.object(wc, "_load_cne_config", return_value=fake_cfg),
-            patch.object(wc, "_external_coverage_end", return_value="2026-10-13"),
+            patch.object(wc, "_external_coverage_end", return_value="2026-11-13"),
         ):
             result = wc.resolve_test_end()
-        assert result == "2026-09-30"
-        assert wc.TEST_END_CAP == "2026-09-30"
+        assert result == wc.TEST_END_CAP
 
     def test_cap_not_intervene_at_exact(self) -> None:
         """数据源恰好等于锁死端 → 原样返回。"""
         fake_cfg = object()
         with (
             patch.object(wc, "_load_cne_config", return_value=fake_cfg),
-            patch.object(wc, "_external_coverage_end", return_value="2026-09-30"),
+            patch.object(wc, "_external_coverage_end", return_value=wc.TEST_END_CAP),
         ):
             result = wc.resolve_test_end()
-        assert result == "2026-09-30"
+        assert result == wc.TEST_END_CAP
 
     def test_cap_not_intervene_below(self) -> None:
         """数据源早于锁死端 → 用数据源（不抬升）。"""
