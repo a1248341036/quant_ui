@@ -14,6 +14,7 @@
 用法：
   python scripts/train_ml_composite.py --model both --train-months 18 --step-months 6
   python scripts/train_ml_composite.py --scheme hrp --no-gate --no-write-pred  # 简单加权：不拟合模型
+  python scripts/train_ml_composite.py --label-days 5 --sample-step-days 5    # 调仓节拍对齐采样（截面日粒度=调仓频率）
 """
 from __future__ import annotations
 
@@ -88,6 +89,11 @@ def _parse_args() -> argparse.Namespace:
                          "的因子加入训练特征。这些因子不走盲测交付链，入库标准就是对 "
                          "lgbm OOS IC 的边际贡献")
     ap.add_argument("--label-days", type=int, default=5, help="前向收益持有天数（对齐调仓频率）")
+    ap.add_argument("--sample-step-days", type=int, default=0,
+                    help="调仓节拍对齐采样：每 N 个交易日取一个截面日做训练样本。"
+                         "0/1 = 日频全量（默认，旧行为）；建议与 --label-days 对齐"
+                         "（如 --label-days 5 --sample-step-days 5），让训练样本粒度与调仓节拍"
+                         "一致——慢频因子不必每日重复、截面信息不稀释，同时训练规模压缩到 1/N。")
     ap.add_argument("--model", default="both", choices=["ridge", "lgbm", "both"],
                     help="仅 --scheme ml 生效：拟合的 ML 模型")
     ap.add_argument("--split-models", action="store_true",
@@ -218,6 +224,9 @@ def main() -> None:
             incompatible.append("--screening-report（消费统一筛选报告）")
         if args.multi_path_shifts:
             incompatible.append("--multi-path-shifts（多路径对照按主链路折结构设计）")
+        if args.sample_step_days > 0:
+            incompatible.append("--sample-step-days（采样掩膜挂在统一 dataset 上；分频模式每组独立成集，"
+                                "分组采样尚未实现，静默失效不可接受）")
         if args.subset_curve:
             incompatible.append("--subset-curve（统一特征矩阵上做 Top-k 累积子集曲线）")
         if args.scheme != "ml":
@@ -562,6 +571,7 @@ def main() -> None:
             mining_end=mining_end,
             size_neutral=args.size_neutral,
             max_corr=args.max_corr,
+            sample_step_days=args.sample_step_days,
             cache=cache,
             decay_months=args.decay_months,
             progress=lambda msg: print(" ", msg, flush=True),
@@ -882,6 +892,7 @@ def main() -> None:
             pred, report, feat_w, feat_c = fit_predict_walkforward(
                 dataset.feature_matrix, dataset.label, date_series, folds, kind=kind,
                 feature_names=dataset.feature_names, label_horizon=args.label_days,
+                train_day_mask=dataset.sampled_day_mask,
             )
             model_outputs[kind] = pred
             fold_reports[kind] = report
@@ -1085,6 +1096,7 @@ def main() -> None:
                 dataset.feature_matrix, dataset.label, date_series, folds,
                 ranked_names=ranked_names, feature_names=dataset.feature_names,
                 kinds=kinds, first_oos=first_oos, label_horizon=args.label_days,
+                train_day_mask=dataset.sampled_day_mask,
                 progress=lambda msg: print(" ", msg, flush=True),
             )
             valid = [r for r in subset_curve if r.get("blended") is not None]
@@ -1157,6 +1169,7 @@ def main() -> None:
                 p, _rep, _w, _c = fit_predict_walkforward(
                     dataset.feature_matrix, dataset.label, date_series, pfolds, kind=kind,
                     feature_names=dataset.feature_names, label_horizon=args.label_days,
+                    train_day_mask=dataset.sampled_day_mask,
                 )
                 p_outs[kind] = p
             usable = [p_outs[k] for k in kinds if np.isfinite(p_outs[k]).any()]
@@ -1263,6 +1276,7 @@ def main() -> None:
             "panel_start": str(panel_start.date()),
             "panel_end": str(end.date()),
             "label_days": args.label_days,
+            "sample_step_days": args.sample_step_days,
             "score_smooth": int(score_smooth_used),
             "include_factors": list(args.include_factors) if args.include_factors else None,
             "folds": len(folds),
@@ -1298,6 +1312,7 @@ def main() -> None:
         "entries": [e.__dict__ for e in model_entries],
         "feature_names": model_feature_names,
         "label_days": args.label_days,
+        "sample_step_days": args.sample_step_days,
         "size_neutral": args.size_neutral,
         "mining_end": str(mining_end.date()),
         "folds": [(str(f.train_dates.min().date()), str(f.train_dates.max().date()),

@@ -85,6 +85,8 @@ class StackingDataset:
     label: np.ndarray  # [n_rows] 前向收益
     mining_end: pd.Timestamp  # 时间隔离边界：仅此日期之后的行可进入训练/OOS
     label_days: int
+    sample_step_days: int = 0  # 调仓节拍对齐采样：每 N 交易日取一个截面日做训练样本（0=日频全量）
+    sampled_day_mask: np.ndarray | None = None  # 全量行长的 bool 采样掩膜（sample_step_days>1 时为每 step 日一截面；None=全量日频）
     dropped: list[dict] = field(default_factory=list)  # 被剔除因子及原因
 
 
@@ -342,6 +344,38 @@ def forward_return_label(panel: pd.DataFrame, hold_days: int) -> np.ndarray:
     return label
 
 
+def _sampled_day_mask(panel: pd.DataFrame, step: int) -> np.ndarray:
+    """调仓节拍对齐采样掩码：每 step 个交易日取一个截面日的全部行。
+
+    step <= 1 时全 True（日频全量，旧行为）。采样日 == 全量日频 ``[::step]``
+    （day 0, step, 2*step, ...），同一截面日全部股票同时进样本。面板按
+    (datetime, instrument) 行序；返回值与 panel 行等长。
+    """
+    step = int(step)
+    if step <= 1:
+        return np.ones(len(panel), dtype=bool)
+    dts = panel.index.get_level_values("datetime")
+    day_codes, _ = pd.factorize(dts, sort=True)
+    return (day_codes % step) == 0
+
+
+def _ffill_along_time(values: np.ndarray, panel: pd.DataFrame) -> np.ndarray:
+    """按股票沿时间前向填充（面板行序 = datetime, instrument）。
+
+    慢频因子（基本面 60 交易日才更新一次 + 发布期 NaN 缺口）在相邻截面日
+    保持同一值、缺口日取'截面日前最近值'的语义由本函数实现；前导缺失不回填
+    （无前视）。支持 1D 或 2D（列数=因子数）输入，输出 float32、与输入同序。
+    """
+    arr = np.asarray(values, dtype=np.float64)
+    inst = panel.index.get_level_values("instrument")
+    if arr.ndim == 1:
+        ff = pd.Series(arr).groupby(inst, sort=False).ffill().to_numpy(dtype=np.float32)
+    else:
+        df = pd.DataFrame(arr, index=panel.index)
+        ff = df.groupby(level="instrument", sort=False).ffill().to_numpy(dtype=np.float32)
+    return ff
+
+
 def _welford_std(values: np.ndarray, ddof: int = 1) -> float:
     """逐元素 Welford 在线方差根——复刻 pandas groupby.std 内部算法。
 
@@ -441,14 +475,16 @@ def _spearman_daily_nb(
         e_xy = np.mean(pr * yr)
         sd_pr = _welford_std_nb(pr)
         sd_yr = _welford_std_nb(yr)
+        # guard：退化分母防御（与 pandas 版 replace(inf/nan)+dropna 语义一致）。
+        # 常数截面（该日有效样本 rank 全同 → std=0）或非有限均值（浮点尾差）时，
+        # cov/(sd_pr·sd_yr) 会 0/0、x/0 或产生 inf——njit 下即除零崩溃；此处该日
+        # IC 直接按缺失跳过，绝不把 NaN/inf/0 分母送进相除。
+        denom = sd_pr * sd_yr
+        if not (np.isfinite(denom) and np.isfinite(e_pr) and np.isfinite(e_yr)
+                and np.isfinite(e_xy)) or abs(denom) <= 1e-12:
+            continue
         # 样本协方差 = (E[xy] - Ex·Ey) · n/(n-1)，与 std 的 ddof=1 一致
         cov = (e_xy - e_pr * e_yr) * nk / (nk - 1)
-        denom = sd_pr * sd_yr
-        if denom == 0.0:
-            # pandas 版数组除法：sd 为 0（该日 rank 全相等）时 0/0→NaN、
-            # 非零/0→inf，随后 replace+dropna 全部剔除该日——此处等价丢弃。
-            # （numba 标量除法会直接抛 ZeroDivisionError，故显式判 0。）
-            continue
         ic = cov / denom
         if np.isfinite(ic):
             ics[n_out] = ic
@@ -677,6 +713,7 @@ def build_dataset_from_values(
     mining_end: pd.Timestamp,
     size_neutral: bool = True,
     max_corr: float = 0.6,
+    sample_step_days: int = 0,
     ics_for_quality: dict[str, float] | None = None,
 ) -> StackingDataset:
     """从已物化的因子值数组组装数据集（含冗余过滤；供脚本与测试共用）。
@@ -686,6 +723,11 @@ def build_dataset_from_values(
     相关性只在**同组**（数据源组，``_entry_group``）内比较——跨组高相关因子
     双双保留：跨面低相关/异源信息正是组合分散化的来源，跨组互剔会让数量占优
     的价量因子系统性挤掉慢周期因子。
+
+    ``sample_step_days``：调仓节拍对齐采样（每 N 交易日取一个截面日做样本）。
+    启用后，因子值先按股票沿时间 ffill（慢频因子在相邻截面日保持同一值、
+    缺口日取截面日前最近值），再按采样日切片——label 同样在全量前向收益上
+    切片，保持无前视尾部 NaN 语义。0/1 = 日频全量（旧行为）。
     """
     quality = ics_for_quality or {}
 
@@ -721,6 +763,17 @@ def build_dataset_from_values(
         np.column_stack([t for _, _, t in kept]).astype(np.float32) if kept else np.empty((len(panel), 0), dtype=np.float32)
     )
     label = forward_return_label(panel, label_days)
+    sampled_day_mask: np.ndarray | None = None
+    if sample_step_days > 1:
+        # 调仓节拍对齐采样：保持全量行结构（feature/label/panel 均不切片，
+        # 下游日频契约——OOS 评估、gate 回测、scores/pred 写出——不变），
+        # 采样只通过 sampled_day_mask 过滤"哪些行可作训练样本"：
+        # 每 step 个交易日取一个截面日的全部行，训练样本不再 5 日重叠；
+        # 慢频因子先按股票 ffill（缺口取'截面日前最近值'），采样日的
+        # 特征值即截面日前最近可得值。OOS/评估仍为全量日频，与日频
+        # baseline 完全同口径可比。
+        sampled_day_mask = _sampled_day_mask(panel, sample_step_days)
+        feature_matrix = _ffill_along_time(feature_matrix, panel)
     return StackingDataset(
         panel=panel,
         feature_matrix=feature_matrix,
@@ -729,6 +782,8 @@ def build_dataset_from_values(
         label=label,
         mining_end=_coerce_naive(mining_end),
         label_days=label_days,
+        sample_step_days=sample_step_days,
+        sampled_day_mask=sampled_day_mask,
         dropped=dropped,
     )
 
@@ -858,6 +913,7 @@ def build_stacking_dataset(
     mining_end: pd.Timestamp,
     size_neutral: bool = True,
     max_corr: float = 0.6,
+    sample_step_days: int = 0,
     cache=None,
     decay_months: int = 12,
     min_finite_ratio: float = 0.05,
@@ -867,6 +923,10 @@ def build_stacking_dataset(
 
     质量分按各因子自己的 label horizon 计（见 compute_quality_scores）；
     训练标签统一 label_days（对齐目标调仓频率）。
+    ``sample_step_days``：调仓节拍对齐采样（见 build_dataset_from_values），
+    0 = 日频全量（默认，旧行为）。用 label_days 对齐时建议同步传
+    sample_step_days=label_days，让训练样本粒度与调仓节拍一致（慢频因子
+    不必在每个交易日重复、截面信息不稀释），同时压缩训练规模 label_days 倍。
     """
     materialized, dropped_eval = materialize_entries(
         panel, entries, cache=cache, min_finite_ratio=min_finite_ratio, progress=progress
@@ -888,6 +948,7 @@ def build_stacking_dataset(
         mining_end=mining_end,
         size_neutral=size_neutral,
         max_corr=max_corr,
+        sample_step_days=sample_step_days,
         ics_for_quality=quality,
     )
     dataset.dropped = dropped + dataset.dropped

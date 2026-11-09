@@ -157,6 +157,7 @@ def fit_predict_walkforward(
     feature_names: Sequence[str] | None = None,
     collect_diagnostics: bool = True,
     label_horizon: int = 5,
+    train_day_mask: np.ndarray | None = None,
 ) -> tuple[np.ndarray, list[dict], list[dict] | None, list[dict] | None]:
     """逐折训练 + OOS 预测；返回 (拼接 OOS 预测 [n_rows]（折外 NaN）, 逐折指标, 特征权重, 置换贡献)。
 
@@ -164,6 +165,10 @@ def fit_predict_walkforward(
     （无缺失处理），lgbm 原生支持 NaN 特征 → 放行，保住基本面/事件等稀疏面
     的样本行（原先整行丢弃会造成训练集缩水与宇宙偏化）。预测原样写回对应行，
     不做截面再标准化（模型输出经 OOS 评估，engine_gate 直接消费）。
+
+    train_day_mask（全量行长的 bool，可选）：调仓节拍对齐采样——只有掩膜为
+    True 的行可作训练样本（每 step 个交易日一个整截面），OOS 评估仍为全量
+    日频，不改变下游日频契约。
 
     特征权重：每折提取重要性并归一为份额后跨折平均——ridge 取 |coef|（特征
     已截面 zscore，系数可比），lgbm 取 gain 重要性；返回按权重降序的
@@ -192,6 +197,8 @@ def fit_predict_walkforward(
     contrib_acc: list[dict] = []
     for fold in folds:
         train_mask = np.isin(date_np, fold.train_dates.to_numpy())
+        if train_day_mask is not None:
+            train_mask = train_mask & train_day_mask
         valid = train_mask & np.isfinite(label)
         if require_finite and feature_matrix.shape[1]:
             valid &= np.isfinite(feature_matrix).all(axis=1)
@@ -315,6 +322,7 @@ def cumulative_subset_curve(
     kinds: Sequence[ModelKind],
     first_oos=None,
     label_horizon: int = 5,
+    train_day_mask: np.ndarray | None = None,
     progress: Callable[[str], None] | None = None,
 ) -> list[dict]:
     """贡献排序累积子集曲线：按贡献降序取 Top-k 特征逐级重训，返回每 k 的 OOS IC。
@@ -358,7 +366,8 @@ def cumulative_subset_curve(
         preds: list[np.ndarray] = []
         for kind in kinds:
             p, _rep, _w, _c = fit_predict_walkforward(
-                feature_matrix[:, idx], label, dates, folds, kind=kind, collect_diagnostics=False
+                feature_matrix[:, idx], label, dates, folds, kind=kind, collect_diagnostics=False,
+                train_day_mask=train_day_mask,
             )
             row[kind] = _ic(p)
             preds.append(p)
