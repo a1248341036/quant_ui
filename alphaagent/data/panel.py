@@ -213,14 +213,21 @@ def _finalize_panel(df: pd.DataFrame, *, dtype: str = "float32") -> pd.DataFrame
     # 保留 OUTPUT_COLUMNS + 任何插件带来的额外列
     extra_cols = [c for c in df.columns if c not in OUTPUT_COLUMNS]
     final_cols = list(OUTPUT_COLUMNS) + extra_cols
-    panel = df[final_cols].copy()
-    # 数值列 downcast（排除标记列）
+    # 数值列 downcast（排除标记列）——**先降精度再 copy**。
+    # 历史顺序先 `df[final_cols].copy()` 再逐列 astype：全量 221 列 float64 面板
+    # （2020-2026 全窗口 ~8.29M 行 ≈ 13.7GiB）会先在 _merge_blocks 里分配整块
+    # float64 拷贝，峰值内存 = 原面板 10.3GB + 13.7GB 新块 > 31GB 机器可承载，
+    # 导致 cne:// 重建路径（submit 携带 --fundamentals）稳定 OOM
+    # （numpy._core._exceptions._ArrayMemoryError, shape (221, 8291345)）。
+    # 先逐列 astype 到 float32（每列 ~33MB 小块，不触发整块合并），
+    # 最后 copy 的合并块只需 ~6.9GiB —— 峰值减半，重建路径可过。
     non_numeric = {"is_trade", "not_st"}
-    for col in panel.columns:
+    for col in final_cols:
         if col in non_numeric:
             continue
-        if pd.api.types.is_numeric_dtype(panel[col]):
-            panel[col] = panel[col].astype(dtype)
+        if pd.api.types.is_numeric_dtype(df[col]):
+            df[col] = df[col].astype(dtype)
+    panel = df[final_cols].copy()
 
     panel = panel.sort_index()
     panel = _coerce_datetime_index(panel)
