@@ -50,6 +50,11 @@ from alphaagent.factor.stacking import (  # noqa: E402
     fit_predict_walkforward,
     walk_forward_splits,
 )
+from alphaagent.factor.stacking.serve import (  # noqa: E402
+    fit_served_model,
+    save_served_model,
+    wma_smooth_scores,
+)
 from alphaagent.factor.mining.research_spec import default_research_spec  # noqa: E402
 from alphaagent.factor.stacking.dataset import _to_utc_naive, forward_return_label  # noqa: E402
 from core import trading_config  # noqa: E402
@@ -183,9 +188,11 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--isolation", default="strict", choices=["strict", "holdout"],
                     help="strict：walk-forward 仅用挖掘期后干净段（fold 少但指标可信）；"
                          "holdout：全历史训练、挖掘期后干净段整体作留出测试（推荐）")
-    ap.add_argument("--eval-mode", default="tuning", choices=["tuning", "blind_test"],
+    ap.add_argument("--eval-mode", default="tuning", choices=["tuning", "blind_test", "production"],
                     help="评估模式：tuning=研发验证模式（默认，右端严格物理截断至 val_end 2024-12-31，2025+盲测段完全不加载）；"
-                         "blind_test=终审盲测模式（仅用于定稿后一次性离线评估，严禁开启 --llm-assist）")
+                         "blind_test=终审盲测模式（仅用于定稿后一次性离线评估，严禁开启 --llm-assist）；"
+                         "production=生产训练模式（右端不截断、全量历史，产出 served_model.joblib 供每日推理，"
+                         "不产评估结论、不写 pred 通道）")
     ap.add_argument("--pred-out", default=None, help="pred 分数输出路径（默认 data/stock/pred_demo.parquet）")
     ap.add_argument("--llm-assist", action="store_true",
                     help="LLM 辅助：A) 枚举后语义研判推荐因子子集（白名单，不给权重）；"
@@ -463,6 +470,19 @@ def main() -> None:
             print(f"[safety] tuning 模式时间隔离：mining_end 对齐至 train 终点 {mining_end.date()}，留出 2023~2024 作为安全 OOS 验证段")
 
         print(f"[safety] 盲测安全隔离生效：eval_mode=tuning · 数据右端={end.date()} · 2025+ 盲测段物理隔离未加载")
+    elif args.eval_mode == "production":
+        # ── 生产训练模式：右端不截断（全量历史到数据最新日），mining_end 对齐 train 终点。
+        # 目的只有一个——产出 served_model.joblib 供每日推理；OOS/gate 结论不作为上线依据，
+        # 也不写 pred 通道（推理通道负责写）。与 tuning 的区别仅在数据右端与产出物语义。
+        data_latest = pd.Timestamp(resolve_test_end())
+        end = pd.Timestamp(args.end) if args.end else data_latest
+        if end > data_latest:
+            print(f"[warn] --end={end.date()} 超过数据源最新交易日 {data_latest.date()}，收敛到数据右端")
+            end = data_latest
+        if args.mining_end == "auto":
+            mining_end = pd.Timestamp(DEFAULT_TRAIN_END)
+        print(f"[production] 生产训练：eval_mode=production · 数据右端={end.date()} · "
+              f"训练段 {mining_end.date()} 之后全量历史（产出 served model，不产评估结论）")
     else:
         # blind_test 终审盲测模式：仅定稿后离线跑，且前面已拦截严禁开启 --llm-assist
         data_latest = pd.Timestamp(resolve_test_end())
@@ -951,7 +971,7 @@ def main() -> None:
     # ⑤b 组合分数平滑：尾随 WMA（gate/报告/pred 全部消费平滑后分数）
     smooth_n = args.score_smooth if args.score_smooth > 0 else args.label_days
     if smooth_n > 1:
-        stacked = _wma_smooth_scores(stacked, panel, smooth_n)
+        stacked = wma_smooth_scores(stacked, panel, smooth_n)
         print(f"组合分数平滑：尾随线性 WMA-{smooth_n}（0=自动取持有天数）")
     else:
         print("组合分数平滑：关闭（--score-smooth 1）")
@@ -969,7 +989,7 @@ def main() -> None:
         scheme_scores = fit_scheme_compare_scores(dataset.feature_matrix, dataset.label, date_series, folds)
         if smooth_n > 1:
             for _sn in scheme_scores:
-                scheme_scores[_sn] = _wma_smooth_scores(scheme_scores[_sn], panel, smooth_n)
+                scheme_scores[_sn] = wma_smooth_scores(scheme_scores[_sn], panel, smooth_n)
         scheme_compare = scheme_compare_report(
             scheme_scores, stacked, dataset.label, date_series,
             first_oos=first_oos, label_horizon=args.label_days,
@@ -1030,7 +1050,7 @@ def main() -> None:
     # ⑦ engine_gate 裁决（OOS 段，周调仓口径）
     gate_result = None
     first_oos = pd.Timestamp(folds[0].oos_dates.min())  # 已在折生成后赋值，此处保持原位兜底（同一值）
-    if not args.no_gate:
+    if not args.no_gate and args.eval_mode != "production":
         from alphaagent.factor.mining.engine_gate import run_engine_gate
 
         policy = default_research_spec(args.modes[0])["delivery_policy"]["production"]["engine_gate"]
@@ -1181,7 +1201,7 @@ def main() -> None:
                 _warnings.simplefilter("ignore", category=RuntimeWarning)
                 ps = np.nanmean(np.column_stack(usable), axis=1).astype(np.float32)
             if smooth_n > 1:
-                ps = _wma_smooth_scores(ps, panel, smooth_n)
+                ps = wma_smooth_scores(ps, panel, smooth_n)
             p0 = pfolds[0].oos_dates.min()
             mm_p = _path_metrics(ps, p0)
             mm_base = _path_metrics(stacked, p0)  # 同一窗口上的主路径口径，保证可比
@@ -1297,6 +1317,49 @@ def main() -> None:
         }
     if args.llm_assist:
         report["llm_recommendation"] = llm_recommendation_meta  # None=回退全量；否则含名单摘要/指纹/是否复用
+
+    # ⑨ served model 固化：训练/推理分离的关键产物——每日推理只加载它，不再重训。
+    # 拟合口径 = 截至训练日的全部有效行（不受 walk-forward 折限制），与报告里的
+    # OOS 指标（每折只用过去训练）是两条独立口径：报告负责评估，served 负责上线。
+    served_model_path: Path | None = None
+    if args.split_models:
+        assert split_state is not None
+        pf = split_state.get("per_frequency") or {}
+        fw_rows = pf.get("fold_weights") or []
+        blend_weights = dict(fw_rows[-1]["weights"]) if fw_rows else {}
+        try:
+            served = fit_served_model(
+                split_state["group_datasets"],
+                kinds,
+                blend_weights=blend_weights,
+                blend_label_days=args.label_days,
+                smooth_window=score_smooth_used,
+                size_neutral=args.size_neutral,
+                source_run=run_id,
+                meta={
+                    "eval_mode": args.eval_mode,
+                    "panel_start": str(panel_start.date()),
+                    "panel_end": str(end.date()),
+                    "blend_fallback": fw_rows[-1].get("fallback") if fw_rows else None,
+                },
+                progress=lambda msg: print(" ", msg, flush=True),
+            )
+            served_model_path = save_served_model(served, out_dir)
+            report["served_model"] = str(served_model_path)
+            print(f"served model 已固化：{served_model_path}")
+            _emit_event(
+                out_dir,
+                "ml_served_model_saved",
+                title="served model 固化完成",
+                message=f"{len(served.groups)} 个频段组 · 训练至 {served.trained_until}",
+                path=str(served_model_path),
+                trained_until=served.trained_until,
+            )
+        except Exception as exc:  # noqa: BLE001 — 固化失败不阻断训练主流程
+            print(f"[warn] served model 固化失败（训练产物不受影响）：{type(exc).__name__}: {exc}")
+    else:
+        print("[info] 非分频模式暂不固化 served model（当前生产链路为 --split-models）")
+
     (out_dir / "report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=1, default=str), encoding="utf-8"
     )
@@ -1363,7 +1426,7 @@ def main() -> None:
             json.dumps(report, ensure_ascii=False, indent=1, default=str), encoding="utf-8"
         )
 
-    if not args.no_write_pred:
+    if not args.no_write_pred and args.eval_mode != "production":
         pred_path = Path(args.pred_out) if args.pred_out else (ROOT / "data" / "stock" / "pred_demo.parquet")
         pred_path.parent.mkdir(parents=True, exist_ok=True)
         write_pred_parquet(stacked, panel, pred_path)
@@ -1432,41 +1495,6 @@ def main() -> None:
         # 事件文件本身就在 out_dir 下，路径冗余。
         artifact_dir=str(out_dir),
     )
-
-
-def _wma_smooth_scores(values: np.ndarray, panel: pd.DataFrame, window: int) -> np.ndarray:
-    """组合分数尾随线性 WMA（按股票、按交易日），治换手/持仓重叠。
-
-    挖掘侧单因子靠表达式内 WMA 平滑过换手门（ovdiv：WMA20 日换手 1.07→0.50），
-    组合分数此前是全链路唯一未平滑的分数。卷积实现（快）：最近一日权重最大；
-    窗口内非有限值不参与加权（den 归一）；原始 NaN 行保持 NaN。
-    """
-    ser = pd.Series(np.asarray(values, dtype=np.float64), index=panel.index)
-    wide = ser.unstack("instrument")
-    # 截尾核（降序）：当前日权重最大、往前线性衰减；convolve(a, w)[t] = Σ_j a[t-j]·w[j]
-    wd = np.arange(window, 0, -1, dtype=np.float64)
-    wd /= wd.sum()
-    out: dict[object, np.ndarray] = {}
-    for col in wide.columns:
-        v = wide[col].to_numpy(dtype=np.float64)
-        m = np.isfinite(v)
-        if not m.any():
-            out[col] = v
-            continue
-        v0 = np.where(m, v, 0.0)
-        num = np.convolve(v0, wd, mode="full")[: len(v)]
-        den = np.convolve(m.astype(np.float64), wd, mode="full")[: len(v)]
-        sm = np.where(den > 1e-12, num / np.maximum(den, 1e-12), np.nan)
-        sm[~m] = np.nan
-        out[col] = sm
-    sm_wide = pd.DataFrame(out, index=wide.index, columns=wide.columns)
-    long = (
-        sm_wide.rename_axis("datetime")
-        .reset_index()
-        .melt(id_vars="datetime", var_name="instrument", value_name="score")
-        .set_index(["datetime", "instrument"])["score"]
-    )
-    return long.reindex(panel.index).to_numpy(dtype=np.float32)
 
 
 def write_pred_parquet(values: np.ndarray, panel: pd.DataFrame, path: Path) -> None:
