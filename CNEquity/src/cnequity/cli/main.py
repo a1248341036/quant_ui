@@ -28,6 +28,7 @@ from cnequity.query.on_demand import OnDemandService
 from cnequity.query.parquet_scan import scan_parquet_files
 from cnequity.query.views import ensure_duckdb_views
 from cnequity.steps.common import BACKFILL_START
+from cnequity.steps.finalize import CURATED_MIRROR_LOOKBACK_DAYS
 from cnequity.storage.atomic import write_json_atomic
 from cnequity.storage.layout import init_data_layout
 from cnequity.storage.source_snapshots import (
@@ -1582,6 +1583,30 @@ def derive(name: str, config_path: str, full: bool, start_str: str | None, end_s
         click.echo(json.dumps(summary, indent=2, default=str))
     else:
         raise click.ClickException(f"Unknown derive target: {name}")
+
+
+@cli.command("heal")
+@click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True)
+@click.option(
+    "--lookback",
+    default=CURATED_MIRROR_LOOKBACK_DAYS,
+    type=int,
+    show_default=True,
+    help="回看的交易日数（默认 30，约 6 周）",
+)
+@click.option("--dry-run", is_flag=True, help="只报告缺口，不写分区")
+def heal(config_path: str, lookback: int, dry_run: bool):
+    """补齐 external 归档有、curated 镜像缺的交易日分区。
+
+    compact 被打断的那天，external 归档照样有数据，只是 curated 镜像少一个
+    分区；水位读的是 external，会正常越过缺口，于是日常调度永远发现不了它。
+    这个命令按交易日历逐日对账，把缺的那几天从 external 镜像回 curated。
+    """
+    from cnequity.steps.finalize import heal_curated_mirror
+
+    cfg = _cfg(config_path)
+    result = heal_curated_mirror(cfg, lookback_days=lookback, apply=not dry_run)
+    click.echo(json.dumps(result, indent=2, default=str))
 
 
 @cli.command()

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, timedelta
 
 import polars as pl
 
@@ -245,6 +245,89 @@ def _sync_external_to_curated(config: Config, dataset: str, trade_date: date) ->
     out = part_dir / "part-sync.parquet"
     df.write_parquet(str(out), compression="zstd")
     return df.height
+
+
+CURATED_MIRROR_LOOKBACK_DAYS = 30
+"""体检时回看的交易日数。
+
+一次源故障造成的 curated 镜像缺口，通常落在最近一两周内；30 个交易日约 6 周，
+足够把「上周五 compact 被超时打断」这类事故在下一次日常运行里捞回来，又不至于
+每次扫描数年分区。调大只增加扫描成本，调小会漏掉更早的缺口。
+
+为什么这个缺口只有这里能发现：``_watermark_date_for`` 对 external 数据集读的是
+适配器自己的归档，那里数据是全的，所以水位会正常越过缺口；只有 curated 镜像会
+因为某天 compact 没跑而少一个分区。而 audit 的 ``daily_bars_calendar_findings``
+和 research 窗口都读 curated，少一天就报洞——2026-11-06 那次事故就是这个形态：
+external 有 5573 行，curated 没有 trade_date=2026-11-06，水位却已经是 11-09。
+"""
+
+
+def heal_curated_mirror(
+    config: Config,
+    *,
+    lookback_days: int = CURATED_MIRROR_LOOKBACK_DAYS,
+    apply: bool = True,
+) -> dict:
+    """把 external 归档里有、curated 镜像里缺的交易日补写回来。
+
+    与 compact 走同一个 ``_sync_external_to_curated``，因此幂等：已存在的分区不
+    重写，external 也没有数据的日期返回 0 行、不落空分区。
+
+    ``apply=False`` 只报告缺口（``cne heal --dry-run``），用于确认范围后再动手。
+    """
+    from cnequity.external.registry import external_coverage_bounds
+    from cnequity.query.parquet_scan import list_hive_partition_dates
+    from cnequity.steps.common import list_trading_dates
+
+    healed: dict[str, list[str]] = {}
+    rows_total = 0
+    scanned: list[str] = []
+    for dataset, spec in DATASETS.items():
+        if not (spec.compactable and spec.layer == "external"):
+            continue
+        pcol = PARTITION_COLS.get(dataset)
+        if pcol != "trade_date":
+            # 更粗的周期分区无法逐日对账；compact 会整段重写它们，不需要这里补。
+            continue
+        first, last = external_coverage_bounds(config, dataset)
+        if last is None:
+            continue
+        scanned.append(dataset)
+
+        # 以 external 自己的最新日期为锚往前数，镜像落后一个月的湖也能整段追回，
+        # 且不会因为一次体检把数年的分区全扫一遍。
+        calendar_lo = last - timedelta(days=lookback_days * 3)
+        if first is not None and first > calendar_lo:
+            calendar_lo = first
+        trading_days = list_trading_dates(config, calendar_lo, last)
+        if not trading_days:
+            continue
+        window = trading_days[-lookback_days:]
+
+        present = set(list_hive_partition_dates(config.curated_root / dataset, pcol))
+        gaps = [day for day in window if day not in present]
+        if not gaps:
+            continue
+        if apply:
+            written: list[str] = []
+            for day in gaps:
+                filled = _sync_external_to_curated(config, dataset, day)
+                if filled:
+                    written.append(day.isoformat())
+                    rows_total += filled
+            if written:
+                healed[dataset] = written
+        else:
+            healed[dataset] = [day.isoformat() for day in gaps]
+
+    return {
+        "lookback_days": lookback_days,
+        "applied": apply,
+        "datasets_scanned": scanned,
+        "gaps": healed,
+        "healed_days": sum(len(v) for v in healed.values()),
+        "rows": rows_total,
+    }
 
 
 @register_step("compact", group="finalize", parallelizable=False)

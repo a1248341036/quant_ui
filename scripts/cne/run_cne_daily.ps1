@@ -532,6 +532,23 @@ function Execute-CnePipeline {
         }
     }
 
+    # 阶段 8.2: curated 镜像对账。compact 被打断的那天，external 归档照样有数据，
+    # 只是 curated 少一个分区；而水位读的是 external，会正常越过缺口 —— stale 探测
+    # 和 --stale-only 都只按水位判，看不见它（2026-11-06 事故就是这样漏的，只能人工
+    # backfill）。这里按交易日历逐日对账，把缺的交易日从 external 镜像回 curated。
+    $mirrorStatus = "skipped"
+    Write-PipelineLog "--- curated mirror reconcile ---"
+    $healExit = Run-CneCommand @("heal", "--lookback", "30")
+    if ($healExit -eq 0) {
+        $mirrorStatus = "OK"
+        Record-Result "curated_mirror" "success" 0 "--" "镜像对账完成"
+    } else {
+        Write-PipelineLog "curated mirror reconcile FAILED (see $LogFile)"
+        $mirrorStatus = "FAILED"
+        $failedSoft += "curated-mirror"
+        Record-Result "curated_mirror" "failed" 0 "--" "镜像对账失败"
+    }
+
     # 阶段 8.5: 全湖体检与统计。此前 health-latest 停在 2026-09-27、stats 停在
     # 2026-10-12 —— 两步都不在每日链路里，所以 3 天停摆没有任何自动检查发现。
     if (-not $SkipHealth) {
