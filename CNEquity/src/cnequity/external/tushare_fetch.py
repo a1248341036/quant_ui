@@ -237,6 +237,12 @@ def _fetch_with_retry(
     2026-10-19 the identical request returns rows once that wait elapses. The
     generic 1.5/3/6 s schedule can never cover it, so this error gets the
     vendor-recommended 30 s instead.
+
+    ``[application_capacity]`` ("上游调度容量临时不可用") is the middleware's
+    intermittent throttle. Measured 2026-11-10: three back-to-back calls all
+    failed inside the generic 1.5/3/6 s ladder, while the identical request
+    sent alone two minutes later returned rows. A ladder that tops out at
+    10 s of total wait can never ride that out, so this one scales 30/60/90 s.
     """
     last_err: Exception | None = None
     for attempt in range(1, retries + 1):
@@ -252,6 +258,9 @@ def _fetch_with_retry(
                 break
             if "upstream_pool_exhausted" in str(exc):
                 delay = 30.0
+            elif "application_capacity" in str(exc):
+                # 30/60/90 s：4 次重试覆盖约 3 分钟，实测足以等到限流解除。
+                delay = min(120.0, 30.0 * attempt)
             else:
                 delay = min(30.0, 1.5 * (2 ** (attempt - 1)))
             logger.warning(
