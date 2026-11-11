@@ -1590,7 +1590,7 @@ def derive(name: str, config_path: str, full: bool, start_str: str | None, end_s
 @click.option(
     "--lookback",
     default=CURATED_MIRROR_LOOKBACK_DAYS,
-    type=int,
+    type=click.IntRange(min=1),
     show_default=True,
     help="回看的交易日数（默认 30，约 6 周）",
 )

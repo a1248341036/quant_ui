@@ -279,6 +279,10 @@ def heal_curated_mirror(
     from cnequity.query.parquet_scan import list_hive_partition_dates
     from cnequity.steps.common import list_trading_dates
 
+    # 0 或负数会让 ``trading_days[-lookback_days:]`` 变成无界切片，
+    # 一次体检退化成全历史扫描；起步夹到 1。
+    lookback_days = max(1, int(lookback_days))
+
     healed: dict[str, list[str]] = {}
     rows_total = 0
     scanned: list[str] = []
@@ -317,6 +321,12 @@ def heal_curated_mirror(
                     rows_total += filled
             if written:
                 healed[dataset] = written
+                logger.info(
+                    "heal_curated_mirror: %s 补回 %d 个交易日 (%s)",
+                    dataset,
+                    len(written),
+                    ", ".join(written),
+                )
         else:
             healed[dataset] = [day.isoformat() for day in gaps]
 
