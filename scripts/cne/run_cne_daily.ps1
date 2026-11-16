@@ -213,6 +213,74 @@ function Execute-CnePipeline {
         }
     }
 
+    # 回填某个波次的逐数据集对账行。成功与失败波次都要调用。
+    # 2026-11-16 事故：回填只在失败分支里做，于是 core/fundamentals/capital/
+    # macro_risk 这几个跑成功的波次一条记录都没有，看板 56 行里只有 18 行有状态，
+    # 剩下 38 行永远停在初始文案"排队等待中"——看起来像还有一堆任务在排队。
+    # $BlockedNote 为空表示波次成功：manifest 里没有批次的数据集是"本轮无排程"
+    # （周期跳过/未启用），不能记成失败。
+    function Publish-WaveRows([string]$Wave, [string]$BlockedNote) {
+        if (-not $Global:CnePredefinedSteps) { return }
+
+        $recordedNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($r in $resultsList) { [void]$recordedNames.Add($r.Dataset) }
+
+        $batchByDataset = @{}
+        if ($script:LastRunId) {
+            $statusOutput = & $Cne @("status", "--run-id", $script:LastRunId, "--config", $Config) 2>&1 | Out-String
+            try {
+                $runStatus = $statusOutput | ConvertFrom-Json
+                if ($runStatus -and $runStatus.batches) {
+                    # 一个 dataset 一次 run 可能有多个批次（分片/ownership/
+                    # 重试 supersede），单挑一条会按 batch_id 顺序覆盖而误判
+                    # 整体。按 dataset 聚合：任一 failed 或未完成(running/
+                    # stale)则 failed，有 warning 则 warning，全成功才 success。
+                    foreach ($g in ($runStatus.batches | Where-Object { $_.dataset } | Group-Object dataset)) {
+                        $agg = $null; $rows = 0; $allSkip = $true
+                        foreach ($b in $g.Group) {
+                            switch ($b.status) {
+                                "success"    { if ($null -eq $agg) { $agg = "success" }; $allSkip = $false }
+                                "warning"    { if ($agg -ne "failed") { $agg = "warning" }; $allSkip = $false }
+                                "failed"     { $agg = "failed"; $allSkip = $false }
+                                "running"    { $agg = "failed"; $allSkip = $false }
+                                "stale"      { $agg = "failed"; $allSkip = $false }
+                                "superseded" { if ($null -eq $agg) { $agg = "success" } }
+                                "skip"       { }
+                                "skipped"    { }
+                                default      { $agg = "failed"; $allSkip = $false }
+                            }
+                            if ($b.status -eq "success") { $rows += $b.rows_written }
+                        }
+                        if ($null -eq $agg) { $agg = if ($allSkip) { "skip" } else { "failed" } }
+                        $batchByDataset[$g.Name] = [pscustomobject]@{ status = $agg; rows_written = $rows }
+                    }
+                }
+            } catch {
+                Write-PipelineLog "wave $Wave manifest 回查失败: $($_.Exception.Message)"
+                $batchByDataset = @{}
+            }
+        }
+
+        foreach ($pre in $Global:CnePredefinedSteps) {
+            if ($pre.Wave -ne $Wave -or $recordedNames.Contains($pre.Dataset)) { continue }
+            if ($batchByDataset.ContainsKey($pre.Dataset)) {
+                $b = $batchByDataset[$pre.Dataset]
+                switch ($b.status) {
+                    "success" { Record-Result $pre.Dataset "success" ([int]$b.rows_written) "--" "实际成功（manifest 确认）" }
+                    "warning" { Record-Result $pre.Dataset "warning" ([int]$b.rows_written) "--" "带警告完成（manifest 确认）" }
+                    { $_ -eq "skipped" -or $_ -eq "skip" } { Record-Result $pre.Dataset "skip" 0 "--" "同周期最新（manifest 确认）" }
+                    "failed"  { Record-Result $pre.Dataset "failed" 0 "--" $BlockedNote }
+                    default   { Record-Result $pre.Dataset "failed" 0 "--" "manifest 状态未完成: $($b.status)" }
+                }
+            } elseif ($BlockedNote) {
+                # manifest 无该批次记录 + 波次失败 = 本轮确实未执行（锁冲突/进程中断等）
+                Record-Result $pre.Dataset "failed" 0 "--" "未执行: 波次中断未产生 batch 记录"
+            } else {
+                Record-Result $pre.Dataset "skip" 0 "--" "本轮无排程（周期跳过/未启用）"
+            }
+        }
+    }
+
     function Run-CneCommand([string[]]$CmdArgs) {
         if ($Quiet -and ($CmdArgs -contains "run" -and $CmdArgs -contains "daily")) {
             $CmdArgs = @($CmdArgs) + "--quiet"
@@ -365,6 +433,10 @@ function Execute-CnePipeline {
         if ($exitCode -eq 0) {
             Write-PipelineLog "wave $wave OK"
             $summary.Add([pscustomobject]@{ Wave = $wave; Status = "OK"; Kind = $(if ($isGate) { "gate" } else { "soft" }) })
+            # 成功波次同样要回填对账行，否则看板里这些数据集一直停在初始文案
+            # "排队等待中"，看起来像还有几十个任务在排队（2026-11-16 实测 56 行
+            # 只有 18 行有状态，全部来自失败波次 + 收尾两项）。
+            Publish-WaveRows $wave ""
         } else {
             Write-PipelineLog "wave $wave FAILED (exit=$exitCode, see $LogFile)"
             $summary.Add([pscustomobject]@{ Wave = $wave; Status = "FAILED"; Kind = $(if ($isGate) { "gate" } else { "soft" }) })
@@ -377,76 +449,20 @@ function Execute-CnePipeline {
             } else {
                 $failedSoft += $wave
             }
-            # 波次失败：先回查该 run 的 manifest 真实逐数据集批次，缺失项按真实状态补齐，
+            # 波次失败：回查该 run 的 manifest 真实逐数据集批次，缺失项按真实状态补齐，
             # 避免 --quiet 吞掉 INFO 成功行导致"实际成功被误标 failed"的级联误报。
-            if ($Global:CnePredefinedSteps) {
-                $recordedNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-                foreach ($r in $resultsList) { [void]$recordedNames.Add($r.Dataset) }
+            Publish-WaveRows $wave $blockedNote
 
-                $batchByDataset = @{}
-                if ($script:LastRunId) {
-                    $statusOutput = & $Cne @("status", "--run-id", $script:LastRunId, "--config", $Config) 2>&1 | Out-String
-                    try {
-                        $runStatus = $statusOutput | ConvertFrom-Json
-                        if ($runStatus -and $runStatus.batches) {
-                            # 一个 dataset 一次 run 可能有多个批次（分片/ownership/
-                            # 重试 supersede），单挑一条会按 batch_id 顺序覆盖而误判
-                            # 整体。按 dataset 聚合：任一 failed 或未完成(running/
-                            # stale)则 failed，有 warning 则 warning，全成功才 success。
-                            foreach ($g in ($runStatus.batches | Where-Object { $_.dataset } | Group-Object dataset)) {
-                                $agg = $null; $rows = 0; $allSkip = $true
-                                foreach ($b in $g.Group) {
-                                    switch ($b.status) {
-                                        "success"    { if ($null -eq $agg) { $agg = "success" }; $allSkip = $false }
-                                        "warning"    { if ($agg -ne "failed") { $agg = "warning" }; $allSkip = $false }
-                                        "failed"     { $agg = "failed"; $allSkip = $false }
-                                        "running"    { $agg = "failed"; $allSkip = $false }
-                                        "stale"      { $agg = "failed"; $allSkip = $false }
-                                        "superseded" { if ($null -eq $agg) { $agg = "success" } }
-                                        "skip"       { }
-                                        "skipped"    { }
-                                        default      { $agg = "failed"; $allSkip = $false }
-                                    }
-                                    if ($b.status -eq "success") { $rows += $b.rows_written }
-                                }
-                                if ($null -eq $agg) { $agg = if ($allSkip) { "skip" } else { "failed" } }
-                                $batchByDataset[$g.Name] = [pscustomobject]@{ status = $agg; rows_written = $rows }
-                            }
-                        }
-                    } catch {
-                        Write-PipelineLog "wave $wave manifest 回查失败: $($_.Exception.Message)"
-                        $batchByDataset = @{}
-                    }
-                }
-
-                foreach ($pre in $Global:CnePredefinedSteps) {
-                    if ($pre.Wave -ne $wave -or $recordedNames.Contains($pre.Dataset)) { continue }
-                    if ($batchByDataset.ContainsKey($pre.Dataset)) {
-                        $b = $batchByDataset[$pre.Dataset]
-                        switch ($b.status) {
-                            "success" { Record-Result $pre.Dataset "success" ([int]$b.rows_written) "--" "实际成功（manifest 确认）" }
-                            "warning" { Record-Result $pre.Dataset "warning" ([int]$b.rows_written) "--" "带警告完成（manifest 确认）" }
-                            { $_ -eq "skipped" -or $_ -eq "skip" } { Record-Result $pre.Dataset "skip" 0 "--" "同周期最新（manifest 确认）" }
-                            "failed"  { Record-Result $pre.Dataset "failed" 0 "--" $blockedNote }
-                            default   { Record-Result $pre.Dataset "failed" 0 "--" "manifest 状态未完成: $($b.status)" }
-                        }
-                    } else {
-                        # manifest 无该批次记录 = 本轮确实未执行（锁冲突/进程中断等）
-                        Record-Result $pre.Dataset "failed" 0 "--" "未执行: 波次中断未产生 batch 记录"
-                    }
-                }
-
-                # 对账后回看：该 wave 若没有任何真实 failed（只有 success/warning/
-                # skip），就不是失败，只是"带警告完成"。把它从 soft 失败里撤掉，
-                # 避免看板把 fund_fees / namechange / sector_bars 这类预期 warning
-                # 报成"存在失败项"（2026-10-19 实测：roll 后仍被标 soft FAILED）。
-                if (-not $isGate) {
-                    $waveDatasets = @($Global:CnePredefinedSteps | Where-Object { $_.Wave -eq $wave } | ForEach-Object { $_.Dataset })
-                    $waveFailed = @($resultsList | Where-Object { $waveDatasets -contains $_.Dataset -and $_.Status -eq 'failed' })
-                    if ($waveFailed.Count -eq 0) {
-                        $failedSoft = @($failedSoft | Where-Object { $_ -ne $wave })
-                        Write-PipelineLog "wave $wave 无真实失败项（仅 warning），不计入 soft 失败"
-                    }
+            # 对账后回看：该 wave 若没有任何真实 failed（只有 success/warning/
+            # skip），就不是失败，只是"带警告完成"。把它从 soft 失败里撤掉，
+            # 避免看板把 fund_fees / namechange / sector_bars 这类预期 warning
+            # 报成"存在失败项"（2026-10-19 实测：roll 后仍被标 soft FAILED）。
+            if (-not $isGate -and $Global:CnePredefinedSteps) {
+                $waveDatasets = @($Global:CnePredefinedSteps | Where-Object { $_.Wave -eq $wave } | ForEach-Object { $_.Dataset })
+                $waveFailed = @($resultsList | Where-Object { $waveDatasets -contains $_.Dataset -and $_.Status -eq 'failed' })
+                if ($waveFailed.Count -eq 0) {
+                    $failedSoft = @($failedSoft | Where-Object { $_ -ne $wave })
+                    Write-PipelineLog "wave $wave 无真实失败项（仅 warning），不计入 soft 失败"
                 }
             }
         }
@@ -629,9 +645,31 @@ function Execute-CnePipeline {
         $doneMessage = "数据同步完成，失败项: $names$reasonText"
         Write-PipelineLog "==== daily pipeline DONE — soft FAILED (warn-only): $($failedSoft -join ', ')$reasonText ===="
     } else {
-        $isAllSuccess = $true
-        $doneMessage = "全部数据集与波次同步成功！"
-        Write-PipelineLog "==== daily pipeline DONE ok ===="
+        # 波次全成功只代表"摄入完成"，不等于"数据可用"：2026-11-16 实测 signals /
+        # research 两个波次 exit=1、audit 报 1 error + BLOCKED，最终仍写"全部数据集
+        # 与波次同步成功"。体检结论必须进摘要，error 还必须翻转 is_success。
+        $healthFile = Join-Path $CneRoot "data\quant_dataset\_cnequity\meta\quality\health-latest.json"
+        $healthErr = 0; $healthWarn = 0
+        if (Test-Path $healthFile) {
+            try {
+                $hj = [System.IO.File]::ReadAllText($healthFile, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+                $healthErr  = [int]$hj.findings_by_severity.error
+                $healthWarn = [int]$hj.findings_by_severity.warning
+            } catch {}
+        }
+        if ($healthErr -gt 0) {
+            $isAllSuccess = $false
+            $doneMessage = "数据已入库，但体检有 $healthErr 项 error / $healthWarn 项 warning（详见 health-latest.json）"
+            Write-PipelineLog "==== daily pipeline DONE — health ERROR: $healthErr error / $healthWarn warning ===="
+        } elseif ($healthWarn -gt 0) {
+            $isAllSuccess = $true
+            $doneMessage = "数据已全部入库；体检有 $healthWarn 项 warning（无 error）"
+            Write-PipelineLog "==== daily pipeline DONE ok — $healthWarn health warning(s) ===="
+        } else {
+            $isAllSuccess = $true
+            $doneMessage = "全部数据集与波次同步成功！"
+            Write-PipelineLog "==== daily pipeline DONE ok ===="
+        }
     }
 
     $statusObj.is_completed = $true
