@@ -14,7 +14,7 @@
 | 为什么 arrow mmap "零拷贝"没生效 | `read_panel_arrow_mmap` 逐列 `combine_chunks().to_numpy(zero_copy_only=True)`，**实测每列产生 29–31MB 私有拷贝**（恰等于 7.78M×4B），230 列累计 **6.83GB**。`zero_copy_only=True` 未报错、`owndata=False`，但 `arr.base` 是 ndarray —— 即 pyarrow 在 IPC 读取路径上**悄悄做了私有拷贝** |
 | mmap 到底有没有用 | 有，但只解决**多进程**场景：mmap 页可跨进程共享物理内存。**单进程内仍完整拷贝一份**，所以"跑一个 run 就要 7.3GB" |
 | 并发 eval 占多少 | 6 路并发实测仅 **+0.71GB**（历史报告说的"每路 2GB"已被 session 级 `aux_cache` 修掉）。**降并发省不下多少内存**，别把它当主手段 |
-| 最优解 | **面板改行主序 2D memmap（`.npy`）**：已实测 `pd.DataFrame(2d_memmap, columns=..., copy=False)` → **单 block、真正零拷贝**（`shares_memory=True`、`iloc` 切片也是 view），且**新增列不再触发整块拷贝**。预期私有 7.79GB → **≈0**，常驻 RSS 由"实际触碰的列数 × 29.7MB"决定 |
+| 最优解 | **面板改行主序 2D memmap（`.npy`）**：已实测 `pd.DataFrame(2d_memmap, columns=..., copy=False)` → **单 block、真正零拷贝**（`shares_memory=True`、`iloc` 切片也是 view），且**新增列不再触发整块拷贝**。✅ **已实施（commit `d590cf0`）**：私有内存 **7.890GB → 0.726GB（−90.8%）**，2 进程并行合计 15.79GB → 1.45GB，因子值逐位一致（`max_diff = 0`）。详见**七·B** |
 | 立即可用的止损 | 3 条不改代码的配置手段（见第五节），最大可立刻省 6GB |
 
 ---
@@ -246,6 +246,74 @@ def matrix_column_names(base: Path) -> list[str] | None: ...   # 只读 json，�
 
 **总预期**：单进程完整 run 峰值 **≈18–20GB → ≈5–7GB**（面板 7.79→0.7、加载峰值 14.5→2、
 submit 4→3.5），可在 31.1GB 机器上**安全并行 2–3 个 run**。
+
+---
+
+## 七·B、实施结果（P0-1 已于 2026-11-14 落地，commit `d590cf0`）
+
+### 7B.1 改动清单
+
+| 文件 | 改动 |
+|---|---|
+| `alphaagent/data/adapters/panel_matrix.py`（新增 380 行） | 行主序 float32 矩阵三件套的写/读/列名/删除 |
+| `alphaagent/data/adapters/cnequity.py` | `_find_cached_panel` 三级读取（matrix > arrow > parquet）；`_save_cached_panel` 落盘 matrix（默认开）；`_purge_old_cache` 成对淘汰并计入配额；**覆盖区间预筛修复** |
+| `alphaagent/data/panel.py` | `load_panel` 同 key `.matrix.npy` 优先于 `.arrow` |
+| `tests/test_panel_matrix.py`（新增 21 项） | 往返 / 零拷贝 / 字符串列 / 回退 / 原子性 |
+
+### 7B.2 实测对比（7.78M 行 × 230 列，`start=2020-01-01`，同条件 A/B）
+
+| 指标 | arrow 路径 | **matrix 路径** | 变化 |
+|---|---|---|---|
+| 加载耗时 | 10.14s | **3.23s** | **−68%** |
+| **私有内存（private / commit）** | 7.890GB | **0.726GB** | **−90.8%** |
+| 峰值 WS（peak_wset） | 14.427GB | **7.271GB** | −49.6% |
+| pandas block 数 | 230 | **5** | — |
+| **2 进程并行私有合计** | 15.788GB | **1.450GB** | **−90.8%** |
+
+> **关于 peak_wset 7.27GB 的诚实说明**：其中约 6.5GB 是**只读文件映射页**（mmap 文件页），
+> 属于可回收的 file-backed 页、且跨进程共享；真正的**私有提交内存只有 0.726GB**。
+> 系统内存吃紧时这些页会被直接丢弃，不需要换页，这也是 2 进程合计只有 1.45GB 的原因。
+> 所以评估内存压力请看 `private`，不要看 `peak_wset`。
+> 原方案第七节预估 peak ≈2GB 偏乐观（未预计到索引构建与映射页计入 WS），以实测为准。
+
+### 7B.3 正确性证据
+
+三条代表性因子在两条路径下**逐位相等**（`max_abs_diff = 0.000e+00`，有限值掩码一致）：
+
+| 表达式 | coverage | daily rank IC（两路径相同） |
+|---|---|---|
+| `CS_ZSCORE(TS_MEAN($ret, 20))` | 0.973384 | −0.07231992 |
+| `CS_NEUTRALIZE(TS_MEAN(DIVIDE($amount,$float_cap),20), $industry_sw_l1)` | 0.968473 | −0.07811638 |
+| `TS_CORR($adj_close, $volume, 20)` | 0.975367 | −0.06634029 |
+
+### 7B.4 顺带修掉的缺陷（实测意外收益）
+
+`_find_cached_panel` 旧逻辑是**先物化、再判断是否覆盖请求窗口**：扫到一份不匹配的缓存时，
+已经付出了完整物化代价才 `continue`。实测（4 组缓存并存、请求 2020 起）会为一份
+4.63M 行 × 230 列的 2023 起缓存**白付 4.4GB 私有 + 6.7GB 映射页**，把加载峰值从
+~1GB 抬到 11.5GB。
+
+修法：用 `meta.json` 里已有的 `start`/`end` 做**物化前预筛**（缺失则退回原判定）。
+这条修复对 arrow 路径同样生效——上表 arrow 列已含该收益。
+
+### 7B.5 开关与迁移
+
+| 环境变量 | 默认 | 说明 |
+|---|---|---|
+| `ALPHA_PANEL_MATRIX` | `1`（开） | 落盘 `.matrix.npy` 副本；设为 `0` 关闭 |
+| `ALPHA_PANEL_ARROW` | `1`（开，沿用旧值） | 建议 matrix 生效后设 `0`：matrix 同样支持跨进程 mmap 共享，而 arrow 每列私有拷贝，二者都开会让单组缓存从 ~9GB 涨到 ~16GB |
+
+- **已有缓存迁移**：不必重建面板。对已有 `.parquet` 跑一次
+  `write_panel_matrix(parquet_path, panel)` 即可生成矩阵（本次 6.67GB / 43s）；
+- **磁盘**：matrix 6.67GB ≈ arrow 6.76GB，若两者都留则单组约 16GB；
+  `_purge_old_cache` 已把 `.matrix.*` 计入 `ALPHA_PANEL_CACHE_MAX_GB` 配额并成对淘汰；
+- **回退**：删除 `.matrix.*` 三件套即可自动回落 arrow / parquet，无需改代码。
+
+### 7B.6 尚未做（可选后续）
+
+- P0-2 索引层 CategoricalIndex（再省 ~0.4GB）；
+- P2 `tradable_mask` wide 矩阵 float32（submit 段 ~1GB）；
+- P3 打点（本轮实测仍靠临时探针，建议按第七节 S1 补 `run_meta.json.memory`）。
 
 ---
 
