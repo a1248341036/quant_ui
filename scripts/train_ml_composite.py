@@ -146,7 +146,11 @@ def _parse_args() -> argparse.Namespace:
         "--exec-selection", default=None,
         help="（已废弃 → 用 scripts/select_ml_exec_params.py）执行参数选定模式。"
              "盲测隔离：参数只在 train/val 段选定，盲测段只做终局裁决。")
-    ap.add_argument("--no-write-pred", action="store_true", help="不写 pred 通道文件")
+    ap.add_argument("--write-pred", action="store_true",
+                    help="显式写全局 pred 通道（默认仅 blind_test 终审写；tuning 研发态不写，"
+                         "避免研发分数覆盖通道上可用的盲测推盘分数）")
+    ap.add_argument("--no-write-pred", action="store_true",
+                    help="强制不写 pred 通道（最高优先级，覆盖默认与 --write-pred）")
     ap.add_argument("--subset-curve", action="store_true",
                     help="贡献排序累积子集曲线：按置换贡献降序取 Top-k 逐级重训（成本 ≈ 2n 次拟合），"
                          "输出'子集规模 vs OOS IC'曲线，定位边际收益归零的最优规模")
@@ -1363,17 +1367,23 @@ def main() -> None:
             json.dumps(report, ensure_ascii=False, indent=1, default=str), encoding="utf-8"
         )
 
-    if not args.no_write_pred:
+    # pred 通道写入策略：默认仅盲测终审（blind_test，唯一合法推盘分数源）写全局 pred_demo；
+    # tuning 研发态默认不写，防止研发分数（右端物理截断至 val_end）覆盖通道上可用的盲测推盘分数。
+    # 显式 --write-pred 可强制任意模式写；--no-write-pred 最高优先级强制不写。
+    should_write_pred = (not args.no_write_pred) and (
+        args.write_pred or args.eval_mode == "blind_test"
+    )
+    if should_write_pred:
         pred_path = Path(args.pred_out) if args.pred_out else (ROOT / "data" / "stock" / "pred_demo.parquet")
         pred_path.parent.mkdir(parents=True, exist_ok=True)
         write_pred_parquet(stacked, panel, pred_path)
         print(f"组合分数已写入 pred 通道：{pred_path}")
-        # 自包含副本：out_dir/scores.parquet（同一份 date/code/score 长表）。
-        # 供组合因子库（composite_factors）固化——save_composite_factor 依赖
-        # out_dir 内报告 + 分数 parquet 完整，复现命令不依赖会被覆盖的全局 pred_demo。
-        scores_path = out_dir / "scores.parquet"
-        write_pred_parquet(stacked, panel, scores_path)
-        print(f"组合分数已写入 out_dir 自包含副本：{scores_path}")
+    # 自包含副本：out_dir/scores.parquet（同一份 date/code/score 长表）。
+    # 供组合因子库（composite_factors）固化——save_composite_factor 依赖
+    # out_dir 内报告 + 分数 parquet 完整；不依赖/不覆盖全局 pred_demo，始终写。
+    scores_path = out_dir / "scores.parquet"
+    write_pred_parquet(stacked, panel, scores_path)
+    print(f"组合分数已写入 out_dir 自包含副本：{scores_path}")
 
     # ⑨ 自动沉淀至组合因子库（Auto-Ingest 闭环）
     #    tuning 研发态下，若开启 auto-ingest 且满足条件，自动入库并去重。
