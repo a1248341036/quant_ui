@@ -30,7 +30,17 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 _NAME_RE = re.compile(r"^panel_(v\d+)_([0-9a-f]+)_(.+)$")
-_SUFFIXES = (".parquet", ".arrow", ".meta.json")
+# matrix 三件套必须纳入：行主序矩阵缓存（2026-11-14 引入）单文件 6~7GB，
+# 是"一份缓存"的组成部分；不列进来的话本脚本永远看不到它，
+# 淘汰旧缓存时会留下最大的那些孤儿文件。
+_SUFFIXES = (
+    ".parquet",
+    ".matrix.npy",
+    ".matrix.idx.npz",
+    ".matrix.json",
+    ".arrow",
+    ".meta.json",
+)
 
 
 def cache_root() -> Path:
@@ -84,6 +94,9 @@ def main() -> int:
         rows = [p for p, s in items if s == ".parquet"]
         if not rows:
             rows = [p for p, s in items if s == ".arrow"]
+        if not rows:
+            # 只剩 matrix 的组也要能被清掉（三格式共存期 parquet 被清后可能出现）
+            rows = [p for p, s in items if s == ".matrix.npy"]
         rows.sort(key=lambda p: p.stat().st_mtime, reverse=True)
         stale = rows[args.keep:]
         print(f"\n[{schema}] 共 {len(rows)} 份 / {len(sigs[schema])} 个签名，"
