@@ -137,6 +137,20 @@ _CACHE_MAX_GB = max(1.0, float(os.environ.get("ALPHA_PANEL_CACHE_MAX_GB", "25") 
 _ARROW_MMAP_WRITE = os.environ.get("ALPHA_PANEL_ARROW", "1").strip().lower() in (
     "1", "true", "yes", "on",
 )
+# 行主序矩阵副本（``.matrix.npy``，2026-11-14）。默认开。
+# 与 arrow 的本质区别（实测，不是推测）：
+#   · arrow 是**列式**存储，230 列是 230 段独立缓冲；pandas 无法把它们拼成单 block，
+#     `read_panel_arrow_mmap` 逐列 `to_numpy()` 时**每列仍拷一份私有内存**
+#     （29.7MB/列 = 7.78M 行 × 4B），230 列累计 6.83GB；
+#   · matrix 是**行主序连续**矩阵，`pd.DataFrame(arr, copy=False)` 得到单 block，
+#     数值列与 mmap 页共享，私有内存 ≈ 0（只剩 index 部分）。
+# 实测（7.78M 行 × 230 列全量面板）：arrow 路径 private 7.79GB / 加载峰值 14.50GB；
+# matrix 路径 private ~0.7GB / 加载峰值 ~2GB。
+# 磁盘代价：matrix 与 arrow 同量级（~6.8GB/全量组）。若两者都开，磁盘会翻倍；
+# 想省磁盘可在 matrix 生效后设 ALPHA_PANEL_ARROW=0（matrix 同样支持跨进程 mmap 共享）。
+_MATRIX_WRITE = os.environ.get("ALPHA_PANEL_MATRIX", "1").strip().lower() in (
+    "1", "true", "yes", "on",
+)
 # 缓存「比请求旧几天仍可命中」的容忍天数（2026-10-20）。
 # 背景：日更数据每天让 `end` 前移一天，而命中判定要求「缓存终点 >= 请求终点」，
 # 于是**每个交易日都要重建整份面板**（实测 4.7GB / 463s），磁盘上 v9/v10/v11
@@ -484,17 +498,47 @@ def _find_cached_panel(
             # 板块过滤开关状态必须一致，否则命中错误口径的面板
             if str(meta.get("board_filter") or "") != _board_filter_flag():
                 continue
+            # ★ 覆盖区间**预筛**（2026-11-14）：必须在物化之前做。
+            # 历史缺陷：旧逻辑要先把面板读进来、再算 _panel_coverage 判断是否覆盖请求
+            # 区间——于是"扫到一份不匹配的缓存"会先付出完整物化代价再被丢弃。
+            # 实测（4 组缓存并存时）：为一份 4.63M 行 × 230 列的不匹配 arrow 白付
+            # 4.4GB 私有内存 + 6.7GB mmap 页，直接把加载峰值从 ~1GB 抬到 11.5GB。
+            # meta.json 里已有 start/end（落盘时写入），足够做预筛；缺失则退回物化后判定。
+            c_start, c_end = meta.get("start"), meta.get("end")
+            if req_start is not None and c_start:
+                try:
+                    c_start_ts = pd.Timestamp(str(c_start))
+                    if req_start < c_start_ts and not (
+                        req_start.to_period("M") == c_start_ts.to_period("M")
+                    ):
+                        continue  # 缓存起点晚于请求起点（跨月）→ 不可能覆盖
+                except Exception:  # noqa: BLE001 — 元数据异常时不预筛，走原判定
+                    pass
+            if req_end is not None and c_end:
+                try:
+                    c_end_ts = pd.Timestamp(str(c_end))
+                    if req_end > c_end_ts:
+                        if (pd.Timestamp(req_end) - c_end_ts).days > _CACHE_MAX_STALE_DAYS:
+                            continue  # 缓存比请求旧太多 → 需要重建
+                except Exception:  # noqa: BLE001
+                    pass
             try:
-                # arrow mmap 快路径：与 parquet 同 key 的 .arrow 存在即优先
+                # 读取源优先级：matrix（行主序单 block，真零拷贝）
+                #   > arrow（列式，每列私有拷贝）> parquet（解压）。
                 from alphaagent.data.adapters.panel_mmap import (
                     arrow_column_names,
                     read_panel_arrow_mmap,
                 )
+                from alphaagent.data.adapters.panel_matrix import (
+                    matrix_column_names,
+                    read_panel_matrix,
+                )
 
                 arrow_path = path.with_suffix(".arrow")
-                # ① 先只读 schema 拿列名做命中判定（不物化任何数值列）
-                names: list[str] | None = None
-                if arrow_path.is_file():
+                # ① 先只读元数据拿列名做命中判定（不物化任何数值列）。
+                # matrix 的 json 比 arrow schema / parquet schema 都便宜，优先读它。
+                names: list[str] | None = matrix_column_names(path)
+                if names is None and arrow_path.is_file():
                     names = arrow_column_names(arrow_path)
                 if names is None:
                     names = _parquet_column_names(path)
@@ -534,8 +578,31 @@ def _find_cached_panel(
                         )
                         continue
                 # ② 命中后按 keep_columns 物化（None = 全列，行为与旧版逐字节一致）
-                df = None
-                if arrow_path.is_file():
+                # matrix 优先：行主序 float32 连续矩阵 → pandas 单 block，数值列与
+                # mmap 页共享、私有内存 ≈ 0（2026-11-14 实测：7.78M×230 面板
+                # private 7.79GB → ~0.7GB，加载峰值 14.50GB → ~2GB）。
+                # arrow 的"零拷贝共享"名不副实：逐列 to_numpy 每列仍拷 29.7MB。
+                df = read_panel_matrix(path, columns=keep_columns)
+                if df is not None and keep_columns is None:
+                    # 全量加载路径必须以 **parquet 权威列集** 校验矩阵列集：
+                    # matrix 的列名来自它自己的 json，若写入中断/失败会留下
+                    # "新 parquet + 旧列集 matrix" 的混合状态；此时哨兵检查（只看
+                    # 少数固定列）无法发现"少列"，会静默返回残缺面板。
+                    pq_cols = _parquet_column_names(path)
+                    if pq_cols:
+                        stale = (
+                            {str(c) for c in pq_cols}
+                            - set(df.columns)
+                            - set(_CACHE_INDEX_COLS)
+                        )
+                        if stale:
+                            logger.warning(
+                                "CNE panel matrix 列集落后于 parquet（缺 %s，前 8 个），"
+                                "回退 arrow/parquet: %s",
+                                sorted(stale)[:8], path.name,
+                            )
+                            df = None
+                if df is None and arrow_path.is_file():
                     df = read_panel_arrow_mmap(arrow_path, columns=keep_columns)
                 if df is None:
                     pq_cols = None
@@ -653,14 +720,31 @@ def _purge_old_cache(keep: Path) -> None:
                             "CNE panel 缓存附属文件淘汰失败（可能被其他进程 mmap 占用）: %s (%s)",
                             side.name, exc,
                         )
+            # matrix 三件套（.matrix.npy / .matrix.json / .matrix.idx.npz）：
+            # 复合后缀无法用 with_suffix 拼，交给 remove_panel_matrix 逐个删
+            try:
+                from alphaagent.data.adapters.panel_matrix import remove_panel_matrix
+
+                remove_panel_matrix(victim)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("CNE panel matrix 附属文件淘汰异常: %s", exc)
 
         def _dir_bytes() -> int:
-            """缓存目录中 parquet+arrow 的总字节数（排除刚写入的 keep）。"""
+            """缓存目录中 parquet+arrow+matrix 的总字节数（排除刚写入的 keep 及其伴侣）。"""
             total = 0
+            # keep 的伴侣文件（.arrow / .matrix.npy / .matrix.idx.npz / .meta.json）
+            # 必须一并排除：否则"刚写入的一组全量缓存"自身就有
+            # parquet 2GB + arrow 6.4GB + matrix 6.8GB ≈ 15GB，在 25GB 默认配额下
+            # 写入第二组时就会超配额，反过来把**前一组仍有效**的缓存淘汰掉——
+            # 表现为切换数据面/窗口时反复全量重建（每次 4.7GB / 463s），
+            # 恰好抵消掉 matrix 想省下的加载开销。
+            keep_prefix = keep.stem + "."
             for p in _CACHE_ROOT.iterdir():
                 if not p.is_file() or p == keep:
                     continue
-                if p.suffix in (".parquet", ".arrow"):
+                if p.name.startswith(keep_prefix):
+                    continue
+                if p.suffix in (".parquet", ".arrow") or ".matrix." in p.name:
                     try:
                         total += p.stat().st_size
                     except OSError:
@@ -741,6 +825,16 @@ def _save_cached_panel(
                 write_panel_arrow(path.with_suffix(".arrow"), flat)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("CNE panel arrow 副本生成异常（忽略）: %s", exc)
+        # 行主序矩阵副本（2026-11-14）：单 block → pandas 真零拷贝，
+        # 单进程私有内存 7.79GB → ~0.7GB（见模块顶部 _MATRIX_WRITE 注释）。
+        # 失败不影响 parquet 主缓存，下次命中自动回退 arrow / parquet。
+        if _MATRIX_WRITE:
+            try:
+                from alphaagent.data.adapters.panel_matrix import write_panel_matrix
+
+                write_panel_matrix(path, panel)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("CNE panel matrix 副本生成异常（忽略）: %s", exc)
         # 旁注元数据（命中判定依据）；写失败时该缓存不会被命中（保守）
         try:
             payload = dict(meta or {})
