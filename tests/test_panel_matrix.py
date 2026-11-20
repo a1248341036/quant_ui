@@ -139,7 +139,12 @@ class TestStringColumns:
         assert write_panel_matrix(_cache_path(tmp_path), src) is True
         out = read_panel_matrix(_cache_path(tmp_path))
         assert out is not None
-        assert list(out.columns) == list(src.columns)  # 列序完全不变
+        # 列集不变；数值列保持原相对顺序，字符串列被排到末尾
+        # （v2：字符串列移出主矩阵单独存，避免读取时按 stride 跨行遍历整个文件）
+        assert set(out.columns) == set(src.columns)
+        num_src = [c for c in src.columns if c not in ("suspend_type", "suspend_timing")]
+        assert list(out.columns[: len(num_src)]) == num_src
+        assert set(out.columns[len(num_src):]) == {"suspend_type", "suspend_timing"}
         for col in ("suspend_type", "suspend_timing"):
             assert out[col].dtype == object
             np.testing.assert_array_equal(
@@ -176,6 +181,51 @@ class TestStringColumns:
         out = read_panel_matrix(_cache_path(tmp_path))
         assert out is not None
         assert int(out["suspend_type"].isna().sum()) == 5
+
+    def test_read_does_not_fault_whole_file(self, tmp_path):
+        """核心回归（2026-11-21）：读取不得把整个矩阵文件 fault 进工作集。
+
+        v1 把字符串列以类别码混在主矩阵里，还原时按列跨行遍历——
+        列 stride（n_cols×4=920B）小于 4KB 页，遍历一列就会触及几乎全部页，
+        实测把 6.8GB 文件整个读进工作集（rss 0.03→6.95GB），零拷贝收益归零。
+        v2 把字符串列移出主矩阵后，读取只映射页表，不 fault 数据页。
+        """
+        import psutil
+
+        # 造一个够大的矩阵（~48MB）让页级差异可观测
+        n_days, n_inst = 3000, 400
+        dates = pd.date_range("2020-01-01", periods=n_days, freq="D").repeat(n_inst)
+        insts = np.tile([f"{i:06d}" for i in range(n_inst)], n_days)
+        idx = pd.MultiIndex.from_arrays(
+            [pd.DatetimeIndex(dates), pd.Index(insts, dtype="object")],
+            names=["datetime", "instrument"],
+        )
+        rng = np.random.default_rng(7)
+        n = len(idx)
+        src = pd.DataFrame(
+            {f"c{i}": rng.standard_normal(n).astype("float32") for i in range(9)},
+            index=idx,
+            copy=False,
+        )
+        src["suspend_type"] = np.where(np.arange(n) % 5 == 0, "S", "")
+        assert write_panel_matrix(_cache_path(tmp_path), src) is True
+
+        data_p, _, _ = matrix_paths(_cache_path(tmp_path))
+        file_mb = data_p.stat().st_size / 1024 ** 2
+        proc = psutil.Process()
+        rss_before = proc.memory_info().rss
+
+        out = read_panel_matrix(_cache_path(tmp_path))
+        assert out is not None
+        assert out.shape == (n, 10)
+
+        rss_after = proc.memory_info().rss
+        grew_mb = (rss_after - rss_before) / 1024 ** 2
+        # 允许索引与 object 列的正常开销，但不允许接近文件大小
+        assert grew_mb < file_mb * 0.5, (
+            f"读取让 rss 增长 {grew_mb:.1f}MB（文件 {file_mb:.1f}MB），"
+            "疑似整文件被 fault（字符串列又混回主矩阵？）"
+        )
 
 
 class TestFallbacks:
