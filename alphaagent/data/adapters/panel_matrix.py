@@ -61,7 +61,10 @@ INDEX_SUFFIX = ".matrix.idx.npz"
 _CHUNK_ROWS = 200_000
 
 # matrix 元数据版本（与 cnequity._CACHE_SCHEMA_VERSION 独立演进）
-_MATRIX_SCHEMA = 1
+# v2（2026-11-21）：字符串列从主矩阵移出，改存 idx.npz 的 int32 codes。
+#   v1 把字符串列以类别码混在主矩阵里，读取还原时跨行遍历 → 整个文件被 fault
+#   进工作集（实测 rss 7.0GB），v1 缓存一律按未命中处理并回退 arrow/parquet。
+_MATRIX_SCHEMA = 2
 
 _INDEX_NAMES = ("datetime", "instrument")
 
@@ -169,23 +172,22 @@ def write_panel_matrix(cache_path: Path | str, panel: pd.DataFrame) -> bool:
         data_p.parent.mkdir(parents=True, exist_ok=True)
 
         # ---- ① 数值矩阵（分块写，避免整表一次性物化）----
-        numeric_pos = np.array(
-            [i for i, c in enumerate(cols) if c not in categorical], dtype=np.intp
-        )
-        cat_pos = {name: cols.index(name) for name in cat_codes}
+        # 主矩阵**只放数值列**。字符串列绝不能混进矩阵：
+        # 读取侧还原它们时要按列跨行遍历，而列 stride = n_cols×4 = 920B < 4KB 页，
+        # 遍历一列就会触及几乎全部物理页 —— 实测把 6.8GB 文件整个 fault 进工作集
+        # （rss 0.029GB → 6.947GB），零拷贝收益被彻底吃掉。
+        # 因此字符串列单独以 int32 codes 存进 idx.npz，读取时作为独立 block 追加。
+        n_numeric = len(numeric_cols)
         tmp_data = data_p.with_name(data_p.name + ".tmp")
         try:
-            arr = _open_memmap(tmp_data, mode="w+", dtype=np.float32, shape=(n_rows, n_cols))
+            arr = _open_memmap(tmp_data, mode="w+", dtype=np.float32, shape=(n_rows, n_numeric))
             try:
                 for lo in range(0, n_rows, _CHUNK_ROWS):
                     hi = min(lo + _CHUNK_ROWS, n_rows)
-                    block = panel.iloc[lo:hi]
-                    vals = block[numeric_cols].to_numpy(
+                    vals = panel.iloc[lo:hi][numeric_cols].to_numpy(
                         dtype=np.float32, copy=False, na_value=np.nan
                     )
-                    arr[lo:hi, numeric_pos] = vals
-                    for name, codes in cat_codes.items():
-                        arr[lo:hi, cat_pos[name]] = codes[lo:hi].astype(np.float32)
+                    arr[lo:hi, :] = vals
                 arr.flush()
             finally:
                 del arr  # Windows 下必须先关句柄才能 rename
@@ -215,8 +217,12 @@ def write_panel_matrix(cache_path: Path | str, panel: pd.DataFrame) -> bool:
 
         tmp_idx = idx_p.with_name(idx_p.name + ".tmp")
         try:
+            payload: dict[str, np.ndarray] = {"dt": dt_ns, "codes": codes_i32}
+            # 字符串列以 int32 codes 独立存放（-1 = 缺失），与主矩阵完全解耦
+            for name, cc in cat_codes.items():
+                payload[f"cat_{name}"] = cc.astype(np.int32, copy=False)
             with open(tmp_idx, "wb") as fh:
-                np.savez(fh, dt=dt_ns, codes=codes_i32)
+                np.savez(fh, **payload)
             os.replace(tmp_idx, idx_p)
         except BaseException:
             try:
@@ -228,13 +234,14 @@ def write_panel_matrix(cache_path: Path | str, panel: pd.DataFrame) -> bool:
         # ---- ③ 元数据（列名顺序 + 词表；只读列名时不必碰数据）----
         meta = {
             "schema": _MATRIX_SCHEMA,
-            "columns": cols,
+            "columns": cols,  # 全部列（原始顺序）——列集校验用
+            "numeric_columns": numeric_cols,  # 主矩阵实际列（顺序即矩阵列序）
             "n_rows": n_rows,
-            "n_cols": n_cols,
+            "n_cols": len(numeric_cols),
             "dtype": "float32",
             "index_names": list(_INDEX_NAMES),
             "categories": [str(c) for c in categories],
-            # 字符串列 → 类别词表（矩阵里存的是码位，读回需还原为 object）
+            # 字符串列 → 类别词表（codes 存在 idx.npz 的 cat_<name> 里）
             "categorical_columns": categorical,
         }
         tmp_meta = meta_p.with_name(meta_p.name + ".tmp")
@@ -258,11 +265,20 @@ def read_panel_matrix(
 ) -> pd.DataFrame | None:
     """memory-map 读取矩阵缓存 → pandas panel（MultiIndex）。
 
-    成功返回**只读** DataFrame（数值列零拷贝指向 mmap 页，单 block）；失败返回 None
-    （调用方回退 arrow / parquet）。
+    成功返回**只读** DataFrame；失败返回 None（调用方回退 arrow / parquet）。
 
-    ``columns``：只保留这些数据列（None = 全部）。单 block 上做列选择会产生一次
-    选中列的拷贝（选中列数 × 29.7MB）——仍远小于 arrow 路径的全列私有拷贝。
+    结构：1 个 float32 数值 block（与 mmap 页共享，零拷贝）+ N 个 object block
+    （字符串列，从 idx.npz 的 codes 还原）。
+
+    **列序**：数值列按原始相对顺序、字符串列排在末尾 —— 与 parquet 路径的列序
+    不同；下游一律按列名取列，不要依赖列位置。
+
+    2026-11-21 实测（7.95M 行 × 230 列）：rss 0.30GB / peak 0.57GB / 读取 0.81s；
+    v1（字符串列以类别码混在主矩阵里）同条件 rss 7.11GB —— 差异全在"还原字符串列
+    是否要跨行遍历整个文件"。
+
+    ``columns``：只保留这些数据列（None = 全部）。行主序矩阵上做列选择会产生一次
+    选中列的拷贝（选中列数 × 数据量）——仍远小于 arrow 路径的全列私有拷贝。
     """
     data_p, meta_p, idx_p = matrix_paths(cache_path)
     if not (data_p.is_file() and meta_p.is_file() and idx_p.is_file()):
@@ -281,59 +297,63 @@ def read_panel_matrix(
             return None
 
         cols = [str(c) for c in meta["columns"]]
+        numeric_cols = [str(c) for c in (meta.get("numeric_columns") or cols)]
         n_rows = int(meta["n_rows"])
-        n_cols = int(meta["n_cols"])
-        if len(cols) != n_cols or n_rows <= 0 or n_cols <= 0:
+        n_numeric = int(meta["n_cols"])
+        if not numeric_cols or len(numeric_cols) != n_numeric or n_rows <= 0:
             return None
 
-        arr = _open_memmap(data_p, mode="r", dtype=np.float32, shape=(n_rows, n_cols))
+        # 主矩阵只含数值列：构造 DataFrame 时**不触碰任何数据页**（实测 rss ≈ 0.03GB）
+        arr = _open_memmap(data_p, mode="r", dtype=np.float32, shape=(n_rows, n_numeric))
 
         with np.load(idx_p) as npz:
             dt_ns = npz["dt"]
             codes = npz["codes"]
-        if dt_ns.shape[0] != n_rows or codes.shape[0] != n_rows:
-            logger.warning(
-                "panel matrix 索引长度与矩阵不符（dt=%d codes=%d rows=%d），按未命中处理",
-                dt_ns.shape[0], codes.shape[0], n_rows,
+            if dt_ns.shape[0] != n_rows or codes.shape[0] != n_rows:
+                logger.warning(
+                    "panel matrix 索引长度与矩阵不符（dt=%d codes=%d rows=%d），按未命中处理",
+                    dt_ns.shape[0], codes.shape[0], n_rows,
+                )
+                return None
+
+            dt_index = pd.DatetimeIndex(dt_ns.view("datetime64[ns]"))
+            categories = [str(c) for c in (meta.get("categories") or [])]
+            if not categories:
+                return None
+            # take 出 object 数组（指针层复用词表里的 str 对象，不重复分配字符串）
+            inst_values = np.asarray(categories, dtype=object)[codes]
+
+            index = pd.MultiIndex.from_arrays(
+                [dt_index, pd.Index(inst_values, dtype="object")],
+                names=list(meta.get("index_names") or _INDEX_NAMES),
             )
-            return None
 
-        dt_index = pd.DatetimeIndex(dt_ns.view("datetime64[ns]"))
-        categories = [str(c) for c in (meta.get("categories") or [])]
-        if not categories:
-            return None
-        # take 出 object 数组（指针层复用词表里的 str 对象，不重复分配字符串）
-        inst_values = np.asarray(categories, dtype=object)[codes]
+            panel = pd.DataFrame(arr, columns=numeric_cols, index=index, copy=False)
 
-        index = pd.MultiIndex.from_arrays(
-            [dt_index, pd.Index(inst_values, dtype="object")],
-            names=list(meta.get("index_names") or _INDEX_NAMES),
-        )
-
-        panel = pd.DataFrame(arr, columns=cols, index=index, copy=False)
-
-        # 字符串列还原：矩阵里存的是类别码（float32），读回替换成 object 列。
-        # 实测替换中段列只把单 block split 成视图，数值列仍与 mmap 页共享（零拷贝）。
-        cat_meta = meta.get("categorical_columns") or {}
-        for name, cats in cat_meta.items():
-            if name not in panel.columns or not cats:
-                continue
-            j = cols.index(name)
-            codes_f = arr[:, j]
-            ci = np.rint(codes_f).astype(np.int64, copy=False)
-            bad = ~np.isfinite(codes_f) | (ci < 0)
-            restored = np.empty(n_rows, dtype=object)
-            good = ~bad
-            if good.any():
-                restored[good] = np.asarray(cats, dtype=object)[ci[good]]
-            if bad.any():
-                restored[bad] = np.nan
-            panel[name] = restored
+            # 字符串列从 idx.npz 独立还原后追加为独立 block。
+            # **不碰主矩阵**：v1 曾把码位混在矩阵里，还原时按 stride 920B 跨行遍历，
+            # 把 6.8GB 文件整页 fault 进工作集（实测 rss 0.03→6.95GB）。
+            # 代价：字符串列排在末尾（列序与原始列序不同），下游一律按列名取列。
+            cat_meta = meta.get("categorical_columns") or {}
+            for name, cats in cat_meta.items():
+                key = f"cat_{name}"
+                if not cats or key not in npz.files:
+                    continue
+                cc = npz[key]
+                if cc.shape[0] != n_rows:
+                    continue
+                restored = np.empty(n_rows, dtype=object)
+                good = cc >= 0
+                if good.any():
+                    restored[good] = np.asarray(cats, dtype=object)[cc[good]]
+                if (~good).any():
+                    restored[~good] = np.nan
+                panel[name] = restored
 
         keep = None if columns is None else {str(c) for c in columns}
         if keep is not None:
-            selected = [c for c in cols if c in keep]
-            if selected and len(selected) < n_cols:
+            selected = [c for c in panel.columns if c in keep]
+            if selected and len(selected) < panel.shape[1]:
                 # 显式 copy=True：memmap 是跨列连续的行主序，横向切列无法返回视图，
                 # 与其让 pandas 隐式拷贝，不如写明语义（选中列通常只有几列）
                 panel = panel[selected].copy()

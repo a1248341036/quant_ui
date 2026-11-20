@@ -317,6 +317,79 @@ submit 4→3.5），可在 31.1GB 机器上**安全并行 2–3 个 run**。
 
 ---
 
+## 七·C、P0-1b：字符串列移出主矩阵（rss 修复，commit `3f3fc5f`）
+
+### 7C.1 现象
+
+P0-1 落地后 **private 已降到 0.76GB**，但**读取后的 rss（工作集）仍是 7.1GB**——
+任务管理器里看进程照样占 7GB，用户感知"没优化"。private 与 rss 的巨大差距说明：
+数值列确实是零拷贝视图，但**有东西把整份文件所有页都 fault 进来了**。
+
+### 7C.2 根因：列 stride 小于页大小
+
+面板有 2 个字符串列（`suspend_timing` / `suspend_type`），v1 把它们以类别码
+（float32）混在主矩阵里，读取时用 `arr[:, j]` 取列再还原。
+
+关键数字：**列 stride = 230 列 × 4B = 920B，而页大小 4096B**。
+按一列跨行遍历 7.95M 行，每读一个元素就落在不同页上（920B < 4KB），
+等于**把整份 6.75GB 文件的每一页都摸一遍**。
+
+实测隔离（`verify_colscan_fault.py`）：
+
+| 操作 | rss |
+|---|---|
+| 仅 `np.memmap` 映射 | 0.029GB |
+| 构造 DataFrame（零拷贝） | 0.077GB |
+| 读 100 行 × 1 列 | 0.077GB |
+| **遍历单列全部行** | **6.947GB** |
+
+private 全程只从 0.537 涨到 0.596GB —— 所以这 6.9GB 是**可回收的文件页**，
+但会挤占 page cache、让系统在内存压力下表现变差，数字上也很难看。
+
+### 7C.3 修法（matrix schema v1 → v2）
+
+- 主矩阵**只放数值列**（228 列）；
+- 字符串列以 **int32 codes** 存进 `idx.npz` 的 `cat_<name>`，词表进 json；
+- 读取时从 npz 还原成 object 数组，作为**独立 block 追加**，全程不碰主矩阵数据页；
+- **代价**：矩阵路径列序变成「数值列… + 字符串列」，与 parquet 路径不同。
+  下游一律按列名取列（`read_panel_matrix` docstring 已明示）；已核对
+  `_find_cached_panel` / `columns_for_facets` / `_prune_panel_columns` / DSL eval
+  全部按名操作，不依赖列位置。
+
+### 7C.4 实测（7.95M 行 × 230 列）
+
+| 指标 | v1 | **v2** |
+|---|---|---|
+| 读取 rss | 7.113GB | **0.302GB（−95.8%）** |
+| 读取峰値 WS | 7.414GB | **0.566GB** |
+| 读取耗时 | 2.55s | **0.81s** |
+| pandas blocks | 5 | 3 |
+| private | 0.761GB | 0.761GB（index 部分，未变） |
+
+对照最初 arrow 路径：**private 7.79GB / rss 7.31GB / peak 14.50GB**。
+累计降幅：peak **−96%**、private **−90%**、rss **−96%**。
+
+### 7C.5 迁移工具（不必重建面板）
+
+`scripts/convert_panel_matrix.py`：用 `ParquetFile.iter_batches` **流式**转换已有
+parquet（两遍扫描建全局词表），逐批写矩阵。
+
+| 方式 | private 峰值 | 耗时 |
+|---|---|---|
+| 一次性加载 DataFrame 再转（旧） | 15.38GB | 43s |
+| **流式 iter_batches（新）** | **2.99GB** | **19.6s** |
+
+用法：`python scripts/convert_panel_matrix.py <cache.parquet> [--force]`
+—— schema 升级后只需转一次，不用重建整个面板。
+
+### 7C.6 回归守卫
+
+新增测试 `test_read_does_not_fault_whole_file`：构造 ~48MB 矩阵，断言读取后
+rss 增幅 < 文件一半。这是锁住"字符串列又混回主矩阵"这类回归的关键用例
+（普通功能测试查不出 rss 浪费）。
+
+---
+
 ## 八、证据索引（本轮实测，可复现）
 
 探针脚本（仓库外，未污染仓库）：
