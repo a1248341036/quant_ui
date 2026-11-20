@@ -326,8 +326,13 @@ def build_metrics_snapshot(state: dict[str, Any]) -> dict[str, Any]:
     conf_ratio = round(conf / (conf + contra), 3) if (conf + contra) else None
 
     av = state.get("ablation_verdicts") or {}
+    from alphaagent.core import memlog
+
     return {
         "wall_minutes": round(wall, 1),
+        # 内存打点（2026-11-21）：rss 含 mmap 只读文件页、可被 OS 回收；
+        # private 才是不可回收的真实占用 —— 判断内存压力请看 private_gb。
+        "memory": memlog.snapshot(),
         "llm_calls": state["llm_calls"],
         "input_k_tokens": round(state["input_tokens"] / 1000, 1),
         "output_k_tokens": round(state["output_tokens"] / 1000, 1),
