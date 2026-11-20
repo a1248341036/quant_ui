@@ -77,3 +77,14 @@ CNEquity/configs/*.bak-*
 
 # External review tooling output
 codefree-code-review/
+
+# Agent worktrees & DSH workspace snapshot bloat
+# .worktrees/ 与 blobs/ 未忽略时会被 DSH 的 workspace-changes 快照
+# （git add --all 写入 %TEMP%\dsh-workspace-changes-*）整树吃掉，
+# 每个会话实例可膨胀到 2 GB。2026-11-20 实测：Temp 中 121 个残留合计 39.6 GB。
+.worktrees/
+.agents/worktrees/
+blobs/
+pytest-of-*/
+CNEquity/pytest-of-*/
+.pytest_tmp/
