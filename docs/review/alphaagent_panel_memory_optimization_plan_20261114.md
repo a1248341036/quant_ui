@@ -431,6 +431,42 @@ def _column_all_nan(panel, column):
 
 ---
 
+## 七·D、P2 / P3 落地（commit `af640d2`）
+
+### 7D.1 P3 内存打点（零依赖）
+
+全仓此前**没有任何内存指标** —— `metrics_snapshot` 无 RSS、`run_meta.json` 无内存，
+排查只能每次临时写探针（本轮就写了 6 个）。现收口为：
+
+- 新增 `alphaagent/core/memlog.py`：用 ctypes 直读 `PROCESS_MEMORY_COUNTERS`，
+  **零依赖**（`psutil` 不在 requirements，仅作兜底）；非 Windows 返回空 dict，
+  永不阻断主流程。
+- 口径明确区分：`rss`（含可回收 mmap 页，任务管理器显示的就是它）/ `private`
+  （提交内存，**判断压力看这个**）/ `peak`。
+- `metrics_snapshot` 增加 `memory` 段 —— 每轮快照可看内存趋势。
+- run 收尾把 `peak` 写回 `run_meta.json` 的 `memory` 段 —— 前端任务列表/详情
+  能直接看到某个 run 吃了多少内存，不必再猜。
+
+### 7D.2 P2 `tradable` 宽表 float32（收益如实记录：约 70MB）
+
+- `per_lot_cost` 由 float64 改 float32：只用于「一手成本 ≤ 等权预算」阈值比较，
+  相对误差 ~1e-7 远小于预算边界；宽表 1540×5160 下少占 ~32MB，
+  `astype(copy)` 峰值从 63.6MB 降到 31.8MB。
+- `limit_up_next` 用 `empty_like` + 切片替代 `np.vstack`，省一份中间拼接数组。
+- 两者算完即 `del`。
+
+> **口径修正**：本方案第四节按「5000 日 × 5000 票」估 tradable 峰值 ~1.4GB，
+> 实测面板是 **1540 日 × 5160 票**，7 个 wide 矩阵合计约 **300MB**。
+> 所以 P2 真实收益只有 ~70MB，**不是 1GB**。不再作为主要收益项。
+
+### 7D.3 P1 并发（结论：不要当主要手段）
+
+6 路并发 eval 实测只增加 **0.71GB**（session 级 `aux_cache` 已在 2026-10-06 生效）。
+降并发只换来 ~0.3-0.5GB，代价是吞吐减半 —— 面板本体才是原来 7.79GB 的来源，
+P0 解决后并发更不该背这个锅。
+
+---
+
 ## 八、证据索引（本轮实测，可复现）
 
 探针脚本（仓库外，未污染仓库）：
