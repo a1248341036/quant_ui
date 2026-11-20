@@ -583,6 +583,25 @@ def _find_cached_panel(
                 # private 7.79GB → ~0.7GB，加载峰值 14.50GB → ~2GB）。
                 # arrow 的"零拷贝共享"名不副实：逐列 to_numpy 每列仍拷 29.7MB。
                 df = read_panel_matrix(path, columns=keep_columns)
+                if df is not None and keep_columns is None:
+                    # 全量加载路径必须以 **parquet 权威列集** 校验矩阵列集：
+                    # matrix 的列名来自它自己的 json，若写入中断/失败会留下
+                    # "新 parquet + 旧列集 matrix" 的混合状态；此时哨兵检查（只看
+                    # 少数固定列）无法发现"少列"，会静默返回残缺面板。
+                    pq_cols = _parquet_column_names(path)
+                    if pq_cols:
+                        stale = (
+                            {str(c) for c in pq_cols}
+                            - set(df.columns)
+                            - set(_CACHE_INDEX_COLS)
+                        )
+                        if stale:
+                            logger.warning(
+                                "CNE panel matrix 列集落后于 parquet（缺 %s，前 8 个），"
+                                "回退 arrow/parquet: %s",
+                                sorted(stale)[:8], path.name,
+                            )
+                            df = None
                 if df is None and arrow_path.is_file():
                     df = read_panel_arrow_mmap(arrow_path, columns=keep_columns)
                 if df is None:
@@ -711,10 +730,19 @@ def _purge_old_cache(keep: Path) -> None:
                 logger.warning("CNE panel matrix 附属文件淘汰异常: %s", exc)
 
         def _dir_bytes() -> int:
-            """缓存目录中 parquet+arrow+matrix 的总字节数（排除刚写入的 keep）。"""
+            """缓存目录中 parquet+arrow+matrix 的总字节数（排除刚写入的 keep 及其伴侣）。"""
             total = 0
+            # keep 的伴侣文件（.arrow / .matrix.npy / .matrix.idx.npz / .meta.json）
+            # 必须一并排除：否则"刚写入的一组全量缓存"自身就有
+            # parquet 2GB + arrow 6.4GB + matrix 6.8GB ≈ 15GB，在 25GB 默认配额下
+            # 写入第二组时就会超配额，反过来把**前一组仍有效**的缓存淘汰掉——
+            # 表现为切换数据面/窗口时反复全量重建（每次 4.7GB / 463s），
+            # 恰好抵消掉 matrix 想省下的加载开销。
+            keep_prefix = keep.stem + "."
             for p in _CACHE_ROOT.iterdir():
                 if not p.is_file() or p == keep:
+                    continue
+                if p.name.startswith(keep_prefix):
                     continue
                 if p.suffix in (".parquet", ".arrow") or ".matrix." in p.name:
                     try:

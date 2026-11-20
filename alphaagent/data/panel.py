@@ -396,12 +396,25 @@ def load_panel(
 
     mpanel = read_panel_matrix(p, columns=columns)
     if mpanel is not None:
-        missing = [
-            c for c in (columns or [])
-            if c not in ("datetime", "instrument") and c not in mpanel.columns
-        ]
+        if columns is None:
+            # 全量加载时必须拿 parquet 权威列集校验矩阵：matrix 的列名来自它自己
+            # 的 json，写入中断/失败会留下"新 parquet + 旧列集 matrix"的混合状态，
+            # 而 columns=None 时下方 arrow 分支同样只校验显式请求列 → 否则会静默
+            # 返回一份缺列面板（比 arrow 路径更隐蔽）。
+            auth_cols = panel_columns(p)
+            missing = [
+                str(c) for c in (auth_cols or [])
+                if str(c) not in ("datetime", "instrument") and str(c) not in mpanel.columns
+            ]
+        else:
+            missing = [
+                c for c in columns
+                if c not in ("datetime", "instrument") and c not in mpanel.columns
+            ]
         if missing:
-            logger.warning("panel matrix 缓存缺列 %s（%s），回退 arrow/parquet", missing, p.name)
+            logger.warning(
+                "panel matrix 缓存缺列 %s（%s），回退 arrow/parquet", missing[:8], p.name
+            )
         elif mpanel.index.is_monotonic_increasing:
             return mpanel
         else:

@@ -246,3 +246,78 @@ class TestAtomicity:
         assert write_panel_matrix(_cache_path(tmp_path), src) is False
         monkeypatch.undo()
         assert read_panel_matrix(_cache_path(tmp_path)) is None
+
+
+class TestStaleMatrixFallback:
+    """矩阵列集落后于 parquet 时必须回退（OCR 2026-11-14 发现的静默缺列风险）。"""
+
+    def _cache_with_stale_matrix(self, tmp_path, extra_col: str = "suspend_type"):
+        src = _make_panel()
+        cache = _cache_path(tmp_path)
+        # 权威 parquet 含 extra_col（模拟插件新增列后 parquet 已重建）
+        full = src.copy()
+        full[extra_col] = "S"
+        full.reset_index().to_parquet(cache, index=False)
+        # 矩阵是旧的（不含 extra_col）
+        assert write_panel_matrix(cache, src) is True
+        return cache
+
+    def test_load_panel_rejects_stale_matrix(self, tmp_path):
+        from alphaagent.data.panel import load_panel
+
+        cache = self._cache_with_stale_matrix(tmp_path)
+        out = load_panel(cache)
+        # 回退到 parquet 后应拿到权威列集（含新列），而不是静默返回缺列矩阵
+        assert "suspend_type" in out.columns
+
+    def test_load_panel_uses_matrix_when_column_sets_match(self, tmp_path):
+        from alphaagent.data.panel import load_panel
+
+        src = _make_panel()
+        cache = _cache_path(tmp_path)
+        src.reset_index().to_parquet(cache, index=False)
+        assert write_panel_matrix(cache, src) is True
+        out = load_panel(cache)
+        assert set(src.columns).issubset(set(out.columns))
+
+
+class TestQuotaAccounting:
+    """keep 自身的伴侣文件不得计入磁盘配额（否则会误淘汰其他有效缓存）。"""
+
+    def test_keep_siblings_not_counted(self, tmp_path, monkeypatch):
+        from alphaagent.data.adapters import cnequity as cne
+
+        monkeypatch.setattr(cne, "_CACHE_ROOT", tmp_path)
+        # 配额 2KB；旧缓存 1KB；keep 1KB + 伴侣 10KB
+        monkeypatch.setattr(cne, "_CACHE_MAX_GB", 2 * 1024 / 1024 ** 3)
+        monkeypatch.setattr(cne, "_CACHE_MAX_FILES", 8)
+
+        old = tmp_path / "panel_old_all.parquet"
+        old.write_bytes(b"x" * 1024)
+        keep = tmp_path / "panel_keep_all.parquet"
+        keep.write_bytes(b"y" * 1024)
+        # keep 的伴侣文件（大）：若被计入配额，总量 11KB > 2KB 会误删 old
+        (tmp_path / "panel_keep_all.matrix.npy").write_bytes(b"z" * 10 * 1024)
+
+        cne._purge_old_cache(keep)
+        assert old.is_file(), "keep 的伴侣文件被计入配额，导致其他有效缓存被误删"
+
+    def test_matrix_files_counted_for_eviction(self, tmp_path, monkeypatch):
+        from alphaagent.data.adapters import cnequity as cne
+
+        monkeypatch.setattr(cne, "_CACHE_ROOT", tmp_path)
+        monkeypatch.setattr(cne, "_CACHE_MAX_GB", 1.0)
+        monkeypatch.setattr(cne, "_CACHE_MAX_FILES", 8)
+
+        old = tmp_path / "panel_old_all.parquet"
+        old.write_bytes(b"x" * 10)
+        # 旧组的大矩阵也要被淘汰掉（否则成孤儿，永不回收）
+        old_matrix = tmp_path / "panel_old_all.matrix.npy"
+        old_matrix.write_bytes(b"m" * 4096)
+        keep = tmp_path / "panel_keep_all.parquet"
+        keep.write_bytes(b"y" * 10)
+
+        monkeypatch.setattr(cne, "_CACHE_MAX_GB", 1 * 1024 / 1024 ** 3)  # 1KB
+        cne._purge_old_cache(keep)
+        assert not old.is_file()
+        assert not old_matrix.is_file(), "淘汰旧组时未同步删除其 matrix 文件"
