@@ -123,6 +123,7 @@ def main() -> int:
 
     try:
         arr = _open_memmap(tmp_data, mode="w+", dtype=np.float32, shape=(n_rows, len(numeric_cols)))
+        all_nan_mask = np.ones(len(numeric_cols), dtype=bool)
         try:
             off = 0
             for batch in pf.iter_batches(batch_size=args.chunk):
@@ -130,9 +131,12 @@ def main() -> int:
                 n = len(d)
                 hi = off + n
                 if n and numeric_cols:
-                    arr[off:hi, :] = d[numeric_cols].to_numpy(
+                    vals = d[numeric_cols].to_numpy(
                         dtype=np.float32, copy=False, na_value=np.nan
                     )
+                    arr[off:hi, :] = vals
+                    # 顺带统计整列 NaN（供 _column_all_nan 查表，避免运行时扫单列）
+                    all_nan_mask &= np.isnan(vals).all(axis=0)
                 dt = d["datetime"]
                 if not np.issubdtype(dt.dtype, np.datetime64):
                     import pandas as pd
@@ -165,6 +169,11 @@ def main() -> int:
         raise
 
     # ---- 索引与元数据 ----
+    all_nan_cols = [numeric_cols[i] for i in np.flatnonzero(all_nan_mask)]
+    for c in string_cols:
+        if n_rows and int((cat_codes[c] < 0).sum()) == n_rows:
+            all_nan_cols.append(c)
+
     payload: dict[str, np.ndarray] = {"dt": dt_ns, "codes": inst_codes}
     for c in string_cols:
         payload[f"cat_{c}"] = cat_codes[c]
@@ -183,6 +192,7 @@ def main() -> int:
         "index_names": list(_INDEX_NAMES),
         "categories": inst_cats,
         "categorical_columns": str_cats,
+        "all_nan_columns": all_nan_cols,
     }
     tmp_meta = meta_p.with_name(meta_p.name + ".tmp")
     tmp_meta.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")

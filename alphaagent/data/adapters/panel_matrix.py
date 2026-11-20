@@ -178,6 +178,11 @@ def write_panel_matrix(cache_path: Path | str, panel: pd.DataFrame) -> bool:
         # （rss 0.029GB → 6.947GB），零拷贝收益被彻底吃掉。
         # 因此字符串列单独以 int32 codes 存进 idx.npz，读取时作为独立 block 追加。
         n_numeric = len(numeric_cols)
+        # 顺带统计"整列为 NaN"的列：调用方（_enrich_trade_flags 的
+        # _column_all_nan）需要这个信息，而**运行时扫单列**会因 stride 920B < 4KB 页
+        # 把整份文件 fault 进工作集（实测 rss → 7GB）。写盘时数据本来就在内存里，
+        # 顺手算出来存进 json，读取侧查表即可，零扫描。
+        all_nan_mask = np.ones(n_numeric, dtype=bool)
         tmp_data = data_p.with_name(data_p.name + ".tmp")
         try:
             arr = _open_memmap(tmp_data, mode="w+", dtype=np.float32, shape=(n_rows, n_numeric))
@@ -188,6 +193,7 @@ def write_panel_matrix(cache_path: Path | str, panel: pd.DataFrame) -> bool:
                         dtype=np.float32, copy=False, na_value=np.nan
                     )
                     arr[lo:hi, :] = vals
+                    all_nan_mask &= np.isnan(vals).all(axis=0)
                 arr.flush()
             finally:
                 del arr  # Windows 下必须先关句柄才能 rename
@@ -198,6 +204,7 @@ def write_panel_matrix(cache_path: Path | str, panel: pd.DataFrame) -> bool:
             except OSError:
                 pass
             raise
+        all_nan_cols = [numeric_cols[i] for i in np.flatnonzero(all_nan_mask)]
 
         # ---- ② 索引层（datetime → int64 ns；instrument → int32 codes + 词表）----
         dt_idx = pd.DatetimeIndex(panel.index.get_level_values(_INDEX_NAMES[0]))
@@ -232,6 +239,11 @@ def write_panel_matrix(cache_path: Path | str, panel: pd.DataFrame) -> bool:
             raise
 
         # ---- ③ 元数据（列名顺序 + 词表；只读列名时不必碰数据）----
+        # 字符串列的"全 NaN"等价于 codes 全部为 -1
+        for name, cc in cat_codes.items():
+            if n_rows and int((cc < 0).sum()) == n_rows:
+                all_nan_cols.append(name)
+
         meta = {
             "schema": _MATRIX_SCHEMA,
             "columns": cols,  # 全部列（原始顺序）——列集校验用
@@ -243,6 +255,8 @@ def write_panel_matrix(cache_path: Path | str, panel: pd.DataFrame) -> bool:
             "categories": [str(c) for c in categories],
             # 字符串列 → 类别词表（codes 存在 idx.npz 的 cat_<name> 里）
             "categorical_columns": categorical,
+            # 整列为 NaN 的列名：让 _column_all_nan 查表而非扫数据
+            "all_nan_columns": all_nan_cols,
         }
         tmp_meta = meta_p.with_name(meta_p.name + ".tmp")
         tmp_meta.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
@@ -329,6 +343,14 @@ def read_panel_matrix(
             )
 
             panel = pd.DataFrame(arr, columns=numeric_cols, index=index, copy=False)
+
+            # 把"整列 NaN"的列名挂到 attrs：调用方（_column_all_nan）据此查表，
+            # 避免运行时扫单列——那会因 stride 920B < 4KB 页把整份文件 fault 进来
+            # （实测 rss 0.3GB → 7.0GB）。
+            # 只在**确实记录了**该字段时才挂：早期 v2 缓存没有这个字段，
+            # 挂空集会让 _column_all_nan 对所有列误报"有值"（is_trade 永不被填）。
+            if "all_nan_columns" in meta:
+                panel.attrs["all_nan_columns"] = set(meta["all_nan_columns"] or [])
 
             # 字符串列从 idx.npz 独立还原后追加为独立 block。
             # **不碰主矩阵**：v1 曾把码位混在矩阵里，还原时按 stride 920B 跨行遍历，

@@ -1098,9 +1098,18 @@ def _enrich_trade_flags(panel: pd.DataFrame) -> None:
 
 
 def _column_all_nan(panel: pd.DataFrame, column: str) -> bool:
-    """列缺失或整列 NaN（预建空列）→ True（需要计算填充）。"""
+    """列缺失或整列 NaN（预建空列）→ True（需要计算填充）。
+
+    matrix 缓存路径优先查 precomputed 表（``panel.attrs["all_nan_columns"]``）：
+    运行时 ``pd.isna(panel[col]).all()`` 会跨行扫单列，而行主序矩阵的列 stride
+    （n_cols×4 ≈ 920B）小于 4KB 页 —— 扫一列就把整份文件 fault 进工作集
+    （2026-11-21 实测：rss 0.30GB → 7.03GB）。写盘时数据本在内存，顺手存下来。
+    """
     if column not in panel.columns:
         return True
+    known = (getattr(panel, "attrs", None) or {}).get("all_nan_columns")
+    if known is not None:
+        return str(column) in known
     try:
         return bool(pd.isna(panel[column]).all())
     except Exception:  # noqa: BLE001 — 无法判定时按"已有值"处理，不覆盖

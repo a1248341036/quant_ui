@@ -298,6 +298,54 @@ class TestAtomicity:
         assert read_panel_matrix(_cache_path(tmp_path)) is None
 
 
+class TestAllNanPrecompute:
+    """整列 NaN 的列名必须预计算到 attrs —— 运行时扫单列会把整个文件 fault 进来。"""
+
+    def test_all_nan_columns_recorded(self, tmp_path):
+        src = _make_panel()
+        src["empty_num"] = np.nan
+        src["empty_str"] = np.nan
+        assert write_panel_matrix(_cache_path(tmp_path), src) is True
+        out = read_panel_matrix(_cache_path(tmp_path))
+        assert out is not None
+        known = out.attrs.get("all_nan_columns")
+        assert known is not None
+        assert "empty_num" in known
+        assert "empty_str" in known
+        # 有值的列不该被误标
+        assert "ret" not in known
+
+    def test_column_all_nan_uses_attrs_without_scanning(self, tmp_path, monkeypatch):
+        from alphaagent.data.adapters.cnequity import _column_all_nan
+
+        src = _make_panel()
+        src["empty_num"] = np.nan
+        write_panel_matrix(_cache_path(tmp_path), src)
+        out = read_panel_matrix(_cache_path(tmp_path))
+        assert out is not None
+
+        # 一旦回退到扫数据就让它失败：证明走的是查表
+        def _boom(*a, **k):
+            raise AssertionError("_column_all_nan 不应扫描数据（应查 attrs）")
+
+        monkeypatch.setattr(pd, "isna", _boom)
+        assert _column_all_nan(out, "empty_num") is True
+        assert _column_all_nan(out, "ret") is False
+        assert _column_all_nan(out, "no_such_col") is True
+
+    def test_fallback_without_attrs_still_scans(self):
+        from alphaagent.data.adapters.cnequity import _column_all_nan
+
+        idx = pd.MultiIndex.from_arrays(
+            [pd.DatetimeIndex(pd.date_range("2024-01-01", periods=3)), pd.Index(["a"] * 3, dtype=object)],
+            names=["datetime", "instrument"],
+        )
+        df = pd.DataFrame({"x": [np.nan] * 3, "y": [1.0, 2.0, 3.0]}, index=idx)
+        # 无 attrs 的普通面板走原逻辑
+        assert _column_all_nan(df, "x") is True
+        assert _column_all_nan(df, "y") is False
+
+
 class TestStaleMatrixFallback:
     """矩阵列集落后于 parquet 时必须回退（OCR 2026-11-14 发现的静默缺列风险）。"""
 
