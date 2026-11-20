@@ -2128,6 +2128,22 @@ async def run_factor_mining_agentscope(
     summary_text = json.dumps(json_safe(summary), ensure_ascii=False, indent=2, default=str) + "\n"
     summary_path.write_text(summary_text, encoding="utf-8")
     (log_dir / "run_summary.json").write_text(summary_text, encoding="utf-8")
+    # 内存峰值写回 run_meta.json（run 开始时写的那份不含内存；前端任务列表/详情
+    # 可直接看到本 run 吃了多少内存）。取不到内存时静默跳过。
+    try:
+        from alphaagent.core import memlog
+
+        mem_peak = memlog.peak()
+        if mem_peak:
+            meta_f = log_dir / "run_meta.json"
+            meta_obj = json.loads(meta_f.read_text(encoding="utf-8")) if meta_f.is_file() else {}
+            meta_obj["memory"] = mem_peak
+            meta_f.write_text(
+                json.dumps(meta_obj, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+    except Exception:  # noqa: BLE001 — 打点失败不影响 run 收尾
+        pass
+
     _emit("run_summary", summary)
     _emit("metrics_snapshot", {"turn": outer_turn, **build_metrics_snapshot(live_metrics)})
     

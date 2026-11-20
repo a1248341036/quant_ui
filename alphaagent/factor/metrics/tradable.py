@@ -136,8 +136,13 @@ def tradable_mask(
     if include_affordable:
         budget = float(capital) / max(int(target_count), 1)
         open_next = open_w.shift(-1)
-        per_lot_cost = open_next.astype(np.float64) * float(lot_size) * (1.0 + float(cost_padding))
+        # float32 足够：本值只用于"一手成本 ≤ 等权预算"的阈值比较，
+        # 相对误差 ~1e-7 远小于预算边界（实测宽表 1540×5160，float64 会多占一倍）。
+        per_lot_cost = (
+            open_next.astype(np.float32) * float(lot_size) * (1.0 + float(cost_padding))
+        )
         ok_wide &= per_lot_cost.le(budget) & open_next.notna()
+        del per_lot_cost, open_next  # 宽表大，算完立刻释放（峰值期同时只留必要矩阵）
         diag["budget_per_name"] = round(budget, 2)
         diag["affordable_max_price"] = round(budget / max(int(lot_size), 1), 2)
 
@@ -147,9 +152,13 @@ def tradable_mask(
 
         try:
             limit_up, _limit_down, _one_up, _one_down = build_limit_flags(close_w, open_w)
-            # 下一交易日涨停对齐到当前行：row i ← limit_up[i+1]，末日无次日 = False
-            limit_up_next = np.vstack([limit_up[1:], np.zeros((1, limit_up.shape[1]), dtype=bool)])
+            # 下一交易日涨停对齐到当前行：row i ← limit_up[i+1]，末日无次日 = False。
+            # 用 empty_like + 切片赋值替代 np.vstack：少一份中间拼接数组（宽表按日×票）。
+            limit_up_next = np.empty_like(limit_up)
+            limit_up_next[:-1, :] = limit_up[1:, :]
+            limit_up_next[-1, :] = False
             ok_wide &= ~limit_up_next
+            del limit_up_next
         except Exception as exc:  # noqa: BLE001 — 涨停判定失败不应阻断评估
             diag["limit_flags_error"] = f"{type(exc).__name__}: {exc}"
 
