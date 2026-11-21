@@ -467,6 +467,81 @@ P0 解决后并发更不该背这个锅。
 
 ---
 
+## 七·E、端到端验证：窗口裁剪抵消零拷贝（commit `5b7e4f4`）
+
+### 7E.1 现象
+
+matrix v2 全部落地后，用 `harness_mine --full-cols --fundamentals` 跑 8 个因子做
+端到端验证，结果**和 arrow 时代一模一样**：
+
+```
+面板加载后内存: rss=7.063GB private=7.549GB peak=14.017GB
+内存峰值:       rss=7.597GB private=8.238GB peak=14.017GB
+```
+
+### 7E.2 根因：`df.loc[布尔数组]` 整块拷贝
+
+`_find_cached_panel` 按请求窗口裁剪缓存时用的是：
+
+```python
+keep = pd.Series(True, index=df.index)
+keep &= dts >= req_start
+keep &= dts <= req_end
+if not bool(keep.all()):
+    df = df.loc[keep]        # ← 布尔索引 = 整块拷贝 6.75GB
+```
+
+**只要调用方传了 `end` 就会被裁一次**。`harness_mine` 会传 `resolve_test_end()`，
+于是每次加载都拷贝一份完整面板，memmap 零拷贝彻底白费。
+
+证据：裁剪后 `rows=7,866,010` < 矩阵 `7,949,486`。
+
+> 这也解释了为什么之前 `verify_e2e_v2` 测出来只有 0.28GB ——
+> 那次传的是 `start=2020-01-01, end=None`，`keep` 全 True，不触发裁剪。
+> **只测「加载」不测「带窗口的加载」，会漏掉这个坑。**
+
+### 7E.3 修法：连续区间用 `iloc` 视图
+
+面板按 `datetime` 排序，请求窗口裁剪本质是「掐头去尾」的**连续区间**：
+
+```python
+keep_np = keep.to_numpy(dtype=bool)
+lo = int(np.argmax(keep_np))
+hi_ex = len(keep_np) - int(np.argmax(keep_np[::-1]))
+if hi_ex > lo and keep_np[lo:hi_ex].all():
+    df = df.iloc[lo:hi_ex]     # 视图，仍与 mmap 共享物理页
+else:
+    df = df.loc[keep]          # 零散掩码才回退拷贝
+```
+
+### 7E.4 实测（harness_mine 全列 8 因子，train 段）
+
+| 指标 | 修复前 | **修复后** |
+|---|---|---|
+| 面板加载 | 5s | **1s** |
+| 加载后 rss | 7.063GB | **0.383GB** |
+| 加载后 private | 7.549GB | **0.87GB** |
+| 加载后 peak | 14.017GB | **0.703GB** |
+| **全程峰值 private** | **8.238GB** | **1.558GB** |
+| 全程峰值 peak_wset | 14.017GB | **3.786GB** |
+
+8 个因子串行评估，全程峰值 private **1.56GB**、peak_wset **3.79GB**。
+按此推算 6 路并发挖掘（并发实测只额外 +0.7GB）整体峰值约 2.5–3GB。
+
+### 7E.5 顺带给 `harness_mine` 加内存自报
+
+CLI 跑完会打印：
+
+```
+[mine] 面板加载后内存: rss=... private=... peak=...
+[mine] 内存峰值: rss=... private=... peak_wset=...（判断压力看 private）
+```
+
+以后验证内存优化不必再外部采样（本轮已经踩过"采错进程"的坑：只采到 6MB 的
+launcher，而真正干活的是子进程）。
+
+---
+
 ## 八、证据索引（本轮实测，可复现）
 
 探针脚本（仓库外，未污染仓库）：
