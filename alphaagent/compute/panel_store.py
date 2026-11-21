@@ -1,7 +1,12 @@
-"""Worker 内部的面版管理层（单 Worker 进程内常驻）。
+"""Worker 内部的面板管理层（单 Worker 进程内常驻）。
 
-基于 panel_mmap.py 的 Arrow IPC + pa.memory_map，
-实现秒级 attach、零拷贝共享与 LRU 缓存管理。
+加载本身委托给 ``load_panel_from_cne`` / ``load_panel``，读取优先级为
+**matrix（行主序 ``.npy`` memmap，真零拷贝）> arrow > parquet**；
+本类只负责 ``_cache`` / ``_split_cache`` 的 LRU 管理，不自己做 mmap。
+
+（2026-11-21 审计订正：本模块此前声称"基于 panel_mmap.py 的 Arrow IPC 实现
+零拷贝共享"——实测 arrow 逐列 ``to_numpy`` 每列仍拷一份私有内存
+（29.7MB/列），已被 matrix 缓存取代。）
 """
 from __future__ import annotations
 
