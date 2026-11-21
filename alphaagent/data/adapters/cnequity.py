@@ -653,7 +653,19 @@ def _find_cached_panel(
                 if req_end is not None:
                     keep &= dts <= req_end
                 if not bool(keep.all()):
-                    df = df.loc[keep]
+                    # 裁剪必须尽量走 iloc 行切片（视图，与 mmap 零拷贝兼容）。
+                    # df.loc[布尔数组] 会**整块拷贝**数值块 —— matrix 缓存 7.95M 行
+                    # × 230 列 = 6.75GB，一次裁剪就把 private 顶回 7.5GB、峰值 14GB
+                    # （2026-11-21 实测：harness_mine 传了 test_end，触发裁剪后
+                    # 零拷贝收益全部归零）。面板按 datetime 排序，裁剪通常是
+                    # 「掐头去尾」的连续区间，用 iloc 即可；只有零散掩码才回退 loc。
+                    keep_np = keep.to_numpy(dtype=bool)
+                    lo = int(np.argmax(keep_np))
+                    hi_ex = len(keep_np) - int(np.argmax(keep_np[::-1]))
+                    if hi_ex > lo and keep_np[lo:hi_ex].all():
+                        df = df.iloc[lo:hi_ex]
+                    else:
+                        df = df.loc[keep]
             logger.info(
                 "CNE adapter: panel 命中磁盘缓存 %s（%d 行, %d 列, 签名 %s, "
                 "已按请求窗口 [%s, %s] 裁剪）",

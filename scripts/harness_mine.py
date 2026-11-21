@@ -591,6 +591,15 @@ def main() -> int:
     print(f"[mine] session={sid} rows={resp.panel_rows} cols={len(resp.available_columns or ())} "
           f"load={time.perf_counter() - t0:.0f}s", flush=True)
 
+    # 内存打点（2026-11-21）：全量面板加载是这批评估的内存基线，
+    # rss 含可回收 mmap 文件页，private 才是不可回收的真实占用。
+    from alphaagent.core import memlog
+
+    _m = memlog.note("panel_loaded")
+    if _m:
+        print(f"[mine] 面板加载后内存: rss={_m['rss_gb']}GB private={_m['private_gb']}GB "
+              f"peak={_m['peak_gb']}GB", flush=True)
+
     rows: list[dict] = []
 
     skeletons: dict[str, Any] = {}
@@ -618,6 +627,7 @@ def main() -> int:
         for i, f in enumerate(factors, 1):
             name, expr = f["name"], f["expr"]
             t = time.perf_counter()
+            memlog.snapshot()  # 每次迭代采样，累积真实峰值（含上一轮评估的临时量）
             session = svc.sessions.get(sid)
             if args.cold_track:
                 try:
@@ -752,6 +762,15 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001 — 增量是加分项，失败不能毁掉整批结果
             print(f"[mine] 增量轨失败（不影响 raw 评估结果）: {type(exc).__name__}: {exc}",
                   flush=True)
+
+    try:
+        _peak = memlog.peak()
+        if _peak:
+            print(f"[mine] 内存峰值: rss={_peak.get('rss_gb')}GB "
+                  f"private={_peak.get('private_gb')}GB "
+                  f"peak_wset={_peak.get('peak_gb')}GB（判断压力看 private）", flush=True)
+    except Exception:  # noqa: BLE001 — 打点失败不影响结果输出
+        pass
 
     n_stat_pass = sum(1 for r in rows if r.get("pass_stage_one_pre"))
     n_full_pass = sum(1 for r in rows if not r.get("fails"))
