@@ -47,6 +47,18 @@ from .split_fusion import (
     split_factor_groups,
     train_frequency_model,
 )
+from .serve import (
+    GroupModel,
+    ServedModel,
+    blend_group_scores_fixed,
+    fit_served_model,
+    load_served_model,
+    predict_served,
+    resolve_latest_served_model,
+    save_served_model,
+    to_pred_frame,
+    wma_smooth_scores,
+)
 
 __all__ = [
     "FactorEntry",
@@ -81,4 +93,14 @@ __all__ = [
     "per_frequency_payload",
     "split_factor_groups",
     "train_frequency_model",
+    "GroupModel",
+    "ServedModel",
+    "blend_group_scores_fixed",
+    "fit_served_model",
+    "load_served_model",
+    "predict_served",
+    "resolve_latest_served_model",
+    "save_served_model",
+    "to_pred_frame",
+    "wma_smooth_scores",
 ]
