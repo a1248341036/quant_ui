@@ -140,7 +140,7 @@ def main(argv: list[str] | None = None) -> int:
     card = served.model_card()
     print(f"served model：{model_path}")
     print(f"  训练至 {served.trained_until} · {len(served.groups)} 组 · "
-          f"{sum(len(g['feature_names']) for g in card['groups'].values())} 特征 · "
+          f"{sum(int(g['n_features']) for g in card['groups'].values())} 特征 · "
           f"平滑 WMA-{served.smooth_window}")
     print("  融合权重：" + "、".join(
         f"{k}={served.blend_weights.get(k, 0.0):.3f}" for k in served.group_keys()))
