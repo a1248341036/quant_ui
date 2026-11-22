@@ -114,11 +114,19 @@ def main() -> int:
                     help="临时分片目录；给出且分片已存在时跳过该批（断点续跑）")
     ap.add_argument("--merge-only", action="store_true",
                     help="只做合并（分片需已由 --parts-dir 提供）")
+    ap.add_argument("--low-priority", action="store_true",
+                    help="进程优先级降为 BelowNormal，避免抢占前台应用（内存不变，但系统更跟手）")
     args = ap.parse_args()
 
     start, end = pd.Timestamp(args.start), pd.Timestamp(args.end)
     segs = list(_segments(start, end, args.batch_days))
     proc = psutil.Process()
+    if args.low_priority:
+        try:
+            proc.nice(psutil.BELOW_NORMAL_PRIORITY_CLASS)
+            print("进程优先级已降为 BelowNormal", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print("设置优先级失败（忽略）: %s" % exc, flush=True)
     print("区间 %s ~ %s，共 %d 批，每批 %d 天，回溯 %d 天"
           % (start.date(), end.date(), len(segs), args.batch_days, args.warmup_days), flush=True)
 
@@ -132,6 +140,14 @@ def main() -> int:
     tmpdir.mkdir(parents=True, exist_ok=True)
     parts: list[Path] = []
     columns: list[str] | None = None
+    # 续跑时列基准必须取自**已有分片**：否则新批以自身列为准，与旧分片列集合
+    # 不一致，合并时会报 "schema lengths differ"。
+    existing = sorted(tmpdir.glob("part_*.parquet"))
+    if existing:
+        import polars as _pl
+
+        columns = list(_pl.scan_parquet(str(existing[0])).collect_schema().names())
+        print("沿用已有分片列基准: %d 列（来自 %s）" % (len(columns), existing[0].name), flush=True)
     t_all = time.time()
 
     try:
@@ -176,39 +192,19 @@ def main() -> int:
             except Exception:
                 pass
 
-        # 流式合并
-        import pyarrow as pa
-        import pyarrow.parquet as pq
+        # 流式合并：用 Polars 的 lazy scan + sink_parquet，自动做类型协调
+        # （vertical_relaxed）且不把整份数据读进内存。
+        # 之前用 pyarrow ParquetWriter 手工对齐 schema 很脆：各批 dtype 会在
+        # 「全 NaN 列 → null / string」这类边界上不一致，强转直接报
+        # Unsupported cast from string to null。
+        import polars as pl
 
         fd, tmp_final = tempfile.mkstemp(dir=str(cne._CACHE_ROOT), prefix=".panel.", suffix=".parquet.tmp")
         os.close(fd)
-        writer = None
-        rows = 0
-        try:
-            # 各分片的 pandas 元数据长度可能不一致（批间列集合细微差异），
-            # 统一剥掉 metadata 后按首个分片的 schema 强转，避免
-            # "Table schema does not match schema used to create file"。
-            for p in parts:
-                pf = pq.ParquetFile(str(p))
-                local = pf.schema_arrow
-                if writer is None:
-                    schema = local.remove_metadata()
-                    columns = list(schema.names)
-                    writer = pq.ParquetWriter(tmp_final, schema, compression="snappy")
-                for batch in pf.iter_batches(batch_size=100_000):
-                    tbl = pa.Table.from_batches([batch])
-                    if tbl.schema.names != schema.names:
-                        for name in schema.names:
-                            if name not in tbl.schema.names:
-                                tbl = tbl.append_column(
-                                    name, pa.nulls(tbl.num_rows, type=schema.field(name).type))
-                        tbl = tbl.select(schema.names)
-                    writer.write_table(tbl.cast(schema))
-                    rows += tbl.num_rows
-                pf.close()
-        finally:
-            if writer is not None:
-                writer.close()
+        lf = pl.concat([pl.scan_parquet(str(p)) for p in parts], how="diagonal_relaxed")
+        lf.sink_parquet(tmp_final, compression="snappy")
+        rows = int(pl.scan_parquet(tmp_final).select(pl.len()).collect().item())
+        columns = list(pl.scan_parquet(tmp_final).collect_schema().names())
         os.replace(tmp_final, path)
 
         meta = {
