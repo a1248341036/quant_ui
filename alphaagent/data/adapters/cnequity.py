@@ -163,6 +163,28 @@ _MATRIX_WRITE = os.environ.get("ALPHA_PANEL_MATRIX", "1").strip().lower() in (
 # **方向安全性**：只容忍「缓存比请求旧」，绝不容忍「缓存比请求新」——后者会把请求
 # 区间之后的未来数据带进调用方，破坏 tuning 模式的物理时间隔离（盲测段污染）。
 _CACHE_MAX_STALE_DAYS = max(0, int(os.environ.get("ALPHA_PANEL_CACHE_STALE_DAYS", "3") or 3))
+# ── 增量补尾/补头（2026-11-22）──
+# 命中判定用的是缓存**实际覆盖区间**（_panel_coverage）：完全覆盖请求时直接命中并裁剪。
+# 缓存比请求短（日更后多出几天）或起点更晚时，原实现整份重建（分钟级 / 峰值数 GB）；
+# 改为只重建「接缝附近的回溯窗口」，其余行沿用缓存。
+# warmup 必须覆盖插件最长回溯：regulatory_events._SEV_WINDOW_DAYS=360 **日历天**
+# （≈250 交易日）是最长的一档，research_views 90 交易日次之。取 260 交易日留余量；
+# 实测 130 交易日时 reg_severity 会与整份重建差 3（接缝缺历史）。可用
+# ALPHA_PANEL_EXTEND_WARMUP 覆盖。
+_CACHE_EXTEND_WARMUP_TPD = max(20, int(os.environ.get("ALPHA_PANEL_EXTEND_WARMUP", "260") or 260))
+# 接缝替换窗口（交易日）：标签列是**前视**的（label_Kd = shift(-K)），缓存末尾若干行
+# 在旧窗口下是 NaN，追加后必须重算。取 40 交易日覆盖最长持有期（20d）+ 余量。
+_CACHE_EXTEND_SEAM_TPD = max(5, int(os.environ.get("ALPHA_PANEL_EXTEND_SEAM", "40") or 40))
+# 开关：默认关闭（2026-11-22）。实测面板有 4 个列族对**窗口右端敏感**——
+# inst_mv / inst_count / inst_ratio / reg_severity：同一区间起点、不同 end 的两次
+# 整份重建，公共行数值本就不同。因此增量拼接在这些列上不可能与"同 end 的整份重建"
+# 逐值一致。默认关，需要时显式 ALPHA_PANEL_INCREMENTAL=1 开启（只补尾/补头，接缝
+# 替换 warm 天，其余沿用缓存），并自行确认下游不依赖上述列族的精确值。
+_CACHE_INCREMENTAL = os.environ.get("ALPHA_PANEL_INCREMENTAL", "0").strip().lower() in (
+    "1", "true", "yes", "on")
+# 缺失区间占请求总跨度的比例超过该值时放弃增量（补的比重建还多，没有收益）。
+_CACHE_EXTEND_MAX_MISSING_RATIO = float(
+    os.environ.get("ALPHA_PANEL_EXTEND_MAX_MISSING", "0.6") or 0.6)
 _CACHE_INDEX_COLS = ["datetime", "instrument"]
 # 聚焦裁剪时**永远保留**的列（非面专属 + 评估/交付链路内部依赖）：
 # - 行情核心列由 OUTPUT_COLUMNS 保证（build_panel_from_hq 的输出契约）；
@@ -688,6 +710,188 @@ def _panel_coverage(panel: pd.DataFrame) -> tuple[Any, Any]:
     return dts.min(), dts.max()
 
 
+def _cache_date_range(path: Path) -> tuple[pd.Timestamp, pd.Timestamp] | None:
+    """只读 datetime 列取缓存覆盖区间（不物化全列，成本几十 MB 量级）。"""
+    try:
+        s = pd.read_parquet(path, columns=["datetime"])["datetime"]
+    except Exception:  # noqa: BLE001
+        return None
+    if s.empty:
+        return None
+    return pd.Timestamp(s.min()), pd.Timestamp(s.max())
+
+
+def _find_extendable_cache(
+    start: str | None,
+    end: str | None,
+    include_fundamentals: bool,
+    focus_facets: Sequence[str] | None = None,
+) -> tuple[Path, pd.Timestamp, pd.Timestamp, bool, bool] | None:
+    """找一份签名一致、但只差头/尾的缓存。
+
+    返回 ``(path, cov_min, cov_max, need_head, need_tail)`` 或 None。
+    聚焦（focus_facets 非空）请求不做增量：那类缓存列集合经过裁剪，增量后
+    拼接口径容易漂移，保持整份重建。
+    """
+    if focus_facets:
+        return None
+    try:
+        if not _CACHE_ROOT.is_dir():
+            return None
+        want_sig = _facet_signature(focus_facets)
+        req_start = pd.Timestamp(start) if start else None
+        req_end = pd.Timestamp(end) if end else None
+        tol = pd.Timedelta(days=_CACHE_MAX_STALE_DAYS)
+        for path in sorted(_CACHE_ROOT.glob(f"panel_v{_CACHE_SCHEMA_VERSION}_*.parquet")):
+            meta = _read_cache_meta(path)
+            if meta is None:
+                continue
+            if str(meta.get("signature") or "") != want_sig:
+                continue
+            if bool(meta.get("include_fundamentals")) != bool(include_fundamentals):
+                continue
+            if str(meta.get("board_filter") or "") != _board_filter_flag():
+                continue
+            cov = _cache_date_range(path)
+            if cov is None:
+                continue
+            cmin, cmax = cov
+            need_head = bool(req_start is not None and req_start < (cmin - tol))
+            need_tail = bool(req_end is not None and req_end > (cmax + tol))
+            if not (need_head or need_tail):
+                continue
+            return path, cmin, cmax, need_head, need_tail
+        return None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("CNE panel 增量缓存探测异常（回退整份重建）: %s", exc)
+        return None
+
+
+def _extend_cached_panel(
+    *,
+    path: Path,
+    cov_min: pd.Timestamp,
+    cov_max: pd.Timestamp,
+    need_head: bool,
+    need_tail: bool,
+    req_start: pd.Timestamp,
+    req_end: pd.Timestamp,
+    registry,
+    include_fundamentals: bool,
+    asset_type: str = "stock",
+) -> pd.DataFrame | None:
+    """在已有缓存上补尾或补头，返回拼接后的面板；不可增量时返回 None。
+
+    正确性要点：插件列含回溯窗口（research_views 90 交易日、style_state/事件类 20），
+    所以补的那段必须**多建 warmup 天**，并把缓存里**接缝处 warmup 天**的行一并替换掉，
+    否则接缝行会因为缺前置历史而与整份重建不一致。两头都缺时直接返回 None 走整份重建。
+    """
+    if need_head and need_tail:
+        return None
+    try:
+        cached = pd.read_parquet(path)
+        if set(_CACHE_INDEX_COLS).issubset(cached.columns):
+            cached = cached.set_index(_CACHE_INDEX_COLS)
+        cached = cached.sort_index()
+        if cached.empty:
+            return None
+        dates = pd.DatetimeIndex(cached.index.get_level_values("datetime").unique()).sort_values()
+        if len(dates) < 3:
+            return None
+        warm = _CACHE_EXTEND_WARMUP_TPD
+
+        # 缺失占比过大则没有增量收益，交回整份重建
+        total_days = max((req_end - req_start).days, 1)
+        miss_days = 0
+        if need_head:
+            miss_days += max((cov_min - req_start).days, 0)
+        if need_tail:
+            miss_days += max((req_end - cov_max).days, 0)
+        if miss_days / total_days > _CACHE_EXTEND_MAX_MISSING_RATIO:
+            logger.info("CNE panel 增量跳过：缺失 %d/%d 天，超过阈值 %.2f，改整份重建",
+                        miss_days, total_days, _CACHE_EXTEND_MAX_MISSING_RATIO)
+            return None
+
+        def _build(a: str, b: str) -> pd.DataFrame:
+            seg = registry.build_panel(
+                start=a, end=b, universe_mask=False,
+                include_fundamentals=include_fundamentals,
+                asset_type=asset_type, include_columns=None,
+            )
+            _enrich_trade_flags(seg)
+            if asset_type == "stock" and len(seg):
+                inst = seg.index.get_level_values("instrument").astype(str)
+                excluded: list[str] = []
+                if _exclude_bse_enabled():
+                    excluded += list(BSE_PREFIXES)
+                if _exclude_kechuang_enabled():
+                    excluded += ["688", "689"]
+                if _exclude_chinext_enabled():
+                    excluded += ["300", "301"]
+                if excluded:
+                    mask = inst.str.startswith(tuple(excluded))
+                    if mask.any():
+                        seg = seg.loc[~mask]
+            return seg
+
+        if need_tail:
+            # 追加 + 替换接缝：回溯列只需前置历史（warm），前视列（label_* = shift(-K)）
+            # 需要重算缓存末尾若干行（seam）。两者相加即为本次构建跨度。
+            seam = _CACHE_EXTEND_SEAM_TPD
+            cut = dates[-seam] if len(dates) > seam else dates[0]
+            bstart = dates[-(warm + seam)] if len(dates) > warm + seam else dates[0]
+            logger.info("CNE panel 增量补尾：构建 [%s ~ %s]，替换缓存 %s 之后的行",
+                        bstart.date(), req_end.date(), cut.date())
+            seg = _build(bstart.date().isoformat(), req_end.date().isoformat())
+            if set(seg.columns) != set(cached.columns):
+                logger.warning("CNE panel 增量补尾列集合不一致（缓存 %d 列 / 新段 %d 列），放弃增量",
+                               cached.shape[1], seg.shape[1])
+                return None
+            seg = seg[seg.index.get_level_values("datetime") >= cut]
+            base = cached[cached.index.get_level_values("datetime") < cut]
+            parts = [base, seg]
+        else:
+            cut = dates[warm] if len(dates) > warm else dates[-1]
+            logger.info("CNE panel 增量补头：构建 [%s ~ %s]，替换缓存 %s 之前的行",
+                        req_start.date(), cut.date(), cut.date())
+            seg = _build(req_start.date().isoformat(), cut.date().isoformat())
+            if set(seg.columns) != set(cached.columns):
+                logger.warning("CNE panel 增量补头列集合不一致（缓存 %d 列 / 新段 %d 列），放弃增量",
+                               cached.shape[1], seg.shape[1])
+                return None
+            seg = seg[seg.index.get_level_values("datetime") < cut]
+            base = cached[cached.index.get_level_values("datetime") >= cut]
+            parts = [seg, base]
+
+        merged = pd.concat(parts, axis=0, sort=False)
+        merged = merged[~merged.index.duplicated(keep="last")].sort_index()
+        missing_cols = [c for c in cached.columns if c not in merged.columns]
+        if missing_cols:
+            logger.warning("CNE panel 增量结果缺列 %s，放弃增量改整份重建", missing_cols[:5])
+            return None
+        merged = merged[cached.columns]
+        for col in merged.columns:  # 尽力维持既有 dtype，避免无谓的 int8→int64 膨胀
+            try:
+                merged[col] = merged[col].astype(cached[col].dtype)
+            except Exception:  # noqa: BLE001
+                pass
+
+        meta = dict(_read_cache_meta(path) or {})
+        meta.update({
+            "start": req_start.date().isoformat(),
+            "end": req_end.date().isoformat(),
+            "rows": int(len(merged)),
+            "columns": int(merged.shape[1]),
+        })
+        _save_cached_panel(path, merged, meta=meta)
+        logger.info("CNE panel 增量完成：%d 行（缓存原 %d 行），已原子覆盖 %s",
+                    len(merged), len(cached), path.name)
+        return merged
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("CNE panel 增量补数失败（回退整份重建）: %s", exc)
+        return None
+
+
 def _purge_old_cache(keep: Path) -> None:
     """缓存目录超过配额/上限时删除最旧文件（保留刚写入的 keep）。
 
@@ -1021,6 +1225,35 @@ def load_panel_from_cne(
             # 就地补齐，无需 +schema 版本强制重建数 GB 缓存（只改内存副本）。
             _enrich_trade_flags(cached)
             return cached
+
+        # 增量补尾/补头（2026-11-22）：缓存与请求只差一段（日更多出几天、或起点更早）时，
+        # 只重建接缝回溯窗口并原子覆盖同一缓存，而不是整份重建。
+        # 仅服务全量口径（focus 为空）、非 universe_mask 的股票面板——与整份重建同分支。
+        if (_CACHE_INCREMENTAL and asset_type == "stock" and not universe_mask
+                and not focus and (start or end)):
+            ext = _find_extendable_cache(start, end, include_fundamentals, focus)
+            if ext is not None:
+                _path, _cmin, _cmax, _need_head, _need_tail = ext
+                _req_start = pd.Timestamp(start) if start else pd.Timestamp(_cmin)
+                _req_end = pd.Timestamp(end) if end else pd.Timestamp(_cmax)
+                merged = _extend_cached_panel(
+                    path=_path, cov_min=_cmin, cov_max=_cmax,
+                    need_head=_need_head, need_tail=_need_tail,
+                    req_start=_req_start, req_end=_req_end,
+                    registry=get_registry(), include_fundamentals=include_fundamentals,
+                    asset_type=asset_type,
+                )
+                if merged is not None and not merged.empty:
+                    dts = merged.index.get_level_values("datetime")
+                    if _req_start is not None or _req_end is not None:
+                        keep = pd.Series(True, index=merged.index)
+                        if _req_start is not None:
+                            keep &= dts >= _req_start
+                        if _req_end is not None:
+                            keep &= dts <= _req_end
+                        merged = merged[keep]
+                    _enrich_trade_flags(merged)
+                    return merged
 
     # B-01 护栏（2026-10-26）：重建是全量内存动作（历史实测 4.7GB+ / 463s+），
     # 静默发生时用户只看到「电脑卡死」。此处按历史缓存规模打内存预估 WARNING，
