@@ -101,6 +101,12 @@ def load(
             ],
         )
         .filter((pl.col("event_date") >= ext) & (pl.col("event_date") <= e))
+        # 必须显式排序：group_by().agg() 的输出顺序不确定，而下面第 155 行的
+        # cum_max().over("symbol") 是**按行序**累积的。不排序时累积顺序随分组数
+        # （即随 end）变化，同一交易日的 reg_severity 会因请求右端不同而不同
+        # ——2026-11-22 实测：end=10-15 与 end=10-29 两次构建，2026-09-01 的
+        # 000567.SZ 得到 4 与 3。排序后与 end 无关。
+        .sort(["symbol", "event_date"])
     )
     if events.is_empty():
         raise ValueError(f"regulatory_events: 窗口 {s}~{e} 内无监管事件")
@@ -148,8 +154,12 @@ def load(
         ],
     )
 
-    # 近 360 自然日窗口内最高严重度：事件日累积最大值回溯（事件在扩展段已被载入）
-    # 为每个 symbol 生成 事件日 的累计最高严重度序列，再 join_asof backward。
+    # 最高严重度累积序列：事件日 → 截至该日的最高严重度，再 join_asof backward 阶梯化。
+    # 注意 1：events 已在上面按 (symbol, event_date) 排序，cum_max 因此有确定语义——
+    #         「截至该事件日的全历史最高严重度」。排序缺失时结果依赖行序（见上方注释）。
+    # 注意 2：`_SEV_WINDOW_DAYS = 360` 是**死常量**（全文件未引用），当初注释写的
+    #         "近 360 自然日窗口内最高严重度" 并未实现，实际是全历史 max。改成真滚动
+    #         窗口会改变历史值（口径变化），需要单独决策，故此处只修确定性、不动语义。
     sev_cum = (
         events.select(["symbol", "event_date", "_day_sev"])
         .with_columns(pl.col("_day_sev").cum_max().over("symbol").alias("_sev_cum_max"))
