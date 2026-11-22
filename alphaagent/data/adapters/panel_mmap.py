@@ -122,6 +122,62 @@ def write_panel_arrow(arrow_path: Path, panel_flat: pd.DataFrame) -> bool:
         return False
 
 
+def write_panel_arrow_chunked(arrow_path: Path, panel: pd.DataFrame,
+                              chunk_rows: int = 400_000) -> bool:
+    """分块把面板（MultiIndex 形态）写成未压缩 Arrow IPC，避免整份 reset_index。
+
+    与 ``write_panel_arrow`` 产物等价（同样的 datetime/instrument + 数值列 schema、
+    同样的未压缩 IPC 格式），区别只在于**内存峰值**：按 ``chunk_rows`` 逐块
+    reset_index → 转 Arrow → write_batch，峰值 ≈ 面板本体 + 一个分块。
+    2026-11-22 事故：重建峰值 16GB，其中 7GB 是整份 reset_index 复制、7GB 是
+    整份 Arrow 转换；分块后两者都不再全量存在。
+    """
+    if not _ARROW_AVAILABLE:
+        return False
+    try:
+        arrow_path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=str(arrow_path.parent), prefix=".panel.", suffix=".arrow.tmp")
+        os.close(fd)
+        schema = None
+        n_cols = 0
+        try:
+            with pa.OSFile(tmp, "wb") as sink:
+                writer = None
+                try:
+                    for start in range(0, len(panel), max(int(chunk_rows), 1)):
+                        block = panel.iloc[start:start + chunk_rows].reset_index()
+                        names = list(block.columns)
+                        arrays = [_column_to_arrow(block[name]) for name in names]
+                        if schema is None:
+                            schema = pa.schema([pa.field(n, a.type) for n, a in zip(names, arrays)])
+                            n_cols = len(names)
+                            writer = ipc.new_file(sink, schema)
+                        # 分块 dtype 可能因全 NaN 列退化（null type），按首块 schema 强转
+                        batch = pa.record_batch(
+                            [a.cast(f.type) if a.type != f.type else a
+                             for a, f in zip(arrays, schema)],
+                            schema=schema,
+                        )
+                        writer.write_batch(batch)
+                        del batch, arrays, block
+                finally:
+                    if writer is not None:
+                        writer.close()
+            os.replace(tmp, arrow_path)
+        except BaseException:  # noqa: BLE001
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+        logger.info("panel arrow 缓存写入完成（分块 %d 行）: %s (%d 列, %d 行)",
+                    int(chunk_rows), arrow_path.name, n_cols, len(panel))
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("panel arrow 分块写入失败（不影响 parquet 主缓存）: %s", exc)
+        return False
+
+
 def arrow_column_names(arrow_path: Path) -> list[str] | None:
     """只读 arrow 文件 schema 拿列名（**不物化任何数值列**）。
 
