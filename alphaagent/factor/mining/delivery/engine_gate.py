@@ -118,6 +118,11 @@ def run_engine_gate(
             buffer_ratio=float(policy.get("buffer_ratio", 0.0) or 0.0),
             no_trade_band=float(policy.get("no_trade_band", 0.0) or 0.0),
         )
+        # 流动性分位下限可显式覆盖：ML 组合的 alpha 集中在低流动性尾部
+        # （实测 top10 的 am20 中位 0.12~0.45 亿，而全市场 20% 分位阈值约 0.5 亿，
+        # 默认 amount_q=0.2 会把整条 alpha 尾部过滤掉）。缺键时沿用引擎默认，不改旧行为。
+        if policy.get("amount_q") is not None:
+            bt_kwargs["amount_q"] = float(policy["amount_q"])
         result = run_backtest(
             engine_frame,
             **bt_kwargs,

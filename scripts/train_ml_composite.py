@@ -134,6 +134,12 @@ def _parse_args() -> argparse.Namespace:
         help="engine_gate 改用固定 Top-N 选股（selection_mode=top_n）；缺省保持动态百分比"
              "（top_pct，用 --gate-selection-pct）。传此参数后 --gate-selection-pct 失效。")
     ap.add_argument(
+        "--gate-amount-q", type=float, default=None,
+        help="engine_gate 的 am20 流动性分位下限（0~1）。缺省不改引擎默认（不做覆盖）。"
+             "实测：ML 组合 alpha 集中在低流动性尾部（top10 的 am20 中位约 0.12~0.45 亿），"
+             "而全市场 20%% 分位阈值约 0.5 亿，默认 amount_q=0.2 会把整条 alpha 尾部过滤掉，"
+             "导致回测只能买到名次 12~98 的次优票。传 0 放开下限（容量受日成交额约束）。")
+    ap.add_argument(
         "--exec-params", default=None,
         help="执行参数锁定文件（select_ml_exec_params.py 在 train/val 段产出 exec_params.json）。"
              "指定后盲测终局 gate 用它锁定的 selection_pct/freq，盲测结果不回调参数。")
@@ -1063,6 +1069,9 @@ def main() -> None:
         # --gate-capital 仅作为显式覆盖保留（高阶用途），默认绝不偏离 10 万。
         capital = float(args.gate_capital) if args.gate_capital is not None else trading_config.GATE_CAPITAL
         policy = {**policy, "capital": capital}
+        # 流动性分位下限：显式传参才覆盖（缺省保持引擎默认，不改变既有门禁口径）
+        if args.gate_amount_q is not None:
+            policy = {**policy, "amount_q": float(args.gate_amount_q)}
         sel_desc = (
             f"Top-N={policy['top_n']}" if policy["selection_mode"] == "top_n"
             else f"top {policy['selection_pct'] * 100:.2f}%"

@@ -119,9 +119,23 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start_backend_with_s
 # 盲测段因子重测（默认 2026-01-01 起；盲测段是唯一诚实样本外，此命令是其正式用途）
 .venv\Scripts\python.exe scripts\blind_test_factors.py
 
+# ML 组合训练 + 门禁（默认命令，2026-11-22 起 gate 固定 --gate-amount-q 0）
+.venv\Scripts\python.exe scripts\train_ml_composite.py --eval-mode tuning --isolation strict ^
+  --modes technical fundamental --scheme ml --model both --label-days 5 ^
+  --train-months 18 --step-months 6 --purge-days 5 --warmup-days 250 ^
+  --max-corr 0.6 --split-models --blend-weight icir --include-ml-increment ^
+  --no-write-pred --gate-top-n 10 --gate-amount-q 0
+
 # 前端 dev
 cd static && npm run dev
 ```
+
+> **ML 门禁必须带 `--gate-amount-q 0`**（2026-11-22 定调）。引擎默认 `amount_q=0.2`
+> 会剔除 am20 最低的 20%，而 ML 组合的 alpha 尾部正好全在这一档（top10 的 am20 中位
+> 0.12~0.45 亿，全市场 20% 分位阈值约 0.5 亿）——不传该参数时门禁只能买到名次 12~98 的
+> 次优票，超额夏普会被压到 0 附近。同口径实测（2025-01-27~2026-09-30、top10 日频、资本
+> 10 万）：默认 -0.05 → `0.05` 时 1.24 → `0` 时 1.88。
+> **代价**：该口径吃的是低流动性溢价，容量受限（10 万级可执行，100 万起步吃力，千万级不可行）。
 
 > **端口约定**：Quant UI 后端固定 **17891**；CNE dashboard **8787**。历史上 AGENTS.md 曾写 8000，已废弃 —— 一律以 `scripts/start_backend_with_sync.ps1` 为准。
 
