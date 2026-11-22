@@ -100,6 +100,9 @@ def _board_filter_flag() -> str:
 # 命中条件 = 请求区间被缓存面板实际覆盖范围包含（含 _CACHE_MAX_STALE_DAYS 容忍）。
 # 目录占用由 _CACHE_MAX_GB（GB 配额）+ _CACHE_MAX_FILES（文件数兜底）双闸约束。
 _CACHE_ROOT = Path(__file__).resolve().parents[3] / "artifacts" / "panel" / "cache"
+# 落盘分块行数（2026-11-22）：换内存不换口径——分块只影响写入峰值，
+# 不影响产物内容。40 万行 × ~230 列 ≈ 0.8GB/块，可通过环境变量下调。
+_CACHE_WRITE_CHUNK_ROWS = int(os.environ.get("ALPHA_PANEL_WRITE_CHUNK_ROWS", "400000") or 400000)
 _CNE_STATE_FILE = (
     Path(__file__).resolve().parents[4]
     / "CNEquity" / "data" / "quant_dataset" / "_cnequity" / "meta" / "state" / "daily_bars.json"
@@ -777,6 +780,34 @@ def _purge_old_cache(keep: Path) -> None:
         logger.warning("CNE panel 缓存淘汰异常（忽略）: %s", exc)
 
 
+def _write_panel_parquet_chunked(panel: pd.DataFrame, tmp: str,
+                                 chunk_rows: int | None = None) -> None:
+    """分块把面板写成 parquet（MultiIndex 先落平表列），避免整份复制。
+
+    背景（2026-11-22 内存事故）：原实现先 ``flat = panel.reset_index()`` 再
+    ``flat.to_parquet()``——那是一次**全量复制**（371 万行 × 230 列 ≈ 7GB），
+    写盘时 pandas→Arrow 又生成一份同尺寸临时表，重建峰值因此到 16GB+。
+    分块写只保留「面板本体 + 一个分块（默认 40 万行 ≈ 0.8GB）」。
+    产物 schema 与整份写完全一致（列 = index 两列 + 数据列，无 pandas 索引元数据）。
+    """
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    rows = int(chunk_rows or _CACHE_WRITE_CHUNK_ROWS)
+    writer = None
+    try:
+        for start in range(0, len(panel), max(rows, 1)):
+            block = panel.iloc[start:start + rows].reset_index()
+            table = pa.Table.from_pandas(block, preserve_index=False)
+            if writer is None:
+                writer = pq.ParquetWriter(tmp, table.schema, compression="snappy")
+            writer.write_table(table)
+            del table, block
+    finally:
+        if writer is not None:
+            writer.close()
+
+
 def _save_cached_panel(
     path: Path,
     panel: pd.DataFrame,
@@ -814,11 +845,10 @@ def _save_cached_panel(
             )
             return
         _CACHE_ROOT.mkdir(parents=True, exist_ok=True)
-        flat = panel.reset_index()
         fd, tmp = tempfile.mkstemp(dir=str(_CACHE_ROOT), prefix=".panel.", suffix=".parquet.tmp")
         os.close(fd)
         try:
-            flat.to_parquet(tmp, index=False)
+            _write_panel_parquet_chunked(panel, tmp)
             os.replace(tmp, path)
         except BaseException:  # noqa: BLE001
             try:
@@ -832,9 +862,9 @@ def _save_cached_panel(
         # 失败不影响主缓存。
         if _ARROW_MMAP_WRITE:
             try:
-                from alphaagent.data.adapters.panel_mmap import write_panel_arrow
+                from alphaagent.data.adapters.panel_mmap import write_panel_arrow_chunked
 
-                write_panel_arrow(path.with_suffix(".arrow"), flat)
+                write_panel_arrow_chunked(path.with_suffix(".arrow"), panel)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("CNE panel arrow 副本生成异常（忽略）: %s", exc)
         # 行主序矩阵副本（2026-11-14）：单 block → pandas 真零拷贝，
