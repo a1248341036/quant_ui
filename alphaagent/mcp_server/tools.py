@@ -654,7 +654,7 @@ def library_similarity(ctx: ServerContext, multi_line_expr: str, mode: str = "te
         _materialize_split_aware,
         _visible_range_of,
     )
-    from alphaagent.factor.metrics import materialize_factor
+    from alphaagent.factor.ingest import materialize_factor
     from core import factor_categories
 
     universe = _norm_universe(universe)  # 入口规范化+早校验（OCR D2）
