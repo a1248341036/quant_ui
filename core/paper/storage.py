@@ -142,14 +142,22 @@ def _ensure_columns() -> None:
     if _cols_checked or not pg.configured():
         return
     try:
-        for col, ddl in (
-            ("strategy_type", "VARCHAR(16) NOT NULL DEFAULT 'factor'"),
-            ("module", "TEXT"),
-            ("event_strategy", "VARCHAR(64)"),
-            ("start_date", "DATE"),
-        ):
-            _ex(f"ALTER TABLE paper_accounts ADD COLUMN IF NOT EXISTS {col} {ddl}")
-        _ex("ALTER TABLE paper_orders ADD COLUMN IF NOT EXISTS shares DOUBLE PRECISION")
+        # SQLite 不支持 ADD COLUMN IF NOT EXISTS：先读现有列，缺哪列补哪列
+        with pg.get_conn() as conn, conn.cursor() as cur:
+            cur.execute("PRAGMA table_info(paper_accounts)")
+            have = {row[1] for row in cur.fetchall()}
+            for col, ddl in (
+                ("strategy_type", "VARCHAR(16) NOT NULL DEFAULT 'factor'"),
+                ("module", "TEXT"),
+                ("event_strategy", "VARCHAR(64)"),
+                ("start_date", "DATE"),
+            ):
+                if col not in have:
+                    cur.execute(f"ALTER TABLE paper_accounts ADD COLUMN {col} {ddl}")
+            cur.execute("PRAGMA table_info(paper_orders)")
+            have = {row[1] for row in cur.fetchall()}
+            if "shares" not in have:
+                cur.execute("ALTER TABLE paper_orders ADD COLUMN shares DOUBLE PRECISION")
         _cols_checked = True
     except Exception as exc:
         print(f"[paper] 列迁移失败: {exc}", flush=True)
