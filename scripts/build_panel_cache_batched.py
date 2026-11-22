@@ -116,6 +116,10 @@ def main() -> int:
                     help="只做合并（分片需已由 --parts-dir 提供）")
     ap.add_argument("--low-priority", action="store_true",
                     help="进程优先级降为 BelowNormal，避免抢占前台应用（内存不变，但系统更跟手）")
+    ap.add_argument("--min-avail-gb", type=float, default=8.0,
+                    help="每批开始前要求的最小系统可用内存(GB)；不足则等待（默认 8）")
+    ap.add_argument("--max-wait-min", type=float, default=180.0,
+                    help="单批最多等待多久(分钟)，超时则照常执行（默认 180）")
     args = ap.parse_args()
 
     start, end = pd.Timestamp(args.start), pd.Timestamp(args.end)
@@ -146,7 +150,11 @@ def main() -> int:
     if existing:
         import polars as _pl
 
-        columns = list(_pl.scan_parquet(str(existing[0])).collect_schema().names())
+        # 分片是**扁平**写的（index 两列也是普通列），作为列基准时必须剔掉它们，
+        # 否则后续 df[columns] 会把 datetime/instrument 当数据列插入，
+        # 再 reset_index 就与索引层同名冲突（cannot insert instrument, already exists）。
+        columns = [c for c in _pl.scan_parquet(str(existing[0])).collect_schema().names()
+                   if c not in cne._CACHE_INDEX_COLS]
         print("沿用已有分片列基准: %d 列（来自 %s）" % (len(columns), existing[0].name), flush=True)
     t_all = time.time()
 
@@ -158,6 +166,19 @@ def main() -> int:
                 print("[%d/%d] %s~%s 复用已有分片" % (i, len(segs), seg_s.date(), seg_e.date()), flush=True)
                 continue
             build_s = max(start, seg_s - pd.Timedelta(days=args.warmup_days))
+            # 内存闸：每批要吃掉 8~14GB，若系统可用内存不足就等，而不是把机器压到 0。
+            # 并行挖掘/回测经常同时占几个 GB，这条闸是"分批跑"能真正不卡死的关键。
+            waited = 0.0
+            while True:
+                avail = psutil.virtual_memory().available / 1e9
+                if avail >= args.min_avail_gb or waited >= args.max_wait_min * 60:
+                    if waited > 0:
+                        print("    等待 %.0f 分钟后开始（当前可用 %.1fGB）" % (waited / 60, avail), flush=True)
+                    break
+                if waited == 0.0:
+                    print("    可用内存 %.1fGB < 阈值 %.1fGB，等待中…" % (avail, args.min_avail_gb), flush=True)
+                time.sleep(30)
+                waited += 30
             t0 = time.time()
             df = registry.build_panel(
                 start=build_s.date().isoformat(), end=seg_e.date().isoformat(),
