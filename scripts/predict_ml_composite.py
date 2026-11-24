@@ -62,7 +62,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--warmup-days", type=int, default=400,
                     help="面板起点提前量（因子窗口+平滑窗口预热，默认 400 与训练一致）")
     ap.add_argument("--out", default=None,
-                    help="pred 输出路径（默认 data/stock/pred_demo.parquet）")
+                    help="pred 输出路径（默认按 --channel 解析：demo→data/stock/pred_demo.parquet，"
+                         "其它→data/stock/pred_<channel>.parquet）")
+    ap.add_argument("--channel", default=None,
+                    help="pred 通道名（不传=环境变量 QUANT_PRED_CHANNEL，再回落 demo）。"
+                         "多通道互不覆盖：训练/实验可用独立通道，生产仍走 demo")
     ap.add_argument("--append", action="store_true",
                     help="与现有 pred 合并（同 date+code 以本次为准）；不加则整体覆盖")
     ap.add_argument("--low-price-floor", type=float, default=10.0,
@@ -175,7 +179,12 @@ def main(argv: list[str] | None = None) -> int:
 
     written = 0
     new_rows = 0
-    out_path = Path(args.out) if args.out else (ROOT / "data" / "stock" / "pred_demo.parquet")
+    if args.out:
+        out_path = Path(args.out)
+    else:
+        from core.store import pred_file as _pred_file
+
+        out_path = _pred_file(args.channel)
     if args.dry_run:
         print("[dry-run] 不写 pred")
     else:

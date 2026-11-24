@@ -47,7 +47,29 @@ FUND_FILE = FUND_DIR / "fund.csv"
 FUND_FEE_FILE = FUND_DIR / "fund_fee.parquet"  # 由 CNE step_fund_fees 维护
 FUND_NAV_FILE = FUND_DIR / "fund_nav.parquet"
 FUND_PANEL_FILE = FUND_DIR / "fund_panel.parquet"
-PRED_FILE = STOCK_DIR / "pred_demo.parquet"  # qweave 研究层输出的 ML 预测分数（date/code/score）
+PRED_CHANNEL_ENV = "QUANT_PRED_CHANNEL"
+
+
+def pred_file(channel: str | None = None) -> Path:
+    """按通道名解析 ML 预测分数文件。
+
+    pred 原来只有一个写死的名字（pred_demo.parquet），任何一次训练只要带
+    ``--write-pred`` 就会把它覆盖成"训练窗口内"的分数（实测把 2024-07~2026-10
+    的生产分数冲成只剩 2024-07~2024-12），下游模拟盘/回测随即失去信号。
+
+    通道化后：
+      - 默认通道 ``demo`` → ``pred_demo.parquet``（生产，保持向后兼容）
+      - 其他通道 ``X`` → ``pred_X.parquet``，互不覆盖
+      - 解析顺序：显式 channel 参数 → 环境变量 ``QUANT_PRED_CHANNEL`` → ``demo``
+    """
+    name = (channel or os.getenv(PRED_CHANNEL_ENV, "") or "demo").strip()
+    if not name or name == "demo":
+        return STOCK_DIR / "pred_demo.parquet"
+    safe = "".join(ch for ch in name if ch.isalnum() or ch in "-_")
+    return STOCK_DIR / f"pred_{safe}.parquet"
+
+
+PRED_FILE = pred_file()  # 兼容旧引用（按导入时的通道解析）
 
 
 TECH_UNIVERSE = "科技TMT"
