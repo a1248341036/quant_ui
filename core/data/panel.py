@@ -9,7 +9,7 @@ from pathlib import Path
 import pandas as pd
 
 from ..store import (
-    DATA_DIR, PANEL_FILE, PRED_FILE, LEGACY_DATA_DIR,
+    DATA_DIR, PANEL_FILE, LEGACY_DATA_DIR,
     PG_PARQUET_DIR, QUANT_DATASET_DIR, SENTIMENT_DIR,
     load_meta,
 )
@@ -568,14 +568,20 @@ def load_stock_detail(code: str, days: int = 250, adj: str = "qfq") -> pd.DataFr
 
 
 def load_pred_scores(codes: list[str] | None = None,
-                     cal: pd.DatetimeIndex | None = None) -> pd.DataFrame | None:
-    """读 qweave 研究层输出的 ML 预测分数（data/pred_demo.parquet）。
+                     cal: pd.DatetimeIndex | None = None,
+                     channel: str | None = None) -> pd.DataFrame | None:
+    """读 ML 预测分数（默认通道 data/pred_demo.parquet）。
 
+    ``channel`` 指定其它通道（读 ``data/pred_<channel>.parquet``），
+    None 时按环境变量 ``QUANT_PRED_CHANNEL`` 解析，再回落 demo。
     返回 date x code 的 score 矩阵，对齐到 cal 交易日历；文件不存在返回 None。
     """
-    if not PRED_FILE.exists():
+    from ..store import pred_file
+
+    path = pred_file(channel)
+    if not path.exists():
         return None
-    df = pd.read_parquet(PRED_FILE)
+    df = pd.read_parquet(path)
     if df.empty or "score" not in df.columns:
         return None
     df = df.copy()
