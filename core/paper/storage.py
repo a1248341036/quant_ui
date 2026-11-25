@@ -23,10 +23,13 @@ DEFAULT_RISK = {
     "buy_cost": trading_config.BUY_COST,
     "sell_cost": trading_config.SELL_COST,
     "spread_bps": 0.0,
+    "slippage_bps": 0.0,
     "min_commission": 0.0,
     "lot_size": trading_config.LOT_SIZE,
     "amount_q": trading_config.AMOUNT_Q,
     "max_weight": 0.5,
+    # equal=等权（默认，向后兼容）；score=按分数秩加权
+    "weight_mode": "equal",
 }
 
 
