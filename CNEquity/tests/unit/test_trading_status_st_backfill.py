@@ -55,6 +55,9 @@ def test_writes_st_rows_and_marks_all_swept_symbols(tmp_path, monkeypatch):
     _write_instruments(cfg, ["600000.SH", "600001.SH"])  # both all_a, no ST for 600001
     df = pl.DataFrame([_st_row("600000.SH", date(2020, 5, 6))])
     written = _patch(monkeypatch, returns=(df, []))
+    # 显式窗口路径：daily 现在走滚动窗口（见 test_st_scope_window），
+    # 这里要验证的是"全窗口扫描后标记所有扫过的票"，所以钉住原起点。
+    cfg._backfill_start = date(2016, 1, 1)
 
     result = _backfill_trading_status_st(cfg, date(2026, 7, 1), "run1")
 
@@ -161,6 +164,8 @@ def test_failed_symbols_are_not_marked_and_surface_a_finding(tmp_path, monkeypat
     _write_instruments(cfg, ["600000.SH", "600001.SH"])
     df = pl.DataFrame([_st_row("600000.SH", date(2020, 5, 6))])
     _patch(monkeypatch, returns=(df, ["600001.SH"]))  # 600001 dropped by throttling
+    # 同 test_writes_st_rows_and_marks_all_swept_symbols：钉住显式窗口起点。
+    cfg._backfill_start = date(2016, 1, 1)
 
     result = _backfill_trading_status_st(cfg, date(2026, 7, 1), "run1")
 

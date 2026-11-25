@@ -103,6 +103,9 @@ def test_daily_step_extends_evidence_and_checkpoint(cfg, monkeypatch):
     monkeypatch.setattr(reference, "current_st_universe", lambda config: SYMBOLS)
     _write_stock_st(cfg, _stock_st_rows())
     _seed_checkpoint(cfg, date(2024, 6, 27), {"000732.SZ": 5, "600519.SH": 0})
+    # 显式窗口路径：daily 默认已改为滚动窗口（见 test_st_scope_window），
+    # 本用例验证的是"复用前缀 checkpoint 只补增量"的逻辑，故钉住原起点。
+    cfg._backfill_start = date(2016, 1, 1)
 
     result = reference.step_trading_status_st(cfg, date(2024, 6, 28), "run-daily", {})
 
@@ -125,6 +128,8 @@ def test_daily_step_is_idempotent(cfg, monkeypatch):
     monkeypatch.setattr(reference, "current_st_universe", lambda config: SYMBOLS)
     _write_stock_st(cfg, _stock_st_rows())
     _seed_checkpoint(cfg, date(2024, 6, 27), {"000732.SZ": 5, "600519.SH": 0})
+    # 同上：钉住显式窗口，保持"幂等续签"这一用例的原意。
+    cfg._backfill_start = date(2016, 1, 1)
 
     first = reference.step_trading_status_st(cfg, date(2024, 6, 28), "run-a", {})
     second = reference.step_trading_status_st(cfg, date(2024, 6, 28), "run-b", {})
