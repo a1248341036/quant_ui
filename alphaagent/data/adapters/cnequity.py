@@ -999,17 +999,45 @@ def _write_panel_parquet_chunked(panel: pd.DataFrame, tmp: str,
 
     rows = int(chunk_rows or _CACHE_WRITE_CHUNK_ROWS)
     writer = None
+    schema = None
     try:
         for start in range(0, len(panel), max(rows, 1)):
             block = panel.iloc[start:start + rows].reset_index()
             table = pa.Table.from_pandas(block, preserve_index=False)
             if writer is None:
-                writer = pq.ParquetWriter(tmp, table.schema, compression="snappy")
+                schema = table.schema
+                writer = pq.ParquetWriter(tmp, schema, compression="snappy")
+            elif table.schema != schema:
+                # 同一面板的不同分块可能推断出不同 schema：某列在块 A 全为 NaN
+                # 会被推断成 null 类型，在块 B 有值则是 double/string。pyarrow 的
+                # ParquetWriter 拒绝 schema 不同的 write_table（2026-11-25 分批
+                # 重建 6 年缓存时在此炸掉，前 34 个分片白建）。这里按首块 schema
+                # 对齐：缺列补 null、类型不同则 cast。
+                logger.debug("分块写 parquet：第 %d 块 schema 与首块不一致，已对齐", start)
+                table = _align_table_to_schema(table, schema)
             writer.write_table(table)
             del table, block
     finally:
         if writer is not None:
             writer.close()
+
+
+def _align_table_to_schema(table, schema):
+    """把 table 对齐到给定 schema：缺列补 null、多余列丢弃、类型不同则 cast。"""
+    import pyarrow as pa
+
+    names = list(schema.names)
+    for field in schema:
+        if field.name not in table.schema.names:
+            table = table.append_column(field.name, pa.nulls(table.num_rows, type=field.type))
+    table = table.select(names)
+    cols = []
+    for field in schema:
+        col = table.column(field.name)
+        if col.type != field.type:
+            col = col.cast(field.type)
+        cols.append(col)
+    return pa.Table.from_arrays(cols, schema=schema)
 
 
 def _save_cached_panel(
