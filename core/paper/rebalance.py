@@ -37,6 +37,23 @@ def _rebalance_due(acc: dict, exec_ts: pd.Timestamp) -> bool:
     return (exec_ts.year, exec_ts.month) != (last_ts.year, last_ts.month)
 
 
+def _cost_bps(risk: dict, side: str) -> float:
+    """单边成交价冲击（bp）= 半价差 + 滑点，与引擎 spread_bps/slippage_bps 同义。
+
+    引擎里 spread_bps 是双边价差（买抬半价差、卖压半价差），slippage_bps 是单边固定滑点。
+    """
+    spread = float(risk.get("spread_bps", 0.0) or 0.0)
+    slip = float(risk.get("slippage_bps", 0.0) or 0.0)
+    return max(spread, 0.0) / 2.0 + max(slip, 0.0)
+
+
+def _fee(amount: float, rate: float, risk: dict) -> float:
+    """佣金 + 最低佣金（A 股散户 5 元起）。"""
+    fee = float(amount) * float(rate)
+    min_comm = float(risk.get("min_commission", 0.0) or 0.0)
+    return max(fee, min_comm) if min_comm > 0 else fee
+
+
 def _compute_targets(acc: dict, panel: pd.DataFrame, codes: list[str],
                      exec_ts: pd.Timestamp):
     """信号日收盘生成目标权重 {code: pct}。返回 (targets, signal_date, error)。"""
@@ -60,8 +77,21 @@ def _compute_targets(acc: dict, panel: pd.DataFrame, codes: list[str],
         n = int(min(len(sig), acc["top_n"]))
         if n <= 0:
             return None, sig_date, "目标持仓为空"
-        for code in sig["code"].head(n):
-            targets[str(code).zfill(6)] = 1.0 / n
+        sel = sig.head(n).copy()
+        sel["code"] = sel["code"].astype(str).str.zfill(6)
+        if str(risk.get("weight_mode", "equal") or "equal") == "score" and n > 1 \
+                and "score" in sel.columns:
+            # 按分数秩加权（与引擎 weight_mode="score" 同口径）：
+            # 最高分拿 n/Σ，最低分拿 1/Σ；分数含 NaN 时退化等权。
+            vals = pd.to_numeric(sel["score"], errors="coerce").to_numpy(dtype=float)
+            if np.isfinite(vals).all():
+                rank = np.argsort(np.argsort(vals)).astype(float) + 1.0
+                w = rank / rank.sum()
+                for code, wi in zip(sel["code"], w):
+                    targets[str(code)] = float(wi)
+                return targets, sig_date, None
+        for code in sel["code"]:
+            targets[str(code)] = 1.0 / n
         return targets, sig_date, None
     except Exception as exc:
         return None, None, f"信号计算失败: {type(exc).__name__}: {exc}"
@@ -147,8 +177,10 @@ def _execute_rebalance(
             continue
         px = float(open_row[code])
         shares = float(pos["shares"])
+        # 可执行口径：卖出按 半价差 + 滑点 下调成交价（与引擎 spread_bps/slippage_bps 同义）
+        px = px * (1.0 - _cost_bps(risk, "sell") / 10000.0)
         amt = shares * px
-        fee = amt * sell_cost
+        fee = _fee(amt, sell_cost, risk)
         cash += amt - fee
         oid = _add_order(acc["id"], {"code": code, "side": "sell", "target_pct": 0.0,
                                      "signal_date": signal_d, "exec_date": exec_d,
@@ -203,6 +235,8 @@ def _execute_rebalance(
                            "reason": "无成交量"})
             continue
         px = float(open_row[code])
+        # 可执行口径：买入按 半价差 + 滑点 上调成交价
+        px = px * (1.0 + _cost_bps(risk, "buy") / 10000.0)
         budget = pv * pct
         gross = px * (1.0 + buy_cost)
         want_lots = int(budget // gross // lot)
@@ -217,7 +251,7 @@ def _execute_rebalance(
                            "reason": "现金不足/预算过小"})
             continue
         shares = lots * lot
-        fee = shares * px * buy_cost
+        fee = _fee(shares * px, buy_cost, risk)
         cost = shares * px + fee
         cash -= cost
         old = positions.get(code)
