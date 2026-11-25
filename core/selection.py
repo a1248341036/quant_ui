@@ -54,6 +54,9 @@ class SelectionPolicy:
     vol_target_lo: float = 0.3               # 缩放系数下限
     vol_target_hi: float = 1.5               # 缩放系数上限（低波时加仓封顶）
     vol_target_window: int = 60              # σ_p 估计窗口（交易日）
+    # 建仓权重：equal=等权（默认，向后兼容）；score=按入选票的质量分秩加权
+    # （最高分拿最多，最低分拿最少；权重和为 1，总仓位与等权一致，只改票内分配）。
+    weight_mode: str = "equal"
 
     def quality(self, scores) -> np.ndarray:
         """方向归一化的质量分：越大越好（买小时取负）。"""
@@ -179,6 +182,25 @@ class PortfolioBuilder:
         weight = float(scale) / len(selected)
         return {k: weight for k in selected}
 
+    @staticmethod
+    def rank_weights(selected: list[int], scores_by_code: dict[int, float],
+                     scale: float = 1.0) -> dict[int, float]:
+        """按质量分秩加权：位次 1..N 归一化（最低分 1/N(N+1)/2 份额）。
+
+        用秩而非原始分数：避免负分/极端值把单票权重打穿，且对分数尺度不敏感。
+        分数缺失或不足两只时退化为等权。
+        """
+        if not selected:
+            return {}
+        if len(selected) < 2:
+            return {k: float(scale) for k in selected}
+        vals = np.array([scores_by_code.get(k, np.nan) for k in selected], dtype=float)
+        if not np.isfinite(vals).all():
+            return PortfolioBuilder.equal_weights(selected, scale)
+        rank = np.argsort(np.argsort(vals)).astype(float) + 1.0
+        w = rank / rank.sum()
+        return {k: float(scale) * float(wi) for k, wi in zip(selected, w)}
+
     def build_targets(
         self,
         policy: SelectionPolicy,
@@ -244,6 +266,13 @@ class PortfolioBuilder:
                 else:
                     chosen = old_in_buffer[:long_n]
         targets = self.equal_weights(chosen)
+        if getattr(policy, "weight_mode", "equal") == "score" and chosen:
+            # 质量分越高 → 权重越大。用质量分（方向归一化）而非原始分数，
+            # 买小场景下也是"越小越好"的一方拿更多。
+            quality_all = policy.quality(sc)
+            quality_by_code = {int(c): float(q)
+                               for c, q in zip(cand.tolist(), quality_all.tolist())}
+            targets = self.rank_weights(chosen, quality_by_code)
         scale = policy.scale_for_regime(market_adx)
         if policy.vol_target_annual is not None:
             hist = close_wide

@@ -62,6 +62,10 @@ class BacktestConfig:
     min_positions: int = 1
     max_positions: int | None = None
     min_score: float | None = None
+    # 建仓权重模式："equal"=等权（默认，向后兼容）；"score"=按当日信号秩加权。
+    # score 模式下权重 ∝ 入选股票在当日信号里的升序位次（1..N），最高分拿最多，
+    # 归一化到目标仓位；总仓位与等权一致，只改变票内分配。
+    weight_mode: str = "equal"
     # ── P1 换手降低（2026-09 新增，默认 0.0 向后兼容）──
     # buffer_ratio：buffer zone 比例（M = round(long_n × buffer_ratio)）。
     # 调仓日老持仓落在 top-(N+M) 内则保留，空缺从 top-N 补足。默认 0.0 = 严格 top-N。
@@ -171,6 +175,7 @@ def run_backtest(
     min_positions: int = 1,
     max_positions: int | None = None,
     min_score: float | None = None,
+    weight_mode: str = "equal",
     execution_profile: AssetExecutionProfile | None = None,
     share_classes: dict[str, str] | None = None,
     spread_bps: float | None = None,
@@ -253,6 +258,7 @@ def run_backtest(
         regime_scale=regime_scale, selection_mode=selection_mode,
         selection_pct=selection_pct, min_positions=min_positions,
         max_positions=max_positions, min_score=min_score,
+        weight_mode=weight_mode,
         execution_profile=execution_profile, share_classes=share_classes,
         spread_bps=spread_bps, min_commission=min_commission,
         impact_coef=impact_coef, impact_vol=impact_vol,
