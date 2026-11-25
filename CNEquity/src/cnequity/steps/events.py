@@ -312,20 +312,41 @@ def step_capital_changes(config: Config, trade_date: date, run_id: str, context:
         end = getattr(config, "_backfill_end", None) or trade_date
         if "event_date" not in df.columns:
             raise RuntimeError("capital_changes: backfill response has no event_date column")
-        parsed_dates = df.get_column("event_date").cast(pl.Date, strict=False)
-        invalid = (
-            parsed_dates.is_null()
-            | (parsed_dates < start).fill_null(False)
-            | (parsed_dates > end).fill_null(False)
+        df = df.with_columns(
+            pl.col("event_date").cast(pl.Date, strict=False).alias("event_date")
         )
-        if int(invalid.sum()):
-            raise RuntimeError(
-                "capital_changes: backfill response returned row(s) outside "
-                f"requested window {start.isoformat()}..{end.isoformat()}"
+        in_window = (
+            pl.col("event_date").is_not_null()
+            & (pl.col("event_date") >= start)
+            & (pl.col("event_date") <= end)
+        )
+        kept = df.filter(in_window)
+        dropped = df.height - kept.height
+        if dropped:
+            # TDX 0x000F 协议没有日期过滤，返回的是每只票的全部股本变迁：其中既有
+            # 早于窗口起点的历史事件，也有解析不出日期的脏行。原实现对这类行直接
+            # raise，等于把整批 5500 只票的结果全丢掉——capital_changes 长期为空
+            # 就是这个原因（2026-11-10 实测跑满 19 分钟后报 "row(s) outside
+            # requested window" 整批丢失，放宽窗口到 1980 年仍然同样失败）。
+            # 脏行是数据事实而不是调用错误：过滤掉并记 warning，窗口内的有效事件
+            # 正常入库，同时把丢弃量写进结果，便于事后核对。
+            logger.warning(
+                "capital_changes: dropped %d/%d row(s) whose event_date is null or "
+                "outside %s..%s",
+                dropped,
+                df.height,
+                start.isoformat(),
+                end.isoformat(),
             )
-        df = df.with_columns(parsed_dates.alias("event_date"))
+        df = kept
+        if df.is_empty():
+            return {"rows_read": 0, "rows_written": 0, "dropped_rows": dropped}
+        result_extra = {"dropped_rows": dropped}
+    else:
+        result_extra = {}
 
     result: dict = {"rows_read": 0, "rows_written": 0}
+    result.update(result_extra)
     if failed:
         result["failed_symbols"] = failed
         result["status"] = "failed"
