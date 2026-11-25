@@ -189,13 +189,12 @@ def main() -> int:
             df = _board_filter(df)
             dts = df.index.get_level_values("datetime")
             df = df[(dts >= seg_s) & (dts <= seg_e)]
+            # 不做列对齐：各批保留自己的列集合，合并阶段用 diagonal_relaxed 取并集、
+            # 缺列自动补 null。此前按"第一批的列"裁剪后续批次，导致早期年份缺数据的
+            # 插件（ac_*/rc_*/idx_*/ind_* 等 21 列）被永久丢掉——6 年缓存只有 211 列
+            # 而生产缓存 232 列，据此算出的分数与生产口径秩相关仅 0.39，回测结论失真。
             if columns is None:
                 columns = list(df.columns)
-            else:
-                missing = [c for c in columns if c not in df.columns]
-                for c in missing:
-                    df[c] = float("nan")
-                df = df[columns]
             cne._write_panel_parquet_chunked(df, str(out), 200_000)
             parts.append(out)
             peak = mon.take()
