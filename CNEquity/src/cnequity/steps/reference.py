@@ -51,6 +51,29 @@ logger = logging.getLogger(__name__)
 # required cooldown while limiting resumable loss to one batch.
 _ST_BACKFILL_CHUNK = 20
 
+# daily 路径的 ST 证据续签窗口（自然日）。取 400 天：research 默认窗口从
+# 2026-09-09 起，400 天能稳定覆盖它，同时把每天要校验的证据量压到 1 年多，
+# 不至于像 BACKFILL_START(2016) 那样要求十年全量证据都躺在 curated 里。
+_ST_DAILY_LOOKBACK_DAYS = 400
+
+
+def _st_scope_start(config: Config, trade_date: date) -> date:
+    """ST 证据续签的 scope 起点。
+
+    daily 路径只覆盖滚动窗口：原先无脑用 ``BACKFILL_START``(2016) 作起点，等于
+    每天都要校验"2016 起全窗口证据已在 curated 里齐备"。实测 201 只票的历史行数
+    不足时整张 receipt 签不出（"cannot publish ST coverage before 201 symbol(s)
+    reach curated storage"），historical all-A 因此长期 BLOCKED，只能人工重签
+    （2026-11-10 与 11-16 各手工签了一次）。显式 ``--start`` 与全量 backfill 保持
+    原语义。
+    """
+    explicit = getattr(config, "_backfill_start", None)
+    if explicit is not None:
+        return explicit
+    if getattr(config, "_backfill", False):
+        return BACKFILL_START
+    return max(BACKFILL_START, trade_date - timedelta(days=_ST_DAILY_LOOKBACK_DAYS))
+
 
 @register_step("instruments", group="core", requires_workers=False)
 def step_instruments(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
@@ -380,7 +403,7 @@ def _backfill_trading_status_st(config: Config, trade_date: date, run_id: str) -
     """
     source = str(getattr(config, "trading_status_st_backfill_source", "baostock") or "baostock")
 
-    start = getattr(config, "_backfill_start", None) or BACKFILL_START
+    start = _st_scope_start(config, trade_date)
     end = getattr(config, "_backfill_end", None) or trade_date
     explicit = getattr(config, "_backfill_symbols", None)
     if explicit is not None:
@@ -521,7 +544,16 @@ def _backfill_trading_status_st(config: Config, trade_date: date, run_id: str) -
 
 
 def _st_evidence_covered_through(checkpoint: dict, scope_start: date) -> date:
-    """旧证据实际覆盖到的最后一天（没有该字段的旧 checkpoint 退化为 min-1）。"""
+    """旧证据实际覆盖到的最后一天（没有该字段的旧 checkpoint 退化为 min-1）。
+
+    没有任何落盘证据（``completed_symbols`` 为空）的 checkpoint 一律不可信：
+    既不能拿 ``scope.end``（pending 空壳的 end 就是请求窗口终点，通常等于
+    ``stock_st`` 最新日期），也不能拿可能被旧逻辑写坏的 ``evidence_covered_through``。
+    2026-11-16 把 scope 从 2016 收到滚动窗口时，新 scope 的 pending 空壳正好落在
+    这条路径上，导致续签 0.2 秒返回 0 行、receipt 永远签不出。
+    """
+    if not checkpoint.get("completed_symbols"):
+        return scope_start - timedelta(days=1)
     raw = checkpoint.get("evidence_covered_through") or (checkpoint.get("scope") or {}).get("end")
     try:
         if raw is not None:
@@ -591,7 +623,14 @@ def step_trading_status_st(config: Config, trade_date: date, run_id: str, contex
             "error": "stock_st 无可解析的 trade_date",
         }
 
-    start = getattr(config, "_backfill_start", None) or BACKFILL_START
+    # scope 起点同样走滚动窗口（原来固定 BACKFILL_START=2016）：receipt 签出时要求
+    # "窗口内每只有 ST 记录的票，其证据行数都已在 curated 里达到 checkpoint 记账的
+    # 行数"。把窗口拉到 2016 就要求十年全量证据严丝合缝，实测有 201 只票历史行数
+    # 不足（expected 755 / persisted 473 之类），于是每天跑完都签不出 receipt，
+    # historical all-A 长期 BLOCKED，只能人工重签（2026-11-10、11-16 各一次）。
+    # 窗口收到 400 天后，scope 记账与 curated 实际写入来自同一批 stock_st 数据，
+    # 行数天然一致。
+    start = _st_scope_start(config, trade_date)
     if latest < start:
         return {"rows_read": 0, "rows_written": 0, "status": "success", "note": "stock_st 尚无窗口内数据"}
 

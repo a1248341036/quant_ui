@@ -31,6 +31,11 @@
 
 .PARAMETER SkipEtfFund
   跳过 ETF/基金/指数刷新（refresh_data.py）。
+
+.PARAMETER AutoCloseMinutes
+  完成汇总展示后自动关闭卡片的分钟数（默认 30，0 = 永不自动关）。
+  无人值守时没人点"确定关闭"，ShowDialog 会一直阻塞，计划任务停在 Running，
+  把次日 21:30 的触发挡在"任务已在运行"外面（2026-11-16 实测卡了 72 分钟）。
 #>
 [CmdletBinding()]
 param(
@@ -42,7 +47,8 @@ param(
     [switch]$Quiet,
     [switch]$SkipClean,
     [switch]$SkipEtfFund,
-    [switch]$SkipHealth
+    [switch]$SkipHealth,
+    [int]$AutoCloseMinutes = 30
 )
 
 $ErrorActionPreference = "Stop"
@@ -730,6 +736,23 @@ if ($UseGui) {
     $recordedKeys = [System.Collections.Generic.HashSet[string]]::new()
     $lastPhase = ""
     $lastStep  = ""
+    $script:autoCloseDeadline = $null
+
+    # 自动关闭兜底：无人值守时没人点"确定关闭"，ShowDialog 会永远阻塞，计划任务
+    # 一直停在 Running，把次日 21:30 的触发挡在"任务已在运行"外面（2026-11-16
+    # 实测卡了 72 分钟）。只在汇总卡片出现后才开始计时，不影响正常查看。
+    # 注意：tick 里要给脚本级变量赋值必须带 $script: 前缀，否则只改到回调局部。
+    $autoCloseTimer = [System.Windows.Threading.DispatcherTimer]::new()
+    $autoCloseTimer.Interval = [TimeSpan]::FromMinutes(1)
+    $autoCloseTimer.add_Tick({
+        if ($null -eq $script:autoCloseDeadline) { return }
+        if ((Get-Date) -lt $script:autoCloseDeadline) { return }
+        $autoCloseTimer.Stop()
+        try {
+            $app.txtFooterHint.Text = "无人值守超时，自动关闭卡片"
+            $app.Window.Close()
+        } catch {}
+    })
 
     $pollTimer = [System.Windows.Threading.DispatcherTimer]::new()
     $pollTimer.Interval = [TimeSpan]::FromMilliseconds(100)
@@ -765,6 +788,10 @@ if ($UseGui) {
                             $summaryShown = $true
                             $app.ShowCompletionSummary([bool]$st.is_success, [string]$st.message)
                             $pollTimer.Stop()
+                            if ($AutoCloseMinutes -gt 0) {
+                                $script:autoCloseDeadline = (Get-Date).AddMinutes($AutoCloseMinutes)
+                                $autoCloseTimer.Start()
+                            }
                             return
                         }
                     }
@@ -781,6 +808,10 @@ if ($UseGui) {
             $msg = if ($isOk) { "全部数据集与波次同步成功！" } else { "流水线执行异常终止 (退出码: $jobExit)，请查阅详细日志。" }
             $app.ShowCompletionSummary($isOk, $msg)
             $pollTimer.Stop()
+            if ($AutoCloseMinutes -gt 0) {
+                $script:autoCloseDeadline = (Get-Date).AddMinutes($AutoCloseMinutes)
+                $autoCloseTimer.Start()
+            }
         }
     })
 
