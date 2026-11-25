@@ -92,6 +92,7 @@ def _prepare_backtest(cfg) -> dict:
     min_positions = cfg.min_positions
     max_positions = cfg.max_positions
     min_score = cfg.min_score
+    weight_mode = str(getattr(cfg, "weight_mode", "equal") or "equal")
     execution_profile = cfg.execution_profile
     share_classes = cfg.share_classes
     spread_bps = cfg.spread_bps
@@ -241,6 +242,7 @@ def _prepare_backtest(cfg) -> dict:
         regime_adx=regime_adx, regime_scale=regime_scale,
         vol_target_annual=vol_target_annual, vol_target_lo=vol_target_lo,
         vol_target_hi=vol_target_hi, vol_target_window=vol_target_window,
+        weight_mode=weight_mode,
     )
 
     return {
@@ -279,7 +281,8 @@ def _prepare_backtest(cfg) -> dict:
         "regime_adx": regime_adx, "regime_scale": regime_scale,
         "selection_mode": selection_mode, "selection_pct": selection_pct,
         "min_positions": min_positions, "max_positions": max_positions,
-        "min_score": min_score, "execution_profile": execution_profile,
+        "min_score": min_score,
+        "execution_profile": execution_profile,
         "share_classes": share_classes,
         "impact_coef": impact_coef, "impact_vol": impact_vol,
         "use_screener": cfg.use_screener,
