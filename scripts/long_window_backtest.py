@@ -34,6 +34,8 @@ def main() -> int:
     ap.add_argument("--freqs", default="monthly,weekly,daily")
     ap.add_argument("--capitals", default="10000,50000")
     ap.add_argument("--top-n", type=int, default=10)
+    ap.add_argument("--channel", default="demo",
+                    help="pred 通道（demo=生产；长历史可用独立通道，如 long6y）")
     ap.add_argument("--out", default="artifacts/alphaagent/stacking/long_window_backtest.csv")
     args = ap.parse_args()
 
@@ -49,9 +51,9 @@ def main() -> int:
     ef["code"] = ef["code"].astype(str).str.extract(r"(\d{6})", expand=False)
     ef = ef.dropna(subset=["code"])
 
-    wide = load_pred_scores(channel="demo")
+    wide = load_pred_scores(channel=args.channel)
     if wide is None:
-        print("pred 通道 demo 读取失败", flush=True)
+        print("pred 通道 %s 读取失败" % args.channel, flush=True)
         return 1
     codes = [str(c) for c in wide.columns]
     print("面板 %d 行，分数 %s，窗口 %s~%s" % (len(ef), wide.shape, args.start, args.end), flush=True)
