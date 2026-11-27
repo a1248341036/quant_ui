@@ -71,6 +71,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                     help="与现有 pred 合并（同 date+code 以本次为准）；不加则整体覆盖")
     ap.add_argument("--low-price-floor", type=float, default=10.0,
                     help="低价池掩码：当日 close 高于该值的置 NaN（0=关闭；默认 10 与 11-08 pred 口径一致）")
+    ap.add_argument("--keep-st", action="store_true",
+                    help="保留 ST 股（默认剔除：处于风险警示板的 (date,code) 分数置 NaN）")
     ap.add_argument("--dry-run", action="store_true", help="只算不写")
     ap.add_argument("--json", action="store_true", help="末尾打印一行 JSON 摘要（供计划任务/监控消费）")
     return ap.parse_args(argv)
@@ -115,6 +117,60 @@ def _apply_low_price_floor(frame: pd.DataFrame, panel: pd.DataFrame,
     merged.loc[blocked, "score"] = np.nan
     out = merged.drop(columns=["close"]).dropna(subset=["score"])
     return out.reset_index(drop=True), int(blocked.sum())
+
+
+def _apply_st_mask(frame: pd.DataFrame, panel: pd.DataFrame,
+                   enabled: bool) -> tuple[pd.DataFrame, int]:
+    """ST 剔除：把处于风险警示板的 (date, code) 分数置 NaN。
+
+    与因子评估层同一份真源（``alphaagent.factor.metrics.st_mask`` → CNE curated
+    ``stock_st``，已与 baostock 逐日 isST 对账 precision/recall=1.0）。
+    此前 ST 掩码只接入了因子评估 / submit / 群体筛，**没有接入 ML 组合的预测链**，
+    导致模型选出的 Top10 全是 ST 股（2026-10 实测 9~10 只）。
+
+    注意：``st_row_mask`` 按 panel 的 (datetime, instrument) 精确 join，instrument
+    带交易所后缀（``000698.SZ``）。传 6 位 code 会一行都匹配不上（静默失效），
+    所以这里用 panel 索引算掩码，再按 (date, 6 位 code) 映射回分数表。
+    """
+    if not enabled or frame.empty or panel is None or panel.empty:
+        return frame, 0
+    try:
+        from alphaagent.factor.metrics.st_mask import st_row_mask
+    except Exception:  # noqa: BLE001
+        return frame, 0
+    try:
+        mask = st_row_mask(panel, asset_type="stock")
+    except Exception:  # noqa: BLE001
+        return frame, 0
+    if mask is None or not bool(np.asarray(mask, dtype=bool).any()):
+        return frame, 0
+
+    import re
+
+    idx = panel.index
+    st_idx = idx[np.asarray(mask, dtype=bool)]
+    if len(st_idx) == 0:
+        return frame, 0
+    st_keys = pd.DataFrame({
+        "date": pd.to_datetime(st_idx.get_level_values("datetime")),
+        "code": [(_norm_code(v)) for v in st_idx.get_level_values("instrument")],
+    }).drop_duplicates()
+
+    work = frame.copy()
+    work["date"] = pd.to_datetime(work["date"])
+    work["code"] = [_norm_code(v) for v in work["code"]]
+    merged = work.merge(st_keys.assign(_st=True), on=["date", "code"], how="left")
+    blocked = merged["_st"].eq(True).to_numpy(dtype=bool)
+    merged.loc[blocked, "score"] = np.nan
+    out = merged.drop(columns=["_st"]).dropna(subset=["score"]).reset_index(drop=True)
+    return out, int(blocked.sum())
+
+
+def _norm_code(v: object) -> str:
+    import re
+
+    m = re.search(r"(\d{6})", str(v))
+    return (m.group(1) if m else str(v)).zfill(6)
 
 
 def _write_pred(frame: pd.DataFrame, out_path: Path, append: bool) -> tuple[int, int]:
@@ -174,8 +230,10 @@ def main(argv: list[str] | None = None) -> int:
     scored_days = frame["date"].nunique()
     n_before = len(frame)
     frame, n_blocked = _apply_low_price_floor(frame, panel, args.low_price_floor)
+    frame, n_st = _apply_st_mask(frame, panel, not args.keep_st)
     print(f"分数：{len(frame)} 行 / {scored_days} 个交易日 / "
-          f"{frame['code'].nunique()} 只；低价池掩码剔除 {n_blocked} 行（close>{args.low_price_floor}）")
+          f"{frame['code'].nunique()} 只；低价池掩码剔除 {n_blocked} 行（close>{args.low_price_floor}）"
+          f"；ST 剔除 {n_st} 行（{'关闭' if args.keep_st else '开启'}）")
 
     written = 0
     new_rows = 0
