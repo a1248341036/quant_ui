@@ -705,6 +705,34 @@ def _entry_group(entry: FactorEntry) -> str:
     return derive_group(facets)
 
 
+def _apply_st_mask(
+    feature_matrix: np.ndarray, label: np.ndarray, panel: pd.DataFrame
+) -> tuple[np.ndarray, np.ndarray]:
+    """把 ST 行的特征与 label 置 NaN（训练样本与 OOS IC 都剔掉 ST）。
+
+    与因子评估层同一份真源：``alphaagent.factor.metrics.st_mask.st_row_mask``
+    → CNE curated ``stock_st``。掩码不可用（数据集缺失 / ``ALPHA_ST_MASK=0`` /
+    非股票）时原样返回，fail-open，绝不中断训练。
+    """
+    try:
+        from alphaagent.factor.metrics.st_mask import st_row_mask
+
+        st_rows = st_row_mask(panel, asset_type="stock")
+    except Exception:  # noqa: BLE001
+        return feature_matrix, label
+    if st_rows is None:
+        return feature_matrix, label
+    st_rows = np.asarray(st_rows, dtype=bool)
+    if st_rows.shape[0] != len(panel) or not st_rows.any():
+        return feature_matrix, label
+    if feature_matrix.size:
+        feature_matrix = feature_matrix.copy()
+        feature_matrix[st_rows, :] = np.nan
+    label = np.asarray(label, dtype=np.float64).copy()
+    label[st_rows] = np.nan
+    return feature_matrix, label
+
+
 def build_dataset_from_values(
     panel: pd.DataFrame,
     factor_values: Sequence[tuple[FactorEntry, np.ndarray]],
@@ -774,6 +802,13 @@ def build_dataset_from_values(
         # baseline 完全同口径可比。
         sampled_day_mask = _sampled_day_mask(panel, sample_step_days)
         feature_matrix = _ffill_along_time(feature_matrix, panel)
+    # ST 剔除（2026-11-26）：与因子评估层同源（``st_mask.mask_values`` 在评估时把
+    # ST 行的因子值置 NaN）。组合层此前**没有接这条链路**——挖掘端 IC 是干净的非 ST
+    # 口径，但模型在含 ST 的样本上学 5 日收益，学到的排序能力基本是 ST 溢价
+    # （实测 Top10 全 ST、剔除 ST 后样本外超额从 +14.7% 掉到 +3.8%）。
+    # 这里对特征与 label 同时置 NaN：训练样本与 OOS IC 都回到非 ST 口径。
+    # mask 必须放在 ffill 之后，否则被 ffill 填回。
+    feature_matrix, label = _apply_st_mask(feature_matrix, label, panel)
     return StackingDataset(
         panel=panel,
         feature_matrix=feature_matrix,
